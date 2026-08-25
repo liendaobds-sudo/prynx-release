@@ -17,7 +17,6 @@ export default function DiffSidebar({
   onPageClick,
   activePage,
   onPlayGif,
-  onRegionClick,
 }: DiffSidebarProps) {
   const { t } = useTranslation();
   const totalDiffs = results.reduce((sum, r) => sum + r.diff_count, 0);

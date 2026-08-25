@@ -13,6 +13,15 @@ export interface StickerSheetTabSummary {
     stickerSheetBusy: boolean;
 }
 
+export type StickerSheetWorkflowStatus = 'pending' | 'processing' | 'review' | 'ready' | 'error';
+
+export function stickerSheetWorkflowStatusAtViewerPosition(
+    statuses: Partial<Record<number, StickerSheetWorkflowStatus>> | undefined,
+    zeroBasedViewerIndex: number,
+): StickerSheetWorkflowStatus | undefined {
+    return statuses?.[zeroBasedViewerIndex + 1];
+}
+
 export function resolveStickerSourceSyncMarker(
     stickerSourceFile: File | null,
     nextSourceImage: File | null,
@@ -65,4 +74,38 @@ export function selectStickerSheetTabSummary(
             || stickerTab?.status === 'exporting'
             || stickerTab?.isExporting === true,
     };
+}
+
+/**
+ * REVISION (audit 2026-08-25 §REV.05): `pages` của AI-sheet được keyed theo
+ * VỊ TRÍ trong Working PDF. Không ánh xạ lại qua số trang nguồn vì reorder và
+ * hai instance duplicate có thể cùng trỏ một source page nhưng có kết quả riêng.
+ */
+export function selectStickerSheetPageWorkflowStatuses(
+    summary: StickerSheetTabSummary,
+    workingPageCount: number,
+): Partial<Record<number, StickerSheetWorkflowStatus>> | undefined {
+    if (summary.stickerSheetMode !== 'ai-sheet' || !summary.stickerSheetSourceFile) {
+        return undefined;
+    }
+
+    const count = Math.max(
+        1,
+        summary.stickerSheetPageCount,
+        summary.stickerSheetSourceImageCount,
+        workingPageCount,
+    );
+    const statuses: Partial<Record<number, StickerSheetWorkflowStatus>> = {};
+    for (let workingPosition = 1; workingPosition <= count; workingPosition += 1) {
+        const page = summary.stickerSheetPages[workingPosition];
+        if (page?.status === 'error') statuses[workingPosition] = 'error';
+        else if (
+            page?.isRefining
+            || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(page?.status || '')
+        ) statuses[workingPosition] = 'processing';
+        else if (page?.status === 'mask-review') statuses[workingPosition] = 'review';
+        else if (page?.status === 'mask-ready') statuses[workingPosition] = 'ready';
+        else statuses[workingPosition] = 'pending';
+    }
+    return statuses;
 }

@@ -11,12 +11,20 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { IMAGE_BATCH_DROP_EVENTS } from '../../lib/tabNavigation';
 import type { BatchItem } from './imageBatch/store';
+import { rasterizeUpscaleWorkingPage } from './upscaleWorkingPage';
+import { getFileArrayBuffer } from '../../lib/utils';
+import { sourceImagePixelsPerPdfPoint } from '../../lib/imageNormalizer';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
     tabId: string;
     pdfFile: File | null;
     sourceImageFile?: File | null;
+    /** Không được gửi thẳng backend; chỉ dùng khôi phục mật độ raster của PDF revision. */
+    sourceImageReferenceFile?: File | null;
+    /** PDF đã bake revision Viewer; chỉ gọi khi người dùng bấm Chạy. */
+    getWorkingFile?: () => Promise<File>;
+    activeWorkingPage?: number;
     onFileFixed?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
 }
 
@@ -24,7 +32,9 @@ interface Props {
 // ─── Process batch (riêng cho upscale — gọi /upscale) ─────────────────────────
 const upscaleControllers = new Map<string, AbortController>();
 const upscaleArtifactLeases = new Map<string, Set<string>>();
-let warmupWarningShown = false;
+const UPSCALE_WORKING_PAGE_PLACEHOLDER = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120"><rect width="160" height="120" fill="#e2e8f0"/><rect x="48" y="22" width="64" height="76" rx="5" fill="#f8fafc" stroke="#94a3b8" stroke-width="3"/><path d="M61 45h38M61 58h38M61 71h26" stroke="#94a3b8" stroke-width="4" stroke-linecap="round"/></svg>',
+)}`;
 
 async function updateUpscaleArtifactLease(
     action: 'claim' | 'release',
@@ -142,6 +152,9 @@ export function shouldPromoteUpscaleResult(
     item: BatchItem,
     sourceImageFile?: File | null,
 ): boolean {
+    // Item workspace có owner rõ ràng nên không còn mơ hồ ngay cả khi batch còn
+    // các ảnh explicit. Trường hợp PDF revision dùng placeholder này.
+    if (item.sourceOrigin === 'workspace') return true;
     // Một ảnh là luồng không mơ hồ. Với batch nhiều ảnh, chỉ thay tài liệu nếu item
     // chính là ảnh nguồn của workspace; không tự chọn hộ người dùng một ảnh khác.
     if (items.length === 1) return true;
@@ -178,6 +191,11 @@ type UpscaleResultReady = (result: {
 }) => boolean | void | Promise<boolean | void>;
 
 type UpscaleWorkingPdfPolicy = (item: BatchItem, items: BatchItem[]) => boolean;
+type UpscaleSourceResolver = (
+    item: BatchItem,
+    items: BatchItem[],
+    signal: AbortSignal,
+) => Promise<File | undefined>;
 
 type NativeUpscaleFileGrant = {
     path: string;
@@ -252,6 +270,7 @@ export async function processUpscaleBatch(
     tabId: string,
     onResultReady?: UpscaleResultReady,
     shouldPrepareWorkingPdf?: UpscaleWorkingPdfPolicy,
+    resolveSource?: UpscaleSourceResolver,
 ) {
     const store = useUpscaleStore.getState();
     const tabState = store.getTab(tabId);
@@ -273,14 +292,26 @@ export async function processUpscaleBatch(
             store.setBatchItems(tabId, [...items]);
             try {
                 const item = items[i];
+                const resolvedSource = await resolveSource?.(item, items, controller.signal);
+                if (resolvedSource) {
+                    items[i] = {
+                        ...items[i],
+                        path: 'browser-file',
+                        fileName: resolvedSource.name,
+                        originalUrl: items[i].originalUrl,
+                        fileObj: resolvedSource,
+                        sourceIdentity: undefined,
+                    };
+                }
+                const requestItem = items[i];
                 store.setProgress(tabId, tv('Đang kết nối bộ xử lý...'));
                 await waitForUpscaleBackend(controller.signal);
                 store.setProgress(tabId, tv('Đang phóng to') + ' ' + processed + ' / ' + items.length + '...');
                 const includeWorkingPdf = !!onResultReady
-                    && (!shouldPrepareWorkingPdf || shouldPrepareWorkingPdf(item, items));
+                    && (!shouldPrepareWorkingPdf || shouldPrepareWorkingPdf(requestItem, items));
                 const { formData, usedPathGrant } = await prepareUpscaleRequest(
                     tabId,
-                    item,
+                    requestItem,
                     options.model,
                     options.scaleFactor,
                     includeWorkingPdf,
@@ -293,11 +324,11 @@ export async function processUpscaleBatch(
                 // UIUX (audit 2026-08-10 §UP.X.03): grant/path có thể stale sau
                 // lúc native cấp. Retry đúng một lần bằng bytes, giữ nguyên option.
                 if (!res.ok && usedPathGrant
-                    && item.fileObj && item.fileObj.size > 0
+                    && requestItem.fileObj && requestItem.fileObj.size > 0
                     && [400, 403, 404].includes(res.status)) {
                     console.warn('[Upscale] Quyền đường dẫn đã stale, retry bằng upload.');
                     const retryForm = new FormData();
-                    retryForm.append('file', item.fileObj, item.fileName);
+                    retryForm.append('file', requestItem.fileObj!, requestItem.fileName);
                     appendUpscaleOptions(
                         retryForm,
                         options.model,
@@ -343,7 +374,7 @@ export async function processUpscaleBatch(
                 const workingPdfPath = res.headers.get('X-Upscale-Working-Pdf-Path') || undefined;
                 const artifactLease = res.headers.get('X-Upscale-Artifact-Lease') || undefined;
                 const outBlob = await res.blob();
-                const resultIdentity = tagUpscaleResultIdentity(outBlob, tabId, item.id);
+                const resultIdentity = tagUpscaleResultIdentity(outBlob, tabId, requestItem.id);
                 const outUrl = URL.createObjectURL(outBlob);
                 items[i] = {
                     ...items[i],
@@ -359,7 +390,7 @@ export async function processUpscaleBatch(
                     try {
                         const committed = await onResultReady({
                             blob: outBlob,
-                            name: upscaleOutputName(item.fileName),
+                            name: upscaleOutputName(requestItem.fileName),
                             workingPdfPath,
                             artifactLease,
                             item: items[i],
@@ -444,7 +475,15 @@ async function handleSave(tabId: string) {
 // SIDEBAR — Rendered in the right settings panel
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function UpscaleTool({ tabId, pdfFile, sourceImageFile, onFileFixed }: Props) {
+export default function UpscaleTool({
+    tabId,
+    pdfFile,
+    sourceImageFile,
+    sourceImageReferenceFile,
+    getWorkingFile,
+    activeWorkingPage = 1,
+    onFileFixed,
+}: Props) {
   const { t } = useTranslation();
     const tabState = useUpscaleStore(state => state.tabs[tabId] || defaultUpscaleTabState);
     const storeActions = useUpscaleStore.getState();
@@ -464,28 +503,54 @@ export default function UpscaleTool({ tabId, pdfFile, sourceImageFile, onFileFix
         };
     }, [tabId]);
 
-    // Ảnh đã được chuẩn hóa thành PDF để hiển thị trong workspace, vì vậy Upscale
-    // phải ưu tiên `sourceImageFile` thay vì nhìn nhầm bản PDF trung gian.
-    const addedRef = useRef<Set<string>>(new Set());
+    // Ảnh shadow chỉ được dùng khi upstream xác nhận còn cùng revision. Khi prop
+    // này về null sau rotate/reorder/edit, item workspace cũ trở thành placeholder
+    // để lúc bấm Chạy raster đúng active Working page; file explicit không đổi.
+    const workspaceInputKeyRef = useRef<string | null>(null);
     React.useEffect(() => {
         const store = useUpscaleStore.getState();
         store.initTab(tabId);
-        const inputFile = sourceImageFile || pdfFile;
-        if (!inputFile) return;
-        const isImage = inputFile.type.startsWith('image/') || inputFile.name.match(/\.(jpg|jpeg|png|webp|tiff?|bmp)$/i);
-        if (!isImage) return;
-        const sourcePath = filePath(inputFile);
-        const key = sourcePath + '|' + inputFile.name + '|' + inputFile.size;
-        if (addedRef.current.has(key)) return;
-
+        if (isProcessing) return;
+        const inputKey = sourceImageFile
+            ? [tabId, 'image', filePath(sourceImageFile), sourceImageFile.name, sourceImageFile.size].join('|')
+            : pdfFile
+                ? [tabId, 'pdf', filePath(pdfFile), pdfFile.name, pdfFile.size, activeWorkingPage].join('|')
+                : [tabId, '<none>'].join('|');
+        if (workspaceInputKeyRef.current === inputKey) return;
+        workspaceInputKeyRef.current = inputKey;
         const currentItems = store.getTab(tabId).batchItems;
-        if (isUpscaleInputAlreadyTracked(currentItems, inputFile)) {
-            addedRef.current.add(key);
+        const workspaceItemIsCurrent = (item: BatchItem): boolean => {
+            if (item.sourceOrigin !== 'workspace') return true;
+            if (sourceImageFile) return isUpscaleInputAlreadyTracked([item], sourceImageFile);
+            return !!pdfFile && item.sourceIdentity === inputKey;
+        };
+        for (const item of currentItems.filter(item => !workspaceItemIsCurrent(item))) {
+            store.removeItem(tabId, item.id);
+        }
+        const remainingItems = store.getTab(tabId).batchItems;
+        if (sourceImageFile) {
+            if (isUpscaleInputAlreadyTracked(remainingItems, sourceImageFile)) return;
+            void normalizeAndAddFiles([sourceImageFile], tabId, useUpscaleStore, {
+                sourceOrigin: 'workspace',
+            });
             return;
         }
-        addedRef.current.add(key);
-        void normalizeAndAddFiles([inputFile], tabId, useUpscaleStore);
-    }, [pdfFile, sourceImageFile, tabId]);
+        // Giữ đúng phạm vi cũ: PDF thuần không tự biến thành input Upscale. Chỉ
+        // tạo placeholder khi workspace thật sự xuất phát từ một ảnh đã normalize.
+        if (!pdfFile || !getWorkingFile || !sourceImageReferenceFile) return;
+        if (remainingItems.some(item => item.sourceOrigin === 'workspace' && item.sourceIdentity === inputKey)) return;
+        // Không đọc/raster PDF trong effect. Resolver của nút Chạy mới
+        // materialize revision và raster đúng vị trí trang đang xem.
+        store.addItems(tabId, [{
+            id: 'workspace-pdf-' + Math.random().toString(36).slice(2),
+            path: 'browser-file',
+            fileName: (pdfFile.name.replace(/\.pdf$/i, '') || 'tai_lieu') + '_trang_' + activeWorkingPage + '.png',
+            originalUrl: UPSCALE_WORKING_PAGE_PLACEHOLDER,
+            status: 'pending',
+            sourceOrigin: 'workspace',
+            sourceIdentity: inputKey,
+        }]);
+    }, [activeWorkingPage, getWorkingFile, isProcessing, pdfFile, sourceImageFile, sourceImageReferenceFile, tabId]);
 
     React.useEffect(() => {
         const handleExternalFiles = (event: Event) => {
@@ -502,31 +567,8 @@ export default function UpscaleTool({ tabId, pdfFile, sourceImageFile, onFileFix
         };
     }, [tabId]);
 
-    // Global flag + warm model (fire-and-forget).
-    React.useEffect(() => {
-        const upscaleWindow = window as Window & { __isUpscalerActive?: boolean };
-        upscaleWindow.__isUpscalerActive = true;
-        try {
-            const fd = new FormData();
-            fd.append('engine', options.model);
-            void authenticatedFetch(getApiUrl() + '/pdf-tools/upscale/warmup', { method: 'POST', body: fd })
-                .then(async response => {
-                    const payload = response.ok ? await response.json() as { ok?: boolean } : null;
-                    if (!payload?.ok && !warmupWarningShown) {
-                        warmupWarningShown = true;
-                        toast.info(tv('Mô hình Upscale chưa sẵn sàng; lần xử lý đầu có thể thất bại.'));
-                    }
-                })
-                .catch(() => {
-                    if (!warmupWarningShown) {
-                        warmupWarningShown = true;
-                        toast.info(tv('Không thể kiểm tra mô hình Upscale; hãy kiểm tra sidecar.'));
-                    }
-                });
-        } catch { /* ignore */ }
-        return () => { upscaleWindow.__isUpscalerActive = false; };
-    }, [tabId, options.model]);
-
+    // PERF/REVISION (audit 2026-08-25 §REV.06): không tự warm model khi mở
+    // panel. Health gate, raster Working page và inference chỉ bắt đầu sau nút Chạy.
     const setOption = <K extends keyof typeof options>(key: K, val: (typeof options)[K]) => {
         if (options[key] === val) return;
         // UIUX (audit 2026-07-28 §UP-04): cấu hình đổi thì kết quả cũ không còn
@@ -558,6 +600,27 @@ export default function UpscaleTool({ tabId, pdfFile, sourceImageFile, onFileFix
         (item, items) => shouldPromoteUpscaleResult(items, item, sourceImageFile),
         [sourceImageFile],
     );
+    const resolveSource = React.useCallback<UpscaleSourceResolver>(async (item, _items, signal) => {
+        if (item.sourceOrigin !== 'workspace' || sourceImageFile) return undefined;
+        if (!pdfFile || !getWorkingFile || !sourceImageReferenceFile) {
+            throw new Error(tv('Không tìm thấy PDF làm việc hiện tại để phóng to.'));
+        }
+        // PERF/REVISION (audit 2026-08-25 §REV.06): không warm/raster nền.
+        // Chỉ materialize đúng revision khi người dùng bấm Chạy.
+        const workingFile = await getWorkingFile();
+        const referenceBytes = await getFileArrayBuffer(sourceImageReferenceFile);
+        if (signal.aborted) throw new DOMException('Đã hủy chuẩn bị ảnh Upscale.', 'AbortError');
+        const sourceDensity = sourceImagePixelsPerPdfPoint(
+            referenceBytes,
+            sourceImageReferenceFile.name,
+        );
+        return rasterizeUpscaleWorkingPage(
+            workingFile,
+            activeWorkingPage,
+            signal,
+            sourceDensity,
+        );
+    }, [activeWorkingPage, getWorkingFile, pdfFile, sourceImageFile, sourceImageReferenceFile]);
     const handleUndoSelected = React.useCallback(async () => {
         if (!selectedId) return;
         const item = batchItems.find(candidate => candidate.id === selectedId);
@@ -641,7 +704,12 @@ export default function UpscaleTool({ tabId, pdfFile, sourceImageFile, onFileFix
             </div>
 
             <div className="flex flex-col gap-2">
-                <button onClick={() => processUpscaleBatch(tabId, handleResultReady, shouldPrepareWorkingPdf)} disabled={isProcessing || !hasPending}
+                <button onClick={() => processUpscaleBatch(
+                    tabId,
+                    handleResultReady,
+                    shouldPrepareWorkingPdf,
+                    resolveSource,
+                )} disabled={isProcessing || !hasPending}
                     className={`w-full h-11 rounded-xl text-[13px] font-bold transition-all flex items-center justify-center gap-2 shadow-sm ${
                         isProcessing || !hasPending
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400'

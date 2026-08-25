@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { statRecentFile } from '../../lib/useRecentFiles'; // §RF.1 (audit menu 2026-07-28)
+import { probeRecentFile } from '../../lib/useRecentFiles'; // §RF.1 (audit menu 2026-07-28)
 import { localFileUrl } from '../../lib/localFileTransport';
 import { isOfficePathOrName } from '../../lib/officeFileTypes';
 
@@ -15,12 +15,13 @@ interface Props {
 
 const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
   const [src, setSrc] = useState<string | { data: Uint8Array }>('');
-  const [fileExists, setFileExists] = useState<boolean | null>(null);
+  const [probeState, setProbeState] = useState<'loading' | 'available' | 'missing' | 'unverified'>('loading');
   const [imgError, setImgError] = useState(false);
 
   const isPdf = name.toLowerCase().endsWith('.pdf');
   const isOffice = isOfficePathOrName(name);
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__;
+  const isTauri = typeof window !== 'undefined'
+    && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 
   useEffect(() => {
     let isActive = true;
@@ -43,27 +44,26 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
       (async () => {
         // §RF.1: dùng helper dùng chung — nó ghi cờ "file đã mất" vào store nên lưới
         // Home, menu Mở gần đây và thumbnail này cùng thấy một trạng thái.
-        const info = await statRecentFile(path);
-        if (!info) {
-          if (isActive) setFileExists(false);
+        const info = await probeRecentFile(path);
+        if (!isActive) return;
+        if (info.status === 'missing') {
+          setProbeState('missing');
           return;
         }
-        if (!isActive) return;
+        if (info.status !== 'available') {
+          setProbeState('unverified');
+          return;
+        }
+        setProbeState('available');
         if (isPdf) {
           const enc = encodeURIComponent(path);
           // page=1, zoom nhỏ (~0.3) đủ nét cho thumbnail 180px; object-contain tự vừa khung.
           // PERF (audit 2026-08-08 §RENDER.2): lưới gần đây là tải nền; không được
           // chiếm lane tương tác của trang PDF mà người dùng đang mở.
           setSrc(`http://tile.localhost/${enc}/1/0.3/0/0/0/0/0?purpose=background`);
-          setFileExists(true);
         } else if (!isOffice) {
           // FILEIO (audit 2026-07-28 §FL.03): ảnh recent có thể ở ổ ngoài scope.
           setSrc(localFileUrl(path));
-          setFileExists(true);
-        } else {
-          // Office chưa có thumbnail trực tiếp; dùng placeholder terminal, không thử
-          // nạp DOCX/XLSX/PPTX như ảnh rồi chờ onError.
-          setFileExists(true);
         }
       })();
     }
@@ -72,10 +72,20 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
     };
   }, [path, isPdf, isOffice, isTauri, active]);
 
-  if (fileExists === false) {
+  if (probeState === 'missing') {
     return (
       <div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex items-center justify-center">
         <span className="text-xs text-slate-400 font-medium px-2 text-center">Missing</span>
+      </div>
+    );
+  }
+
+  if (probeState === 'unverified') {
+    const ext = (name.split('.').pop() || '').toUpperCase();
+    return (
+      <div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex flex-col items-center justify-center gap-1">
+        <span className="text-2xl opacity-40">📄</span>
+        {ext && <span className="text-[10px] font-semibold text-slate-400">{ext}</span>}
       </div>
     );
   }
@@ -147,7 +157,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
 });
 
 class ThumbnailErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
-  constructor(props: any) { super(props); this.state = { hasError: false }; }
+  constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false }; }
   static getDerivedStateFromError() { return { hasError: true }; }
   render() {
     if (this.state.hasError) return <div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex items-center justify-center"><span className="text-xs text-slate-400">Error</span></div>;
@@ -156,9 +166,14 @@ class ThumbnailErrorBoundary extends React.Component<{children: React.ReactNode}
 }
 
 export default function ThumbnailViewWrapper(props: Props) {
+  // PERF/FILEIO (feedback 2026-08-25 §RF.2): unmount state thật khi rời Home.
+  // Khi quay lại, không có frame nào remount `src` tile cũ trước probe mới.
+  if (props.active === false) {
+    return <div className="w-full h-full bg-slate-100 dark:bg-zinc-800" />;
+  }
   return (
     <ThumbnailErrorBoundary>
-      <ThumbnailView key={props.path} {...props} />
+      <ThumbnailView key={`${props.path}:${props.name}`} {...props} />
     </ThumbnailErrorBoundary>
   );
 }

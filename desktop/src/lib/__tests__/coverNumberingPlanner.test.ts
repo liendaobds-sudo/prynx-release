@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { sortedClusterOrder, planCoverLayout, buildCoverRecords, resolveCoverPageIndices, type Cluster } from '../coverNumberingPlanner';
-import type { NumberingJob, SortMethod } from '../coverNumberingEngine';
+import type { NumberingJob } from '../coverNumberingEngine';
 
 // Lưới 2×2 (gốc trên-trái): A trên-trái, B trên-phải, C dưới-trái, D dưới-phải.
 const GRID: Cluster[] = [

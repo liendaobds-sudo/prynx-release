@@ -34,129 +34,7 @@ import { Environment, Lightformer, Html } from '@react-three/drei';
 import { useMockupStore } from '../../stores/useMockupStore';
 import { envMapResolutionForTier } from '../../lib/mockup3d/materialLibrary';
 import { useTranslation } from 'react-i18next';
-
-// ─── Mô tả preset ───────────────────────────────────────────────────────────
-
-/** Hình dạng nguồn sáng phẳng dùng để dựng môi trường studio thủ tục. */
-type LightformerForm = 'circle' | 'ring' | 'rect';
-
-/** Cấu hình một nguồn sáng phẳng (Lightformer) trong env map. */
-interface LightformerConfig {
-    form?: LightformerForm;
-    intensity: number;
-    color: string;
-    position: [number, number, number];
-    rotation?: [number, number, number];
-    /** scale có thể là số đồng nhất hoặc [x, y]. */
-    scale: number | [number, number];
-}
-
-/** Định nghĩa một preset Môi_Trường_HDRI studio. */
-export interface HdriPreset {
-    /** Id ổn định, dùng làm khóa trong store. */
-    id: string;
-    /** Nhãn hiển thị cho người dùng. */
-    label: string;
-    /**
-     * Đường dẫn import cục bộ tới tệp HDRI (.hdr/.exr) nếu có.
-     * Khi `undefined`, preset dựng môi trường thủ tục bằng Lightformer
-     * (không request mạng). KHÔNG dùng id preset CDN ở đây.
-     */
-    file?: string;
-    /** Màu nền môi trường dùng khi bake (không hiển thị làm background). */
-    ambient: string;
-    /** Tập nguồn sáng phẳng dựng nên môi trường studio. */
-    lightformers: LightformerConfig[];
-}
-
-// ─── Thư viện preset studio (≥3 — Yêu cầu 3.2) ──────────────────────────────
-
-/**
- * Tối thiểu 3 preset studio. Mỗi preset là một cấu hình ánh sáng studio
- * khác biệt rõ rệt (mềm / tương phản cao / trung tính lạnh / hoàng hôn ấm),
- * dựng hoàn toàn cục bộ.
- */
-export const HDRI_PRESETS: HdriPreset[] = [
-    {
-        id: 'studio-soft',
-        label: 'Studio mềm',
-        ambient: '#dfe6ee',
-        lightformers: [
-            // Softbox lớn phía trên — key light dịu
-            { form: 'rect', intensity: 3.0, color: '#fff6ec', position: [0, 6, 2], rotation: [-Math.PI / 2, 0, 0], scale: [10, 10] },
-            // Fill mềm phía trước
-            { form: 'rect', intensity: 1.2, color: '#eaf2ff', position: [0, 1, 8], rotation: [0, 0, 0], scale: [12, 6] },
-            // Rim nhẹ hai bên
-            { form: 'rect', intensity: 1.0, color: '#ffffff', position: [-8, 3, -2], rotation: [0, Math.PI / 2, 0], scale: [6, 8] },
-            { form: 'rect', intensity: 1.0, color: '#ffffff', position: [8, 3, -2], rotation: [0, -Math.PI / 2, 0], scale: [6, 8] },
-        ],
-    },
-    {
-        id: 'studio-contrast',
-        label: 'Studio tương phản',
-        ambient: '#1a1d24',
-        lightformers: [
-            // Key light mạnh, hẹp
-            { form: 'rect', intensity: 6.0, color: '#ffffff', position: [4, 6, 4], rotation: [-Math.PI / 3, Math.PI / 6, 0], scale: [4, 6] },
-            // Rim sáng tách chủ thể khỏi nền tối
-            { form: 'rect', intensity: 3.0, color: '#cfe0ff', position: [-6, 4, -4], rotation: [0, Math.PI / 2, 0], scale: [3, 8] },
-            // Fill rất nhẹ giữ chi tiết vùng tối
-            { form: 'circle', intensity: 0.6, color: '#ffffff', position: [0, 2, 7], scale: 6 },
-        ],
-    },
-    {
-        id: 'studio-cool',
-        label: 'Studio trung tính lạnh',
-        ambient: '#c9d6e8',
-        lightformers: [
-            { form: 'rect', intensity: 2.6, color: '#eef4ff', position: [0, 7, 0], rotation: [-Math.PI / 2, 0, 0], scale: [12, 12] },
-            { form: 'rect', intensity: 1.4, color: '#dbe8ff', position: [-6, 3, 4], rotation: [0, Math.PI / 4, 0], scale: [6, 8] },
-            { form: 'rect', intensity: 1.4, color: '#dbe8ff', position: [6, 3, 4], rotation: [0, -Math.PI / 4, 0], scale: [6, 8] },
-            { form: 'ring', intensity: 0.8, color: '#ffffff', position: [0, 2, 9], scale: 5 },
-        ],
-    },
-    {
-        id: 'studio-warm',
-        label: 'Studio ấm',
-        ambient: '#efe0cf',
-        lightformers: [
-            { form: 'rect', intensity: 3.2, color: '#ffe7c4', position: [0, 6, 3], rotation: [-Math.PI / 2.5, 0, 0], scale: [10, 8] },
-            { form: 'rect', intensity: 1.6, color: '#ffd9a0', position: [-7, 2, 2], rotation: [0, Math.PI / 3, 0], scale: [5, 7] },
-            { form: 'circle', intensity: 1.0, color: '#fff0dc', position: [5, 3, 6], scale: 6 },
-        ],
-    },
-    // Product hero lookdev (key warm + fill cool + rim) — inspired showcase 3-point
-    {
-        id: 'product-hero',
-        label: 'Product hero',
-        ambient: '#d8dce4',
-        lightformers: [
-            { form: 'rect', intensity: 4.2, color: '#fff4e0', position: [4, 7, 5], rotation: [-Math.PI / 3, Math.PI / 8, 0], scale: [5, 7] },
-            { form: 'rect', intensity: 1.1, color: '#dfe6ff', position: [-5, 3, 2], rotation: [0, Math.PI / 3, 0], scale: [6, 8] },
-            { form: 'rect', intensity: 0.9, color: '#ffffff', position: [2, 2, 6], scale: [8, 5] },
-            { form: 'rect', intensity: 1.4, color: '#ffe8cf', position: [-3, 4, -6], rotation: [0, Math.PI / 2, 0], scale: [4, 8] },
-            { form: 'circle', intensity: 0.5, color: '#ffffff', position: [0, 1, 0], scale: 12 },
-        ],
-    },
-    {
-        id: 'product-lowkey',
-        label: 'Product low-key',
-        ambient: '#1a1d24',
-        lightformers: [
-            { form: 'rect', intensity: 5.5, color: '#ffffff', position: [3, 6, 4], rotation: [-Math.PI / 3, Math.PI / 6, 0], scale: [3, 5] },
-            { form: 'rect', intensity: 2.2, color: '#8fb6ff', position: [1, -1, -5], rotation: [0, 0, 0], scale: [4, 6] },
-            { form: 'circle', intensity: 0.35, color: '#bcd0ff', position: [-4, 2, 3], scale: 5 },
-        ],
-    },
-];
-
-/** Preset mặc định nếu id không khớp preset nào. */
-const FALLBACK_PRESET: HdriPreset = HDRI_PRESETS[0];
-
-/** Trả về preset theo id; id không hợp lệ → preset mặc định đầu tiên. */
-export function getHdriPreset(id: string): HdriPreset {
-    return HDRI_PRESETS.find((p) => p.id === id) ?? FALLBACK_PRESET;
-}
+import { getHdriPreset, type HdriPreset } from './environmentPresets';
 
 /** Ngưỡng timeout nạp HDRI (Yêu cầu 3.6): quá 10 giây → fallback. */
 export const HDRI_LOAD_TIMEOUT_MS = 10_000;
@@ -329,17 +207,14 @@ export default function EnvironmentRig() {
     const setHdriStatus = useMockupStore((s) => s.setHdriStatus);
     const envResolution = envMapResolutionForTier(qualityTier);
 
-    const [failed, setFailed] = useState(false);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Preset đang hiển thị, đã resolve (id không hợp lệ → preset mặc định).
     const preset = getHdriPreset(hdriPreset);
     const presetId = preset.id;
-
-    // Id preset hiện tại, cập nhật trong lúc render để effect/handler luôn
-    // đọc được giá trị mới nhất mà không cần phụ thuộc.
-    const currentPresetRef = useRef(presetId);
-    currentPresetRef.current = presetId;
+    const environmentKey = `${presetId}-${envResolution}`;
+    const [failedState, setFailedState] = useState(() => ({ key: environmentKey, failed: false }));
+    const failed = failedState.key === environmentKey && failedState.failed;
 
     // Preset mà StudioEnvironment đã báo "ready". Vì React chạy effect của
     // component CON trước effect của CHA, child có thể báo ready TRƯỚC khi
@@ -363,9 +238,9 @@ export default function EnvironmentRig() {
 
     const handleError = useCallback(() => {
         clearTimer();
-        setFailed(true);
+        setFailedState({ key: environmentKey, failed: true });
         setHdriStatus('failed');
-    }, [clearTimer, setHdriStatus]);
+    }, [clearTimer, environmentKey, setHdriStatus]);
 
     // Vòng đời mỗi lần đổi preset / resolution. Effect này chạy SAU effect của
     // StudioEnvironment (con). Nếu con đã báo ready cho đúng preset hiện tại
@@ -377,7 +252,6 @@ export default function EnvironmentRig() {
     // Khi qualityTier đổi resolution, key remount StudioEnvironment → onReady
     // chạy lại; readyPresetRef vẫn khớp presetId nên không false-fail timeout.
     useEffect(() => {
-        setFailed(false);
         clearTimer();
 
         if (readyPresetRef.current === presetId) {
@@ -387,12 +261,12 @@ export default function EnvironmentRig() {
 
         setHdriStatus('loading');
         timerRef.current = setTimeout(() => {
-            setFailed(true);
+            setFailedState({ key: environmentKey, failed: true });
             setHdriStatus('failed');
         }, HDRI_LOAD_TIMEOUT_MS);
 
         return clearTimer;
-    }, [presetId, envResolution, setHdriStatus, clearTimer]);
+    }, [environmentKey, presetId, envResolution, setHdriStatus, clearTimer]);
 
     // Đường dẫn dự phòng: đèn studio mặc định + banner trạng thái.
     if (failed || hdriStatus === 'failed') {
@@ -408,7 +282,7 @@ export default function EnvironmentRig() {
         <EnvErrorBoundary onError={handleError}>
             {/* key remount khi resolution đổi để bake lại PMREM */}
             <StudioEnvironment
-                key={`${presetId}-${envResolution}`}
+                key={environmentKey}
                 preset={preset}
                 onReady={handleReady}
                 resolution={envResolution}

@@ -20,6 +20,14 @@ interface Props {
   ) => void | Promise<void>;
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    return String((error as { message?: unknown }).message);
+  }
+  return String(error);
+}
+
 interface InkInfo {
   name: string;
   type: 'process' | 'spot';
@@ -78,8 +86,8 @@ export default function InkManagerTool({ tabId, pdfFile, onFileFixed }: Props) {
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/inks/${fid}`);
       const data = await res.json();
       if (documentIdentityRef.current === requestIdentity) setInks(data.inks || []);
-    } catch (e: any) {
-      if (documentIdentityRef.current === requestIdentity) setStatus(`❌ ${e.message}`);
+    } catch (error: unknown) {
+      if (documentIdentityRef.current === requestIdentity) setStatus(`❌ ${errorMessage(error)}`);
     }
     if (documentIdentityRef.current === requestIdentity) setLoading(false);
   }, [documentIdentity, pdfFile, ensureUploaded]);
@@ -122,7 +130,7 @@ export default function InkManagerTool({ tabId, pdfFile, onFileFixed }: Props) {
           recipeRecorder.discardPending(recipeTicket);
         }
       } else { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${data.detail || t('preprocess.inkManager:loi')}`); }
-    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${e.message}`); }
+    } catch (error: unknown) { recipeRecorder.discardPending(recipeTicket); setStatus(`❌ ${errorMessage(error)}`); }
     finally { setConverting(false); }
   };
 

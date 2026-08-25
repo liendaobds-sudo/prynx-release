@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuthStore } from '../stores/useAuthStore';
 import { maskLicenseKey } from '../lib/licenseKey';
+import { SUPPORT } from '../lib/supportContact';
 import { useTranslation } from 'react-i18next';
+import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater';
 import ChangeLicenseKeyPanel from './auth/ChangeLicenseKeyPanel';
 
 interface AboutModalProps {
@@ -11,18 +13,9 @@ interface AboutModalProps {
   autoCheck?: boolean;
 }
 
-// Thông tin liên hệ hỗ trợ PrynX (PrintSolutions.vn).
-export const SUPPORT = {
-  website: 'https://printsolutions.vn',
-  product: 'https://printsolutions.vn/product/prynx',
-  email: 'khanhpham.print@gmail.com',
-  phone: '0862160492',
-  zalo: 'https://zalo.me/0862160492',
-};
-
 async function openExternal(url: string) {
   try {
-    if ((window as any).__TAURI_INTERNALS__) {
+    if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       const { open } = await import('@tauri-apps/plugin-shell');
       await open(url);
     } else {
@@ -41,9 +34,19 @@ type UpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'latest' }
-  | { kind: 'available'; version?: string; update: any }
+  | { kind: 'available'; version?: string; update: Update }
   | { kind: 'downloading'; percent: number }
   | { kind: 'error'; message: string };
+
+// TYPE (audit 2026-08-23 §P2.66): giữ lỗi updater ở boundary unknown.
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (message) return String(message);
+  }
+  return String(error);
+}
 
 export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
   const { t } = useTranslation();
@@ -85,7 +88,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
   }, [autoCheck]);
 
   const checkUpdate = async () => {
-    if (!(window as any).__TAURI_INTERNALS__) {
+    if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       setUpd({ kind: 'error', message: t('misc.about:chi_kha_dung_trong_ban_cai_dat') });
       return;
     }
@@ -95,16 +98,16 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
       const found = await check();
       if (found) setUpd({ kind: 'available', version: found.version, update: found });
       else setUpd({ kind: 'latest' });
-    } catch (e: any) {
-      setUpd({ kind: 'error', message: e?.message || String(e) });
+    } catch (error: unknown) {
+      setUpd({ kind: 'error', message: getErrorMessage(error) });
     }
   };
 
-  const installUpdate = async (update: any) => {
+  const installUpdate = async (update: Update) => {
     try {
       let total = 0, got = 0;
       setUpd({ kind: 'downloading', percent: 0 });
-      await update.downloadAndInstall((ev: any) => {
+      await update.downloadAndInstall((ev: DownloadEvent) => {
         if (ev.event === 'Started') total = ev.data?.contentLength || 0;
         else if (ev.event === 'Progress') {
           got += ev.data?.chunkLength || 0;
@@ -113,8 +116,8 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
       });
       const { relaunch } = await import('@tauri-apps/plugin-process');
       await relaunch();
-    } catch (e: any) {
-      setUpd({ kind: 'error', message: e?.message || String(e) });
+    } catch (error: unknown) {
+      setUpd({ kind: 'error', message: getErrorMessage(error) });
     }
   };
 

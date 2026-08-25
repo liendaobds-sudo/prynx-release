@@ -3,7 +3,7 @@ import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, type VdpProgressIn
 import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
 import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
 import { startVdpDrag } from '../../utils/vdpDrag';
-import { useVdpTool } from '@/hooks/useVdpTool';
+import { useVdpTool, type SetVdpFields, type VdpToolField } from '@/hooks/useVdpTool';
 import {
     deriveJob, generateCoverData, type NumberingJob,
     type InnerMode, type Distribution, type SortMethod,
@@ -13,12 +13,14 @@ import { useNumberingJobStore, DEFAULT_SHARED_JOB, type SharedJob } from '@/stor
 import { useTranslation } from 'react-i18next';
 import { tv } from '@/i18n';
 import { getFileArrayBuffer } from '@/lib/utils';
+import { tagArtifactLeaseToken } from '@/lib/artifactLease';
 
 interface Props {
     pdfFile: File | null;
     getWorkingFile?: () => Promise<File>;
-    vdpFields?: any[];
-    setVdpFields?: React.Dispatch<React.SetStateAction<any[]>>;
+    workingPageCount?: number;
+    vdpFields?: VdpToolField[];
+    setVdpFields?: SetVdpFields;
     selectedFieldIds?: string[];
     onSelectField?: (ids: string[]) => void;
     onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
@@ -34,7 +36,7 @@ const SORT_LABELS: Record<SortMethod, string> = {
 };
 
 /** Token role của field bìa: {X}/{Y}/{Z}. Suy từ textContent. */
-function fieldRole(f: any): 'X' | 'Y' | 'Z' | null {
+function fieldRole(f: VdpToolField): 'X' | 'Y' | 'Z' | null {
     const t = (f?.textContent || '').toUpperCase();
     if (t.indexOf('{X}') >= 0) return 'X';
     if (t.indexOf('{Y}') >= 0) return 'Y';
@@ -43,7 +45,7 @@ function fieldRole(f: any): 'X' | 'Y' | 'Z' | null {
 }
 
 export default function CoverNumberingTool({
-    pdfFile, getWorkingFile, vdpFields = [], setVdpFields,
+    pdfFile, getWorkingFile, workingPageCount, vdpFields = [], setVdpFields,
     selectedFieldIds = [], onSelectField, onSpawnTab, onApplyResult, isActive = true,
 }: Props) {
   const { t } = useTranslation();
@@ -81,11 +83,16 @@ export default function CoverNumberingTool({
         pollAbortRef.current?.abort();
     };
 
-    // Đọc số trang của file gốc (cho PA2) — load nhẹ bằng pdf-lib, bỏ qua nếu lỗi.
+    // REVISION (audit 2026-08-25 §REV.12): page range phải dùng số trang đang
+    // thấy trong Viewer. Raw PDF chỉ là fallback cho cách dùng độc lập/legacy.
     useEffect(() => {
         let cancelled = false;
         (async () => {
             if (!pdfFile) { setTotalPages(0); return; }
+            if (Number.isInteger(workingPageCount) && Number(workingPageCount) >= 0) {
+                setTotalPages(Number(workingPageCount));
+                return;
+            }
             try {
                 const { PDFDocument } = await import('pdf-lib');
                 // FILEIO (audit 2026-08-06 §5): file làm việc của tab có thể là File RỖNG/sentinel
@@ -96,7 +103,7 @@ export default function CoverNumberingTool({
             } catch { if (!cancelled) setTotalPages(0); }
         })();
         return () => { cancelled = true; };
-    }, [pdfFile]);
+    }, [pdfFile, workingPageCount]);
 
     const coverPageIdx = useMemo(
         () => resolveCoverPageIndices(coverPagesStr, totalPages),
@@ -104,7 +111,7 @@ export default function CoverNumberingTool({
     );
 
     const { handleGroupFields, handleUngroupFields, deleteSelectedField } =
-        useVdpTool(vdpFields, setVdpFields as any, selectedFieldIds, onSelectField, isActive);
+        useVdpTool(vdpFields, setVdpFields, selectedFieldIds, onSelectField, isActive);
 
     const job: NumberingJob = useMemo(() => ({ ...v }), [v]);
 
@@ -113,7 +120,7 @@ export default function CoverNumberingTool({
 
     // Gom field thành cụm theo groupId (mỗi cụm = 1 bìa với role X/Y/Z).
     const clusters: Cluster[] = useMemo(() => {
-        const groups = new Map<string, any[]>();
+        const groups = new Map<string, VdpToolField[]>();
         for (const f of vdpFields) {
             const gid = f.groupId || f.id;
             if (!groups.has(gid)) groups.set(gid, []);
@@ -153,7 +160,7 @@ export default function CoverNumberingTool({
             // trò) rồi key record theo đúng token đó.
             const cloned = vdpFields.map(f => ({ ...f }));
             const roleOf = new Map<string, 'X' | 'Y' | 'Z'>();
-            const fieldsByGroup = new Map<string, any[]>();
+            const fieldsByGroup = new Map<string, VdpToolField[]>();
             for (const f of cloned) {
                 const gid = f.groupId || f.id;
                 if (!fieldsByGroup.has(gid)) fieldsByGroup.set(gid, []);
@@ -200,7 +207,7 @@ export default function CoverNumberingTool({
                 const copied = await out.copyPages(src, coverPageIdx);
                 copied.forEach(p => out.addPage(p));
                 const outBytes = await out.save();
-                template = new File([outBytes as any], `cover_${pdfFile.name}`, { type: 'application/pdf' });
+                template = new File([new Uint8Array(outBytes)], `cover_${pdfFile.name}`, { type: 'application/pdf' });
             }
 
             setStatus(t('preprocess.coverNumbering:dang_day_len_may_chu_to_in', { n: csvData.length }));
@@ -211,10 +218,12 @@ export default function CoverNumberingTool({
             // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} vào state cho ProgressBar
             const result = await pollVdpJob(jobId, (m, info) => { setStatus(m); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
             if (!result.blob) throw new Error(t('preprocess.coverNumbering:khong_nhan_duoc_file_ket_qua'));
+            // LIFECYCLE (audit 2026-08-25 §REV.11): giữ lease khi mở tab mới hoặc áp vào tab hiện tại.
+            const outputBlob = tagArtifactLeaseToken(result.blob, result.artifactLease);
             const outName = `MecBia_${pdfFile.name}`;
-            if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh_da_tao_tab_moi')); }
-            else if (onApplyResult) { await onApplyResult(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
-        } catch (e: any) {
+            if (spawnNewTab && onSpawnTab) { onSpawnTab(outputBlob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh_da_tao_tab_moi')); }
+            else if (onApplyResult) { await onApplyResult(outputBlob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
+        } catch (e: unknown) {
             // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
             if (isCanceled(e)) { setStatus(t('preprocess.coverNumbering:da_huy', 'Đã hủy')); return; }
             setStatus(formatError(e, t('preprocess.coverNumbering:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)

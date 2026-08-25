@@ -3,7 +3,11 @@ import { ChevronDown, Redo2, Undo2 } from 'lucide-react';
 
 import { tv } from '../../i18n';
 import { StickerBleedColorControl } from './StickerOutputSettingsPanel';
-import { useStickerSheetStore, type StickerMaskTool } from './stickerSheetStore';
+import {
+    useStickerSheetStore,
+    type PrepareStickerWorkspaceSource,
+    type StickerMaskTool,
+} from './stickerSheetStore';
 import { ToolNumberInput, ToolSectionLabel } from './ToolUI';
 
 
@@ -13,6 +17,7 @@ interface Props {
     onExportPng?: () => void | Promise<void>;
     isExporting?: boolean;
     pageOrder?: number[];
+    prepareWorkspaceSource?: PrepareStickerWorkspaceSource;
 }
 
 const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> = [
@@ -24,6 +29,11 @@ const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> 
 function cutlineRoundRadiusMm(roundness: number): number {
     // QUALITY (feedback 2026-08-19 §CUTROUND.7): phải khớp helper backend.
     return Math.max(0, Math.min(100, roundness)) / 100 * 3;
+}
+
+function formatStageElapsed(milliseconds: number): string {
+    const seconds = milliseconds / 1000;
+    return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
 }
 
 interface CutlineSliderProps {
@@ -86,6 +96,7 @@ export default function StickerSheetPanel({
     onExportPng,
     isExporting = false,
     pageOrder,
+    prepareWorkspaceSource,
 }: Props) {
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const state = tab || useStickerSheetStore.getState().getTab(tabId);
@@ -98,6 +109,7 @@ export default function StickerSheetPanel({
     }, [actions, tabId]);
 
     const manifest = state.manifest;
+    const sourcePreviewLoading = Boolean(state.inspection && !state.sourcePreviewReady);
     const hasMask = Boolean(manifest) && ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
     const [settingsOpen, setSettingsOpen] = useState(state.status === 'mask-review');
     const busy = state.isRefining
@@ -145,6 +157,32 @@ export default function StickerSheetPanel({
     // pageOrder trước khi inspect; dùng danh sách đó để không ép quét từng trang.
     const visibleSourcePageCount = new Set(exportOrder).size;
     const canDetectAllPages = visibleSourcePageCount > 1 && pendingPageCount > 0;
+    const stageLabel = state.status === 'inspecting'
+        ? tv('Đang chuẩn bị preview gốc')
+        : sourcePreviewLoading
+            ? state.status === 'detecting'
+                ? tv('Đang nhận diện từng tem · preview gốc đang tải nền')
+                : tv('Đang tải preview gốc')
+            : state.status === 'detecting'
+                ? tv('Đang nhận diện từng tem và loại bóng')
+                : state.status === 'confirming'
+                    ? tv('Đang chuẩn bị vùng cắt')
+                    : state.status === 'exporting'
+                        ? tv('Đang xuất file')
+                        : '';
+    const [stageElapsedMs, setStageElapsedMs] = useState(0);
+    useEffect(() => {
+        if (!stageLabel) {
+            setStageElapsedMs(0);
+            return undefined;
+        }
+        const startedAt = Date.now();
+        const tick = () => setStageElapsedMs(Date.now() - startedAt);
+        tick();
+        const timer = window.setInterval(tick, 1000);
+        return () => window.clearInterval(timer);
+    }, [sourcePreviewLoading, stageLabel, state.inspection?.session_id, state.status]);
+
     useEffect(() => {
         // UIUX (feedback 2026-08-12 §AI.COMPACT1): sau khi xác nhận hoặc đang xuất,
         // thu cả thiết lập lẫn thao tác xuất; người dùng có thể xổ ra để xem lại.
@@ -154,7 +192,12 @@ export default function StickerSheetPanel({
         const pageNumber = state.activeSourcePage;
         // UIUX (audit 2026-08-15 §XEPTEM.1): auto thử CutContour/vector/Alpha/
         // nền đơn giản trước; AI chỉ là fallback khi các nhánh chắc chắn không đủ.
-        await actions.detectStickers(tabId, 'auto', pageNumber);
+        await actions.detectStickers(
+            tabId,
+            'auto',
+            pageNumber,
+            prepareWorkspaceSource,
+        );
         const detected = useStickerSheetStore.getState().getTab(tabId);
         const detectedPage = detected.pages[pageNumber]
             || (detected.activeSourcePage === pageNumber ? detected : null);
@@ -217,14 +260,17 @@ export default function StickerSheetPanel({
                 </div>
             )}
 
-            {(state.status === 'inspecting' || state.status === 'detecting' || state.status === 'confirming') && (
+            {stageLabel && (
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-[12px] text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-300">
-                    <span className="inline-block mr-2 h-3 w-3 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-                    {state.status === 'inspecting'
-                        ? tv('Đang chuẩn bị ảnh để nhận diện…')
-                        : state.status === 'confirming'
-                            ? tv('Đang chuẩn bị vùng cắt…')
-                            : tv('Đang nhận diện từng tem và loại bóng…')}
+                    <div className="flex items-start gap-2">
+                        <span className="mt-0.5 inline-block h-3 w-3 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+                        <div className="min-w-0">
+                            <div className="font-semibold">{stageLabel}</div>
+                            <div className="text-[10px] text-indigo-600/90 dark:text-indigo-300/90">
+                                {tv('Đã chờ')} {formatStageElapsed(stageElapsedMs)}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
 
@@ -248,7 +294,13 @@ export default function StickerSheetPanel({
                     {canDetectAllPages && (
                         <button
                             type="button"
-                            onClick={() => { void actions.detectAllStickers(tabId, 'auto'); }}
+                            onClick={() => {
+                                void actions.detectAllStickers(
+                                    tabId,
+                                    'auto',
+                                    prepareWorkspaceSource,
+                                );
+                            }}
                             className="h-10 min-w-0 rounded-lg border border-violet-300 bg-white px-2 text-[11px] font-bold text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
                         >
                             {tv('Nhận diện tất cả trang')} ({pendingPageCount})

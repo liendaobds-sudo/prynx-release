@@ -3,7 +3,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import PageResizerTool, { allowedScaleModes, applyPageSizeMode, shouldShowBackgroundFill } from './PageResizerTool';
+import PageResizerTool from './PageResizerTool';
+import { allowedScaleModes, applyPageSizeMode, shouldShowBackgroundFill } from './pageResizerViewLogic';
 import { DEFAULT_RESIZE_SETTINGS } from '../imposition-tools/store/slices/preprocSlice';
 
 const api = vi.hoisted(() => ({
@@ -184,5 +185,80 @@ describe('PageResizerTool background-fill visibility', () => {
         expect(screen.queryByRole('button', {
             name: /Resize (theo|by) (nội dung|content)/i,
         })).toBeNull();
+    });
+
+    it('does not leak transparency pages from the previous PDF while inspecting a new one', async () => {
+        let resolveFirst: ((value: { has_transparency: boolean; transparent_pages: number[] }) => void) | undefined;
+        api.inspectResizeTransparency
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+            .mockResolvedValueOnce({ has_transparency: false, transparent_pages: [] });
+        const firstFile = new File(['pdf-a'], 'alpha.pdf', { type: 'application/pdf' });
+        const secondFile = new File(['pdf-b'], 'opaque.pdf', { type: 'application/pdf' });
+        const { rerender } = render(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            onChange: vi.fn(),
+            pdfFile: firstFile,
+        }));
+
+        rerender(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            onChange: vi.fn(),
+            pdfFile: secondFile,
+        }));
+
+        await waitFor(() => expect(api.inspectResizeTransparency).toHaveBeenCalledTimes(2));
+        expect(screen.queryByRole('button', {
+            name: /Resize (theo|by) (nội dung|content)/i,
+        })).toBeNull();
+
+        resolveFirst?.({ has_transparency: true, transparent_pages: [1] });
+        await waitFor(() => expect(screen.queryByRole('button', {
+            name: /Resize (theo|by) (nội dung|content)/i,
+        })).toBeNull());
+    });
+
+    it('inspects the latest Working PDF after the page revision changes', async () => {
+        api.inspectResizeTransparency.mockResolvedValue({
+            has_transparency: false,
+            transparent_pages: [],
+        });
+        const pdfFile = new File(['backing'], 'backing.pdf', { type: 'application/pdf' });
+        const firstWorking = new File(['working-a'], 'working-a.pdf', { type: 'application/pdf' });
+        const secondWorking = new File(['working-b'], 'working-b.pdf', { type: 'application/pdf' });
+        let currentWorking = firstWorking;
+        const getWorkingFile = vi.fn(async () => currentWorking);
+        const firstOrder = [1, 2];
+        const firstRotations = [0, 0];
+
+        const { rerender } = render(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            onChange: vi.fn(),
+            pdfFile,
+            getWorkingFile,
+            viewerPageOrder: firstOrder,
+            viewerPageRotations: firstRotations,
+        }));
+        await waitFor(() => expect(api.inspectResizeTransparency).toHaveBeenCalledWith(
+            firstWorking,
+            undefined,
+            expect.any(AbortSignal),
+        ));
+
+        currentWorking = secondWorking;
+        rerender(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            onChange: vi.fn(),
+            pdfFile,
+            getWorkingFile,
+            viewerPageOrder: [2, 1],
+            viewerPageRotations: [90, 0],
+        }));
+
+        await waitFor(() => expect(api.inspectResizeTransparency).toHaveBeenCalledWith(
+            secondWorking,
+            undefined,
+            expect.any(AbortSignal),
+        ));
+        expect(getWorkingFile).toHaveBeenCalledTimes(2);
     });
 });

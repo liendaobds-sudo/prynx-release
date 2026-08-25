@@ -8,16 +8,18 @@ import { PDFDocument } from 'pdf-lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CoverNumberingTool from './CoverNumberingTool';
+import { readArtifactLeaseToken } from '@/lib/artifactLease';
 
 const mocks = vi.hoisted(() => ({
     fetchLocalFileBuffer: vi.fn(),
     startVdpJobBackend: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'job-1'),
+    pollVdpJob: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
 }));
 
 vi.mock('@/lib/localFileTransport', () => ({ fetchLocalFileBuffer: mocks.fetchLocalFileBuffer }));
 vi.mock('@/lib/api', () => ({
     startVdpJobBackend: mocks.startVdpJobBackend,
-    pollVdpJob: vi.fn(() => new Promise(() => undefined)),
+    pollVdpJob: mocks.pollVdpJob,
     cancelVdpJobBackend: vi.fn(async () => undefined),
 }));
 vi.mock('react-i18next', () => ({
@@ -33,6 +35,7 @@ vi.mock('@/i18n', () => ({ tv: (s: string) => s }));
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: Record<string, never> };
 const tauriWindow = window as TauriWindow;
+const ARTIFACT_LEASE_TOKEN = 'c'.repeat(64);
 
 /** PDF thật 6 trang (bìa + ruột). */
 async function makeRealPdf(pages = 6): Promise<Uint8Array<ArrayBuffer>> {
@@ -56,10 +59,23 @@ function enableSingleFileMode() {
     fireEvent.click(box as HTMLInputElement);
 }
 
+function makeCoverFields() {
+    return ['X', 'Y', 'Z'].map((role, index) => ({
+        id: `f${index}`,
+        groupId: 'g1',
+        x: 10,
+        y: 10,
+        textContent: `{${role}}`,
+        name: role,
+    }));
+}
+
 describe('CoverNumberingTool — đường native (File rỗng + path)', () => {
     beforeEach(() => {
         tauriWindow.__TAURI_INTERNALS__ = {};
         mocks.fetchLocalFileBuffer.mockReset();
+        mocks.startVdpJobBackend.mockReset().mockResolvedValue('job-1');
+        mocks.pollVdpJob.mockReset().mockImplementation(() => new Promise(() => undefined));
     });
 
     afterEach(() => {
@@ -98,6 +114,18 @@ describe('CoverNumberingTool — đường native (File rỗng + path)', () => {
         expect(mocks.fetchLocalFileBuffer).not.toHaveBeenCalled();
     });
 
+    it('dùng số trang Working revision thay vì đếm lại backing PDF', async () => {
+        const bytes = await makeRealPdf(6);
+        mocks.fetchLocalFileBuffer.mockResolvedValue(bytes.buffer);
+        const pdfFile = makePathBackedFile('backing.pdf', 'D:\\jobs\\backing.pdf');
+
+        render(<CoverNumberingTool pdfFile={pdfFile} workingPageCount={2} />);
+        enableSingleFileMode();
+
+        await waitFor(() => expect(screen.getByText(/File có 2 trang/)).toBeTruthy());
+        expect(mocks.fetchLocalFileBuffer).not.toHaveBeenCalled();
+    });
+
     it('trích trang bìa từ bytes đọc trên đĩa (không ném "No PDF header found")', async () => {
         const bytes = await makeRealPdf(6);
         // Cả `pdfFile` (đếm trang) lẫn `getWorkingFile()` (template) đều path-backed.
@@ -108,9 +136,7 @@ describe('CoverNumberingTool — đường native (File rỗng + path)', () => {
         const working = makePathBackedFile('Ruot_va_bia.pdf', 'D:\\jobs\\Ruot_va_bia.pdf');
 
         // 1 cụm bìa với 3 field X/Y/Z (textContent mang token) → clusters.length = 1.
-        const vdpFields = ['X', 'Y', 'Z'].map((r, i) => ({
-            id: `f${i}`, groupId: 'g1', x: 10, y: 10, textContent: `{${r}}`, name: r,
-        }));
+        const vdpFields = makeCoverFields();
 
         render(
             <CoverNumberingTool
@@ -138,5 +164,63 @@ describe('CoverNumberingTool — đường native (File rỗng + path)', () => {
         });
         const outDoc = await PDFDocument.load(new Uint8Array(buf));
         expect(outDoc.getPageCount()).toBe(1);
+    });
+
+    it('gắn lease lên native-path stub trước khi mở tab kết quả', async () => {
+        const pdfFile = new File(['template'], 'bia.pdf', { type: 'application/pdf' });
+        const nativeStub = new Blob(['dummy'], { type: 'application/pdf' });
+        const onSpawnTab = vi.fn<(blob: Blob, name: string, path?: string) => void>();
+        mocks.pollVdpJob.mockResolvedValueOnce({
+            blob: nativeStub,
+            path: 'D:\\results\\vdp-cover.pdf',
+            artifactLease: ARTIFACT_LEASE_TOKEN,
+        });
+
+        render(
+            <CoverNumberingTool
+                pdfFile={pdfFile}
+                workingPageCount={1}
+                vdpFields={makeCoverFields()}
+                onSpawnTab={onSpawnTab}
+            />,
+        );
+        fireEvent.click(screen.getByRole('button', { name: /run/i }));
+
+        await waitFor(() => expect(onSpawnTab).toHaveBeenCalledTimes(1));
+        const [receivedBlob, , receivedPath] = onSpawnTab.mock.calls[0] as [Blob, string, string];
+        expect(receivedBlob).toBe(nativeStub);
+        expect(receivedPath).toBe('D:\\results\\vdp-cover.pdf');
+        expect(readArtifactLeaseToken(receivedBlob)).toBe(ARTIFACT_LEASE_TOKEN);
+    });
+
+    it('gắn cùng lease lên Blob tải về trước khi áp vào tab hiện tại', async () => {
+        const pdfFile = new File(['template'], 'bia.pdf', { type: 'application/pdf' });
+        const downloadedBlob = new Blob(['pdf-result'], { type: 'application/pdf' });
+        const onApplyResult = vi.fn<(blob: Blob, name: string, path?: string) => Promise<void>>(
+            async () => undefined,
+        );
+        mocks.pollVdpJob.mockResolvedValueOnce({
+            blob: downloadedBlob,
+            path: null,
+            artifactLease: ARTIFACT_LEASE_TOKEN,
+        });
+
+        render(
+            <CoverNumberingTool
+                pdfFile={pdfFile}
+                workingPageCount={1}
+                vdpFields={makeCoverFields()}
+                onApplyResult={onApplyResult}
+            />,
+        );
+        const spawnLabel = screen.getByText(/mo_ket_qua_o_tab_moi/).closest('label');
+        fireEvent.click(spawnLabel?.querySelector('input[type="checkbox"]') as HTMLInputElement);
+        fireEvent.click(screen.getByRole('button', { name: /run/i }));
+
+        await waitFor(() => expect(onApplyResult).toHaveBeenCalledTimes(1));
+        const [receivedBlob, , receivedPath] = onApplyResult.mock.calls[0] as [Blob, string, string | undefined];
+        expect(receivedBlob).toBe(downloadedBlob);
+        expect(receivedPath).toBeUndefined();
+        expect(readArtifactLeaseToken(receivedBlob)).toBe(ARTIFACT_LEASE_TOKEN);
     });
 });

@@ -21,6 +21,10 @@ export interface BatchItem {
     // canonical path từ picker, browser dùng ingest token. Tránh collision khi hai
     // file trùng tên + size nhưng khác nội dung.
     sourceIdentity?: string;
+    // REVISION (audit 2026-08-25 §REV.06): chỉ item tự đồng bộ từ workspace
+    // mới được thay khi revision nguồn đổi. Item không có nhãn là dữ liệu cũ và
+    // luôn được đối xử như `explicit` để không xóa nhầm ảnh người dùng đã chọn.
+    sourceOrigin?: 'workspace' | 'explicit';
 }
 
 export interface BatchTabState<O> {

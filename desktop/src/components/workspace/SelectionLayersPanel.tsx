@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
-import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
+import { globalPdfObjectCache, type CachedPdfObject } from '../../stores/pdfObjectCache';
 import { Lock, LockOpen, Eye, EyeOff, Trash2, FolderOpen, Plus, Image as ImageIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
@@ -34,11 +34,29 @@ interface OcgLayer {
     pageNum?: number;
 }
 
+type SelectionComponent = Pick<
+    CachedPdfObject,
+    'id' | 'type' | 'bbox' | 'xref' | 'drawIndex' | 'content' | 'ocgIds'
+>;
+
+type ComponentRow = SelectionComponent & {
+    _displayName: string;
+};
+
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = error.message;
+        if (typeof message === 'string' && message) return message;
+    }
+    return fallback;
+}
+
 interface EditLayersPanelProps {
     tabId?: string;
-    handleDeleteObjects: (objs: any[], pageNum: number) => void;
+    handleDeleteObjects: (objects: SelectionComponent[], pageNum: number) => void | Promise<void>;
     // For edit PDF upgrade: pass accurate current page objects from edit system for "thành phần"
-    editObjects?: any[];
+    editObjects?: SelectionComponent[];
     isEditMode?: boolean;
     editSession?: UseEditSession;
 }
@@ -109,11 +127,11 @@ export default function EditLayersPanel({
         const sourceObjects = isEditMode
             ? (editObjects || [])
             : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
-        const topmostFirst = [...sourceObjects].sort((a: any, b: any) =>
+        const topmostFirst = [...sourceObjects].sort((a, b) =>
             (Number(b.drawIndex) || 0) - (Number(a.drawIndex) || 0)
         );
         const counters: Record<string, number> = { text: 0, image: 0, vector: 0 };
-        const labeled = topmostFirst.map((obj: any) => {
+        const labeled: ComponentRow[] = topmostFirst.map((obj) => {
             const type = String(obj.type || 'vector');
             counters[type] = (counters[type] || 0) + 1;
             const content = String(obj.content || '').trim().replace(/\s+/g, ' ');
@@ -127,7 +145,7 @@ export default function EditLayersPanel({
             return { ...obj, _displayName: displayName };
         });
         const query = searchTerm.trim().toLowerCase();
-        return labeled.filter((obj: any) =>
+        return labeled.filter((obj) =>
             !query || `${obj._displayName} ${obj.content || ''} ${obj.type || ''}`.toLowerCase().includes(query)
         );
     }, [isEditMode, editObjects, pdfUrl, searchTerm, t]);
@@ -140,7 +158,7 @@ export default function EditLayersPanel({
         const source = isEditMode
             ? (editObjects || [])
             : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
-        return source.map((obj: any) => String(obj.id));
+        return source.map((obj) => String(obj.id));
     }, [isEditMode, editObjects, pdfUrl]);
     const allComponentsSelected = allComponentIds.length > 0
         && allComponentIds.every(id => selectedObjectIds.includes(id));
@@ -201,9 +219,9 @@ export default function EditLayersPanel({
                 layerId, visible: wasHidden,
             });
             if (!outcome) throw new Error('Không thể cập nhật layer.');
-        } catch (err: any) {
+        } catch (err) {
             setHiddenOcgLayerIds(hiddenOcgLayerIds);
-            setError(err?.message || 'Không thể thay đổi trạng thái layer.');
+            setError(getErrorMessage(err, 'Không thể thay đổi trạng thái layer.'));
         }
     }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, isEditMode, editSession, activeSourcePageIndex, setError]);
     // ─── Toggle Lock ───────────────────────────────────────
@@ -220,9 +238,9 @@ export default function EditLayersPanel({
                 layerId, locked: !wasLocked,
             });
             if (!outcome) throw new Error('Không thể khóa/mở khóa layer.');
-        } catch (err: any) {
+        } catch (err) {
             setLockedOcgLayerIds(lockedOcgLayerIds);
-            setError(err?.message || 'Không thể khóa/mở khóa layer.');
+            setError(getErrorMessage(err, 'Không thể khóa/mở khóa layer.'));
         }
     }, [lockedOcgLayerIds, setLockedOcgLayerIds, editSession, activeSourcePageIndex, setError]);
     // ─── Toggle Expand/Collapse ────────────────────────────
@@ -255,8 +273,8 @@ export default function EditLayersPanel({
                 layerId: renamingId, layerName: renameValue.trim(),
             });
             if (!outcome) throw new Error('Không thể đổi tên layer.');
-        } catch (err: any) {
-            setError(err?.message || 'Không thể đổi tên layer.');
+        } catch (err) {
+            setError(getErrorMessage(err, 'Không thể đổi tên layer.'));
         } finally {
             setIsLoading(false);
             setRenamingId(null);
@@ -274,8 +292,8 @@ export default function EditLayersPanel({
             if (!outcome) throw new Error('Không thể xóa layer.');
             setHiddenOcgLayerIds(prev => prev.filter(id => id !== layerId));
             setLockedOcgLayerIds(prev => prev.filter(id => id !== layerId));
-        } catch (err: any) {
-            setError(err?.message || 'Không thể xóa layer.');
+        } catch (err) {
+            setError(getErrorMessage(err, 'Không thể xóa layer.'));
         } finally {
             setIsLoading(false);
         }
@@ -306,8 +324,8 @@ export default function EditLayersPanel({
             if (result.warning) {
                 toast.info(`⚠ ${result.warning}`);
             }
-        } catch (err: any) {
-            setError(err?.message || 'Flatten layer thất bại.');
+        } catch (err) {
+            setError(getErrorMessage(err, 'Flatten layer thất bại.'));
         } finally {
             setIsLoading(false);
         }
@@ -318,14 +336,14 @@ export default function EditLayersPanel({
             ? (editObjects || [])
             : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
         const selectedIds = new Set(selectedObjectIds);
-        const objectsToDelete = source.filter((object: any) => selectedIds.has(object.id));
+        const objectsToDelete = source.filter((object) => selectedIds.has(object.id));
         if (objectsToDelete.length === 0) return;
 
         try {
             setIsLoading(true);
             if (isEditMode) {
                 if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
-                const targetIds = objectsToDelete.map((object: any) => String(object.id));
+                const targetIds = objectsToDelete.map((object) => String(object.id));
                 const outcome = await editSession.applyOp({
                     page: activeSourcePageIndex,
                     kind: 'delete',
@@ -355,7 +373,7 @@ export default function EditLayersPanel({
             prev.includes(objectId) ? prev.filter(id => id !== objectId) : [...prev, objectId]
         );
     };
-    const renderComponentItem = (obj: any, keyPrefix: string = 'component') => {
+    const renderComponentItem = (obj: ComponentRow, keyPrefix: string = 'component') => {
         const isSelected = selectedObjectIds.includes(obj.id);
         const isHidden = hiddenObjectIds.includes(obj.id);
         const isLocked = lockedObjectIds.includes(obj.id);
@@ -383,12 +401,12 @@ export default function EditLayersPanel({
                                 visible: wasHidden,
                             });
                             if (!outcome) throw new Error('Không thể đổi hiển thị thành phần.');
-                        } catch (err: any) {
+                        } catch (err) {
                             setHiddenObjectIds(prev => wasHidden
                                 ? Array.from(new Set([...prev, obj.id]))
                                 : prev.filter(id => id !== obj.id)
                             );
-                            setError(err?.message || 'Không thể đổi hiển thị thành phần.');
+                            setError(getErrorMessage(err, 'Không thể đổi hiển thị thành phần.'));
                         }
                     }}
                     className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
@@ -573,7 +591,7 @@ export default function EditLayersPanel({
                 {hasChildren && isExpanded && (
                     <div className="border-l border-slate-200 dark:border-zinc-700 ml-3">
                         {layer.children.map(child => renderLayerItem(child, depth + 1))}
-                        {layerComponents.map((obj: any) => renderComponentItem(obj, 'layer-' + layer.id))}
+                        {layerComponents.map((obj) => renderComponentItem(obj, 'layer-' + layer.id))}
                     </div>
                 )}
             </div>
@@ -697,7 +715,7 @@ export default function EditLayersPanel({
                         </span>
                     </div>
                     <div data-layer-scroll className="max-h-[35%] overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin">
-                        {unlayeredComponents.map((obj: any) => renderComponentItem(obj, 'unlayered'))}
+                        {unlayeredComponents.map((obj) => renderComponentItem(obj, 'unlayered'))}
                     </div>
                 </>
             )}

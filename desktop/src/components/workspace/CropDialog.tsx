@@ -1,8 +1,14 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
 import { validateRectUnit } from '../preprocess-tools/setPageBoxesUtils';
 import { useTranslation } from 'react-i18next';
 import { fracToDisplayRectMm, fracToRectMm, rectDisplaySizeMm, rectMmToFrac, resizeCropFrac, rotateCropFracForMaterializedPage, rotateDisplayBoxMm, restoreCropFracForViewer, type BoxMm, type Frac, type HorizontalCropAlign, type RectMm, type VerticalCropAlign } from '../../lib/cropDialogGeometry';
+import {
+    WorkspaceContext,
+    isWorkspaceDocumentRevisionCurrent,
+    useWorkspaceStore,
+} from '../../stores/useWorkspaceStore';
+import { useShallow } from 'zustand/react/shallow';
 
 interface PageBoxesResponse {
     page: number;
@@ -133,6 +139,17 @@ interface Props {
 
 export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, onClose, embedded = false }: Props) {
     const { t } = useTranslation();
+    const workspaceStore = useContext(WorkspaceContext);
+    if (!workspaceStore) throw new Error('Missing WorkspaceContext.Provider in the tree');
+    const workspaceRevision = useWorkspaceStore(useShallow(state => ({
+        file: state.file,
+        viewerPageOrder: state.viewerPageOrder,
+        viewerPageInstanceIds: state.viewerPageInstanceIds,
+        viewerPageRotations: state.viewerPageRotations,
+        editGeneration: state.editGeneration,
+    })));
+    const workspaceRevisionRef = useRef(workspaceRevision);
+    workspaceRevisionRef.current = workspaceRevision;
     const rememberedPreferencesRef = useRef<CropPreferences | null>(null);
     if (rememberedPreferencesRef.current === null) {
         rememberedPreferencesRef.current = loadCropPreferences();
@@ -145,6 +162,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
     const [fileId, setFileId] = useState('');
     const [boxes, setBoxes] = useState<PageBoxesResponse | null>(null);
     const [boxesVerified, setBoxesVerified] = useState(false);
+    const [revisionRefreshPending, setRevisionRefreshPending] = useState(false);
     const [fracs, setFracs] = useState<Frac[]>([]);
     const [sourceFracs, setSourceFracs] = useState<Frac[]>([]);
     const [regionAlignments, setRegionAlignments] = useState<RegionAlignment[]>([]);
@@ -169,6 +187,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
     const loadAbortRef = useRef<AbortController | null>(null);
     const applyAbortRef = useRef<AbortController | null>(null);
     const openRequestIdRef = useRef(0);
+    const openedWorkspaceRevisionRef = useRef<typeof workspaceRevision | null>(null);
     const committingRef = useRef(false);
     const fracsRef = useRef<Frac[]>([]);
     const selectedIdxRef = useRef(0);
@@ -212,6 +231,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         setFileId('');
         setBoxes(null);
         setBoxesVerified(false);
+        setRevisionRefreshPending(false);
         setFracs([]);
         setDetectedRegions(null);
         setSourceFracs([]);
@@ -220,6 +240,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         setRangeFrom(1);
         setRangeTo(1);
         setPhase('idle');
+        openedWorkspaceRevisionRef.current = null;
         const previous = previousFocusRef.current;
         previousFocusRef.current = null;
         queueMicrotask(() => previous?.focus?.());
@@ -239,6 +260,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             if (list.length === 0) return;
 
             abortPending();
+            openedWorkspaceRevisionRef.current = workspaceRevisionRef.current;
             const nextViewerRotation = Number(detail.viewerRotation) || 0;
             // PAGEBOX (audit 2026-08-04 §W1.PB5): canvas lưu frac trước CSS
             // rotation; PDF làm việc đã bake góc đó vào /Rotate nên phải đổi hệ.
@@ -274,6 +296,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             setOpen(true);
             setBoxes(initialBoxes);
             setBoxesVerified(false);
+            setRevisionRefreshPending(false);
             setFileId('');
             setPageNum(detail.pageNum);
             setOwnerId(detail.ownerId || '');
@@ -288,6 +311,20 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             // for legacy callers that do not provide that geometry.
             if (initialBoxes) return;
             const controller = new AbortController();
+            const requestRevision = openedWorkspaceRevisionRef.current;
+            const assertRequestCurrent = () => {
+                controller.signal.throwIfAborted();
+                if (
+                    requestId !== openRequestIdRef.current
+                    || !requestRevision
+                    || !isWorkspaceDocumentRevisionCurrent(
+                        requestRevision,
+                        workspaceStore.getState(),
+                    )
+                ) {
+                    throw new DOMException('Yêu cầu chuẩn bị PDF đã lỗi thời', 'AbortError');
+                }
+            };
             loadAbortRef.current = controller;
             try {
                 const fid = await ensureFileId(controller.signal);
@@ -302,8 +339,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                 if (!boxRes.ok || !data?.cropbox) {
                     throw new Error(data.detail || t('misc.cropDialog:khong_doc_duoc_kho_trang_http', { status: boxRes.status }));
                 }
-                controller.signal.throwIfAborted();
-                if (requestId !== openRequestIdRef.current) return;
+                assertRequestCurrent();
                 setBoxes(data);
                 setBoxesVerified(true);
             } catch (err: unknown) {
@@ -320,7 +356,75 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             window.removeEventListener('prynx-crop-open', onOpen as EventListener);
             abortPending();
         };
-    }, [abortPending, ensureFileId, t, tabId]);
+    }, [abortPending, ensureFileId, t, tabId, workspaceStore]);
+
+    useEffect(() => {
+        const previousRevision = openedWorkspaceRevisionRef.current;
+        if (
+            !open
+            || !previousRevision
+            || previousRevision === workspaceRevision
+            || committingRef.current
+        ) return;
+
+        openedWorkspaceRevisionRef.current = workspaceRevision;
+        abortPending();
+        openRequestIdRef.current += 1;
+
+        const previousIds = previousRevision.viewerPageInstanceIds;
+        const currentIds = workspaceRevision.viewerPageInstanceIds;
+        let nextPageIndex = Math.max(0, pageNum - 1);
+        if (ownerId && previousIds?.length) {
+            const previousIndex = previousIds.indexOf(ownerId);
+            const currentIndex = currentIds?.indexOf(ownerId) ?? -1;
+            if (previousIndex < 0 || currentIndex < 0) {
+                // REVISION (audit 2026-08-25 §REV.02): không còn chứng minh được
+                // owner của vùng cắt thì reset panel, không rơi sang trang kế bên.
+                resetDialog();
+                return;
+            }
+            nextPageIndex = currentIndex;
+        } else if (ownerId && currentIds?.length) {
+            const currentIndex = currentIds.indexOf(ownerId);
+            if (currentIndex >= 0) nextPageIndex = currentIndex;
+        }
+
+        const totalPages = workspaceRevision.viewerPageOrder?.length
+            ?? currentIds?.length
+            ?? 0;
+        if (totalPages > 0 && nextPageIndex >= totalPages) {
+            resetDialog();
+            return;
+        }
+
+        const nextViewerRotation = workspaceRevision.viewerPageRotations?.[nextPageIndex] || 0;
+        const overlayFracs = fracsRef.current.map((frac) =>
+            restoreCropFracForViewer(frac, viewerRotation));
+        const rebasedFracs = overlayFracs.map((frac) =>
+            rotateCropFracForMaterializedPage(frac, nextViewerRotation));
+
+        setError('');
+        setDetectError('');
+        setDetectedRegions(null);
+        setDetectingEdges(false);
+        setFileId('');
+        setBoxes(null);
+        setBoxesVerified(false);
+        setRevisionRefreshPending(true);
+        setPageNum(nextPageIndex + 1);
+        setViewerRotation(nextViewerRotation);
+        setFracs(rebasedFracs);
+        setSourceFracs(rebasedFracs.map((frac) => ({ ...frac })));
+        setPhase('preparing');
+    }, [
+        abortPending,
+        open,
+        ownerId,
+        pageNum,
+        resetDialog,
+        viewerRotation,
+        workspaceRevision,
+    ]);
 
     useEffect(() => {
         if (!open) return;
@@ -397,21 +501,38 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
     // potentially expensive file upload starts only when edge processing is
     // explicitly revealed, or later when Apply is pressed.
     useEffect(() => {
-        if (!open || !processEdges || boxesVerified || loadAbortRef.current) return;
+        if (
+            !open
+            || (!processEdges && !revisionRefreshPending)
+            || boxesVerified
+            || loadAbortRef.current
+        ) return;
 
         const controller = new AbortController();
         const requestId = openRequestIdRef.current;
+        const requestRevision = openedWorkspaceRevisionRef.current;
+        const assertRequestCurrent = () => {
+            controller.signal.throwIfAborted();
+            if (
+                requestId !== openRequestIdRef.current
+                || !requestRevision
+                || !isWorkspaceDocumentRevisionCurrent(requestRevision, workspaceStore.getState())
+            ) {
+                throw new DOMException('Yêu cầu chuẩn bị PDF đã lỗi thời', 'AbortError');
+            }
+        };
         loadAbortRef.current = controller;
         setPhase('preparing');
         setDetectError('');
 
         void (async () => {
             try {
-                const fid = fileId || await ensureFileId(controller.signal);
-                controller.signal.throwIfAborted();
+                const fid = await ensureFileId(controller.signal);
+                assertRequestCurrent();
                 const boxRes = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${fid}/${pageNum}`, {
                     signal: controller.signal,
                 });
+                assertRequestCurrent();
                 const data = await boxRes.json() as PageBoxesResponse & ApiResult;
                 if (!boxRes.ok || !data?.cropbox) {
                     throw new Error(data.detail || t('misc.cropDialog:khong_doc_duoc_kho_trang_http', { status: boxRes.status }));
@@ -421,9 +542,12 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                 setBoxes(data);
                 setBoxesVerified(true);
                 setFileId(fid);
+                setRevisionRefreshPending(false);
             } catch (err: unknown) {
                 if (!isAbortError(err) && requestId === openRequestIdRef.current) {
-                    setDetectError(errorMessage(err, t('misc.cropDialog:edge_detection_failed')));
+                    const message = errorMessage(err, t('misc.cropDialog:edge_detection_failed'));
+                    if (revisionRefreshPending) setError(message);
+                    else setDetectError(message);
                 }
             } finally {
                 if (loadAbortRef.current === controller) loadAbortRef.current = null;
@@ -437,7 +561,16 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             controller.abort();
             if (loadAbortRef.current === controller) loadAbortRef.current = null;
         };
-    }, [open, processEdges, boxesVerified, fileId, ensureFileId, pageNum, t]);
+    }, [
+        open,
+        processEdges,
+        boxesVerified,
+        revisionRefreshPending,
+        ensureFileId,
+        pageNum,
+        t,
+        workspaceStore,
+    ]);
 
     useEffect(() => {
         if (!processEdges || !fileId || !pageBox || rectsMm.length === 0) {
@@ -448,6 +581,18 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         }
 
         const controller = new AbortController();
+        const requestId = openRequestIdRef.current;
+        const requestRevision = openedWorkspaceRevisionRef.current;
+        const assertRequestCurrent = () => {
+            controller.signal.throwIfAborted();
+            if (
+                requestId !== openRequestIdRef.current
+                || !requestRevision
+                || !isWorkspaceDocumentRevisionCurrent(requestRevision, workspaceStore.getState())
+            ) {
+                throw new DOMException('Kết quả nhận diện đã lỗi thời', 'AbortError');
+            }
+        };
         setDetectingEdges(true);
         setDetectError('');
         setDetectedRegions(null);
@@ -464,21 +609,26 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                     }),
                     signal: controller.signal,
                 });
+                assertRequestCurrent();
                 const data = await res.json() as ApiResult;
                 if (!res.ok || !Array.isArray(data?.regions) || data.regions.length !== rectsMm.length) {
                     throw new Error(data?.detail || t('misc.cropDialog:edge_detection_failed'));
                 }
+                assertRequestCurrent();
                 setDetectedRegions(data.regions);
             } catch (err: unknown) {
-                if (!isAbortError(err)) {
+                if (!isAbortError(err) && requestId === openRequestIdRef.current) {
                     setDetectError(errorMessage(err, t('misc.cropDialog:edge_detection_failed')));
                 }
             } finally {
-                if (!controller.signal.aborted) setDetectingEdges(false);
+                if (
+                    !controller.signal.aborted
+                    && requestId === openRequestIdRef.current
+                ) setDetectingEdges(false);
             }
         })();
         return () => controller.abort();
-    }, [processEdges, fileId, pageNum, pageBox, rectsMm, maxTrimMm, t]);
+    }, [processEdges, fileId, pageNum, pageBox, rectsMm, maxTrimMm, t, workspaceStore]);
 
     const effectiveRects = useMemo(() => {
         if (!processEdges || !detectedRegions || detectedRegions.length !== rectsMm.length) return rectsMm;
@@ -563,32 +713,53 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         if (!boxes || effectiveRects.length === 0 || !detectionReady || phase !== 'idle') return;
 
         const controller = new AbortController();
+        const requestId = openRequestIdRef.current;
+        const requestRevision = openedWorkspaceRevisionRef.current;
+        const assertRequestCurrent = () => {
+            controller.signal.throwIfAborted();
+            if (
+                requestId !== openRequestIdRef.current
+                || !requestRevision
+                || !isWorkspaceDocumentRevisionCurrent(requestRevision, workspaceStore.getState())
+            ) {
+                throw new DOMException('Yêu cầu cắt đã lỗi thời', 'AbortError');
+            }
+        };
         applyAbortRef.current?.abort();
         applyAbortRef.current = controller;
         setPhase('applying');
         setError('');
         try {
-            const currentFileId = fileId || await ensureFileId(controller.signal);
-            controller.signal.throwIfAborted();
+            // REVISION (audit 2026-08-25 §REV.03): Apply luôn chốt Working PDF
+            // và PageBox cùng một revision; không tái dùng ID/geometry từ lần mở panel.
+            const currentFileId = await ensureFileId(controller.signal);
+            assertRequestCurrent();
             setFileId(currentFileId);
 
-            let verifiedBoxes = boxes;
-            if (!boxesVerified) {
-                const boxRes = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${currentFileId}/${pageNum}`, {
-                    signal: controller.signal,
-                });
-                const boxData = await boxRes.json() as PageBoxesResponse & ApiResult;
-                if (!boxRes.ok || !boxData?.cropbox) {
-                    throw new Error(boxData.detail || t('misc.cropDialog:khong_doc_duoc_kho_trang_http', { status: boxRes.status }));
-                }
-                controller.signal.throwIfAborted();
-                verifiedBoxes = boxData;
-                setBoxes(boxData);
-                setBoxesVerified(true);
+            const boxRes = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${currentFileId}/${pageNum}`, {
+                signal: controller.signal,
+            });
+            assertRequestCurrent();
+            const boxData = await boxRes.json() as PageBoxesResponse & ApiResult;
+            assertRequestCurrent();
+            if (!boxRes.ok || !boxData?.cropbox) {
+                throw new Error(boxData.detail || t('misc.cropDialog:khong_doc_duoc_kho_trang_http', { status: boxRes.status }));
             }
+            setBoxes(boxData);
+            setBoxesVerified(true);
 
-            const verifiedPageBox = verifiedBoxes.cropbox || verifiedBoxes.mediabox;
-            const verifiedRotation = verifiedBoxes.rotation || 0;
+            const totalPages = Math.max(1, boxData.total_pages);
+            const pagesToApply = applyScope === 'current'
+                ? [Math.max(1, Math.min(totalPages, pageNum))]
+                : applyScope === 'all'
+                    ? Array.from({ length: totalPages }, (_, index) => index + 1)
+                    : (() => {
+                        const from = Math.max(1, Math.min(totalPages, Math.min(rangeFrom, rangeTo)));
+                        const to = Math.max(1, Math.min(totalPages, Math.max(rangeFrom, rangeTo)));
+                        return Array.from({ length: to - from + 1 }, (_, index) => from + index);
+                    })();
+            const verifiedPageBox = boxData.cropbox || boxData.mediabox;
+            const verifiedRotation = boxData.rotation || 0;
             const rectsToApply = visualFracs.map((frac) => fracToRectMm(frac, verifiedPageBox, verifiedRotation));
             const displayRectsToApply = visualFracs.map((frac) => fracToDisplayRectMm(frac, verifiedPageBox, verifiedRotation));
             for (let i = 0; i < rectsToApply.length; i++) {
@@ -605,24 +776,28 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                     file_id: currentFileId,
                     page: pageNum,
                     rects_mm: rectsToApply,
-                    display_rects_mm: targetPages.length > 1 ? displayRectsToApply : undefined,
+                    display_rects_mm: pagesToApply.length > 1 ? displayRectsToApply : undefined,
                     keep_other_pages: outputMode === 'keep_document',
-                    pages: targetPages,
+                    pages: pagesToApply,
                 }),
                 signal: controller.signal,
             });
+            assertRequestCurrent();
             const data = await res.json() as ApiResult;
+            assertRequestCurrent();
             if (!res.ok || !data.success || !data.output_filename) {
                 throw new Error(data.detail || t('misc.cropDialog:cat_kho_that_bai'));
             }
             const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`, {
                 signal: controller.signal,
             });
+            assertRequestCurrent();
             if (!dl.ok) throw new Error(t('misc.cropDialog:cat_kho_that_bai'));
             const blob = await dl.blob();
-            controller.signal.throwIfAborted();
+            assertRequestCurrent();
 
             // Từ đây là commit cục bộ ngắn và không thể rollback giữa chừng: khóa đóng dialog.
+            assertRequestCurrent();
             committingRef.current = true;
             setPhase('committing');
             await onApplied(blob, data.output_filename, openResultInNewTab);

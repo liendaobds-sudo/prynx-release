@@ -214,7 +214,6 @@ export function buildDimensionSvg(model: DielineModel): string {
     if (boxType === 'tray') {
         const tG = G;
         const T = params.T;
-        const clearance = 1;
         let svg = '';
 
         // Tray bounding box
@@ -357,7 +356,7 @@ export async function downloadPDF(
         const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
         const svgElement = svgDoc.documentElement;
 
-        await (doc as any).svg(svgElement, {
+        await doc.svg(svgElement, {
             x: 0,
             y: 0,
             width: pageW,
@@ -414,7 +413,7 @@ export async function buildDielinePdfBlob(model: DielineModel): Promise<Blob | n
         const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
         const svgElement = svgDoc.documentElement;
 
-        await (doc as any).svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
+        await doc.svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
 
         doc.setProperties({
             title: `${model.name} - ${model.params.L}x${model.params.W}x${model.params.D}`,

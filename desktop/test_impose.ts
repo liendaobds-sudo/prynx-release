@@ -1,5 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
 import { imposePdf } from './src/lib/pdfImposer';
+import type { ProcessingSettings } from './src/lib/pdfImposer';
 
 (async () => {
     try {
@@ -21,7 +22,8 @@ import { imposePdf } from './src/lib/pdfImposer';
             pageOrder: [0, 1, 2, 3, 4, 5, 6, 7]
         };
 
-        const result = await imposePdf(file, settings as any, (msg) => console.log(msg));
+        // LINT (audit 2026-08-24 LO140): fixture legacy có field booklet mở rộng ngoài union hiện tại; cast qua unknown giữ boundary rõ ràng.
+        const result = await imposePdf(file, settings as unknown as ProcessingSettings, (msg) => console.log(msg));
         console.log("Success! Blob size:", result.blob.size);
     } catch (e) {
         console.error("FAIL:", e);

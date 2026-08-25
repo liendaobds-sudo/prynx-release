@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { useAppSettingsStore } from '../stores/appSettingsStore';
@@ -15,6 +14,7 @@ import { tv } from '../i18n';
 import { KEYBOARD_SHORTCUTS, SHORTCUT_GROUPS } from '../lib/keyboardShortcuts';
 
 type SettingsTab = 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter';
+const MEASUREMENT_UNITS = ['mm', 'cm', 'inch'] as const;
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -86,7 +86,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
                 <div className="space-y-6 flex-1 pr-4">
                   {TOOL_CATEGORIES.map(category => {
-                    const tools = getToolsByCategory(category.id as any);
+                    const tools = getToolsByCategory(category.id);
                     if (tools.length === 0) return null;
                     
                     return (
@@ -238,11 +238,11 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:don_vi_do_luong_mac_dinh')}</h4>
                     <div className="flex gap-4">
-                      {['mm', 'cm', 'inch'].map(unit => (
+                      {MEASUREMENT_UNITS.map(unit => (
                         <label 
                           key={unit} 
                           className="flex items-center gap-2 cursor-pointer group"
-                          onClick={() => setMeasurementUnit(unit as any)}
+                          onClick={() => setMeasurementUnit(unit)}
                         >
                           <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${measurementUnit === unit ? 'border-amber-500' : 'border-slate-300 dark:border-zinc-600 group-hover:border-amber-400'}`}>
                             {measurementUnit === unit && <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />}

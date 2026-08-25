@@ -4,6 +4,8 @@ export interface BookPage {
     imageUrl: string;
     pageNumber?: number;
     signatureInfo?: string;
+    /** Trang đệm nội bộ không ánh xạ về trang PDF nguồn. */
+    _originalIndex?: number;
 }
 
 export interface Sheet {

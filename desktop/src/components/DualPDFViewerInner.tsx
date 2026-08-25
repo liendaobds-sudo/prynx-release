@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { Virtuoso } from 'react-virtuoso';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 
@@ -190,7 +190,7 @@ function PageWithOverlay({
 }
 
 class DualViewerErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
-  constructor(props: any) { super(props); this.state = { hasError: false }; }
+  constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false }; }
   static getDerivedStateFromError() { return { hasError: true }; }
   render() {
     if (this.state.hasError) return <div className="flex-1 w-full h-full bg-slate-100 dark:bg-zinc-900 flex items-center justify-center text-red-500 font-medium">{tv('Lỗi hiển thị PDF (react-pdf). Vui lòng tải lại ứng dụng.')}</div>;
@@ -226,8 +226,8 @@ function DualPDFViewerInner({
   const [isRightFullscreen, setIsRightFullscreen] = useState(false);
   
   // Virtuoso refs for scroll-to-page
-  const leftVirtuosoRef = useRef<any>(null);
-  const rightVirtuosoRef = useRef<any>(null);
+  const leftVirtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const rightVirtuosoRef = useRef<VirtuosoHandle | null>(null);
 
   // Scroller element refs for proper cleanup
   const leftScrollerRef = useRef<HTMLElement | null>(null);
@@ -248,7 +248,7 @@ function DualPDFViewerInner({
 
   // Ref to block manual sync during programmatic scrolling
   const isProgrammaticScroll = useRef(false);
-  const programmaticScrollTimer = useRef<any>(null);
+  const programmaticScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Scroll to page via Virtuoso API
   useEffect(() => {
@@ -298,10 +298,12 @@ function DualPDFViewerInner({
     : Math.max(300, Math.floor(containerFlexWidth * ((100 - leftPanePercent) / 100) - 80));
 
   // Synchronized scroll via scroller ref
-  const handleLeftScroll = useCallback((e: any) => {
+  const handleLeftScroll = useCallback((e: Event) => {
     if (syncing.current || isRightFullscreen || isProgrammaticScroll.current) return;
     syncing.current = true;
-    const src = e.target || e.currentTarget;
+    const src = e.target instanceof HTMLElement
+      ? e.target
+      : e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
     if (src) {
       const ratio = src.scrollTop / (src.scrollHeight - src.clientHeight || 1);
       const rightEl = document.getElementById('right-virtuoso-scroller');
@@ -312,10 +314,12 @@ function DualPDFViewerInner({
     requestAnimationFrame(() => { syncing.current = false; });
   }, [isRightFullscreen]);
 
-  const handleRightScroll = useCallback((e: any) => {
+  const handleRightScroll = useCallback((e: Event) => {
     if (syncing.current || isRightFullscreen || isProgrammaticScroll.current) return;
     syncing.current = true;
-    const src = e.target || e.currentTarget;
+    const src = e.target instanceof HTMLElement
+      ? e.target
+      : e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
     if (src) {
       const ratio = src.scrollTop / (src.scrollHeight - src.clientHeight || 1);
       const leftEl = document.getElementById('left-virtuoso-scroller');

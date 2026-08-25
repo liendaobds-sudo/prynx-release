@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * SavePrintFilesModal — Lưu file in ra ổ cứng (spec: binh-tem-be-report, Yêu cầu 8).
  *
@@ -104,7 +103,8 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
             const dir = await openDialog({ directory: true, multiple: false, title: t('misc.savePrintFiles:chon_thu_muc_luu_file_in') });
             if (typeof dir === 'string') { setFolder(dir); setSavePrint({ lastFolder: dir }); }
         } catch (e) {
-            setStatus(t('misc.savePrintFiles:khong_mo_duoc_hop_thoai_chon_thu_muc', { msg: (e as any)?.message }));
+            const message = e instanceof Error ? e.message : String(e);
+            setStatus(t('misc.savePrintFiles:khong_mo_duoc_hop_thoai_chon_thu_muc', { msg: message }));
         }
     };
 
@@ -122,7 +122,8 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
             });
             setStatus(t('misc.savePrintFiles:da_luu_ok_file_vao', { ok, folder }));
         } catch (e) {
-            setStatus(t('misc.savePrintFiles:loi_khi_luu', { msg: (e as any)?.message || e }));
+            const message = e instanceof Error ? e.message : String(e);
+            setStatus(t('misc.savePrintFiles:loi_khi_luu', { msg: message }));
         } finally {
             setBusy(false);
         }
@@ -158,9 +159,9 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                     <div>
                         <label className="text-[11px] font-bold text-slate-600 uppercase">{t('misc.savePrintFiles:dat_ten_file')}</label>
                         <div className="flex gap-3 mt-1 text-sm">
-                            {[['report', 'Theo report'], ['number', t('misc.savePrintFiles:danh_so')], ['original', t('misc.savePrintFiles:giu_ten_goc')]].map(([v, lbl]) => (
+                            {([['report', 'Theo report'], ['number', t('misc.savePrintFiles:danh_so')], ['original', t('misc.savePrintFiles:giu_ten_goc')]] as const).map(([v, lbl]) => (
                                 <label key={v} className="flex items-center gap-1.5 cursor-pointer">
-                                    <input type="radio" name="nameMode" checked={savePrint.nameMode === v} onChange={() => setSavePrint({ nameMode: v as any })} />
+                                    <input type="radio" name="nameMode" checked={savePrint.nameMode === v} onChange={() => setSavePrint({ nameMode: v })} />
                                     {lbl}
                                 </label>
                             ))}

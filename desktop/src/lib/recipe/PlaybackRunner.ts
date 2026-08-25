@@ -99,6 +99,14 @@ export interface PlaybackResult {
     failedStep?: { index: number; step: RecipeStep; error: string };
 }
 
+function errorMessageOf(error: unknown): string {
+    if (error && typeof error === 'object' && 'message' in error) {
+        const message = (error as { message?: unknown }).message;
+        if (typeof message === 'string' && message) return message;
+    }
+    return String(error);
+}
+
 /**
  * Phát lại recipe tuần tự. Trả PlaybackResult; KHÔNG throw (lỗi bước → ok=false).
  */
@@ -155,8 +163,9 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
         if (step.needsExternalInput) {
             try {
                 ext = (await deps.requestExternalInput?.(step, step.needsExternalInput)) ?? null;
-            } catch (error: any) {
-                if (error?.message === 'ABORT_BY_USER' || isCanceled(error)) {
+            } catch (error: unknown) {
+                const errorMessage = errorMessageOf(error);
+                if (errorMessage === 'ABORT_BY_USER' || isCanceled(error)) {
                     return finish({
                         ok: false,
                         status: 'canceled',
@@ -175,7 +184,7 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
                     failedStep: {
                         index: i,
                         step,
-                        error: error?.message || String(error),
+                        error: errorMessage,
                     },
                 });
             }
@@ -250,8 +259,9 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
             if (outcome.status === 'error' && !capturedError) {
                 capturedError = outcome.error;
             }
-        } catch (e: any) {
-            if (e?.message === 'ABORT_BY_USER' || isCanceled(e)) {
+        } catch (e: unknown) {
+            const errorMessage = errorMessageOf(e);
+            if (errorMessage === 'ABORT_BY_USER' || isCanceled(e)) {
                 return finish({
                     ok: false,
                     status: 'canceled',
@@ -261,7 +271,7 @@ export async function runRecipe(recipe: Recipe, deps: PlaybackDeps): Promise<Pla
                     canceledStep: { index: i, step },
                 });
             }
-            capturedError = e?.message || String(e);
+            capturedError = errorMessage;
         }
 
         if (capturedError) {

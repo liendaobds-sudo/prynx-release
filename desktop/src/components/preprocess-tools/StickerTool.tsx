@@ -460,7 +460,7 @@ export default function StickerTool({
     const resolvePreviewSourceFile = React.useCallback(async () => {
         if (!pdfFile) return null;
         if (preferPdfFile) return pdfFile;
-        return (await getWorkingFile()) || pdfFile;
+        return (await getWorkingFile.resolveUnprepared()) || pdfFile;
     }, [getWorkingFile, pdfFile, preferPdfFile]);
     const cutlinePreview = useClassicCutlinePreview({
         enabled: classicPreviewEnabled,
@@ -723,10 +723,16 @@ export default function StickerTool({
 
     const handleRun = async (overrides?: CutlineRunOverrides) => {
         if (!pdfFile) return;
-        if (!overrides && (canonicalPreviewPending || canonicalPreviewStale)) {
+        if (!overrides && canonicalPreviewPending) {
             // Viewer cố ý giữ frame cũ trong lúc cập nhật/lỗi. Không cho request
-            // rơi về detector legacy rồi tạo một CutContour khác frame đó.
-            setError(t('preprocess.stickerSheet:classic_preview_updating'));
+            // rơi về detector legacy rồi tạo một CutContour khác frame đó khi
+            // canonical preview thực sự là nguồn bắt buộc. Nếu đang giữ nền/trạng
+            // thái local page-box, stale server frame không được chặn lượt chạy.
+            // Đây là trạng thái chờ đã có status riêng bên dưới, không phải lỗi
+            // thực thi;
+            // không đẩy nó vào `error` (khung đỏ) khi người dùng bấm nhanh lúc nút
+            // vừa chuyển sang disabled vì một lượt preview mới.
+            setError('');
             return;
         }
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
@@ -745,6 +751,12 @@ export default function StickerTool({
         setError('');
         setWarning('');
 
+        let recipeTicket: RecipeOperationTicket | null = null;
+        try {
+        // REVISION (audit 2026-08-25 §REV.01): chốt/publish Edit PDF trước khi
+        // ghi recipe; nếu barrier lỗi thì không được để lại một step chưa chạy.
+        await getWorkingFile.prepare();
+
         // Selection ids belong to one concrete PDF revision and must not be
         // replayed by a recipe on another file.
         const recordingThisTab = !!tabId && recipeRecorder.isRecordingFor(tabId);
@@ -755,7 +767,7 @@ export default function StickerTool({
             onProcessingChange?.(false);
             return;
         }
-        const recipeTicket = recordingThisTab
+        recipeTicket = recordingThisTab
             ? recipeRecorder.noteOperation('sticker_dieline', {
                 productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, curveTension, fillHoles,
                 bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
@@ -778,7 +790,6 @@ export default function StickerTool({
             return;
         }
 
-        try {
             let resultBlob: Blob;
             let resultPath: string | undefined;
 

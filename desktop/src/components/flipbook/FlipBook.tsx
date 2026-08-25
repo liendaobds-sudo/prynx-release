@@ -4,7 +4,19 @@ import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { BookData, BookPage } from './types';
 import { tv } from '../../i18n';
 
-const FlipBookComponent = HTMLFlipBook as any;
+const FlipBookComponent = HTMLFlipBook;
+
+interface FlipBookHandle {
+    pageFlip: () => {
+        turnToPage: (pageIndex: number) => void;
+        flipPrev: () => void;
+        flipNext: () => void;
+    };
+}
+
+interface FlipPageEvent {
+    data: number;
+}
 
 interface FlipBookProps {
     data: BookData;
@@ -17,7 +29,7 @@ interface FlipBookProps {
 const Page = forwardRef<HTMLDivElement, { page: BookPage; number: number }>(
     ({ page, number }, ref) => {
         const [loaded, setLoaded] = useState(false);
-        const isEmpty = (page as any)._originalIndex === -1 || page.id.toString().startsWith('empty-');
+        const isEmpty = page._originalIndex === -1 || page.id.toString().startsWith('empty-');
 
         return (
             <div ref={ref} className="page bg-white shadow-lg">
@@ -54,7 +66,7 @@ Page.displayName = 'Page';
 const CoverPage = forwardRef<HTMLDivElement, { page: BookPage; isFront?: boolean }>(
     ({ page, isFront }, ref) => {
         const [loaded, setLoaded] = useState(false);
-        const isEmpty = (page as any)._originalIndex === -1 || page.id.toString().startsWith('empty-');
+        const isEmpty = page._originalIndex === -1 || page.id.toString().startsWith('empty-');
 
         return (
             <div ref={ref} className={`page ${isFront ? "page-cover page-cover-top" : "page-cover page-cover-bottom"}`}>
@@ -92,7 +104,7 @@ export const FlipBook: React.FC<FlipBookProps> = ({
     onPageChange,
     pageAspectRatio = 0.707
 }) => {
-    const bookRef = useRef<any>(null);
+    const bookRef = useRef<FlipBookHandle | null>(null);
     const [isFlipping, setIsFlipping] = useState(false);
     const [dimensions, setDimensions] = useState({ width: 500, height: 700 });
     const [isMobile, setIsMobile] = useState(false);
@@ -171,7 +183,7 @@ export const FlipBook: React.FC<FlipBookProps> = ({
         }
     }, [currentPageIndex]);
 
-    const handleFlipWithRef = useCallback((e: any) => {
+    const handleFlipWithRef = useCallback((e: FlipPageEvent) => {
         internalPageRef.current = e.data;
         if (onPageChange) onPageChange(e.data);
 
@@ -211,7 +223,7 @@ export const FlipBook: React.FC<FlipBookProps> = ({
             pageNumber: paddedPages.length + 1,
             imageUrl: '',
             _originalIndex: -1
-        } as BookPage & { _originalIndex: number });
+        });
     }
 
     return (

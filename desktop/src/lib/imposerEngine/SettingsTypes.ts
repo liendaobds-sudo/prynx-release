@@ -134,7 +134,8 @@ export interface DieCutSettings extends BaseSettings {
     shapeType?: string | null;
     shapeParams?: string | null;
     detectedShapesByPage?: Record<number, string>;
-    detectedShapeParamsByPage?: Record<number, any>;
+    // LINT (audit 2026-08-23 LO66): shape params là object mở theo từng loại khuôn.
+    detectedShapeParamsByPage?: Record<number, Record<string, unknown>>;
     
     targetQuantity?: number;
     targetQuantitiesByPage?: Record<number, number>;

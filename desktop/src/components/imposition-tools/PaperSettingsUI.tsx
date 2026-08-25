@@ -11,43 +11,6 @@ import {
 import { HIDE_OFFSET_BOOKLET } from '../../lib/featureFocus';
 
 export type { PaperUsage, SavedForm };
-export { formUsages };
-
-export function usePaperPresets(storageKey: string) {
-    const [savedForms, setSavedForms] = useState<SavedForm[]>([]);
-
-    useEffect(() => {
-        try {
-            const data = localStorage.getItem(storageKey);
-            if (data) setSavedForms(JSON.parse(data));
-        } catch (e) { }
-    }, [storageKey]);
-
-    const handleSavePreset = (name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh' = 'in_nhanh', gripperMargin: number = 0, usages: PaperUsage[] = ['in_nhanh']) => {
-        const newPreset: SavedForm = {
-            id: 'custom_' + Date.now(),
-            name, w, h, marginTop: mT, marginBottom: mB, marginLeft: mL, marginRight: mR, marginMode: mode, classification, usages, gripperMargin
-        };
-        const newList = [...savedForms, newPreset];
-        setSavedForms(newList);
-        localStorage.setItem(storageKey, JSON.stringify(newList));
-        return newPreset.id;
-    };
-
-    const handleUpdatePreset = (id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh' = 'in_nhanh', gripperMargin: number = 0, usages: PaperUsage[] = ['in_nhanh']) => {
-        const newList = savedForms.map(f => f.id === id ? { ...f, name, w, h, marginTop: mT, marginBottom: mB, marginLeft: mL, marginRight: mR, marginMode: mode, classification, usages, gripperMargin } : f);
-        setSavedForms(newList);
-        localStorage.setItem(storageKey, JSON.stringify(newList));
-    };
-
-    const handleDeletePreset = (id: string) => {
-        const newList = savedForms.filter(f => f.id !== id);
-        setSavedForms(newList);
-        localStorage.setItem(storageKey, JSON.stringify(newList));
-    };
-
-    return { savedForms, handleSavePreset, handleUpdatePreset, handleDeletePreset };
-}
 
 export function PaperSettingsDialog({ 
     isOpen, onClose, 
@@ -105,6 +68,7 @@ export function PaperSettingsDialog({
 
     useEffect(() => {
         if (isOpen) {
+            // Mở lại dialog phải nạp draft từ props hiện tại trước khi user chỉnh.
             setW(width); setH(height); setMT(marginTop); setMB(marginBottom); setML(marginLeft); setMR(marginRight); setMMode(marginMode);
             setGripper(gripperMargin || 0);
             setSizeError(null); // UIUX (audit 2026-07-27 §B-04)
@@ -128,6 +92,7 @@ export function PaperSettingsDialog({
                 );
             }
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- LINT (audit 2026-08-24 LO140): initialUsages được tạo theo render nhưng các props nó đọc đã có trong danh sách; thêm hàm sẽ reset draft sau mọi render.
     }, [isOpen, width, height, marginTop, marginBottom, marginLeft, marginRight, marginMode, classification, gripperMargin, currentFormsize, savedForms, isEditing, defaultUsages]);
 
     useEffect(() => {

@@ -260,6 +260,22 @@ function readImageDpi(bytes: Uint8Array, isJpg: boolean): { x: number; y: number
     }
 }
 
+/**
+ * Mật độ pixel/point mà PDF normalize đã dùng cho ảnh nguồn. Raster Working PDF
+ * theo scale này giữ nguyên số pixel đầu vào trước khi Upscale; ảnh không có DPI
+ * vẫn đúng quy ước cũ 1 px = 1 pt.
+ */
+export function sourceImagePixelsPerPdfPoint(
+    bytes: ArrayBuffer | Uint8Array,
+    fileName: string,
+): number {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const dpi = readImageDpi(data, isJpgName(fileName));
+    if (!dpi) return 1;
+    const density = Math.max(dpi.x, dpi.y) / 72;
+    return Number.isFinite(density) && density > 0 ? density : 1;
+}
+
 function readJpegJfifDpi(b: Uint8Array): { x: number; y: number } | null {
     // SOI = FFD8, APP0 = FFE0 ngay sau, rồi "JFIF\0"
     if (b.length < 18 || b[0] !== 0xff || b[1] !== 0xd8) return null;

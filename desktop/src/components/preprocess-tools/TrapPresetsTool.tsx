@@ -1,6 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
-import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
+import {
+  createRevisionScopedPdfUploadCache,
+  type RevisionScopedPdfUploadLease,
+} from '../../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import {
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, ToolWarning
@@ -15,7 +19,7 @@ interface Props {
     name: string,
     path?: string,
     recipeTicket?: RecipeOperationTicket | null,
-  ) => void | Promise<void>;
+  ) => void | boolean | Promise<void | boolean>;
 }
 
 const OPTIONS = [
@@ -23,9 +27,24 @@ const OPTIONS = [
   { key: 'preserve_overprint', label: 'Giữ overprint hiện có', desc: 'Không tắt các thiết lập overprint đã có sẵn trong file; chỉ bổ sung cho object đen chưa set.' },
 ];
 
+interface ActiveTrapRequest {
+  generation: number;
+  controller: AbortController;
+  snapshot: WorkingPdfRevisionSnapshot | null;
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 export default function TrapPresetsTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
-  const [fileId, setFileId] = useState('');
   const [overprintBlack, setOverprintBlack] = useState(true);
   const [preserveOverprint, setPreserveOverprint] = useState(true);
   const [running, setRunning] = useState(false);
@@ -36,22 +55,100 @@ export default function TrapPresetsTool({ tabId, pdfFile, onFileFixed }: Props) 
     // UIUX (audit 2026-07-28 §PF.1): giữ thông báo khi viewer nhận đúng file vừa xử lý.
     const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
     expectedOutputNameRef.current = null;
-    setFileId('');
     if (!preserveSuccess) setStatus('');
   }, [pdfFile]);
 
   const getWorkingFile = useWorkingPdf();
-  const ensureUploaded = useCallback(async (): Promise<string> => {
-    if (fileId) return fileId;
-    if (!pdfFile) throw new Error(t('preprocess.trapPresets:chua_co_file_pdf'));
-    const r = await uploadPDF((await getWorkingFile()) || pdfFile);
-    setFileId(r.id);
-    return r.id;
-  }, [fileId, pdfFile, getWorkingFile, t]);
+  const uploadCache = useMemo(() => createRevisionScopedPdfUploadCache({
+    resolver: getWorkingFile,
+    upload: uploadPDF,
+    missingFileError: () => new Error(t('preprocess.trapPresets:chua_co_file_pdf')),
+  }), [getWorkingFile, t]);
+  const requestGenerationRef = useRef(0);
+  const activeRequestRef = useRef<ActiveTrapRequest | null>(null);
+  const abortActiveRequest = useCallback(() => {
+    requestGenerationRef.current += 1;
+    const active = activeRequestRef.current;
+    activeRequestRef.current = null;
+    if (active && !active.controller.signal.aborted) {
+      active.controller.abort(createAbortError('Revision PDF đã thay đổi.'));
+    }
+  }, []);
+  const beginRequest = useCallback((): ActiveTrapRequest => {
+    abortActiveRequest();
+    const request = {
+      generation: ++requestGenerationRef.current,
+      controller: new AbortController(),
+      snapshot: getWorkingFile.capture?.() ?? null,
+    };
+    activeRequestRef.current = request;
+    return request;
+  }, [abortActiveRequest, getWorkingFile]);
+  const isRequestCurrent = useCallback((request: ActiveTrapRequest): boolean => (
+    activeRequestRef.current === request
+    && request.generation === requestGenerationRef.current
+    && !request.controller.signal.aborted
+  ), []);
+  const assertRequestCurrent = useCallback((
+    request: ActiveTrapRequest,
+    lease: RevisionScopedPdfUploadLease,
+  ) => {
+    if (!isRequestCurrent(request)) {
+      throw request.controller.signal.reason ?? createAbortError('Lượt trapping đã hết hiệu lực.');
+    }
+    lease.assertCurrent();
+  }, [isRequestCurrent]);
+  const finishRequest = useCallback((request: ActiveTrapRequest): boolean => {
+    if (!isRequestCurrent(request)) return false;
+    activeRequestRef.current = null;
+    return true;
+  }, [isRequestCurrent]);
+  const renderedRevision = getWorkingFile.capture?.();
+  const renderedRevisionFile = renderedRevision?.file ?? pdfFile;
+  const renderedPageRevisionKey = JSON.stringify([
+    renderedRevision?.viewerPageOrder ?? null,
+    renderedRevision?.viewerPageInstanceIds ?? null,
+    renderedRevision?.viewerPageRotations ?? null,
+    renderedRevision?.editGeneration ?? 0,
+  ]);
+  const previousRevisionRef = useRef({
+    file: renderedRevisionFile,
+    key: renderedPageRevisionKey,
+  });
+  useEffect(() => {
+    const previous = previousRevisionRef.current;
+    previousRevisionRef.current = { file: renderedRevisionFile, key: renderedPageRevisionKey };
+    const active = activeRequestRef.current;
+    if (!active?.snapshot || !getWorkingFile.isCurrent(active.snapshot)) {
+      uploadCache.invalidate();
+      abortActiveRequest();
+    }
+    setRunning(false);
+    // REVISION (audit 2026-08-25 §REV.04): không giữ trạng thái thành công của
+    // revision trước khi người dùng vừa xoay/xóa/reorder cùng file.
+    if (previous.file === renderedRevisionFile && previous.key !== renderedPageRevisionKey) {
+      setStatus('');
+    }
+  }, [abortActiveRequest, getWorkingFile, renderedPageRevisionKey, renderedRevisionFile, uploadCache]);
+  useEffect(() => () => {
+    abortActiveRequest();
+    uploadCache.dispose();
+  }, [abortActiveRequest, uploadCache]);
 
   const apply = async () => {
     setRunning(true); setStatus('');
     const params = { overprint_black: overprintBlack, preserve_overprint: preserveOverprint };
+    try {
+      // REVISION (audit 2026-08-25 §REV.01/04): chốt Edit PDF trước khi
+      // ghi Recipe để Step và file_id luôn cùng một revision.
+      await getWorkingFile.prepare();
+    } catch (error: unknown) {
+      setStatus(t('preprocess.trapPresets:loi_x', {
+        msg: error instanceof Error ? error.message : '',
+      }));
+      setRunning(false);
+      return;
+    }
     const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
     const recipeTicket = shouldRecord
       ? recipeRecorder.noteOperation('trapping', {
@@ -64,25 +161,53 @@ export default function TrapPresetsTool({ tabId, pdfFile, onFileFixed }: Props) 
       setRunning(false);
       return;
     }
+    const request = beginRequest();
     try {
-      const fid = await ensureUploaded();
+      const lease = await uploadCache.ensureLease(request.controller.signal);
+      assertRequestCurrent(request, lease);
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/set-overprint`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fid, action_id: 'SET_BLACK_OVERPRINT', params }),
+        body: JSON.stringify({ file_id: lease.fileId, action_id: 'SET_BLACK_OVERPRINT', params }),
+        signal: request.controller.signal,
       });
+      assertRequestCurrent(request, lease);
       const data = await res.json();
+      assertRequestCurrent(request, lease);
       if (data.success) {
-        setStatus(t('preprocess.trapPresets:da_ap_dung_overprint_den'));
         if (data.output_filename && onFileFixed) {
-          const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+          const dl = await authenticatedFetch(
+            `${getApiUrl()}/preflight/download/${data.output_filename}`,
+            { signal: request.controller.signal },
+          );
+          assertRequestCurrent(request, lease);
+          if (!dl.ok) throw new Error('Không tải được file trapping.');
+          const artifact = await dl.blob();
+          assertRequestCurrent(request, lease);
           expectedOutputNameRef.current = data.output_filename;
-          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+          const committed = await onFileFixed(artifact, data.output_filename, undefined, recipeTicket);
+          // REVISION (audit 2026-08-25 §REV.03/04): chỉ báo thành công khi
+          // callback commit không từ chối kết quả cũ.
+          if (committed === false) {
+            expectedOutputNameRef.current = null;
+            return;
+          }
+          setStatus(t('preprocess.trapPresets:da_ap_dung_overprint_den'));
         } else {
           recipeRecorder.discardPending(recipeTicket);
         }
       } else { recipeRecorder.discardPending(recipeTicket); setStatus(t('preprocess.trapPresets:loi_x', { msg: data.error || 'Lỗi' })); }
-    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setStatus(t('preprocess.trapPresets:loi_x', { msg: e.message })); }
-    finally { setRunning(false); }
+    } catch (e: unknown) {
+      expectedOutputNameRef.current = null;
+      recipeRecorder.discardPending(recipeTicket);
+      if (!isRequestCurrent(request) || isAbortError(e)) return;
+      const message = e instanceof Error
+        ? e.message
+        : typeof e === 'object' && e !== null && 'message' in e && typeof e.message === 'string'
+          ? e.message
+          : '';
+      setStatus(t('preprocess.trapPresets:loi_x', { msg: message }));
+    }
+    finally { if (finishRequest(request)) setRunning(false); }
   };
 
   const toggleOpt = (key: string) => {

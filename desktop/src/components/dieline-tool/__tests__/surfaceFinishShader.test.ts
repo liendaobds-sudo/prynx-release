@@ -3,7 +3,7 @@ import {
     patchSpotUvRoughnessShader,
     patchSpotUvClearcoatShader,
     patchSpotUvPhysicalShader,
-} from '../SolidPanelMesh';
+} from '../surfaceFinishShader';
 
 describe('Spot-UV material shader', () => {
     it('vùng mask trắng chuyển sang roughness bóng và nền được giữ nguyên', () => {

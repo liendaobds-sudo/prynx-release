@@ -6,6 +6,7 @@ import {
     detectStickerSource,
     exportStickerSheet,
     inspectStickerSource,
+    loadStickerSourcePreview,
     previewStickerCutline,
     refineStickerSource,
     type StickerSourceDetectionPayload,
@@ -20,6 +21,7 @@ vi.mock('../../lib/stickerSheetApi', () => ({
     detectStickerSource: vi.fn(),
     exportStickerSheet: vi.fn(),
     inspectStickerSource: vi.fn(),
+    loadStickerSourcePreview: vi.fn(),
     previewStickerCutline: vi.fn(),
     refineStickerSource: vi.fn(),
 }));
@@ -173,6 +175,7 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
         useStickerSheetStore.setState({ tabs: {} });
         vi.clearAllMocks();
         vi.mocked(confirmStickerSource).mockResolvedValue(true);
+        vi.mocked(loadStickerSourcePreview).mockResolvedValue(new Blob(['source-preview']));
         vi.mocked(previewStickerCutline).mockResolvedValue({
             page_number: 1,
             mask_revision: 1,
@@ -263,6 +266,44 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
         expect(useStickerSheetStore.getState().getTab('tab-a').status).toBe('exporting');
         useStickerSheetStore.getState().finishExport('tab-a');
         expect(useStickerSheetStore.getState().getTab('tab-a').status).toBe('mask-ready');
+    });
+
+
+    it('không chờ preview PDF trước khi gửi request nhận diện', async () => {
+        const sessionId = 'p'.repeat(32);
+        const source = inspection(sessionId);
+        source.inspection.source_kind = 'pdf';
+        source.inspection.mime_type = 'application/pdf';
+        source.inspection.original_name = 'sheet.pdf';
+        source.previewBlob = new Blob();
+        vi.mocked(inspectStickerSource).mockResolvedValue(source);
+
+        let resolvePreview!: (blob: Blob) => void;
+        vi.mocked(loadStickerSourcePreview).mockImplementationOnce(() => new Promise(resolve => {
+            resolvePreview = resolve;
+        }));
+        let resolveDetect!: (payload: StickerSourceDetectionPayload) => void;
+        vi.mocked(detectStickerSource).mockImplementationOnce(() => new Promise(resolve => {
+            resolveDetect = resolve;
+        }));
+
+        const file = new File(['pdf'], 'sheet.pdf', { type: 'application/pdf' });
+        useStickerSheetStore.getState().selectSource('tab-deferred', file);
+        const pending = useStickerSheetStore.getState().detectStickers('tab-deferred');
+
+        await vi.waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
+        expect(loadStickerSourcePreview).toHaveBeenCalledTimes(1);
+        expect(useStickerSheetStore.getState().getTab('tab-deferred').status).toBe('detecting');
+
+        resolveDetect(detection(sessionId));
+        await pending;
+        expect(useStickerSheetStore.getState().getTab('tab-deferred').status).toBe('mask-review');
+        expect(useStickerSheetStore.getState().getTab('tab-deferred').sourcePreviewReady).toBe(false);
+
+        resolvePreview(new Blob(['preview-pdf']));
+        await vi.waitFor(() => expect(
+            useStickerSheetStore.getState().getTab('tab-deferred').sourcePreviewReady,
+        ).toBe(true));
     });
 
     it('xếp hàng tinh chỉnh và luôn áp dụng lựa chọn slider mới nhất', async () => {
@@ -543,6 +584,132 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
                 ],
             }),
         );
+    });
+
+    it('workspace materialize hai trang và export theo vị trí Working PDF', async () => {
+        const sessionId = '7'.repeat(32);
+        const rawSource = new File(['raw'], 'raw.pdf', { type: 'application/pdf' });
+        const materialized = new File(['working'], 'working.pdf', { type: 'application/pdf' });
+        const revision = { id: 'revision-rotated-duplicate' };
+        let revisionCurrent = true;
+        const prepareWorkspaceSource = vi.fn(async () => ({
+            file: materialized,
+            revision,
+            isCurrent: () => revisionCurrent,
+        }));
+        vi.mocked(inspectStickerSource).mockResolvedValue(multiPageInspection(2, sessionId));
+        vi.mocked(detectStickerSource).mockImplementation(async (_sessionId, options) => (
+            detectionForPage(options?.pageNumber || 1, sessionId)
+        ));
+        vi.mocked(exportStickerSheet).mockResolvedValue({
+            blob: new Blob(['pdf']), filename: 'working-output.pdf', stickerCount: 2,
+        });
+        useStickerSheetStore.getState().selectSource(
+            'tab-working',
+            rawSource,
+            'workspace',
+        );
+
+        await useStickerSheetStore.getState().detectAllStickers(
+            'tab-working',
+            'ai',
+            prepareWorkspaceSource,
+        );
+
+        const detected = useStickerSheetStore.getState().getTab('tab-working');
+        expect(detected.sourceFile).toBe(materialized);
+        expect(detected.sourceRevision).toBe(revision);
+        expect(inspectStickerSource).toHaveBeenCalledWith(
+            materialized,
+            expect.any(AbortSignal),
+            { preview: 'defer' },
+        );
+        expect(vi.mocked(detectStickerSource).mock.calls.map(
+            call => call[1]?.pageNumber,
+        ).sort()).toEqual([1, 2]);
+        await useStickerSheetStore.getState().confirmMask('tab-working', 1);
+        await useStickerSheetStore.getState().confirmMask('tab-working', 2);
+        await useStickerSheetStore.getState().exportFile(
+            'tab-working',
+            'pdf',
+            [1, 2],
+            prepareWorkspaceSource,
+        );
+
+        expect(exportStickerSheet).toHaveBeenCalledWith(
+            sessionId,
+            expect.objectContaining({
+                pageOrder: [1, 2],
+                pages: [
+                    expect.objectContaining({ sourcePage: 1 }),
+                    expect.objectContaining({ sourcePage: 2 }),
+                ],
+            }),
+        );
+        revisionCurrent = false;
+    });
+
+    it('revision đổi khi detect đang chạy thì không publish mask stale', async () => {
+        const sessionId = '8'.repeat(32);
+        const materialized = new File(['working'], 'working.pdf', { type: 'application/pdf' });
+        const revision = { id: 'revision-before-edit' };
+        let revisionCurrent = true;
+        const prepareWorkspaceSource = vi.fn(async () => ({
+            file: materialized,
+            revision,
+            isCurrent: () => revisionCurrent,
+        }));
+        vi.mocked(inspectStickerSource).mockResolvedValue(inspection(sessionId));
+        let resolveDetect!: (value: StickerSourceDetectionPayload) => void;
+        vi.mocked(detectStickerSource).mockImplementationOnce(() => new Promise(resolve => {
+            resolveDetect = resolve;
+        }));
+        useStickerSheetStore.getState().selectSource(
+            'tab-revision-stale',
+            new File(['raw'], 'raw.pdf', { type: 'application/pdf' }),
+            'workspace',
+        );
+
+        const pending = useStickerSheetStore.getState().detectStickers(
+            'tab-revision-stale',
+            'ai',
+            1,
+            prepareWorkspaceSource,
+        );
+        await vi.waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
+        revisionCurrent = false;
+        resolveDetect(detection(sessionId));
+        await pending;
+
+        const tab = useStickerSheetStore.getState().getTab('tab-revision-stale');
+        expect(tab.sourceFile).toBe(materialized);
+        expect(tab.sourceRevision).toBeNull();
+        expect(tab.inspection).toBeNull();
+        expect(tab.manifest).toBeNull();
+        expect(tab.status).toBe('source-ready');
+        expect(tab.error).toContain('Tài liệu đã thay đổi');
+    });
+
+    it('nguồn explicit không gọi preparer workspace và không bị thay thế', async () => {
+        prepareSuccessfulFlow();
+        const explicit = new File(['image'], 'explicit.png', { type: 'image/png' });
+        const prepareWorkspaceSource = vi.fn(async () => {
+            throw new Error('Không được gọi preparer cho nguồn explicit');
+        });
+        useStickerSheetStore.getState().selectSource('tab-explicit-owner', explicit);
+
+        await useStickerSheetStore.getState().detectStickers(
+            'tab-explicit-owner',
+            'auto',
+            1,
+            prepareWorkspaceSource,
+        );
+
+        const tab = useStickerSheetStore.getState().getTab('tab-explicit-owner');
+        expect(prepareWorkspaceSource).not.toHaveBeenCalled();
+        expect(tab.sourceFile).toBe(explicit);
+        expect(tab.sourceOrigin).toBe('explicit');
+        expect(tab.manifest).not.toBeNull();
     });
 
     it('một trang detect lỗi không xóa kết quả sibling hoặc đóng session tài liệu', async () => {

@@ -1,7 +1,11 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
-import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
+import {
+  createRevisionScopedPdfUploadCache,
+  type RevisionScopedPdfUploadLease,
+} from '../../lib/revisionScopedPdfUpload';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 
@@ -50,21 +54,84 @@ const ACTIONS = [
   { id: 'FIX_METADATA',         icon: I.Eraser,  title: 'Sửa Metadata',          desc: 'Xóa bỏ các dữ liệu ẩn, metadata thừa, comments, form, hoặc các thẻ XML không cần thiết trong cấu trúc PDF. Giúp làm sạch file và ngăn ngừa lỗi tương thích.' },
 ];
 
+// TYPE (audit 2026-08-23 §P2.65): giữ contract preflight ở boundary UI thay vì
+// lan any qua report và nhật ký pipeline.
+interface PreflightIssue {
+  rule_id: string;
+  severity: string;
+  page?: number | null;
+  object_ref?: string;
+  description: string;
+  auto_fixable?: boolean;
+  bbox?: number[] | null;
+  bboxes?: number[][] | null;
+}
+
+interface PreflightReport {
+  file_name: string;
+  total_pages: number;
+  issues: PreflightIssue[];
+  summary: Record<string, unknown>;
+  color_summary: { dominant_space?: string | null; [key: string]: unknown };
+  font_summary: Record<string, unknown>;
+  image_summary: Record<string, unknown>;
+}
+
+interface PreflightLogEntry {
+  action_id: string;
+  status: string;
+  message: string;
+  duration_ms: number;
+  report?: Record<string, unknown> | null;
+}
+
+interface PreflightFixResult {
+  success: boolean;
+  output_filename?: string | null;
+  log?: PreflightLogEntry[];
+  error?: string | null;
+  report?: Record<string, unknown> | null;
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return fallback;
+}
+
+interface ActivePreflightRequest {
+  generation: number;
+  controller: AbortController;
+  snapshot: WorkingPdfRevisionSnapshot | null;
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 interface Props {
   pdfFile: File | null;
   onFileFixed: (blob: Blob, name: string) => void | boolean | Promise<void | boolean>;
-  onIssueSelect?: (issue: any) => void;
+  onIssueSelect?: (issue: PreflightIssue) => void;
   onOpenOutputPreview?: () => void;
   onOpenFontTools?: () => void;
 }
 
 export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onOpenOutputPreview, onOpenFontTools }: Props) {
   const { t } = useTranslation();
-  const [fileId, setFileId] = useState('');
   const [selectedRules, setSelectedRules] = useState<Set<string>>(new Set());
   const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
-  const [report, setReport] = useState<any>(null);
-  const [fixResult, setFixResult] = useState<any>(null);
+  const [report, setReport] = useState<PreflightReport | null>(null);
+  const [fixResult, setFixResult] = useState<PreflightFixResult | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const [fixingAction, setFixingAction] = useState('');
   const [error, setError] = useState('');
@@ -75,73 +142,196 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
 
   // Whenever a new file is loaded (e.g. after fixing), reset the fileId cache and report
   useEffect(() => {
-      setFileId('');
       setReport(null);
   }, [pdfFile]);
 
   // ── Upload file to backend (if not already) ──
   const getWorkingFile = useWorkingPdf();
-  const ensureUploaded = useCallback(async (): Promise<string> => {
-    if (fileId) return fileId;
-    if (!pdfFile) throw new Error(t('preprocess.preflight:chua_co_file_pdf'));
-    const result = await uploadPDF((await getWorkingFile()) || pdfFile);
-    setFileId(result.id);
-    return result.id;
-  }, [fileId, pdfFile, getWorkingFile, t]);
+  const uploadCache = useMemo(() => createRevisionScopedPdfUploadCache({
+    resolver: getWorkingFile,
+    upload: uploadPDF,
+    missingFileError: () => new Error(t('preprocess.preflight:chua_co_file_pdf')),
+  }), [getWorkingFile, t]);
+  const requestGenerationRef = useRef(0);
+  const activeRequestRef = useRef<ActivePreflightRequest | null>(null);
+  const abortActiveRequest = useCallback(() => {
+    requestGenerationRef.current += 1;
+    const active = activeRequestRef.current;
+    activeRequestRef.current = null;
+    if (active && !active.controller.signal.aborted) {
+      active.controller.abort(createAbortError('Revision PDF đã thay đổi.'));
+    }
+  }, []);
+  const beginRequest = useCallback((): ActivePreflightRequest => {
+    abortActiveRequest();
+    const request = {
+      generation: ++requestGenerationRef.current,
+      controller: new AbortController(),
+      snapshot: getWorkingFile.capture?.() ?? null,
+    };
+    activeRequestRef.current = request;
+    return request;
+  }, [abortActiveRequest, getWorkingFile]);
+  const isRequestCurrent = useCallback((request: ActivePreflightRequest): boolean => (
+    activeRequestRef.current === request
+    && request.generation === requestGenerationRef.current
+    && !request.controller.signal.aborted
+  ), []);
+  const assertRequestCurrent = useCallback((
+    request: ActivePreflightRequest,
+    lease: RevisionScopedPdfUploadLease,
+  ) => {
+    if (!isRequestCurrent(request)) {
+      throw request.controller.signal.reason ?? createAbortError('Lượt Preflight đã hết hiệu lực.');
+    }
+    lease.assertCurrent();
+  }, [isRequestCurrent]);
+  const finishRequest = useCallback((request: ActivePreflightRequest): boolean => {
+    if (!isRequestCurrent(request)) return false;
+    activeRequestRef.current = null;
+    return true;
+  }, [isRequestCurrent]);
+  const renderedRevision = getWorkingFile.capture?.();
+  const renderedRevisionFile = renderedRevision?.file ?? pdfFile;
+  const renderedRevisionKey = JSON.stringify([
+    renderedRevision?.viewerPageOrder ?? null,
+    renderedRevision?.viewerPageInstanceIds ?? null,
+    renderedRevision?.viewerPageRotations ?? null,
+    renderedRevision?.editGeneration ?? 0,
+  ]);
+  useEffect(() => {
+    // REVISION (audit 2026-08-25 §REV.04): report và request Preflight chỉ thuộc
+    // đúng revision đã upload; page edit phải hủy response cũ ngay lập tức.
+    const active = activeRequestRef.current;
+    if (!active?.snapshot || !getWorkingFile.isCurrent(active.snapshot)) {
+      uploadCache.invalidate();
+      abortActiveRequest();
+    }
+    setIsInspecting(false);
+    setFixingAction('');
+    setReport(null);
+    setError('');
+  }, [abortActiveRequest, getWorkingFile, pdfFile, renderedRevisionFile, renderedRevisionKey, uploadCache]);
+  useEffect(() => () => {
+    abortActiveRequest();
+    uploadCache.dispose();
+  }, [abortActiveRequest, uploadCache]);
 
   // ── Inspect ──
   const runInspect = useCallback(async () => {
     if (!pdfFile || selectedRules.size === 0) return;
     setIsInspecting(true); setError(''); setReport(null); setFixResult(null);
     try {
-      const fid = await ensureUploaded();
+      await getWorkingFile.prepare();
+    } catch (error: unknown) {
+      setError(getErrorMessage(error, t('preprocess.preflight:loi_kiem_tra')));
+      setIsInspecting(false);
+      return;
+    }
+    const request = beginRequest();
+    try {
+      const lease = await uploadCache.ensureLease(request.controller.signal);
+      assertRequestCurrent(request, lease);
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/inspect`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fid, rules: Array.from(selectedRules), tac_threshold: 300 }),
+        body: JSON.stringify({ file_id: lease.fileId, rules: Array.from(selectedRules), tac_threshold: 300 }),
+        signal: request.controller.signal,
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preprocess.preflight:loi_kiem_tra'));
-      setReport(await res.json());
-    } catch (e: any) { setError(e.message); }
-    finally { setIsInspecting(false); }
-  }, [pdfFile, selectedRules, ensureUploaded, t]);
+      assertRequestCurrent(request, lease);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as unknown;
+        assertRequestCurrent(request, lease);
+        const detail = typeof payload === 'object' && payload !== null && 'detail' in payload
+          && typeof payload.detail === 'string' ? payload.detail : t('preprocess.preflight:loi_kiem_tra');
+        throw new Error(detail);
+      }
+      const nextReport = await res.json() as PreflightReport;
+      assertRequestCurrent(request, lease);
+      setReport(nextReport);
+    } catch (error: unknown) {
+      if (isRequestCurrent(request) && !isAbortError(error)) {
+        setError(getErrorMessage(error, t('preprocess.preflight:loi_kiem_tra')));
+      }
+    } finally {
+      if (finishRequest(request)) setIsInspecting(false);
+    }
+  }, [assertRequestCurrent, beginRequest, finishRequest, getWorkingFile, isRequestCurrent, pdfFile, selectedRules, t, uploadCache]);
 
   // ── Pipeline (auto-upload if needed) ──
   const runPipeline = useCallback(async () => {
     if (selectedActions.size === 0) return;
     setFixingAction('PIPELINE'); setFixResult(null); setError('');
     try {
-      const fid = await ensureUploaded();
+      await getWorkingFile.prepare();
+    } catch (error: unknown) {
+      setError(getErrorMessage(error, t('preprocess.preflight:loi')));
+      setFixingAction('');
+      return;
+    }
+    const request = beginRequest();
+    try {
+      const lease = await uploadCache.ensureLease(request.controller.signal);
+      assertRequestCurrent(request, lease);
       const actions = Array.from(selectedActions).map(id => ({ id, params: {} }));
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/pipeline`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fid, actions }),
+        body: JSON.stringify({ file_id: lease.fileId, actions }),
+        signal: request.controller.signal,
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preprocess.preflight:loi'));
-      const data = await res.json();
+      assertRequestCurrent(request, lease);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as unknown;
+        assertRequestCurrent(request, lease);
+        const detail = typeof payload === 'object' && payload !== null && 'detail' in payload
+          && typeof payload.detail === 'string' ? payload.detail : t('preprocess.preflight:loi');
+        throw new Error(detail);
+      }
+      const data = await res.json() as PreflightFixResult;
+      assertRequestCurrent(request, lease);
 
       if (data.success && data.output_filename) {
-        const pdfRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
-        if (pdfRes.ok) {
-          const blob = await pdfRes.blob();
-          // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không hiện kết quả
-          // fix và không bỏ chọn action vì file đang mở chưa đổi.
-          const committed = await onFileFixed(blob, data.output_filename);
-          if (committed === false) return;
-          setFixResult(data);
-          setSelectedActions(new Set()); // Auto-deselect fixed actions
+        const pdfRes = await authenticatedFetch(
+          `${getApiUrl()}/preflight/download/${data.output_filename}`,
+          { signal: request.controller.signal },
+        );
+        assertRequestCurrent(request, lease);
+        if (!pdfRes.ok) {
+          throw new Error(t('preprocess.preflight:loi'));
         }
+        const blob = await pdfRes.blob();
+        assertRequestCurrent(request, lease);
+        // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không hiện kết quả
+        // fix và không bỏ chọn action vì file đang mở chưa đổi.
+        const committed = await onFileFixed(blob, data.output_filename);
+        if (committed === false) return;
+        setFixResult(data);
+        setSelectedActions(new Set()); // Auto-deselect fixed actions
       } else {
+        assertRequestCurrent(request, lease);
         setFixResult(data);
       }
-    } catch (e: any) { setError(e.message); }
-    finally { setFixingAction(''); }
-  }, [selectedActions, ensureUploaded, onFileFixed, t]);
+    } catch (error: unknown) {
+      if (isRequestCurrent(request) && !isAbortError(error)) {
+        setError(getErrorMessage(error, t('preprocess.preflight:loi')));
+      }
+    } finally {
+      if (finishRequest(request)) setFixingAction('');
+    }
+  }, [assertRequestCurrent, beginRequest, finishRequest, getWorkingFile, isRequestCurrent, onFileFixed, selectedActions, t, uploadCache]);
 
   const toggleRule = (id: string) => {
-    setSelectedRules(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setSelectedRules(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
   const toggleAction = (id: string) => {
-    setSelectedActions(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setSelectedActions(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   return (
@@ -209,7 +399,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
             <div style={{ marginTop: '12px' }} className="flex gap-2">
               <button
                 onClick={runInspect}
-                disabled={isInspecting || selectedRules.size === 0}
+                disabled={isInspecting || !!fixingAction || selectedRules.size === 0}
                 className="flex-1 px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700"
               >
                 {isInspecting ? (
@@ -251,9 +441,9 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.preflight:danh_sach_loi')}</label>
               <div className="max-h-[180px] overflow-y-auto space-y-1 pr-1">
-                {report.issues.map((issue: any, i: number) => (
+                {report.issues.map((issue, i) => (
                   <div key={i} 
-                    onClick={() => onIssueSelect && onIssueSelect(issue)}
+                    onClick={() => onIssueSelect?.(issue)}
                     className={`p-2 rounded border-l-2 flex flex-col gap-1 cursor-pointer hover:brightness-95 transition-all ${
                     issue.severity === 'error' ? 'border-red-500 bg-red-50 dark:bg-red-900/10 text-red-800 dark:text-red-200'
                     : 'border-amber-400 bg-amber-50 dark:bg-amber-900/10 text-amber-800 dark:text-amber-200'
@@ -275,7 +465,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
             </div>
           )}
 
-          {report.issues?.some((i: any) => i.rule_id === 'FONT_NOT_EMBEDDED') && (
+          {report.issues?.some(i => i.rule_id === 'FONT_NOT_EMBEDDED') && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-2.5">
               <div className="flex gap-2">
                 <span className="text-sm">⚠️</span>
@@ -356,7 +546,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
             {selectedActions.size > 0 && (
               <button
                 onClick={runPipeline}
-                disabled={!!fixingAction}
+                disabled={isInspecting || !!fixingAction}
                 style={{ marginTop: '16px' }}
                 className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700"
               >
@@ -377,8 +567,8 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
           <h4 className={`text-[11px] font-bold mb-1 ${fixResult.success ? 'text-emerald-600' : 'text-red-600'}`}>
             {fixResult.success ? t('preprocess.preflight:thanh_cong') : t('preprocess.preflight:that_bai')}
           </h4>
-          {fixResult.log?.map((e: any, i: number) => (
-            <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">{e.status === 'success' ? '✅' : '❌'} {e.message} ({e.duration_ms}ms)</p>
+          {fixResult.log?.map((entry, i) => (
+            <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">{entry.status === 'success' ? '✅' : '❌'} {entry.message} ({entry.duration_ms}ms)</p>
           ))}
           {fixResult.success && (
             <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">

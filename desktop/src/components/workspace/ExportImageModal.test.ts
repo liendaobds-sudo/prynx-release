@@ -3,7 +3,8 @@
 import { createElement } from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import ExportImageModal, { buildExportJobs, parsePageRange } from './ExportImageModal';
+import ExportImageModal from './ExportImageModal';
+import { buildExportJobs, parsePageRange } from './exportImagePlan';
 
 describe('parsePageRange', () => {
     it('đảo range, khử trùng và giữ trang hợp lệ', () => {

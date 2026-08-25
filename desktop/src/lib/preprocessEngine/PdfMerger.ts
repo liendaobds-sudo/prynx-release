@@ -1,4 +1,4 @@
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, type PDFPage } from 'pdf-lib';
 import { MergeSettings } from '../../components/preprocess-tools/MergeTool';
 import { imageBytesToPdfDoc, addImagePageToDoc } from '../imageNormalizer';
 import { tv } from '../../i18n';
@@ -176,12 +176,12 @@ export async function mergePdf(
     return newPdf.save();
 }
 
-function getNextInsertBlock(copiedInsert: any[], settings: MergeSettings, currentIdx: number): { pages: any[], nextIdx: number } {
+function getNextInsertBlock(copiedInsert: PDFPage[], settings: MergeSettings, currentIdx: number): { pages: PDFPage[], nextIdx: number } {
     if (settings.repeatMode === 'entire') {
         return { pages: copiedInsert, nextIdx: currentIdx }; // nextIdx doesn't matter, we always return entire
     } else {
         const count = settings.insertPagesEachTime;
-        const pagesToReturn = [];
+        const pagesToReturn: PDFPage[] = [];
         let newIdx = currentIdx;
         
         for (let i = 0; i < count; i++) {

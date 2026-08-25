@@ -1,6 +1,7 @@
 export type PageDimension = { w: number; h: number };
 export type DieAvailability = boolean | null;
 export type StickerDieSizeMode = 'die' | 'page';
+export type ShapeParamsByPage = Record<number, Record<string, unknown>>;
 
 function isUsablePageDimension(value: PageDimension | null | undefined): value is PageDimension {
     return !!value
@@ -33,7 +34,7 @@ export function resolvePreviewItemDimension(
  * hai khuôn CIRCLE khác kích thước vẫn là multi-mold.
  */
 export function inheritedSingleMoldMaster(
-    shapeParamsByPage: Record<number, any> | undefined,
+    shapeParamsByPage: ShapeParamsByPage | undefined,
     pageCount: number,
 ): number | null {
     if (!shapeParamsByPage || pageCount < 2) return null;
@@ -41,7 +42,7 @@ export function inheritedSingleMoldMaster(
     const sources = new Set<number>();
     for (let page = 0; page < pageCount; page += 1) {
         const raw = shapeParamsByPage[page]?.inheritedFromPage;
-        if (Number.isInteger(raw)) sources.add(Number(raw));
+        if (typeof raw === 'number' && Number.isInteger(raw)) sources.add(raw);
     }
     if (sources.size !== 1) return null;
 
@@ -50,7 +51,7 @@ export function inheritedSingleMoldMaster(
     for (let page = 0; page < pageCount; page += 1) {
         if (page === master) continue;
         const raw = shapeParamsByPage[page]?.inheritedFromPage;
-        if (!Number.isInteger(raw) || Number(raw) !== master) return null;
+        if (typeof raw !== 'number' || !Number.isInteger(raw) || raw !== master) return null;
     }
     return master;
 }
@@ -232,9 +233,9 @@ export function projectPageRecordToViewer<T>(
 }
 
 export function projectShapeParamsToViewer(
-    bySourcePage: Record<number, any> | undefined,
+    bySourcePage: ShapeParamsByPage | undefined,
     viewerPageOrder: number[] | null | undefined,
-): Record<number, any> {
+): ShapeParamsByPage {
     const projected = projectPageRecordToViewer(bySourcePage, viewerPageOrder);
     if (!viewerPageOrder || viewerPageOrder.length === 0) return projected;
 
@@ -249,8 +250,9 @@ export function projectShapeParamsToViewer(
     Object.keys(projected).forEach((key) => {
         const viewerIndex = Number(key);
         const props = projected[viewerIndex];
-        if (!props || typeof props !== "object" || !Number.isInteger(props.inheritedFromPage)) return;
-        const mappedMaster = firstViewerIndexBySource.get(Number(props.inheritedFromPage));
+        const inheritedFromPage = props?.inheritedFromPage;
+        if (typeof inheritedFromPage !== 'number' || !Number.isInteger(inheritedFromPage)) return;
+        const mappedMaster = firstViewerIndexBySource.get(inheritedFromPage);
         if (mappedMaster === undefined) return;
         projected[viewerIndex] = { ...props, inheritedFromPage: mappedMaster };
     });

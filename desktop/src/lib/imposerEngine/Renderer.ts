@@ -1,5 +1,6 @@
 // src/lib/imposerEngine/Renderer.ts
 import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees, scale } from 'pdf-lib';
+import type { Color, PDFEmbeddedPage, PDFPage } from 'pdf-lib';
 import { VirtualSheet } from './VirtualMap';
 import type { GuillotineSettings, OffsetSettings } from './SettingsTypes';
 export type BookletSettings = GuillotineSettings | OffsetSettings;
@@ -9,19 +10,30 @@ import i18n from '../../i18n';
 
 const MM_TO_POINTS = 2.83465;
 
+interface TrimBox {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+interface SourcePageDetail {
+    angle: number;
+}
+
 export const drawSpreadMarks = (
-    outputPage: any,
-    leftTrimBox: { x: number; y: number; width: number; height: number },
-    rightTrimBox: { x: number; y: number; width: number; height: number },
+    outputPage: PDFPage,
+    leftTrimBox: TrimBox,
+    rightTrimBox: TrimBox,
     sheetWidth: number,
     sheetHeight: number,
-    settings?: any
+    settings?: BookletSettings
 ) => {
     const markLength = ((settings?.markLength ?? 5.0) * MM_TO_POINTS);
     const markOffset = ((settings?.markOffset ?? 3.0) * MM_TO_POINTS);
     const markThickness = ((settings?.markThickness ?? 0.25) * MM_TO_POINTS);
 
-    const drawL = (x1: number, y1: number, x2: number, y2: number, color: any) => {
+    const drawL = (x1: number, y1: number, x2: number, y2: number, color: Color) => {
         outputPage.drawLine({start:{x:x1,y:y1}, end:{x:x2,y:y2}, thickness: markThickness, color});
     };
     
@@ -45,8 +57,8 @@ export const drawSpreadMarks = (
     };
     
     // Spread Distribution
-    const spreadDistribution = (settings as any)?.spreadDistribution || 'clustered';
-    const bMode = (settings as any)?.bindingMode;
+    const spreadDistribution = settings?.spreadDistribution || 'clustered';
+    const bMode = settings?.bindingMode;
     const isFoldable = bMode === 'saddle' || bMode === 'thread';
     const spineGap = settings?.gapX || 0;
     const drawIndividual = spreadDistribution === 'even' || spineGap > 0;
@@ -97,8 +109,8 @@ export const drawSpreadMarks = (
 
 export const renderBooklet = async (
     virtualMap: VirtualSheet[],
-    embeddedPages: any[],
-    srcPageDetails: any[],
+    embeddedPages: Array<PDFEmbeddedPage | null>,
+    srcPageDetails: SourcePageDetail[],
     context: GeometricContext,
     outputPdf: PDFDocument,
     bleedPt: number,
@@ -112,7 +124,7 @@ export const renderBooklet = async (
 ) => {
     
     // Flatten iteration plan based on Interleave Mode
-    const surfaces: { sheetIndex: number, isFront: boolean, slots: any, sheet: VirtualSheet }[] = [];
+    const surfaces: { sheetIndex: number, isFront: boolean, slots: VirtualSheet['front'], sheet: VirtualSheet }[] = [];
     const isSingleSided = settings?.bindingMode === 'flush_mount';
     
     if (interleaveMode === 'normal' || isSingleSided) {
@@ -150,7 +162,7 @@ export const renderBooklet = async (
         
         const outputPage = outputPdf.addPage([context.finalSheetWidth, context.finalSheetHeight]);
 
-            const trimBoxes: any[] = [];
+            const trimBoxes: TrimBox[] = [];
 
             for (const pos of ['left', 'right']) {
                 const isLeft = pos === 'left';
@@ -204,7 +216,7 @@ export const renderBooklet = async (
                     else if (srcDetail.angle === 180) { nativeAngle = 180; drawX = -rawW; drawY = -rawH; }
 
                     const isCutStackSpread = settings?.bindingMode === 'cut_stacks';
-                    const distribution = (settings as any)?.spreadDistribution || 'clustered';
+                    const distribution = settings?.spreadDistribution || 'clustered';
                     const isHutGay = distribution !== 'even';
                     const isRightStack = isFront ? !isLeft : isLeft;
                     const shouldRotateCutStack = isCutStackSpread && isHutGay && isRightStack;
@@ -248,9 +260,9 @@ export const renderBooklet = async (
                     const gridW = trimBoxes[1].x + trimBoxes[1].width - trimBoxes[0].x;
                     const gridH = trimBoxes[0].height;
                     const mmToPt = 2.83465;
-                    const markLen = (settings as any)?.markLength ?? 5;
-                    const markOff = (settings as any)?.markOffset ?? 3;
-                    const offsetPt = (((settings as any)?.bleed || 0) + markLen + markOff + 2) * mmToPt;
+                    const markLen = settings?.markLength ?? 5;
+                    const markOff = settings?.markOffset ?? 3;
+                    const offsetPt = ((settings?.bleed || 0) + markLen + markOff + 2) * mmToPt;
                     drawRegistrationMarks(outputPage, context.finalSheetWidth, context.finalSheetHeight, gridX, gridY, gridW, gridH, offsetPt);
                 }
             }

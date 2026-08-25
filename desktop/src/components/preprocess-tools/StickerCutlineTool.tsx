@@ -1,12 +1,18 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
+import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { saveBlob } from '../../lib/saveBlob';
 import { toast } from '../ui/Toast';
 import StickerSheetPanel from './StickerSheetPanel';
 import StickerTool from './StickerTool';
-import { useStickerSheetStore, type StickerSourceMode } from './stickerSheetStore';
+import {
+    useStickerSheetStore,
+    type PrepareStickerWorkspaceSource,
+    type StickerSourceMode,
+    type StickerWorkspaceSourceLease,
+} from './stickerSheetStore';
 import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 
 
@@ -58,6 +64,9 @@ export default function StickerCutlineTool({
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
+    const workingPdf = useWorkingPdf();
+    const workspaceLeaseRef = useRef<StickerWorkspaceSourceLease | null>(null);
+    const workspaceLeasePromiseRef = useRef<Promise<StickerWorkspaceSourceLease> | null>(null);
     const mode = tab?.mode || 'existing';
     const modeHelpId = useId();
     const [directProcessing, setDirectProcessing] = useState(false);
@@ -71,15 +80,50 @@ export default function StickerCutlineTool({
         || tab?.status === 'exporting'
         || directProcessing
     );
+    const workingPageOrder = pageOrder?.map((_sourcePage, index) => index + 1);
+
+    const prepareWorkspaceSource = useCallback<PrepareStickerWorkspaceSource>(async () => {
+        const cached = workspaceLeaseRef.current;
+        if (cached?.isCurrent()) return cached;
+        const inFlight = workspaceLeasePromiseRef.current;
+        if (inFlight) return inFlight;
+
+        const pending: Promise<StickerWorkspaceSourceLease> = (async () => {
+            // REVISION (audit 2026-08-25 §REV.05): chỉ chốt edit và materialize
+            // Working PDF khi người dùng thật sự Nhận diện/Xuất, không chạy nền.
+            await workingPdf.prepare();
+            const revision = workingPdf.capture();
+            if (!revision) {
+                throw new Error('Không tìm thấy PDF đang hiển thị để nhận diện tem.');
+            }
+            const file = await workingPdf.materialize(revision);
+            if (!workingPdf.isCurrent(revision)) {
+                throw new Error('Tài liệu đã thay đổi trong lúc chuẩn bị. Hãy thử lại.');
+            }
+            const lease: StickerWorkspaceSourceLease = {
+                file,
+                revision,
+                isCurrent: () => workingPdf.isCurrent(revision),
+            };
+            workspaceLeaseRef.current = lease;
+            return lease;
+        })().finally(() => {
+            if (workspaceLeasePromiseRef.current === pending) {
+                workspaceLeasePromiseRef.current = null;
+            }
+        });
+        workspaceLeasePromiseRef.current = pending;
+        return pending;
+    }, [workingPdf]);
 
     useEffect(() => actions.initTab(tabId), [actions, tabId]);
 
     useEffect(() => {
         if (!isActive || mode !== 'ai-sheet') return;
-        // UIUX (audit 2026-08-09 §MP.6): trang AI bám số trang nguồn đang được
-        // thumbnail chọn; đổi thumbnail không thay viewport hoặc trạng thái zoom/Hand.
-        actions.setActivePage(tabId, activeSourcePage);
-    }, [actions, activeSourcePage, isActive, mode, tabId]);
+        // REVISION (audit 2026-08-25 §REV.05): AI xử lý Working PDF đã bake
+        // reorder/duplicate nên trang phải bám vị trí thumbnail, không bám source page.
+        actions.setActivePage(tabId, activeWorkingPage);
+    }, [actions, activeWorkingPage, isActive, mode, tabId]);
 
     useEffect(() => {
         if (!isActive || mode !== 'ai-sheet') return;
@@ -94,6 +138,7 @@ export default function StickerCutlineTool({
             setCompletedExport(null);
         }
         const current = useStickerSheetStore.getState().getTab(tabId);
+        if (current.sourceOrigin === 'explicit' && current.sourceFile) return;
         const historySourceOwner = stickerSourceOwnerFromHistory(pdfFile);
         if (
             current.sourceFile === workspaceSource
@@ -106,7 +151,12 @@ export default function StickerCutlineTool({
     }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId]);
 
     const handleExport = async () => {
-        const result = await actions.exportFile(tabId, 'pdf', pageOrder);
+        const result = await actions.exportFile(
+            tabId,
+            'pdf',
+            workingPageOrder,
+            prepareWorkspaceSource,
+        );
         if (!result) return;
         exportedFilenameRef.current = result.filename;
         try {
@@ -132,7 +182,12 @@ export default function StickerCutlineTool({
     };
 
     const handleExportPng = async () => {
-        const result = await actions.exportFile(tabId, 'png_zip', pageOrder);
+        const result = await actions.exportFile(
+            tabId,
+            'png_zip',
+            workingPageOrder,
+            prepareWorkspaceSource,
+        );
         if (!result) return;
         try {
             const saved = await saveBlob(result.blob, result.filename, {
@@ -215,7 +270,8 @@ export default function StickerCutlineTool({
                         onExport={handleExport}
                         onExportPng={handleExportPng}
                         isExporting={tab?.isExporting === true}
-                        pageOrder={pageOrder}
+                        pageOrder={workingPageOrder}
+                        prepareWorkspaceSource={prepareWorkspaceSource}
                     />
                     {completedExport && (
                         <div

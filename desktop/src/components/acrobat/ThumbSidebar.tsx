@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import type { VirtuosoHandle } from 'react-virtuoso';
 import { useThumbSidebar } from './useThumbSidebar';
 import {
     createThumbnailRenderRequest,
@@ -12,7 +13,7 @@ import {
 import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
-import { formatRotatedPageSizePx96 } from './dimensionMath';
+import { fitThumbnailPageSize, formatRotatedPageSizePx96 } from './dimensionMath';
 import type { SessionPreview } from '../../hooks/useEditSession';
 import {
     groupEditPreviewsBySourcePage,
@@ -20,6 +21,8 @@ import {
     ThumbnailEditPreviewLayer,
 } from './thumbnailEditPreview';
 import { pageHeightPtFromDim, pageWidthPtFromDim } from '../workspace/editGeometry';
+import type { ViewerContextMenuState } from './ViewerContextMenu';
+import { stickerSheetWorkflowStatusAtViewerPosition } from '../stickerSheetTabSelector';
 
 export type ThumbPageWorkflowStatus = 'pending' | 'processing' | 'review' | 'ready' | 'error';
 
@@ -78,6 +81,41 @@ export function ThumbWorkflowBadge({
     );
 }
 
+type ThumbFile = File & {
+    path?: string;
+    isBlank?: boolean;
+    __editCommit?: boolean;
+};
+
+type ThumbDimension = { w: number; h: number; widthPt: number };
+
+interface MemoThumbItemProps {
+    index: number;
+    originalPageNum: number;
+    logicalPageLabel: number;
+    isSelected: boolean;
+    isActive: boolean;
+    isDragged: boolean;
+    showCopyBadge: boolean;
+    showCopyDropBadge: boolean;
+    hoverTargetState: string;
+    rot: number;
+    localDim?: ThumbDimension;
+    thumbBaseWidth: number;
+    pdfUrl: string | null;
+    file: ThumbFile | null;
+    thumbRev: string;
+    pageCount: number;
+    isLoadable: boolean;
+    isViewerActive?: boolean;
+    registerRef?: (element: HTMLElement | null, index: number) => void;
+    handleThumbClick: (event: React.MouseEvent, index: number) => void;
+    handlePointerDown: (event: React.PointerEvent<HTMLDivElement>, index: number) => void;
+    onContextMenu: (event: React.MouseEvent, index: number, label: number) => void;
+    workflowStatus?: ThumbPageWorkflowStatus;
+    editPreviews?: readonly SessionPreview[];
+};
+
 interface ThumbSidebarProps {
     // Page state
     pageOrder: number[];
@@ -101,7 +139,7 @@ interface ThumbSidebarProps {
     // Actions
     commitSnapshot: () => void;
     handleQuickRotate: (degrees: number) => void;
-    setContextMenu: React.Dispatch<React.SetStateAction<any>>;
+    setContextMenu: React.Dispatch<React.SetStateAction<ViewerContextMenuState>>;
     setIsInsertModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;
     setIsExtractModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -109,10 +147,10 @@ interface ThumbSidebarProps {
     navigatePage: (newPage: number, options?: { preserveSelection?: boolean }) => void;
     // Refs
     sidebarRef: React.RefObject<HTMLDivElement | null>;
-    mainVirtuosoRef: React.RefObject<any>;
+    mainVirtuosoRef: React.RefObject<VirtuosoHandle | null>;
     internalScrollRef: React.MutableRefObject<HTMLElement | null>;
     // File info
-    file: any;
+    file: ThumbFile | null;
     pdfUrl: string | null;
     isViewerActive?: boolean;
     pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
@@ -121,7 +159,7 @@ interface ThumbSidebarProps {
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
-const MemoThumbItem = React.memo((props: any) => {
+const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
     const {
         index, originalPageNum, logicalPageLabel,
         isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
@@ -130,13 +168,16 @@ const MemoThumbItem = React.memo((props: any) => {
         handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews,
     } = props;
     const { t } = useTranslation();
-    const isBlankDoc = !!(file as any)?.isBlank;
+    const isBlankDoc = file?.isBlank === true;
 
-    const exactRatio = localDim ? localDim.h / localDim.w : 1.414;
     const normRot = (((rot || 0) % 360) + 360) % 360;
     const isRotated = normRot % 180 !== 0;
-    const imgW = thumbBaseWidth;
-    const imgH = Math.round(thumbBaseWidth * exactRatio);
+    const { width: imgW, height: imgH } = fitThumbnailPageSize(
+        localDim?.w,
+        localDim?.h,
+        thumbBaseWidth,
+        normRot,
+    );
     // KHUNG + RUỘT xoay CÙNG NHAU như một khối (page wrapper). Slot ngoài dành đúng footprint
     // SAU xoay: 90/270 hoán rộng↔cao (khối imgW×imgH xoay 90° chiếm imgH×imgW). Nhờ vậy khung
     // luôn khớp hướng ruột, dải thumbnail xếp đúng, KHÔNG chừa dải trắng.
@@ -145,13 +186,16 @@ const MemoThumbItem = React.memo((props: any) => {
 
     const revToken = thumbRev || pdfUrl || '';
     const thumbDpr = window.devicePixelRatio || 1;
+    // Trang ngang xoay dọc cần bitmap nguồn rộng hơn thumbBaseWidth; nếu vẫn render
+    // theo base rồi kéo CSS lên, thumbnail main sẽ mờ trong khi child đã bake thì nét.
+    const renderCssWidth = Math.max(thumbBaseWidth, imgW);
     const thumbnailRequest = React.useMemo(() => createThumbnailRenderRequest({
         revision: revToken,
         pageNum: originalPageNum,
         pageWidthPx96: localDim?.w,
-        cssWidth: thumbBaseWidth,
+        cssWidth: renderCssWidth,
         devicePixelRatio: thumbDpr,
-    }), [revToken, originalPageNum, localDim?.w, thumbBaseWidth, thumbDpr]);
+    }), [revToken, originalPageNum, localDim?.w, renderCssWidth, thumbDpr]);
     const { cacheKey, zoom: optimalZoom } = thumbnailRequest;
     const subscribeToCurrentThumbnail = useCallback(
         (listener: () => void) => subscribeThumbCache(cacheKey, listener),
@@ -171,7 +215,7 @@ const MemoThumbItem = React.memo((props: any) => {
     const [nativeRetryNonce, setNativeRetryNonce] = useState(0);
     const thumbRenderOwnerId = `thumbnail:${useId()}`;
     const needsNativeRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
-        && !!(window as any).__TAURI_INTERNALS__ && !!file?.path && originalPageNum > 0;
+        && '__TAURI_INTERNALS__' in window && !!file?.path && originalPageNum > 0;
     const needsPdfJsRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
         && !file?.path && originalPageNum > 0 && !!revToken;
 
@@ -425,6 +469,8 @@ function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
         // Edit-commit: giữ cổng đang mở (không setReady(false)) → không unmount cả dải.
         // Nội dung từng thumb bust qua thumbRev (pdfUrl) trong MemoThumbItem useEffect.
         if (skipReset) return;
+        // Đổi tài liệu phải đóng cổng thumbnail cũ trước khi tile mới sẵn sàng.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- reset theo nguồn PDF ngoại vi.
         setReady(false);
         let opened = false;
         const open = () => { if (!opened) { opened = true; setReady(true); } };
@@ -449,8 +495,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         allPageDims, thumbBaseWidth,
         isThumbMenuOpen, setIsThumbMenuOpen,
         commitSnapshot, handleQuickRotate,
-        setContextMenu, sidebarRef, mainVirtuosoRef, internalScrollRef,
-        file, pdfUrl, isViewerActive, onCrossFileCopy, pageWorkflowStatuses, editSessionPreviews,
+        setContextMenu, sidebarRef, mainVirtuosoRef,
+        file, pdfUrl, isViewerActive, pageWorkflowStatuses, editSessionPreviews,
         setIsDeleteModalOpen, navigatePage,
     } = props;
 
@@ -483,14 +529,14 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     // Panel width hiệu dụng: lúc kéo resize dùng live width (style.width), không chỉ store.
     const panelWidthForClamp = livePanelWidth ?? thumbWidth;
 
-    // Khi thu hẹp panel / Ctrl+wheel phóng to thumb: ảnh (thumbBaseWidth) có thể RỘNG HƠN
-    // panel → overflow cắt mất nửa phải. Clamp bề rộng hiển thị theo panel (trừ padding + scrollbar).
-    // Trang xoay 90° footprint = chiều cao gốc ≈ base×ratio — chừa thêm margin 0.72.
+    // Khi thu hẹp panel / Ctrl+wheel phóng to thumb, clamp theo panel để không cắt
+    // outline và thanh cuộn. Giữ mật độ 0.72 hiện tại để bản sửa parity không làm
+    // toàn bộ thumbnail đang quen mắt phóng lớn đồng loạt.
     const THUMB_H_PAD = 52; // px-2 list + px-3 item + outline + scrollbar (~12)
     const maxFootprintW = Math.max(48, panelWidthForClamp - THUMB_H_PAD);
     const fittedThumbBase = Math.min(
         thumbBaseWidth,
-        Math.floor(maxFootprintW * 0.72), // 0.72 ≈ 1/1.4 — an toàn cho portrait sau xoay 90°
+        Math.floor(maxFootprintW * 0.72), // giữ mật độ thị giác hiện tại của sidebar
     );
     const displayThumbBase = Math.max(40, fittedThumbBase);
 
@@ -522,14 +568,16 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     // Chỉ tải tile cho thumbnail đang nằm trong tầm nhìn (IntersectionObserver), kết hợp
     // cổng "trang chính hiển thị trước". Tránh việc mở file nhiều trang fire hàng loạt
     // request thumbnail làm nghẽn pdfium handle dùng chung với trang chính.
-    const thumbsGateOpen = useThumbLoadGate(pdfUrl, (file as any)?.__editCommit === true);
+    const thumbsGateOpen = useThumbLoadGate(pdfUrl, file?.__editCommit === true);
     const [visibleThumbs, setVisibleThumbs] = useState<Set<number>>(new Set());
     const thumbObserverRef = useRef<IntersectionObserver | null>(null);
 
     useEffect(() => {
-        if ((file as any)?.__editCommit) return;
+        if (file?.__editCommit) return;
+        // Danh sách quan sát thuộc tài liệu cũ; xóa khi URL tài liệu đổi để IntersectionObserver đăng ký lại.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- đồng bộ cache quan sát với PDF ngoại vi.
         setVisibleThumbs(new Set());
-    }, [pdfUrl]);
+    }, [file, pdfUrl]);
 
     useEffect(() => () => thumbObserverRef.current?.disconnect(), []);
 
@@ -707,7 +755,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         file={file}
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
                                         isViewerActive={isViewerActive}
-                                        workflowStatus={pageWorkflowStatuses?.[originalPageNum]}
+                                        workflowStatus={stickerSheetWorkflowStatusAtViewerPosition(pageWorkflowStatuses, index)}
                                         editPreviews={editPreviewsBySourcePage.get(originalPageNum)}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}

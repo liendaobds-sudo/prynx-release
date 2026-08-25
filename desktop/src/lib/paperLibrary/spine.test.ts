@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
     BINDING_AVAILABILITY,
     calcSpineThickness,
-    MIN_SPINE_BY_BINDING,
     PAGES_PER_SHEET,
 } from './spine';
 

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { pdfjs } from 'react-pdf';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { FlipBook } from './FlipBook';
-import { BookData, BookPage } from './types';
+import type { BookData, BookPage } from './types';
 import { generateBindingMap } from '../../lib/imposerEngine/VirtualMap';
 import { buildTileUrl, trimmedAspectRatio } from './tileUrl';
 import { flipbookRenderPurpose, shouldPromoteFlipbookUrl } from './flipbookLoadPolicy';
@@ -12,11 +13,35 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { useTranslation } from 'react-i18next';
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
+interface FlipbookPdfSource {
+    path?: string;
+}
+
+interface PdfPageDimensions {
+    widthPt: number;
+    heightPt: number;
+}
+
+interface PdfMetadata {
+    widthPt: number;
+    heightPt: number;
+    allDims?: Record<string, PdfPageDimensions>;
+}
+
+type FlipbookPage = BookPage & {
+    _originalIndex: number;
+    _userRotation: number;
+};
+
+type FlipbookBookData = Omit<BookData, 'pages'> & {
+    pages: FlipbookPage[];
+};
+
 interface FlipbookDialogProps {
     isOpen: boolean;
     onClose: () => void;
     pdfUrl: string | null;
-    pdfFile?: any; // Added for native tile rendering
+    pdfFile?: FlipbookPdfSource | null; // Added for native tile rendering
     pageOrder: number[]; // 1-based indices from thumbnails, -1 for blank
     pageRotations?: number[]; // Rotation by thumbnail position
     bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
@@ -30,13 +55,13 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
     isOpen, onClose, pdfUrl, pdfFile, pageOrder, pageRotations = [], bindingMode, foliosize, bleed = 0, blankPlacement = 'end'
 }) => {
   const { t } = useTranslation();
-    const [bookData, setBookData] = useState<BookData>({ pages: [] });
+    const [bookData, setBookData] = useState<FlipbookBookData>({ pages: [] });
     const [bookRevision, setBookRevision] = useState(0);
     const [currentPageIndex, setCurrentPageIndex] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [pageAspectRatio, setPageAspectRatio] = useState<number>(0.707); // Default A4
-    const pdfRef = useRef<any>(null);
-    const metaRef = useRef<any>(null); // meta.allDims (pdfium): khổ trang/pt để tính clip trừ bleed
+    const pdfRef = useRef<PDFDocumentProxy | null>(null);
+    const metaRef = useRef<PdfMetadata | null>(null); // meta.allDims (pdfium): khổ trang/pt để tính clip trừ bleed
 
     // Load PDF Document when URL changes
     useEffect(() => {
@@ -46,13 +71,13 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         const loadDoc = async () => {
             setIsLoading(true);
             try {
-                const isNative = !!((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path);
-                if (isNative) {
+                const nativePath = window.__TAURI_INTERNALS__ ? pdfFile?.path : undefined;
+                if (nativePath) {
                     // pdfium (Rust) đọc số trang + khổ trang, KHÔNG qua pdf.js. File sau bù xén
                     // (CMYK/spot CutContour/SMask) khiến pdf.js throw ngay ở getDocument →
                     // trước đây flipbook sập ở "cửa" dù pdfium render được (bug 2026-07-08).
                     const { invoke } = await import('@tauri-apps/api/core');
-                    const meta = await invoke<any>('get_pdf_metadata', { filePath: (pdfFile as any).path });
+                    const meta = await invoke<PdfMetadata>('get_pdf_metadata', { filePath: nativePath });
                     if (!cancelled) {
                         pdfRef.current = null;
                         metaRef.current = meta;
@@ -74,7 +99,8 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
 
         loadDoc();
         return () => { cancelled = true; };
-    }, [pdfUrl, isOpen, pageOrder, pageRotations, bindingMode, foliosize, blankPlacement]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- LINT (audit 2026-08-24 LO140): initBookData là helper theo render; các đầu vào chính đã liệt kê tường minh để tránh vòng nạp lại PDF.
+    }, [pdfUrl, pdfFile?.path, isOpen, pageOrder, pageRotations, bindingMode, foliosize, blankPlacement]);
 
     // Handle ESC key
     useEffect(() => {
@@ -86,7 +112,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isOpen, onClose]);
 
-    const initBookData = async (doc: any, meta: any) => {
+    const initBookData = async (doc: PDFDocumentProxy | null, meta: PdfMetadata | null) => {
         setIsLoading(true);
 
         const effectivePageCount = pageOrder.length;
@@ -103,7 +129,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
             }
         }
 
-        const initialPages: BookPage[] = [];
+        const initialPages: FlipbookPage[] = [];
 
         for (let logical1Based = 1; logical1Based <= totalPages; logical1Based++) {
             const isCover = logical1Based === 1;
@@ -133,7 +159,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                 imageUrl: '', // Will be loaded lazily
                 _originalIndex: originalIndex, // internal tracker
                 _userRotation: userRotation,
-            } as BookPage & { _originalIndex: number; _userRotation: number });
+            });
         }
 
         // Get aspect ratio from the first valid page
@@ -154,7 +180,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                         setPageAspectRatio(Math.abs(firstRotation) % 180 !== 0 ? 1 / ratio : ratio);
                     }
                 } else {
-                    const page = await doc.getPage(firstValidIndex);
+                    const page = await doc!.getPage(firstValidIndex);
                     const viewport = page.getViewport({ scale: 1.0, rotation: (page.rotate || 0) + firstRotation });
                     setPageAspectRatio(viewport.width / viewport.height);
                 }
@@ -171,7 +197,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
     };
 
     const renderPageToDataURL = async (
-        doc: any,
+        doc: PDFDocumentProxy | null,
         originalIndex: number,
         userRotation: number = 0,
         purpose: 'interactive' | 'background' = 'interactive',
@@ -179,14 +205,15 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         if (originalIndex === -1) return ''; // Blank page
 
         // --- NATIVE TAURI RENDER PIPELINE (ZERO LATENCY) ---
-        if ((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path) {
+        const nativePath = window.__TAURI_INTERNALS__ ? pdfFile?.path : undefined;
+        if (nativePath) {
             const scale = 1.0; // Optimized scale for Flipbook (fast native fetch)
             const rot = userRotation;
             // Clip bleed theo khổ trang nguồn (allDims[trang]) → xem trước ĐÚNG thành phẩm.
             const dim = metaRef.current?.allDims?.[String(originalIndex)];
             // Return the Native tile.localhost URL instantly! The browser will fetch it asynchronously.
             return buildTileUrl({
-                path: (pdfFile as any).path,
+                path: nativePath,
                 page: originalIndex,
                 scale,
                 rot,
@@ -198,7 +225,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         }
 
         try {
-            const page = await doc.getPage(originalIndex);
+            const page = await doc!.getPage(originalIndex);
             const viewport = page.getViewport({ scale: 1.5, rotation: (page.rotate || 0) + userRotation }); // Good resolution for preview
             
             // Create a fresh canvas to prevent transform matrix accumulation
@@ -220,8 +247,8 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
     };
 
     const loadPageImages = async (
-        doc: any,
-        currentPages: any[],
+        doc: PDFDocumentProxy | null,
+        currentPages: FlipbookPage[],
         startIndex: number,
         count: number,
         visibleStartIndex = startIndex,
@@ -264,14 +291,14 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         // Native (Tauri + path): render qua tile.localhost, KHÔNG cần pdfRef (doc=null).
         // Guard cũ `!pdfRef.current` chặn nhánh native → lật trang không load hình
         // (chỉ 4 trang preload đầu hiện). Cho qua khi native.
-        const isNative = !!((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path);
+        const isNative = !!(window.__TAURI_INTERNALS__ && pdfFile?.path);
         if (!isOpen || bookData.pages.length === 0 || (!isNative && !pdfRef.current)) return;
 
         // Trang vừa lật tới phải được promote ngay; chỉ bốn trang kế tiếp mới chờ hết
         // animation rồi nạp nền. Nhờ worker riêng, request ảnh không chặn CSS/WebView.
         void loadPageImages(
             pdfRef.current,
-            bookData.pages as any,
+            bookData.pages,
             currentPageIndex,
             2,
             currentPageIndex,
@@ -280,7 +307,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         const timeout = setTimeout(() => {
             void loadPageImages(
                 pdfRef.current,
-                bookData.pages as any,
+                bookData.pages,
                 currentPageIndex + 2,
                 4,
                 currentPageIndex,
@@ -289,7 +316,8 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         }, 750);
 
         return () => clearTimeout(timeout);
-    }, [currentPageIndex, isOpen, bookData.pages.length, bookRevision, bindingMode, foliosize]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- LINT (audit 2026-08-24 LO140): chỉ length/revision được phép kích hoạt; phụ thuộc cả mảng pages hoặc helper theo render sẽ tự nạp lại sau mỗi lần gắn imageUrl.
+    }, [currentPageIndex, isOpen, bookData.pages.length, bookRevision, bindingMode, foliosize, pdfFile?.path]);
 
     if (!isOpen) return null;
 

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Button } from './Button';
+import type { DiffPart, TextDiffWorkerResponse } from '../workers/textDiffProtocol';
 import { useTranslation } from 'react-i18next';
 
 // Ngưỡng cảnh báo: trên mức này nên dùng so theo DÒNG cho nhanh.
@@ -12,7 +13,7 @@ export default function TextCompareTab() {
   const [ignoreSpaces, setIgnoreSpaces] = useState(false);
   const [mode, setMode] = useState<'word' | 'line'>('word');
 
-  const [differences, setDifferences] = useState<any[] | null>(null);
+  const [differences, setDifferences] = useState<DiffPart[] | null>(null);
   const [isComparing, setIsComparing] = useState(false);
   const [error, setError] = useState('');
 
@@ -28,11 +29,13 @@ export default function TextCompareTab() {
   const handleTextChangeA = (val: string) => {
     setTextA(val);
     if (differences) setDifferences(null);
+    setError('');
   };
 
   const handleTextChangeB = (val: string) => {
     setTextB(val);
     if (differences) setDifferences(null);
+    setError('');
   };
 
   const handleCompare = () => {
@@ -46,16 +49,17 @@ export default function TextCompareTab() {
     const worker = new Worker(new URL('../workers/textDiffWorker.ts', import.meta.url), { type: 'module' });
     workerRef.current = worker;
 
-    worker.onmessage = (e: MessageEvent) => {
+    worker.onmessage = (e: MessageEvent<TextDiffWorkerResponse>) => {
       const data = e.data;
-      if (data?.ok) setDifferences(data.parts);
-      else { setError(data?.error || t('tabs.textCompare:loi_khi_so_sanh_van_ban')); setDifferences(null); }
+      if (data.ok) setDifferences(data.parts);
+      else { setError(data.error || t('tabs.textCompare:loi_khi_so_sanh_van_ban')); setDifferences(null); }
       setIsComparing(false);
       worker.terminate();
       if (workerRef.current === worker) workerRef.current = null;
     };
     worker.onerror = (err) => {
-      setError('Lỗi xử lý nền: ' + (err.message || 'unknown'));
+      // Chỉ lưu phần chi tiết; nhãn lỗi được render một lần ở vùng kết quả.
+      setError(err.message || t('tabs.textCompare:loi_khi_so_sanh_van_ban'));
       setIsComparing(false);
       worker.terminate();
       if (workerRef.current === worker) workerRef.current = null;
@@ -64,12 +68,13 @@ export default function TextCompareTab() {
     worker.postMessage({ a: textA, b: textB, mode, ignoreSpaces });
   };
 
-  const hasDifferences = differences ? differences.length > 1 || (differences.length === 1 && (differences[0].added || differences[0].removed)) : false;
+  const hasDifferences = differences?.some(part => part.added || part.removed) ?? false;
 
   const handleClear = () => {
     setTextA('');
     setTextB('');
     setDifferences(null);
+    setError('');
   };
 
   return (
@@ -110,8 +115,8 @@ export default function TextCompareTab() {
       {/* Tuỳ chọn so sánh + cảnh báo văn bản lớn */}
       <div className="flex flex-wrap items-center justify-center gap-3 -mt-2">
         <div className="flex items-center gap-1 bg-slate-100 dark:bg-zinc-800 rounded-lg p-0.5 text-[12px]">
-          <button onClick={() => { setMode('word'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'word' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_tu')}</button>
-          <button onClick={() => { setMode('line'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'line' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_dong')}</button>
+          <button onClick={() => { setMode('word'); setDifferences(null); setError(''); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'word' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_tu')}</button>
+          <button onClick={() => { setMode('line'); setDifferences(null); setError(''); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'line' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_dong')}</button>
         </div>
         {isBig && (
           <span className="text-[12px] text-amber-600 dark:text-amber-400">{t('tabs.textCompare:van_ban_lon_ky_tu_nen_chon_so_theo_dong', { n: Math.round(totalLen / 1000) })}</span>
@@ -142,11 +147,14 @@ export default function TextCompareTab() {
         <div className="flex justify-between items-end mb-4 border-b border-slate-200 dark:border-white/10 pb-4 transition-colors">
           <div>
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white transition-colors">{t('tabs.textCompare:ket_qua_phan_tich')}</h3>
-            {hasDifferences ? (
-              <p className="text-sm text-amber-600 mt-1">{t('tabs.textCompare:phat_hien_co_su_thay_doi_noi_dung')}</p>
-            ) : (
-              (textA || textB) && <p className="text-sm text-emerald-600 mt-1">{t('tabs.textCompare:hai_doan_van_ban_giong_nhau_hoan_toan')}</p>
-            )}
+            <div className="min-h-[1.25rem]">
+              {!error && hasDifferences && (
+                <p className="text-sm text-amber-600 mt-1">{t('tabs.textCompare:phat_hien_co_su_thay_doi_noi_dung')}</p>
+              )}
+              {!error && differences !== null && !hasDifferences && (
+                <p className="text-sm text-emerald-600 mt-1">{t('tabs.textCompare:hai_doan_van_ban_giong_nhau_hoan_toan')}</p>
+              )}
+            </div>
           </div>
           
           <div className="flex flex-col items-end gap-3">
@@ -164,6 +172,7 @@ export default function TextCompareTab() {
                 onChange={(e) => {
                   setIgnoreSpaces(e.target.checked);
                   setDifferences(null);
+                  setError('');
                 }}
                 className="hidden"
               />
@@ -196,6 +205,10 @@ export default function TextCompareTab() {
           {isComparing ? (
             <div className="h-full flex items-center justify-center text-slate-400">
                <span className="animate-pulse">{t('tabs.textCompare:dang_ra_soat_noi_dung')}</span>
+            </div>
+          ) : error ? (
+            <div role="alert" className="h-full flex items-center justify-center text-red-600 dark:text-red-400 text-sm">
+              {t('tabs.textCompare:loi_xu_ly_nen')} {error}
             </div>
           ) : !differences ? (
             <div className="h-full flex items-center justify-center text-slate-400 italic">

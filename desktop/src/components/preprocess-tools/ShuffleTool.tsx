@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
-import { SHUFFLE_PRESETS, getPresetById, RepeatMode, parseRule, applyRule, shuffleEvenOdd, reversePages, serializeRule, type ShuffleRule } from '../../lib/preprocessEngine/ShuffleEngine';
+import { SHUFFLE_PRESETS, getPresetById, RepeatMode, parseRule, applyRule, shuffleEvenOdd, reversePages, serializeRule, type PageMapping, type ShuffleRule } from '../../lib/preprocessEngine/ShuffleEngine';
 import { 
     ToolSectionLabel, ToolCardOption, 
     ToolNumberInput, ToolInfo 
@@ -29,36 +29,26 @@ export default function ShuffleTool({ settings, onChange }: Props) {
   const { t } = useTranslation();
     const [localRule, setLocalRule] = useState(settings.rule);
     const [parentRef] = useAutoAnimate<HTMLDivElement>({ duration: 150 });
-    const [activeTab, setActiveTab] = useState<TabId>(() => {
-        if (settings.presetId === 'special') return 'quick';
-        if (settings.presetId === 'custom') return 'custom';
-        return 'preset';
-    });
+    // Tab là state dẫn xuất từ preset đang lưu; parent là nguồn sự thật duy nhất.
+    const activeTab: TabId = settings.presetId === 'special'
+        ? 'quick'
+        : settings.presetId === 'custom' ? 'custom' : 'preset';
 
-    const [previewStr, setPreviewStr] = useState('');
-
-    useEffect(() => {
-        setLocalRule(settings.rule);
-    }, [settings.rule]);
-
-    useEffect(() => {
+    const previewStr = useMemo(() => {
         try {
             const simulatedPages = Math.max(16, Math.ceil((settings.groupSize || 16) / 4) * 4);
-            let mapping: any[] = [];
-            
+            let mapping: PageMapping[] = [];
+
             if (activeTab === 'quick') {
                 if (settings.specialAction === 'reverse') mapping = reversePages(simulatedPages);
                 else if (settings.specialAction === 'split_odd_even') mapping = shuffleEvenOdd(simulatedPages, 'odd_first').filter(m => m.srcPage % 2 === 0);
                 else mapping = shuffleEvenOdd(simulatedPages, settings.specialAction || 'odd_first');
             } else {
                 const rules = parseRule(localRule || settings.rule);
-                if (rules.length === 0) {
-                    setPreviewStr(t('preprocess.shuffle:vui_long_nhap_chuoi_quy_tac_hop_le'));
-                    return;
-                }
+                if (rules.length === 0) return t('preprocess.shuffle:vui_long_nhap_chuoi_quy_tac_hop_le');
                 mapping = applyRule(rules, simulatedPages, settings.groupSize || 1, settings.mode);
             }
-            
+
             const displayMapping = mapping.slice(0, 32).map(m => {
                 if (m.srcPage === -1) return t('preprocess.shuffle:trong');
                 let str = (m.srcPage + 1).toString();
@@ -67,23 +57,17 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                 if (m.rotation === 270) str += '<';
                 return str;
             });
-            
+
             let res = displayMapping.join(', ');
             if (mapping.length > 32) res += '...';
-            setPreviewStr(`[${res}]`);
+            return `[${res}]`;
         } catch {
-            setPreviewStr(t('preprocess.shuffle:quy_tac_khong_hop_le'));
+            return t('preprocess.shuffle:quy_tac_khong_hop_le');
         }
     }, [activeTab, settings, localRule, t]);
 
-    useEffect(() => {
-        if (settings.presetId === 'special') setActiveTab('quick');
-        else if (settings.presetId === 'custom') setActiveTab('custom');
-        else setActiveTab('preset');
-    }, [settings.presetId]);
 
     const handleTabChange = (tab: TabId) => {
-        setActiveTab(tab);
         if (tab === 'quick') {
             onChange({ ...settings, presetId: 'special', specialAction: 'reverse' });
         } else if (tab === 'preset') {

@@ -36,6 +36,36 @@ export function formatPageSizeMm(widthPoints: number, heightPoints: number): str
   return `${roundMeasurement(widthPoints * ptToMm).toFixed(1)} × ${roundMeasurement(heightPoints * ptToMm).toFixed(1)} mm`;
 }
 
+// UIUX (fix New Window 2026-08-25 §NW.TH.1): `thumbBaseWidth` là chiều rộng
+// HIỂN THỊ sau xoay. Main giữ góc ở CSS còn child đã bake góc vào PDF, nên phải
+// tính inner box theo góc để cả hai biểu diễn có cùng footprint.
+export function fitThumbnailPageSize(
+  widthPx: number | undefined,
+  heightPx: number | undefined,
+  displayWidthPx: number,
+  rotationDegrees = 0,
+): { width: number; height: number } {
+  const hasValidPageSize = typeof widthPx === 'number'
+    && Number.isFinite(widthPx)
+    && widthPx > 0
+    && typeof heightPx === 'number'
+    && Number.isFinite(heightPx)
+    && heightPx > 0;
+  const safeWidth = hasValidPageSize ? widthPx : 1;
+  const safeHeight = hasValidPageSize ? heightPx : 1.414;
+  const safeDisplayWidth = Number.isFinite(displayWidthPx) && displayWidthPx > 0
+    ? displayWidthPx
+    : 1;
+  const ratio = safeHeight / safeWidth;
+  const normalizedRotation = ((rotationDegrees % 360) + 360) % 360;
+  const swapsAxes = normalizedRotation === 90 || normalizedRotation === 270;
+
+  return {
+    width: Math.max(1, Math.round(swapsAxes ? safeDisplayWidth / ratio : safeDisplayWidth)),
+    height: Math.max(1, Math.round(swapsAxes ? safeDisplayWidth : safeDisplayWidth * ratio)),
+  };
+}
+
 // UIUX (audit 2026-08-04 §DIM.6): tooltip thumbnail phải phản ánh khổ trang sau xoay;
 // px@96 chỉ được đổi sang mm tại tầng hiển thị và luôn giữ chính xác 0,1 mm.
 export function formatRotatedPageSizePx96(

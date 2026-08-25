@@ -65,8 +65,9 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
                 Creator: meta.Creator || '',
                 Producer: meta.Producer || '',
             });
-        } catch (e: any) {
-            setError(e.message || t('preprocess.metadata:loi_khong_xac_dinh'));
+        } catch (caughtError: unknown) {
+            const message = caughtError instanceof Error ? caughtError.message : '';
+            setError(message || t('preprocess.metadata:loi_khong_xac_dinh'));
         } finally {
             setIsLoading(false);
         }
@@ -127,8 +128,9 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
             }
             setSuccess(clearAll ? t('preprocess.metadata:xoa_thanh_cong') : t('preprocess.metadata:luu_thanh_cong'));
             if (clearAll) setFields({ ...EMPTY });
-        } catch (e: any) {
-            setError(e.message || t('preprocess.metadata:loi_khong_xac_dinh'));
+        } catch (caughtError: unknown) {
+            const message = caughtError instanceof Error ? caughtError.message : '';
+            setError(message || t('preprocess.metadata:loi_khong_xac_dinh'));
         } finally {
             setIsProcessing(false);
         }

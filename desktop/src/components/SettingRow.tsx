@@ -1,5 +1,4 @@
 import React from "react";
-import { cn } from "../lib/utils";
 
 interface SettingRowProps {
   title: React.ReactNode;

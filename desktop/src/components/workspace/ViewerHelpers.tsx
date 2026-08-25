@@ -1,13 +1,30 @@
 import { useState, useEffect } from 'react';
-import { getQRBlob, DEFAULT_QR_STYLE } from '@/engine/barcode/qrEngine';
-import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
+import { getQRBlob, DEFAULT_QR_STYLE, type QRStyleOptions } from '@/engine/barcode/qrEngine';
+import { generateBarcodeDataURL, type BarcodeType } from '@/engine/barcode/barcodeEngine';
 import { useTranslation } from 'react-i18next';
+interface VdpPreviewField {
+  type: 'qrcode' | 'barcode';
+  qrStyle?: Partial<QRStyleOptions>;
+  errorCorrection?: 'L' | 'M' | 'Q' | 'H';
+  barcodeType?: BarcodeType;
+  barHeight?: number;
+  barColor?: string;
+  bgColor?: string;
+  transparentBg?: boolean;
+  showText?: boolean;
+  quietZone?: number;
+  rotation?: number;
+  fontSize?: number;
+  textAlign?: 'center' | 'left' | 'right';
+  width?: number;
+  height?: number;
+}
 
 /**
  * VdpPreviewImage — Renders a live preview of a VDP field (QR code or barcode).
  * Generates a data URL asynchronously and displays it as an image.
  */
-export const VdpPreviewImage = ({ field }: { field: any }) => {
+export const VdpPreviewImage = ({ field }: { field: VdpPreviewField }) => {
   const { t } = useTranslation();
     const [dataUrl, setDataUrl] = useState<string | null>(null);
 
@@ -17,7 +34,7 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
             try {
                 if (field.type === 'qrcode') {
                     // Lề trắng vẽ bằng container (padding) → sinh ảnh QR không margin, nền trong suốt.
-                    const style = { ...(field.qrStyle || DEFAULT_QR_STYLE), margin: 0, transparentBg: true };
+                    const style: QRStyleOptions = { ...DEFAULT_QR_STYLE, ...(field.qrStyle || {}), margin: 0, transparentBg: true };
                     const blob = await getQRBlob({
                         data: "https://www.printsolutions.vn/",
                         size: 400,

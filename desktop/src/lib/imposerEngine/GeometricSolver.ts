@@ -140,8 +140,6 @@ export const solvePageTransform = (
     const innerW = context.finalSheetWidth - context.margins.left - context.margins.right;
     const innerH = context.finalSheetHeight - context.margins.top - context.margins.bottom;
 
-    // Centers the entire spread in the middle of the inner safe zone, then offsets by bottom/left margins
-    const marginX = context.margins.left + (innerW - (context.actualDrawnWidth * 2)) / 2;
     const marginY = context.margins.bottom + (innerH - context.actualDrawnHeight) / 2;
 
     const halfSheetCenterX = context.margins.left + innerW / 2;

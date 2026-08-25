@@ -1,13 +1,12 @@
-import { useCallback, useMemo, useEffect, useRef, useState, useContext, type CSSProperties } from 'react';
+import { useCallback, useMemo, useEffect, useLayoutEffect, useRef, useState, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { localFileUrl } from '../lib/localFileTransport';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolByUniqueKey, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 
 import PDFUploader from './PDFUploader';
 import AcrobatViewer, { type PageOverlayRenderContext } from './AcrobatViewer';
-import type { ThumbPageWorkflowStatus } from './acrobat/ThumbSidebar';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
-import { useEditSession } from '../hooks/useEditSession';
+import { useEditSession, type UseEditSession } from '../hooks/useEditSession';
 import { useWorkingPdf } from '../hooks/useWorkingPdf';
 import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { Button } from './Button';
@@ -26,13 +25,40 @@ import { canUseRectangleStickerInking } from './imposition-tools/shapeDetectionP
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
+import { createRevisionScopedPdfUploadCache } from '../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../lib/recipe/RecipeRecorder';
 import { shouldBlockUnrecordedCommit } from '../lib/recipe/unrecordedCommit';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
-import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
-import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
+import { isRestoredDocumentDirty } from '../lib/dirtySession';
+import {
+    createRecoveryHistoryEntry,
+    deleteSnapshot,
+    isRecoverySourceCurrent,
+    readRecoverySourceFingerprint,
+    writeSnapshot,
+} from '../lib/recovery';
+import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
+import {
+    ArtifactLeaseOwner,
+    collectArtifactLeaseTokens,
+    copyArtifactLeaseToken,
+    tagArtifactLeaseToken,
+} from '../lib/artifactLease';
+import {
+    createWorkspaceHistoryEntry,
+    type WorkspaceHistoryEntry,
+} from '../lib/workspaceHistory';
+import {
+    prepareDocumentWindowSource,
+    type DocumentWindowTabApi,
+    type DocumentWindowViewState,
+} from '../lib/documentWindow';
 import { pageIndicesToPageNumbers } from '../lib/printPageSelection';
 import { beginOptionalContentTransfer, finishOptionalContentTransfer } from '../lib/pdfOptionalContent';
+import {
+    extractWorkingPagePositions,
+    isWorkingPageSelectionCurrent,
+} from '../lib/extractWorkingPages';
 import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
 import OutputPreviewHost from './OutputPreviewHost';
 import RecipeRecordControl from './recipe/RecipeRecordControl';
@@ -52,6 +78,7 @@ import { firstDeniedRecipeStep, recipeStepAccessError } from '../lib/recipe/reci
 import {
     createWorkingArtifactController,
     createWorkingArtifactProcessContext,
+    resolveInitialWorkingArtifact,
 } from '../lib/recipe/workingArtifact';
 import type { ProcessOutcome } from '../lib/processHandlers';
 import DataMergeTool from './preprocess-tools/DataMergeTool';
@@ -70,21 +97,33 @@ import {
     maxFullToolMenuWidth,
    resolveToolMenuDrag,
     resolveEffectiveToolMenuLayout,
+    resolveToolMenuDividerLayout,
+    resolveToolMenuDraftLayout,
    resolveWorkspaceToolMenuToggle,
     resolveWorkspaceToolPanelClose,
-    toolMenuTotalWidth,
     type ToolMenuMode,
+    type EffectiveToolMenuLayout,
 } from '../lib/rightToolMenuLayout';
 import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
 import { statNativeSystemFile } from '../lib/nativeFileAccess';
+import type { VdpToolField } from '../hooks/useVdpTool';
+import type { PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
+import type { ShuffleSettings } from './preprocess-tools/ShuffleTool';
+import type { PageResizerSettings } from './preprocess-tools/pageResizerViewLogic';
+import type { TrimShiftSettings } from './preprocess-tools/TrimShiftTool';
+import type { SplitSettings } from './preprocess-tools/SplitTool';
+import type { MergeSettings } from './preprocess-tools/MergeTool';
 
 import {
     WorkspaceContext,
+    captureWorkspaceDocumentRevision,
     createWorkspaceStore,
+    isWorkspaceDocumentRevisionCurrent,
     useWorkspaceStore,
     workspaceDocumentIdentity,
+    type WorkspaceDocumentRevisionToken,
 } from '../stores/useWorkspaceStore';
-import { clearTileUrlCacheForFile } from './workspace/LivePageFrame';
+import { clearTileUrlCacheForFile } from '../lib/tileUrlCache';
 import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
@@ -95,6 +134,11 @@ import {
     shouldShowDocumentCleanupOverlay,
 } from './preprocess-tools/DocumentCleanupTool';
 import { copyUpscaleResultIdentity, UpscalePreview } from './preprocess-tools/UpscaleTool';
+import {
+    createSourceImageRevisionOwner,
+    isSourceImageRevisionCurrent,
+    type SourceImageRevisionOwner,
+} from '../lib/sourceImageRevision';
 import StickerSheetWorkspace, {
     StickerCutlineOverlay,
 } from './preprocess-tools/StickerSheetWorkspace';
@@ -102,8 +146,8 @@ import { useStickerSheetStore, type StickerSheetPageState } from './preprocess-t
 import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 import {
     resolveStickerSourceSyncMarker,
+    selectStickerSheetPageWorkflowStatuses,
     selectStickerSheetTabSummary,
-    stickerSourceOwnerFromHistory,
     viewerShowsStickerSource,
 } from './stickerSheetTabSelector';
 import LogoRebuildWorkspace from './preprocess-tools/LogoRebuildWorkspace';
@@ -113,6 +157,7 @@ import { canToolRunWithoutPdf, LOGO_REBUILD_ENABLED, resolveDedicatedInitialTool
 import { registerActiveTabFeature } from '../lib/tabNavigation';
 import { useToolActivationGuard } from '../hooks/useToolActivationGuard';
 import { canUse } from '../lib/license/features';
+import { isEphemeralBackendPath } from '../lib/impositionPathPolicy';
 import { useAuthStore } from '../stores/useAuthStore';
 import FeatureAccessOverlay from './license/FeatureAccessOverlay';
 
@@ -124,6 +169,41 @@ import FeatureAccessOverlay from './license/FeatureAccessOverlay';
 const MAX_HISTORY = 12;
 
 const FILE_OPEN_SLOW_MS = 8_000;
+
+type WorkspaceFileLike = File & {
+    path?: string;
+    isGenerated?: boolean;
+    isTempUploadPath?: boolean;
+    __nativePathPending?: boolean;
+    __pathMaterializationFailed?: boolean;
+    __editCommit?: boolean;
+};
+type RuntimeWindow = Window & { __TAURI_INTERNALS__?: unknown };
+class StaleWorkspaceDocumentRevisionError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'StaleWorkspaceDocumentRevisionError';
+    }
+}
+type PdfObject = { type?: string; bbox?: unknown; xref?: number | string | null; [key: string]: unknown };
+type PdfLayer = { id: number; visible?: boolean; locked?: boolean; children?: PdfLayer[]; [key: string]: unknown };
+type BindingMode = 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
+type RecipeSettingsView = ProcessingSettings & { imposerMode?: string; chainNup?: boolean; foldPattern?: string; bindingMode?: BindingMode; blankPlacement?: string };
+type RecipeExternalInputStep = { externalInputCount?: number };
+
+function errorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = error.message;
+        if (typeof message === 'string' && message) return message;
+    }
+    return String(error);
+}
+
+function asRecipeParams(value: object): Record<string, unknown> {
+    return value as unknown as Record<string, unknown>;
+}
+
 
 /** Chỉ lớp SVG subscribe zoom; tránh render lại toàn bộ ImpositionTab khi cuộn. */
 function ClassicCutlinePageOverlay({
@@ -246,7 +326,7 @@ interface Props {
     isActive?: boolean;
     onDirtyChange?: (isDirty: boolean) => void;
     onTitleChange?: (title: string) => void;
-    onSpawnTab?: (file: File, extraPayload?: any) => void;
+    onSpawnTab?: (file: File, extraPayload?: Record<string, unknown>) => void;
     initialFile?: File;
     initialReport?: string;
     initialFeature?: string;
@@ -258,6 +338,13 @@ interface Props {
     officeSourceFiles?: File[];
     initialRecovery?: import('../lib/recovery').RecoverySnapshot;
     onRequestHome?: () => void;
+    documentWindow?: {
+        saveAsOnly: boolean;
+        disableRecovery: boolean;
+        initialViewState?: DocumentWindowViewState;
+        onInitialViewStateApplied?: () => void;
+    };
+    onDocumentWindowApiChange?: (tabId: string, api: DocumentWindowTabApi | null) => void;
 }
 
 export default function ImpositionTab(props: Props) {
@@ -286,43 +373,32 @@ export default function ImpositionTab(props: Props) {
     );
 }
 
-/**
- * Path "phù du" của backend: file tạm nằm trong thư mục uploads/results/temp, hoặc
- * tên dạng <uuid>.pdf do `/api/vdp/upload` sinh. KHÔNG được coi là đích lưu thật:
- * tác vụ dọn rác backend (TTL 26h, cleanup_orphan_files) sẽ xóa các file này → nếu
- * Ctrl+S ghi đè vào đó thì người dùng MẤT dữ liệu sau khi file bị dọn. Dùng để buộc
- * hộp thoại "chọn nơi lưu" và để bỏ qua snapshot recovery trỏ vào path sắp biến mất.
- */
-export function isEphemeralBackendPath(p?: string | null): boolean {
-    if (!p) return false;
-    const norm = p.replace(/\\/g, '/').toLowerCase();
-    if (/\/(uploads|results|temp)\//.test(norm)) return true;
-    if (/\/[0-9a-f]{32}\.pdf$/.test(norm)) return true;
-    return false;
-}
-
-function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, onRequestHome, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
+function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, onRequestHome, documentWindow, onDocumentWindowApiChange, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
   const { t } = useTranslation();
+    const store = useContext(WorkspaceContext);
+    if (!store) throw new Error('Missing WorkspaceContext.Provider in the tree');
     const recipeOwnerTabId = tabId || 'workspace:default';
     const getCropWorkingFile = useWorkingPdf();
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
     const {
         phase, setPhase, file, setFile, originalFileName, setOriginalFileName,
-        pdfUrl, setPdfUrl, fileSizeStr, setFileSizeStr, highlightedIssue, setHighlightedIssue,
+        pdfUrl, setPdfUrl, fileSizeStr, setFileSizeStr, setHighlightedIssue,
         isProcessing, setIsProcessing, processStatus, setProcessStatus, error, setError,
-        history, setHistory, isSaved, setIsSaved, showSaveAsModal, setShowSaveAsModal,
-        reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder, setViewerPageInstanceIds,
-        viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
+        history, setHistory, objectEditPast, objectEditFuture,
+        isSaved, setIsSaved, showSaveAsModal, setShowSaveAsModal,
+        reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder,
+        viewerPageInstanceIds, setViewerPageInstanceIds,
+        viewerPageRotations, setViewerPageRotations, editGeneration, advanceEditGeneration, setBleedView,
         isDraggingSidebar, setIsDraggingSidebar, rightToolMenuFullWidth, setRightToolMenuFullWidth,
         rightToolMenuMode: toolMenuMode, setRightToolMenuMode,
         pdfObjectsVersion, setPdfObjectsVersion,
         isObjectEditMode,
         currentEditObjects,
-        pdfOcgLayers, setPdfOcgLayers,
-        selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
+        setPdfOcgLayers,
+        setHiddenObjectIds,
         setLockedObjectIds,
-        hiddenOcgLayerIds, setHiddenOcgLayerIds, setLockedOcgLayerIds,
+        setHiddenOcgLayerIds, setLockedOcgLayerIds,
         selectionFileId, setSelectionFileId, vdpFields, setVdpFields, isCropMode, setIsCropMode, commitCropSelection, setIsObjectEditMode, setViewerToolMode,
         selectedVdpFieldIds, setSelectedVdpFieldIds,
         showCloseConfirm, setShowCloseConfirm,
@@ -333,24 +409,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setDetectedShapeType, setDetectedShapeParams, 
         setDetectedShapesByPage, setDetectedDimensionsByPage, setDetectedShapeParamsByPage,
         detectedDimensionsByPage,
-        setViewerZoom, setViewerFitMode, setViewerPageDisplayMode
+        setViewerFitMode, setViewerPageDisplayMode
     } = useWorkspaceStore(useShallow(state => ({
         phase: state.phase, setPhase: state.setPhase, file: state.file, setFile: state.setFile, originalFileName: state.originalFileName, setOriginalFileName: state.setOriginalFileName,
-        pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, fileSizeStr: state.fileSizeStr, setFileSizeStr: state.setFileSizeStr, highlightedIssue: state.highlightedIssue, setHighlightedIssue: state.setHighlightedIssue,
+        pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, fileSizeStr: state.fileSizeStr, setFileSizeStr: state.setFileSizeStr, setHighlightedIssue: state.setHighlightedIssue,
         isProcessing: state.isProcessing, setIsProcessing: state.setIsProcessing, processStatus: state.processStatus, setProcessStatus: state.setProcessStatus, error: state.error, setError: state.setError,
-        history: state.history, setHistory: state.setHistory, isSaved: state.isSaved, setIsSaved: state.setIsSaved, showSaveAsModal: state.showSaveAsModal, setShowSaveAsModal: state.setShowSaveAsModal,
-        reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds,
-        viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
+        history: state.history, setHistory: state.setHistory,
+        objectEditPast: state.objectEditPast, objectEditFuture: state.objectEditFuture,
+        isSaved: state.isSaved, setIsSaved: state.setIsSaved, showSaveAsModal: state.showSaveAsModal, setShowSaveAsModal: state.setShowSaveAsModal,
+        reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder,
+        viewerPageInstanceIds: state.viewerPageInstanceIds, setViewerPageInstanceIds: state.setViewerPageInstanceIds,
+        viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations,
+        editGeneration: state.editGeneration, advanceEditGeneration: state.advanceEditGeneration, setBleedView: state.setBleedView,
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
         rightToolMenuFullWidth: state.rightToolMenuFullWidth, setRightToolMenuFullWidth: state.setRightToolMenuFullWidth,
         rightToolMenuMode: state.rightToolMenuMode, setRightToolMenuMode: state.setRightToolMenuMode,
         pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
         isObjectEditMode: state.isObjectEditMode,
         currentEditObjects: state.currentEditObjects,
-        pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
-        selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
+        setPdfOcgLayers: state.setPdfOcgLayers,
+        setHiddenObjectIds: state.setHiddenObjectIds,
         setLockedObjectIds: state.setLockedObjectIds,
-        hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
+        setHiddenOcgLayerIds: state.setHiddenOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
         selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields, isCropMode: state.isCropMode, setIsCropMode: state.setIsCropMode, commitCropSelection: state.commitCropSelection, setIsObjectEditMode: state.setIsObjectEditMode, setViewerToolMode: state.setViewerToolMode,
         selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
@@ -361,8 +441,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams, 
         setDetectedShapesByPage: state.setDetectedShapesByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage,
-        setViewerZoom: state.setViewerZoom, setViewerFitMode: state.setViewerFitMode, setViewerPageDisplayMode: state.setViewerPageDisplayMode
+        setViewerFitMode: state.setViewerFitMode, setViewerPageDisplayMode: state.setViewerPageDisplayMode
     })));
+
+    const renderedDocumentRevision = useMemo(
+        () => captureWorkspaceDocumentRevision({
+            file,
+            viewerPageOrder,
+            viewerPageInstanceIds,
+            viewerPageRotations,
+            editGeneration,
+        }),
+        [file, viewerPageOrder, viewerPageInstanceIds, viewerPageRotations, editGeneration],
+    );
 
     // P1-T03: Use dedicated store for these (migrated)
     // DÙNG SELECTOR + useShallow: chỉ re-render khi 6 field này đổi. Trước đây gọi
@@ -372,12 +463,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // = góp phần "đơ ~3-4s lúc mở" (đo được trong Performance profile).
     const {
         activeDashboardTool, setActiveDashboardTool, setIsPresetOpen,
-        batchOutput, setBatchOutput,
+        setBatchOutput,
         confirmBookletSettings, setConfirmBookletSettings,
         impositionUnit, separateCutPage,
     } = useImposerSettingsStore(useShallow(s => ({
         activeDashboardTool: s.activeDashboardTool, setActiveDashboardTool: s.setActiveDashboardTool, setIsPresetOpen: s.setIsPresetOpen,
-        batchOutput: s.batchOutput, setBatchOutput: s.setBatchOutput,
+        setBatchOutput: s.setBatchOutput,
         confirmBookletSettings: s.confirmBookletSettings, setConfirmBookletSettings: s.setConfirmBookletSettings,
         impositionUnit: s.impositionUnit,
         separateCutPage: s.separateCutPage,
@@ -412,7 +503,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         observer.observe(root);
         return () => observer.disconnect();
     }, []);
-   const setSidebarWidth = setRightToolMenuFullWidth;
     const setToolMenuLayout = useCallback((mode: ToolMenuMode, width?: number) => {
         setRightToolMenuMode(mode);
         if (typeof width === 'number') setRightToolMenuFullWidth(width);
@@ -428,15 +518,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [setRightToolMenuMode]);
 
     const hasActiveRightTool = activeDashboardTool !== 'none' || isObjectEditMode;
-    const effectiveToolMenuLayout = resolveEffectiveToolMenuLayout({
+    const [preferredCatalogSplitWidth, setPreferredCatalogSplitWidth] = useState<number | null>(null);
+    const baseEffectiveToolMenuLayout = resolveEffectiveToolMenuLayout({
         preferredMode: toolMenuMode,
         preferredFullWidth: sidebarWidth,
         containerWidth: workspaceWidth,
         hasConfigPanel: hasActiveRightTool,
         viewerReservedWidth: TOOL_MENU_VIEWER_MIN_WIDTH,
     });
+    const effectiveToolMenuLayout = preferredCatalogSplitWidth === null
+        ? baseEffectiveToolMenuLayout
+        : resolveToolMenuDividerLayout(baseEffectiveToolMenuLayout, preferredCatalogSplitWidth);
     const effectiveToolMenuMode = effectiveToolMenuLayout.mode;
-    const isSidebarOpen = effectiveToolMenuMode === 'full';
+    useEffect(() => {
+        if (!hasActiveRightTool) setPreferredCatalogSplitWidth(null);
+    }, [hasActiveRightTool]);
 
     const licensePlan = useAuthStore(state => state.licensePlan);
     const licenseFeatures = useAuthStore(state => state.licenseFeatures);
@@ -447,50 +543,29 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [logoWorkspaceOpened, setLogoWorkspaceOpened] = useState(
         () => activeDashboardTool === 'logo_rebuild' || dedicatedInitialTool === 'logo_rebuild',
     );
+    const stickerSheetTabSummary = useStickerSheetStore(useShallow(
+        state => selectStickerSheetTabSummary(state, tabId),
+    ));
     const {
         stickerSheetMode,
         stickerSheetSourceFile,
         stickerSheetActiveSourcePage,
         stickerSheetPages,
-        stickerSheetPageCount,
-        stickerSheetSourceImageCount,
         stickerSheetBusy,
-    } = useStickerSheetStore(useShallow(
-        state => selectStickerSheetTabSummary(state, tabId),
-    ));
+    } = stickerSheetTabSummary;
     const setStickerSheetMode = useStickerSheetStore(state => state.setMode);
     const disposeStickerSheetTab = useStickerSheetStore(state => state.disposeTab);
-    const stickerSheetPageStatuses = useMemo<Partial<Record<number, ThumbPageWorkflowStatus>> | undefined>(() => {
-        if (stickerSheetMode !== 'ai-sheet' || !stickerSheetSourceFile) return undefined;
-        const count = Math.max(
-            1,
-            stickerSheetPageCount,
-            stickerSheetSourceImageCount,
-            viewerPageOrder?.length || 0,
-            viewerNumPages || 0,
-        );
-        const statuses: Partial<Record<number, ThumbPageWorkflowStatus>> = {};
-        for (let pageNumber = 1; pageNumber <= count; pageNumber += 1) {
-            const page = stickerSheetPages[pageNumber];
-            if (page?.status === 'error') statuses[pageNumber] = 'error';
-            else if (
-                page?.isRefining
-                || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(page?.status || '')
-            ) statuses[pageNumber] = 'processing';
-            else if (page?.status === 'mask-review') statuses[pageNumber] = 'review';
-            else if (page?.status === 'mask-ready') statuses[pageNumber] = 'ready';
-            else statuses[pageNumber] = 'pending';
-        }
-        return statuses;
-    }, [
-        stickerSheetMode,
-        stickerSheetPageCount,
-        stickerSheetPages,
-        stickerSheetSourceFile,
-        stickerSheetSourceImageCount,
-        viewerNumPages,
-        viewerPageOrder,
-    ]);
+    const stickerSheetWorkingPageCount = Math.max(
+        viewerPageOrder?.length || 0,
+        viewerNumPages || 0,
+    );
+    const stickerSheetPageStatuses = useMemo(
+        () => selectStickerSheetPageWorkflowStatuses(
+            stickerSheetTabSummary,
+            stickerSheetWorkingPageCount,
+        ),
+        [stickerSheetTabSummary, stickerSheetWorkingPageCount],
+    );
     const previousDashboardToolRef = useRef<string | null>(null);
     const suppressDedicatedToolRestoreRef = useRef(false);
     const syncedStickerSourceRef = useRef<File | null>(null);
@@ -552,12 +627,52 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [showOpenInDesign, setShowOpenInDesign] = useState(false);
     const [showRecipePanel, setShowRecipePanel] = useState(false);
     const [isRecipePlaying, setIsRecipePlaying] = useState(false);
+    const editSessionForToolRef = useRef<UseEditSession | null>(null);
+    const [editBarrierPending, setEditBarrierPending] = useState(false);
+    const ensureEditCommittedBeforeTool = useCallback(async (): Promise<void> => {
+        // REVISION (audit 2026-08-25 §REV.01-02): commit() tự dùng chung Promise
+        // đang bay và chỉ resolve sau khi onCommit đã publish Working File mới.
+        await editSessionForToolRef.current?.commit();
+    }, []);
+    const runEditTransitionBarrier = useCallback(async (): Promise<boolean> => {
+        setEditBarrierPending(true);
+        try {
+            await ensureEditCommittedBeforeTool();
+            return true;
+        } catch (error) {
+            setError(errorMessage(error) || t(
+                'tabs.imposition:loi_chot_chinh_sua_truoc_cong_cu',
+                { defaultValue: 'Không thể chốt thay đổi Edit PDF. Hãy thử lại trước khi chạy công cụ khác.' },
+            ));
+            return false;
+        } finally {
+            setEditBarrierPending(false);
+        }
+    }, [ensureEditCommittedBeforeTool, setError, t]);
     // Keep the Crop mode, the toolbar button, and the right-hand tool panel in sync.
     // Selecting Crop from the panel enables drawing; C/toolbar toggles promote the
     // same mode into the panel without opening a separate modal.
-    useEffect(() => {
+    useLayoutEffect(() => {
         const previous = previousDashboardToolRef.current;
         previousDashboardToolRef.current = activeDashboardTool;
+        if (
+            previous !== null
+            && previous !== activeDashboardTool
+            && activeDashboardTool !== 'none'
+            && activeDashboardTool !== 'sticker'
+            && isObjectEditMode
+        ) {
+            // Chuyển công cụ là điểm commit-on-exit của Edit PDF. Chặn panel ngay
+            // trong lúc commit để người dùng không thể bấm Chạy trên backing file cũ.
+            setIsObjectEditMode(false);
+            // REVISION (audit 2026-08-25 §REV.01): session có thể đang có op bay
+            // nhưng dirty chưa kịp đổi; luôn drain/commit khi phiên còn mở.
+            if (editSessionForToolRef.current?.sessionId) {
+                void runEditTransitionBarrier().then((committed) => {
+                    if (!committed) setIsObjectEditMode(true);
+                });
+            }
+        }
         if (previous === null) {
             if (activeDashboardTool === 'crop' && !isCropMode) {
                 setIsCropMode(true);
@@ -581,14 +696,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } else if (!isCropMode && activeDashboardTool === 'crop') {
             setActiveDashboardTool('none');
         }
-    }, [activeDashboardTool, isCropMode, setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode]);
+    }, [activeDashboardTool, isCropMode, isObjectEditMode, runEditTransitionBarrier,
+        setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode]);
     // Lựa chọn vị trí trang trắng — chỉ hỏi trong dialog Xác nhận khi số trang lẻ tay.
     const [confirmBlankPlacement, setConfirmBlankPlacement] = useState<'end' | 'center'>('end');
 
     // Set initial report from props (once)
     useEffect(() => {
         if (initialReport && !reportMsg) setReportMsg(initialReport);
-    }, []);
+    }, [initialReport, reportMsg, setReportMsg]);
 
     // Tile cache là GLOBAL dùng chung mọi tab, key = `${pdfUrl}_...`. Gom mọi pdfUrl tab
     // này từng dùng, khi ĐÓNG tab (unmount) dọn hết tile của chúng → giải phóng bitmap
@@ -596,16 +712,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const usedPdfUrlsRef = useRef<Set<string>>(new Set());
     useEffect(() => { if (pdfUrl) usedPdfUrlsRef.current.add(pdfUrl); }, [pdfUrl]);
     useEffect(() => {
+        // LINT (audit 2026-08-24 LO140): chụp tập URL tại lúc đăng ký cleanup,
+        // tránh dọn nhầm ref đã đổi sau khi component unmount.
+        const usedPdfUrls = usedPdfUrlsRef.current;
         return () => {
-            for (const u of usedPdfUrlsRef.current) clearTileUrlCacheForFile(u);
-            usedPdfUrlsRef.current.clear();
+            for (const u of usedPdfUrls) clearTileUrlCacheForFile(u);
+            usedPdfUrls.clear();
         };
     }, []);
 
     const handleVdpBoxCreate = useCallback((box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string, textContent?: string, name?: string }) => {
         const fieldId = `field_${Date.now()}`;
         setVdpFields(prev => {
-            const newField: any = {
+            const newField: VdpToolField = {
                 id: fieldId,
                 name: box.name || `Truong_${prev.length + 1}`,
                 type: box.type || 'text',
@@ -650,7 +769,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return [...prev, newField];
         });
         setSelectedVdpFieldIds([fieldId]);
-    }, []);
+    }, [setSelectedVdpFieldIds, setVdpFields]);
 
     // Handle ESC to close modals
     useEffect(() => {
@@ -667,7 +786,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [scaleConfirmModal, showCloseConfirm]);
+    }, [scaleConfirmModal, setShowCloseConfirm, showCloseConfirm]);
 
     // Pre-upload file silently in background for features that need file_id (Output Preview, Selection, etc.)
     // ĐÃ DEFER: chỉ cần khi dùng Selection/Output Preview, không cần lúc mở. Trì hoãn để
@@ -679,23 +798,36 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // năng cần (lúc đó mới chịu chi phí, không treo lúc mở).
     useEffect(() => {
         if (file && !selectionFileId && file.name.toLowerCase().endsWith('.pdf')) {
-            const sz = (file as any)?.size || 0;
+            const sz = (file as WorkspaceFileLike)?.size || 0;
             // History/native stub có path nhưng chưa biết size: coi là file lớn
             // cho pre-upload. Tác vụ cần file_id sẽ đăng ký path khi người dùng mở nó.
-            if ((file as any).path && sz <= 0) return;
+            if ((file as WorkspaceFileLike).path && sz <= 0) return;
             // Bỏ pre-upload eager cho file > 20MB (sẽ upload on-demand khi mở Selection/Output Preview).
             if (sz > 20 * 1024 * 1024) return;
             const timer = setTimeout(() => {
-                uploadPDF(file).then(res => {
-                    setSelectionFileId(res.id);
-                    if (res.pdf_metadata && res.pdf_metadata.color_space) {
-                        onTitleChange?.(`${file.name} (${res.pdf_metadata.color_space})`);
+                void (async () => {
+                    // REVISION (audit 2026-08-25 §REV.10): upload đúng snapshot
+                    // đang thấy và chỉ bind file_id nếu snapshot còn current.
+                    const snapshot = getCropWorkingFile.capture();
+                    if (!snapshot) return;
+                    const workingFile = await getCropWorkingFile.materialize(snapshot);
+                    if (!getCropWorkingFile.isCurrent(snapshot)) return;
+                    const res = await uploadPDF(workingFile);
+                    if (!getCropWorkingFile.isCurrent(snapshot)) return;
+                    const identity = workspaceDocumentIdentity(
+                        snapshot.file,
+                        snapshot.viewerPageOrder,
+                        snapshot.viewerPageRotations,
+                    );
+                    setSelectionFileId(res.id, identity);
+                    if (res.pdf_metadata?.color_space) {
+                        onTitleChange?.(`${snapshot.file.name} (${res.pdf_metadata.color_space})`);
                     }
-                }).catch(() => { /* silent — will retry when needed */ });
+                })().catch(() => { /* silent — tác vụ cần file_id sẽ retry */ });
             }, 2500);
             return () => clearTimeout(timer);
         }
-    }, [file]);
+    }, [file, getCropWorkingFile, onTitleChange, selectionFileId, setSelectionFileId]);
     // FILEIO (audit 2026-08-02 §TEST.1): chuyển ảnh có trạng thái hữu hạn. Watchdog chỉ
     // đổi thông tin UI, không hard-timeout ảnh lớn; generation fence từ chối mọi callback muộn.
     // [RESULT-TAB FLASH FIX 2026-08-18] Tab kết quả có file ngay từ lúc mount phải
@@ -709,9 +841,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [sourceImageFile, setSourceImageFile] = useState<File | null>(() => (
         initialFile && isSupportedImageFileName(initialFile.name) ? initialFile : null
     ));
+    const [sourceImageOwner, setSourceImageOwner] = useState<SourceImageRevisionOwner | null>(null);
+    // REVISION (audit 2026-08-25 §REV.08): Undo và Recovery dùng chung pending
+    // transaction; state đặt trước lifecycle mở file để entry chỉ được tạo một lần.
+    const [pendingHistoryEntry, setPendingHistoryEntry] = useState<WorkspaceHistoryEntry | null>(null);
+    const [restoredHistoryDirtyFile, setRestoredHistoryDirtyFile] = useState<File | null>(null);
+    const sourceImageFileForRevision = sourceImageFile && isSourceImageRevisionCurrent(
+        sourceImageOwner,
+        renderedDocumentRevision,
+    ) ? sourceImageFile : null;
     const stickerSheetSourceVisible = viewerShowsStickerSource(
         file,
-        sourceImageFile,
+        sourceImageFileForRevision,
         stickerSheetSourceFile,
     );
     const currentViewerDocumentIdentity = workspaceDocumentIdentity(
@@ -727,14 +868,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         && classicCutlineViewerPreview.documentIdentity === currentViewerDocumentIdentity
     ) ? classicCutlineViewerPreview : null;
     const renderStickerSheetPageOverlay = useCallback((context: PageOverlayRenderContext) => {
-        const pageState = stickerSheetPages[context.originalPageNum];
+        const workingPosition = context.viewerPagePosition;
+        const pageState = stickerSheetPages[workingPosition];
         if (!pageState?.manifest) return null;
         const editable = isActive === true && context.isActivePage;
         if (!editable) {
             return (
                 <ReadonlyViewerStickerSheetPageOverlay
                     pageState={pageState}
-                    sourcePage={context.originalPageNum}
+                    sourcePage={workingPosition}
                 />
             );
         }
@@ -743,7 +885,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 tabId={tabId || ''}
                 isActive
                 editingEnabled={viewerToolMode === 'pointer'}
-                sourcePage={context.originalPageNum}
+                sourcePage={workingPosition}
             />
         );
     }, [isActive, stickerSheetPages, tabId, viewerToolMode]);
@@ -805,6 +947,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 syncedStickerSourceRef.current = initialFile;
                 try {
                     openedFile = await imageFileToPdfIfNeeded(initialFile, getFileArrayBuffer);
+                    setSourceImageOwner(isSupportedImageFileName(initialFile.name)
+                        ? createSourceImageRevisionOwner(openedFile, store.getState().editGeneration)
+                        : null);
                 } catch (openError) {
                     console.error('[initialFile] convert ảnh → PDF lỗi:', openError);
                     if (!cancelled && fileOpeningAttemptRef.current === attempt) {
@@ -823,6 +968,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 let objUrl = '';
                 const nativePath = (openedFile as File & { path?: string }).path;
                 const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+                let recoveryEntry: WorkspaceHistoryEntry | null = null;
+                if (initialRecovery) {
+                    const currentFingerprint = nativePath
+                        ? await readRecoverySourceFingerprint(nativePath)
+                        : null;
+                    if (!isRecoverySourceCurrent(initialRecovery, currentFingerprint)) {
+                        setError(t('tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly'));
+                        settleFileOpeningAttempt(attempt, 'error');
+                        return;
+                    }
+                    // Entry giữ đúng openedFile object; AcrobatViewer chỉ hydrate nó
+                    // sau loader ready và tự sinh ID riêng khi snapshot v1 chưa có IDs.
+                    recoveryEntry = createRecoveryHistoryEntry(initialRecovery, openedFile);
+                }
                 if (isTauri && !nativePath) {
                     // UIUX (audit 2026-08-04 §CROP.LOAD): file kết quả trong RAM sẽ được
                     // materialize sang đường dẫn tạm ngay sau khi mở. Báo trước cho viewer để
@@ -840,6 +999,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     objUrl = URL.createObjectURL(openedFile);
                 }
                 setFile(openedFile);
+                if (recoveryEntry) {
+                    setPendingHistoryEntry(recoveryEntry);
+                    setRestoredHistoryDirtyFile(openedFile);
+                    setIsSaved(false);
+                }
                 setOriginalFileName(openedFile.name);
                 setFileSizeStr((openedFile.size / (1024 * 1024)).toFixed(2) + ' MB');
                 setPdfUrl(objUrl);
@@ -872,7 +1036,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // RIÊNG theo từng công cụ trong toolProfiles — KHÔNG ghi đè taskMode bằng identity
     // công cụ (sticker_imposer/cnc_imposer). Trước đây ép taskMode = lockedMode → mỗi
     // lần mở file/tool lại về "Dàn nhiều mẫu".
-    const applyLockedMode = (mode: string | undefined | null) => {
+    const applyLockedMode = useCallback((mode: string | undefined | null) => {
         if (!mode) return;
         const st = imposerStoreRef.current!.getState();
         // Booklet: taskMode chính là booklet
@@ -885,8 +1049,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             st.restoreTaskModeForTool(mode);
             return;
         }
-        st.setTaskMode(mode as any);
-    };
+        st.setTaskMode(mode as import('./imposition-tools/types').TaskMode);
+    }, [imposerStoreRef]);
 
     // Gán công cụ khoá (từ Home: tem bế / bế rớt / cắt xén / booklet) — chỉ khi
     // lockedMode đổi, KHÔNG phụ thuộc file (tránh reset Tác vụ mỗi lần mở file mới).
@@ -894,7 +1058,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!lockedMode) return;
         setActiveDashboardTool(lockedMode);
         applyLockedMode(lockedMode);
-    }, [lockedMode, setActiveDashboardTool]);
+    }, [applyLockedMode, lockedMode, setActiveDashboardTool]);
 
     // Công cụ mở từ Home hoặc snapshot khôi phục dùng cùng một hợp đồng panel phải.
     useEffect(() => {
@@ -926,7 +1090,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 onTitleChange?.(names[launchFeature]);
             }
         }
-    }, [launchFeature, dedicatedInitialTool, lockedMode, onTitleChange, setActiveDashboardTool, setPhase, t]);
+    }, [launchFeature, dedicatedInitialTool, lockedMode, onTitleChange, setActiveDashboardTool, setPhase, t, applyLockedMode]);
 
     // UIUX (fix 2026-07-28): tự phục hồi tab chuyên dụng khi state rơi về none ngoài ý muốn.
     // Nút X là hành động chủ động nên được phép đóng panel đúng một lần.
@@ -941,7 +1105,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // Async physical path polyfill (non-blocking via HTTP)
     useEffect(() => {
-        if (file && !(file as any).path && !(file as any).__pathMaterializationFailed && (window as any).__TAURI_INTERNALS__) {
+        if (file && !(file as WorkspaceFileLike).path && !(file as WorkspaceFileLike).__pathMaterializationFailed && (window as RuntimeWindow).__TAURI_INTERNALS__) {
             let isCancelled = false;
             (async () => {
                 try {
@@ -980,7 +1144,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         });
                         Object.defineProperty(newFile, 'path', { value: tempPath });
                         try { Object.defineProperty(newFile, 'isTempUploadPath', { value: true, configurable: true }); } catch { /* ignore */ }
-                        if ((file as any).isGenerated) {
+                        if ((file as WorkspaceFileLike).isGenerated) {
                             try { Object.defineProperty(newFile, 'isGenerated', { value: true, configurable: true }); } catch { /* ignore */ }
                         }
                         setFile(newFile);
@@ -995,7 +1159,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     }
                 } catch (e) {
                     console.error("Path polyfill failed", e);
-                    if (!isCancelled && (file as any).__nativePathPending) {
+                    if (!isCancelled && (file as WorkspaceFileLike).__nativePathPending) {
                         // Cả upload HTTP lẫn ghi IPC đều thất bại: bỏ trạng thái chờ và cho
                         // usePdfLoader thử PDF.js thật sự. Cờ failed ngăn effect này lặp vô hạn.
                         const fallbackFile = new File([file], file.name, {
@@ -1003,7 +1167,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             lastModified: file.lastModified,
                         });
                         try { Object.defineProperty(fallbackFile, '__pathMaterializationFailed', { value: true, configurable: true }); } catch { /* ignore */ }
-                        if ((file as any).isGenerated) {
+                        if ((file as WorkspaceFileLike).isGenerated) {
                             try { Object.defineProperty(fallbackFile, 'isGenerated', { value: true, configurable: true }); } catch { /* ignore */ }
                         }
                         setFile(fallbackFile);
@@ -1012,11 +1176,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             })();
             return () => { isCancelled = true; };
         }
-    }, [file]);
+    }, [file, onTitleChange, setFile]);
 
     const handleBleedUpdate = useCallback((show: boolean, mm: number) => {
         setBleedView((prev: { show: boolean; mm: number }) => (prev.show === show && prev.mm === mm) ? prev : { show, mm });
-    }, []);
+    }, [setBleedView]);
 
     useEffect(() => {
         if (!isActive) return;
@@ -1025,7 +1189,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
         if (showSaveAsModal) window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [showSaveAsModal, isActive]);
+    }, [showSaveAsModal, isActive, setShowSaveAsModal]);
 
 
     // Routing panel-PHẢI: quyết định tường minh qua hàm thuần (test ở toolPanel.test.ts).
@@ -1051,6 +1215,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const documentIsDirty = useMemo(() => {
         if (editSessionDirty) return true; // edit-object chưa commit → LUÔN dirty (kể cả isSaved)
         if (isSaved) return false;
+        if (isRestoredDocumentDirty(file, restoredHistoryDirtyFile)) return true;
         if (history.length > 0) return true;
         if (viewerDirty) return true;
 
@@ -1059,64 +1224,87 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // viewerPageRotations là number[] THEO VỊ TRÍ, luôn đầy đủ độ dài (kể cả toàn 0).
         // Phải kiểm CÓ GÓC KHÁC 0 — KHÔNG dùng .length (bật oan cờ "đang sửa" → auto-save +
         // prompt lưu oan dù chưa xoay gì). Object.values chạy đúng cả trên array lẫn record cũ.
-        if (viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0)) return true;
+        if (viewerPageRotations && Object.values(viewerPageRotations).some((r: unknown) => ((((r as number) % 360) + 360) % 360) !== 0)) return true;
         if (vdpFields && vdpFields.length > 0) return true;
         return false;
-    }, [isSaved, history.length, file, viewerPageRotations, vdpFields, viewerDirty, editSessionDirty]);
+    }, [isSaved, restoredHistoryDirtyFile, history.length, file, viewerPageRotations, vdpFields, viewerDirty, editSessionDirty]);
     const isDirty = logoSessionDirty || documentIsDirty;
+    const toolInputBlockedByEdit = (
+        activeDashboardTool !== 'none'
+        && activeDashboardTool !== 'sticker'
+        && (editBarrierPending || editSessionDirty)
+    );
 
     useEffect(() => {
         onDirtyChange?.(isDirty);
     }, [isDirty, onDirtyChange]);
 
+    useEffect(() => {
+        // Save thành công là biên duy nhất được xóa cờ dirty phục hồi. pastStack rỗng
+        // sau hydrate không được làm tab recovery tự nhận là đã lưu.
+        if (isSaved && restoredHistoryDirtyFile) setRestoredHistoryDirtyFile(null);
+    }, [isSaved, restoredHistoryDirtyFile]);
+
     // ── AUTOSAVE / CRASH RECOVERY (phương án A: metadata + path gốc) ──────────────
     // Khi tab đang-sửa VÀ file có đường dẫn trên đĩa → ghi snapshot (debounce 8s) ra
     // %APPDATA%\PrynX\recovery\. Crash/cúp điện → snapshot còn sót → App hỏi khôi phục
-    // lúc mở lại. Hết dirty (đã lưu) → xóa snapshot. Snapshot CHỈ chứa thao tác sửa
-    // (thứ tự/xoay trang + field VDP) + path gốc; KHÔNG lưu bytes PDF.
+    // lúc mở lại. Hết dirty (đã lưu) → xóa snapshot. Snapshot chứa fingerprint +
+    // revision trang/VDP; KHÔNG lưu bytes PDF hay edit-object chỉ nằm trong RAM.
     useEffect(() => {
+        if (documentWindow?.disableRecovery) return;
         if (!tabId) return;
-        const fpath = (file as any)?.path as string | undefined;
+        const fpath = (file as WorkspaceFileLike)?.path as string | undefined;
         // Bỏ qua snapshot khi path là file phù du (uploads/results/temp): file này bị
         // dọn sau 26h → khôi phục sẽ trỏ vào path đã biến mất. Chờ tới khi lưu ra vị
         // trí thật (fpath ổn định) mới snapshot.
-        if (!documentIsDirty || !fpath || isEphemeralBackendPath(fpath)) {
+        if (
+            !documentIsDirty
+            || editSessionDirty
+            || !fpath
+            || isEphemeralBackendPath(fpath)
+        ) {
             void deleteSnapshot(tabId);
             return;
         }
+        let cancelled = false;
         const snapTimer = setTimeout(() => {
-            void writeSnapshot({
-                v: 1,
-                tabId,
-                title: originalFileName || file?.name || t('tabs.imposition:tai_lieu'),
-                savedAt: new Date().toISOString(),
-                originalPath: fpath,
-                originalName: file?.name || originalFileName || 'document.pdf',
-                feature: activeDashboardTool !== 'none' ? activeDashboardTool : undefined,
-                lockedMode: lockedMode && activeDashboardTool === lockedMode ? lockedMode : undefined,
-                viewerPageOrder: viewerPageOrder || undefined,
-                viewerPageRotations: viewerPageRotations || undefined,
-                vdpFields: (vdpFields && vdpFields.length) ? vdpFields : undefined,
-            });
+            void (async () => {
+                const sourceFingerprint = await readRecoverySourceFingerprint(fpath);
+                if (cancelled) return;
+                if (!sourceFingerprint) {
+                    await deleteSnapshot(tabId);
+                    return;
+                }
+                await writeSnapshot({
+                    v: 2,
+                    tabId,
+                    title: originalFileName || file?.name || t('tabs.imposition:tai_lieu'),
+                    savedAt: new Date().toISOString(),
+                    originalPath: fpath,
+                    originalName: file?.name || originalFileName || 'document.pdf',
+                    sourceFingerprint,
+                    dirty: true,
+                    pendingObjectEdits: false,
+                    feature: activeDashboardTool !== 'none' ? activeDashboardTool : undefined,
+                    lockedMode: lockedMode && activeDashboardTool === lockedMode ? lockedMode : undefined,
+                    viewerPageOrder: viewerPageOrder || undefined,
+                    viewerPageInstanceIds: viewerPageInstanceIds || undefined,
+                    viewerPageRotations: viewerPageRotations || undefined,
+                    vdpFields: (vdpFields && vdpFields.length) ? vdpFields : undefined,
+                });
+            })();
         }, 8000);
-        return () => clearTimeout(snapTimer);
-    }, [tabId, documentIsDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, activeDashboardTool, lockedMode]);
+        return () => {
+            cancelled = true;
+            clearTimeout(snapTimer);
+        };
+    }, [tabId, documentIsDirty, editSessionDirty, file, originalFileName,
+        viewerPageOrder, viewerPageInstanceIds, viewerPageRotations, vdpFields,
+        activeDashboardTool, lockedMode, t, documentWindow?.disableRecovery]);
 
-    // Áp KHÔI PHỤC một lần khi mở tab từ snapshot: dựng lại thao tác sửa trên file gốc.
+    // VDP không phụ thuộc loader; revision trang đi riêng qua pendingHistoryEntry.
     useEffect(() => {
         if (!initialRecovery) return;
-        if (initialRecovery.viewerPageOrder) setViewerPageOrder(initialRecovery.viewerPageOrder);
-        if (initialRecovery.viewerPageRotations) {
-            const raw = initialRecovery.viewerPageRotations;
-            // Migrate dạng CŨ Record<pageNum,deg> → number[] THEO VỊ TRÍ (out[i]=góc trang
-            // ở vị trí i trong pageOrder). Snapshot mới đã là mảng → dùng thẳng.
-            if (Array.isArray(raw)) {
-                setViewerPageRotations(raw);
-            } else {
-                const order = initialRecovery.viewerPageOrder || [];
-                setViewerPageRotations(order.map((pn: number) => (raw as Record<string, number>)[String(pn)] || 0));
-            }
-        }
         if (initialRecovery.vdpFields) setVdpFields(initialRecovery.vdpFields);
         setIsSaved(false);  // khôi phục = trạng thái ĐANG-SỬA
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1137,11 +1325,62 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Undo/Redo riêng cho chế độ chỉnh sửa đối tượng (Ctrl+Z + nút Undo).
     const editHistory = useObjectEditHistory();
 
+    const artifactLeaseOwnerRef = useRef<ArtifactLeaseOwner | null>(null);
+    const artifactLeaseDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const artifactLeaseTokens = useMemo(() => collectArtifactLeaseTokens([
+        file,
+        ...history.map(entry => entry.file),
+        ...objectEditPast.map(entry => entry.file),
+        ...objectEditFuture.map(entry => entry.file),
+    ]), [file, history, objectEditPast, objectEditFuture]);
+    const artifactLeaseTokensRef = useRef(artifactLeaseTokens);
+    artifactLeaseTokensRef.current = artifactLeaseTokens;
+
+    useEffect(() => {
+        // tabId là identity bất biến của component. Cleanup được hoãn một macrotask:
+        // React StrictMode setup→cleanup→setup sẽ hủy lượt dispose giả và tái dùng
+        // owner đang claim, tránh khe release-trước-claim làm marker bị thu hồi.
+        if (artifactLeaseDisposeTimerRef.current) {
+            clearTimeout(artifactLeaseDisposeTimerRef.current);
+            artifactLeaseDisposeTimerRef.current = null;
+        }
+        const owner = artifactLeaseOwnerRef.current
+            ?? new ArtifactLeaseOwner(recipeOwnerTabId, {
+                onLeaseLost: () => setError(t(
+                    'tabs.imposition:artifact_lam_viec_da_het_han',
+                    {
+                        defaultValue: 'File làm việc tạm đã hết hạn. Hãy chạy lại công cụ để tạo kết quả mới trước khi tiếp tục.',
+                    },
+                )),
+            });
+        artifactLeaseOwnerRef.current = owner;
+        void owner.sync(artifactLeaseTokensRef.current).catch(() => {
+            // Owner tự retry; lỗi mạng tạm thời không được tạo unhandled rejection.
+        });
+        return () => {
+            artifactLeaseDisposeTimerRef.current = setTimeout(() => {
+                artifactLeaseDisposeTimerRef.current = null;
+                if (artifactLeaseOwnerRef.current !== owner) return;
+                artifactLeaseOwnerRef.current = null;
+                void owner.dispose();
+            }, 0);
+        };
+    }, [recipeOwnerTabId, setError, t]);
+
+    useEffect(() => {
+        const owner = artifactLeaseOwnerRef.current;
+        if (!owner) return;
+        void owner.sync(artifactLeaseTokens).catch(() => {
+            // Owner tự retry với desired mới nhất.
+        });
+    }, [artifactLeaseTokens]);
+
     const commitWorkingFile = useCallback(async (
         newBlob: Blob,
         newName: string,
         existingPath?: string,
         recipeTicket?: RecipeOperationTicket | null,
+        expectedDocumentRevision?: WorkspaceDocumentRevisionToken | null,
     ) => {
         // Chụp vé trước MỌI await. Chỉ caller đã noteOperation và giữ đúng ticket mới
         // được ghi Step; undefined/null đều là cấm ghi. Không suy đoán pending tại commit.
@@ -1150,9 +1389,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             if (recipeRecorder.canCommitWorkingFile(recipeOwnerTabId, capturedRecipeTicket)) return;
             throw new Error(t('tabs.imposition:ket_qua_khong_thuoc_luot_ghi_hien_tai'));
         };
+        const assertDocumentRevisionCurrent = () => {
+            if (
+                !expectedDocumentRevision
+                || isWorkspaceDocumentRevisionCurrent(expectedDocumentRevision, store.getState())
+            ) return;
+            throw new StaleWorkspaceDocumentRevisionError(t(
+                'tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly',
+                {
+                    defaultValue: 'Tài liệu đã thay đổi trong lúc xử lý. Kết quả cũ đã được bỏ qua; vui lòng chạy lại.',
+                },
+            ));
+        };
         // RECIPE (audit 2026-08-15 §REC.RACE): chặn ngay callback không mang vé và
         // kết quả cũ về sau khi người dùng đã dừng/hủy phiên ghi.
         assertRecipeCommitAllowed();
+        // REVISION (audit 2026-08-25 §REV.03): chặn trước mọi I/O tốn thời gian.
+        assertDocumentRevisionCurrent();
         let committedBlob = newBlob;
         let committedName = newName;
         let committedPath = existingPath;
@@ -1198,10 +1451,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         // Use newName to correctly reflect the current file's processing state
         const displayName = committedName;
-        const newFile = new File([committedBlob as any], displayName, { type: 'application/pdf' });
+        const newFile = new File([committedBlob], displayName, { type: 'application/pdf' });
+        copyArtifactLeaseToken(newBlob, newFile);
         
         try {
-            if ((window as any).__TAURI_INTERNALS__) {
+            if ((window as RuntimeWindow).__TAURI_INTERNALS__) {
                 let tempPath = '';
                 // VDP/job kết quả: backend đã ghi file thật ra đĩa và trả về đường dẫn
                 // (newBlob lúc này chỉ là blob "dummy" để skip download). Dùng thẳng
@@ -1211,7 +1465,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     try {
                         const { stat } = await import('@tauri-apps/plugin-fs');
                         const info = await stat(committedPath);
-                        Object.defineProperty(newFile, 'size', { value: Number((info as any).size || 0) });
+                        Object.defineProperty(newFile, 'size', { value: Number((info as { size?: number }).size || 0) });
                     } catch {
                         // Native rendering only requires the path; size is display metadata.
                     }
@@ -1219,10 +1473,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     try {
                         const { uploadFileForNup } = await import('../lib/api');
                         tempPath = await uploadFileForNup(newFile);
-                    } catch (err) {
+                    } catch {
                         console.warn("HTTP upload failed for fix pdf, falling back to IPC");
-                        const { tempDir, join } = (await import('@tauri-apps/api/path')) as any;
-                        const { writeFile } = (await import('@tauri-apps/plugin-fs')) as any;
+                        const { tempDir, join } = await import('@tauri-apps/api/path');
+                        const { writeFile } = await import('@tauri-apps/plugin-fs');
                         const buffer = await committedBlob.arrayBuffer();
                         const tDir = await tempDir();
                         tempPath = await join(tDir, `prynx_tmp_${Date.now()}_${newName}`);
@@ -1241,6 +1495,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Không có await từ lần kiểm tra cuối tới khi publish state: Dừng/Hủy không
         // thể chen giữa rồi để callback cũ thay working file của phiên mới.
         assertRecipeCommitAllowed();
+        // REVISION (audit 2026-08-25 §REV.03): kiểm lại ngay sát publish; xoay,
+        // xóa, reorder hoặc edit trong lúc ghi temp không được bị kết quả cũ ghi đè.
+        assertDocumentRevisionCurrent();
         // RECIPE (audit 2026-08-17 §REC.5): số Step trong draft TRƯỚC khi commit này
         // ghi thêm Step. Gắn vào entry history để Undo (về đúng revision trước) rút lại
         // Step tương ứng — recipe lưu ra không còn chứa thao tác người dùng đã hoàn tác.
@@ -1253,29 +1510,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 // Strip bytes khi file có path đĩa → entry undo chỉ giữ tên+path (đọc lại
                 // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
                 // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
-                const historyFile = stripBytesIfOnDisk(file);
-                if (recipeDraftLenBefore !== null) {
-                    Object.defineProperty(historyFile, '__recipeDraftLen', {
-                        value: recipeDraftLenBefore,
-                        configurable: true,
-                    });
-                }
-                // Undo phải khôi phục đồng thời PDF hiển thị và ảnh nguồn tương ứng;
-                // nếu không, Bù xén vẫn có thể âm thầm nhận ảnh upscale mới.
-                Object.defineProperty(historyFile, '__prynxSourceImageFile', {
-                    value: sourceImageFile,
-                    configurable: true,
-                });
-                if (stickerSheetSourceVisible && stickerSheetSourceFile) {
-                    // PERF/UIUX (feedback 2026-08-11 §AI.UNDO1): PDF nguồn có thể
-                    // được strip thành path-stub. Giữ owner để Undo không bị effect
-                    // đồng bộ nguồn mở lại chính PDF đó lần thứ hai giữa lúc Viewer nạp.
-                    Object.defineProperty(historyFile, '__prynxStickerSourceFile', {
-                        value: stickerSheetSourceFile,
-                        configurable: true,
-                    });
-                }
-                const next = [...prev, historyFile];
+                const next = [...prev, createWorkspaceHistoryEntry({
+                    file,
+                    pageOrder: viewerPageOrder,
+                    pageInstanceIds: viewerPageInstanceIds,
+                    pageRotations: viewerPageRotations,
+                    pageRevisionDirty: viewerDirty,
+                    sourceImageFile,
+                    stickerSourceFile: stickerSheetSourceVisible ? stickerSheetSourceFile : null,
+                    recipeDraftLen: recipeDraftLenBefore,
+                })];
                 return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
             });
         }
@@ -1288,6 +1532,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             activeDashboardTool === 'sticker' && stickerSheetMode === 'ai-sheet',
         );
         setSourceImageFile(nextSourceImage);
+        setSourceImageOwner(nextSourceImage
+            ? createSourceImageRevisionOwner(newFile, store.getState().editGeneration)
+            : null);
         setOriginalFileName(committedName);
         setFile(newFile);
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
@@ -1307,6 +1554,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         // Cleanup visual edits because they are now baked into the file
         setViewerPageOrder(undefined);
+        setViewerPageInstanceIds(undefined);
         setViewerPageRotations(undefined);
         setHighlightedIssue(null);
         setViewerDirty(false); // Clear any preflight highlights
@@ -1317,12 +1565,32 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         activeDashboardTool,
         file,
         onTitleChange,
+        pdfUrl,
         recipeOwnerTabId,
+        setFile,
+        setFileSizeStr,
+        setHiddenObjectIds,
+        setHighlightedIssue,
+        setHistory,
+        setIsSaved,
+        setLockedObjectIds,
+        setOriginalFileName,
+        setPdfUrl,
+        setSelectionFileId,
+        setViewerDirty,
+        setViewerPageOrder,
+        setViewerPageInstanceIds,
+        setViewerPageRotations,
         sourceImageFile,
+        store,
         stickerSheetMode,
         stickerSheetSourceFile,
         stickerSheetSourceVisible,
         t,
+        viewerDirty,
+        viewerPageInstanceIds,
+        viewerPageOrder,
+        viewerPageRotations,
     ]);
 
     /**
@@ -1345,19 +1613,55 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             toast.info(t('tabs.imposition:thao_tac_chua_ghi_duoc_vao_quy_trinh'));
             return false;
         }
-        await commitWorkingFile(newBlob, newName, existingPath, recipeTicket ?? null);
-        return true;
-    }, [commitWorkingFile, recipeOwnerTabId, t]);
-    const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
-        if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
-        // PAGEBOX (audit 2026-08-04 §W1.PB5): Crop phải đọc đúng artifact người
-        // dùng đang thấy sau reorder/delete/duplicate/rotate; hook này fail-closed.
-        const workingFile = await getCropWorkingFile(file);
-        if (!workingFile) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
-        const res = await uploadPDF(workingFile, { signal });
-        setSelectionFileId(res.id);
-        return res.id;
-    }, [file, getCropWorkingFile, setSelectionFileId, t]);
+        try {
+            await commitWorkingFile(
+                newBlob,
+                newName,
+                existingPath,
+                recipeTicket ?? null,
+                renderedDocumentRevision,
+            );
+            return true;
+        } catch (error) {
+            if (error instanceof StaleWorkspaceDocumentRevisionError) {
+                recipeRecorder.discardPending(recipeTicket);
+                toast.info(error.message);
+                return false;
+            }
+            throw error;
+        }
+    }, [commitWorkingFile, recipeOwnerTabId, renderedDocumentRevision, t]);
+    const cropUploadCache = useMemo(() => createRevisionScopedPdfUploadCache({
+        resolver: getCropWorkingFile,
+        upload: uploadPDF,
+        publish: (fileId) => setSelectionFileId(fileId),
+        missingFileError: () => new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho')),
+    }), [getCropWorkingFile, setSelectionFileId, t]);
+    useEffect(() => {
+        // REVISION (audit 2026-08-25 §REV.02): page order/instance/rotation hoặc
+        // edit generation đổi phải hủy upload cũ và bỏ file_id của revision trước.
+        cropUploadCache.invalidate();
+    }, [cropUploadCache, renderedDocumentRevision]);
+    useEffect(() => () => cropUploadCache.dispose(), [cropUploadCache]);
+    const ensureCropFileId = useCallback(
+        (signal?: AbortSignal) => cropUploadCache.ensure(signal),
+        [cropUploadCache],
+    );
+    const getPreparedWorkingFile = useCallback(async (): Promise<File> => {
+        // REVISION (audit 2026-08-25 §REV.06): execution ảnh chờ Edit barrier,
+        // materialize đúng snapshot rồi CAS trước khi raster/inference. Preview
+        // vẫn dùng `getWorkingFile` legacy để không tự commit Edit trong nền.
+        await getCropWorkingFile.prepare();
+        const snapshot = getCropWorkingFile.capture();
+        if (!snapshot) throw new Error('Không tìm thấy PDF làm việc hiện tại.');
+        const workingFile = await getCropWorkingFile.materialize(snapshot);
+        if (!getCropWorkingFile.isCurrent(snapshot)) {
+            throw new StaleWorkspaceDocumentRevisionError(
+                t('tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly'),
+            );
+        }
+        return workingFile;
+    }, [getCropWorkingFile, t]);
 
     const handleCropApplied = useCallback(async (blob: Blob, filename: string, openInNewTab: boolean) => {
         // RECIPE (audit 2026-08-16 §REC.4): Cắt khổ theo toạ độ không phát lại được.
@@ -1413,13 +1717,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
     // --- OBJECT EDIT UPLOAD ---
-    const uploadPromiseRef = useRef<Promise<any> | null>(null);
-    const pdfObjectsCacheRef = useRef<Record<number, any[]>>({});
+    const uploadPromiseRef = useRef<Promise<{ id: string }> | null>(null);
+    const pdfObjectsCacheRef = useRef<ReturnType<typeof globalPdfObjectCache.getAllObjects>>({});
 
     // Keep cache ref in sync
     useEffect(() => { pdfObjectsCacheRef.current = globalPdfObjectCache.getAllObjects(pdfUrl || ''); }, [pdfObjectsVersion, pdfUrl]);
-
-    const store = useContext(WorkspaceContext);
 
     // ── Object Edit Mode CẦN selectionFileId (để gọi /edit/objects, /edit/text…) ──
     // Pre-upload có thể BỊ BỎ QUA (file > 20MB) hoặc chưa kịp/đã lỗi, và on-demand
@@ -1441,7 +1743,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             } catch { /* sẽ thử lại khi bật lại edit mode */ }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, file, selectionFileId]);
+    }, [isObjectEditMode, file, selectionFileId, store]);
 
     const fetchPdfObjectsForPage = useCallback(async (pageNum: number) => {
         const state = store!.getState();
@@ -1482,10 +1784,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setPdfObjectsVersion(prev => prev + 1);
 
 
-        } catch (err: any) {
-            setError(err.message || t('tabs.imposition:loi_tai_object_trang_n', { n: pageNum }));
+        } catch (err: unknown) {
+            setError(errorMessage(err) || t('tabs.imposition:loi_tai_object_trang_n', { n: pageNum }));
         }
-    }, [file, setError, setPdfObjectsVersion, store]);
+    }, [file, setError, setPdfObjectsVersion, store, t]);
 
     // Load OCG layers independently from the object cache. A previous PDF can leave
     // virtual layers in the store, so checking only pdfOcgLayers.length is not safe.
@@ -1509,7 +1811,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const layers = layerData.layers || [];
                 const hidden: number[] = [];
                 const locked: number[] = [];
-                const walk = (items: any[]) => items.forEach((layer: any) => {
+                const walk = (items: PdfLayer[]) => items.forEach((layer: PdfLayer) => {
                     if (layer.visible === false) hidden.push(layer.id);
                     if (layer.locked === true) locked.push(layer.id);
                     if (Array.isArray(layer.children)) walk(layer.children);
@@ -1533,7 +1835,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [selectionFileId, setPdfOcgLayers, setHiddenOcgLayerIds, setLockedOcgLayerIds, tabId]);
 
 
-    const handleDeleteObjects = useCallback(async (objs: any[], pageNum: number) => {
+    const handleDeleteObjects = useCallback(async (objs: PdfObject[], pageNum: number) => {
         if (!selectionFileId) {
             setError(t('tabs.imposition:loi_khong_tim_thay_selectionfileid_co'));
             return;
@@ -1581,8 +1883,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             } else {
                 setError(t('tabs.imposition:api_tra_ve_thanh_cong_nhung_thieu_du'));
             }
-        } catch (err: any) {
-            setError(err.message || t('tabs.imposition:loi_xoa_doi_tuong'));
+        } catch (err: unknown) {
+            setError(errorMessage(err) || t('tabs.imposition:loi_xoa_doi_tuong'));
         } finally {
             setIsProcessing(false);
         }
@@ -1611,10 +1913,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         outputFilename: string,
         outputFid?: string,
         outputPath?: string,
+        artifactLease?: string,
     ) => {
         if (!outputUrl) return;
         const displayName = outputFilename || `Edited_${file?.name || 'document.pdf'}`;
-        const isTauri = !!(window as any).__TAURI_INTERNALS__;
+        const isTauri = !!(window as RuntimeWindow).__TAURI_INTERNALS__;
         const prevPdfUrl = pdfUrl;
 
         // RECIPE (audit 2026-08-16 §REC.11 + 2026-08-17 §REC.11A/R): đường commit nhẹ
@@ -1631,10 +1934,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             : null;
 
         try {
-            // Lưu snapshot TRƯỚC thao tác vào undo-stack riêng của object-edit (gồm cả
-            // selectionFileId) → Ctrl+Z / nút Undo khôi phục đúng (move/delete/rotate...).
-            editHistory.pushSnapshot({ file, pdfUrl: prevPdfUrl, fid: selectionFileId });
-
             let newFile: File;
             let newPdfUrl: string;
             let sizeStr: string | null = null;
@@ -1647,7 +1946,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 newPdfUrl = localFileUrl(outputPath);
                 // Kích thước file: stat cục bộ (rẻ); lỗi thì bỏ qua, giữ size cũ.
                 try {
-                    const { stat } = (await import('@tauri-apps/plugin-fs')) as any;
+                    const { stat } = await import('@tauri-apps/plugin-fs');
                     const info = await stat(outputPath);
                     if (info?.size != null) sizeStr = (info.size / (1024 * 1024)).toFixed(2) + ' MB';
                 } catch { /* giữ fileSizeStr hiện tại */ }
@@ -1658,7 +1957,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const res = await authenticatedFetch(fullUrl);
                 if (!res.ok) throw new Error(t('tabs.imposition:tai_working_file_moi_that_bai_http', { status: res.status }));
                 const blob = await res.blob();
-                newFile = new File([blob as any], displayName, { type: 'application/pdf' });
+                newFile = new File([blob], displayName, { type: 'application/pdf' });
                 newPdfUrl = URL.createObjectURL(blob);
                 sizeStr = (blob.size / (1024 * 1024)).toFixed(2) + ' MB';
             }
@@ -1668,6 +1967,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // QUA reset hủy diệt (numPages=0 → unmount, reset scroll/zoom/selection),
             // nhờ đó giao diện KHÔNG "reload" sau mỗi thao tác — chỉ tile + overlay đổi.
             try { Object.defineProperty(newFile, '__editCommit', { value: true, configurable: true }); } catch { /* noop */ }
+            tagArtifactLeaseToken(newFile, artifactLease);
 
             // RECIPE (audit 2026-08-17 §REC.11A): kiểm lại vé NGAY TRƯỚC khi publish.
             // stat/fetch ở trên có await; nếu người dùng Dừng/Hủy phiên ghi trong lúc
@@ -1677,6 +1977,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 recipeTicket = null;
             }
 
+            // REVISION (audit 2026-08-25 §REV.01): chỉ thêm Undo khi mọi I/O đã
+            // thành công và ngay sát publish; retry sau lỗi không tạo snapshot rác.
+            editHistory.pushSnapshot({ file, pdfUrl: prevPdfUrl, fid: selectionFileId });
             setFile(newFile);
             setOriginalFileName(displayName);
             setPdfUrl(newPdfUrl);
@@ -1697,12 +2000,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
             // LƯU Ý: KHÔNG reset viewerPageOrder/rotations (edit không đụng thứ tự trang)
             // và KHÔNG detectColorSpace (bỏ để giảm tải mỗi op) — khác commitWorkingFile.
-        } catch (err: any) {
+        } catch (err: unknown) {
             // Không để note treo sang thao tác kế tiếp khi lượt commit này thất bại.
             recipeRecorder.discardPending(recipeTicket);
-            setError(err?.message || t('tabs.imposition:loi_cap_nhat_sau_chinh_sua'));
+            setError(errorMessage(err) || t('tabs.imposition:loi_cap_nhat_sau_chinh_sua'));
+            // REVISION (audit 2026-08-25 §REV.01): barrier phải biết publish thất
+            // bại để giữ dirty/session và chặn công cụ kế tiếp đọc backing file cũ.
+            throw err;
         }
-    }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
+    }, [file, pdfUrl, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
         setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory,
         recipeOwnerTabId, t]);
 
@@ -1711,22 +2017,96 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // pdfUrl sang tile thật MỘT lần (nền). Session lỗi/410 → BÁO LỖI, không fallback.
     const editSession = useEditSession({
         eventScopeId: tabId,
+        // REVISION (audit 2026-08-25 §REV.03): mỗi op/undo/redo có generation
+        // riêng; dirty=true không đủ vì thao tác thứ hai vẫn giữ cùng boolean.
+        onEditRevisionStart: advanceEditGeneration,
         // RECIPE (audit 2026-08-17 §REC.11A): await để lifecycle commit-on-exit chờ
         // publish xong; recorder không bị Dừng/Hủy chen vào giữa lúc consumer đang chạy.
         onCommit: async (result) => {
-            if (result?.success && result.output_url) {
-                await handleEditCommit(
-                    result.output_url,
-                    result.output_filename || '',
-                    result.output_fid,
-                    result.output_path,
-                );
+            if (!result?.success || !result.output_url) {
+                throw new Error(t(
+                    'tabs.imposition:loi_cap_nhat_sau_chinh_sua',
+                    { defaultValue: 'Không nhận được Working File sau khi chốt Edit PDF.' },
+                ));
             }
+            await handleEditCommit(
+                result.output_url,
+                result.output_filename || '',
+                result.output_fid,
+                result.output_path,
+                result.artifact_lease,
+            );
         },
         onSessionFailed: () => {
             setError(t('tabs.imposition:khong_mo_duoc_phien_chinh_sua_backend'));
         },
     });
+    editSessionForToolRef.current = editSession;
+    useEffect(() => {
+        const barrier = ensureEditCommittedBeforeTool;
+        store.getState().setDocumentPreparationBarrier(barrier);
+        return () => {
+            if (store.getState().documentPreparationBarrier === barrier) {
+                store.getState().setDocumentPreparationBarrier(null);
+            }
+        };
+    }, [ensureEditCommittedBeforeTool, store]);
+
+    // UIUX/DATA (audit 2026-08-25 §NW.1): API này đọc trực tiếp store CỦA TAB.
+    // App chỉ giữ facade ổn định theo tabId nên không thể vô tình nhân payload mở file cũ.
+    const prepareDocumentWindowRef = useRef<() => Promise<import('../lib/documentWindow').PreparedDocumentWindow>>(
+        async () => { throw new Error('Cửa sổ PDF chưa sẵn sàng.'); },
+    );
+    prepareDocumentWindowRef.current = async () => {
+        if (!store) throw new Error('Không đọc được phiên tài liệu đang mở.');
+
+        // Chụp viewport trước mọi await; commit edit có thể đổi backing file nhưng
+        // không được làm cửa sổ mới nhảy sang trang/zoom khác.
+        const beforeCommit = store.getState();
+        if (!beforeCommit.file || beforeCommit.viewerNumPages <= 0) {
+            throw new Error('Chưa có PDF để mở trong cửa sổ mới.');
+        }
+        const viewState: DocumentWindowViewState = {
+            activePage: Math.max(1, beforeCommit.viewerActivePage),
+            zoom: beforeCommit.viewerZoom,
+            fitMode: beforeCommit.viewerFitMode,
+            pageDisplayMode: beforeCommit.viewerPageDisplayMode,
+        };
+
+        if (editSession.dirty) {
+            const result = await editSession.commit();
+            if (!result?.success || !result.output_path) {
+                throw new Error('Không thể hoàn tất phần chỉnh sửa đối tượng trước khi mở cửa sổ mới.');
+            }
+            const publishedPath = (store.getState().file as WorkspaceFileLike | null)?.path;
+            const normalizePath = (value: string) => value.replaceAll('/', '\\').toLocaleLowerCase();
+            if (!publishedPath || normalizePath(publishedPath) !== normalizePath(result.output_path)) {
+                throw new Error('Bản PDF sau chỉnh sửa chưa được cập nhật vào phiên làm việc.');
+            }
+        }
+
+        // Sau commit tuyệt đối không dùng closure `file`: callback onCommit đã publish
+        // Working File mới vào store, còn closure có thể vẫn trỏ bản khách ban đầu.
+        const freshFile = store.getState().file as File | null;
+        if (!freshFile) throw new Error('Không đọc được PDF làm việc mới nhất.');
+        const workingFile = await getCropWorkingFile(freshFile);
+        if (!workingFile) throw new Error('Không thể tạo PDF theo thứ tự và góc xoay hiện tại.');
+
+        return prepareDocumentWindowSource(
+            workingFile,
+            originalFileName || freshFile.name,
+            viewState,
+        );
+    };
+
+    useEffect(() => {
+        if (!tabId || !onDocumentWindowApiChange) return;
+        const api: DocumentWindowTabApi = {
+            prepareNewWindow: () => prepareDocumentWindowRef.current(),
+        };
+        onDocumentWindowApiChange(tabId, api);
+        return () => onDocumentWindowApiChange(tabId, null);
+    }, [onDocumentWindowApiChange, tabId]);
 
     // Đồng bộ `editSession.dirty` (op edit-object chưa commit ra đĩa — commit-on-exit)
     // vào cờ `editSessionDirty` để `isDirty` (khai báo TRƯỚC editSession, không đọc trực
@@ -1752,18 +2132,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     useEffect(() => {
         // Cho phép bước Undo kế tiếp sau khi React đã áp xong file/history mới.
-        documentUndoTransitionRef.current = false;
-    }, [file, history.length, pdfUrl]);
+        if (!pendingHistoryEntry) documentUndoTransitionRef.current = false;
+    }, [file, history.length, pdfUrl, pendingHistoryEntry]);
+
+    const handleHistoryEntryHydrated = useCallback((entry: WorkspaceHistoryEntry) => {
+        setPendingHistoryEntry(current => current === entry ? null : current);
+        setRestoredHistoryDirtyFile(entry.pageRevisionDirty ? entry.file : null);
+        setViewerDirty(entry.pageRevisionDirty);
+        setSourceImageOwner(entry.sourceImageFile
+            ? createSourceImageRevisionOwner(entry.file, store.getState().editGeneration)
+            : null);
+    }, [setViewerDirty, store]);
 
     const handleUndo = useCallback(() => {
         // PERF (feedback 2026-08-10 §UNDO.2): keydown có thể lặp trước lần
         // render kế tiếp. Không cho hai lượt nạp tài liệu chồng lên nhau.
         if (documentUndoTransitionRef.current || history.length === 0) return;
 
-        const prevFile = history[history.length - 1];
+        const previousEntry = history[history.length - 1];
+        const prevFile = previousEntry.file;
         let objUrl = '';
-        if ((window as any).__TAURI_INTERNALS__ && (prevFile as any).path) {
-            objUrl = localFileUrl((prevFile as any).path);
+        if ((window as RuntimeWindow).__TAURI_INTERNALS__ && (prevFile as WorkspaceFileLike).path) {
+            objUrl = localFileUrl((prevFile as WorkspaceFileLike).path ?? '');
         } else {
             objUrl = URL.createObjectURL(prevFile);
         }
@@ -1773,19 +2163,37 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         // RECIPE (audit 2026-08-17 §REC.5): về lại revision này thì rút Step mà commit
         // sau nó đã ghi. Chỉ khi vẫn đang ghi ở tab này; recorder tự bỏ qua nếu lệch.
-        const recipeDraftLen = (prevFile as File & { __recipeDraftLen?: number }).__recipeDraftLen;
+        const recipeDraftLen = previousEntry.recipeDraftLen;
         if (typeof recipeDraftLen === 'number') {
             recipeRecorder.rollbackDraftTo(recipeOwnerTabId, recipeDraftLen);
         }
 
+        // Generic Undo đổi hẳn revision: vô hiệu mọi job/Edit cache của file đang
+        // hiển thị, rồi chỉ hydrate page state sau khi loader của File cũ đã ready.
+        advanceEditGeneration();
+        store.getState().setObjectEditPast([]);
+        store.getState().setObjectEditFuture([]);
+        setSelectionFileId('');
+        setPendingHistoryEntry(previousEntry);
+        setRestoredHistoryDirtyFile(null);
         setFile(prevFile);
         setOriginalFileName(prevFile.name);
         setPdfUrl(objUrl);
-        const restoredSource = (prevFile as File & { __prynxSourceImageFile?: File | null })
-            .__prynxSourceImageFile ?? null;
-        const restoredStickerSource = stickerSourceOwnerFromHistory(prevFile);
+        const restoredSource = previousEntry.sourceImageFile;
+        const restoredStickerSource = previousEntry.stickerSourceFile;
+        // Adapter tương thích cho selector AI hiện hữu; owner chuẩn vẫn nằm trong
+        // WorkspaceHistoryEntry, không còn suy từ metadata ẩn trên File.
+        if (restoredStickerSource) {
+            Object.defineProperty(prevFile, '__prynxStickerSourceFile', {
+                value: restoredStickerSource,
+                configurable: true,
+            });
+        }
         syncedStickerSourceRef.current = restoredStickerSource ?? restoredSource;
         setSourceImageFile(restoredSource);
+        // Chỉ mở owner sau callback hydrate; trước thời điểm đó ảnh shadow phải
+        // fail-closed để tool không ăn ảnh gốc trong một frame trung gian.
+        setSourceImageOwner(null);
 
         // URL cũ còn có thể đang được loader hiện tại dùng trong cùng tick.
         // Thu hồi sau khi state swap đã commit để tránh cắt ngang lượt render cũ.
@@ -1800,6 +2208,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Dò song song từng có thể đọc toàn PDF và làm WebView đứng.
 
         setViewerPageOrder(undefined);
+        setViewerPageInstanceIds(undefined);
         setViewerPageRotations(undefined);
 
         // Reset detection so it re-runs if needed
@@ -1809,18 +2218,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setDetectedDimensionsByPage({});
         setDetectedShapeParamsByPage({});
     }, [history, pdfUrl, onTitleChange, setHistory, setFile, setOriginalFileName, setPdfUrl,
-        setFileSizeStr, setViewerPageOrder, setViewerPageRotations, setDetectedShapeType,
+        setFileSizeStr, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setDetectedShapeType,
         setDetectedShapeParams, setDetectedShapesByPage, setDetectedDimensionsByPage,
-        setDetectedShapeParamsByPage, recipeOwnerTabId]);
+        setDetectedShapeParamsByPage, recipeOwnerTabId, advanceEditGeneration, setSelectionFileId,
+        store]);
 
 
 
 
-    const sidebarDragRef = useRef({ startX: 0, startTotalWidth: 0, startFullWidth: 0 });
+    const sidebarDragRef = useRef<{
+        startX: number;
+        startTotalWidth: number;
+        startFullWidth: number;
+        startCatalogWidth: number;
+        target: 'outer' | 'catalog';
+    }>({ startX: 0, startTotalWidth: 0, startFullWidth: 0, startCatalogWidth: 0, target: 'outer' });
     const [sidebarDraftTotalWidth, setSidebarDraftTotalWidth] = useState<number | null>(null);
+    const [sidebarDraftLayout, setSidebarDraftLayout] = useState<EffectiveToolMenuLayout | null>(null);
     const sidebarDraftLayoutRef = useRef<{ mode: ToolMenuMode; fullWidth: number } | null>(null);
+    const sidebarDraftEffectiveLayoutRef = useRef<EffectiveToolMenuLayout | null>(null);
     const sidebarDraftFrameRef = useRef<number | null>(null);
     const sidebarDraftTotalWidthRef = useRef<number | null>(null);
+    const sidebarDividerCatalogWidthRef = useRef<number | null>(null);
     const sidebarDragPointerIdRef = useRef<number | null>(null);
 
     useEffect(() => {
@@ -1830,18 +2249,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 cancelAnimationFrame(sidebarDraftFrameRef.current);
                 sidebarDraftFrameRef.current = null;
             }
+            const dragTarget = sidebarDragRef.current.target;
             const layout = sidebarDraftLayoutRef.current;
+            const dividerCatalogWidth = sidebarDividerCatalogWidthRef.current;
             sidebarDraftLayoutRef.current = null;
+            sidebarDraftEffectiveLayoutRef.current = null;
+            sidebarDividerCatalogWidthRef.current = null;
             sidebarDragPointerIdRef.current = null;
             setSidebarDraftTotalWidth(null);
+            setSidebarDraftLayout(null);
             setIsDraggingSidebar(false);
-            if (layout) setToolMenuLayout(layout.mode, layout.fullWidth);
+            if (dragTarget === 'catalog') {
+                if (dividerCatalogWidth !== null) setPreferredCatalogSplitWidth(dividerCatalogWidth);
+            } else if (layout) {
+                setToolMenuLayout(layout.mode, layout.fullWidth);
+            }
         };
         const handlePointerMove = (e: PointerEvent) => {
             if (sidebarDragPointerIdRef.current !== e.pointerId) return;
             const deltaX = sidebarDragRef.current.startX - e.clientX;
             const requestedTotalWidth = sidebarDragRef.current.startTotalWidth + deltaX;
-            const hasActiveTool = activeDashboardTool !== 'none';
+            const hasActiveTool = hasActiveRightTool;
             const maximumTotalWidth = Math.max(
                 TOOL_MENU_ICON_WIDTH,
                 (workspaceRootRef.current?.clientWidth || window.innerWidth) - TOOL_MENU_VIEWER_MIN_WIDTH,
@@ -1851,27 +2279,59 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 hasActiveTool,
                 TOOL_MENU_VIEWER_MIN_WIDTH,
             );
-            const draftTotalWidth = clampToolMenuDraftTotalWidth(
-                requestedTotalWidth,
-                maximumTotalWidth,
-                hasActiveTool,
-            );
-            const nextLayout = resolveToolMenuDrag(
-                draftTotalWidth,
-                hasActiveTool,
-                sidebarDragRef.current.startFullWidth,
-                maximumFullWidth,
-            );
-            sidebarDraftLayoutRef.current = nextLayout;
-            // UIUX (audit 2026-08-22 §UX.MT.03): trong gesture render đúng raw width;
-            // chỉ pointerup mới chốt full/icons, nên không có dead-zone hoặc nhảy ngược.
+            let draftTotalWidth: number;
+            let draftEffectiveLayout: EffectiveToolMenuLayout;
+            if (sidebarDragRef.current.target === 'catalog') {
+                const startCatalogWidth = sidebarDragRef.current.startCatalogWidth;
+                const startTotalWidth = sidebarDragRef.current.startTotalWidth;
+                draftEffectiveLayout = resolveToolMenuDividerLayout({
+                    mode: 'full',
+                    configWidth: startTotalWidth - startCatalogWidth,
+                    catalogWidth: startCatalogWidth,
+                    totalWidth: startTotalWidth,
+                    canExpandFull: true,
+                }, startCatalogWidth + deltaX);
+                draftTotalWidth = draftEffectiveLayout.totalWidth;
+                sidebarDraftLayoutRef.current = null;
+                sidebarDividerCatalogWidthRef.current = draftEffectiveLayout.catalogWidth;
+            } else {
+                draftTotalWidth = clampToolMenuDraftTotalWidth(
+                    requestedTotalWidth,
+                    maximumTotalWidth,
+                    hasActiveTool,
+                );
+                const nextLayout = resolveToolMenuDrag(
+                    draftTotalWidth,
+                    hasActiveTool,
+                    sidebarDragRef.current.startFullWidth,
+                    maximumFullWidth,
+                );
+                sidebarDraftLayoutRef.current = nextLayout;
+                sidebarDividerCatalogWidthRef.current = null;
+                // UIUX (audit 2026-08-25): outer handle đổi tổng width;
+                // divider giữa hai pane có nhánh riêng để Viewer không reflow.
+                draftEffectiveLayout = resolveToolMenuDraftLayout({
+                    totalWidth: draftTotalWidth,
+                    mode: nextLayout.mode,
+                    hasConfigPanel: hasActiveRightTool,
+                    maximumTotalWidth,
+                    preferredWidth: sidebarDragRef.current.startFullWidth,
+                });
+            }
+            sidebarDraftEffectiveLayoutRef.current = draftEffectiveLayout;
+            // UIUX (audit 2026-08-25): trong gesture hai panel bám đúng raw width;
+            // mode được chốt vào pointerup để preference không bị ghi giữa chừng.
             sidebarDraftTotalWidthRef.current = draftTotalWidth;
             if (sidebarDraftFrameRef.current === null) {
                 sidebarDraftFrameRef.current = requestAnimationFrame(() => {
                     sidebarDraftFrameRef.current = null;
                     const pendingWidth = sidebarDraftTotalWidthRef.current;
+                    const pendingLayout = sidebarDraftEffectiveLayoutRef.current;
                     if (pendingWidth !== null) {
                         setSidebarDraftTotalWidth(pendingWidth);
+                    }
+                    if (pendingLayout !== null) {
+                        setSidebarDraftLayout(pendingLayout);
                     }
                 });
             }
@@ -1894,7 +2354,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
         };
-    }, [activeDashboardTool, isDraggingSidebar, setIsDraggingSidebar, setToolMenuLayout]);
+    }, [
+        activeDashboardTool,
+        effectiveToolMenuMode,
+        hasActiveRightTool,
+        isDraggingSidebar,
+        setIsDraggingSidebar,
+        setToolMenuLayout,
+        workspaceWidth,
+    ]);
 
     const formatSize = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 
@@ -1906,6 +2374,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const attempt = beginFileOpeningAttempt(false);
         try {
             selectedFile = await imageFileToPdfIfNeeded(selectedFile, getFileArrayBuffer);
+            setSourceImageOwner(isSupportedImageFileName(pendingSelectedOpenRef.current?.file.name || '')
+                ? createSourceImageRevisionOwner(selectedFile, store.getState().editGeneration)
+                : null);
         } catch (openError) {
             console.error('[handleFileSelected] convert ảnh → PDF lỗi:', openError);
             if (fileOpeningAttemptRef.current === attempt) {
@@ -2011,24 +2482,32 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // ═══ Processing handlers (extracted to lib/processHandlers.ts) ═══
     const [processCancelHandler, setProcessCancelHandler] = useState<(() => Promise<void>) | null>(null);
 
-    const buildProcessContext = useCallback((recipeTicket: RecipeOperationTicket | null = null) => {
+    // LINT (audit 2026-08-24 LO140): context được tạo trước helper bake; ref giữ
+    // hàm bake mới nhất mà không đọc biến const trước khi khởi tạo.
+    const applyAcrobatEditsRef = useRef<(sourceFile?: File | null) => Promise<Blob | null>>(
+        async () => null,
+    );
+
+    const buildProcessContext = useCallback(async (recipeTicket: RecipeOperationTicket | null = null) => {
+        await getCropWorkingFile.prepare();
+        const workingRevision = getCropWorkingFile.capture();
+        if (!workingRevision) {
+            throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
+        }
         const getWorkingBytesLocal = async (): Promise<Uint8Array> => {
-            if (viewerPageOrder) {
-                const bakedBlob = await applyAcrobatEdits();
-                if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
-            }
-            // getFileArrayBuffer đọc từ ĐĨA qua path khi file đã strip bytes (sau undo,
-            // #2 audit RAM) — file!.arrayBuffer() sẽ trả 0 byte trên file rỗng+path.
-            return new Uint8Array(await getFileArrayBuffer(file!));
+            // REVISION (audit 2026-08-25 §REV.03): materialize đúng snapshot lúc
+            // bấm chạy; không đọc closure order/rotation đã trôi trong job dài.
+            const workingFile = await getCropWorkingFile.materialize(workingRevision);
+            return new Uint8Array(await getFileArrayBuffer(workingFile));
         };
         const getWorkingSourcePathLocal = async (): Promise<string | undefined> => {
-            const sourcePath = (file as File & { path?: string })?.path;
+            const sourcePath = (workingRevision.file as File & { path?: string }).path;
             if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ || !sourcePath) return undefined;
 
-            const hasRotationEdits = !!(viewerPageRotations && Object.values(viewerPageRotations)
+            const hasRotationEdits = !!(workingRevision.viewerPageRotations && Object.values(workingRevision.viewerPageRotations)
                 .some((rotation) => (((rotation % 360) + 360) % 360) !== 0));
-            const hasNonIdentityOrder = !!viewerPageOrder
-                && viewerPageOrder.some((pageNumber, index) => pageNumber !== index + 1);
+            const hasNonIdentityOrder = !!workingRevision.viewerPageOrder
+                && workingRevision.viewerPageOrder.some((pageNumber, index) => pageNumber !== index + 1);
             if (viewerDirty || editSessionDirty || initialRecovery || hasRotationEdits || hasNonIdentityOrder) {
                 return undefined;
             }
@@ -2036,10 +2515,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
 
         return {
-            file: file!,
+            file: workingRevision.file,
             onSpawnTab,
             commitWorkingFile: (blob: Blob, name: string, path?: string) => (
-                commitWorkingFile(blob, name, path, recipeTicket)
+                commitWorkingFile(blob, name, path, recipeTicket, workingRevision)
             ),
             // Bọc setError: khi một thao tác (đã noteOperation) BÁO LỖI (msg≠'') →
             // dọn pending note để KHÔNG bị ghép nhầm vào commit của thao tác sau.
@@ -2057,7 +2536,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             getWorkingBytes: getWorkingBytesLocal,
             getWorkingSourcePath: getWorkingSourcePathLocal,
         };
-    }, [file, onSpawnTab, commitWorkingFile, viewerNumPages, viewerPageOrder, viewerPageRotations, viewerDirty, editSessionDirty, initialRecovery]);
+    }, [commitWorkingFile, editSessionDirty, getCropWorkingFile, initialRecovery, onSpawnTab,
+        setBatchOutput, setError, setIsProcessing, setProcessStatus, setReportMsg, t,
+        viewerDirty, viewerNumPages]);
 
     const processEngine = useCallback(async (settings: ProcessingSettings, spawnNewTab: boolean) => {
         if (!file) return;
@@ -2082,12 +2563,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!effectiveSpawn && recordingThisTab) {
             const opId = settings.impositionMode === ImpositionMode.Booklet
                 ? 'booklet'
-                : (settings as any).imposerMode === 'cnc'
+                : (settings as RecipeSettingsView).imposerMode === 'cnc'
                     ? 'cnc_imposer'
-                    : (settings as any).imposerMode === 'diecut'
+                    : (settings as RecipeSettingsView).imposerMode === 'diecut'
                         ? 'sticker_imposer'
                         : 'nup';
-            const recordParams = sanitizeRecipeImpositionParams(opId, settings as any);
+            const recordParams = sanitizeRecipeImpositionParams(opId, asRecipeParams(settings));
             // RECIPE (audit 2026-08-16 §PLAY.3R): thứ tự trang và góc xoay thuộc đúng
             // tài liệu này nên đã bị tước khỏi Step. Lượt chạy tay vẫn dùng chúng, vì
             // vậy phải nói rõ Step ghi ra sẽ không tái lập phần đó — im lặng ở đây từng
@@ -2109,11 +2590,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         await runRecordedProcess(recipeTicket, async () => {
             const { runProcessEngine } = await import('../lib/processHandlers');
-            return runProcessEngine(buildProcessContext(recipeTicket), settings, effectiveSpawn);
+            return runProcessEngine(await buildProcessContext(recipeTicket), settings, effectiveSpawn);
         });
     }, [file, buildProcessContext, recipeOwnerTabId, t, viewerPageOrder, viewerPageRotations]);
 
-    const handleStartCatalogPlan = useCallback(async (planConfig: any, sheetSettings: any) => {
+    const handleStartCatalogPlan = useCallback(async (planConfig: PlanConfig, sheetSettings: Partial<ProcessingSettings> & { spawnNewTab?: boolean }) => {
         if (!file) return;
         // Catalog chưa có RecipeOpId/runner. Cho phép chạy lúc đang ghi sẽ thay working file
         // nhưng không tạo Step, khiến mọi bước sau phát lại trên sai nguồn.
@@ -2123,14 +2604,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         await runRecordedProcess(null, async () => {
             const { runCatalogPlan } = await import('../lib/processHandlers');
-            return runCatalogPlan(buildProcessContext(null), planConfig, sheetSettings);
+            return runCatalogPlan(await buildProcessContext(null), planConfig, sheetSettings);
         });
     }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
     // Khi ĐANG GHI: ép spawnNewTab=false để thao tác commit vào working file (chuỗi
     // tuyến tính) VÀ được ghi vào recipe. Mặc định spawnNewTab=true → nếu không ép,
     // thao tác mở tab mới, hook record bị bỏ qua (bug: recipe thiếu bước).
-    const handleStartShuffle = async (settings: any) => {
+    const handleStartShuffle = async (settings: ShuffleSettings & { spawnNewTab?: boolean }) => {
         if (!file) return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
         // RECIPE (audit 2026-08-16 §REC.2): "Tách chẵn/lẻ" luôn sinh HAI tài liệu và
@@ -2142,7 +2623,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
         const recipeTicket = !eff.spawnNewTab && recordingThisTab
-            ? recipeRecorder.noteOperation('shuffle', eff, undefined, recipeOwnerTabId)
+            ? recipeRecorder.noteOperation('shuffle', asRecipeParams(eff), undefined, recipeOwnerTabId)
             : null;
         if (recordingThisTab && !recipeTicket) {
             toast.info(t('tabs.imposition:dang_xu_ly_file'));
@@ -2150,16 +2631,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         await runRecordedProcess(recipeTicket, async () => {
             const { runShuffle } = await import('../lib/processHandlers');
-            return runShuffle(buildProcessContext(recipeTicket), eff);
+            return runShuffle(await buildProcessContext(recipeTicket), eff);
         });
     };
 
-    const handleStartResize = async (settings: any) => {
+    const handleStartResize = async (settings: PageResizerSettings & { spawnNewTab?: boolean }) => {
         if (!file) return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
         const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
         const recipeTicket = !eff.spawnNewTab && recordingThisTab
-            ? recipeRecorder.noteOperation('resize', eff, undefined, recipeOwnerTabId)
+            ? recipeRecorder.noteOperation('resize', asRecipeParams(eff), undefined, recipeOwnerTabId)
             : null;
         if (recordingThisTab && !recipeTicket) {
             toast.info(t('tabs.imposition:dang_xu_ly_file'));
@@ -2167,16 +2648,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         await runRecordedProcess(recipeTicket, async () => {
             const { runResize } = await import('../lib/processHandlers');
-            return runResize(buildProcessContext(recipeTicket), eff);
+            return runResize(await buildProcessContext(recipeTicket), eff);
         });
     };
 
-    const handleStartTrimShift = async (settings: any) => {
+    const handleStartTrimShift = async (settings: TrimShiftSettings & { spawnNewTab?: boolean }) => {
         if (!file) return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
         const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
         const recipeTicket = !eff.spawnNewTab && recordingThisTab
-            ? recipeRecorder.noteOperation('trim_shift', eff, undefined, recipeOwnerTabId)
+            ? recipeRecorder.noteOperation('trim_shift', asRecipeParams(eff), undefined, recipeOwnerTabId)
             : null;
         if (recordingThisTab && !recipeTicket) {
             toast.info(t('tabs.imposition:dang_xu_ly_file'));
@@ -2184,11 +2665,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         await runRecordedProcess(recipeTicket, async () => {
             const { runTrimShift } = await import('../lib/processHandlers');
-            return runTrimShift(buildProcessContext(recipeTicket), eff);
+            return runTrimShift(await buildProcessContext(recipeTicket), eff);
         });
     };
 
-    const handleStartSplit = useCallback(async (settings: any) => {
+    const handleStartSplit = useCallback(async (settings: SplitSettings & { spawnNewTab?: boolean }) => {
         if (!file) return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
         if (recordingThisTab && !isLinearRecipeSplitMode(settings.mode)) {
@@ -2200,7 +2681,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         const eff = recordingThisTab ? { ...settings, spawnNewTab: false } : settings;
         const recipeTicket = !eff.spawnNewTab && recordingThisTab
-            ? recipeRecorder.noteOperation('split', eff, undefined, recipeOwnerTabId)
+            ? recipeRecorder.noteOperation('split', asRecipeParams(eff), undefined, recipeOwnerTabId)
             : null;
         if (recordingThisTab && !recipeTicket) {
             toast.info(t('tabs.imposition:dang_xu_ly_file'));
@@ -2208,11 +2689,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         await runRecordedProcess(recipeTicket, async () => {
             const { runSplit } = await import('../lib/processHandlers');
-            return runSplit(buildProcessContext(recipeTicket), eff);
+            return runSplit(await buildProcessContext(recipeTicket), eff);
         });
     }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
-    const handleStartMerge = useCallback(async (settings: any) => {
+    const handleStartMerge = useCallback(async (settings: MergeSettings & { spawnNewTab?: boolean }) => {
         if (!file && settings.mode === 'insert_pages') return;
         const recordingThisTab = recipeRecorder.isRecordingFor(recipeOwnerTabId);
         // RECIPE (audit 2026-08-16 §PLAY.5): Trộn xen kẽ cần đủ hai nguồn, Chèn trang
@@ -2228,7 +2709,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // KHÔNG lưu blob file ngoài vào recipe (Property 7) — chỉ lưu cấu hình ghép.
             // `insertFile` cũng phải bị tước: JSON.stringify(File) = `{}` truthy sẽ lọt
             // qua guard của engine rồi vỡ khi đọc `.name`.
-            const { filesToMerge, oddFile, evenFile, insertFile, ...mergeParams } = eff;
+            const { filesToMerge, oddFile: _oddFile, evenFile: _evenFile, insertFile: _insertFile, ...mergeParams } = eff;
+            void _oddFile;
+            void _evenFile;
+            void _insertFile;
             // RECIPE (audit 2026-08-17 §PLAY.5R): ghi ĐÚNG số file ngoài để phát lại hỏi
             // lại đủ N file theo thứ tự (Ghép nối tiếp A+B+C ghi trên A → cần 2 file).
             const externalInputCount = Array.isArray(filesToMerge)
@@ -2236,7 +2720,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 : 0;
             recipeTicket = recipeRecorder.noteOperation(
                 'merge',
-                mergeParams,
+                asRecipeParams(mergeParams),
                 { externalInputCount },
                 recipeOwnerTabId,
             );
@@ -2247,7 +2731,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         await runRecordedProcess(recipeTicket, async () => {
             const { runMerge } = await import('../lib/processHandlers');
-            return runMerge(buildProcessContext(recipeTicket), eff);
+            return runMerge(await buildProcessContext(recipeTicket), eff);
         });
     }, [file, buildProcessContext, recipeOwnerTabId, t]);
 
@@ -2273,37 +2757,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         setIsRecipePlaying(true);
         try {
+        // REVISION (audit 2026-08-25 §REV.03): Recipe tự tạo nhiều revision nên
+        // dùng con trỏ CAS riêng; mỗi publish hợp lệ sẽ tiến con trỏ sang file mới.
+        let playbackExpectedRevision = captureWorkspaceDocumentRevision(store.getState());
+        const assertPlaybackRevisionCurrent = () => {
+            if (isWorkspaceDocumentRevisionCurrent(playbackExpectedRevision, store.getState())) return;
+            throw new StaleWorkspaceDocumentRevisionError(t(
+                'tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly',
+                {
+                    defaultValue: 'Tài liệu đã thay đổi trong lúc xử lý. Kết quả cũ đã được bỏ qua; vui lòng chạy lại.',
+                },
+            ));
+        };
         // Playback là luồng ngoài recorder: mọi commit/error đều mang `null` để không thể
         // tiêu thụ pending thật của một phiên ghi đang tồn tại ở tab khác.
-        const base = buildProcessContext(null);
-        let initialPath: string | undefined;
-        try { initialPath = await base.getWorkingSourcePath?.(); }
-        catch { initialPath = undefined; }
-
-        let initialBytes: Uint8Array | undefined;
-        if (!initialPath) {
-            try { initialBytes = await base.getWorkingBytes(); }
-            catch { initialBytes = new Uint8Array(await getFileArrayBuffer(file)); }
-        }
+        const base = await buildProcessContext(null);
+        const initialArtifact = await resolveInitialWorkingArtifact(base, file);
 
         // RECIPE (audit 2026-08-15 §PLAY.1-2): native output trả carrier rỗng
         // kèm path thật. Controller giữ đúng nguồn chân lý và chỉ đọc path vào
         // RAM khi runner kế tiếp thật sự cần bytes.
         const workingArtifact = createWorkingArtifactController(
-            initialPath
-                ? {
-                    kind: 'path',
-                    name: file.name,
-                    mimeType: file.type || 'application/pdf',
-                    path: initialPath,
-                    size: file.size,
-                }
-                : {
-                    kind: 'bytes',
-                    name: file.name,
-                    mimeType: file.type || 'application/pdf',
-                    bytes: initialBytes!,
-                },
+            initialArtifact,
             {
                 readPath: async (artifact) => {
                     const pathFile = new File([], artifact.name, { type: artifact.mimeType });
@@ -2336,11 +2811,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             input.type = 'file';
             input.accept = accept;
             input.onchange = () => resolve(input.files?.[0] ?? null);
-            (input as any).oncancel = () => resolve(null);
+            (input as HTMLInputElement & { oncancel?: (() => void) | null }).oncancel = () => resolve(null);
             input.click();
         });
 
-        const requestExternalInput = async (step: any, kind: 'csv' | 'file') => {
+        const requestExternalInput = async (step: unknown, kind: 'csv' | 'file') => {
             if (kind === 'csv') {
                 const f = await pickOneFile('.csv,text/csv');
                 if (!f) return null;
@@ -2349,7 +2824,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // RECIPE (audit 2026-08-17 §PLAY.5R): hỏi ĐỦ số file đã ghi, TỪNG cái theo
             // thứ tự, để Ghép nối tiếp phát lại đúng A+B+C (không mất C). Recipe cũ
             // thiếu externalInputCount → coi như 1 file (giữ hành vi cũ).
-            const count = Math.max(1, Number(step?.externalInputCount) || 1);
+            const count = Math.max(1, Number((step as RecipeExternalInputStep)?.externalInputCount) || 1);
             const files: File[] = [];
             for (let i = 0; i < count; i++) {
                 // Native file picker không hiện label riêng → báo trước bằng toast để
@@ -2367,16 +2842,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         // RECIPE (audit 2026-08-17 §PLAY.13): đẩy ĐÚNG một entry history (revision
         // trước lượt phát) để Undo thu gọn cả lượt về đúng file ban đầu, thay vì N lần.
+        assertPlaybackRevisionCurrent();
         if (file) {
             setHistory(prev => {
-                const next = [...prev, stripBytesIfOnDisk(file)];
+                const next = [...prev, createWorkspaceHistoryEntry({
+                    file,
+                    pageOrder: viewerPageOrder,
+                    pageInstanceIds: viewerPageInstanceIds,
+                    pageRotations: viewerPageRotations,
+                    pageRevisionDirty: viewerDirty,
+                    sourceImageFile,
+                    stickerSourceFile: stickerSheetSourceVisible ? stickerSheetSourceFile : null,
+                })];
                 return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
             });
         }
         // Thứ tự/góc xoay trang đã được bake vào input lúc đọc working; reset để không
         // áp nhầm lên revision mới của lượt phát.
         setViewerPageOrder(undefined);
+        setViewerPageInstanceIds(undefined);
         setViewerPageRotations(undefined);
+        playbackExpectedRevision = captureWorkspaceDocumentRevision(store.getState());
 
         // RECIPE (audit 2026-08-17 §PLAY.14): publisher riêng cho lượt phát — chỉ giữ
         // một blob URL trung gian, không đẩy history mỗi bước (đã đẩy một entry ở trên).
@@ -2385,12 +2871,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             revokeObjectUrl: (u) => URL.revokeObjectURL(u),
             localFileUrl,
             onRevision: ({ file: revFile, url, name, path }) => {
+                assertPlaybackRevisionCurrent();
                 setOriginalFileName(name);
                 setFile(revFile);
                 setPdfUrl(url);
                 if (!path) setFileSizeStr((revFile.size / (1024 * 1024)).toFixed(2) + ' MB');
                 setIsSaved(false);
                 onTitleChange?.(name);
+                playbackExpectedRevision = captureWorkspaceDocumentRevision(store.getState());
             },
         });
 
@@ -2451,8 +2939,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setIsRecipePlaying(false);
         }
     }, [file, buildProcessContext, recipeOwnerTabId, t, onTitleChange,
-        setHistory, setViewerPageOrder, setViewerPageRotations, setOriginalFileName,
-        setFile, setPdfUrl, setFileSizeStr, setIsSaved, setProcessStatus]);
+        setHistory, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations,
+        setOriginalFileName, setFile, setPdfUrl, setFileSizeStr, setIsSaved,
+        setProcessStatus, sourceImageFile, stickerSheetSourceFile, stickerSheetSourceVisible,
+        store, viewerDirty, viewerPageInstanceIds, viewerPageOrder, viewerPageRotations]);
 
     const handleStartBooklet = useCallback((config: BookletSettings) => {
         // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
@@ -2466,7 +2956,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // tuyệt đối không được đi vào job In Nhanh chỉ vì UI đang ẩn nó.
         const isOffsetBooklet = config.paperClassification === 'offset';
         const effectiveFoldPattern = isOffsetBooklet ? config.foldPattern : undefined;
-        const settings: any = {
+        const settings = {
             imposerMode: isOffsetBooklet ? 'offset' : 'guillotine',
             impositionMode: ImpositionMode.Booklet,
             paperClassification: config.paperClassification,
@@ -2505,8 +2995,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
 
         // Calculate preview report
-        const effectiveFoliosize = ((settings as any).chainNup && (settings as any).foldPattern && (settings as any).foldPattern.startsWith('sig_'))
-            ? parseInt((settings as any).foldPattern.split('_')[1])
+        const foldPattern = (settings as RecipeSettingsView).foldPattern;
+        const effectiveFoliosize = (settings as RecipeSettingsView).chainNup && foldPattern?.startsWith('sig_')
+            ? parseInt(foldPattern.split('_')[1] ?? '', 10)
             : config.foliosize;
 
         const totalPages = viewerPageOrder ? viewerPageOrder.length : 0;
@@ -2518,7 +3009,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const bodyMultiple = config.signatureMode === 'flush_mount' ? 2 : 4;
         const paddedBodyPages = Math.ceil(imposedPageCount / bodyMultiple) * bodyMultiple;
         const paddedPages = paddedBodyPages + separatedCoverPages;
-        const mapResult = generateBindingMap(imposedPageCount, (settings as any).bindingMode || 'saddle', effectiveFoliosize, (settings as any).blankPlacement || 'end');
+        const mapResult = generateBindingMap(imposedPageCount, settings.bindingMode || 'saddle', effectiveFoliosize, settings.blankPlacement || 'end');
 
         // Check if page sizes are consistent
         let sizesConsistent = true;
@@ -2543,7 +3034,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         if (isPerfect) {
             // Bypass confirmation if everything is perfectly aligned
-            processEngine(settings, config.spawnNewTab);
+            processEngine(settings as ProcessingSettings, config.spawnNewTab);
         } else {
             setConfirmBlankPlacement(config.blankPlacement || 'end');
             setConfirmBookletSettings({
@@ -2580,7 +3071,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         ) && (
             config.alternateRotation === 'row' || config.alternateRotation === 'column'
         ) ? config.alternateRotation : 'none';
-        const settings: any = {
+        const settings = {
             imposerMode: config.cncMode ? 'cnc' : (config.isDieCutMode ? 'diecut' : 'guillotine'),
             impositionMode: ImpositionMode.NUp,
             paperThickness: 0,
@@ -2672,8 +3163,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             saveByReport: config.saveByReport,
         };
 
-        processEngine(settings, config.spawnNewTab);
-    }, [viewerPageOrder, viewerPageRotations, processEngine]);
+        processEngine(settings as unknown as ProcessingSettings, config.spawnNewTab);
+    }, [viewerPageOrder, viewerPageRotations, viewerNumPages, processEngine]);
     //#endregion
 
     //#region Core UI Handlers
@@ -2714,14 +3205,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         onTitleChange?.(t('tabs.imposition:khong_co_file'));
     };
 
-    const handleReset = () => {
-        if (isDirty || viewerDirty) {
-            setShowCloseConfirm(true);
-            return;
-        }
-        forceReset();
-    };
-
     // Số trang file GỐC (disk) — khác viewerNumPages sau khi xóa trang.
     // Cache theo identity file; xóa đuôi 10→4 còn order [1,2,3,4] vẫn phải bake.
     const sourcePageCountCacheRef = useRef<{ key: string; count: number } | null>(null);
@@ -2737,8 +3220,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (len > maxViewerOrderLenRef.current) maxViewerOrderLenRef.current = len;
     }, [viewerPageOrder]);
 
-    const resolveSourcePageCount = async (f: File): Promise<number> => {
-        const key = `${(f as any).path || f.name}|${f.size}|${(f as any).lastModified || 0}`;
+    const resolveSourcePageCount = useCallback(async (f: File): Promise<number> => {
+        const fileLike = f as WorkspaceFileLike;
+        const key = `${fileLike.path || f.name}|${f.size}|${f.lastModified || 0}`;
         if (sourcePageCountCacheRef.current?.key === key) {
             return sourcePageCountCacheRef.current.count;
         }
@@ -2747,10 +3231,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const count = doc.getPageCount();
         sourcePageCountCacheRef.current = { key, count };
         return count;
-    };
+    }, []);
 
     /** order === [1..N] với N = số trang FILE GỐC (không phải viewerNumPages sau xóa). */
-    const isViewerOrderIdentityForSource = async (
+    const isViewerOrderIdentityForSource = useCallback(async (
         f: File,
         order: number[] | null | undefined,
     ): Promise<boolean> => {
@@ -2762,9 +3246,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const srcCount = await resolveSourcePageCount(f);
         if (order.length !== srcCount) return false;
         return order.every((p, i) => p === i + 1);
-    };
+    }, [resolveSourcePageCount]);
 
-    const applyAcrobatEdits = async (sourceFile: File | null = file) => {
+    const applyAcrobatEdits = useCallback(async (sourceFile: File | null = file) => {
         if (!sourceFile || !viewerPageOrder) return null;
         const rotations = viewerPageRotations || {};
         const arrayBuffer = await getFileArrayBuffer(sourceFile);
@@ -2805,28 +3289,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
 
         const pdfBytes = await newDoc.save();
-        return new Blob([pdfBytes as any], { type: 'application/pdf' });
-    };
+        return new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
+    }, [file, viewerPageOrder, viewerPageRotations]);
 
-    /** Lấy bytes PDF đã áp dụng visual edits (xóa trang, xoay, sắp xếp lại) */
-    const getWorkingBytes = async (): Promise<Uint8Array> => {
-        if (viewerPageOrder && file && !(await isViewerOrderIdentityForSource(file, viewerPageOrder))) {
-            const bakedBlob = await applyAcrobatEdits();
-            if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
-            throw new Error('Không thể tạo PDF làm việc từ thứ tự trang hiện tại.');
-        } else if (viewerPageOrder && file) {
-            // Identity order nhưng có thể còn xoay — bake nếu có góc ≠ 0.
-            const hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
-            if (hasRot) {
-                const bakedBlob = await applyAcrobatEdits();
-                if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
-                throw new Error('Không thể tạo PDF làm việc từ góc xoay trang hiện tại.');
-            }
-        }
-        // getFileArrayBuffer đọc từ path (protocol localfile) nếu file đã strip bytes sau undo,
-        // fallback file.arrayBuffer() khi có bytes — tránh trả 0 byte (audit RAM #2).
-        return new Uint8Array(await getFileArrayBuffer(file!));
-    };
+    applyAcrobatEditsRef.current = applyAcrobatEdits;
 
     /**
      * Trả về File template để các tác vụ tiếp theo (VDP, đánh số...) xử lý.
@@ -2853,7 +3319,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // viewerPageRotations giờ là number[] THEO VỊ TRÍ, flattenRotations luôn tạo mảng
         // đầy đủ độ dài KỂ CẢ khi mọi góc = 0 → phải kiểm "có góc ≠ 0", không phải "có key"
         // (nếu dùng .length sẽ bật cờ sửa oan → bake file thừa).
-        const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
+        const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: unknown) => ((((r as number) % 360) + 360) % 360) !== 0));
         if ((hasOrderEdits || hasRotEdits) && file) {
             try {
                 const baked = await applyAcrobatEdits();
@@ -2878,6 +3344,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     /** @returns true nếu đã lưu thành công; false nếu huỷ dialog / lỗi. */
     const handleSaveFile = useCallback(async (isSaveAs: boolean = false): Promise<boolean> => {
+        // DATA (audit 2026-08-25 §NW.2): snapshot child không bao giờ ghi đè file
+        // khách hoặc snapshot app-owned, kể cả Ctrl+S/SaveModal truyền `false`.
+        const effectiveSaveAs = isSaveAs || Boolean(documentWindow?.saveAsOnly);
         // Edit-session COMMIT-ON-SAVE: nếu đang sửa object và có thay đổi chưa ghi
         // (commit-on-exit chưa chạy vì vẫn ở edit mode), commit NGAY để `file`/pdfUrl
         // trỏ Working_File mới ĐÃ bake mọi op. onCommit → handleEditCommit set state
@@ -2898,25 +3367,25 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Working_File đã bake op. Non-edit: getState().file === file (không đổi).
         const curFile: File | null = (store?.getState().file as File | null) || file;
         let targetBlob: Blob | null = curFile;
-        let targetName = curFile ? curFile.name : 'Document.pdf';
+        const targetName = curFile ? curFile.name : 'Document.pdf';
         let didBake = false;  // có bake edits/VDP vào blob mới hay không
 
         if (!targetBlob) return false;
 
         // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
         // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
-        const isGeneratedResult = !!(curFile as any)?.isGenerated;
+        const isGeneratedResult = !!(curFile as WorkspaceFileLike)?.isGenerated;
         // path chỉ là file tạm backend (<uuid>.pdf) do polyfill gán để render → KHÔNG
         // được coi là đích lưu thật. Bắt buộc hỏi vị trí lưu (tránh ghi đè temp + đổi
         // tên tab thành chuỗi uuid). Phòng thủ 2 lớp: cờ isTempUploadPath HOẶC path nằm
         // trong thư mục phù du của backend (uploads/results/temp | <uuid>.pdf).
-        const isTempUploadPath = !!(curFile as any)?.isTempUploadPath
-            || isEphemeralBackendPath((curFile as any)?.path);
+        const isTempUploadPath = !!(curFile as WorkspaceFileLike)?.isTempUploadPath
+            || isEphemeralBackendPath((curFile as WorkspaceFileLike)?.path);
 
         // Chỉ bake khi có sửa đổi THẬT SỰ (xoay khác 0, hoặc thứ tự trang khác gốc /
         // có xoá/chèn). So với FILE GỐC page count — không dùng viewerNumPages (sau xóa
         // luôn = order.length → xóa đuôi bị bỏ sót). Nếu chỉ "lưu lại" không sửa → bỏ bake.
-        const _hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
+        const _hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: unknown) => ((((r as number) % 360) + 360) % 360) !== 0));
         const _hasReorder = !!viewerPageOrder && curFile
             ? !(await isViewerOrderIdentityForSource(curFile, viewerPageOrder))
             : false;
@@ -2932,8 +3401,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     targetBlob = editedBlob;
                     didBake = true;
                 }
-            } catch (err: any) {
-                setError(t('tabs.imposition:loi_khi_ap_dung_sua_doi') + err.message);
+            } catch (err: unknown) {
+                setError(t('tabs.imposition:loi_khi_ap_dung_sua_doi') + errorMessage(err));
                 return false;
             } finally {
                 setIsProcessing(false);
@@ -2950,7 +3419,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Cập nhật in-memory sau khi lưu thành công: bake blob mới (giữ TÊN GỐC),
         // xoá visual edits/VDP đã bake, đánh dấu ĐÃ LƯU (không còn dirty).
         const _bakeInMemory = (blob: Blob, name: string, path: string | null) => {
-            const bf = new File([blob as any], name, { type: 'application/pdf' });
+            const bf = new File([blob], name, { type: 'application/pdf' });
             if (path) {
                 try { Object.defineProperty(bf, 'path', { value: path }); } catch { /* ignore */ }
             }
@@ -2969,7 +3438,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
 
         try {
-            if ((window as any).__TAURI_INTERNALS__) {
+            if ((window as RuntimeWindow).__TAURI_INTERNALS__) {
                 const { save } = await import('@tauri-apps/plugin-dialog');
                 const { invoke } = await import('@tauri-apps/api/core');
                 // GHI NGUYÊN TỬ qua lệnh Rust (ghi temp cùng thư mục rồi rename = thay-thế
@@ -2981,8 +3450,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 let path: string | null = null;
                 // File kết quả sinh sẵn (VDP/batch) nằm ở thư mục tạm + blob in-memory chỉ
                 // là placeholder → KHÔNG ghi đè vào temp, luôn hỏi vị trí lưu.
-                if (!isSaveAs && (curFile as any)?.path && !isGeneratedResult && !isTempUploadPath) {
-                    path = (curFile as any).path; // Overwrite original
+                if (!effectiveSaveAs && (curFile as WorkspaceFileLike)?.path && !isGeneratedResult && !isTempUploadPath) {
+                    path = (curFile as WorkspaceFileLike).path ?? null; // Overwrite original
                 } else {
                     path = await save({
                         filters: [{ name: 'PDF', extensions: ['pdf'] }],
@@ -2994,7 +3463,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (path) {
                     // Lưu đè đúng file nguồn mà không có gì để bake → đã là chính nó,
                     // bỏ qua (đặt TRƯỚC khi đọc bytes để không đọc thừa file lớn qua IPC).
-                    if (path === (curFile as any)?.path && !didBake) {
+                    if (path === (curFile as WorkspaceFileLike)?.path && !didBake) {
                         const fileName = path.split(/[\\/]/).pop() || targetName;
                         setIsSaved(true);
                         onTitleChange?.(fileName);
@@ -3007,7 +3476,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     // khi serialize khối bytes khổng lồ (vd booklet 338MB). Ngược lại (đã bake
                     // edits/VDP, hoặc file chỉ có blob in-memory) → ghi bytes như cũ.
                     const sourceDiskPath: string | null =
-                        (!didBake && (curFile as any)?.path) ? (curFile as any).path : null;
+                        (!didBake && (curFile as WorkspaceFileLike)?.path) ? ((curFile as WorkspaceFileLike).path ?? null) : null;
                     const performWrite = async (destPath: string) => {
                         if (sourceDiskPath) {
                             const { invoke } = await import('@tauri-apps/api/core');
@@ -3026,7 +3495,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             // File tách/sinh trong bộ nhớ vừa được lưu ra vị trí THẬT:
                             // trỏ `file` sang path mới + bỏ cờ tạm để Ctrl+S sau ghi đè
                             // đúng file người dùng (không hỏi lại, không dùng path uuid).
-                            const rebased = new File([targetBlob as any], fileName, { type: 'application/pdf' });
+                            const rebased = new File([targetBlob], fileName, { type: 'application/pdf' });
                             try { Object.defineProperty(rebased, 'path', { value: path }); } catch { /* ignore */ }
                             // Chỉ ĐỔI PATH (copy đĩa→đĩa), nội dung + pdfUrl KHÔNG đổi → cờ này
                             // cho usePdfLoader RETURN SỚM (như __editCommit): không setNumPages(0),
@@ -3038,8 +3507,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         setIsSaved(true);
                         onTitleChange?.(fileName);
                         return true;
-                    } catch (writeErr: any) {
-                        if (writeErr.toString().includes('forbidden path') || writeErr.toString().includes('not allowed')) {
+                    } catch (writeErr: unknown) {
+                        const writeErrorText = errorMessage(writeErr);
+                        if (writeErrorText.includes('forbidden path') || writeErrorText.includes('not allowed')) {
                             const fallbackPath = await save({
                                 filters: [{ name: 'PDF', extensions: ['pdf'] }],
                                 defaultPath: targetName,
@@ -3079,15 +3549,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 onTitleChange?.(targetName);
                 return true;
             }
-        } catch (e: any) {
-            setError(t('tabs.imposition:khong_the_luu_file') + e);
+        } catch (e: unknown) {
+            setError(t('tabs.imposition:khong_the_luu_file') + errorMessage(e));
             return false;
         }
-    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange, editSession, store, isObjectEditMode]);
+    }, [editSession, store, file, viewerPageRotations, viewerPageOrder, isViewerOrderIdentityForSource, setError, t, setIsProcessing, setProcessStatus, applyAcrobatEdits, setFile, pdfUrl, setPdfUrl, setFileSizeStr, setViewerPageOrder, setViewerPageRotations, setViewerDirty, setSelectionFileId, setHiddenObjectIds, setLockedObjectIds, setIsSaved, onTitleChange, setOriginalFileName, documentWindow?.saveAsOnly]);
 
     useEffect(() => {
-        const handleTriggerSave = async (e: any) => {
-            if (e.detail?.tabId !== tabId) return;
+        const handleTriggerSave = async (e: Event) => {
+            const detail = (e as CustomEvent<{ tabId?: string; requestId?: string; saveAs?: boolean }>).detail;
+            if (detail?.tabId !== tabId) return;
             // Workspace Logo sở hữu artifact SVG và Save dialog riêng. Nếu parent
             // tiếp tục xử lý, cùng requestId có thể nhận kết quả lưu PDF sai trước.
             if (
@@ -3095,7 +3566,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 && logoWorkspaceOpened
                 && (logoSessionDirty || !documentIsDirty)
             ) return;
-            const requestId = e.detail?.requestId as string | undefined;
+            const requestId = detail?.requestId;
             const reply = (result: 'saved' | 'cancelled' | 'failed') => {
                 if (!requestId) return;
                 window.dispatchEvent(new CustomEvent('app-save-result', {
@@ -3113,14 +3584,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 reply('failed');
                 return;
             }
-            if (e.detail.saveAs) {
+            if (detail?.saveAs) {
                 setShowSaveAsModal(true);
                 // Save As modal không await → báo cancelled cho luồng thoát tuần tự
                 // (user vẫn lưu được qua modal; thoát app dùng Lưu trực tiếp không saveAs).
                 reply('cancelled');
                 return;
             }
-            if (!(isDirty || viewerDirty)) {
+            if (!documentWindow?.saveAsOnly && !(isDirty || viewerDirty)) {
                 // UIUX (audit menu 2026-07-28 §MB.2b): trước đây thoát êm, user bấm Lưu
                 // mà không thấy gì nên tưởng menu chết. Nói rõ là KHÔNG có gì cần lưu.
                 // Luồng thoát app (có requestId) vẫn im lặng — nó chỉ cần kết quả 'saved'.
@@ -3129,7 +3600,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 return;
             }
             try {
-                const ok = await handleSaveFile(false);
+                const ok = await handleSaveFile(Boolean(documentWindow?.saveAsOnly));
                 reply(ok ? 'saved' : 'cancelled');
             } catch {
                 reply('failed');
@@ -3137,7 +3608,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
         window.addEventListener('app-trigger-save', handleTriggerSave);
         return () => window.removeEventListener('app-trigger-save', handleTriggerSave);
-    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile, file, store, t, activeDashboardTool, logoWorkspaceOpened, logoSessionDirty, documentIsDirty]);
+    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile, file, store, t, activeDashboardTool, logoWorkspaceOpened, logoSessionDirty, documentIsDirty, setShowSaveAsModal, documentWindow?.saveAsOnly]);
 
     // Ctrl+P → in PDF ĐANG XEM qua hộp thoại máy in Windows (lệnh Rust print_pdf).
     // KHÔNG dùng window.print() của WebView2 (chỉ in DOM giao diện). Resolve path
@@ -3150,7 +3621,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setError('');
 
         try {
-            if (!(window as any).__TAURI_INTERNALS__) {
+            if (!(window as RuntimeWindow).__TAURI_INTERNALS__) {
                 setError(t('tabs.imposition:in_chi_ho_tro_trong_ung_dung'));
                 return;
             }
@@ -3170,7 +3641,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const curFile: File | null = (store?.getState().file as File | null) || file;
             if (!curFile) return;
 
-            const hasRotationEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
+            const hasRotationEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: unknown) => ((((r as number) % 360) + 360) % 360) !== 0));
             const hasOrderEdits = !!viewerPageOrder
                 && !(await isViewerOrderIdentityForSource(curFile, viewerPageOrder));
 
@@ -3212,17 +3683,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 initialPage,
                 selectedPages,
             });
-        } catch (e: any) {
-            setError(t('tabs.imposition:khong_the_in_file') + (e?.message || e));
+        } catch (e: unknown) {
+            setError(t('tabs.imposition:khong_the_in_file') + (errorMessage(e) || String(e)));
         } finally {
             isPrintingRef.current = false;
         }
-    }, [file, viewerPageRotations, viewerPageOrder, viewerNumPages, viewerActivePage, editSession, store, openPrintDialog, t]);
+    }, [setError, editSession, store, file, viewerPageRotations, viewerPageOrder, isViewerOrderIdentityForSource, viewerNumPages, viewerActivePage, openPrintDialog, t, setIsProcessing, setProcessStatus, applyAcrobatEdits]);
 
     useEffect(() => {
-        const handleTriggerPrint = (e: any) => {
+        const handleTriggerPrint = (e: Event) => {
+            const detail = (e as CustomEvent<{ tabId?: string }>).detail;
             if (!isActive) return;
-            if (e.detail.tabId === tabId) {
+            if (detail?.tabId === tabId) {
                 handlePrintFile();
             }
         };
@@ -3230,46 +3702,53 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return () => window.removeEventListener('app-trigger-print', handleTriggerPrint);
     }, [isActive, tabId, handlePrintFile]);
 
-    const handleExtractPages = async (indices: number[], deleteAfter: boolean) => {
-        if (!file || !onSpawnTab || !viewerPageOrder || !viewerPageRotations) return;
+    const handleExtractPages = async (viewerIndices: number[]): Promise<boolean> => {
+        if (!store.getState().file || !onSpawnTab) return false;
         try {
             setIsProcessing(true);
             setProcessStatus(t('tabs.imposition:dang_boc_tach_file_pdf'));
-            const arrayBuffer = await getFileArrayBuffer(file);
-            const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            const newDoc = await PDFDocument.create();
-
-            const firstPage = srcDoc.getPages()[0];
-            const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 }; // A4 fallback
-
-            // viewerPageRotations giờ là number[] THEO VỊ TRÍ. indices ở đây là SỐ TRANG
-            // (do AcrobatViewer truyền pageOrder[pos]) → map số trang về vị trí đầu tiên
-            // trong viewerPageOrder để tra góc. Fallback dữ liệu CŨ: nếu là Record<pageNum,deg>
-            // thì tra thẳng theo số trang (per-instance rotation 2026-07-06).
-            const rotsAny = viewerPageRotations as any;
-            const rotIsArray = Array.isArray(rotsAny);
-            for (const pIdx of indices) {
-                if (pIdx === -1) {
-                    newDoc.addPage([defaultDim.w, defaultDim.h]);
-                } else {
-                    const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                    const rot = rotIsArray
-                        ? (rotsAny[viewerPageOrder.indexOf(pIdx)] || 0)
-                        : (rotsAny[pIdx] || 0);
-                    if (rot) {
-                        const currentRot = copiedPage.getRotation().angle;
-                        copiedPage.setRotation(degrees(currentRot + rot));
-                    }
-                    newDoc.addPage(copiedPage);
-                }
+            const selectionState = store.getState();
+            const selectedInstanceIds = viewerIndices.map(
+                index => selectionState.viewerPageInstanceIds?.[index] || '',
+            );
+            if (selectedInstanceIds.some(id => !id)) {
+                throw new StaleWorkspaceDocumentRevisionError(
+                    t('tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly'),
+                );
             }
-
-            const pdfBytes = await newDoc.save();
-            const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
-            const extractedFile = new File([blob], `Bi_Broc_Tach_${file.name}`, { type: 'application/pdf' });
+            // `prepare()` chờ mọi edit-object đang bay commit/publish. Chụp snapshot
+            // SAU barrier rồi materialize đúng order/duplicate/rotation theo instance.
+            await getCropWorkingFile.prepare();
+            if (!isWorkingPageSelectionCurrent(
+                viewerIndices,
+                selectedInstanceIds,
+                store.getState().viewerPageInstanceIds,
+            )) {
+                throw new StaleWorkspaceDocumentRevisionError(
+                    t('tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly'),
+                );
+            }
+            const snapshot = getCropWorkingFile.capture();
+            if (!snapshot) throw new Error(t('tabs.imposition:loi_he_thong_khi_trich_xuat'));
+            const workingFile = await getCropWorkingFile.materialize(snapshot);
+            if (!getCropWorkingFile.isCurrent(snapshot)) {
+                throw new StaleWorkspaceDocumentRevisionError(
+                    t('tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly'),
+                );
+            }
+            const extractedFile = await extractWorkingPagePositions(workingFile, viewerIndices);
+            // CAS sát publication: job cũ không được mở tab kết quả từ revision
+            // không còn hiển thị, và Viewer vì thế cũng không được xóa trang.
+            if (!getCropWorkingFile.isCurrent(snapshot)) {
+                throw new StaleWorkspaceDocumentRevisionError(
+                    t('tabs.imposition:tai_lieu_da_thay_doi_trong_luc_xu_ly'),
+                );
+            }
             onSpawnTab(extractedFile);
-        } catch (e: any) {
-            setError(e.message || t('tabs.imposition:loi_he_thong_khi_trich_xuat'));
+            return true;
+        } catch (e: unknown) {
+            setError(errorMessage(e) || t('tabs.imposition:loi_he_thong_khi_trich_xuat'));
+            return false;
         } finally {
             setIsProcessing(false);
             setProcessStatus('');
@@ -3291,7 +3770,37 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // UIUX (audit 2026-08-22 §UX.MT.04): width hiệu dụng chỉ là derived layout;
     // không ghi đè preference khi viewport hẹp.
     const rightToolMenuWidth = effectiveToolMenuLayout.totalWidth;
-    const effectiveRightToolMenuWidth = sidebarDraftTotalWidth ?? rightToolMenuWidth;
+    const displayedToolMenuLayout = sidebarDraftLayout === null
+        ? effectiveToolMenuLayout
+        : sidebarDragRef.current.target === 'catalog' || preferredCatalogSplitWidth === null
+            ? sidebarDraftLayout
+            : resolveToolMenuDividerLayout(sidebarDraftLayout, preferredCatalogSplitWidth);
+    const displayedIsSidebarOpen = displayedToolMenuLayout.mode === 'full';
+    const effectiveRightToolMenuWidth = sidebarDraftLayout?.totalWidth
+        ?? sidebarDraftTotalWidth
+        ?? rightToolMenuWidth;
+    const beginRightToolMenuDrag = (
+        event: React.PointerEvent<HTMLDivElement>,
+        target: 'outer' | 'catalog',
+    ) => {
+        event.preventDefault();
+        sidebarDragPointerIdRef.current = event.pointerId;
+        sidebarDraftLayoutRef.current = target === 'outer'
+            ? { mode: effectiveToolMenuMode, fullWidth: sidebarWidth }
+            : null;
+        sidebarDraftEffectiveLayoutRef.current = null;
+        sidebarDraftTotalWidthRef.current = null;
+        sidebarDividerCatalogWidthRef.current = null;
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        sidebarDragRef.current = {
+            startX: event.clientX,
+            startTotalWidth: displayedToolMenuLayout.totalWidth,
+            startFullWidth: sidebarWidth,
+            startCatalogWidth: displayedToolMenuLayout.catalogWidth,
+            target,
+        };
+        setIsDraggingSidebar(true);
+    };
     const activeToolDefinition = findToolByUniqueKey(activeDashboardTool);
     const activeToolLocked = !!activeToolDefinition
         && !canUse(activeToolDefinition.featureId, licensePlan, licenseFeatures);
@@ -3396,8 +3905,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             <DialogKeys
                                 onCancel={() => setConfirmBookletSettings(null)}
                                 onConfirm={() => {
-                                    const finalSettings = { ...(confirmBookletSettings.settings as any), blankPlacement: confirmBlankPlacement };
-                                    processEngine(finalSettings, confirmBookletSettings.spawnNewTab);
+                                    const finalSettings = { ...(confirmBookletSettings.settings as unknown as RecipeSettingsView), blankPlacement: confirmBlankPlacement };
+                                    processEngine(finalSettings as ProcessingSettings, confirmBookletSettings.spawnNewTab);
                                     setConfirmBookletSettings(null);
                                 }}
                             />
@@ -3410,13 +3919,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <div className="p-6">
                                     <p className="text-slate-700 dark:text-zinc-300 mb-4 text-[15px]">
                                         {t('tabs.imposition:file_pdf_goc_gom')} <strong>{confirmBookletSettings.totalPages} {t('tabs.imposition:trang')}</strong>.
-                                        {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
+                                        {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as unknown as RecipeSettingsView).bindingMode !== 'flush_mount' && (
                                             <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-1">
                                                 {t('tabs.imposition:can_them_n_trang_trang_lam_tron', { add: confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages, total: confirmBookletSettings.paddedPages })}
                                             </span>
                                         )}
                                     </p>
-                                    {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
+                                    {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as unknown as RecipeSettingsView).bindingMode !== 'flush_mount' && (
                                         <div className="mb-5">
                                             <label className="text-[12px] text-slate-500 font-medium block mb-2">
                                                 {t('tabs.imposition:dat_n_trang_trang_o_dau', { n: confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages })}
@@ -3444,7 +3953,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <div className="p-4 bg-slate-50 dark:bg-zinc-900/50 flex justify-end gap-3 border-t border-slate-200 dark:border-white/10 mt-2">
                                     <Button variant="secondary" onClick={() => setConfirmBookletSettings(null)}>{t('tabs.imposition:huy_bo')}</Button>
                                     <Button variant="primary" onClick={() => {
-                                        const finalSettings = { ...(confirmBookletSettings.settings as any), blankPlacement: confirmBlankPlacement };
+                                        const finalSettings = { ...(confirmBookletSettings.settings as unknown as RecipeSettingsView), blankPlacement: confirmBlankPlacement };
                                         processEngine(finalSettings, confirmBookletSettings.spawnNewTab);
                                         setConfirmBookletSettings(null);
                                     }}>{t('tabs.imposition:dong_y_khoi_chay')}</Button>
@@ -3468,7 +3977,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     <OpenInDesignModal
                         open={showOpenInDesign}
                         onClose={() => setShowOpenInDesign(false)}
-                        resultFilePath={(file as any)?.path}
+                        resultFilePath={(file as WorkspaceFileLike)?.path}
                         resultBlob={file}
                         separateCut={effectiveSeparateCut}
                         cncMode={activeDashboardTool === 'cnc_imposer'}
@@ -3485,7 +3994,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         sheetWmm={0}
                         sheetHmm={0}
                         paths={[]}
-                        sourcePdfPath={(file as any)?.path}
+                        sourcePdfPath={(file as WorkspaceFileLike)?.path}
                         sourceName={file?.name}
                         defaultName={(originalFileName || 'cut').replace(/\.pdf$/i, '')}
                         currentPage={viewerActivePage}
@@ -3526,7 +4035,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
-                        {activeDashboardTool === 'document_cleanup' && shouldShowDocumentCleanupOverlay(!!file, !!sourceImageFile) && (
+                        {activeDashboardTool === 'document_cleanup' && shouldShowDocumentCleanupOverlay(!!file, !!sourceImageFileForRevision) && (
                             // UIUX (feedback 2026-08-21 §DOC.VIEW.01): toolbar Acrobat cao 48 px
                             // vẫn phải dùng được; bắt đầu workspace ngay dưới toolbar để các cụm
                             // Ảnh gốc/Kết quả và thu phóng không bị toolbar che mất.
@@ -3554,6 +4063,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <LogoRebuildWorkspace
                                     tabId={tabId || ''}
                                     isActive={isActive === true && activeDashboardTool === 'logo_rebuild'}
+                                    isLocked={activeToolLocked}
                                     hasOtherDirtyChanges={documentIsDirty}
                                     onDirtyChange={setLogoSessionDirty}
                                 />
@@ -3600,6 +4110,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <AcrobatViewer
                                     isActive={isActive}
                                     tabId={tabId}
+                                    initialViewState={documentWindow?.initialViewState}
+                                    onInitialViewStateApplied={documentWindow?.onInitialViewStateApplied}
                                     pageOverlay={classicCutlineOverlay ? (
                                         <ClassicCutlinePageOverlay
                                             preview={classicCutlineOverlay.preview}
@@ -3619,6 +4131,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         && stickerSheetSourceVisible
                                         ? stickerSheetPageStatuses
                                         : undefined}
+                                    pendingHistoryEntry={pendingHistoryEntry}
+                                    onHistoryEntryHydrated={handleHistoryEntryHydrated}
+                                    restoredHistoryDirty={restoredHistoryDirtyFile === file}
                                     onViewerDirtyChange={setViewerDirty}
                                     onExtractPages={handleExtractPages}
                                     onObjectDelete={handleDeleteObjects}
@@ -3660,37 +4175,46 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     rightPanel={(
                                         <div
                                             style={{ width: `${effectiveRightToolMenuWidth}px` }}
-                                            className={`shrink-0 bg-[#f8fafc] dark:bg-zinc-900 shadow-[-10px_0_30px_rgba(0,0,0,0.05)] flex flex-row justify-end z-20 h-full transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} relative border-l border-slate-200 dark:border-zinc-800`}
+                                            className="shrink-0 bg-[#f8fafc] dark:bg-zinc-900 shadow-[-10px_0_30px_rgba(0,0,0,0.05)] flex flex-row justify-end z-20 h-full relative border-l border-slate-200 dark:border-zinc-800"
                                         >
-                                        {/* Resizer Handle */}
+                                        {/* Mép ngoài: đổi tổng width của cả cụm. */}
                                         {/* UIUX (audit 2026-07-27 §B-25): vùng bắt chuột rộng gấp đôi (w-2.5), chỉ vẽ 1px ở giữa — nhìn không đổi */}
                                         <div
                                             className="absolute left-0 top-0 bottom-0 w-2.5 -ml-[5px] cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
-                                            onPointerDown={(e) => {
-                                                e.preventDefault();
-                                                sidebarDragPointerIdRef.current = e.pointerId;
-                                                sidebarDraftLayoutRef.current = { mode: effectiveToolMenuMode, fullWidth: sidebarWidth };
-                                                e.currentTarget.setPointerCapture?.(e.pointerId);
-                                                sidebarDragRef.current = {
-                                                    startX: e.clientX,
-                                                    startTotalWidth: rightToolMenuWidth,
-                                                    startFullWidth: sidebarWidth,
-                                                };
-                                                setIsDraggingSidebar(true);
-                                            }}
+                                            onPointerDown={(event) => beginRightToolMenuDrag(event, 'outer')}
                                         >
                                             <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-px bg-app-line pointer-events-none" />
                                         </div>
+                                        {/* UIUX (audit 2026-08-25): divider thật giữa thiết lập và catalog;
+                                            kéo tại đây chỉ phân bổ hai pane, không resize Viewer. */}
+                                        {hasActiveRightTool && displayedIsSidebarOpen && (
+                                            <div
+                                                style={{ right: `${displayedToolMenuLayout.catalogWidth}px` }}
+                                                role="separator"
+                                                aria-orientation="vertical"
+                                                className="group absolute top-0 bottom-0 z-50 w-2.5 translate-x-1/2 cursor-col-resize touch-none hover:bg-blue-500/10 active:bg-blue-500/20"
+                                                onPointerDown={(event) => beginRightToolMenuDrag(event, 'catalog')}
+                                            >
+                                                <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-app-line transition-colors group-hover:bg-blue-500" />
+                                            </div>
+                                        )}
                                         
                                         {/* Main Config Panel */}
                                         {hasActiveRightTool && (
-                                            <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-200 dark:border-zinc-800">
+                                            <div
+                                                className="flex flex-col overflow-hidden border-r border-slate-200 dark:border-zinc-800"
+                                                style={{
+                                                    flexBasis: `${displayedToolMenuLayout.configWidth}px`,
+                                                    flexGrow: 0,
+                                                    flexShrink: 0,
+                                                }}
+                                            >
                                                 {/* Sidebar Header */}
                                                 <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1a1a] shrink-0 shadow-sm relative z-10">
                                                     <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
                                                         {/* UIUX (audit 2026-08-22 §RM.DUAL-PANEL): catalog cạnh bên đã đảm nhiệm điều hướng;
                                                             header chỉ giữ thông tin file và các hành động của panel. */}
-                                                        {(activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFile))) && fileSizeStr && (
+                                                        {(activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFileForRevision))) && fileSizeStr && (
                                                             <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>
                                                         )}
                                                     </h2>
@@ -3728,7 +4252,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         )}
 
-                                                        {(isObjectEditMode ? (editSession.canUndo || editHistory.canUndo) : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFile)) && (
+                                                        {(isObjectEditMode ? (editSession.canUndo || editHistory.canUndo) : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (activeDashboardTool !== 'document_cleanup' || (!!file && !sourceImageFileForRevision)) && (
                                                             <button
                                                                 onClick={() => { if (isObjectEditMode) { if (editSession.canUndo) void editSession.undo(); else editHistory.undo(); } else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
@@ -3753,7 +4277,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                     </div>
                                                 </div>
 
-                                                <div className="p-4 overflow-y-auto flex-1 flex flex-col text-sm text-slate-800 dark:text-zinc-200 scroller-thin relative bg-[#f8fafc] dark:bg-zinc-900 border-t border-black/5 dark:border-white/5">
+                                                <div
+                                                    inert={toolInputBlockedByEdit}
+                                                    aria-busy={toolInputBlockedByEdit}
+                                                    className="p-4 overflow-y-auto flex-1 flex flex-col text-sm text-slate-800 dark:text-zinc-200 scroller-thin relative bg-[#f8fafc] dark:bg-zinc-900 border-t border-black/5 dark:border-white/5"
+                                                >
+                                                    {toolInputBlockedByEdit && (
+                                                        <div className="absolute inset-0 z-[70] flex items-center justify-center bg-white/80 px-4 text-center backdrop-blur-[1px] dark:bg-zinc-900/80">
+                                                            <div className="flex items-center gap-2 rounded-lg border border-black/10 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-200">
+                                                                <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-orange-500" />
+                                                                {t('tabs.imposition:dang_chot_chinh_sua_pdf', {
+                                                                    defaultValue: 'Đang chốt thay đổi Edit PDF…',
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                     {rightPanelKind === 'edit' ? (
                                                         <EditLayersPanel
                                                             tabId={tabId}
@@ -3783,7 +4321,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     return;
                                                                 }
                                                                 try {
-                                                                    await commitWorkingFile(blob, name, path, recipeTicket);
+                                                                    await commitWorkingFile(
+                                                                        blob,
+                                                                        name,
+                                                                        path,
+                                                                        recipeTicket,
+                                                                        renderedDocumentRevision,
+                                                                    );
                                                                 } finally {
                                                                     recipeRecorder.discardPending(recipeTicket);
                                                                 }
@@ -3792,6 +4336,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             }}
                                                             onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                copyArtifactLeaseToken(blob, newFile);
                                                                 if (path) {
                                                                     Object.defineProperty(newFile, 'path', { value: path });
                                                                 }
@@ -3821,7 +4366,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     return;
                                                                 }
                                                                 try {
-                                                                    await commitWorkingFile(blob, name, path, recipeTicket);
+                                                                    await commitWorkingFile(
+                                                                        blob,
+                                                                        name,
+                                                                        path,
+                                                                        recipeTicket,
+                                                                        renderedDocumentRevision,
+                                                                    );
                                                                 } finally {
                                                                     recipeRecorder.discardPending(recipeTicket);
                                                                 }
@@ -3830,6 +4381,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             }}
                                                             onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                copyArtifactLeaseToken(blob, newFile);
                                                                 if (path) {
                                                                     Object.defineProperty(newFile, 'path', { value: path });
                                                                 }
@@ -3843,6 +4395,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         <CoverNumberingTool
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
+                                                            workingPageCount={viewerPageOrder?.length ?? viewerNumPages}
                                                             vdpFields={vdpFields}
                                                             setVdpFields={setVdpFields}
                                                             selectedFieldIds={selectedVdpFieldIds}
@@ -3859,7 +4412,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     return;
                                                                 }
                                                                 try {
-                                                                    await commitWorkingFile(blob, name, path, recipeTicket);
+                                                                    await commitWorkingFile(
+                                                                        blob,
+                                                                        name,
+                                                                        path,
+                                                                        recipeTicket,
+                                                                        renderedDocumentRevision,
+                                                                    );
                                                                 } finally {
                                                                     recipeRecorder.discardPending(recipeTicket);
                                                                 }
@@ -3868,6 +4427,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             }}
                                                             onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                copyArtifactLeaseToken(blob, newFile);
                                                                 if (path) {
                                                                     Object.defineProperty(newFile, 'path', { value: path });
                                                                 }
@@ -3899,8 +4459,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             systemMergeFiles={systemMergeFiles}
                                                             officeSourceFile={officeSourceFile}
                                                             officeSourceFiles={officeSourceFiles}
-                                                            sourceImageFile={sourceImageFile}
+                                                            sourceImageFile={sourceImageFileForRevision}
+                                                            sourceImageReferenceFile={sourceImageFile}
                                                             getWorkingFile={getWorkingFile}
+                                                            getPreparedWorkingFile={getPreparedWorkingFile}
                                                             ensureCropFileId={ensureCropFileId}
                                                             onCropApplied={handleCropApplied}
                                                             onCropClose={handleCropClose}
@@ -3913,13 +4475,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         {/* UIUX (audit 2026-08-22 §RM.DUAL-PANEL): full = thiết lập + catalog; icons = rail. */}
                                         {(
                                             <div
-                                                className={`relative h-full shrink-0 transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} ${isSidebarOpen ? '' : 'w-[48px]'}`}
-                                               style={isSidebarOpen
-                                                    ? { width: `${effectiveToolMenuLayout.catalogWidth}px` }
-                                                    : undefined}
+                                                className="relative h-full min-w-0 flex-1 overflow-hidden"
                                             >
-                                                {isSidebarOpen ? (
-                                                    <div className="z-10 flex h-full w-full flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-900">
+                                                <div
+                                                    inert={!displayedIsSidebarOpen}
+                                                    aria-hidden={!displayedIsSidebarOpen}
+                                                    className={`absolute inset-y-0 right-0 z-10 flex flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none dark:border-zinc-800 dark:bg-zinc-900 ${displayedIsSidebarOpen ? 'pointer-events-auto translate-x-0 opacity-100' : 'pointer-events-none translate-x-1 opacity-0'}`}
+                                                    style={{
+                                                        width: `${displayedIsSidebarOpen
+                                                            ? displayedToolMenuLayout.catalogWidth
+                                                            : sidebarWidth}px`,
+                                                    }}
+                                                >
                                                         <div className="flex h-11 w-full shrink-0 items-center gap-2 border-b border-black/5 px-2 dark:border-white/10">
                                                             <button
                                                                 type="button"
@@ -3939,16 +4506,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         <ToolMenuList
                                                             setActiveTool={setActiveDashboardTool}
                                                             setTaskMode={(mode) => imposerStoreRef.current?.getState().setTaskMode(mode as TaskMode)}
+                                                            onActiveToolChange={(tool) => {
+                                                                if (tool === 'none') closeActiveToolPanel();
+                                                                else setActiveDashboardTool(tool);
+                                                            }}
                                                             activeTool={activeDashboardTool}
                                                         />
-                                                    </div>
-                                                ) : (
-                                                    <div className="z-10 flex h-full w-full flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] dark:border-zinc-800 dark:bg-zinc-900">
+                                                </div>
+                                                <div
+                                                    inert={displayedIsSidebarOpen}
+                                                    aria-hidden={displayedIsSidebarOpen}
+                                                    className={`absolute inset-y-0 right-0 z-20 flex w-12 flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none dark:border-zinc-800 dark:bg-zinc-900 ${displayedIsSidebarOpen ? 'pointer-events-none translate-x-1 opacity-0' : 'pointer-events-auto translate-x-0 opacity-100'}`}
+                                                >
                                                         <div className="flex h-11 w-full shrink-0 items-center justify-center border-b border-black/5 dark:border-white/10">
                                                             <button
                                                                 type="button"
                                                                 onClick={() => {
-                                                                    const next = resolveWorkspaceToolMenuToggle(isSidebarOpen);
+                                                                    const next = resolveWorkspaceToolMenuToggle(displayedIsSidebarOpen);
                                                                     if (next.mode === 'full') openWorkspaceSidebar();
                                                                     else collapseWorkspaceSidebar();
                                                                 }}
@@ -3986,6 +4560,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         key={`fav-${toolKey}`}
                                                                                         type="button"
                                                                                         onClick={() => {
+                                                                                            if (activeDashboardTool === toolKey) {
+                                                                                                closeActiveToolPanel();
+                                                                                                return;
+                                                                                            }
                                                                                             requestToolActivation(tool, () => {
                                                                                                 setActiveDashboardTool(toolKey);
                                                                                             });
@@ -4026,6 +4604,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         key={toolKey}
                                                                                         type="button"
                                                                                         onClick={() => {
+                                                                                            if (activeDashboardTool === toolKey) {
+                                                                                                closeActiveToolPanel();
+                                                                                                return;
+                                                                                            }
                                                                                             requestToolActivation(tool, () => {
                                                                                                 setActiveDashboardTool(toolKey);
                                                                                             });
@@ -4044,8 +4626,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 );
                                                             })}
                                                         </div>
-                                                    </div>
-                                                )}
+                                                </div>
                                             </div>
                                         )}
                                     </div>

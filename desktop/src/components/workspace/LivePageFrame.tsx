@@ -12,16 +12,14 @@ import {
 import { normalizePageHoverPosition } from '../../lib/outputPreviewSampling';
 import {
     cacheTileUrl,
-    clearTileUrlCache,
-    clearTileUrlCacheForFile,
     getCachedTileUrl,
     hasCachedTileUrl,
     type TileUrlSource,
 } from '../../lib/tileUrlCache';
 import { useCropPointerDrawing } from '../../hooks/useCropPointerDrawing';
+import type { VdpToolField } from '../../hooks/useVdpTool';
 import { VdpPreviewImage } from './ViewerHelpers';
 import OutputPreviewPageBoxLayer from './OutputPreviewPageBoxLayer';
-import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
 import {
     FIRST_TILE_SLOW_MS,
     INITIAL_TILE_LOAD_STATE,
@@ -35,8 +33,8 @@ import {
     progressiveViewerColorStages,
     type ViewerColorStage,
 } from '../../hooks/viewer/useTileRenderer';
-import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
-import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { globalPdfObjectCache, type CachedPdfObject } from '../../stores/pdfObjectCache';
+import { useWorkspaceStore, type WorkspacePreflightIssue } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore'; // §R.9 (audit độ nét 2026-07-28)
 import { useShallow } from 'zustand/react/shallow';
@@ -52,7 +50,6 @@ import {
     clipRectPdfToCanvas,
     addBboxCanvasToNative,
     moveDeltaCanvasToPdf,
-    snapRotation,
     pickFontForName as pickFontForNameUtil,
 } from './editGeometry';
 import { shouldLoadEditObjectsForFrame } from '../acrobat/thumbnailEditPreview';
@@ -108,7 +105,33 @@ import {
     viewportTilePresentationItems,
 } from './viewportTilePolicy';
 
-export { clearTileUrlCache, clearTileUrlCacheForFile };
+import {
+    VIEWER_RASTER_IMAGE_RENDERING,
+    viewerAccurateBaseScaleForRole,
+    viewerPageRenderPriority,
+    shouldCompositeViewerTile,
+    shouldRenderViewerBaseTile,
+    shouldRenderViewerAccurateBaseTile,
+    shouldRenderViewerAccurateUnderlay,
+    selectViewerAccurateBaseZoom,
+    shouldEnableViewerAccurateLayer,
+    shouldEnableViewerViewportAccurateTile,
+    viewerPanGridRenderPolicy,
+    shouldPresentViewerPanGrid,
+    shouldUseViewerDisplayLayer,
+    shouldUseViewerAccurateSimulation,
+    shouldUseViewerDirectFullPageSurface,
+    viewerSurfaceSwapMs,
+    shouldShowOutputPreviewBitmap,
+    isViewerTargetScaleReady,
+    shouldKeepViewerAccurateBaseMounted,
+    shouldRequestViewerAccurateBase,
+    shouldRenderViewerBasePage,
+    viewerBackgroundRenderOwnerId,
+    shouldMountViewerViewportLayer,
+    viewerRenderGroupKey,
+    viewerTileFileKey,
+} from './livePageFramePolicy';
 
 // Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
 const EMPTY_OBJECT_IDS: string[] = [];
@@ -133,7 +156,7 @@ interface EditCanvasObj {
     fontName?: string; // tên font gốc (BaseFont) để gợi ý/khớp font hệ thống
 }
 
-function isNonPaintingPointTextObject(obj: any): boolean {
+function isNonPaintingPointTextObject(obj: { type?: unknown; bbox?: unknown } | null | undefined): boolean {
     if (obj?.type !== 'text' || !Array.isArray(obj?.bbox) || obj.bbox.length !== 4) return false;
     return Math.abs(Number(obj.bbox[2]) - Number(obj.bbox[0])) <= 0.01
         && Math.abs(Number(obj.bbox[3]) - Number(obj.bbox[1])) <= 0.01;
@@ -183,8 +206,6 @@ const EDIT_ADD_TEXT_SIZE_PT = 12;
 const EDIT_ADD_TEXT_W_PT = 200;
 const EDIT_ADD_IMAGE_SIZE_PT = 150;
 
-const TILE_SIZE = 512;
-
 // ═══ Edit Objects Cache (chế độ Chỉnh sửa đối tượng) ═══
 // Cache danh sách EditCanvasObj theo khóa `${selectionFileId}:${pageIndex}` để
 // bật/tắt chế độ KHÔNG phải fetch lại /edit/objects (hết "load lâu khi tắt/bật").
@@ -211,341 +232,103 @@ interface TileLoadLabels {
     retry: string;
     cancel: string;
 }
+interface TileRequestOptions {
+    ownerId?: string;
+    groupKey?: string;
+    priority?: number;
+    colorStage?: ViewerColorStage;
+    forceAccurateColor?: boolean;
+    /** Token cua mot lan hien thi, dung chung cho coarse/display/accurate. */
+    generationKey?: string;
+}
+
+interface LiveTileProps {
+    fileKey: string;
+    pageNum: number;
+    pageInstanceId?: string;
+    zoom: number;
+    coarseZoom?: number;
+    rot: number;
+    clipX?: number;
+    clipY?: number;
+    clipW?: number;
+    clipH?: number;
+    cssLeft?: number;
+    cssTop?: number;
+    cssW?: number;
+    cssH?: number;
+    eager?: boolean;
+    getTileUrl?: (pageNum: number, rotation: number, zoom: number, clipX?: number, clipY?: number, clipW?: number, clipH?: number, options?: TileRequestOptions) => Promise<TileUrlSource>;
+    onVisible: (element: HTMLElement, visible: boolean, eager?: boolean) => void;
+    onRenderReady?: () => void;
+    onTileReady?: (info: { scale: number }) => void;
+    onTileUnmount?: () => void;
+    renderOwnerId?: string;
+    renderPriority?: number;
+    renderEnabled?: boolean;
+    showLoadStatus?: boolean;
+    loadLabels?: TileLoadLabels;
+    progressiveAccurate?: boolean;
+    accurateOnly?: boolean;
+    cancelAccurateGroup?: (groupKey: string) => void;
+    presentationFadeMs?: number;
+    seamlessGridPresentation?: boolean;
+    initialSource?: TileUrlSource | null;
+    preserveUnderlay?: boolean;
+}
+
+interface TileLayerProps {
+    fileKey: string;
+    displayFileKey: string;
+    pageNum: number;
+    pageInstanceId?: string;
+    zoom: number;
+    dpr: number;
+    accurateDpiAnchor?: number;
+    rotation: number;
+    displayWidth: number;
+    displayHeight: number;
+    containerRef: React.RefObject<HTMLElement | null>;
+    getTileUrl?: LiveTileProps['getTileUrl'];
+    onVisible: LiveTileProps['onVisible'];
+    onRenderReady?: () => void;
+    onAccurateCommitted?: () => void;
+    renderOwnerId?: string;
+    accurateColor?: boolean;
+    accurateCommitted?: boolean;
+    waitForAccurateBase?: boolean;
+    keepDisplayUntilAccurate?: boolean;
+    renderEnabled?: boolean;
+    cancelAccurateGroup?: (groupKey: string) => void;
+    initialPpeFrame?: ViewerFirstFrame | null;
+    stableUnderlayReady?: boolean;
+}
+
+interface TextChar {
+    c: string;
+}
+
+interface TextLine {
+    bbox: { x: number; y: number; w: number; h: number };
+    chars?: TextChar[];
+}
+
+interface TextBlock {
+    lines?: TextLine[];
+}
+
+type TextBlocksInput = TextBlock[] | { blocks?: TextBlock[] };
+
+interface EditPreviewLayer {
+    page: number;
+    url: string;
+    full?: boolean;
+    clipRect?: BBox | null;
+}
 
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
-// UIUX (feedback 2026-08-14 §VIEW.SHARP): WebView2/Edge đã đo trên chính file Standee:
-// tăng 24 → 72 → 96 DPI nhưng cùng co về khung Viewer gần như không làm chữ nhỏ rõ hơn.
-// Chế độ WebKit này giữ tương phản cạnh khi compositor thu bitmap và không đổi pixel 1:1.
-export const VIEWER_RASTER_IMAGE_RENDERING = '-webkit-optimize-contrast' as React.CSSProperties['imageRendering'];
-
-// UIUX (feedback 2026-08-14 §VIEW.SWAP): underlay ưu tiên đúng mật độ màn hình để
-// trang kế bên hiện ngay. Mức 24 DPI chỉ còn là fallback khi bitmap toàn trang
-// vượt ngân sách surface; tile viewport vẫn giữ nguyên mật độ đích.
-export const VIEWER_ACCURATE_UNDERLAY_SCALE = 0.25;
-
-export function viewerAccurateBaseScaleForRole(
-    preferredScale: number,
-    screenScale: number,
-    isActiveFrame: boolean,
-    prefetchPage: boolean,
-    hasReadyUnderlay = true,
-): number {
-    // UIUX (feedback 2026-08-14 §VIEW.PAGE): trang liền kề dựng trước theo mật độ
-    // màn hình; khi thành active, LiveTile giữ frame này và nâng nét phía sau.
-    if (!isActiveFrame && prefetchPage) return screenScale;
-    if (isActiveFrame && !hasReadyUnderlay) return screenScale;
-    return preferredScale;
-}
-
-export function viewerPageRenderPriority(
-    viewerIsActive: boolean,
-    isActiveFrame: boolean,
-    prefetchPage: boolean,
-): number {
-    if (!viewerIsActive) return 1000;
-    if (isActiveFrame) return 10;
-    return prefetchPage ? 20 : 100;
-}
-
-export function shouldCompositeViewerTile(
-    displayedColorRank: number,
-    displayedScale: number,
-    nextColorStage: ViewerColorStage | undefined,
-    nextScale: number,
-): boolean {
-    const nextColorRank = nextColorStage === 'accurate' ? 2 : 1;
-    return nextColorRank > displayedColorRank
-        || (nextColorRank === displayedColorRank && nextScale >= displayedScale);
-}
-
-export function isViewportTargetCurrent(
-    targetGroup: string | null | undefined,
-    currentGroup: string,
-): boolean {
-    return targetGroup === currentGroup;
-}
-
-export function shouldRenderViewerBaseTile(
-    shouldRenderBasePage: boolean,
-    _accurateColorPage: boolean,
-    _needsTiling: boolean,
-    _isActiveFrame: boolean,
-    fullPageWithinSurfaceBudget = true,
-): boolean {
-    // COLOR (feedback 2026-08-09 §RENDER.F8): slot nền vẫn theo vòng đời trang;
-    // policy pipeline bên dưới mới quyết định slot này có được phép dùng PDFium hay không.
-    return shouldRenderBasePage && fullPageWithinSurfaceBudget;
-}
-
-export function shouldRenderViewerAccurateBaseTile(
-    shouldRenderBasePage: boolean,
-    accurateColorPage: boolean,
-    needsTiling: boolean,
-    fullPageWithinSurfaceBudget = true,
-): boolean {
-    // Zoom thường dùng full-page PPE; zoom cao giao cho viewport PPE để không raster
-    // hai bitmap lớn cùng lúc. Trang rủi ro không có lớp PDFium nằm dưới.
-    return shouldRenderBasePage
-        && accurateColorPage
-        && !needsTiling
-        && fullPageWithinSurfaceBudget;
-}
-
-export function shouldRenderViewerAccurateUnderlay(
-    shouldRenderBasePage: boolean,
-    accurateColorPage: boolean,
-    needsTiling: boolean,
-    underlayWithinSurfaceBudget: boolean,
-): boolean {
-    return shouldRenderBasePage
-        && accurateColorPage
-        && needsTiling
-        && underlayWithinSurfaceBudget;
-}
-
-export function selectViewerAccurateBaseZoom(
-    preferredScale: number,
-    pageWidth: number,
-    pageHeight: number,
-    targetScale: number,
-): number | null {
-    if (isViewerFullPageWithinSurfaceBudget(
-        pageWidth,
-        pageHeight,
-        preferredScale,
-        targetScale,
-    )) return preferredScale;
-    if (isViewerFullPageWithinSurfaceBudget(
-        pageWidth,
-        pageHeight,
-        VIEWER_ACCURATE_UNDERLAY_SCALE,
-        targetScale,
-    )) return VIEWER_ACCURATE_UNDERLAY_SCALE;
-    return null;
-}
-
-export function shouldEnableViewerAccurateLayer(
-    shouldRenderAccurateLayer: boolean,
-    _displayLayerReady: boolean,
-    _accurateCommitted = false,
-): boolean {
-    // COLOR (feedback 2026-08-09 §RENDER.F8): PPE phải bắt đầu ngay. Chờ callback
-    // của display sẽ vừa phát khung sai màu, vừa đặt PPE sau PDFium trong hàng đợi.
-    return shouldRenderAccurateLayer;
-}
-
-export function shouldEnableViewerViewportAccurateTile(
-    accurateCommitted: boolean,
-    waitForAccurateBase: boolean,
-    visibleIsTarget: boolean,
-): boolean {
-    // PERF/COLOR (audit 2026-08-11 §PAN.TURBO-A): direct high-zoom không có
-    // full-page PPE để mở cổng; viewport priority 0 phải tự làm frame accurate đầu tiên.
-    return accurateCommitted || !waitForAccurateBase || visibleIsTarget;
-}
-
-// Hàm policy thuần được export để khóa hồi quy cold-open bằng unit test.
-// eslint-disable-next-line react-refresh/only-export-components
-export function viewerPanGridRenderPolicy(
-    accurateCommitted: boolean,
-    hasVisibleViewportTile: boolean,
-    phaseReady: boolean,
-): { near: boolean; outer: boolean } {
-    // PERF (audit 2026-08-14 §VIEW.LARGE.4): cold-open chưa có frame PPE không được
-    // phát đồng thời pan-grid với target chính. Các cell nhỏ từng hiện trước ở 554 ms
-    // và tạo thêm 8 job PPE trước first-frame; sau first-frame vẫn mở đầy đủ runway pan.
-    const firstAccurateFrameReady = accurateCommitted || hasVisibleViewportTile || phaseReady;
-    return {
-        near: firstAccurateFrameReady,
-        outer: firstAccurateFrameReady && phaseReady,
-    };
-}
-
-export function shouldPresentViewerPanGrid(
-    planIsCurrent: boolean,
-    viewportCovered: boolean,
-    zoomSettling: boolean,
-    hasStableUnderlay: boolean,
-): boolean {
-    // UIUX (feedback 2026-08-14 §VIEW.SWAP): các cell vẫn decode ở nền nhưng chỉ
-    // được đưa vào compositor cùng lúc khi hợp của chúng đã phủ kín viewport.
-    return planIsCurrent
-        && viewportCovered
-        && !(zoomSettling && hasStableUnderlay);
-}
-
-export function shouldUseViewerDisplayLayer(
-    accurateColorPage: boolean,
-    accurateCommitted: boolean,
-    keepDisplayUntilAccurate = false,
-): boolean {
-    // COLOR (feedback 2026-08-09 §RENDER.F8): trang rủi ro chỉ được phát pixel PPE,
-    // kể cả cold-open; PDFium chỉ còn là compatibility lane của trang thông thường.
-    if (!accurateColorPage) return true;
-    // PREFLIGHT (audit 2026-08-10 §OP.8): trang detector xem là an toàn được giữ
-    // bitmap hiện tại khi vừa mở Output Preview; chỉ rút nó sau khi Simulation mới
-    // đã decode, tránh quay lại màn Loading/nháy trắng của lỗi §OP.6.
-    return keepDisplayUntilAccurate && !accurateCommitted;
-}
-
-export function shouldUseViewerAccurateSimulation(
-    detectorRequiresAccurate: boolean,
-    outputPreviewActive: boolean,
-): boolean {
-    return detectorRequiresAccurate || outputPreviewActive;
-}
-
-export function shouldUseViewerDirectFullPageSurface(
-    accurateColorPage: boolean,
-    renderScale: number,
-    targetScale: number,
-    pageWidth: number,
-    pageHeight: number,
-    viewportWidth: number,
-    viewportHeight: number,
-): boolean {
-    if (!accurateColorPage) return false;
-    const values = [
-        renderScale,
-        targetScale,
-        pageWidth,
-        pageHeight,
-        viewportWidth,
-        viewportHeight,
-    ];
-    if (!values.every(value => Number.isFinite(value) && value > 0)) return false;
-    // UIUX (feedback 2026-08-11 §VIEW.SURFACE): trang đang nằm trọn trong viewport chỉ
-    // tốn xấp xỉ số pixel màn hình. Dựng thẳng một surface PPE đúng mật độ sẽ nhanh hơn
-    // nền 144 DPI + nhiều tile và không tạo pha “mờ → nét” không cần thiết.
-    const renderIsTargetDensity = renderScale + 0.001 >= targetScale * 0.95;
-    const pageFitsViewport = pageWidth <= viewportWidth + 1
-        && pageHeight <= viewportHeight + 1;
-    // PERF (audit 2026-08-13 §VIEW.LARGE.1): trước đây chỉ kiểm tra footprint CSS.
-    // Standee 800×1750 mm nằm vừa khung nhưng render nền 92 DPI thành khoảng
-    // 2.900×6.340 px; decode/ghép ảnh sau IPC có thể làm WebView báo lỗi trang.
-    // Tính footprint raster thực tế của surface hiện tại; nếu vượt ngân sách thì
-    // chuyển sang viewport PPE, không giảm DPI của frame chính.
-    const fullPageWithinSurfaceBudget = isViewerFullPageWithinSurfaceBudget(
-        pageWidth,
-        pageHeight,
-        renderScale,
-        targetScale,
-    );
-    return renderIsTargetDensity && pageFitsViewport && fullPageWithinSurfaceBudget;
-}
-
-export function viewerSurfaceSwapMs(
-    accurateColorPage: boolean,
-    requestedMs: number,
-): number {
-    // UIUX (feedback 2026-08-11 §VIEW.SURFACE): PPE mới chỉ xuất hiện sau khi đã
-    // decode hoàn chỉnh; hòa trộn với surface cũ làm mắt thấy một pha mềm trung gian.
-    return accurateColorPage ? 0 : Math.max(0, requestedMs);
-}
-
-export function shouldShowOutputPreviewBitmap(
-    outputPreviewActive: boolean,
-    activeViewerPage: number | null,
-    framePage: number,
-): boolean {
-    return outputPreviewActive && activeViewerPage === framePage;
-}
-
-export function isViewerTargetScaleReady(displayedScale: number, targetScale: number): boolean {
-    return Number.isFinite(displayedScale)
-        && Number.isFinite(targetScale)
-        && displayedScale + 0.001 >= targetScale;
-}
-
-export function shouldKeepViewerAccurateBaseMounted(
-    accurateColorPage: boolean,
-    renderAccurateBaseTile: boolean,
-    accurateCommitted: boolean,
-    fullPageWithinSurfaceBudget = true,
-): boolean {
-    // Giữ bitmap accurate full-page cũ làm fallback đúng màu khi chuyển qua viewport.
-    return accurateColorPage
-        && fullPageWithinSurfaceBudget
-        && (renderAccurateBaseTile || accurateCommitted);
-}
-
-export function shouldRequestViewerAccurateBase(
-    renderAccurateBaseTile: boolean,
-    accurateCommitted: boolean,
-    accurateBaseReady: boolean,
-    fullPageWithinSurfaceBudget = true,
-): boolean {
-    // Nếu frame accurate đầu tiên đến từ viewport, warm một full-page PPE ở nền để
-    // lần zoom-out sau luôn có fallback đúng màu.
-    if (!fullPageWithinSurfaceBudget) return false;
-    return renderAccurateBaseTile || (accurateCommitted && !accurateBaseReady);
-}
-
-export function shouldRenderViewerBasePage(
-    viewerIsActive: boolean,
-    isActiveFrame: boolean,
-    prefetchPage: boolean,
-): boolean {
-    // Cổng prefetch do Viewer chỉ mở sau khi trang active đã hiển thị.
-    return viewerIsActive && (isActiveFrame || prefetchPage);
-}
-
-export function viewerBackgroundRenderOwnerId(
-    ownerId: string,
-    pageInstanceId: string | undefined,
-    accurateColorPage: boolean,
-    _isActiveFrame: boolean,
-): string {
-    // Scope của nền PPE ổn định khi trang đổi prefetch → active; viewport dùng owner
-    // tương tác gốc nên không restart/hủy ảnh nền chỉ vì đổi vai trò hiển thị.
-    if (!accurateColorPage) return ownerId;
-    return `${ownerId}:accurate-base:${pageInstanceId || 'unknown-page'}`;
-}
-
-export function shouldMountViewerViewportLayer(
-    needsTiling: boolean,
-    accurateColorPage: boolean,
-    isActiveFrame: boolean,
-    accurateCommitted = false,
-    accurateBaseReady = true,
-): boolean {
-    // UIUX (feedback 2026-08-11 §VIEW.SURFACE): khi zoom-out, giữ surface viewport
-    // nét cũ tới lúc full-page PPE mới đã decode. Rút lớp này sớm sẽ lộ nền thấp DPI.
-    return needsTiling
-        || (accurateColorPage && isActiveFrame && accurateCommitted && !accurateBaseReady);
-}
-
-export function viewerRenderGroupKey(
-    pageNum: number,
-    pageInstanceId: string | undefined,
-    isViewport: boolean,
-): string {
-    // PERF (audit 2026-08-08 §RENDER.5): mỗi bản sao trang là một slot riêng;
-    // cleanup của instance này không được hủy render instance khác cùng source page.
-    const instanceId = pageInstanceId || `source-${pageNum}`;
-    return `page:${pageNum}:instance:${instanceId}:${isViewport ? 'viewport' : 'page'}`;
-}
-
-export function viewerTileFileKey(
-    source: string,
-    accurateColor: boolean,
-    documentToken?: string,
-    previewRevision?: string,
-    profileId = 'fogra39',
-    intent = 'relative',
-    proofIdentity = '',
-): string {
-    // PERF (audit 2026-08-08 §RENDER.5): cache hiển thị phải mang revision;
-    // save-over cùng path không được lấy lại Blob của phiên tài liệu trước.
-    const revision = documentToken || previewRevision || 'unknown-revision';
-    const simulation = accurateColor
-        ? `|profile:${(profileId || 'fogra39').trim().toLowerCase()}|intent:${(intent || 'relative').trim().toLowerCase()}|proof:${proofIdentity || 'default'}`
-        : '';
-    return `${source}|revision:${revision}|color:${accurateColor ? 'accurate' : 'display'}${simulation}`;
-}
-
 // Export ở mức component để regression test không cho hiện PDFium trong cold-open PPE.
-export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: any) => {
+export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
     const loadAttemptRef = useRef(0);
@@ -1202,11 +985,12 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, getTileUrl, onVisible, pageNum, progressiveAccurate, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceTileEvent, zoom]);
+    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, getTileUrl, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceTileEvent, zoom]);
     
     // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
     // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
     useEffect(() => {
+        const ownedBlobUrls = ownedBlobUrlsRef.current;
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
@@ -1228,10 +1012,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             }
             if (renderOwnerId) nativeRenderCoordinator.cancelGroup(renderOwnerId, renderGroupKey);
             cancelAccurateGroup?.(renderGroupKey);
-            for (const url of ownedBlobUrlsRef.current) {
+            for (const url of ownedBlobUrls) {
                 if (!hasCachedTileUrl(url)) URL.revokeObjectURL(url);
             }
-            ownedBlobUrlsRef.current.clear();
+            ownedBlobUrls.clear();
         };
     }, [cancelAccurateGroup, renderGroupKey, renderOwnerId, traceTileEvent]);
     useEffect(() => () => {
@@ -1408,7 +1192,7 @@ type BufferedViewportPanGridPlan = {
     outer: BufferedViewportTileSpec[];
 };
 
-const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false }: any) => {
+const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false }: TileLayerProps) => {
     const traceLayerIdRef = useRef(
         viewerTraceHash(`layer:${pageInstanceId || 'page'}:${pageNum}`),
     );
@@ -1656,7 +1440,7 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
         // PERF (feedback 2026-08-09 §ZOOM.F2): lần đầu phải đo đồng bộ; WebView2
         // occluded có thể hoãn rAF và accurate active không còn full-page dự phòng.
         compute();
-        const target: any = scrollEl || window;
+        const target: Window | HTMLElement = scrollEl || window;
         target.addEventListener('scroll', coalescer.schedule, { passive: true });
         window.addEventListener('resize', coalescer.schedule);
         return () => {
@@ -1664,7 +1448,7 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
             window.removeEventListener('resize', coalescer.schedule);
             coalescer.cancel();
         };
-    }, [accurateColor, bufferGroup, containerRef, rasterDpr, renderEnabled, rotation, sDisplayW, sDisplayH, sZoom]);
+    }, [accurateColor, bufferGroup, containerRef, rasterDpr, renderEnabled, rotation, sDisplayW, sDisplayH, sZoom, reuseGroup, renderScale, traceLayerEvent]);
 
     useEffect(() => {
         traceLayerEvent('viewport-layer-mount', {
@@ -1967,13 +1751,17 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
 // ═══ VDP text preview với AUTO-FIT ═══
 // Bóp cỡ chữ (xuống tối thiểu) để text vừa CHIỀU CAO khung, khớp với engine backend
 // (ReportLab cũng bóp theo chiều cao). Khi autoFit === false thì giữ nguyên cỡ chữ.
-const VdpAutoFitText = ({ field, scale, text }: any) => {
+interface VdpPreviewField extends VdpToolField {
+    autoFit?: boolean;
+}
+
+const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale: number; text: string }) => {
     const ref = useRef<HTMLSpanElement>(null);
     // Backend render fontSize ở pt THẬT, nhưng khung dùng đơn vị CSS (×96/72). Để preview
     // khớp output, cỡ chữ trên màn = fontSize(pt) × scale × (96/72). scale = displayWidth/pageDim.w.
     const fontPx = (field.fontSize || 10) * scale * (96 / 72);
     const [scaleX, setScaleX] = useState<number>(1);
-    const align = field.alignment || 'left';
+    const align = (field.alignment || 'left') as 'left' | 'center' | 'right';
 
     useLayoutEffect(() => {
         // Cần đồng bộ ngay sau layout để preview chữ không lóe sai tỷ lệ.
@@ -2030,10 +1818,10 @@ const VdpAutoFitText = ({ field, scale, text }: any) => {
 // bề rộng render KHỚP bề rộng thật của dòng trên trang. KHÔNG overflow:hidden/width
 // cứng (bản cũ cắt mất chữ tràn + lệch). scaleX đo 1 lần qua offsetWidth (bỏ qua
 // transform nên không lặp vô hạn). transformOrigin top-left để neo đúng mép trái-trên.
-const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale, gapPt }: { line: any; scale: number; gapPt: number }) {
+const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale, gapPt }: { line: TextLine; scale: number; gapPt: number }) {
     const ref = useRef<HTMLSpanElement>(null);
     const [scaleX, setScaleX] = useState(1);
-    const text = line.chars?.map((c: any) => c.c).join('') || '';
+    const text = line.chars?.map((c: TextChar) => c.c).join('') || '';
     const targetW = (line.bbox.w || 0) * scale;
     const h = (line.bbox.h || 0) * scale;
     // KẸP chiều cao khung click ≤ khe tới dòng kế → span KHÔNG chồng mép Y với dòng
@@ -2083,15 +1871,15 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
     pageWidthPx,
     displayWidth,
 }: {
-    textBlocks: any;
+    textBlocks: TextBlocksInput;
     pageWidthPx?: number;
     displayWidth: number;
 }) {
     const allLines = React.useMemo(
         () => (Array.isArray(textBlocks) ? textBlocks : (textBlocks?.blocks || []))
-            .flatMap((block: any) => block.lines || [])
-            .filter((line: any) => line?.bbox)
-            .sort((a: any, b: any) => a.bbox.y - b.bbox.y),
+            .flatMap((block: TextBlock) => block.lines || [])
+            .filter((line: TextLine) => line?.bbox)
+            .sort((a: TextLine, b: TextLine) => a.bbox.y - b.bbox.y),
         [textBlocks],
     );
     const pageWidthPt = pageWidthPx ? pageWidthPx * 72 / 96 : 595;
@@ -2099,7 +1887,7 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
 
     return (
         <div className="absolute inset-0 z-[12] select-text cursor-text" style={{ pointerEvents: 'auto' }}>
-            {allLines.map((line: any, index: number) => {
+            {allLines.map((line: TextLine, index: number) => {
                 const next = allLines[index + 1];
                 const gap = next ? (next.bbox.y - line.bbox.y) : Infinity;
                 return <SelectableTextLine key={index} line={line} scale={scale} gapPt={gap} />;
@@ -2108,6 +1896,8 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
     );
 });
 
+// Props contract is supplied by AcrobatViewer; keep the broad bridge while the shared viewer contract is migrated.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const LivePageFrame = (props: any) => {
   const { t } = useTranslation();
     const tileLoadLabels = useMemo<TileLoadLabels>(() => ({
@@ -2120,7 +1910,6 @@ export const LivePageFrame = (props: any) => {
     }), [t]);
     //#region Props & State
     const { originalPageNum, viewerPageNum, pageInstanceId, actualWidth100, zoom, physicalDisplayScale = 1, displayDevicePixelRatio = 1, accurateDpiAnchor = 96, rotation, bleedView, highlightBoxes, pageDim,
-        onObjectDelete,
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
         setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage,
         isImageFile: isImage, nativeFilePath, previewRevision,
@@ -2297,7 +2086,7 @@ export const LivePageFrame = (props: any) => {
         const pageHmm = pageDim.h * 25.4 / 72;
         const clampPos = (v: number, size: number, max: number) => Math.max(0, Math.min(v, Math.max(0, max - size)));
 
-        onVdpFieldsChange((prev: any[]) => prev.map((f: any) => {
+        onVdpFieldsChange((prev: VdpToolField[]) => prev.map((f: VdpToolField) => {
             if (!interaction.fieldIds.includes(f.id)) return f;
             const startData = interaction.startFields[f.id];
             if (!startData) return f;
@@ -2352,7 +2141,7 @@ export const LivePageFrame = (props: any) => {
     const rotateVdpField = (fieldId: string, newRot: number) => {
         if (!onVdpFieldsChange) return;
         const nr = ((newRot % 360) + 360) % 360;
-        onVdpFieldsChange((prev: any[]) => prev.map((f: any) => {
+        onVdpFieldsChange((prev: VdpToolField[]) => prev.map((f: VdpToolField) => {
             if (f.id !== fieldId) return f;
             const oldRot = ((Number(f.rotation) || 0) % 360 + 360) % 360;
             const oldVert = oldRot === 90 || oldRot === 270;
@@ -2412,7 +2201,7 @@ export const LivePageFrame = (props: any) => {
     // Crop PDF: lưu theo phần trăm trang, không lưu pixel. Nhờ vậy vùng đã quét
     // không lệch khi đổi zoom/fit. ownerId tách cả các bản nhân đôi cùng source page.
     const cropOwnerId = String(pageInstanceId || `page-${originalPageNum}`);
-    const cropSels = cropSelection?.ownerId === cropOwnerId ? cropSelection.regions : [];
+    const cropSels = useMemo(() => cropSelection?.ownerId === cropOwnerId ? cropSelection.regions : [], [cropSelection, cropOwnerId]);
     const selectedCropIdx = cropSelection?.ownerId === cropOwnerId
         ? cropSelection.selectedIndex
         : -1;
@@ -2581,6 +2370,8 @@ export const LivePageFrame = (props: any) => {
     // Ref cho listener window (tránh stale closure khi pointermove).
     const editInteractionRef = useRef(editInteraction);
     useEffect(() => { editInteractionRef.current = editInteraction; }, [editInteraction]);
+    // Keep latest edit helper through a ref; avoid a pre-declaration TDZ.
+    const sendEditAndPreviewRef = useRef<((op: EditOp) => Promise<boolean>) | null>(null);
     useEffect(() => { setShowImageFrameMenu(false); }, [selectedObjectIds, isObjectEditMode]);
 
     // Ẩn ghost + xóa transform tạm; dùng chung cho commit/refetch/timeout an toàn.
@@ -2614,7 +2405,7 @@ export const LivePageFrame = (props: any) => {
             observerRef.current = new IntersectionObserver((entries) => {
                 entries.forEach(entry => {
                     if (entry.isIntersecting) {
-                        const target = entry.target as any;
+                        const target = entry.target as LoadableTileElement;
                         if (target._loadTile) target._loadTile();
                         observerRef.current?.unobserve(target);
                     }
@@ -2644,7 +2435,7 @@ export const LivePageFrame = (props: any) => {
     // prefetch (computeRenderZoomPure) → cùng giá trị → cache key tile khớp.
     // PERF (audit độ nét 2026-07-28 §R.9): ngân sách pixel theo cài đặt của người dùng.
     const renderBudgetPx = previewQuality === 'fast' ? RENDER_BUDGET_PX.fast : RENDER_BUDGET_PX.high;
-    const computeRenderZoom = (z: number) => computeRenderZoomPure(
+    const computeRenderZoom = useCallback((z: number) => computeRenderZoomPure(
         z,
         actualWidth100,
         pageDim?.w,
@@ -2652,7 +2443,7 @@ export const LivePageFrame = (props: any) => {
         renderBudgetPx,
         physicalDisplayScale,
         displayDevicePixelRatio,
-    );
+    ), [actualWidth100, pageDim?.w, pageDim?.h, renderBudgetPx, physicalDisplayScale, displayDevicePixelRatio]);
     const [renderZoom, setRenderZoom] = useState(() => computeRenderZoom(zoom));
     const renderedDisplayMetricsRef = useRef({
         scale: physicalDisplayScale,
@@ -2670,7 +2461,7 @@ export const LivePageFrame = (props: any) => {
             dpr: displayDevicePixelRatio,
         };
         setRenderZoom(computeRenderZoom(zoom));
-    }, [physicalDisplayScale, displayDevicePixelRatio]);
+    }, [physicalDisplayScale, displayDevicePixelRatio, computeRenderZoom, zoom]);
 
     // Đổi cài đặt chất lượng phải áp NGAY (không chờ zoom kế tiếp) → renderBudgetPx trong deps.
     useEffect(() => {
@@ -2678,7 +2469,7 @@ export const LivePageFrame = (props: any) => {
             setRenderZoom(computeRenderZoom(zoom));
         }, 250);
         return () => clearTimeout(timeoutId);
-    }, [zoom, renderBudgetPx, physicalDisplayScale, displayDevicePixelRatio]);
+    }, [zoom, renderBudgetPx, physicalDisplayScale, displayDevicePixelRatio, computeRenderZoom]);
 
     // ─── Edit PDF Object: nạp danh sách object từ /edit/objects (task 10.1) ───
     // Khi vào Selection_Mode, gọi GET /edit/objects/{fid}/{pageIndex} (0-based) để lấy
@@ -2751,8 +2542,8 @@ export const LivePageFrame = (props: any) => {
                 const by0 = pb ? Number(pb[1]) || 0 : 0;
                 editCropOriginRef.current = [bx0, by0];
                 const objs: EditCanvasObj[] = (data.objects || [])
-                    .filter((o: any) => !isNonPaintingPointTextObject(o))
-                    .map((o: any) => {
+                    .filter((o: CachedPdfObject) => !isNonPaintingPointTextObject(o))
+                    .map((o: CachedPdfObject) => {
                     const cbbox = objectBboxNativeToCanvas(o.bbox as BBox, pageHeightPt, bx0, by0);
                     return {
                         id: o.id,
@@ -2799,7 +2590,7 @@ export const LivePageFrame = (props: any) => {
             }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion, isActiveFrame, setHiddenObjectIds]);
+    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion, isActiveFrame, setHiddenObjectIds, setSelectedObjectIds, hideEditGhost, t]);
 
     // ─── Edit PDF Object: đồng bộ object của TRANG ACTIVE lên panel (fix tắt mắt) ─
     // Panel "Thành phần" đọc store `currentEditObjects`. Vì danh sách trang là ảo
@@ -2810,16 +2601,31 @@ export const LivePageFrame = (props: any) => {
     useEffect(() => {
         if (!isObjectEditMode || !isActiveFrame || !setCurrentEditObjects) return;
         // Chỉ ghi store khi reference/nội dung đổi — tránh loop với panel Thành phần.
-        setCurrentEditObjects((prev: any) => {
-            if (prev === editObjects) return prev;
+        // Chuẩn hóa bbox canvas của overlay về contract object cache của panel.
+        // [LINT AUDIT 2026-08-24 LO140]
+        const nextEditObjects: CachedPdfObject[] = editObjects.map((obj) => ({
+            id: obj.id,
+            type: obj.type,
+            bbox: [...obj.bbox],
+            drawIndex: obj.drawIndex,
+            ocgIds: obj.ocgIds,
+            ocgNames: obj.ocgNames,
+            matrix: obj.matrix,
+            content: obj.content,
+            color: obj.color,
+            fontName: obj.fontName,
+            nativeBbox: obj.nativeBbox,
+        }));
+        setCurrentEditObjects((prev: CachedPdfObject[]) => {
+            if (prev === nextEditObjects) return prev;
             if (
-                Array.isArray(prev) && Array.isArray(editObjects)
-                && prev.length === editObjects.length
-                && prev.every((o: any, i: number) => o === editObjects[i] || o?.id === editObjects[i]?.id)
+                Array.isArray(prev) && Array.isArray(nextEditObjects)
+                && prev.length === nextEditObjects.length
+                && prev.every((o: CachedPdfObject, i: number) => o === nextEditObjects[i] || o?.id === nextEditObjects[i]?.id)
             ) {
                 return prev;
             }
-            return editObjects;
+            return nextEditObjects;
         });
     }, [isObjectEditMode, isActiveFrame, editObjects, setCurrentEditObjects]);
 
@@ -2856,6 +2662,7 @@ export const LivePageFrame = (props: any) => {
         const onKey = (e: KeyboardEvent) => {
             // Bỏ qua khi đang gõ trong input/textarea (vd. editor text inline).
             const t = e.target as HTMLElement | null;
+            const dispatchEditOp = (op: EditOp) => sendEditAndPreviewRef.current?.(op) ?? Promise.resolve(false);
             if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
                 e.preventDefault();
@@ -2878,7 +2685,7 @@ export const LivePageFrame = (props: any) => {
                     targetIds: [...editClipboard.objectIds],
                     delta: { dx: off, dy: -off },
                 };
-                void sendEditAndPreview(op).then((success) => {
+                void dispatchEditOp(op).then((success) => {
                     if (success) setEditClipboard({ ...editClipboard, pasteCount: bump });
                 });
             } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
@@ -2893,7 +2700,7 @@ export const LivePageFrame = (props: any) => {
                     targetIds: [...selectedObjectIds],
                     delta: { dx: off, dy: -off },
                 };
-                void sendEditAndPreview(op);
+                void dispatchEditOp(op);
             } else if (e.key === 'Delete' || e.key === 'Backspace') {
                 // Xóa tập object đang chọn → POST /edit/delete → Working_File mới.
                 if (editBusy || selectedObjectIds.length === 0) return;
@@ -2904,7 +2711,7 @@ export const LivePageFrame = (props: any) => {
                     targetIds: [...selectedObjectIds],
                 };
                 const idsToClear = [...selectedObjectIds];
-                void sendEditAndPreview(op).then((success) => {
+                void dispatchEditOp(op).then((success) => {
                     // Chỉ bỏ chọn khi backend đã xóa thật; op lỗi vẫn giữ selection để thử lại.
                     if (success) setSelectedObjectIds(prev => prev.filter(id => !idsToClear.includes(id)));
                 });
@@ -2917,7 +2724,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds, editClipboard, setEditClipboard, isViewerActive]);
+    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds, editClipboard, setEditClipboard, isViewerActive, setEditAddMode, setSelectedObjectIds]);
 
     // ─── Edit PDF Object: reset transform tạm + preview khi đổi lựa chọn (10.2) ─
     // Khi tập chọn thay đổi (hoặc bỏ chọn), bỏ transform tạm và ảnh preview cũ để
@@ -3016,7 +2823,7 @@ export const LivePageFrame = (props: any) => {
 
                 // Fallback to hidden object preview (legacy, ngoài edit mode)
                 const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
-                const objectsToHide = currentObjects.filter((o: any) => hiddenObjectIds.includes(o.id));
+                const objectsToHide = currentObjects.filter((o: CachedPdfObject) => hiddenObjectIds.includes(o.id));
                 
                 const res = await authenticatedFetch(`${getApiUrl()}/preflight/preview-hide`, {
                     method: 'POST',
@@ -3024,7 +2831,7 @@ export const LivePageFrame = (props: any) => {
                     body: JSON.stringify({
                         file_id: selectionFileId,
                         page: originalPageNum,
-                        objects: objectsToHide.map((obj: any) => ({
+                        objects: objectsToHide.map((obj: CachedPdfObject) => ({
                             type: obj.type,
                             bbox: obj.bbox,
                             xref: obj.xref
@@ -3039,7 +2846,7 @@ export const LivePageFrame = (props: any) => {
                     setPreviewImageUrl(data.preview_b64);
                 }
             } catch (err) {
-                if ((err as any)?.name !== 'AbortError') console.error("Failed to fetch hidden layer preview:", err);
+                if (!(err instanceof DOMException && err.name === 'AbortError')) console.error("Failed to fetch hidden layer preview:", err);
                 if (isMounted) setPreviewImageUrl(null);
             } finally {
                 if (isMounted) setIsPreviewLoading(false);
@@ -3056,7 +2863,7 @@ export const LivePageFrame = (props: any) => {
             controller.abort();
             clearTimeout(timeoutId);
         };
-    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, isObjectEditMode, isActiveFrame]);
+    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, isObjectEditMode, isActiveFrame, pdfUrl]);
     
     //#endregion
 
@@ -3082,7 +2889,7 @@ export const LivePageFrame = (props: any) => {
             }
         };
 
-        const handleDragLeave = (e: DragEvent) => {
+        const handleDragLeave = () => {
             el.style.opacity = '1';
         };
 
@@ -3094,14 +2901,18 @@ export const LivePageFrame = (props: any) => {
             let vdpType = '';
             try {
                 vdpType = e.dataTransfer!.getData('application/vdp-field');
-            } catch(err) {}
+            } catch {
+                // DataTransfer có thể không chứa kiểu VDP hợp lệ.
+            }
             if (!vdpType) {
                 try {
                     const payload = JSON.parse(e.dataTransfer!.getData('text/plain'));
                     if (payload && payload.source === 'vdp') {
                         vdpType = payload.type;
                     }
-                } catch (err) {}
+                } catch {
+                    // Payload text không phải JSON VDP; bỏ qua.
+                }
             }
             
             if (vdpType && pageDim) {
@@ -3143,7 +2954,7 @@ export const LivePageFrame = (props: any) => {
                     pageNum: originalPageNum, type: vdpType,
                     textContent: textContent || undefined,
                     name: fieldName || undefined
-                } as any); 
+                });
             }
         };
 
@@ -3192,7 +3003,7 @@ export const LivePageFrame = (props: any) => {
                     pageNum: originalPageNum, type: vdpType,
                     textContent: textContent || undefined,
                     name: fieldName || undefined
-                } as any); 
+                });
             }
         };
 
@@ -3212,7 +3023,7 @@ export const LivePageFrame = (props: any) => {
     }, [isVdpMode, pageDim, displayWidth, onVdpBoxCreate, vdpFields.length, originalPageNum, isViewerActive]);
 
     const displayHeight = pageDim && pageDim.w ? displayWidth * (pageDim.h / pageDim.w) : displayWidth * 1.414;
-    const cropPageBox = pageDim?.w && pageDim?.h ? { x0: 0, y0: 0, x1: pageDim.w * 25.4 / 96, y1: pageDim.h * 25.4 / 96, width: pageDim.w * 25.4 / 96, height: pageDim.h * 25.4 / 96 } : undefined;
+    const cropPageBox = useMemo(() => pageDim?.w && pageDim?.h ? { x0: 0, y0: 0, x1: pageDim.w * 25.4 / 96, y1: pageDim.h * 25.4 / 96, width: pageDim.w * 25.4 / 96, height: pageDim.h * 25.4 / 96 } : undefined, [pageDim?.w, pageDim?.h]);
     const isRotated = (rotation || 0) % 180 !== 0;
     const outerWidth = isRotated ? displayHeight : displayWidth;
     const outerHeight = isRotated ? displayWidth : displayHeight;
@@ -3423,6 +3234,7 @@ export const LivePageFrame = (props: any) => {
         shouldRenderBasePage,
         viewerIsActive,
         zoom,
+        originalPageNum,
     ]);
 
     useEffect(() => {
@@ -3446,15 +3258,16 @@ export const LivePageFrame = (props: any) => {
     ]);
 
     useEffect(() => {
+        const frameId = traceFrameIdRef.current;
         void viewerTraceLog('frame-mount', {
-            frame_id: traceFrameIdRef.current,
+            frame_id: frameId,
             page: originalPageNum,
             active_frame: isActiveFrame,
             page_instance: viewerTraceHash(pageInstanceId || ''),
         });
         return () => {
             void viewerTraceLog('frame-unmount', {
-                frame_id: traceFrameIdRef.current,
+                frame_id: frameId,
                 page: originalPageNum,
                 active_frame: isActiveFrame,
             });
@@ -3498,7 +3311,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, previewFramePage, totalPages, cropPageBox, rotation, tabId, isViewerActive]);
+    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, previewFramePage, originalPageNum, totalPages, cropPageBox, rotation, tabId, isViewerActive]);
 
     // Crop panel -> page overlay: keep the selected frame visible and live.
     // ownerId prevents updates from reaching a duplicate instance of the same page.
@@ -3627,7 +3440,7 @@ export const LivePageFrame = (props: any) => {
         };
     }, [displayDevicePixelRatio, isActiveFrame, isViewerActive, outerHeight, outerWidth, rotation]);
 
-    const getUnrotatedCoords = (clientX: number, clientY: number, rect: DOMRect) => {
+    const getUnrotatedCoords = React.useCallback((clientX: number, clientY: number, rect: DOMRect) => {
         const cx = rect.width / 2;
         const cy = rect.height / 2;
         const x = clientX - rect.left - cx;
@@ -3641,7 +3454,7 @@ export const LivePageFrame = (props: any) => {
             x: unrotatedX + displayWidth / 2, 
             y: unrotatedY + displayHeight / 2 
         };
-    };
+    }, [displayHeight, displayWidth, rotation]);
 
     // ─── Edit PDF Object (task 10.2): hộp bao hợp nhất của object đang chọn ───
 
@@ -3783,7 +3596,7 @@ export const LivePageFrame = (props: any) => {
             window.removeEventListener('blur', cancelCropAdjustment);
             cancelCropAdjustment();
         };
-    }, [isCropInteractionEnabled, cropOwnerId, displayWidth, displayHeight, rotation, setCropSelection, recordCropSelectionSnapshot, cancelCropAdjustment]);
+    }, [isCropInteractionEnabled, cropOwnerId, displayWidth, displayHeight, rotation, setCropSelection, recordCropSelectionSnapshot, cancelCropAdjustment, getUnrotatedCoords, notifyCropPanel]);
     // Trả về hộp bao (union) theo px canvas (gốc trên-trái) của các object được
     // chọn, dùng cho overlay transform + neo handle. `scale` = px/point.
     const getEditSelectionBoxPx = (scale: number): { left: number; top: number; width: number; height: number } | null => {
@@ -3840,7 +3653,7 @@ export const LivePageFrame = (props: any) => {
     //
     // Trả true nếu áp thành công. Session lỗi/410 → hook đã markFailed + báo lỗi (không
     // fallback). Lỗi op (409/422...) → ném để caller hiển thị thông báo phù hợp.
-    const applyOpViaSession = async (op: EditOp): Promise<SessionOpOutcome | null> => {
+    const applyOpViaSession = React.useCallback(async (op: EditOp): Promise<SessionOpOutcome | null> => {
         if (!editSession) {
             setEditNotice(t('misc.livePageFrame:phien_chinh_sua_chua_san_sang_hay_mo'));
             setTimeout(() => setEditNotice(null), 6000);
@@ -3867,7 +3680,7 @@ export const LivePageFrame = (props: any) => {
         } finally {
             setEditBusy(false);
         }
-    };
+    }, [displayWidth, editSession, pageDim?.w, setEditBusy, setEditNotice, t]);
 
     // Khi MOUSE UP: dựng EditOp từ transform tạm rồi áp qua edit-session (1 lần).
     // Đây là ĐIỂM DUY NHẤT gọi backend (KHÔNG gọi khi đang kéo — Yêu cầu 13.2).
@@ -3977,9 +3790,9 @@ export const LivePageFrame = (props: any) => {
                 }
                 hideEditGhost();
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.warn(t('misc.livePageFrame:edit_transform_session_that_bai'), err);
-            const msg = String(err?.message || err);
+            const msg = err instanceof Error ? err.message : String(err);
             if (msg.includes('409') || msg.includes('ánh xạ') || msg.includes('map')) {
                 setEditNotice(t('misc.livePageFrame:doi_tuong_qua_phuc_tap_clip_xobject'));
             } else {
@@ -4085,20 +3898,19 @@ export const LivePageFrame = (props: any) => {
         };
     }, [
         isObjectEditMode, isVdpMode, isActiveFrame, selectedObjectIds, lockedObjectIds,
-                editBusy, selectionFileId, pageDim?.w, displayWidth,
-        originalPageNum, isViewerActive,
-        // applyOpViaSession is intentionally omitted: recreating this listener on every
-        // render could discard an accumulated key-repeat delta before it is committed.
+        editBusy, selectionFileId, pageDim?.w, displayWidth,
+        originalPageNum, isViewerActive, hideEditGhost, applyOpViaSession,
     ]);
-    const sendEditAndPreview = async (op: EditOp): Promise<boolean> => {
+    const sendEditAndPreview = React.useCallback(async (op: EditOp): Promise<boolean> => {
         if (!selectionFileId) return false;
         try {
             const outcome = await applyOpViaSession(op);
             if (!outcome) return false; // phiên hỏng/410 — onSessionFailed đã báo lỗi.
             // Cảnh báo khi KHÔNG giữ được font gốc và người dùng CHƯA chọn font →
             // đã âm thầm dùng font dự phòng (DejaVuSans). detail = serialize op_result.
-            const r: any = (outcome as any).opResult?.detail;
-            const usedFallback = Array.isArray(r) ? r.some((x: any) => x?.used_fallback) : !!r?.used_fallback;
+            const detail = outcome.opResult?.detail;
+            const hasFallback = (value: unknown): boolean => typeof value === 'object' && value !== null && 'used_fallback' in value && Boolean((value as { used_fallback?: unknown }).used_fallback);
+            const usedFallback = Array.isArray(detail) ? detail.some(hasFallback) : hasFallback(detail);
             if (usedFallback && !editFontPath) {
                 setEditNotice(t('misc.livePageFrame:khong_giu_duoc_font_goc_da_dung_font_du'));
                 setTimeout(() => setEditNotice(null), 6000);
@@ -4122,7 +3934,8 @@ export const LivePageFrame = (props: any) => {
             setTimeout(() => setEditNotice(null), 7000);
             return false;
         }
-    };
+    }, [applyOpViaSession, editFontPath, selectionFileId, t]);
+    sendEditAndPreviewRef.current = sendEditAndPreview;
 
     // Sửa nội dung một cụm text CÓ SẴN (double-click → editor inline). editText KHÔNG
     // cần bbox: backend resolve vị trí/font/cỡ từ object mục tiêu qua Geometry_Reader.
@@ -4444,7 +4257,7 @@ export const LivePageFrame = (props: any) => {
                 const cy = box.top + box.height / 2;
                 const initAng = Math.atan2(-1, 0);
                 const curAng = Math.atan2(curY - cy, curX - cx);
-                let deg = (curAng - initAng) * 180 / Math.PI;
+                const deg = (curAng - initAng) * 180 / Math.PI;
                 // Shift snap không có e ở đây — giữ góc thô; Shift xử lý ở mousemove cũ nếu cần.
                 editLiveTransformRef.current = { kind: 'rotate', rotateDeg: deg };
                 if (ghost) {
@@ -4510,7 +4323,7 @@ export const LivePageFrame = (props: any) => {
     return (
         <>
         {/* Inject dynamic fonts for VDP */}
-        {isVdpMode && (window as any).__TAURI_INTERNALS__ && vdpFields?.map((field: any, idx: number) => 
+        {isVdpMode && window.__TAURI_INTERNALS__ && vdpFields?.map((field: VdpToolField, idx: number) =>
             field.fontFile && field.fontName ? (
                 <style key={`vdp-font-${field.id || idx}`}>{`
                     @font-face {
@@ -5015,8 +4828,8 @@ export const LivePageFrame = (props: any) => {
                  == originalPageNum-1) để frame ảo khác không vẽ nhầm overlay trang này.
                  z-[16] < overlay object (z-30) để khung chọn vẫn nổi trên preview. */}
              {isObjectEditMode && pageDim && (editSession?.previews || [])
-                 .filter((sp: any) => sp.page === originalPageNum - 1)
-                 .map((sp: any, i: number) => {
+                 .filter((sp: EditPreviewLayer) => sp.page === originalPageNum - 1)
+                 .map((sp: EditPreviewLayer, i: number) => {
                      if (sp.full || !sp.clipRect) {
                          return (
                              <img key={i} src={sp.url} alt="" className="absolute z-[16] pointer-events-none"
@@ -5063,7 +4876,7 @@ export const LivePageFrame = (props: any) => {
                  </div>
              )}
              
-             {highlightBoxes && highlightBoxes.map((box: any, idx: number) => {
+             {highlightBoxes && (highlightBoxes as WorkspacePreflightIssue[]).map((box: WorkspacePreflightIssue, idx: number) => {
                  if (!pageDim) return null;
                  
                  // If no bbox, it's a page-level issue (like Transparency or Overprint)
@@ -5751,11 +5564,11 @@ export const LivePageFrame = (props: any) => {
              {vdpFields && vdpFields.length > 0 && pageDim && (() => {
                  const pageWidthPt = pageDim.w;
                  const scale = displayWidth / pageWidthPt;
-                 return vdpFields.filter((f: any) => f.pageNum === originalPageNum).map((field: any) => {
-                     const x0 = (field.x / 25.4 * 72) * scale;
-                     const y0 = (field.y / 25.4 * 72) * scale;
-                     const w = (field.width / 25.4 * 72) * scale;
-                     const h = (field.height / 25.4 * 72) * scale;
+                 return vdpFields.filter((f: VdpToolField) => f.pageNum === originalPageNum).map((field: VdpToolField) => {
+                     const x0 = ((field.x ?? 0) / 25.4 * 72) * scale;
+                     const y0 = ((field.y ?? 0) / 25.4 * 72) * scale;
+                     const w = ((field.width ?? 0) / 25.4 * 72) * scale;
+                     const h = ((field.height ?? 0) / 25.4 * 72) * scale;
                      const safeSelectedIds = Array.isArray(selectedVdpFieldIds) ? selectedVdpFieldIds : [];
                      const isSelected = safeSelectedIds.includes(field.id);
                      const isInteracting = vdpInteraction && Array.isArray(vdpInteraction.fieldIds) && vdpInteraction.fieldIds.includes(field.id);
@@ -5770,7 +5583,7 @@ export const LivePageFrame = (props: any) => {
                                  if (field.type === 'text') {
                                      e.stopPropagation();
                                      setEditingTextId(field.id);
-                                     setEditTextContent(field.textContent !== undefined ? field.textContent : `{${field.name}}`);
+                                     setEditTextContent(field.textContent ?? `{${field.name}}`);
                                  }
                              }}
                              onMouseDown={(e) => e.stopPropagation()}
@@ -5797,7 +5610,7 @@ export const LivePageFrame = (props: any) => {
                                  let newSelection = [...safeSelectedIds];
                                  
                                  // Handle Group Selection (if this field belongs to a group, select the whole group)
-                                 const groupFields = field.groupId ? vdpFields.filter((f: any) => f.groupId === field.groupId).map((f: any) => f.id) : [field.id];
+                                 const groupFields = field.groupId ? vdpFields.filter((f: VdpToolField) => f.groupId === field.groupId).map((f: VdpToolField) => f.id) : [field.id];
                                  
                                  if (e.shiftKey) {
                                      const allSelected = groupFields.every((id: string) => newSelection.includes(id));
@@ -5827,15 +5640,15 @@ export const LivePageFrame = (props: any) => {
                                      const newFieldsToMove: string[] = [];
                                      const startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> = {};
                                      
-                                     onVdpFieldsChange?.((prev: any[]) => {
-                                         const copies: any[] = [];
+                                     onVdpFieldsChange?.((prev: VdpToolField[]) => {
+                                         const copies: VdpToolField[] = [];
                                          fieldsToMove.forEach((id: string) => {
-                                             const f = prev.find((tf: any) => tf.id === id);
+                                             const f = prev.find((tf: VdpToolField) => tf.id === id);
                                              if (!f) return;
                                              
                                              const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                                              newFieldsToMove.push(copyId);
-                                             startFields[copyId] = { x: f.x, y: f.y, w: f.width, h: f.height, fontSize: f.fontSize };
+                                             startFields[copyId] = { x: f.x ?? 0, y: f.y ?? 0, w: f.width ?? 0, h: f.height ?? 0, fontSize: f.fontSize };
                                              
                                              let newName = f.name;
                                              let newTextContent = f.textContent;
@@ -5845,7 +5658,7 @@ export const LivePageFrame = (props: any) => {
                                                  if (match) {
                                                      const prefix = match[1];
                                                      let maxNum = parseInt(match[2], 10);
-                                                     [...prev, ...copies].forEach((pf: any) => {
+                                                     [...prev, ...copies].forEach((pf: VdpToolField) => {
                                                          if (pf && pf.name && pf.name.startsWith(prefix)) {
                                                              const m = pf.name.match(/^(.*?)(\d+)$/);
                                                              if (m && m[1] === prefix) {
@@ -5861,7 +5674,7 @@ export const LivePageFrame = (props: any) => {
                                                      }
                                                  } else {
                                                      let maxNum = 0;
-                                                     [...prev, ...copies].forEach((pf: any) => {
+                                                     [...prev, ...copies].forEach((pf: VdpToolField) => {
                                                          if (pf && pf.name && pf.name.startsWith(`${newName}_`)) {
                                                              const m = pf.name.match(/_(\d+)$/);
                                                              if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
@@ -5904,9 +5717,9 @@ export const LivePageFrame = (props: any) => {
                                      // STANDARD MOVE/RESIZE
                                      const startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> = {};
                                      fieldsToMove.forEach((id: string) => {
-                                         const f = vdpFields.find((tf: any) => tf.id === id);
+                                         const f = vdpFields.find((tf: VdpToolField) => tf.id === id);
                                          if (f) {
-                                             startFields[id] = { x: f.x, y: f.y, w: f.width, h: f.height, fontSize: f.fontSize };
+                                             startFields[id] = { x: f.x ?? 0, y: f.y ?? 0, w: f.width ?? 0, h: f.height ?? 0, fontSize: f.fontSize };
                                          }
                                      });
                                      
@@ -5922,7 +5735,7 @@ export const LivePageFrame = (props: any) => {
                              }}
                          >
                              <div className={`absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow whitespace-nowrap pointer-events-none transition-opacity z-[70] ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                                 {field.fieldName || field.name || t('misc.livePageFrame:chua_dat_ten')} ({field.type})
+                                 {(typeof field.fieldName === 'string' ? field.fieldName : field.name) || t('misc.livePageFrame:chua_dat_ten')} ({field.type})
                              </div>
                              
                              {/* Visual Placeholders — xoay nội dung quanh tâm box theo
@@ -5948,7 +5761,7 @@ export const LivePageFrame = (props: any) => {
                                  style={rotStyle}
                              >
                                  {(field.type === 'qrcode' || field.type === 'barcode') && (
-                                     <VdpPreviewImage field={field} />
+                                     <VdpPreviewImage field={field as { type: 'qrcode' | 'barcode' }} />
                                  )}
                                  {field.type === 'image' && (
                                      <div 
@@ -5970,7 +5783,7 @@ export const LivePageFrame = (props: any) => {
                                              value={editTextContent}
                                              onChange={(e) => setEditTextContent(e.target.value)}
                                              onBlur={() => {
-                                                 onVdpFieldsChange?.(vdpFields.map((f: any) => f.id === field.id ? { ...f, textContent: editTextContent } : f));
+                                                 onVdpFieldsChange?.(vdpFields.map((f: VdpToolField) => f.id === field.id ? { ...f, textContent: editTextContent } : f));
                                                  setEditingTextId(null);
                                              }}
                                              onKeyDown={(e) => {
@@ -6000,7 +5813,7 @@ export const LivePageFrame = (props: any) => {
                                          <VdpAutoFitText
                                              field={field}
                                              scale={scale}
-                                             text={field.textContent !== undefined ? field.textContent : `{${field.name}}`}
+                                             text={field.textContent ?? `{${field.name}}`}
                                          />
                                      )
                                  )}
@@ -6043,7 +5856,7 @@ export const LivePageFrame = (props: any) => {
                                                  startX: e.clientX - rect.left,
                                                  startY: e.clientY - rect.top,
                                                  startFields: {
-                                                     [field.id]: { x: field.x, y: field.y, w: field.width, h: field.height, fontSize: field.fontSize }
+                                                     [field.id]: { x: field.x ?? 0, y: field.y ?? 0, w: field.width ?? 0, h: field.height ?? 0, fontSize: field.fontSize }
                                                  }
                                              });
                                          }}
@@ -6059,7 +5872,7 @@ export const LivePageFrame = (props: any) => {
                  với dropdown "Xoay (độ)" bên panel). Backend chỉ render 0/90/180/270
                  nên chỉ cung cấp các mức đó + xoay tương đối 90° CW/CCW. */}
              {vdpCtxMenu && (() => {
-                 const target = vdpFields.find((f: any) => f.id === vdpCtxMenu.fieldId);
+                 const target = vdpFields.find((f: VdpToolField) => f.id === vdpCtxMenu.fieldId);
                  if (!target) return null;
                  const cur = ((Number(target.rotation) || 0) % 360 + 360) % 360;
                  const items: { label: string; rot: number; active?: boolean }[] = [
@@ -6167,7 +5980,7 @@ export const LivePageFrame = (props: any) => {
                      const drawString = applyTokens(f.content, numStr, totalStr, todayStr);
                      if (!drawString) return null;
 
-                     let posStyles: any = { position: 'absolute' };
+                     const posStyles: React.CSSProperties = { position: 'absolute' };
                      
                      if (f.left !== null && f.right !== null) {
                          posStyles.left = 0;

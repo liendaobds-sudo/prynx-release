@@ -578,6 +578,8 @@ function FoldControls() {
 
     // Đồng bộ display khi store đổi từ ngoài (và không đang animate).
     useEffect(() => {
+        // Slider local phải phản ánh store khi animation đã dừng; đây là đồng bộ hiển thị có chủ đích.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- đồng bộ UI animation với Zustand.
         if (!driving) setDisplayFold(foldProgress);
     }, [foldProgress, driving]);
 
@@ -655,6 +657,8 @@ function FoldControls() {
         let start: number | null = null;
         let lastUi = 0;
         writeFoldLive(0, 0);
+        // Hero bắt đầu từ pose 0; slider cần nhảy về cùng mốc trước frame đầu tiên.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- đồng bộ UI animation có chủ đích.
         setDisplayFold(0);
 
         const tick = (timestamp: number) => {

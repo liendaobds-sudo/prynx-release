@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { pdfjs } from 'react-pdf';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import {
     createThumbnailRenderRequest,
     putThumbCache,
@@ -16,7 +17,39 @@ export const PDF_LOAD_SLOW_NOTICE_MS = 10_000;
 export type PdfLoadStatus = 'idle' | 'loading' | 'slow' | 'ready' | 'error' | 'cancelled';
 export type ViewerEngineMode = 'current' | 'hybrid' | 'ppe-only';
 type PdfLoadingTask = ReturnType<typeof pdfjs.getDocument>;
+type LoaderFile = File & {
+    path?: string;
+    isInMemory?: boolean;
+    isBlank?: boolean;
+    blankWidthPt?: number;
+    blankHeightPt?: number;
+    blankPageCount?: number;
+    __editCommit?: boolean;
+    __pathRebaseOnly?: boolean;
+    __nativePathPending?: boolean;
+};
+type CrossFilePageOrderPayload = number[] | { pdfUrl?: string; order?: number[]; focusIndex?: number };
+type LoaderWindow = Window & {
+    __TAURI_INTERNALS__?: unknown;
+    __prynx_cross_file_page_order?: CrossFilePageOrderPayload | null;
+};
 type PdfLoadFileIdentity = { name?: string; size?: number; lastModified?: number; path?: string };
+interface PdfMetadataPage { index: number; width_pt?: number; height_pt?: number; }
+interface PdfMetadata {
+    numPages?: number;
+    page_count?: number;
+    widthPt?: number;
+    heightPt?: number;
+    max_width_pt?: number;
+    max_height_pt?: number;
+    allDims?: Record<string, { widthPt?: number; heightPt?: number }>;
+    pages?: PdfMetadataPage[];
+    colorRisk?: PdfColorRiskSummary | null;
+    renderEngine?: PdfRenderEngineIdentity | null;
+    viewerEngineMode?: unknown;
+    viewerShadowEnabled?: boolean;
+    fileIdentity?: string;
+}
 
 interface PdfJsThumbnailViewport {
     width: number;
@@ -157,6 +190,10 @@ export interface PdfRenderEngineIdentity {
 // chỉ cần duy nhất trong phiên (không cần deterministic theo nội dung).
 let _pageIdSeq = 0;
 let _pdfLoaderCacheOwnerSeq = 0;
+// UIUX (audit 2026-08-25 NEW-WINDOW): counter module-level bắt đầu lại ở mỗi
+// WebView, nên thêm UUID ổn định theo WebView để owner native không va chạm.
+const PDF_LOADER_WINDOW_UUID = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 export function genPageId(): string { return `p${++_pageIdSeq}`; }
 export function genPageIds(n: number): string[] {
     return Array.from({ length: n }, () => genPageId());
@@ -171,9 +208,17 @@ export function flattenRotations(ids: string[], map: Record<string, number>): nu
     return ids.map(id => map[id] || 0);
 }
 
+export interface ViewerSnapshot {
+    order: number[];
+    instanceIds: string[];
+    selection: number[];
+    lastSelected: number | null;
+    rotations: Record<string, number>;
+}
+
 export interface UsePdfLoaderResult {
-    pdfRef: any;
-    thumbPdfRef: any;
+    pdfRef: PDFDocumentProxy | null;
+    thumbPdfRef: PDFDocumentProxy | null;
     pageDim: { w: number; h: number } | null;
     allPageDims: Record<number, { w: number; h: number; widthPt: number }>;
     pageWidthPt: number;
@@ -200,7 +245,7 @@ export interface UsePdfLoaderResult {
 }
 
 interface UsePdfLoaderProps {
-    file: any;
+    file: LoaderFile | null;
     pdfUrl: string | null;
     setNumPages: (n: number) => void;
     setActivePage: (p: number) => void;
@@ -211,8 +256,8 @@ interface UsePdfLoaderProps {
 export function usePdfLoader({
     file, pdfUrl, setNumPages, setActivePage, setZoom, containerRef
 }: UsePdfLoaderProps) {
-    const [pdfRef, setPdfRef] = useState<any>(null);
-    const [thumbPdfRef, setThumbPdfRef] = useState<any>(null);
+    const [pdfRef, setPdfRef] = useState<PDFDocumentProxy | null>(null);
+    const [thumbPdfRef, setThumbPdfRef] = useState<PDFDocumentProxy | null>(null);
     const [pageDim, setPageDim] = useState<{ w: number; h: number } | null>(null);
     const [allPageDims, setAllPageDims] = useState<Record<number, { w: number; h: number; widthPt: number }>>({});
     const [pageWidthPt, setPageWidthPt] = useState<number>(595);
@@ -236,8 +281,8 @@ export function usePdfLoader({
     const [pageRotations, setPageRotations] = useState<Record<string, number>>({});
 
     // -- Undo/Redo stacks live here as they are tightly coupled with page state --
-    const [pastStack, setPastStack] = useState<any[]>([]);
-    const [futureStack, setFutureStack] = useState<any[]>([]);
+    const [pastStack, setPastStack] = useState<ViewerSnapshot[]>([]);
+    const [futureStack, setFutureStack] = useState<ViewerSnapshot[]>([]);
     
     const [loadError, setLoadError] = useState<Error | null>(null);
     const [loadStatus, setLoadStatus] = useState<PdfLoadStatus>('idle');
@@ -250,7 +295,7 @@ export function usePdfLoader({
     const metadataHydrationStartRef = useRef<(() => void) | null>(null);
     const tileCacheOwnerIdRef = useRef<string | null>(null);
     if (tileCacheOwnerIdRef.current === null) {
-        tileCacheOwnerIdRef.current = `pdf-loader:${++_pdfLoaderCacheOwnerSeq}`;
+        tileCacheOwnerIdRef.current = `pdf-loader:${PDF_LOADER_WINDOW_UUID}:${++_pdfLoaderCacheOwnerSeq}`;
     }
     const sourceKey = loadSourceKey(file, pdfUrl);
     const nativeFilePath = typeof file?.path === 'string' && file.path ? file.path : null;
@@ -262,14 +307,8 @@ export function usePdfLoader({
         const task = loadingTaskRef.current;
         loadingTaskRef.current = null;
         void Promise.resolve(task?.destroy?.()).catch(() => undefined);
-        console.info('[PDF-LOAD]', {
-            stage: 'retry',
-            fileName: file?.name || '',
-            fileSize: file?.size || 0,
-            source: file?.path ? 'native' : 'memory',
-        });
         setLoadRevision(value => value + 1);
-    }, [file]);
+    }, []);
 
     const cancelLoad = useCallback(() => {
         loadGenerationRef.current += 1;
@@ -277,24 +316,18 @@ export function usePdfLoader({
         const task = loadingTaskRef.current;
         loadingTaskRef.current = null;
         void Promise.resolve(task?.destroy?.()).catch(() => undefined);
-        console.info('[PDF-LOAD]', {
-            stage: 'cancel',
-            fileName: file?.name || '',
-            fileSize: file?.size || 0,
-            source: file?.path ? 'native' : 'memory',
-        });
         setLoadError(null);
         setLoadStatus('cancelled');
         setNumPages(0);
         setLoadRevision(value => value + 1);
-    }, [file, setNumPages, sourceKey]);
+    }, [setNumPages, sourceKey]);
 
     const notifyFirstPageRenderReady = useCallback(() => {
         metadataHydrationStartRef.current?.();
     }, []);
 
     useEffect(() => {
-        if (!nativeFilePath || !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+        if (!nativeFilePath || !(window as LoaderWindow).__TAURI_INTERNALS__) {
             return;
         }
         const leasedPath = nativeFilePath;
@@ -323,7 +356,7 @@ export function usePdfLoader({
     useEffect(() => {
         // Edit-commit: KHÔNG xóa toàn bộ cache tile (key cũ theo pdfUrl cũ không trùng
         // key mới nên tự vô hiệu) → tránh white-flash các trang khác.
-        if ((file as any)?.__editCommit) return;
+        if (file?.__editCommit) return;
         if (file || pdfUrl) {
             // PERF (audit 2026-08-08 §RENDER.8): chỉ dọn namespace không còn owner;
             // tab khác vẫn mounted/suspend không bị mất Blob cache.
@@ -341,14 +374,14 @@ export function usePdfLoader({
         // KHÔNG nạp lại metadata, KHÔNG setNumPages(0) (gây unmount toàn viewer +
         // spinner), KHÔNG reset scroll/zoom/selection/undo. Tile tự nạp lại do
         // LiveTile khóa theo pdfUrl (đã đổi); overlay /edit/objects refetch theo fid.
-        if ((file as any)?.__editCommit) {
+        if (file?.__editCommit) {
             return;
         }
 
         // Lưu bằng COPY đĩa→đĩa chỉ đổi .path của `file`, pdfUrl + nội dung GIỮ NGUYÊN.
         // Không có gì để nạp lại → return sớm (như __editCommit) để không setNumPages(0)
         // (unmount viewer + spinner) và không re-render toàn bộ trang/thumbnail vô ích.
-        if ((file as any)?.__pathRebaseOnly && isSameUrl) {
+        if (file?.__pathRebaseOnly && isSameUrl) {
             return;
         }
 
@@ -392,28 +425,16 @@ export function usePdfLoader({
             if (slowTimer !== undefined) window.clearTimeout(slowTimer);
         };
         const startSlowWatchdog = () => {
-            console.info('[PDF-LOAD]', { ...logBase, stage: 'start' });
             slowTimer = window.setTimeout(() => {
                 if (cancelled || generation !== loadGenerationRef.current) return;
                 // Chỉ đổi UI để người dùng biết tác vụ còn chạy; KHÔNG timeout/hard-cap.
                 setLoadStatus(current => current === 'loading' ? 'slow' : current);
-                console.info('[PDF-LOAD]', {
-                    ...logBase,
-                    stage: 'slow',
-                    elapsedMs: Math.round(performance.now() - startedAt),
-                });
             }, PDF_LOAD_SLOW_NOTICE_MS);
         };
-        const markReady = (pages: number) => {
+        const markReady = () => {
             if (cancelled || generation !== loadGenerationRef.current) return;
             clearSlowTimer();
             setLoadStatus('ready');
-            console.info('[PDF-LOAD]', {
-                ...logBase,
-                stage: 'ready',
-                pages,
-                elapsedMs: Math.round(performance.now() - startedAt),
-            });
         };
         const markError = (error: unknown, stage: string) => {
             if (cancelled || generation !== loadGenerationRef.current) return;
@@ -448,20 +469,20 @@ export function usePdfLoader({
         // materialize sang file tạm để PDFium đọc. Không khởi động PDF.js song song rồi lóe
         // màn lỗi trước khi nguồn native sẵn sàng; nếu materialize thất bại, ImpositionTab
         // bỏ cờ này và đổi File identity để lượt PDF.js dự phòng chạy bình thường.
-        if ((file as any)?.__nativePathPending
+        if (file?.__nativePathPending
             && pdfUrl
-            && !(file as any)?.path
-            && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+            && !file?.path
+            && (window as LoaderWindow).__TAURI_INTERNALS__) {
             startSlowWatchdog();
             return cleanupLoad;
         }
 
         // Trang trắng mới tạo: kích thước đã biết sẵn → dựng đồng bộ, KHÔNG nạp pdfjs/pdfium.
         // Tránh cold-start "đang tải PDF" + "rendering" cho một trang trắng đơn giản.
-        if ((file as any)?.isBlank) {
-            const wPt = (file as any).blankWidthPt || 595;
-            const hPt = (file as any).blankHeightPt || 842;
-            const count = (file as any).blankPageCount || 1;
+        if (file?.isBlank) {
+            const wPt = file.blankWidthPt || 595;
+            const hPt = file.blankHeightPt || 842;
+            const count = file.blankPageCount || 1;
             const w = wPt * (96 / 72);
             const h = hPt * (96 / 72);
             setPageWidthPt(wPt);
@@ -505,26 +526,26 @@ export function usePdfLoader({
                 setSelectedIndices(new Set([0]));
                 setLastSelectedIndex(0);
                 setActivePage(1);
-                markReady(1);
+                markReady();
             };
             img.onerror = () => markError(new Error('Không thể đọc dữ liệu ảnh.'), 'image_error');
             img.src = pdfUrl;
             return cleanupLoad;
         }
 
-        if (pdfUrl && (file as any)?.path && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+        if (pdfUrl && file?.path && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
             startSlowWatchdog();
             (async () => {
                 try {
-                    const filePath = (file as any).path;
+                    const filePath = file.path;
                     const { invoke } = await import('@tauri-apps/api/core');
                     const isCurrentGeneration = () => !cancelled && generation === loadGenerationRef.current;
 
-                    const normalizeHttpMetadata = (meta: any) => ({
+                    const normalizeHttpMetadata = (meta: PdfMetadata) => ({
                         numPages: meta.page_count || 0,
                         widthPt: meta.max_width_pt || 0,
                         heightPt: meta.max_height_pt || 0,
-                        allDims: Object.fromEntries((meta.pages || []).map((page: any) => [
+                        allDims: Object.fromEntries((meta.pages || []).map((page: PdfMetadataPage) => [
                             String(page.index + 1),
                             { widthPt: page.width_pt, heightPt: page.height_pt },
                         ])),
@@ -555,7 +576,7 @@ export function usePdfLoader({
                     const loadFullMetadata = async (expectedIdentity?: string) => {
                         try {
                             const __t0 = performance.now();
-                            const meta: any = await invoke('get_pdf_metadata', expectedIdentity
+                            const meta = await invoke<PdfMetadata>('get_pdf_metadata', expectedIdentity
                                 ? { filePath, expectedIdentity }
                                 : { filePath });
                             if (typeof localStorage !== 'undefined' && localStorage.perfDebug === '1') {
@@ -572,7 +593,7 @@ export function usePdfLoader({
                         }
                     };
 
-                    const buildPageDims = (meta: any, numPages: number, widthPt: number, heightPt: number) => {
+                    const buildPageDims = (meta: PdfMetadata, numPages: number, widthPt: number, heightPt: number) => {
                         const dims: Record<number, { w: number; h: number; widthPt: number }> = {};
                         const baseW = widthPt * (96 / 72);
                         const baseH = heightPt * (96 / 72);
@@ -589,7 +610,7 @@ export function usePdfLoader({
 
                     const schedulePlateLabels = (numPages: number) => {
                         // Không chen đọc blob/worker spot-color vào đường first-pixel.
-                        const knownSize = (file as any)?.size || 0;
+                        const knownSize = file?.size || 0;
                         if (numPages > 100 || knownSize <= 0 || knownSize > 30 * 1024 * 1024) return;
                         window.setTimeout(async () => {
                             try {
@@ -606,11 +627,13 @@ export function usePdfLoader({
                                 };
                                 worker.onerror = () => worker.terminate();
                                 worker.postMessage({ buf }, [buf]);
-                            } catch { }
+                            } catch {
+                                // Không lấy được plate metadata thì vẫn hiển thị trang.
+                            }
                         }, 100);
                     };
 
-                    let bootstrap: any;
+                    let bootstrap: PdfMetadata = {};
                     let bootstrapContainsFullMetadata = false;
                     try {
                         const __t0 = performance.now();
@@ -672,7 +695,7 @@ export function usePdfLoader({
                     setAllPageDims(buildPageDims(bootstrap, numPagesFromEngine, widthPt, heightPt));
 
                     // Cross-file copy/move: order scoped theo pdfUrl đích (tránh tab khác nuốt).
-                    const cfPayload = (window as any).__prynx_cross_file_page_order;
+                    const cfPayload = (window as LoaderWindow).__prynx_cross_file_page_order;
                     const cfOrder: number[] | null = Array.isArray(cfPayload)
                         ? cfPayload
                         : (cfPayload && cfPayload.pdfUrl === pdfUrl && Array.isArray(cfPayload.order)
@@ -686,9 +709,9 @@ export function usePdfLoader({
                         setPageOrder(cfOrder);
                         setPageInstanceIds(genPageIds(cfOrder.length));
                         window.setTimeout(() => {
-                            const current = (window as any).__prynx_cross_file_page_order;
+                            const current = (window as LoaderWindow).__prynx_cross_file_page_order;
                             if (current && (Array.isArray(current) || current.pdfUrl === pdfUrl)) {
-                                (window as any).__prynx_cross_file_page_order = null;
+                                (window as LoaderWindow).__prynx_cross_file_page_order = null;
                             }
                         }, 100);
                     } else {
@@ -711,9 +734,9 @@ export function usePdfLoader({
                         setActivePage(focusIdx + 1);
                         setPlateLabels({});
                     }
-                    markReady(numPagesFromEngine);
+                    markReady();
 
-                    const applyFullMetadata = (full: any) => {
+                    const applyFullMetadata = (full: PdfMetadata) => {
                         if (!isCurrentGeneration()) return;
                         if (bootstrap.fileIdentity && full.fileIdentity !== bootstrap.fileIdentity) {
                             console.warn('[PERF-META] Bỏ metadata nền vì identity file đã thay đổi.');
@@ -765,7 +788,7 @@ export function usePdfLoader({
                 }
             })();
             return cleanupLoad;
-        } else if (pdfUrl && (!(window as any).__TAURI_INTERNALS__ || (file as any)?.isInMemory || !(file as any)?.path)) {
+        } else if (pdfUrl && (!(window as LoaderWindow).__TAURI_INTERNALS__ || file?.isInMemory || !file?.path)) {
             startSlowWatchdog();
             (async () => {
                 try {
@@ -780,7 +803,7 @@ export function usePdfLoader({
                     setPdfRef(doc);
                     setThumbPdfRef(doc);
                     setNumPages(doc.numPages);
-                    const cfPayload2 = (window as any).__prynx_cross_file_page_order;
+                    const cfPayload2 = (window as LoaderWindow).__prynx_cross_file_page_order;
                     const cfOrder2: number[] | null = Array.isArray(cfPayload2)
                         ? cfPayload2
                         : (cfPayload2 && cfPayload2.pdfUrl === pdfUrl && Array.isArray(cfPayload2.order)
@@ -794,9 +817,9 @@ export function usePdfLoader({
                         setPageOrder(cfOrder2);
                         setPageInstanceIds(genPageIds(cfOrder2.length));
                         setTimeout(() => {
-                            const cur = (window as any).__prynx_cross_file_page_order;
+                            const cur = (window as LoaderWindow).__prynx_cross_file_page_order;
                             if (cur && (Array.isArray(cur) || cur.pdfUrl === pdfUrl)) {
-                                (window as any).__prynx_cross_file_page_order = null;
+                                (window as LoaderWindow).__prynx_cross_file_page_order = null;
                             }
                         }, 100);
                     } else {
@@ -861,7 +884,7 @@ export function usePdfLoader({
                             setZoom(safeContainerWidth / actual100);
                         }
                     }
-                    markReady(doc.numPages);
+                    markReady();
 
                     if (doc.numPages > 100) {
                         const hydrateLongDocument = async () => {
@@ -901,6 +924,10 @@ export function usePdfLoader({
             })();
             return cleanupLoad;
         }
+    // LINT (audit 2026-08-24 LO-PDFLOAD): effect này chỉ được kích bởi revision nguồn.
+    // pageOrder/callbacks là state phục hồi trong cùng lượt tải; thêm vào deps sẽ nạp lại
+    // PDF khi order vừa được set, gây gọi PDF.js lặp và làm trắng viewer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- khóa lifecycle theo source revision
     }, [pdfUrl, file, loadRevision, sourceKey]);
 
     // Update pageDim when active page changes (for multi-size PDFs)
@@ -923,15 +950,18 @@ export function usePdfLoader({
                         ? previous
                         : { ...previous, [activePage]: dim }
                 ));
-            } catch { }
+            } catch {
+                // Không đọc được kích thước trang hiện tại; giữ dữ liệu trước đó.
+            }
         }
     }, [pdfRef]);
 
     // Thumbnail generation helper (web/pdfjs only). Tauri dùng IPC render_pdf_page trong ThumbSidebar.
-    const generateThumb = useCallback(async (pdf: PdfJsThumbnailDocument, pageNum: number, _rotation: number, width: number) => {
+    const generateThumb = useCallback(async (pdf: PdfJsThumbnailDocument | null | undefined, pageNum: number, _rotation: number, width: number) => {
+        if (!pdf) return;
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
         if (isImage) return;
-        if ((file as any)?.path) return; // Tauri: IPC path trong MemoThumbItem, không dùng cache này
+        if (file?.path) return; // Tauri: IPC path trong MemoThumbItem, không dùng cache này
 
         try {
             const page = await pdf.getPage(pageNum) as PdfJsThumbnailPage;

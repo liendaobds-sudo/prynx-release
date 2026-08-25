@@ -14,7 +14,6 @@ import {
     getSpreadPatternById,
     getPatternForPageCount,
     getExactPatternForPageCount,
-    type SpreadFoldPattern,
 } from '../FoldPatterns';
 
 

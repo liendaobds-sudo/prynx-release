@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useDialogLifecycle } from './AcrobatModals';
+import { useDialogLifecycle } from './dialogLifecycle';
 
 export type CrossFileInsertPos = 'start' | 'end' | 'before' | 'after';
 
@@ -24,20 +24,17 @@ interface Props {
  * Hỏi vị trí chèn khi copy/di chuyển trang sang file khác:
  * đầu file / cuối file / trước trang N / sau trang N.
  */
-export function CrossFileInsertModal({ pending, onConfirm, onCancel }: Props) {
+interface ContentProps extends Omit<Props, 'pending'> {
+    pending: CrossFileInsertPending;
+}
+
+function CrossFileInsertModalContent({ pending, onConfirm, onCancel }: ContentProps) {
     const { t } = useTranslation();
     const dialogRef = useDialogLifecycle(onCancel, Boolean(pending));
     const [pos, setPos] = useState<CrossFileInsertPos>('end');
-    const [pageNum, setPageNum] = useState(1);
+    const [pageNum, setPageNum] = useState(() => Math.max(1, pending.targetNumPages || 1));
 
-    useEffect(() => {
-        if (!pending) return;
-        setPos('end');
-        const n = Math.max(1, pending.targetNumPages || 1);
-        setPageNum(Math.min(n, Math.max(1, pending.targetNumPages || 1)));
-    }, [pending]);
 
-    if (!pending) return null;
 
     const maxPage = Math.max(1, pending.targetNumPages || 1);
     const hasPages = pending.targetNumPages > 0;
@@ -146,4 +143,20 @@ export function CrossFileInsertModal({ pending, onConfirm, onCancel }: Props) {
             </div>
         </div>
     );
+}
+
+
+export function CrossFileInsertModal(props: Props) {
+    const { pending } = props;
+    if (!pending) return null;
+    const pendingKey = [
+        pending.targetPdfUrl,
+        pending.targetTabId ?? '',
+        pending.targetName,
+        pending.targetNumPages,
+        pending.mode,
+        pending.sourcePageNums.join(','),
+        pending.sourceIndices.join(','),
+    ].join('|');
+    return <CrossFileInsertModalContent key={pendingKey} {...props} pending={pending} />;
 }

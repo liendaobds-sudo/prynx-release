@@ -21,7 +21,7 @@ import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
 
 // Hiển thị read-only 1 nhóm thiết lập (paper/marks/booklet/nup).
-function DetailSection({ title, obj }: { title: string; obj?: Record<string, any> }) {
+function DetailSection({ title, obj }: { title: string; obj?: object }) {
   if (!obj) return null;
   const entries = Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '');
   if (entries.length === 0) return null;
@@ -79,6 +79,8 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
 
   useEffect(() => {
     if (isOpen) {
+      // Mỗi lần mở dialog bắt đầu một lần tải preset mới; trạng thái loading phải reset trước promise.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset UI theo phiên mở và I/O ngoại vi.
       setIsLoading(true);
       loadPresets().then(list => {
         setPresets(list);

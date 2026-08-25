@@ -18,6 +18,8 @@
  *    thu gọn cả lượt phát về đúng revision trước khi phát.
  */
 
+import { copyArtifactLeaseToken } from '../artifactLease';
+
 export interface PlaybackRevision {
     file: File;
     url: string;
@@ -44,9 +46,14 @@ export function createPlaybackPublisher(deps: PlaybackPublisherDeps): PlaybackPu
     let currentObjectUrl: string | null = null;
 
     const publish = (blob: Blob, name: string, existingPath?: string): void => {
-        const file = new File([blob as BlobPart], name, {
-            type: blob.type || 'application/pdf',
-        });
+        // LIFECYCLE (audit 2026-08-25 §REV.11): N-up/Booklet trả carrier có
+        // lease token. File revision phải giữ token để owner của tab claim artifact.
+        const file = copyArtifactLeaseToken(
+            blob,
+            new File([blob as BlobPart], name, {
+                type: blob.type || 'application/pdf',
+            }),
+        );
         if (existingPath) {
             Object.defineProperty(file, 'path', { value: existingPath, configurable: true });
         }

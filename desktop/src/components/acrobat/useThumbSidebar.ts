@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, Dispatch, SetStateAction } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, Dispatch, SetStateAction } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { genPageId } from '../../hooks/viewer/usePdfLoader';
+import type { VirtuosoHandle } from 'react-virtuoso';
 
 interface UseThumbSidebarProps {
     pageOrder: number[];
@@ -15,7 +16,7 @@ interface UseThumbSidebarProps {
     setActivePage: (page: number) => void;
     commitSnapshot: () => void;
     sidebarRef: React.RefObject<HTMLDivElement | null>;
-    mainVirtuosoRef?: React.RefObject<any>;
+    mainVirtuosoRef?: React.RefObject<VirtuosoHandle | null>;
     onNavigatePage: (index: number) => void;
     pdfUrl?: string;
 }
@@ -325,8 +326,12 @@ export function useThumbSidebar({
     };
 
     useEffect(() => {
-        const handleCrossHover = (e: any) => {
-            const { targetPdfUrl, hoverIndex, dropPosition: pos } = e.detail;
+        const handleCrossHover = (e: Event) => {
+            const { targetPdfUrl, hoverIndex, dropPosition: pos } = (e as CustomEvent<{
+                targetPdfUrl?: string;
+                hoverIndex: number | null;
+                dropPosition: 'before' | 'after';
+            }>).detail;
             if (targetPdfUrl === pdfUrl) {
                 setHoverTargetIndex(hoverIndex);
                 setDropPosition(pos);
@@ -342,7 +347,9 @@ export function useThumbSidebar({
 
     // Track latest state to avoid stale closures during pointer events
     const latestStateRef = useRef({ pageOrder, selectedIndices, lastSelectedIndex, pageInstanceIds });
-    latestStateRef.current = { pageOrder, selectedIndices, lastSelectedIndex, pageInstanceIds };
+    useLayoutEffect(() => {
+        latestStateRef.current = { pageOrder, selectedIndices, lastSelectedIndex, pageInstanceIds };
+    }, [pageOrder, selectedIndices, lastSelectedIndex, pageInstanceIds]);
 
     // We use a ref to track state during the pointer drag to avoid stale closures
     const dragContextRef = useRef<{ draggedIndex: number | null, hoverIndex: number | null, dropPosition: 'before' | 'after' }>({ draggedIndex: null, hoverIndex: null, dropPosition: 'before' });

@@ -28,13 +28,14 @@ import { toast } from 'sonner';
 import { useMockupStore } from '../../stores/useMockupStore';
 import { computeExportSize, flipWebGlPixelRows, MAX_EXPORT_PX } from '../../lib/mockup3d/exportSizing';
 import type { ExportScale } from '../../lib/mockup3d/types';
-import { computeTargetPose } from './CameraRig';
+import { computeTargetPose } from './cameraRigPresets';
 import type { CameraPreset } from '../../stores/useMockupStore';
 import { useTranslation } from 'react-i18next';
 
 type MockupExportFormat = 'png' | 'jpeg' | 'webp';
+type ExportExtension = 'png' | 'jpg' | 'webp' | 'glb';
 const MIME_MAP: Record<MockupExportFormat, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
-const EXT_MAP: Record<MockupExportFormat, string> = { png: 'png', jpeg: 'jpg', webp: 'webp' };
+const EXT_MAP: Record<MockupExportFormat, ExportExtension> = { png: 'png', jpeg: 'jpg', webp: 'webp' };
 
 // ─── Tùy chọn & kiểu trả về ─────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ export interface SceneExportApi {
 // ─── Tiện ích thuần (không phụ thuộc React) ─────────────────────────────────
 
 /** Sinh tên tệp xuất kèm dấu thời gian để tránh trùng. */
-function buildFilename(prefix: string, ext: 'png' | 'glb'): string {
+function buildFilename(prefix: string, ext: ExportExtension): string {
     const stamp = new Date()
         .toISOString()
         .replace(/[:.]/g, '-')
@@ -316,7 +317,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 }
 
                 const ext = EXT_MAP[exportFormat];
-                const filename = buildFilename(filePrefix, ext as any);
+                const filename = buildFilename(filePrefix, ext);
                 await saveBlob(blob, filename, exportOutputDir || undefined);
                 reportSuccess('png', filename);
                 return true;
@@ -368,7 +369,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 );
                 if (blob) {
                     const ext = EXT_MAP[exportFormat];
-                    await saveBlob(blob, buildFilename(`${filePrefix}-${preset}`, ext as any), exportOutputDir || undefined);
+                    await saveBlob(blob, buildFilename(`${filePrefix}-${preset}`, ext), exportOutputDir || undefined);
                     okCount += 1;
                 }
             }

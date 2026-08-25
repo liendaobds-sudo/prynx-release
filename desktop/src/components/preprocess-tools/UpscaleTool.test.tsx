@@ -3,7 +3,7 @@
 import { StrictMode } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BatchItem } from './imageBatch/store';
@@ -18,15 +18,20 @@ import UpscaleTool, {
     upscaleOutputName,
 } from './UpscaleTool';
 import { useUpscaleStore } from './useUpscaleStore';
+import { IMAGE_BATCH_DROP_EVENTS } from '../../lib/tabNavigation';
 
 const apiMocks = vi.hoisted(() => ({ authenticatedFetch: vi.fn() }));
 const tauriMocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+const workingPageMocks = vi.hoisted(() => ({ rasterize: vi.fn() }));
 
 vi.mock('../../lib/api', () => ({
     getApiUrl: () => 'http://localhost:8321/api',
     authenticatedFetch: apiMocks.authenticatedFetch,
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauriMocks.invoke }));
+vi.mock('./upscaleWorkingPage', () => ({
+    rasterizeUpscaleWorkingPage: workingPageMocks.rasterize,
+}));
 vi.mock('../../i18n', () => ({ tv: (text: string) => text }));
 vi.mock('react-i18next', () => ({
     useTranslation: () => ({ t: (key: string) => key }),
@@ -83,6 +88,9 @@ describe('UpscaleTool — dùng kết quả cho công cụ kế tiếp', () => {
             if (url.endsWith('/warmup')) return { ok: true, json: async () => ({ ok: true }) };
             return successResponse(resultBlob);
         });
+        workingPageMocks.rasterize.mockResolvedValue(
+            new File(['working-page'], 'working-page-2.png', { type: 'image/png' }),
+        );
     });
 
     it('chỉ tự thay workspace khi kết quả không mơ hồ', () => {
@@ -272,6 +280,97 @@ describe('UpscaleTool — dùng kết quả cho công cụ kế tiếp', () => {
         fireEvent.click(screen.getByTitle('preprocess.upscale:hoan_tac_de_chinh_sua_lai'));
         await waitFor(() => expect(onFileFixed).toHaveBeenNthCalledWith(2, source, 'tem.jpg', undefined));
         expect(useUpscaleStore.getState().getTab('tab-ui').batchItems[0].status).toBe('pending');
+    });
+
+    it('nguồn ảnh stale chuyển sang active Working page khi bấm Chạy và giữ file explicit', async () => {
+        const workspaceImage = new File(['workspace'], 'anh-workspace.png', { type: 'image/png' });
+        Object.defineProperty(workspaceImage, 'arrayBuffer', {
+            value: async () => Uint8Array.from([1, 2, 3]).buffer,
+        });
+        const explicitImage = new File(['explicit'], 'anh-them-tay.png', { type: 'image/png' });
+        const pdf = new File(['pdf-source'], 'tai-lieu.pdf', { type: 'application/pdf' });
+        const workingPdf = new File(['pdf-working'], 'tai-lieu-working.pdf', { type: 'application/pdf' });
+        const getWorkingFile = vi.fn().mockResolvedValue(workingPdf);
+        const onFileFixed = vi.fn(async () => undefined);
+        const renderWorkspace = (sourceImageFile: File | null) => (
+            <UpscaleTool
+                tabId="tab-stale-workspace"
+                pdfFile={pdf}
+                sourceImageFile={sourceImageFile}
+                sourceImageReferenceFile={workspaceImage}
+                getWorkingFile={getWorkingFile}
+                activeWorkingPage={2}
+                onFileFixed={onFileFixed}
+            />
+        );
+
+        const view = render(renderWorkspace(workspaceImage));
+        const store = useUpscaleStore.getState();
+        await waitFor(() => expect(store.getTab('tab-stale-workspace').batchItems).toHaveLength(1));
+        expect(store.getTab('tab-stale-workspace').batchItems[0]).toMatchObject({
+            fileName: workspaceImage.name,
+            sourceOrigin: 'workspace',
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(IMAGE_BATCH_DROP_EVENTS.upscale, {
+                detail: { tabId: 'tab-stale-workspace', files: [explicitImage] },
+            }));
+        });
+        await waitFor(() => expect(store.getTab('tab-stale-workspace').batchItems).toHaveLength(2));
+        expect(store.getTab('tab-stale-workspace').batchItems.find(
+            item => item.fileName === explicitImage.name,
+        )?.sourceOrigin).toBe('explicit');
+
+        // Upstream vô hiệu ảnh shadow sau rotate/reorder/edit.
+        view.rerender(renderWorkspace(null));
+        await waitFor(() => {
+            const items = store.getTab('tab-stale-workspace').batchItems;
+            expect(items).toHaveLength(2);
+            expect(items.some(item => item.fileName === workspaceImage.name)).toBe(false);
+            expect(items.find(item => item.fileName === explicitImage.name)?.sourceOrigin).toBe('explicit');
+            const workspaceItem = items.find(item => item.sourceOrigin === 'workspace');
+            expect(workspaceItem).toMatchObject({ fileName: 'tai-lieu_trang_2.png' });
+            expect(workspaceItem?.fileObj).toBeUndefined();
+        });
+
+        // Không materialize/raster/warm trong effect.
+        expect(getWorkingFile).not.toHaveBeenCalled();
+        expect(workingPageMocks.rasterize).not.toHaveBeenCalled();
+        expect(apiMocks.authenticatedFetch.mock.calls.some(
+            ([url]) => String(url).endsWith('/upscale/warmup'),
+        )).toBe(false);
+
+        fireEvent.click(screen.getByRole('button', { name: 'preprocess.common:run' }));
+        await waitFor(() => expect(getWorkingFile).toHaveBeenCalledTimes(1));
+        expect(workingPageMocks.rasterize).toHaveBeenCalledWith(
+            workingPdf,
+            2,
+            expect.any(AbortSignal),
+            1,
+        );
+        await waitFor(() => expect(onFileFixed).toHaveBeenCalledWith(
+            resultBlob,
+            'upscaled_working-page-2.png',
+            'D:\\results\\upscaled.pdf',
+        ));
+        expect(store.getTab('tab-stale-workspace').batchItems.find(
+            item => item.fileName === explicitImage.name,
+        )).toMatchObject({
+            fileObj: explicitImage,
+            sourceOrigin: 'explicit',
+            status: 'success',
+        });
+        const uploadedNames = apiMocks.authenticatedFetch.mock.calls
+            .filter(([url]) => String(url).endsWith('/pdf-tools/upscale'))
+            .map(([, init]) => (init?.body as FormData).get('file'))
+            .filter((file): file is File => file instanceof File)
+            .map(file => file.name);
+        expect(uploadedNames).toEqual([explicitImage.name, 'working-page-2.png']);
+        expect(uploadedNames).not.toContain(workspaceImage.name);
+        expect(apiMocks.authenticatedFetch.mock.calls.some(
+            ([url]) => String(url).endsWith('/upscale/warmup'),
+        )).toBe(false);
     });
 
     it('không commit muộn sau khi màn Upscale đã đóng', async () => {

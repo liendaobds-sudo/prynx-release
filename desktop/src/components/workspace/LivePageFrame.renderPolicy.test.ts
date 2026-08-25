@@ -23,7 +23,7 @@ import {
     viewerRenderGroupKey,
     viewerTileFileKey,
     VIEWER_ACCURATE_UNDERLAY_SCALE,
-} from './LivePageFrame';
+} from './livePageFramePolicy';
 
 describe('Viewer — policy ghép tile progressive', () => {
     it('không cho PDFium hoàn tất muộn ghi đè PPE cùng scale', () => {

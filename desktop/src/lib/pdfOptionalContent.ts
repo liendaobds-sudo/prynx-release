@@ -58,6 +58,7 @@ import {
     PDFObject,
     PDFObjectCopier,
     PDFRef,
+    PDFStream,
 } from 'pdf-lib';
 
 const K_OCPROPERTIES = PDFName.of('OCProperties');
@@ -463,11 +464,22 @@ function findStampedRefs(doc: PDFDocument): Map<string, PDFRef[]> {
                 if (seenXObjects.has(ref.tag)) return;
                 seenXObjects.add(ref.tag);
             }
-            const xobj = xobjects.lookupMaybe(key, PDFDict);
-            if (!xobj) return;
-            noteRef(xobj.get(K_OC));
+            // UIUX (audit 2026-08-25 §NW.5): XObject hợp lệ thường là stream:
+            // ảnh là PDFRawStream, Form cũng
+            // là PDFStream. lookupMaybe(key, PDFDict) sẽ ném
+            // `Expected instance of PDFDict ... PDFRawStream` khi gặp ảnh.
+            // Chỉ Form có /Resources lồng cần đi sâu; mọi stream vẫn được đọc
+            // dict để giữ /OC nếu file gắn layer trực tiếp lên XObject.
+            const xobj = xobjects.lookup(key);
+            const xobjDict = xobj instanceof PDFDict
+                ? xobj
+                : xobj instanceof PDFStream
+                    ? xobj.dict
+                    : undefined;
+            if (!xobjDict) return;
+            noteRef(xobjDict.get(K_OC));
             // Form XObject có `/Resources` riêng, Illustrator lồng layer khá sâu ở đây.
-            walkResources(xobj.lookupMaybe(K_RESOURCES, PDFDict), depth + 1);
+            walkResources(xobjDict.lookupMaybe(K_RESOURCES, PDFDict), depth + 1);
         });
     };
 

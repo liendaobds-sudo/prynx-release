@@ -23,7 +23,6 @@ import type {
     OutputPreviewRgb,
     OutputPreviewShowFilter,
 } from '../stores/useWorkspaceStore';
-import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { useWorkspaceToolActivationGuard } from '../hooks/useToolActivationGuard';
 import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import SoftProofPanel from './SoftProofPanel';
@@ -94,6 +93,12 @@ const PAGE_BOX_LINE_CLASSES: Record<OutputPreviewPageBoxKind, string> = {
     trimbox: 'border-emerald-500',
     artbox: 'border-rose-500',
 };
+
+function outputPreviewErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error) return error;
+    return fallback;
+}
 
 function isPageBoxMm(value: unknown): value is OutputPreviewPageBoxes['cropbox'] {
     if (!value || typeof value !== 'object') return false;
@@ -334,7 +339,6 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const compositeGenerationRef = React.useRef(0);
     const compositeObjectUrlRef = React.useRef<string | null>(null);
     const tacObjectUrlRef = React.useRef<string | null>(null);
-    const pageBoxesGenerationRef = React.useRef(0);
     const onPlatesChangeRef = React.useRef(onPlatesChange);
     // UIUX (audit 2026-08-22 §UX.VIEW.02): fileId luôn trỏ tới Working PDF đã
     // materialize theo thứ tự Viewer. `pageNum` vì vậy chính là trang của file này;
@@ -352,7 +356,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             setActiveDashboardTool(tool);
             onClose();
         });
-    }, [onClose, requestWorkspaceToolActivation, setActiveDashboardTool, workspaceStore]);
+    }, [onClose, requestWorkspaceToolActivation, setActiveDashboardTool]);
 
     useEffect(() => {
         let cancelled = false;
@@ -509,7 +513,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     // PAGEBOX (audit 2026-08-10 §OP.E3): đọc box thật của trang nguồn và gắn
     // viewerPageNum để response cũ/khác frame không thể vẽ lên trang hiện tại.
     useEffect(() => {
-        const generation = ++pageBoxesGenerationRef.current;
+        let active = true;
         const controller = new AbortController();
         setPageBoxesLoading(true);
         setPageBoxesError('');
@@ -526,23 +530,22 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 sourcePageNum,
             );
             if (!parsed) throw new Error('Invalid PageBox response');
-            if (generation !== pageBoxesGenerationRef.current || controller.signal.aborted) return;
+            if (!active || controller.signal.aborted) return;
             setOutputPreviewPageBoxes(parsed);
         }).catch(() => {
-            if (generation !== pageBoxesGenerationRef.current || controller.signal.aborted) return;
+            if (!active || controller.signal.aborted) return;
             setOutputPreviewPageBoxes(null);
             setPageBoxesError(t('tabs.outputPreview:khong_doc_duoc_hop_trang'));
         }).finally(() => {
-            if (generation === pageBoxesGenerationRef.current && !controller.signal.aborted) {
+            if (active && !controller.signal.aborted) {
                 setPageBoxesLoading(false);
             }
         });
 
         return () => {
+            active = false;
             controller.abort();
-            if (generation === pageBoxesGenerationRef.current) {
-                setOutputPreviewPageBoxes(null);
-            }
+            setOutputPreviewPageBoxes(null);
         };
     }, [fileId, pageNum, setOutputPreviewPageBoxes, sourcePageNum, t]);
 
@@ -621,7 +624,11 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 
     const handlePointerUp = (e: React.PointerEvent) => {
         dragRef.current.isDragging = false;
-        try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch(err){}
+        try {
+            (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch {
+            // Pointer capture có thể đã được trình duyệt giải phóng trước đó.
+        }
     };
 
     useEffect(() => {
@@ -752,8 +759,8 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 setAccuracyLabel(result.accuracy ?? '');
                 setQualityNote(result.quality_note ?? '');
                 setDetectedSpots(result.detected_spots ?? []);
-            } catch (err: any) {
-                if (isMounted) setError(err.message);
+            } catch (err: unknown) {
+                if (isMounted) setError(outputPreviewErrorMessage(err, t('tabs.outputPreview:khong_the_phan_tach_kem')));
             } finally {
                 if (isMounted) setLoading(false);
             }
@@ -1049,12 +1056,12 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             } else if (!data.success) {
                 toast.error(t('tabs.outputPreview:chuyen_spot_cmyk_khong_thanh_cong', { msg: data.error || 'Unknown' }));
             }
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error('Convert spot failed:', e);
-            toast.error(t('tabs.outputPreview:loi_msg', { msg: e.message || 'Không kết nối được backend' }));
+            toast.error(t('tabs.outputPreview:loi_msg', { msg: outputPreviewErrorMessage(e, t('tabs.outputPreview:loi_khong_xac_dinh')) }));
         }
         setConvertingSpot('');
-    }, [fileId, onFileFixed]);
+    }, [fileId, onFileFixed, t]);
 
     const processPlates = plateList.filter(plate => !plate.is_spot && PROCESS_NAMES.has(plate.name));
     const spotPlates = plateList.filter(plate => plate.is_spot || !PROCESS_NAMES.has(plate.name));
@@ -1849,9 +1856,9 @@ export function OverprintPreviewToggle({
             // PREFLIGHT (audit 2026-08-10 §OP.9): mặc định hiển thị composite
             // color-managed; diff chỉ là chế độ chẩn đoán do người dùng chọn riêng.
             setOverprintPreviewUrl(data.overprint_image);
-        } catch (e: any) {
+        } catch (e: unknown) {
             if (!controller.signal.aborted && generation === requestGenerationRef.current) {
-                setError(e.message || t('tabs.outputPreview:loi_khong_xac_dinh'));
+                setError(outputPreviewErrorMessage(e, t('tabs.outputPreview:loi_khong_xac_dinh')));
                 clearPreview();
             }
         } finally {

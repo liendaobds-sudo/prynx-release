@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * OutputSettingsSection — Marks, Bleed, Cluster, and Output settings.
  * 
@@ -6,6 +5,7 @@
  * Renders: Trim marks, sticker marks (cut type, pont), cluster settings,
  *          bleed input, spawn new tab toggle.
  */
+import type { CutType } from '../generated/CutType';
 import React from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -49,7 +49,7 @@ export default function OutputSettingsSection({ activeTool }: { activeTool: stri
                         <div className="flex flex-1 items-center gap-2 min-w-0">
                             <select
                                 value={s.cutType}
-                                onChange={e => s.setCutType(e.target.value as any)}
+                                onChange={e => s.setCutType(e.target.value as CutType)}
                                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
                                 <option value="default">{t('imposition.outputSettings:mac_dinh')}</option>

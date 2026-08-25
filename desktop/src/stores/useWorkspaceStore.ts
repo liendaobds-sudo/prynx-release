@@ -4,9 +4,13 @@ import { createContext, useContext } from 'react';
 import type { StoreApi } from 'zustand';
 import type { OutputPreviewPageBoxes, PlateOverlay } from '../lib/outputPreviewOverlay';
 import type { CropRegionFrac } from '../lib/cropGeometry';
-import type { ProcessingSettings } from '../lib/pdfImposer';
 import type { ToolMenuMode } from '../lib/rightToolMenuLayout';
 import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
+import type { CachedPdfObject } from './pdfObjectCache';
+import type { VdpToolField } from '../hooks/useVdpTool';
+import type { NumberStyle } from '../lib/stampFormat';
+import type { VdpTemplateField } from '../lib/vdpTemplate';
+import type { WorkspaceHistoryEntry } from '../lib/workspaceHistory';
 
 // ═══════════════════════════════════════════════════════════
 // useWorkspaceStore — Central state for ImpositionTab workspace
@@ -23,8 +27,8 @@ export function workspaceFileIdentity(file: File | null | undefined): string {
 
 export function workspaceDocumentIdentity(
     file: File | null | undefined,
-    pageOrder: number[] | undefined,
-    pageRotations: number[] | undefined,
+    pageOrder: readonly number[] | undefined,
+    pageRotations: readonly number[] | undefined,
 ): string {
     const order = pageOrder?.length ? pageOrder.join(',') : 'source';
     const rotations = pageRotations?.length
@@ -109,6 +113,91 @@ export interface ViewerActivePagePhysical {
     heightPt: number;
 }
 
+/** Finding preflight được dùng để chiếu bbox lên viewer đang mở. */
+export interface WorkspacePreflightIssue {
+    rule_id: string;
+    severity: string;
+    page?: number | null;
+    object_ref?: string;
+    description: string;
+    auto_fixable?: boolean;
+    bbox?: number[] | null;
+    bboxes?: number[][] | null;
+}
+
+/** OCG layer trả về từ endpoint edit/ocg; giữ cấu trúc cây để panel render trực tiếp. */
+export interface WorkspaceOcgLayerObject {
+    type: string;
+    name: string;
+    page: number;
+    color?: string | null;
+}
+
+export interface WorkspaceOcgLayer {
+    id: number;
+    name: string;
+    visible: boolean;
+    locked: boolean;
+    depth: number;
+    children: WorkspaceOcgLayer[];
+    color: string;
+    isGroup?: boolean;
+    isVirtual?: boolean;
+    isPageLayer?: boolean;
+    parentOcgId?: number;
+    pageNum?: number;
+    objects?: WorkspaceOcgLayerObject[];
+}
+
+export interface WatermarkPreviewSettings {
+    watermarkType: 'text' | 'image';
+    watermarkText: string;
+    batesStart: number;
+    batesPadding: number;
+    watermarkImageUrl: string;
+    layerZIndex: 'top' | 'bottom';
+    targetType: 'all' | 'even' | 'odd' | 'range';
+    rangeStart: number;
+    rangeEnd: number;
+    color: string;
+    fontSize: number;
+    opacity: number;
+    rotation: number;
+    spacing: number;
+    isRepeated: boolean;
+    scaleMode: 'absolute' | 'fit_page' | 'stretch';
+    imageScale: number;
+    positionXMode: 'center' | 'left' | 'right';
+    offsetX: number;
+    positionYMode: 'center' | 'top' | 'bottom';
+    offsetY: number;
+    wmWidth: number;
+    wmHeight: number;
+}
+
+export interface StickPreviewSettings {
+    fields: {
+        topLeft: string;
+        topCenter: string;
+        topRight: string;
+        bottomLeft: string;
+        bottomCenter: string;
+        bottomRight: string;
+    };
+    margins: { top: number; bottom: number; left: number; right: number };
+    startNumber: number;
+    increment: number;
+    padLength: number;
+    fontName: string;
+    fontSize: number;
+    fontColor: string;
+    rotation: number;
+    targetType: 'all' | 'even' | 'odd' | 'range';
+    rangeStart: number;
+    rangeEnd: number;
+    numberStyle: NumberStyle;
+    mirrorMargins: boolean;
+}
 type CropSelectionUpdater = CropSelectionState | null | ((prev: CropSelectionState | null) => CropSelectionState | null);
 const CROP_HISTORY_LIMIT = 64;
 
@@ -131,7 +220,7 @@ export interface WorkspaceState {
     error: string;
 
     // ── History & Save ──
-    history: File[];
+    history: WorkspaceHistoryEntry[];
     // Undo/Redo RIÊNG cho chế độ chỉnh sửa đối tượng (object edit). Mỗi entry lưu
     // {file, pdfUrl, fid} để khôi phục ĐẦY ĐỦ trạng thái edit (kể cả selectionFileId)
     // — khác `history` (chỉ File, dùng cho các tool khác qua nút Undo cam).
@@ -150,7 +239,11 @@ export interface WorkspaceState {
     // (KHÔNG phải keyed theo số trang gốc — đổi từ per-instance rotation 2026-07-06). Cho
     // phép mỗi bản nhân bản xoay độc lập. Consumer bake/impose lặp theo vị trí nên dùng [i].
     viewerPageRotations: number[] | undefined;
-    highlightedIssue: any;
+    /** Generation đơn điệu của edit-object in-memory; mỗi op/undo/redo giữ một revision riêng. */
+    editGeneration: number;
+    /** Barrier do ImpositionTab đăng ký để tool chờ Edit PDF commit-on-exit. */
+    documentPreparationBarrier: (() => Promise<void>) | null;
+    highlightedIssue: WorkspacePreflightIssue | null;
     bleedView: { show: boolean; mm: number };
 
     // ── Sidebar & Layout ──
@@ -197,7 +290,7 @@ export interface WorkspaceState {
     // ── Object Edit Mode (chế độ chỉnh sửa đối tượng) ──
     isObjectEditMode: boolean;
     // Current page components for layers-like panel in edit PDF (accurate from /edit/objects)
-    currentEditObjects: any[];
+    currentEditObjects: CachedPdfObject[];
     pdfObjectsVersion: number;
     selectedObjectIds: string[];
     hiddenObjectIds: string[];
@@ -216,7 +309,7 @@ export interface WorkspaceState {
     editAddMode: 'text' | 'image' | null;
 
     // ── OCG Layers ──
-    pdfOcgLayers: any[];
+    pdfOcgLayers: WorkspaceOcgLayer[];
     hiddenOcgLayerIds: number[];
     lockedOcgLayerIds: number[];
     expandedOcgLayerIds: number[];
@@ -225,7 +318,7 @@ export interface WorkspaceState {
     ocgPreviewUrl: string | null;
 
     // ── VDP Tool ──
-    vdpFields: any[];
+    vdpFields: VdpToolField[];
     selectedVdpFieldIds: string[];
 
     // ── Preprocess ──
@@ -233,12 +326,12 @@ export interface WorkspaceState {
     detectedShapeParams: string | null;
     detectedShapesByPage: Record<number, string>;
     detectedDimensionsByPage: Record<number, { w: number, h: number }>;
-    detectedShapeParamsByPage: Record<number, any>;
+    detectedShapeParamsByPage: Record<number, Record<string, unknown>>;
     /** SVG đường bế classic phủ trực tiếp lên Viewer của riêng workspace/tab này. */
     classicCutlineViewerPreview: ClassicCutlineViewerPreview | null;
 
     // ── Watermark Preview ──
-    watermarkPreview: any | null;
+    watermarkPreview: WatermarkPreviewSettings | null;
 
     // ── AcrobatViewer Shared State ──
     viewerZoom: number;
@@ -267,7 +360,10 @@ export interface WorkspaceState {
     setProcessStatus: (status: string) => void;
     setError: (error: string) => void;
 
-    setHistory: (updater: File[] | ((prev: File[]) => File[])) => void;
+    setHistory: (
+        updater: WorkspaceHistoryEntry[]
+        | ((prev: WorkspaceHistoryEntry[]) => WorkspaceHistoryEntry[])
+    ) => void;
     setObjectEditPast: (updater: { file: File | null; pdfUrl: string | null; fid: string }[] | ((prev: { file: File | null; pdfUrl: string | null; fid: string }[]) => { file: File | null; pdfUrl: string | null; fid: string }[])) => void;
     setObjectEditFuture: (updater: { file: File | null; pdfUrl: string | null; fid: string }[] | ((prev: { file: File | null; pdfUrl: string | null; fid: string }[]) => { file: File | null; pdfUrl: string | null; fid: string }[])) => void;
     setIsSaved: (val: boolean) => void;
@@ -279,8 +375,10 @@ export interface WorkspaceState {
     setViewerPageOrder: (order: number[] | undefined) => void;
     setViewerPageInstanceIds: (ids: string[] | undefined) => void;
     setViewerPageRotations: (rotations: number[] | undefined) => void;
-    setHighlightedIssue: (issue: any) => void;
-    setBleedView: (updater: any) => void;
+    advanceEditGeneration: () => void;
+    setDocumentPreparationBarrier: (barrier: (() => Promise<void>) | null) => void;
+    setHighlightedIssue: (issue: WorkspacePreflightIssue | null) => void;
+    setBleedView: (updater: { show: boolean; mm: number } | ((prev: { show: boolean; mm: number }) => { show: boolean; mm: number })) => void;
 
     setRightToolMenuMode: (mode: ToolMenuMode) => void;
     setRightToolMenuFullWidth: (width: number) => void;
@@ -319,7 +417,7 @@ export interface WorkspaceState {
     recordCropSelectionSnapshot: () => void;
     undoCropSelection: () => void;
     redoCropSelection: () => void;
-    setCurrentEditObjects: (updater: any[] | ((prev: any[]) => any[])) => void;
+    setCurrentEditObjects: (updater: CachedPdfObject[] | ((prev: CachedPdfObject[]) => CachedPdfObject[])) => void;
     setPdfObjectsVersion: (updater: number | ((prev: number) => number)) => void;
     setSelectedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setEditClipboard: (clip: { sourcePage: number; objectIds: string[]; pasteCount: number } | null) => void;
@@ -330,7 +428,7 @@ export interface WorkspaceState {
     setObjectSelectionContext: (context: EditObjectSelectionContext | null) => void;
     setEditAddMode: (updater: ('text' | 'image' | null) | ((prev: 'text' | 'image' | null) => 'text' | 'image' | null)) => void;
 
-    setPdfOcgLayers: (layers: any[]) => void;
+    setPdfOcgLayers: (layers: WorkspaceOcgLayer[]) => void;
     setHiddenOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
     setLockedOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
     setExpandedOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
@@ -338,17 +436,17 @@ export interface WorkspaceState {
     setIsLayerPanelOpen: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setOcgPreviewUrl: (url: string | null) => void;
 
-    setVdpFields: (updater: any[] | ((prev: any[]) => any[])) => void;
+    setVdpFields: (updater: VdpToolField[] | VdpTemplateField[] | Record<string, unknown>[] | ((prev: VdpToolField[]) => VdpToolField[])) => void;
     setSelectedVdpFieldIds: (ids: string[]) => void;
 
     // ── Watermark Preview ──
-    setWatermarkPreview: (settings: any | null) => void;
+    setWatermarkPreview: (settings: WatermarkPreviewSettings | null) => void;
 
     setDetectedShapeType: (val: string | null) => void;
     setDetectedShapeParams: (val: string | null) => void;
     setDetectedShapesByPage: (updater: Record<number, string> | ((prev: Record<number, string>) => Record<number, string>)) => void;
     setDetectedDimensionsByPage: (updater: Record<number, { w: number, h: number }> | ((prev: Record<number, { w: number, h: number }>) => Record<number, { w: number, h: number }>)) => void;
-    setDetectedShapeParamsByPage: (updater: Record<number, any> | ((prev: Record<number, any>) => Record<number, any>)) => void;
+    setDetectedShapeParamsByPage: (updater: Record<number, Record<string, unknown>> | ((prev: Record<number, Record<string, unknown>>) => Record<number, Record<string, unknown>>)) => void;
     setClassicCutlineViewerPreview: (value: ClassicCutlineViewerPreview) => void;
     clearClassicCutlineViewerPreview: (ownerId: string) => void;
 
@@ -364,8 +462,76 @@ export interface WorkspaceState {
     setViewerPageDimMm: (dim: { w: number; h: number } | null) => void;
     setViewerActivePagePhysical: (value: ViewerActivePagePhysical | null) => void;
 
-    stickPreviewParams: any | null;
-    setStickPreviewParams: (params: any | null) => void;
+    stickPreviewParams: StickPreviewSettings | null;
+    setStickPreviewParams: (params: StickPreviewSettings | null) => void;
+}
+
+export interface WorkspaceDocumentRevisionToken {
+    readonly file: File | null;
+    readonly viewerPageOrder: readonly number[] | undefined;
+    readonly viewerPageInstanceIds: readonly string[] | undefined;
+    readonly viewerPageRotations: readonly number[] | undefined;
+    readonly editGeneration: number;
+}
+
+type WorkspaceDocumentRevisionSource = Pick<
+    WorkspaceState,
+    'file' | 'viewerPageOrder' | 'viewerPageInstanceIds' | 'viewerPageRotations' | 'editGeneration'
+>;
+
+function cloneFrozenArray<T>(value: readonly T[] | undefined): readonly T[] | undefined {
+    return value === undefined ? undefined : Object.freeze([...value]);
+}
+
+function sameOptionalArray<T>(
+    left: readonly T[] | undefined,
+    right: readonly T[] | undefined,
+): boolean {
+    if (left === right) return true;
+    if (left === undefined || right === undefined || left.length !== right.length) return false;
+    return left.every((value, index) => Object.is(value, right[index]));
+}
+
+function invalidateSelectionRevision() {
+    return {
+        selectionFileId: '',
+        selectionDocumentIdentity: '',
+        selectedObjectIds: [],
+        hiddenObjectIds: [],
+        lockedObjectIds: [],
+        editClipboard: null,
+        objectSelectionContext: null,
+    } satisfies Partial<WorkspaceState>;
+}
+
+/**
+ * REVISION (audit 2026-08-25 §REV.03): chụp đúng File + từng instance trang +
+ * edit generation. Clone/freeze để một job dài không đọc mảng bị mutate về sau.
+ */
+export function captureWorkspaceDocumentRevision(
+    state: WorkspaceDocumentRevisionSource,
+    sourceFile: File | null = state.file,
+): WorkspaceDocumentRevisionToken {
+    return Object.freeze({
+        file: sourceFile,
+        viewerPageOrder: cloneFrozenArray(state.viewerPageOrder),
+        viewerPageInstanceIds: cloneFrozenArray(state.viewerPageInstanceIds),
+        viewerPageRotations: cloneFrozenArray(state.viewerPageRotations),
+        editGeneration: state.editGeneration,
+    });
+}
+
+export function isWorkspaceDocumentRevisionCurrent(
+    expected: WorkspaceDocumentRevisionToken,
+    state: WorkspaceDocumentRevisionSource,
+): boolean {
+    return (
+        expected.file === state.file
+        && expected.editGeneration === state.editGeneration
+        && sameOptionalArray(expected.viewerPageOrder, state.viewerPageOrder)
+        && sameOptionalArray(expected.viewerPageInstanceIds, state.viewerPageInstanceIds)
+        && sameOptionalArray(expected.viewerPageRotations, state.viewerPageRotations)
+    );
 }
 
 export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'full', initialRightToolMenuFullWidth = 390) => createStore<WorkspaceState>()((set) => ({
@@ -393,6 +559,8 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     viewerPageOrder: undefined,
     viewerPageInstanceIds: undefined,
     viewerPageRotations: undefined,
+    editGeneration: 0,
+    documentPreparationBarrier: null,
     highlightedIssue: null,
     bleedView: { show: false, mm: 0 },
 
@@ -521,21 +689,40 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     setViewerDirty: (v) => set({ viewerDirty: v }),
     setShowCloseConfirm: (v) => set({ showCloseConfirm: v }),
 
-    setViewerPageOrder: (order) => set({
-        viewerPageOrder: order,
-        classicCutlineViewerPreview: null,
-        viewerActivePagePhysical: null,
-    }),
-    setViewerPageInstanceIds: (ids) => set({
-        viewerPageInstanceIds: ids,
-        classicCutlineViewerPreview: null,
-        viewerActivePagePhysical: null,
-    }),
-    setViewerPageRotations: (rotations) => set({
-        viewerPageRotations: rotations,
-        classicCutlineViewerPreview: null,
-        viewerActivePagePhysical: null,
-    }),
+    setViewerPageOrder: (order) => set((state) => (
+        sameOptionalArray(state.viewerPageOrder, order)
+            ? state
+            : {
+                viewerPageOrder: order,
+                classicCutlineViewerPreview: null,
+                viewerActivePagePhysical: null,
+                ...invalidateSelectionRevision(),
+            }
+    )),
+    setViewerPageInstanceIds: (ids) => set((state) => (
+        sameOptionalArray(state.viewerPageInstanceIds, ids)
+            ? state
+            : {
+                viewerPageInstanceIds: ids,
+                classicCutlineViewerPreview: null,
+                viewerActivePagePhysical: null,
+                ...invalidateSelectionRevision(),
+            }
+    )),
+    setViewerPageRotations: (rotations) => set((state) => (
+        sameOptionalArray(state.viewerPageRotations, rotations)
+            ? state
+            : {
+                viewerPageRotations: rotations,
+                classicCutlineViewerPreview: null,
+                viewerActivePagePhysical: null,
+                ...invalidateSelectionRevision(),
+            }
+    )),
+    advanceEditGeneration: () => set((state) => ({
+        editGeneration: state.editGeneration + 1,
+    })),
+    setDocumentPreparationBarrier: (barrier) => set({ documentPreparationBarrier: barrier }),
     setHighlightedIssue: (issue) => set({ highlightedIssue: issue }),
     setBleedView: (updater) => set((state) => ({
         bleedView: typeof updater === 'function' ? updater(state.bleedView) : updater,
@@ -873,7 +1060,7 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     )),
 
     setVdpFields: (updater) => set((state) => ({
-        vdpFields: typeof updater === 'function' ? updater(state.vdpFields) : updater,
+        vdpFields: typeof updater === 'function' ? updater(state.vdpFields) : updater as VdpToolField[],
     })),
     setSelectedVdpFieldIds: (ids) => set((state) => {
         const prev = state.selectedVdpFieldIds;

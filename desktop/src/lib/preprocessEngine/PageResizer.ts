@@ -106,15 +106,13 @@ export async function resizePages(
         // Ưu tiên CropBox khi nhỏ hơn MediaBox (sau Crop UI: viewer đã cắt, MediaBox
         // có thể còn gốc nếu bản cũ chưa sync) → resize đúng vùng đã cắt, không co
         // cả trang gốc. Còn lại dùng MediaBox để GIỮ BLEED (nội dung ngoài CropBox).
-        const mb: any = (srcPage as any).getMediaBox
-            ? (srcPage as any).getMediaBox()
-            : { x: 0, y: 0, width: srcW, height: srcH };
-        let box = { left: mb.x as number, bottom: mb.y as number, right: mb.x + mb.width, top: mb.y + mb.height };
+        const mb = srcPage.getMediaBox();
+        let box = { left: mb.x, bottom: mb.y, right: mb.x + mb.width, top: mb.y + mb.height };
         let embedW = srcW;
         let embedH = srcH;
         try {
-            const cb: any = (srcPage as any).getCropBox?.() ?? null;
-            if (cb && cb.width > 1 && cb.height > 1) {
+            const cb = srcPage.getCropBox();
+            if (cb.width > 1 && cb.height > 1) {
                 const mediaArea = Math.max(1, srcW * srcH);
                 const cropArea = cb.width * cb.height;
                 if (cropArea < mediaArea * 0.99) {
@@ -187,11 +185,11 @@ export async function resizePages(
             const y1 = Math.min(targetHPt, Math.max(py0, py1));
             return [x0, y0, x1, y1];
         };
-        const auxBoxes: Array<['TrimBox' | 'BleedBox' | 'ArtBox', any]> = [
-            ['TrimBox', (srcPage.node as any).TrimBox?.()],
-            ['BleedBox', (srcPage.node as any).BleedBox?.()],
-            ['ArtBox', (srcPage.node as any).ArtBox?.()],
-        ];
+        const auxBoxes = [
+            ['TrimBox', srcPage.node.TrimBox()],
+            ['BleedBox', srcPage.node.BleedBox()],
+            ['ArtBox', srcPage.node.ArtBox()],
+        ] as const;
         for (const [name, arr] of auxBoxes) {
             if (!arr) continue;
             try {

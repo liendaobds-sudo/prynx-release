@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
@@ -17,6 +18,98 @@ interface AcrobatToolbarProps {
     extraActions?: ReactNode;
     /** Mép phải: Mở bằng AI/Corel… */
     extraActionsRight?: ReactNode;
+}
+
+interface ToolbarDropdownPortalProps {
+    anchorRef: RefObject<HTMLElement | null>;
+    portalRoot: HTMLElement;
+    width: number;
+    estimatedHeight: number;
+    ariaLabel: string;
+    className: string;
+    onClose: () => void;
+    children: ReactNode;
+}
+
+/**
+ * UIUX (audit 2026-08-25): popup phải thoát khỏi scrollport của dải toolbar.
+ * `overflow-x-auto` cũng làm trục Y bị clip theo quy tắc CSS, nên dropdown đặt
+ * absolute bên trong toolbar vẫn mở state nhưng hoàn toàn không nhìn thấy.
+ */
+function ToolbarDropdownPortal({
+    anchorRef,
+    portalRoot,
+    width,
+    estimatedHeight,
+    ariaLabel,
+    className,
+    onClose,
+    children,
+}: ToolbarDropdownPortalProps) {
+    const [position, setPosition] = useState({ top: -10_000, left: -10_000 });
+
+    useLayoutEffect(() => {
+        const updatePosition = () => {
+            const anchor = anchorRef.current;
+            if (!anchor) return;
+
+            const rect = anchor.getBoundingClientRect();
+            const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+            const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+            const viewportGap = 8;
+            const popupGap = 4;
+            const maxLeft = Math.max(viewportGap, viewportWidth - width - viewportGap);
+            const left = Math.max(viewportGap, Math.min(rect.right - width, maxLeft));
+            const belowTop = rect.bottom + popupGap;
+            const top = belowTop + estimatedHeight <= viewportHeight - viewportGap
+                ? belowTop
+                : Math.max(viewportGap, rect.top - estimatedHeight - popupGap);
+
+            setPosition({ top, left });
+        };
+
+        updatePosition();
+        window.addEventListener('resize', updatePosition);
+        window.addEventListener('scroll', updatePosition, true);
+        return () => {
+            window.removeEventListener('resize', updatePosition);
+            window.removeEventListener('scroll', updatePosition, true);
+        };
+    }, [anchorRef, estimatedHeight, width]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            // Chặn Escape lọt xuống hotkey viewer và vô tình thoát Crop/Edit/Hand.
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+            anchorRef.current?.focus();
+        };
+        window.addEventListener('keydown', handleKeyDown, true);
+        return () => window.removeEventListener('keydown', handleKeyDown, true);
+    }, [anchorRef, onClose]);
+
+    return createPortal(
+        <>
+            <div
+                className="fixed inset-0 z-[60]"
+                data-testid="toolbar-dropdown-backdrop"
+                role="presentation"
+                onClick={onClose}
+            />
+            <div
+                role="menu"
+                aria-label={ariaLabel}
+                className={`fixed z-[80] ${className}`}
+                style={{ top: position.top, left: position.left, width }}
+            >
+                {children}
+            </div>
+        </>,
+        // Giữ popup trong owner toolbar để tab nền vẫn kế thừa opacity/pointer-events.
+        portalRoot,
+    );
 }
 
 export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools, extraActions, extraActionsRight }: AcrobatToolbarProps) {
@@ -68,6 +161,8 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
     const [zoomInputVal, setZoomInputVal] = useState('');
     const [isZoomMenuOpen, setIsZoomMenuOpen] = useState(false);
     const [isDisplayMenuOpen, setIsDisplayMenuOpen] = useState(false);
+    const zoomMenuAnchorRef = useRef<HTMLButtonElement>(null);
+    const displayMenuAnchorRef = useRef<HTMLButtonElement>(null);
 
     // Sync pageInput when activePage changes from outside
     const [prevActivePage, setPrevActivePage] = useState(activePage);
@@ -78,10 +173,10 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
 
     // Thu hẹp: đo bề rộng THẬT của toolbar (không theo cửa sổ) → khi hẹp thì gắn
     // class 'tb-narrow' để CSS ẩn các nhãn chữ (.tb-label), chỉ còn icon → hết đè.
-    const barRef = useRef<HTMLDivElement>(null);
+    const [barElement, setBarElement] = useState<HTMLDivElement | null>(null);
     const [isNarrow, setIsNarrow] = useState(false);
     useEffect(() => {
-        const el = barRef.current;
+        const el = barElement;
         if (!el || typeof ResizeObserver === 'undefined') return;
         const ro = new ResizeObserver((entries) => {
             const w = entries[0]?.contentRect.width ?? 0;
@@ -89,11 +184,11 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
         });
         ro.observe(el);
         return () => ro.disconnect();
-    }, []);
+    }, [barElement]);
 
     // UIUX (audit 2026-08-01): popup toolbar nổi trên ThumbSidebar; sidebar nằm sau trong DOM.
     return (
-        <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#1e1e1e] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-[70] relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
+        <div ref={setBarElement} data-acrobat-toolbar className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#1e1e1e] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-[70] relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
             <style>{`.tb-narrow .tb-label{display:none!important;}`}</style>
             {/* Mép trái: Xuất ảnh / Ghi quy trình (và extra khác từ parent) */}
             <div className="flex items-center gap-1.5 shrink-0 min-w-0">
@@ -101,7 +196,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
             </div>
             {/* Spacer co được — đẩy nhóm tool navigation/zoom ra giữa */}
             <div className="flex-1 min-w-0" />
-            <div className="flex min-w-0 max-w-full shrink-0 items-center gap-1 overflow-x-auto scrollbar-thin">
+            <div data-toolbar-scroll className="flex min-w-0 max-w-full shrink-0 items-center gap-1 overflow-x-auto scrollbar-thin">
                 <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title={`Previous Page (${getShortcutLabel('pages.previous')})`} aria-label="Previous Page">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3 3l3-3 3 3"/></svg>
                 </button>
@@ -240,29 +335,41 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     )}
                     {/* UIUX (audit 2026-07-27 §C-10): mở rộng vùng bấm w-4→w-6 + thêm title (tooltip). */}
                     <button
+                        ref={zoomMenuAnchorRef}
                         className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300 focus:outline-none transition-colors"
-                        onClick={() => setIsZoomMenuOpen(!isZoomMenuOpen)}
+                        onClick={() => {
+                            setIsDisplayMenuOpen(false);
+                            setIsZoomMenuOpen(open => !open);
+                        }}
                         title={t('misc.acrobatToolbar:chon_muc_thu_phong')}
                         aria-label={t('misc.acrobatToolbar:chon_muc_thu_phong')}
+                        aria-haspopup="menu"
+                        aria-expanded={isZoomMenuOpen}
                     >
                         <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M0 0l5 6 5-6z"/></svg>
                     </button>
 
-                    {isZoomMenuOpen && (
-                        <div className="absolute top-full right-0 mt-1 w-20 bg-white dark:bg-zinc-800 rounded shadow-lg py-1 border border-black/10 dark:border-white/10 z-[100] animate-in fade-in zoom-in-95 duration-100 h-64 overflow-y-auto">
+                    {isZoomMenuOpen && barElement && (
+                        <ToolbarDropdownPortal
+                            anchorRef={zoomMenuAnchorRef}
+                            portalRoot={barElement}
+                            width={80}
+                            estimatedHeight={256}
+                            ariaLabel={t('misc.acrobatToolbar:chon_muc_thu_phong')}
+                            className="bg-white dark:bg-zinc-800 rounded shadow-lg py-1 border border-black/10 dark:border-white/10 animate-in fade-in zoom-in-95 duration-100 h-64 overflow-y-auto"
+                            onClose={() => setIsZoomMenuOpen(false)}
+                        >
                             {[1, 2, 5, 10, 25, 50, 75, 100, 150, 200, 400, 800, 1600, 3200, 6400].map(val => (
                                 <button
                                     key={val}
+                                    role="menuitem"
                                     className="w-full text-center px-2 py-1.5 text-[13px] text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors"
                                     onClick={() => { handleCustomZoom(val / 100); setIsZoomMenuOpen(false); }}
                                 >
                                     {val}%
                                 </button>
                             ))}
-                        </div>
-                    )}
-                    {isZoomMenuOpen && (
-                        <div className="fixed inset-0 z-40" onClick={() => setIsZoomMenuOpen(false)} />
+                        </ToolbarDropdownPortal>
                     )}
                 </div>
 
@@ -311,7 +418,18 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                 </button>
 
                 <div className="relative mx-1">
-                    <button className={`h-8 px-2 flex items-center justify-center gap-1.5 rounded transition-colors ${isDisplayMenuOpen ? 'bg-black/10 dark:bg-white/20' : 'hover:bg-black/5 dark:hover:bg-white/10'} text-slate-700 dark:text-zinc-300`} onClick={() => setIsDisplayMenuOpen(!isDisplayMenuOpen)} title={t('misc.acrobatToolbar:hien_thi_trang')} aria-label={t('misc.acrobatToolbar:hien_thi_trang')}>
+                    <button
+                        ref={displayMenuAnchorRef}
+                        className={`h-8 px-2 flex items-center justify-center gap-1.5 rounded transition-colors ${isDisplayMenuOpen ? 'bg-black/10 dark:bg-white/20' : 'hover:bg-black/5 dark:hover:bg-white/10'} text-slate-700 dark:text-zinc-300`}
+                        onClick={() => {
+                            setIsZoomMenuOpen(false);
+                            setIsDisplayMenuOpen(open => !open);
+                        }}
+                        title={t('misc.acrobatToolbar:hien_thi_trang')}
+                        aria-label={t('misc.acrobatToolbar:hien_thi_trang')}
+                        aria-haspopup="menu"
+                        aria-expanded={isDisplayMenuOpen}
+                    >
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             {pageDisplayMode === 'single_fit' && <rect x="5" y="3" width="14" height="18" rx="2" />}
                             {pageDisplayMode === 'single_scroll' && <><rect x="5" y="2" width="14" height="9" rx="2" /><rect x="5" y="13" width="14" height="9" rx="2" /></>}
@@ -321,37 +439,42 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                         <span className="text-[13px] font-medium tb-label">{t('misc.acrobatToolbar:hien_thi')}</span>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
                     </button>
-                    {isDisplayMenuOpen && (
-                        <>
-                            <div className="fixed inset-0 z-40" onClick={() => setIsDisplayMenuOpen(false)} />
-                            <div className="absolute top-10 right-0 w-64 bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded py-1.5 z-50 text-[13px] text-slate-700 dark:text-zinc-200">
+                    {isDisplayMenuOpen && barElement && (
+                        <ToolbarDropdownPortal
+                            anchorRef={displayMenuAnchorRef}
+                            portalRoot={barElement}
+                            width={256}
+                            estimatedHeight={210}
+                            ariaLabel={t('misc.acrobatToolbar:bo_cuc_trang')}
+                            className="bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded py-1.5 text-[13px] text-slate-700 dark:text-zinc-200"
+                            onClose={() => setIsDisplayMenuOpen(false)}
+                        >
                                 
                                 {/* UIUX (audit 2026-07-27 §C-02, feedback user): bỏ mục "Thu phóng (vừa
                                     màn hình)" — đã có 2 nút fit 1-click ngay cạnh dropdown, giữ bản sao
                                     trong menu chỉ làm dài thêm. Dropdown giờ thuần Bố cục trang. */}
                                 <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">{t('misc.acrobatToolbar:bo_cuc_trang')}</div>
-                                <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_fit'); setIsDisplayMenuOpen(false);}}>
+                                <button role="menuitem" className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_fit'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'single_fit' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="5" y="3" width="14" height="18" rx="2" /></svg>
                                     <span>{t('misc.acrobatToolbar:xem_mot_trang')}</span>
                                 </button>
-                                <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_scroll'); setIsDisplayMenuOpen(false);}}>
+                                <button role="menuitem" className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_scroll'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'single_scroll' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="5" y="2" width="14" height="9" rx="2" /><rect x="5" y="13" width="14" height="9" rx="2" /></svg>
                                     <span>{t('misc.acrobatToolbar:cuon_trang_doc')}</span>
                                 </button>
-                                <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_fit'); setIsDisplayMenuOpen(false);}}>
+                                <button role="menuitem" className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_fit'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'two_fit' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="2" y="4" width="9" height="16" rx="2" /><rect x="13" y="4" width="9" height="16" rx="2" /></svg>
                                     <span>{t('misc.acrobatToolbar:xem_hai_trang')}</span>
                                 </button>
-                                <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_scroll'); setIsDisplayMenuOpen(false);}}>
+                                <button role="menuitem" className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_scroll'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'two_scroll' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="2" y="2" width="9" height="9" rx="2" /><rect x="13" y="2" width="9" height="9" rx="2" /><rect x="2" y="13" width="9" height="9" rx="2" /><rect x="13" y="13" width="9" height="9" rx="2" /></svg>
                                     <span>{t('misc.acrobatToolbar:cuon_hai_trang')}</span>
                                 </button>
-                            </div>
-                        </>
+                        </ToolbarDropdownPortal>
                     )}
                 </div>
 

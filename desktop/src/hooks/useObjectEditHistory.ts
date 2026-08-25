@@ -22,6 +22,8 @@ export interface EditSnap {
     fid: string;
 }
 
+type EditCommitFile = File & { __editCommit?: boolean };
+
 // Giới hạn số bước undo để tránh phình RAM (mỗi snapshot giữ 1 File object).
 const MAX_EDIT_HISTORY = 30;
 
@@ -42,7 +44,7 @@ function _discardWorkingFiles(fids: (string | null)[], currentFid: string) {
 function markEditCommit(f: File | null) {
     if (!f) return;
     try {
-        if (!(f as any).__editCommit) {
+        if (!(f as EditCommitFile).__editCommit) {
             Object.defineProperty(f, '__editCommit', { value: true, configurable: true });
         }
     } catch {

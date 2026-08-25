@@ -1,14 +1,15 @@
-// @ts-nocheck
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { buildBookReportText } from '../../../lib/bookReport';
 import { formatSizeMm } from '../../../lib/measurementFormat';
 import { Checkbox, inputCls, SectionLabel } from '../SharedUI';
-import { PREDEFINED_SIZES, type BookReportFieldKey } from '../types';
+import { PREDEFINED_SIZES, type BookReportDisplayConfig, type BookReportFieldKey } from '../types';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 
-const FIELD_CONTROLS: Array<[BookReportFieldKey, string, string]> = [
+type BookReportFlag = Extract<keyof BookReportDisplayConfig, `show${string}`>;
+
+const FIELD_CONTROLS: Array<[BookReportFieldKey, BookReportFlag, string]> = [
     ['orderCode', 'showOrderCode', 'Mã đơn hàng'],
     ['title', 'showTitle', 'Tên sản phẩm'],
     ['finishedSize', 'showFinishedSize', 'Khổ thành phẩm'],

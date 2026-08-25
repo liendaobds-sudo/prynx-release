@@ -76,7 +76,9 @@ describe('recipeOps — buildRecipeStep', () => {
     it('deep-clone params (độc lập nguồn)', () => {
         const src = { conversions: ['rgb_to_cmyk'] };
         const step = buildRecipeStep('convertcolors', src);
-        (step.params as any).conversions.push('x');
+        const conversions = step.params.conversions;
+        if (!Array.isArray(conversions)) throw new TypeError('Fixture conversions phải là mảng');
+        conversions.push('x');
         expect(src.conversions).toEqual(['rgb_to_cmyk']);
     });
 

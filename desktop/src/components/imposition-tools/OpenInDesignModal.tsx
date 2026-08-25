@@ -179,6 +179,7 @@ export default function OpenInDesignModal({
             }
         })();
         return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- LINT (audit 2026-08-24 LO140): t chỉ định dạng lỗi; đổi ngôn ngữ không được đọc lại toàn bộ PDF kết quả.
     }, [open, resultBlob, resultFilePath, cncMode, cncTwoSided, separateCut, originalName, currentPage]);
 
     useEffect(() => {

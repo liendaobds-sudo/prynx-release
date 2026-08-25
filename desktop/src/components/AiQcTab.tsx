@@ -5,6 +5,16 @@ import { Button } from './Button';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
 
+// TYPE (audit 2026-08-23 §P2.71): lỗi API/OCR là boundary không tin cậy.
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (message) return String(message);
+  }
+  return String(error);
+}
+
 export default function AiQcTab() {
   const { t } = useTranslation();
   const { llmMode, cloudApiKey } = useComparisonStore();
@@ -53,8 +63,8 @@ export default function AiQcTab() {
       } else {
         setAiOutput([t('tabs.aiQc:khong_phat_hien_thay_loi_chinh_ta_hay')]);
       }
-    } catch (e: any) {
-      setAiOutput([`❌ Đã xảy ra lỗi khi gọi AI: ${e.message}`]);
+    } catch (error: unknown) {
+      setAiOutput([`❌ Đã xảy ra lỗi khi gọi AI: ${getErrorMessage(error)}`]);
     } finally {
       setIsProcessing(false);
     }
@@ -77,8 +87,8 @@ export default function AiQcTab() {
       } else {
          toast.info(t('tabs.aiQc:khong_tim_thay_ky_tu_nao_trong_file_nay'));
       }
-    } catch (e: any) {
-      toast.error(t('tabs.aiQc:loi_trich_xuat', { msg: e.message }));
+    } catch (error: unknown) {
+      toast.error(t('tabs.aiQc:loi_trich_xuat', { msg: getErrorMessage(error) }));
     } finally {
       setIsExtracting(false);
     }

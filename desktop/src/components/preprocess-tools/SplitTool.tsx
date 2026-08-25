@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { SplitMode } from '../../lib/preprocessEngine/PdfSplitter';
 import { 
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, 

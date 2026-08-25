@@ -13,9 +13,14 @@
  * viewerNumPages sau xóa. Xóa đuôi 10→4 còn [1,2,3,4] vẫn phải bake (bug preview
  * ratio_stack/N-Up vẫn thấy 10 loại).
  */
-import { useCallback } from 'react';
+import { useContext, useMemo } from 'react';
 import { PDFDocument, degrees } from 'pdf-lib';
-import { useWorkspaceStore } from '../stores/useWorkspaceStore';
+import {
+    WorkspaceContext,
+    captureWorkspaceDocumentRevision,
+    isWorkspaceDocumentRevisionCurrent,
+    type WorkspaceDocumentRevisionToken,
+} from '../stores/useWorkspaceStore';
 import { getFileArrayBuffer } from '../lib/utils';
 import {
     beginOptionalContentTransfer,
@@ -38,23 +43,32 @@ function resolveSourcePageCount(f: File): Promise<number> {
     return pending;
 }
 
-export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | null> {
-    const file = useWorkspaceStore(state => state.file);
-    const viewerPageOrder = useWorkspaceStore(state => state.viewerPageOrder);
-    const viewerPageRotations = useWorkspaceStore(state => state.viewerPageRotations);
+export interface WorkingPdfRevisionSnapshot extends WorkspaceDocumentRevisionToken {
+    readonly file: File;
+}
 
-    return useCallback(async (sourceFile?: File | null): Promise<File | null> => {
-        // EXPORT (re-audit 2026-07-31 §RA-04): nhận Working File vừa commit để
-        // tránh closure React còn giữ file cũ trong cùng lượt async.
-        const activeFile = sourceFile === undefined ? file : sourceFile;
-        if (!activeFile) return null;
+export interface WorkingPdfResolver {
+    (sourceFile?: File | null): Promise<File | null>;
+    prepare: () => Promise<void>;
+    resolveUnprepared: (sourceFile?: File | null) => Promise<File | null>;
+    capture: (sourceFile?: File | null) => WorkingPdfRevisionSnapshot | null;
+    materialize: (snapshot: WorkingPdfRevisionSnapshot) => Promise<File>;
+    isCurrent: (snapshot: WorkingPdfRevisionSnapshot) => boolean;
+}
+
+export async function materializeWorkingPdfRevision(
+    snapshot: WorkingPdfRevisionSnapshot,
+): Promise<File> {
+        const activeFile = snapshot.file;
+        const viewerPageOrder = snapshot.viewerPageOrder;
+        const viewerPageRotations = snapshot.viewerPageRotations;
 
         // Góc xoay khác 0 đã đủ chứng minh cần Working PDF; không đọc cả file chỉ
         // để đếm trang trước khi làm một việc chắc chắn phải materialize.
         const hasRotEdits = !!(
             viewerPageRotations
             && Object.values(viewerPageRotations).some(
-                (r: any) => (((r as number) % 360) + 360) % 360 !== 0,
+                r => ((r % 360) + 360) % 360 !== 0,
             )
         );
         let hasOrderEdits = false;
@@ -78,7 +92,7 @@ export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | nu
         // Kiểm CÓ GÓC KHÁC 0. Dữ liệu cũ Record<pageNum,deg> thì Object.values cũng chạy.
         if (!hasOrderEdits && !hasRotEdits) return activeFile;
 
-        const rotations = viewerPageRotations || {};
+        const rotations = viewerPageRotations || [];
         const arrayBuffer = await getFileArrayBuffer(activeFile);
         const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
@@ -95,12 +109,8 @@ export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | nu
         // rotations là number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i) — khớp
         // per-instance rotation (bản nhân bản xoay độc lập). Đọc theo index vòng lặp,
         // KHÔNG theo số trang gốc pIdx (nhiều vị trí có thể cùng pIdx). Fallback: nếu
-        // dữ liệu cũ là Record<pageNum,deg> thì rotations[pIdx] vẫn hoạt động do JS
-        // index bằng key số/chuỗi — nhưng bản mới luôn là mảng.
-        const rotAt = (i: number, pIdx: number): number => {
-            if (Array.isArray(rotations)) return rotations[i] || 0;
-            return (rotations as Record<number, number>)[pIdx] || 0;
-        };
+        // Snapshot mới luôn lưu rotation theo vị trí/instance.
+        const rotAt = (i: number): number => rotations[i] || 0;
         for (let i = 0; i < order.length; i++) {
             const pIdx = order[i];
             if (pIdx === -1) {
@@ -111,7 +121,7 @@ export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | nu
                 newDoc.addPage([dim.w, dim.h]);
             } else {
                 const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                const rot = rotAt(i, pIdx);
+                const rot = rotAt(i);
                 if (rot) {
                     const currentRot = copiedPage.getRotation().angle;
                     copiedPage.setRotation(degrees(currentRot + rot));
@@ -122,6 +132,57 @@ export function useWorkingPdf(): (sourceFile?: File | null) => Promise<File | nu
 
         finishOptionalContentTransfer(ocTransfer, newDoc);
         const pdfBytes = await newDoc.save();
-        return new File([pdfBytes as any], activeFile.name, { type: 'application/pdf' });
-    }, [file, viewerPageOrder, viewerPageRotations]);
+        return new File([new Uint8Array(pdfBytes)], activeFile.name, { type: 'application/pdf' });
+}
+
+export function useWorkingPdf(): WorkingPdfResolver {
+    const store = useContext(WorkspaceContext);
+    if (!store) throw new Error('Missing WorkspaceContext.Provider in the tree');
+
+    return useMemo(() => {
+        const prepare = async (): Promise<void> => {
+            // REVISION (audit 2026-08-25 §REV.01): resolve Working PDF chỉ bắt
+            // đầu sau khi edit-object pending đã commit và publish vào store.
+            await store.getState().documentPreparationBarrier?.();
+        };
+        const capture = (sourceFile?: File | null): WorkingPdfRevisionSnapshot | null => {
+            const state = store.getState();
+            const activeFile = sourceFile === undefined ? state.file : sourceFile;
+            if (!activeFile) return null;
+            return captureWorkspaceDocumentRevision(
+                state,
+                activeFile,
+            ) as WorkingPdfRevisionSnapshot;
+        };
+
+        const resolve = async (sourceFile?: File | null): Promise<File | null> => {
+            // REVISION (audit 2026-08-25 §REV.01-03): barrier có thể publish một
+            // File mới. Nếu caller truyền đúng File đang mở trước barrier thì phải
+            // rebase sang File mới; chỉ giữ sourceFile khi đó là nguồn ngoài độc lập.
+            const beforeFile = store.getState().file;
+            await prepare();
+            const rebasedSource = sourceFile === undefined || sourceFile === beforeFile
+                ? store.getState().file
+                : sourceFile;
+            const snapshot = capture(rebasedSource);
+            return snapshot ? materializeWorkingPdfRevision(snapshot) : null;
+        };
+
+        const resolveUnprepared = async (sourceFile?: File | null): Promise<File | null> => {
+            // Preview chỉ đọc revision đã publish; tuyệt đối không tự chốt Edit PDF
+            // vì render xem trước không phải hành động chạy công cụ.
+            const snapshot = capture(sourceFile);
+            return snapshot ? materializeWorkingPdfRevision(snapshot) : null;
+        };
+
+        return Object.assign(resolve, {
+            prepare,
+            resolveUnprepared,
+            capture,
+            materialize: materializeWorkingPdfRevision,
+            isCurrent: (snapshot: WorkingPdfRevisionSnapshot) => (
+                isWorkspaceDocumentRevisionCurrent(snapshot, store.getState())
+            ),
+        });
+    }, [store]);
 }

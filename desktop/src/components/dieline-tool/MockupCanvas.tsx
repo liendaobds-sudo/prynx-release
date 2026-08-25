@@ -53,6 +53,8 @@ function ToneMappingController() {
     const invalidate = useThree((s) => s.invalidate);
 
     useEffect(() => {
+        // R3F trả về WebGLRenderer mutable theo thiết kế Three.js; cấu hình renderer phải ghi trực tiếp.
+        // eslint-disable-next-line react-hooks/immutability -- API Three.js yêu cầu mutation có chủ đích.
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = toneExposure;
         gl.outputColorSpace = THREE.SRGBColorSpace;

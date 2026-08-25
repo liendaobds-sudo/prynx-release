@@ -9,17 +9,23 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createImposerSettingsStore } from './useImposerSettingsStore';
 import { disposeImposerPersistScope } from './store/persist';
+import type { PageResizerSettings } from '../preprocess-tools/pageResizerViewLogic';
 
 const PERSIST_KEY = 'ps_imposer_settings';
 
 function defaultStateSnapshot() {
     localStorage.clear();
     const store = createImposerSettingsStore();
-    const s = store.getState() as Record<string, any>;
     // Chỉ giữ field dữ liệu (bỏ function/action) để snapshot ổn định.
-    const data: Record<string, any> = {};
-    for (const k of Object.keys(s).sort()) {
-        if (typeof s[k] !== 'function') data[k] = s[k];
+    const data: Record<string, unknown> = {};
+    const entries = Object.entries(store.getState());
+    entries.sort(([left], [right]) => {
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+    });
+    for (const [key, value] of entries) {
+        if (typeof value !== 'function') data[key] = value;
     }
     return data;
 }
@@ -88,7 +94,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         };
         localStorage.setItem(PERSIST_KEY, JSON.stringify(v6));
         const store = createImposerSettingsStore();
-        const rd = store.getState().reportDisplay as any;
+        const rd = store.getState().reportDisplay;
         expect(rd.showGangCount).toBe(true);
         expect(rd.fieldOrder).toContain('gangCount');
         // gangCount chèn ngay sau identifier
@@ -114,7 +120,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         };
         localStorage.setItem(PERSIST_KEY, JSON.stringify(v7));
         const store = createImposerSettingsStore();
-        const rs = store.getState().resizeSettings as any;
+        const rs = store.getState().resizeSettings as PageResizerSettings;
         expect(rs.sizePresetId).toBe('A3');
         expect(rs.pageSizeMode).toBe('fixed');
         expect(rs.scaleMode).toBe('fill');
@@ -271,7 +277,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
                 sticker_imposer: { taskMode: 'sticker_imposer' },
                 cnc_imposer: { taskMode: 'step_repeat' },
             },
-        } as any);
+        });
 
         st().restoreTaskModeForTool('sticker_imposer');
         expect(st().taskMode).toBe('nup');
@@ -296,7 +302,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
             toolProfiles: {
                 sticker_imposer: { taskMode: 'nup' },
             },
-        } as any);
+        });
         st().setActiveDashboardTool('sticker_imposer');
         st().restoreTaskModeForTool('sticker_imposer');
 
@@ -346,7 +352,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
             activeDashboardTool: 'sticker_imposer',
             impositionUnit: 'page_sheet',
             toolProfiles: { sticker_imposer: { taskMode: 'nup' } },
-        } as any);
+        });
 
         store.getState().restoreTaskModeForTool('sticker_imposer');
         expect(store.getState().impositionUnit).toBe('sticker');
@@ -376,7 +382,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
                 cnc_imposer: { taskMode: 'step_repeat', cutType: 'one_dao', dieSizeMode: 'page' },
             },
             cutType: 'one_dao',
-        } as any);
+        });
         st().switchToolProfile('sticker_imposer', 'cnc_imposer');
         expect(st().cutType).toBe('default');
         expect(st().dieSizeMode).toBe('die');

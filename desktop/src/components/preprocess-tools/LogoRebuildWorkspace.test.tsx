@@ -54,6 +54,16 @@ const CORE_CAPABILITIES = {
   },
   limitations: [],
 } satisfies LogoRebuildCapabilities;
+const CORE_CAPABILITIES_V2 = {
+  ...CORE_CAPABILITIES,
+  engine: {
+    ...CORE_CAPABILITIES.engine,
+    version: '0.2.0-dev.1',
+    curve_presets: ['automatic', 'faithful', 'balanced', 'trajectory_completion'],
+    geometry_metrics_version: 1,
+  },
+} satisfies LogoRebuildCapabilities;
+
 
 const READY_QC = {
   physical_width_mm: null,
@@ -86,11 +96,25 @@ const READY_QC = {
   review_actions: [],
 };
 
+const READY_QC_V2 = {
+  ...READY_QC,
+  native_metrics: {
+    ...READY_QC.native_metrics,
+    max_symmetric_distance_px: 0.125,
+    line_segments: 0,
+    cubic_segments: 4,
+    circle_count: 1,
+    ellipse_count: 0,
+    max_smooth_tangent_jump_degrees: 0,
+    artifact_max_tangent_jump_degrees: 0,
+  },
+};
+
 function mockReadyPreview(jobId = 'logo-dirty-session'): void {
   vi.mocked(createLogoRebuildPreview).mockResolvedValue({
     status: 'ready',
     job_id: jobId,
-    svg: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80"><path d="M10 10 L90 10 L90 40 C90 55 70 70 50 70 L10 70 Z"/></svg>',
     width_px: 100,
     height_px: 100,
     warnings: [],
@@ -147,6 +171,7 @@ describe('LogoRebuildWorkspace', () => {
     expect(screen.getByRole('button', { name: 'Đen trắng' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
     expect((screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement).value).toBe('0');
+    expect(screen.queryByRole('radio', { name: /Tự động \(Khuyến nghị\)/ })).toBeNull();
     expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
     expect(screen.queryByText(/auto.?color/i)).toBeNull();
     expect((screen.getByLabelText('Cân bằng độ sáng cho artwork phẳng không đều màu') as HTMLInputElement).checked).toBe(false);
@@ -282,6 +307,25 @@ describe('LogoRebuildWorkspace', () => {
     expect(screen.getAllByRole('status').some(region => region.getAttribute('aria-live') === 'polite')).toBe(true);
   });
 
+  it('chặn file đổi đuôi có MIME không phải ảnh ngay tại picker (§LR5.10)', async () => {
+    render(<LogoRebuildWorkspace />);
+    await screen.findByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i);
+    const file = new File(['not-an-image'], 'renamed.png', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    expect(screen.getByText(/File không khớp định dạng ảnh/i)).toBeTruthy();
+    expect(preflightLogoRebuild).not.toHaveBeenCalled();
+  });
+
+  it('chặn file logo vượt 500MB trước preflight (§LR5.10)', async () => {
+    render(<LogoRebuildWorkspace />);
+    await screen.findByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i);
+    const file = new File(['small-payload'], 'huge.png', { type: 'image/png' });
+    Object.defineProperty(file, 'size', { configurable: true, value: 500 * 1024 * 1024 + 1 });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+    expect(screen.getByText(/File logo quá lớn/i)).toBeTruthy();
+    expect(preflightLogoRebuild).not.toHaveBeenCalled();
+  });
+
   it('chỉ báo trạng thái request khi backend chưa cung cấp tiến độ theo phase', async () => {
     let resolvePreview!: (value: Awaited<ReturnType<typeof createLogoRebuildPreview>>) => void;
     vi.mocked(createLogoRebuildPreview).mockReturnValue(new Promise(resolve => { resolvePreview = resolve; }));
@@ -356,6 +400,11 @@ describe('LogoRebuildWorkspace', () => {
     await selectFileAndApplySuggestedPalette('compare.png');
     fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
     await screen.findByAltText('SVG vector đã dựng');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Hiện điểm neo' }));
+    const anchorOverlay = screen.getByTestId('logo-anchor-overlay');
+    expect(within(anchorOverlay).getAllByTestId('logo-anchor-point')).toHaveLength(5);
+    expect(within(anchorOverlay).getAllByTestId('logo-anchor-handle')).toHaveLength(2);
+
 
     fireEvent.change(screen.getByLabelText('Mức phóng đại'), { target: { value: '800' } });
     expect(screen.getByTestId('logo-compare-stage').style.transform).toContain('scale(8)');
@@ -590,7 +639,7 @@ describe('LogoRebuildWorkspace', () => {
         }));
       });
       await waitFor(() => expect(results).toEqual(['cancelled']));
-      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
       expect(screen.getByText(/tab vẫn còn thay đổi tài liệu cần lưu/i)).toBeTruthy();
 
       rerender(
@@ -701,6 +750,20 @@ describe('LogoRebuildWorkspace', () => {
     expect(preflightLogoRebuild).toHaveBeenCalledTimes(1);
   });
 
+  it('không nhận native-drop khi entitlement đang bị khóa (§LR5.07)', async () => {
+    render(<LogoRebuildWorkspace tabId="logo-locked" isActive isLocked />);
+    await waitFor(() => expect(screen.getByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i)).toBeTruthy());
+    const source = new File(['png-data'], 'locked.png', { type: 'image/png' });
+    act(() => {
+      window.dispatchEvent(new CustomEvent(
+        IMAGE_BATCH_DROP_EVENTS.logo_rebuild,
+        { detail: { tabId: 'logo-locked', files: [source] } },
+      ));
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(preflightLogoRebuild).not.toHaveBeenCalled();
+  });
+
   it('dùng làm mượt Cutout cho JPEG mà không tăng khử hạt', async () => {
     render(<LogoRebuildWorkspace />);
     await waitFor(() => expect(screen.getByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i)).toBeTruthy());
@@ -714,6 +777,54 @@ describe('LogoRebuildWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Chọn ảnh khác'), { target: { files: [png] } });
     expect((screen.getByLabelText('Khử hạt nhỏ') as HTMLInputElement).value).toBe('4');
     expect((screen.getByLabelText('Độ mượt đường cong') as HTMLInputElement).value).toBe('0');
+  });
+
+  it('hiển thị đủ preset V2, giữ preset khi đổi JPEG/PNG và gửi mục tiêu quỹ đạo', async () => {
+    vi.mocked(getLogoRebuildCapabilities).mockResolvedValue(CORE_CAPABILITIES_V2);
+    vi.mocked(createLogoRebuildPreview).mockResolvedValue({
+      status: 'ready',
+      job_id: 'curve-preset-v2',
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      width_px: 320,
+      height_px: 180,
+      warnings: [],
+      engine: 'prynx-logo-core',
+      engine_version: '0.2.0-dev.1',
+      ...READY_QC_V2,
+    });
+    render(<LogoRebuildWorkspace />);
+    await screen.findByText(/prynx-logo-core 0.2.0-dev.1 · Schema kết quả 1/i);
+
+    const presets = screen.getAllByRole('radio');
+    expect(presets).toHaveLength(4);
+    expect((screen.getByRole('radio', { name: /Tự động \(Khuyến nghị\)/ }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('radio', { name: /Bám sát bản gốc/ })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /^Cân bằng/ })).toBeTruthy();
+    const trajectoryPreset = screen.getByRole('radio', { name: /Hoàn thiện quỹ đạo/ });
+    fireEvent.click(trajectoryPreset);
+    expect((trajectoryPreset as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByLabelText('Độ mượt đường cong')).toBeNull();
+
+    const jpeg = new File(['jpeg-data'], 'logo-noisy.jpg', { type: 'image/jpeg' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [jpeg] } });
+    expect((screen.getByRole('radio', { name: /Hoàn thiện quỹ đạo/ }) as HTMLInputElement).checked).toBe(true);
+
+    const png = new File(['png-data'], 'logo-flat.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh khác'), { target: { files: [png] } });
+    expect((screen.getByRole('radio', { name: /Hoàn thiện quỹ đạo/ }) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Áp dụng gợi ý' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
+    await waitFor(() => expect(createLogoRebuildPreview).toHaveBeenCalledTimes(1));
+    const [, settings] = vi.mocked(createLogoRebuildPreview).mock.calls[0];
+    expect(settings.curve_preset).toBe('trajectory_completion');
+
+    const curveQuality = await screen.findByRole('region', { name: 'Độ sạch đường cong' });
+    expect(curveQuality.textContent).toContain('Điểm neo nguồn / đầu ra: 320 → 120 (−63%)');
+    expect(curveQuality.textContent).toContain('Đoạn thẳng / Bézier: 0 / 4');
+    expect(curveQuality.textContent).toContain('Hình tròn / elip: 1 / 0');
+    expect(curveQuality.textContent).toContain('Sai số hai chiều lớn nhất: 0.1250 px');
+    expect(curveQuality.textContent).toContain('Lệch tiếp tuyến SVG cuối lớn nhất: 0.00°');
   });
 
   it('khóa xuất SVG review cho đến khi người dùng xác nhận đã kiểm tra', async () => {
@@ -779,13 +890,14 @@ describe('LogoRebuildWorkspace', () => {
     expect(settings.palette).toEqual(['#233d69', '#ef4444']);
     expect(settings.background_color).toBe('#ffffff');
     expect(settings.smoothing).toBe(0);
+    expect(settings.curve_preset).toBeUndefined();
     expect(settings.illumination_correction).toBe(false);
     expect(await screen.findByAltText('SVG vector đã dựng')).toBeTruthy();
     expect(screen.getByText('Schema kết quả: 1')).toBeTruthy();
-    const artifactQuality = screen.getByRole('region', { name: 'Chất lượng artifact' });
-    expect(artifactQuality.textContent).toContain('IoU: 0.9876 · MAE: 0.0123');
-    expect(artifactQuality.textContent).toContain('Biên ngoài / lỗ: 2 / 1');
-    expect(artifactQuality.textContent).toContain('Node nguồn / đầu ra: 320 / 120');
+    const curveQuality = screen.getByRole('region', { name: 'Độ sạch đường cong' });
+    expect(curveQuality.textContent).toContain('IoU: 0.9876 · MAE: 0.0123');
+    expect(curveQuality.textContent).toContain('Biên ngoài / lỗ: 2 / 1');
+    expect(curveQuality.textContent).toContain('Điểm neo nguồn / đầu ra: 320 → 120 (−63%)');
     expect(screen.getByTitle('a'.repeat(64)).textContent).toBe('aaaaaaaaaaaa…');
     expect(screen.getByTitle('b'.repeat(64)).textContent).toBe('bbbbbbbbbbbb…');
     expect((screen.getByRole('button', { name: /Tải SVG/ }) as HTMLButtonElement).disabled).toBe(false);
@@ -1060,6 +1172,35 @@ describe('LogoRebuildWorkspace', () => {
       now.mockRestore();
     }
   });
+  it('khóa split/overlay khi crop làm hai lớp khác hệ tọa độ (§LR5.01)', async () => {
+    mockReadyPreview('coordinate-guard');
+    render(<LogoRebuildWorkspace />);
+    await selectFileAndApplySuggestedPalette('coordinate-guard.png');
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo preview SVG' }));
+    await screen.findByAltText('SVG vector đã dựng');
+    fireEvent.click(screen.getByRole('button', { name: 'Chồng lớp' }));
+    expect(screen.getByLabelText('Độ mờ vector')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Cách chọn vùng logo'), { target: { value: 'crop' } });
+    expect(screen.getByRole('button', { name: 'Gốc' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByLabelText('Độ mờ vector')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Chia đôi' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Chồng lớp' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Chọn toàn ảnh để so sánh/i)).toBeTruthy();
+  });
+
+  it('cho phép chỉnh tay nắm crop bằng phím mũi tên (§LR5.08)', async () => {
+    render(<LogoRebuildWorkspace />);
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), {
+      target: { files: [new File(['png-data'], 'keyboard-crop.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(screen.getByLabelText('Cách chọn vùng logo'), { target: { value: 'crop' } });
+    const firstHandle = screen.getByRole('button', { name: 'Điểm crop 1' });
+    fireEvent.keyDown(firstHandle, { key: 'ArrowRight' });
+    expect((screen.getByLabelText('X %') as HTMLInputElement).value).toBe('1');
+    expect((screen.getByLabelText('Rộng %') as HTMLInputElement).value).toBe('99');
+  });
+
   it('chỉ nhận phím tắt hoàn tác khi workspace thuộc tab đang hoạt động', async () => {
     const { rerender } = render(<LogoRebuildWorkspace isActive />);
     await waitFor(() => expect(screen.getByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i)).toBeTruthy());

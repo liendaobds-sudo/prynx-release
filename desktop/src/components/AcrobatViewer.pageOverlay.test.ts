@@ -3,11 +3,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    createViewerVirtualizationContext,
     matchesPageOverlayTarget,
     renderPageOverlayForFrame,
     selectionAfterViewerScroll,
+    shouldCenterVirtuosoList,
+    shouldRemovePagesAfterExtract,
     type PageOverlayRenderer,
-} from './AcrobatViewer';
+} from './AcrobatViewer.helpers';
 
 
 describe('AcrobatViewer — nhắm lớp phủ theo trang Viewer', () => {
@@ -59,6 +62,27 @@ describe('AcrobatViewer — nhắm lớp phủ theo trang Viewer', () => {
 });
 
 describe('AcrobatViewer — lớp phủ độc lập theo từng khung trang', () => {
+    it('đổi context ảo hóa ngay khi renderer preview mới được công bố', () => {
+        const renderer: PageOverlayRenderer = vi.fn(() => 'cutline-ready');
+        const before = createViewerVirtualizationContext(null, undefined, undefined);
+        const after = createViewerVirtualizationContext(null, undefined, renderer);
+
+        expect(before).not.toEqual(after);
+        expect(after.pageOverlayRenderer).toBe(renderer);
+    });
+
+    it('đổi context khi dữ liệu trình bày của row đổi dù overlay callback giữ nguyên', () => {
+        const renderer: PageOverlayRenderer = vi.fn(() => 'preview');
+        const beforeRevision = { editPreviews: [] };
+        const afterRevision = { editPreviews: [{ page: 0, url: 'next' }] };
+        const before = createViewerVirtualizationContext(null, undefined, renderer, beforeRevision);
+        const after = createViewerVirtualizationContext(null, undefined, renderer, afterRevision);
+
+        expect(before.presentationRevision).toBe(beforeRevision);
+        expect(after.presentationRevision).toBe(afterRevision);
+        expect(before).not.toBe(after);
+    });
+
     it('vẫn dựng preview trang 1 sau khi active chuyển sang trang 2', () => {
         const renderer: PageOverlayRenderer = vi.fn(context => (
             `preview-${context.originalPageNum}-${context.isActivePage ? 'editable' : 'readonly'}`
@@ -117,6 +141,13 @@ describe('AcrobatViewer — lớp phủ độc lập theo từng khung trang', (
 });
 
 describe('AcrobatViewer — đồng bộ trang khi cuộn', () => {
+    it('chỉ căn giữa vùng xem khi danh sách cuộn có đúng một row', () => {
+        expect(shouldCenterVirtuosoList('single_scroll', 1)).toBe(true);
+        expect(shouldCenterVirtuosoList('two_scroll', 1)).toBe(true);
+        expect(shouldCenterVirtuosoList('single_scroll', 2)).toBe(false);
+        expect(shouldCenterVirtuosoList('single_fit', 1)).toBe(false);
+    });
+
     it('giữ nguyên identity khi cuộn vẫn nằm trên cùng trang', () => {
         const current = new Set([1]);
 
@@ -139,5 +170,13 @@ describe('AcrobatViewer — đồng bộ trang khi cuộn', () => {
         expect(selectionAfterViewerScroll(single, 0, 2)).toBe(single);
         expect(selectionAfterViewerScroll(single, 3, 2)).toBe(single);
         expect(selectionAfterViewerScroll(multiple, 2, 2)).toBe(multiple);
+    });
+});
+
+describe('AcrobatViewer — xóa trang sau Extract', () => {
+    it('chỉ cho xóa khi tạo artifact thành công và người dùng đã chọn xóa sau', () => {
+        expect(shouldRemovePagesAfterExtract(true, true)).toBe(true);
+        expect(shouldRemovePagesAfterExtract(false, true)).toBe(false);
+        expect(shouldRemovePagesAfterExtract(true, false)).toBe(false);
     });
 });

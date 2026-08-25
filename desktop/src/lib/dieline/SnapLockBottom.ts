@@ -22,7 +22,6 @@ import {
     snap,
     computeBoundingBox,
     bezierSegment,
-    filletBezier,
 } from './utils';
 
 import { buildDustFlap, buildTuckFlap } from './sharedHelpers';
@@ -297,7 +296,6 @@ export function generateSnapLockBottom(params: BoxParams): DielineModel {
     });
 
     // --- C3. Closure Panel trên ---
-    const closureH = snap(W - T);
     const closureTopY = snap(yTop + T);
     const tuckTopCreaseY = snap(yTop + W - T); // Span = W - T
 

@@ -154,23 +154,6 @@ function calcUsableArea(sheet: SheetDimensions, margins: MarginConfig): { w: num
     return { w: Math.max(0, w), h: Math.max(0, h) };
 }
 
-/**
- * Quyết định: Có nên xoay khổ kẽm 90° không?
- * (Landscape / Portrait optimization)
- */
-function shouldRotateSheet(spreadW: number, spreadH: number, usableW: number, usableH: number, cols: number, rows: number): boolean {
-    const gridW_normal = cols * spreadW;
-    const gridH_normal = rows * spreadH;
-    const fits_normal = gridW_normal <= usableW && gridH_normal <= usableH;
-
-    // Thử xoay kẽm (swap usable W↔H)
-    const fits_rotated = gridW_normal <= usableH && gridH_normal <= usableW;
-
-    if (fits_normal) return false;
-    if (fits_rotated && !fits_normal) return true;
-    return false;
-}
-
 // ==================== PUBLIC API ====================
 
 /**

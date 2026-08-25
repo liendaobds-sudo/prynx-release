@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * ImposerDashboard — Thin Controller for Imposition Settings.
  * 
@@ -15,7 +14,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
-import { usePaperPresets, PaperSettingsDialog } from './PaperSettingsUI';
+import { PaperSettingsDialog } from './PaperSettingsUI';
+import { usePaperPresets } from './usePaperPresets';
 import PaperSizeSelect from './PaperSizeSelect';
 import {
     formUsages,
@@ -39,7 +39,8 @@ import { FlipbookDialog } from '../flipbook/FlipbookDialog';
 import { SheetViewerDialog } from '../flipbook/SheetViewerDialog';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { previewPerfLog } from '../../lib/previewPerfLog';
-import { MergeSettings, defaultMergeSettings } from '../preprocess-tools/MergeTool';
+import type { MergeSettings } from '../preprocess-tools/MergeTool';
+import { defaultMergeSettings } from '../preprocess-tools/mergeDefaults';
 import MergeTool from '../preprocess-tools/MergeTool';
 
 // Section components
@@ -55,7 +56,7 @@ import { useWorkspaceToolActivationGuard } from '../../hooks/useToolActivationGu
 
 // Store & Types
 import { useImposerSettingsStore } from './useImposerSettingsStore';
-import { PREDEFINED_SIZES, DEFAULT_FORMSIZE, DEFAULT_CUT_BORDER_CONFIG, getImposerCapability, WORKSPACE_TOOL_PANEL, isWorkspaceTool, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
+import { PREDEFINED_SIZES, DEFAULT_FORMSIZE, DEFAULT_CUT_BORDER_CONFIG, getImposerCapability, WORKSPACE_TOOL_PANEL, isWorkspaceTool, type ActiveToolType, type TaskMode, type NupSettings, type ImposerDashboardProps } from './types';
 export type { BookletSettings, NupSettings } from './types';
 export { PREDEFINED_SIZES, DEFAULT_FORMSIZE } from './types';
 
@@ -103,6 +104,37 @@ interface ImpositionPdfMetaPage {
     guillotine_height_pt?: number;
 }
 
+type RuntimeWindow = Window & { __TAURI_INTERNALS__?: unknown };
+type WorkspaceFileLike = File & { path?: string };
+type ShapeParams = Record<string, unknown>;
+type ShapeDetectionResponse = {
+    shapes?: string[];
+    dimensions?: Array<{ w: number; h: number }>;
+    shapeParams?: ShapeParams[];
+    perPage?: Array<{ ok?: boolean; [key: string]: unknown }>;
+    hasValidDie?: boolean;
+};
+type PdfMetadataResponse = {
+    widthPt?: number;
+    heightPt?: number;
+    allDims?: Record<string, { widthPt: number; heightPt: number }>;
+};
+type ShapeRequest = { path: string } | { fileId: string };
+
+type ImpositionPresetDraft = Omit<
+    ImpositionPreset,
+    'id' | 'name' | 'description' | 'createdAt' | 'updatedAt'
+>;
+
+function isAbortError(error: unknown): boolean {
+    return typeof error === 'object' && error !== null && 'name' in error
+        && (error as { name?: unknown }).name === 'AbortError';
+}
+
+function normalizeMasterSig(value: number): 4 | 8 | 16 {
+    return value === 8 || value === 16 ? value : 4;
+}
+
 function isSameSizeNupLayoutType(value: string): value is SameSizeNupLayoutType {
     return value === 'sequential' || value === 'cut_stacks' || value === 'ratio_stack';
 }
@@ -141,7 +173,10 @@ function classifyGuillotinePageSizes(
     return 'uniform';
 }
 
-export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, sourceImageFile, getWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
+export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, sourceImageFile, sourceImageReferenceFile, getWorkingFile, getPreparedWorkingFile, ensureCropFileId, onCropApplied, onCropClose }: ImposerDashboardProps) {
+    // Giữ hai prop legacy để tương thích caller; active tool hiện do store quản lý.
+    void initialFeature;
+    void lockedMode;
   const { t } = useTranslation();
 
     // ═══ Workspace State ═══
@@ -209,6 +244,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             return oldQuantities[idx] !== nextQuantities[idx];
         });
         if (changed) s.setTargetQuantitiesByPage(nextQuantities);
+    // [LINT AUDIT 2026-08-24 §LO140] Dependency list intentionally names the profile triggers; full `s` would rerun/heal on every store field.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [viewerPageInstanceIds, s.targetQuantitiesByPage, s.setTargetQuantitiesByPage]);
 
     // NAV (audit điều hướng tab 2026-07-28): store theo tab là nguồn trạng thái duy nhất.
@@ -261,6 +298,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             s.switchToolProfile(prev, activeTool);
             prevActiveToolRef.current = activeTool;
         }
+    // [LINT AUDIT 2026-08-24 §LO140] Dependency list intentionally names the profile triggers; full `s` would rerun/heal on every store field.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTool]);
 
     // Dao cắt + clusterMode: mỗi lần vào tem bế / CNC → mặc định an toàn
@@ -288,11 +327,11 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         sourceKey: string;
         shapes: Record<number, string>;
         dimensions: Record<number, { w: number; h: number }>;
-        params: Record<number, any>;
+        params: Record<number, ShapeParams>;
     } | null>(null);
 
-    const isTauriRuntime = !!(window as any).__TAURI_INTERNALS__;
-    const shapeLocalPath = (pdfFile as any)?.path as string | undefined;
+    const isTauriRuntime = !!(window as RuntimeWindow).__TAURI_INTERNALS__;
+    const shapeLocalPath = (pdfFile as WorkspaceFileLike)?.path;
     const detectionSourceKey = shapeDetectionSourceKey(
         isTauriRuntime,
         shapeLocalPath,
@@ -462,7 +501,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     const diagnosticTraceId = useMemo(() => {
         const randomId = globalThis.crypto?.randomUUID?.()
             || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-        return `sr-${randomId}`.slice(0, 64);
+        const scopeSeed = `${tabId}:${previewSourceKey}`;
+        return `sr-${randomId}-${scopeSeed.slice(0, 8)}`.slice(0, 64);
     }, [tabId, previewSourceKey]);
     const previewDiagnosticRef = useRef<{
         traceId: string;
@@ -591,6 +631,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 }
             }
         }
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.formsize, savedForms, s.customSheetWidth, s.customSheetHeight, activeTool, paperContext]);
 
     // ═══ formsize phải hợp context tool + migrate legacy id (SRA3/…) ═══
@@ -614,6 +656,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         if (belongs === false) {
             s.setFormsize(fallbackFormsizeForContext(ctx, savedForms));
         }
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.paperClassification, s.formsize, savedForms, activeTool, paperContext]);
 
     const handleSettingsApply = useCallback((w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
@@ -637,6 +681,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         if (s.taskMode === 'booklet') {
             s.setMarkType(s.scaleMode !== '100' ? 'guillotine' : 'none');
         }
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.scaleMode, s.taskMode]);
 
     // Safety net: setTaskMode / restoreTaskModeForTool / switchToolProfile đã
@@ -650,6 +696,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         ) {
             s.setLayoutType('sequential');
         }
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.taskMode, s.layoutType]);
 
     useEffect(() => {
@@ -658,6 +706,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         if ((s.signatureMode === 'cut_stacks' || s.signatureMode === 'flush_mount') && s.scaleMode === 'cut_stack') {
             s.setScaleMode('100');
         }
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.signatureMode, s.scaleMode]);
 
     // Persistence is now handled automatically by Zustand persist middleware in useImposerSettingsStore.ts
@@ -694,7 +744,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             // nhanh hơn nhiều với file lớn). Web → cần fileId (upload nếu chưa có).
             const isPdf = pdfFile && (pdfFile.type === 'application/pdf' || pdfFile.name?.toLowerCase().endsWith('.pdf'));
 
-            let reqBody: any = null;
+            let reqBody: ShapeRequest | null = null;
             if (isTauriRuntime && shapeLocalPath && isPdf) {
                 reqBody = { path: shapeLocalPath };
             } else if (selectionFileId) {
@@ -723,7 +773,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             const _tDetect = performance.now();
             void previewPerfLog('detect-shape START', {
                 tool: activeTool,
-                via: reqBody.path ? 'path' : 'fileId',
+                via: reqBody && 'path' in reqBody ? 'path' : 'fileId',
             });
             try {
                 const res = await authenticatedFetch(`${getApiUrl()}/imposition/detect-shape`, {
@@ -732,7 +782,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     body: JSON.stringify(reqBody),
                     signal: controller.signal,
                 });
-                const data = await res.json();
+                const data = await res.json() as ShapeDetectionResponse;
                 // SSOT (die-shape-detection-ssot — R4.6): cập nhật ngay cả khi
                 // một số trang là CUSTOM. Backend chỉ trả success=false khi lỗi
                 // cấp file; còn lại luôn có mảng shapes (trang lỗi → 'CUSTOM').
@@ -741,12 +791,12 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     data.shapes.forEach((s: string, i: number) => { newShapes[i] = s; });
                     const newDims: Record<number, { w: number; h: number }> = {};
                     if (data.dimensions) {
-                        data.dimensions.forEach((d: any, i: number) => { newDims[i] = d; });
+                        data.dimensions.forEach((d: { w: number; h: number }, i: number) => { newDims[i] = d; });
                         setDetectedDimensionsByPage(newDims);
                     }
-                    const newParams: Record<number, any> = {};
+                    const newParams: Record<number, ShapeParams> = {};
                     if (data.shapeParams) {
-                        data.shapeParams.forEach((p: any, i: number) => { newParams[i] = p; });
+                        data.shapeParams.forEach((p: ShapeParams, i: number) => { newParams[i] = p; });
                         setDetectedShapeParamsByPage(newParams);
                     }
                     setDetectedShapesByPage(newShapes);
@@ -767,9 +817,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         ? (viewerPageOrder[(viewerActivePage || 1) - 1] ?? 1) - 1
                         : (viewerActivePage || 1) - 1);
                     if (newShapes[activeIdx]) setDetectedShapeType(newShapes[activeIdx]);
-                    if (newParams[activeIdx]) setDetectedShapeParams(newParams[activeIdx]);
+                    if (newParams[activeIdx]) setDetectedShapeParams(JSON.stringify(newParams[activeIdx]));
                     if (Array.isArray(data.perPage)) {
-                        const failed = data.perPage.filter((p: any) => p && p.ok === false);
+                        const failed = data.perPage.filter((p) => p && p.ok === false);
                         if (failed.length > 0) {
                             console.warn(t('imposition.imposerDashboard:detect_shape_trang_loi_custom'), failed);
                         }
@@ -786,10 +836,10 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         ok: res.ok,
                     });
                 }
-            } catch (err: any) {
-                if (err?.name !== 'AbortError') {
+            } catch (err: unknown) {
+                if (!isAbortError(err)) {
                     console.error('Auto shape detection failed:', err);
-                    void previewPerfLog('detect-shape ERROR', { err: String(err?.message || err).slice(0, 120) });
+                    void previewPerfLog('detect-shape ERROR', { err: String(err).slice(0, 120) });
                 }
             }
             finally { if (!cancelled) setIsDetectingShape(false); }
@@ -800,6 +850,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             cancelled = true;
             controller.abort();
         };
+    // [LINT AUDIT 2026-08-24 §LO140] This effect is intentionally keyed by source/tool state; adding action members or the full store would duplicate detection/projection work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTool,
         detectionSourceKey,
@@ -823,6 +875,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         setDetectedShapeParamsByPage(pageState.params);
         setDetectedShapeType('RECTANGLE');
         setDetectedShapeParams(null);
+    // [LINT AUDIT 2026-08-24 §LO140] This effect is intentionally keyed by source/tool state; adding action members or the full store would duplicate detection/projection work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTool,
         currentDieAvailability,
@@ -844,7 +898,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             ? (viewerPageOrder[(viewerActivePage || 1) - 1] ?? 1) - 1
             : (viewerActivePage || 1) - 1);
         if (detected.shapes[activeIdx]) setDetectedShapeType(detected.shapes[activeIdx]);
-        setDetectedShapeParams(detected.params[activeIdx] || null);
+        setDetectedShapeParams(detected.params[activeIdx] ? JSON.stringify(detected.params[activeIdx]) : null);
+    // [LINT AUDIT 2026-08-24 §LO140] This effect is intentionally keyed by source/tool state; adding action members or the full store would duplicate detection/projection work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         currentDieAvailability,
         detectionSourceKey,
@@ -858,6 +914,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         // UIUX (audit 2026-08-13 §DIE-FALLBACK-01): không để hai lựa chọn cho cùng
         // một kết quả fallback; file không khuôn luôn dùng khung trang của Từng tem.
         s.setImpositionUnit('sticker');
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [stickerUnitAvailability.forceSticker, s.impositionUnit, s.setImpositionUnit]);
 
     useEffect(() => {
@@ -870,6 +928,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         // UIUX (audit 2026-08-13 §DIE-FALLBACK-02): trạng thái lưu cũ "theo khuôn"
         // không được sống tiếp khi detector đã xác nhận file không có đường bế.
         s.setDieSizeMode('page');
+    // [LINT AUDIT 2026-08-24 §LO140] This effect is intentionally keyed by source/tool state; adding action members or the full store would duplicate detection/projection work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         activeTool,
         effectiveDieAvailability,
@@ -895,10 +955,10 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 return; // Do not attempt to load metadata for non-PDFs (like images)
             }
             try {
-                if ((window as any).__TAURI_INTERNALS__ && (pdfFile as any).path && (pdfFile.type === 'application/pdf' || pdfFile.name.toLowerCase().endsWith('.pdf'))) {
+                if ((window as RuntimeWindow).__TAURI_INTERNALS__ && (pdfFile as WorkspaceFileLike).path && (pdfFile.type === 'application/pdf' || pdfFile.name.toLowerCase().endsWith('.pdf'))) {
                     // Use Python backend to fetch metadata (handles TrimBox, UserUnit, and doesn't load file into RAM)
                     try {
-                        const filePath = (pdfFile as any).path;
+                        const filePath = (pdfFile as WorkspaceFileLike).path;
                         const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8321';
                         const res = await fetch(`${apiUrl}/api/imposition/pdf-meta`, {
                             method: 'POST',
@@ -929,7 +989,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 });
                                 return; // Success, skip fallback
                             }
-                        } else {
                         }
                     } catch (err) {
                         console.warn("Failed to fetch pdf-meta from Python backend", err);
@@ -937,7 +996,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     
                     // Fallback to Rust (will get MediaBox without TrimBox, but better than crashing)
                     const { invoke } = await import('@tauri-apps/api/core');
-                    const metadata: any = await invoke('get_pdf_metadata', { filePath: (pdfFile as any).path });
+                    const metadata = await invoke<PdfMetadataResponse>('get_pdf_metadata', { filePath: (pdfFile as WorkspaceFileLike).path });
                     if (isActive && metadata.widthPt && metadata.heightPt) {
                         s.setSourcePageDim({ w: metadata.widthPt, h: metadata.heightPt });
                         s.setSourceMediaPageDim({ w: metadata.widthPt, h: metadata.heightPt });
@@ -1007,6 +1066,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         };
         loadPdfMetadata();
         return () => { isActive = false; };
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pdfFile]);
 
     // ═══ Tự nhận bleed từ file (TrimBox vs MediaBox) → điền sẵn vào ô bleed UI ═══
@@ -1017,7 +1078,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         if (activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer') return;
         const isPdf = pdfFile.type === 'application/pdf' || pdfFile.name?.toLowerCase().endsWith('.pdf');
         if (!isPdf) return;
-        const filePath = (pdfFile as any).path;
+        const filePath = (pdfFile as WorkspaceFileLike).path;
         if (!filePath) return;
         const fileKey = String(filePath);
         if (_bleedAutoFileRef.current === fileKey) return; // đã auto-điền cho file này
@@ -1040,6 +1101,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             } catch { /* bỏ qua: giữ bleed UI hiện tại */ }
         })();
         return () => { active = false; };
+    // [LINT AUDIT 2026-08-24 §LO140] `s` is a full Zustand profile; the listed fields are the deliberate trigger set to avoid re-running healing on unrelated edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pdfFile, activeTool]);
 
     // Auto Catalog: recalculate optimizer + planner
@@ -1053,22 +1116,23 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         const sheetW = _press.w;
         const sheetH = _press.h;
 
+        const sourcePageDim = s.sourcePageDim;
         import('../../lib/imposerEngine/SheetOptimizer').then(({ optimizeMasterSig }) => {
             const optResult = optimizeMasterSig(
-                { width: s.sourcePageDim.w, height: s.sourcePageDim.h },
+                { width: sourcePageDim.w, height: sourcePageDim.h },
                 { width: sheetW, height: sheetH },
                 { gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY }
             );
             s.setOptimalData(optResult);
             if (optResult.recommended) {
                 import('../../lib/imposerEngine/CatalogPlanner').then(({ planCatalog }) => {
-                    let targetMasterSig = optResult.recommended!.pagesPerSig;
-                    if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = parseInt(s.catalogMasterSigOverride, 10);
+                    let targetMasterSig = normalizeMasterSig(optResult.recommended!.pagesPerSig);
+                    if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = normalizeMasterSig(parseInt(s.catalogMasterSigOverride, 10));
                     const planRes = planCatalog({
                         totalPages: sourceTotalPages,
                         bindingMode: s.signatureMode === 'thread' ? 'perfect' : 'saddle',
                         hasSeparateCover: s.catalogHasCover,
-                        masterSig: targetMasterSig as any,
+                        masterSig: targetMasterSig,
                         remainderPlacement: s.catalogRemainderPlacement,
                     });
                     s.setCatalogPreview(planRes.report);
@@ -1079,15 +1143,19 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 s.setCatalogJobsState(null);
             }
         });
-    }, [s.autoCatalog, s.sourcePageDim, sourceTotalPages, s.formsize, savedForms, s.customSheetWidth, s.customSheetHeight, s.gripperMargin, s.marginTop, s.marginLeft, s.marginRight, s.bleed, s.gapX, s.gapY, s.signatureMode, s.catalogHasCover, s.catalogMasterSigOverride, s.catalogRemainderPlacement]);
+    // [LINT AUDIT 2026-08-24 §LO140] Optimizer inputs are enumerated below; omitting the aggregate `s` prevents a fetch/reset on every unrelated profile update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [s.autoCatalog, s.sourcePageDim, sourceTotalPages, s.formsize, savedForms, s.customSheetWidth, s.customSheetHeight, s.gripperMargin, s.marginTop, s.marginLeft, s.marginRight, s.bleed, s.gapX, s.gapY, s.signatureMode, s.catalogHasCover, s.catalogMasterSigOverride, s.catalogRemainderPlacement, resolvePressSheetDims, t]);
 
     // Batch layout reset + fetch
     useEffect(() => {
         s.setPreviewCapacities({});
         s.setFetchEpoch(e => e + 1);
+    // [LINT AUDIT 2026-08-24 §LO140] Optimizer inputs are enumerated below; omitting the aggregate `s` prevents a fetch/reset on every unrelated profile update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, s.columns, s.rows, activeTool, detectedDimensionsByPage, detectedShapesByPage, detectedShapeParamsByPage, s.pontType, s.pontConfig,
         // Ảnh hưởng SỐ ô/tờ per-type (secondary_gap / bleed / cụm) → phải tính lại capacity.
-        s.bleed, s.cutType, effectiveDieSizeMode, s.dieOffsetMm, effectiveFillBlockGap, s.splitGap, s.marginMode, s.markType, s.groupingStrategy, s.impositionUnit,
+        s.bleed, s.cutType, effectiveDieSizeMode, s.dieOffsetMm, effectiveFillBlockGap, s.marginMode, s.markType, s.groupingStrategy, s.impositionUnit,
         s.clusterSizingMode, s.clusterCols, s.clusterRows, s.clusterTileW, s.clusterTileH, s.tileGapX, s.tileGapY,
         pdfFile, sourceTotalPages, viewerPageOrder, s.sourcePageDim, s.sourcePageDims, isDetectingShape, completedShapeDetectionKey, expectedShapeDetectionKey]);
 
@@ -1102,7 +1170,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         const isNupLike = s.taskMode === 'nup' || s.taskMode === 'step_repeat';
         const effectiveGrouping = dieGeometryMode || s.markType === 'guillotine'
             ? s.groupingStrategy : 'none';
-        if ((!dieGeometryMode && !isNupLike) || sourceTotalPages <= 1 || !pdfFile) return;
+        if ((!dieGeometryMode && !isNupLike) || sourceTotalPages <= 1 || !pdfFile || !getWorkingFile) return;
+        const readWorkingFile = getWorkingFile;
         if (!batchCapacityDetectionReady(
             pageSheetMode ? 'nup' : activeTool,
             isDetectingShape,
@@ -1116,13 +1185,13 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         const timer = setTimeout(async () => {
             try {
                 // ── Nguồn file: working file (bake sửa viewer) — .path khi không sửa (Tauri). ──
-                const isTauri = !!(window as any).__TAURI_INTERNALS__;
+                const isTauri = !!(window as RuntimeWindow).__TAURI_INTERNALS__;
                 let srcPath: string | undefined;
                 let srcFileId: string | undefined;
                 try {
-                    const wf = await getWorkingFile();
-                    if (isTauri && (wf as any)?.path) {
-                        srcPath = (wf as any).path;
+                    const wf = await readWorkingFile();
+                    if (isTauri && (wf as WorkspaceFileLike)?.path) {
+                        srcPath = (wf as WorkspaceFileLike).path;
                     } else {
                         const bytes = new Uint8Array(await wf.arrayBuffer());
                         if (isTauri) {
@@ -1152,7 +1221,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     s.gripperMargin > 0
                     && !dieGeometryMode
                     && s.paperClassification === 'offset'
-                    && s.taskMode !== 'booklet'
                 ) {
                     // [GRIPPER PARITY FIX 2026-08-06] Kẹp sàn cho khớp backend, không cộng dồn.
                     effMarginBottom = Math.max(effMarginBottom, s.gripperMargin);
@@ -1281,8 +1349,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 if (Object.keys(caps).length > 0) {
                     s.setPreviewCapacities({ ...s.previewCapacities, ...caps });
                 }
-            } catch (e: any) {
-                if (e?.name !== 'AbortError') console.warn('[BatchCapacity] fetch failed:', e);
+            } catch (e: unknown) {
+                if (!isAbortError(e)) console.warn('[BatchCapacity] fetch failed:', e);
             }
         }, 350);
 
@@ -1292,11 +1360,12 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
 
     // System merge files
     useEffect(() => {
-        if (systemMergeFiles?.length > 0) {
+        if (systemMergeFiles && systemMergeFiles.length > 0) {
+            const incomingFiles = systemMergeFiles;
             setActiveTool('merge');
-            setMergeSettings(prev => ({ ...prev, mode: 'merge_files', filesToMerge: [...(prev.filesToMerge || []), ...systemMergeFiles] }));
+            setMergeSettings(prev => ({ ...prev, mode: 'merge_files', filesToMerge: [...(prev.filesToMerge || []), ...incomingFiles] }));
         }
-    }, [systemMergeFiles]);
+    }, [systemMergeFiles, setActiveTool]);
 
 
     // ═══ Execute Handler ═══
@@ -1328,11 +1397,11 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 const _press = resolvePressSheetDims();
                 const sheetW = _press.w;
                 const sheetH = _press.h;
-                let targetMasterSig = s.optimalData.recommended.pagesPerSig;
-                if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = parseInt(s.catalogMasterSigOverride, 10);
+                let targetMasterSig: 4 | 8 | 16 = normalizeMasterSig(s.optimalData.recommended.pagesPerSig);
+                if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = normalizeMasterSig(parseInt(s.catalogMasterSigOverride, 10));
                 onStartCatalogPlan(
                     { totalPages: sourceTotalPages || 0, bindingMode: s.signatureMode === 'thread' ? 'perfect' : 'saddle', hasSeparateCover: s.catalogHasCover, masterSig: targetMasterSig, remainderPlacement: s.catalogRemainderPlacement },
-                    { sheetWidth: sheetW, sheetHeight: sheetH, bleed: s.bleed, markType: s.markType, markOffset: s.marksConfig?.distance, markLength: s.marksConfig?.length, markThickness: s.marksConfig?.thickness, markStyle: s.marksConfig?.style === 2 ? 'japanese' : 'default', gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, paperThickness: s.paperThickness, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, bookReport: buildActiveBookReport(sheetW, sheetH), spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true } as any
+                    { sheetWidth: sheetW, sheetHeight: sheetH, bleed: s.bleed, markType: s.markType, markOffset: s.marksConfig?.distance, markLength: s.marksConfig?.length, markThickness: s.marksConfig?.thickness, markStyle: s.marksConfig?.style === 2 ? 'japanese' : 'default', gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, paperThickness: s.paperThickness, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, bookReport: buildActiveBookReport(sheetW, sheetH), spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true } as unknown as Record<string, unknown>
                 );
                 return;
             }
@@ -1408,7 +1477,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 s.gripperMargin > 0
                 && !_isDieCutOrCncExec
                 && s.paperClassification === 'offset'
-                && s.taskMode !== 'booklet'
             ) {
                 // [GRIPPER PARITY FIX 2026-08-06] Kẹp sàn cho khớp backend, không cộng dồn.
                 effMarginBottom = Math.max(effMarginBottom, s.gripperMargin);
@@ -1540,8 +1608,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     };
 
     // ═══ Preset Callbacks ═══
-    const getCurrentSettings = useCallback(() => ({
-        taskMode: s.taskMode as 'booklet' | 'nup' | 'sticker_imposer',
+    const getCurrentSettings = useCallback((): ImpositionPresetDraft => ({
+        taskMode: s.taskMode === 'booklet' ? 'booklet' : 'nup',
         paper: { formsize: s.formsize, customSheetWidth: s.customSheetWidth, customSheetHeight: s.customSheetHeight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight, marginMode: s.marginMode },
         marks: { markType: s.markType, markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness, markStyle: s.marksConfig.style === 2 ? 'style2' as const : 'style1' as const },
         booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, gutterMargin: s.gutterMargin, blankPlacement: s.blankPlacement, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.paperClassification === 'offset' ? (s.foldPattern || undefined) : undefined, gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined } : undefined,
@@ -1558,7 +1626,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode,
             cutBorder: { ...s.cutBorder },
         } : undefined,
-    }), [s]);
+    }), [s, effectiveAlternateRotation]);
 
     const handleLoadPreset = useCallback((preset: ImpositionPreset) => {
         // SEC (audit 2026-08-04 re-audit UI): không mutation một field nào
@@ -1583,7 +1651,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             }
             if (preset.nup) {
                 s.setLayoutType(
-                    preset.nup.layoutType === 'mixed_guillotine'
+                    String(preset.nup.layoutType) === 'mixed_guillotine'
                         ? 'sequential'
                         : preset.nup.layoutType,
                 );
@@ -1596,7 +1664,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                         : 'none',
                 );
                 s.setDuplexFlow(preset.nup.duplexFlow);
-                s.setAlign(preset.nup.align as any);
+                s.setAlign(preset.nup.align as NupSettings['align']);
                 s.setClusterMode(preset.nup.clusterMode); s.setClusterCount(preset.nup.clusterCount);
                 s.setClusterGap(preset.nup.clusterGap); s.setClusterGapMode(preset.nup.clusterGapMode);
                 // Preset cũ thiếu field phải TẮT viền; không giữ trạng thái đang bật.
@@ -1678,12 +1746,15 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 <PreprocessingRouter
                     tabId={tabId} activeTool={activeTool} pdfFile={pdfFile || null} isProcessing={isProcessing} isActive={isActive === true}
                     getWorkingFile={getWorkingFile}
+                    getPreparedWorkingFile={getPreparedWorkingFile}
+                    sourceImageReferenceFile={sourceImageReferenceFile}
                     onStartShuffle={onStartShuffle} onStartResize={onStartResize}
                     onStartTrimShift={onStartTrimShift}
-                    onStartSplit={onStartSplit} onStartMerge={onStartMerge}
+                    onStartSplit={onStartSplit}
                     onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onOpenTool={(tool) => setActiveTool(tool as ActiveToolType)} onFileFixed={onFileFixed}
                     viewerActivePage={viewerActivePage}
                     viewerPageOrder={viewerPageOrder || undefined}
+                    viewerPageRotations={viewerPageRotations || undefined}
                     officeSourceFile={officeSourceFile}
                     officeSourceFiles={officeSourceFiles} sourceImageFile={sourceImageFile} ensureCropFileId={ensureCropFileId} onCropApplied={onCropApplied} onCropClose={onCropClose}
                 />
@@ -1783,9 +1854,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     {(s.taskMode === 'nup' || s.taskMode === 'step_repeat' || s.taskMode === 'sticker_imposer') && (
                         <>
                             <GridSettingsSection
-                                taskMode={s.taskMode} setTaskMode={s.setTaskMode as any} activeTool={activeTool}
-                                duplexFlow={s.duplexFlow} setDuplexFlow={s.setDuplexFlow as any}
-                                gridStrategy={s.gridStrategy} setGridStrategy={s.setGridStrategy as any}
+                                taskMode={s.taskMode} setTaskMode={s.setTaskMode as unknown as (v: string) => void} activeTool={activeTool}
+                                duplexFlow={s.duplexFlow} setDuplexFlow={s.setDuplexFlow as unknown as (v: string) => void}
+                                gridStrategy={s.gridStrategy} setGridStrategy={s.setGridStrategy as unknown as (v: string) => void}
                                 targetQuantity={s.targetQuantity} setTargetQuantity={s.setTargetQuantity}
                                 targetQuantitiesByPage={s.targetQuantitiesByPage} setTargetQuantitiesByPage={s.setTargetQuantitiesByPage}
                                 previewCapacity={s.previewCapacity} previewCapacities={s.previewCapacities}
@@ -1843,7 +1914,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                     s.gripperMargin > 0
                                     && !stickerLike
                                     && s.paperClassification === 'offset'
-                                    && s.taskMode !== 'booklet'
                                 ) {
                                     // [GRIPPER PARITY FIX 2026-08-06] Backend KẸP SÀN (max), không cộng dồn
                                     // — xem nup_engine.py (if gripper_pt > margin_bottom). Cộng dồn làm
@@ -1989,7 +2059,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                         ? previewDetectedShapeParamsByPage : undefined
                                 }
                                 isDetectingShape={stickerLike && isDetectingShape}
-                                pontType={pontSettingsMode ? s.pontType : 'none'} pontConfig={(pontSettingsMode && s.pontType !== 'none') ? s.pontConfig : null}
+                                pontType={pontSettingsMode ? s.pontType : 'none'} pontConfig={(pontSettingsMode && s.pontType !== 'none') ? s.pontConfig : undefined}
                                 onCapacityChange={(cap) => {
                                     s.setPreviewCapacity(cap);
                                     const master = stickerLike
@@ -2007,7 +2077,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 }}
                                 onMixedPlacedByPage={(m) => s.setMixedPlacedByPage(m)}
                                 fileId={stickerLike ? selectionFileId : undefined}
-                                filePath={((window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
+                                filePath={((window as RuntimeWindow).__TAURI_INTERNALS__) ? ((pdfFile as WorkspaceFileLike)?.path || undefined) : undefined}
                                 pageIdx={shapePageIdx}
                                 bleed={s.bleed}
                                 cutBorder={cutBorderCapable ? s.cutBorder : undefined}

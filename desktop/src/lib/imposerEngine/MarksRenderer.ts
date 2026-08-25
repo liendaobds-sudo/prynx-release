@@ -14,16 +14,26 @@
 //   - At INNER edges (between cells):    lines run exactly between trim edges, NO bleed extension.
 
 import { PDFPage, PDFFont, cmyk } from 'pdf-lib';
+import type { Color } from 'pdf-lib';
 import { ProcessingSettings } from '../pdfImposer';
 import { NupBlock } from './NupGridSolver';
 
 const MM_TO_POINTS = 2.83465;
 const MARK_COLOR = cmyk(1, 1, 1, 1); // Registration Color (prints on all plates)
 
-function getMarkOptions(settings: ProcessingSettings) {
-    const len = ((settings as any)?.markLength ?? 5.0) * MM_TO_POINTS;
-    const off = ((settings as any)?.markOffset ?? 3.0) * MM_TO_POINTS;
-    const thickness = ((settings as any)?.markThickness ?? 0.25) * MM_TO_POINTS;
+type MarkRenderingSettings = ProcessingSettings & {
+    markType?: 'none' | 'corners' | 'guillotine';
+    markOffset?: number;
+    markLength?: number;
+    markThickness?: number;
+    isBookletSpread?: boolean;
+    cutStack?: boolean;
+};
+
+function getMarkOptions(settings: MarkRenderingSettings | undefined) {
+    const len = (settings?.markLength ?? 5.0) * MM_TO_POINTS;
+    const off = (settings?.markOffset ?? 3.0) * MM_TO_POINTS;
+    const thickness = (settings?.markThickness ?? 0.25) * MM_TO_POINTS;
     return { len, off, thickness };
 }
 
@@ -36,7 +46,7 @@ function drawLine(page: PDFPage, x1: number, y1: number, x2: number, y2: number,
     });
 }
 
-function drawLineColor(page: PDFPage, x1: number, y1: number, x2: number, y2: number, thickness: number, color: any) {
+function drawLineColor(page: PDFPage, x1: number, y1: number, x2: number, y2: number, thickness: number, color: Color) {
     page.drawLine({
         start: { x: x1, y: y1 },
         end: { x: x2, y: y2 },
@@ -72,11 +82,12 @@ export function drawMarksNup(
     gapY: number,
     isMergedItemMode?: boolean
 ) {
-    if ((settings as any)?.markType === 'none') return;
+    const markSettings = settings as MarkRenderingSettings | undefined;
+    if (markSettings?.markType === 'none') return;
 
-    const { len, off, thickness } = getMarkOptions(settings);
+    const { len, off, thickness } = getMarkOptions(markSettings);
 
-    if ((settings as any)?.markType === 'corners') {
+    if (markSettings?.markType === 'corners') {
         drawCornerMarks(page, gridX, gridY, totalGridW, totalGridH, len, off, thickness);
         return;
     }
@@ -105,9 +116,6 @@ export function drawMarksNup(
 
     for (let i = 0; i < blocks.length; i++) {
         const b = blocks[i];
-        const itemW = b.cells.length > 0 ? b.cells[0].width : 0;
-        const itemH = b.cells.length > 0 ? b.cells[0].height : 0;
-
         const pdfTopY = gridY + totalGridH - b.startY;
         const pdfBottomY = gridY + totalGridH - (b.startY + b.height);
         const pdfLeftX = gridX + b.startX;
@@ -123,12 +131,12 @@ export function drawMarksNup(
             hCuts.add(roundPt(cell.y));
             hCuts.add(roundPt(cell.y + cell.height));
 
-            if ((settings as any)?.isBookletSpread) {
+            if (markSettings?.isBookletSpread) {
                 // For cut_stack, gapX acts as the internal spine gap between the two halves.
-                const innerGapPt = ((settings as any)?.cutStack && (settings as any)?.gapX) ? (settings as any)?.gapX * 2.83465 : 0; // MM_TO_POINTS
+                const innerGapPt = (markSettings?.cutStack && markSettings.gapX) ? markSettings.gapX * 2.83465 : 0; // MM_TO_POINTS
                 
                 // Saddle stitch → fold mark (red tick). Cut stack → slit mark (added to main cuts).
-                const isSaddleFold = !((settings as any)?.cutStack);
+                const isSaddleFold = !markSettings?.cutStack;
                 
                 // Determine the spine orientation based on 90/270 rotation (isRotated)
                 // isRotated180 does not swap width and height, so spine remains vertical
@@ -508,7 +516,7 @@ export function drawColorBar(
             width: PATCH_W, height: PATCH_H,
             borderColor: cmyk(0, 0, 0, 1),
             borderWidth: 0.3,
-            color: undefined as any,
+            color: undefined,
         });
     }
 }
@@ -766,7 +774,6 @@ export function drawFolioMarks(
     const trimX = cellX + bleedPt;
     const trimY = cellY + bleedPt;
     const trimW = spreadW - 2 * bleedPt;
-    const trimH = spreadH - 2 * bleedPt;
 
     try {
         // Hiển thị số thứ tự spread ở giữa-dưới trim box

@@ -85,8 +85,9 @@ export default function EncryptTool({ pdfFile, onFileFixed }: Props) {
             } else {
                 setSuccess(t('preprocess.encrypt:khoa_thanh_cong'));
             }
-        } catch (e: any) {
-            setError(e.message || t('preprocess.encrypt:loi_khong_xac_dinh'));
+        } catch (caughtError: unknown) {
+            const message = caughtError instanceof Error ? caughtError.message : '';
+            setError(message || t('preprocess.encrypt:loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);
@@ -132,8 +133,9 @@ export default function EncryptTool({ pdfFile, onFileFixed }: Props) {
             } else {
                 setSuccess(t('preprocess.encrypt:mo_khoa_thanh_cong'));
             }
-        } catch (e: any) {
-            setError(e.message || t('preprocess.encrypt:loi_khong_xac_dinh'));
+        } catch (caughtError: unknown) {
+            const message = caughtError instanceof Error ? caughtError.message : '';
+            setError(message || t('preprocess.encrypt:loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);

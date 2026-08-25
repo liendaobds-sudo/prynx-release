@@ -6,6 +6,7 @@ import {
 } from './api';
 
 export type LogoRebuildMode = 'monochrome' | 'fixed_palette';
+export type LogoCurvePreset = 'automatic' | 'faithful' | 'balanced' | 'trajectory_completion';
 export type LogoRebuildEngine = 'prynx_core' | 'vtracer';
 
 export interface NormalizedPoint {
@@ -18,6 +19,7 @@ export interface LogoRebuildSettings {
   engine: LogoRebuildEngine;
   palette: string[];
   background_color?: string;
+  curve_preset?: LogoCurvePreset;
   crop?: { x: number; y: number; width: number; height: number };
   perspective_points?: NormalizedPoint[];
   smoothing: number;
@@ -34,6 +36,8 @@ export interface LogoRebuildCapabilities {
   auto_color_enabled: false;
   preview_engine_enabled: boolean;
   engine: {
+    curve_presets?: LogoCurvePreset[];
+    geometry_metrics_version?: number | null;
     engine: string;
     version: string;
     cancellable: boolean;
@@ -91,6 +95,13 @@ export interface LogoRebuildPreview {
     source_nodes: number;
     output_nodes: number;
     max_error_px: number;
+    max_symmetric_distance_px?: number;
+    line_segments?: number;
+    cubic_segments?: number;
+    circle_count?: number;
+    ellipse_count?: number;
+    max_smooth_tangent_jump_degrees?: number;
+    artifact_max_tangent_jump_degrees?: number;
     raster_scale: number;
     iou: number;
     mae: number;

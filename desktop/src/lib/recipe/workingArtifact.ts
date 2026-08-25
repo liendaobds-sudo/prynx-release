@@ -6,6 +6,7 @@
  * lý lại tài liệu ban đầu; carrier 0/11 byte cũng không phải nội dung PDF.
  */
 import type { ProcessContext } from '../processHandlers';
+import { readArtifactLeaseToken, tagArtifactLeaseToken } from '../artifactLease';
 
 const UNKNOWN_PATH_SIZE = Number.MAX_SAFE_INTEGER;
 
@@ -16,12 +17,16 @@ export type WorkingArtifact =
         mimeType: string;
         path: string;
         size?: number;
+        /** Token runtime của artifact backend; không được serialize vào Recipe JSON. */
+        artifactLeaseToken?: string;
     }
     | {
         kind: 'bytes';
         name: string;
         mimeType: string;
         bytes: Uint8Array;
+        /** Token runtime của artifact backend; không được serialize vào Recipe JSON. */
+        artifactLeaseToken?: string;
     };
 
 type PathArtifact = Extract<WorkingArtifact, { kind: 'path' }>;
@@ -44,6 +49,46 @@ export interface WorkingArtifactController {
     ) => Promise<void>;
 }
 
+/**
+ * Chụp nguồn đầu vào cho một lượt Phát Recipe từ đúng Working revision.
+ *
+ * REVISION (audit 2026-08-25 §REV.09): lỗi materialize phải dừng lượt phát;
+ * tuyệt đối không đọc lại backing File vì file đó có thể chưa chứa xoay/xóa/reorder.
+ */
+export async function resolveInitialWorkingArtifact(
+    context: Pick<ProcessContext, 'getWorkingBytes' | 'getWorkingSourcePath'>,
+    file: File,
+): Promise<WorkingArtifact> {
+    let path: string | undefined;
+    try {
+        path = await context.getWorkingSourcePath?.();
+    } catch {
+        // Path native chỉ là fast-path. Cùng revision vẫn có thể materialize bytes.
+        path = undefined;
+    }
+
+    const mimeType = file.type || 'application/pdf';
+    const artifactLeaseToken = readArtifactLeaseToken(file);
+    if (path) {
+        return {
+            kind: 'path',
+            name: file.name,
+            mimeType,
+            path,
+            size: file.size,
+            ...(artifactLeaseToken ? { artifactLeaseToken } : {}),
+        };
+    }
+
+    return {
+        kind: 'bytes',
+        name: file.name,
+        mimeType,
+        bytes: await context.getWorkingBytes(),
+        ...(artifactLeaseToken ? { artifactLeaseToken } : {}),
+    };
+}
+
 function normalizedSize(size: number | undefined): number | undefined {
     // PDF path 0 byte không phải nguồn hợp lệ; trong app nó thường có nghĩa là
     // stat chưa biết. Dùng sentinel an toàn thay vì hiểu nhầm là file nhỏ.
@@ -52,9 +97,12 @@ function normalizedSize(size: number | undefined): number | undefined {
 
 function fileFromArtifact(artifact: WorkingArtifact): File {
     if (artifact.kind === 'bytes') {
-        return new File([artifact.bytes as BlobPart], artifact.name, {
-            type: artifact.mimeType,
-        });
+        return tagArtifactLeaseToken(
+            new File([artifact.bytes as BlobPart], artifact.name, {
+                type: artifact.mimeType,
+            }),
+            artifact.artifactLeaseToken,
+        );
     }
 
     const file = new File([], artifact.name, { type: artifact.mimeType });
@@ -69,7 +117,7 @@ function fileFromArtifact(artifact: WorkingArtifact): File {
         value: size,
         configurable: true,
     });
-    return file;
+    return tagArtifactLeaseToken(file, artifact.artifactLeaseToken);
 }
 
 /** Dựng facade ProcessContext cho đúng revision tại đầu mỗi Step. */
@@ -119,6 +167,7 @@ export function createWorkingArtifactController(
 
         async commit(blob, name, existingPath, publish) {
             const mimeType = blob.type || 'application/pdf';
+            const artifactLeaseToken = readArtifactLeaseToken(blob);
             let next: WorkingArtifact;
             let pendingPathSize: Promise<number | undefined> | null = null;
 
@@ -129,6 +178,7 @@ export function createWorkingArtifactController(
                     name,
                     mimeType,
                     path: existingPath,
+                    ...(artifactLeaseToken ? { artifactLeaseToken } : {}),
                 };
                 if (io.statPath) {
                     // Chạy song song với publish để không cộng thêm một lượt stat
@@ -143,6 +193,7 @@ export function createWorkingArtifactController(
                     name,
                     mimeType,
                     bytes: new Uint8Array(await blob.arrayBuffer()),
+                    ...(artifactLeaseToken ? { artifactLeaseToken } : {}),
                 };
             }
 

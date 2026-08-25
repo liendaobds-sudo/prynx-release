@@ -51,7 +51,7 @@ export interface AppData {
 }
 
 // ─── Build QR String ─────────────────────────────────────
-export function buildQRString(type: QRContentType, data: any): string {
+export function buildQRString(type: QRContentType, data: unknown): string {
   switch (type) {
     case 'url':   return data as string;
     case 'text':  return data as string;
@@ -369,6 +369,6 @@ export async function getQRBlob(
 
   if (raw instanceof Blob) return raw;
   // Node Buffer fallback
-  return new Blob([new Uint8Array(raw as any)], { type: `image/${format === 'svg' ? 'svg+xml' : format}` });
+  return new Blob([new Uint8Array(raw)], { type: `image/${format === 'svg' ? 'svg+xml' : format}` });
 }
 

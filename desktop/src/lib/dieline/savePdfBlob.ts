@@ -2,7 +2,7 @@ export type SavePdfResult = { kind: 'saved' } | { kind: 'cancelled' };
 
 export async function savePdfBlob(blob: Blob, filename: string): Promise<SavePdfResult> {
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+    const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
     if (!isTauri) {
         const url = URL.createObjectURL(blob);
         try {

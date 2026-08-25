@@ -2,8 +2,8 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { LiveTile } from './LivePageFrame';
 import {
-    LiveTile,
     shouldEnableViewerViewportAccurateTile,
     shouldMountViewerViewportLayer,
     shouldRenderViewerAccurateBaseTile,
@@ -14,8 +14,8 @@ import {
     viewerPanGridRenderPolicy,
     VIEWER_RASTER_IMAGE_RENDERING,
     viewerSurfaceSwapMs,
-} from './LivePageFrame';
-import { cacheTileUrl, clearTileUrlCache } from '../../lib/tileUrlCache';
+} from './livePageFramePolicy';
+import { cacheTileUrl, clearTileUrlCache, type TileUrlSource } from '../../lib/tileUrlCache';
 import { CancelledTileRenderError } from '../../hooks/viewer/tileRenderScheduler';
 import {
     VIEWER_DIRECT_FULL_PAGE_MAX_PIXELS,
@@ -26,6 +26,17 @@ import {
     viewerFirstFrameMatchesTile,
     type ViewerFirstFrame,
 } from '../../lib/viewerFirstFrame';
+
+type GetTileUrl = (
+    pageNum: number,
+    rotation: number,
+    zoomScale: number,
+    clipX?: number,
+    clipY?: number,
+    clipW?: number,
+    clipH?: number,
+    requestOptions?: { colorStage?: string },
+) => Promise<TileUrlSource>;
 
 afterEach(() => {
     cleanup();
@@ -219,7 +230,7 @@ describe('LiveTile — cold-open màu chính xác', () => {
     });
 
     it('giữ PDFium cho trang compatibility chưa được đánh dấu màu rủi ro', async () => {
-        const getTileUrl = vi.fn((..._args: unknown[]) => new Promise<never>(() => {}));
+        const getTileUrl = vi.fn<GetTileUrl>(() => new Promise<never>(() => {}));
         render(
             <LiveTile
                 {...makeProps({ getTileUrl, showLoadStatus: true })}
@@ -240,7 +251,7 @@ describe('LiveTile — cold-open màu chính xác', () => {
     });
 
     it('chỉ yêu cầu PPE accurate khi trang rủi ro còn đang chờ', async () => {
-        const getTileUrl = vi.fn((..._args: unknown[]) => new Promise<never>(() => {}));
+        const getTileUrl = vi.fn<GetTileUrl>(() => new Promise<never>(() => {}));
         const view = render(
             <LiveTile
                 {...makeProps({ getTileUrl, accurateOnly: true, showLoadStatus: true })}
@@ -537,8 +548,9 @@ describe('LiveTile — cold-open màu chính xác', () => {
     });
 
     it('cold-open xin thẳng PPE target nét, không phát coarse 24 DPI', async () => {
-        const getTileUrl = vi.fn(async (..._args: unknown[]) => ({
-            url: `blob:http://localhost/accurate-${getTileUrl.mock.calls.length}`,
+        let requestCount = 0;
+        const getTileUrl = vi.fn<GetTileUrl>(async () => ({
+            url: `blob:http://localhost/accurate-${++requestCount}`,
             byteLength: 64,
             cacheable: true,
         }));

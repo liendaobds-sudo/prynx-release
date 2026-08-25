@@ -17,6 +17,32 @@ import { mergePdf } from './PdfMerger';
 
 const MM_TO_POINTS = 2.83465;
 
+type MergeSettings = Parameters<typeof mergePdf>[1];
+
+function makeMergeSettings(
+  mode: MergeSettings['mode'],
+  overrides: Partial<Omit<MergeSettings, 'mode'>> = {},
+): MergeSettings {
+  return {
+    filesToMerge: [],
+    oddFile: null,
+    evenFile: null,
+    insertFile: null,
+    insertWhat: 'entire',
+    insertRangeFrom: 1,
+    insertRangeTo: 1,
+    useIntervals: false,
+    startInserting: 'after_page',
+    afterPageNum: 1,
+    skipPages: 1,
+    repeatMode: 'entire',
+    insertPagesEachTime: 1,
+    whenFinished: 'stop',
+    ...overrides,
+    mode,
+  };
+}
+
 async function makePdf(n: number, baseW = 100, h = 200): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   for (let i = 0; i < n; i++) {
@@ -233,8 +259,8 @@ describe('PageResizer — resizePages', () => {
     });
 
     const page = (await PDFDocument.load(out)).getPage(0);
-    const trim = (page.node as any).TrimBox().asRectangle();
-    const bleed = (page.node as any).BleedBox().asRectangle();
+    const trim = page.getTrimBox();
+    const bleed = page.getBleedBox();
     expect(trim.x).toBeCloseTo(5, 1);
     expect(trim.y).toBeCloseTo(10, 1);
     expect(trim.width).toBeCloseTo((srcW - 20) / 2, 1);
@@ -250,14 +276,14 @@ describe('PdfMerger — mergePdf', () => {
   it('merge_files: base + 1 file, giữ thứ tự', async () => {
     const base = await makePdf(2, 100); // 100,101
     const extra = new File([await makePdf(2, 200) as BlobPart], 'b.pdf', { type: 'application/pdf' });
-    const out = await mergePdf(base, { mode: 'merge_files', filesToMerge: [extra] } as any);
+    const out = await mergePdf(base, makeMergeSettings('merge_files', { filesToMerge: [extra] }));
     expect(await widths(out)).toEqual([100, 101, 200, 201]);
   });
 
   it('interleave: xen kẽ odd/even', async () => {
     const oddFile = new File([await makePdf(3, 100) as BlobPart], 'odd.pdf', { type: 'application/pdf' });
     const evenFile = new File([await makePdf(2, 200) as BlobPart], 'even.pdf', { type: 'application/pdf' });
-    const out = await mergePdf(null, { mode: 'interleave', oddFile, evenFile } as any);
+    const out = await mergePdf(null, makeMergeSettings('interleave', { oddFile, evenFile }));
     expect(await widths(out)).toEqual([100, 200, 101, 201, 102]);
   });
 });

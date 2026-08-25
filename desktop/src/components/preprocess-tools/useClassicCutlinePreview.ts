@@ -200,7 +200,6 @@ function roundedPageBoxPath(
     const rightRadiusMinusHandle = compactNumber(right - radius + handle);
     const leftRadiusMinusHandle = compactNumber(left + radius - handle);
     const bottomMinusHandle = compactNumber(bottom - radius + handle);
-    const leftBottomHandle = compactNumber(bottom - radius + handle);
     const leftTopHandle = compactNumber(top + radius - handle);
 
     return [
@@ -559,6 +558,8 @@ export function useClassicCutlinePreview({
         offsetMm,
         pageNumber,
         source,
+        resolvedCornerStyle,
+        resolvedCutMode,
         usesLocalPageBox,
     ]);
 

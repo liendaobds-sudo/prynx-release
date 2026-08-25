@@ -11,13 +11,23 @@ import {
 } from '../../lib/recipe/RecipeRecorder';
 import StickerTool from './StickerTool';
 
+type OnFileFixed = (
+    blob: Blob,
+    filename: string,
+    path?: string,
+    ticket?: RecipeOperationTicket | null,
+) => Promise<void>;
+
 
 const previewApiMocks = vi.hoisted(() => ({
     inspectStickerSourceManifest: vi.fn(),
     detectStickerSourceManifest: vi.fn(),
     previewStickerCutline: vi.fn(),
     closeStickerSheetSession: vi.fn(),
-    resolveWorkingPdf: vi.fn(async () => null),
+    resolveWorkingPdf: Object.assign(vi.fn(async () => null), {
+        prepare: vi.fn(async () => undefined),
+        resolveUnprepared: vi.fn(async () => null),
+    }),
 }));
 
 const workspaceMocks = vi.hoisted(() => ({
@@ -29,12 +39,36 @@ const workspaceMocks = vi.hoisted(() => ({
     setIsCropMode: vi.fn(),
     setViewerToolMode: vi.fn(),
     viewerPageInstanceIds: ['viewer-instance-1'],
+    viewerActivePagePhysical: null as {
+        documentIdentity: string;
+        viewerPage: number;
+        sourcePage: number;
+        pageInstanceId: string | null;
+        rotation: number;
+        widthPt: number;
+        heightPt: number;
+    } | null,
     setClassicCutlineViewerPreview: vi.fn(),
     clearClassicCutlineViewerPreview: vi.fn(),
 }));
 
 const CLASSIC_PREVIEW_SESSION_ID = '0123456789abcdef0123456789abcdef';
 const CLASSIC_PREVIEW_FINGERPRINT = 'a'.repeat(64);
+
+/** Gọi handler React trực tiếp để mô phỏng click đã lọt vào hàng đợi sự kiện
+ * đúng lúc DOM vừa chuyển nút sang disabled. `fireEvent.click` tự bỏ qua nút
+ * disabled nên không bao phủ được race này. */
+function invokeReactClick(button: HTMLButtonElement): void {
+    const propsKey = Object.keys(button).find(key => key.startsWith('__reactProps$'));
+    const props = propsKey
+        ? (button as unknown as Record<string, unknown>)[propsKey]
+        : null;
+    const onClick = props && typeof props === 'object' && 'onClick' in props
+        ? (props as { onClick?: unknown }).onClick
+        : null;
+    if (typeof onClick !== 'function') throw new Error('Không tìm thấy handler React của nút');
+    (onClick as () => void)();
+}
 
 function mockClassicPreviewArtifact(): void {
     previewApiMocks.inspectStickerSourceManifest.mockResolvedValue({
@@ -228,6 +262,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         previewApiMocks.previewStickerCutline.mockReset();
         previewApiMocks.closeStickerSheetSession.mockResolvedValue(undefined);
         window.localStorage.clear();
+        workspaceMocks.viewerActivePagePhysical = null;
         recipeRecorderStore.setState({
             isRecording: false,
             ownerTabId: null,
@@ -582,8 +617,13 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             .toHaveBeenCalledTimes(1), { timeout: 2000 });
         const execute = screen.getByRole('button', { name: 'Thực thi' }) as HTMLButtonElement;
         expect(execute.disabled).toBe(true);
-        fireEvent.click(execute);
+        invokeReactClick(execute);
         expect(authenticatedFetch).not.toHaveBeenCalled();
+        // Nút có thể nhận click sát thời điểm chuyển sang disabled; đây là trạng
+        // thái chờ, không được biến thành khung lỗi đỏ trùng với status teal.
+        expect(screen.getByTestId('classic-cutline-preview-status').textContent)
+            .toContain('Đang cập nhật đường bế xem trước…');
+        expect(screen.queryByText(/❌ Đang cập nhật đường bế xem trước/)).toBeNull();
 
         resolvePreview({
             page_number: 1,
@@ -750,6 +790,15 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         } as unknown as Response);
         const onFileFixed = vi.fn().mockResolvedValue(undefined);
         window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
+        workspaceMocks.viewerActivePagePhysical = {
+            documentIdentity: 'document-identity',
+            viewerPage: 1,
+            sourcePage: 1,
+            pageInstanceId: 'viewer-instance-1',
+            rotation: 0,
+            widthPt: 595.28,
+            heightPt: 841.89,
+        };
 
         render(
             <StickerTool
@@ -782,6 +831,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
 
     it('giữ đúng ticket của tab cho tới callback commit', async () => {
         recipeRecorder.start('tab-a');
+        const noteOperation = vi.spyOn(recipeRecorder, 'noteOperation');
         vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
         vi.mocked(authenticatedFetch).mockResolvedValue({
             ok: true,
@@ -790,12 +840,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         } as unknown as Response);
         let releaseCommit!: () => void;
         const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
-        const onFileFixed = vi.fn((
-            _blob: Blob,
-            _name: string,
-            _path?: string,
-            _ticket?: RecipeOperationTicket | null,
-        ) => commitGate);
+        const onFileFixed = vi.fn<OnFileFixed>(() => commitGate);
         window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
 
         render(
@@ -809,8 +854,12 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
 
         await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
         expect(onFileFixed.mock.calls[0][3]).toMatchObject({ ownerTabId: 'tab-a' });
+        expect(previewApiMocks.resolveWorkingPdf.prepare).toHaveBeenCalledOnce();
+        expect(previewApiMocks.resolveWorkingPdf.prepare.mock.invocationCallOrder[0])
+            .toBeLessThan(noteOperation.mock.invocationCallOrder[0]);
 
         releaseCommit();
         await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+        noteOperation.mockRestore();
     });
 });

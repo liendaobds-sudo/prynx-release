@@ -55,6 +55,23 @@ function isAbortError(error: unknown): boolean {
     return error instanceof DOMException && error.name === 'AbortError';
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = error.message;
+        if (typeof message === 'string' && message) return message;
+    }
+    return fallback;
+}
+
+function formatValidationDetailItem(detail: unknown): string {
+    if (typeof detail === 'object' && detail !== null && 'msg' in detail) {
+        const message = detail.msg;
+        if (typeof message === 'string' && message) return message;
+    }
+    return JSON.stringify(detail) ?? '';
+}
+
 async function readOfficeOutput(
     response: Response,
     preferPath: boolean,
@@ -386,20 +403,20 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         );
 
         try {
-            const preferPath = !!(window as any).__TAURI_INTERNALS__;
+            const preferPath = !!window.__TAURI_INTERNALS__;
             const formData = new FormData();
             formData.append('job_id', jobId);
             if (preferPath) formData.append('return_path', 'true');
             if (isExcelName(src.name)) {
                 formData.append('excel_layout', excelLayoutOverride || 'preserve');
             }
-            const diskPath = (src as any).path as string | undefined;
+            const diskPath = src.path;
 
             if (diskPath && typeof diskPath === 'string' && diskPath.length > 2) {
                 formData.append('file_path', diskPath);
             } else {
                 const real = await prepareFileForUpload(src);
-                const blob = real instanceof Blob ? real : new Blob([real as any]);
+                const blob = real instanceof Blob ? real : new Blob([real as BlobPart]);
                 if (blob.size === 0) {
                     throw new Error(t('preprocess.officeConvert:loi_doc_file'));
                 }
@@ -417,7 +434,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 const msg = typeof detail === 'string'
                     ? detail
                     : Array.isArray(detail)
-                        ? detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ')
+                        ? detail.map((item: unknown) => formatValidationDetailItem(item)).join('; ')
                         : t('preprocess.officeConvert:loi_server', { status: res.status });
                 throw new Error(msg);
             }
@@ -466,11 +483,11 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
             const committed = await onFileFixed?.(output.blob, output.name, output.path);
             if (committed !== false) setSuccess(t('preprocess.officeConvert:thanh_cong'));
-        } catch (convertError: any) {
+        } catch (convertError) {
             if (!isRequestCurrent('single', request)) return;
             setError(isAbortError(convertError)
                 ? t('preprocess.officeConvert:cancelled')
-                : convertError?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
+                : getErrorMessage(convertError, t('preprocess.officeConvert:loi_khong_xac_dinh')));
             setProgress('');
         } finally {
             if (finishRequest('single', request)) {
@@ -521,7 +538,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     // ── Auto-run when parent passes officeSourceFile ─────────────
     useEffect(() => {
         if (!officeSourceFile || (officeSourceFiles && officeSourceFiles.length > 1)) return;
-        const key = `${(officeSourceFile as any).path || ''}|${officeSourceFile.name}|${officeSourceFile.size}`;
+        const key = `${officeSourceFile.path || ''}|${officeSourceFile.name}|${officeSourceFile.size}`;
         if (key === lastSourceKeyRef.current) return;
         lastSourceKeyRef.current = key;
         if (!isOfficePathOrName(officeSourceFile.name)) {
@@ -538,7 +555,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         setError('');
         setSuccess('');
         try {
-            if ((window as any).__TAURI_INTERNALS__) {
+            if (window.__TAURI_INTERNALS__) {
                 const { open } = await import('@tauri-apps/plugin-dialog');
                 const supportedOfficeExtensions = capabilityStatus
                     ? capabilityStatus.supported_extensions.map((ext) => ext.replace(/^\./, ''))
@@ -596,9 +613,11 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 };
                 input.click();
             }
-        } catch (e: any) {
-            setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
+        } catch (error) {
+            setError(getErrorMessage(error, t('preprocess.officeConvert:loi_khong_xac_dinh')));
         }
+    // LINT audit 2026-08-24 LO140: stage helpers are function declarations shared by picker/drop; keep picker trigger scoped.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canAnyBatch, canOfficeBatch, capabilityStatus, stageFile, t]);
 
     const handleGoogle = useCallback(async () => {
@@ -626,7 +645,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             t('preprocess.officeConvert:dang_tai_google'),
         );
         try {
-            const preferPath = !!(window as any).__TAURI_INTERNALS__;
+            const preferPath = !!window.__TAURI_INTERNALS__;
             const formData = new FormData();
             formData.append('url', url);
             formData.append('job_id', jobId);
@@ -649,11 +668,11 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
             const committed = await onFileFixed?.(output.blob, output.name, output.path);
             if (committed !== false) setSuccess(t('preprocess.officeConvert:thanh_cong_google'));
-        } catch (googleError: any) {
+        } catch (googleError) {
             if (!isRequestCurrent('single', request)) return;
             setError(isAbortError(googleError)
                 ? t('preprocess.officeConvert:cancelled')
-                : googleError?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
+                : getErrorMessage(googleError, t('preprocess.officeConvert:loi_khong_xac_dinh')));
             setProgress('');
         } finally {
             if (finishRequest('single', request)) setIsProcessing(false);
@@ -699,7 +718,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     const chooseBatchFolders = async () => {
         setError('');
         try {
-            if (!(window as any).__TAURI_INTERNALS__) {
+            if (!window.__TAURI_INTERNALS__) {
                 throw new Error(t('preprocess.officeConvert:batch_tauri_only'));
             }
             const { open } = await import('@tauri-apps/plugin-dialog');
@@ -724,8 +743,8 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             setBatchOutputFolder(output);
             setBatchResults(files.map((file) => ({ ...file, status: 'pending' })));
             if (files.length === 0) setError(t('preprocess.officeConvert:batch_no_files'));
-        } catch (e: any) {
-            setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
+        } catch (error) {
+            setError(getErrorMessage(error, t('preprocess.officeConvert:loi_khong_xac_dinh')));
         }
     };
 
@@ -739,14 +758,14 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             stageFile(supported[0]);
             return;
         }
-        const missingPath = supported.find((file) => !(file as any).path);
+        const missingPath = supported.find((file) => !file.path);
         if (missingPath) {
             setError(t('preprocess.officeConvert:batch_tauri_only'));
             return;
         }
         const results = supported
             .map((file) => ({
-                path: (file as any).path as string,
+                path: file.path as string,
                 name: file.name,
                 size: file.size,
                 status: 'pending' as const,
@@ -780,7 +799,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     }
 
     async function chooseBatchOutputFolder() {
-        if (!(window as any).__TAURI_INTERNALS__) {
+        if (!window.__TAURI_INTERNALS__) {
             setError(t('preprocess.officeConvert:batch_tauri_only'));
             return;
         }
@@ -796,6 +815,8 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
     useEffect(() => {
         if (!officeSourceFiles || officeSourceFiles.length < 2) return;
         void stageLooseFiles(officeSourceFiles);
+    // LINT audit 2026-08-24 LO140: run only when source prop changes; adding a declaration would stage on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [officeSourceFiles]);
     const updateBatchResult = (index: number, patch: Partial<BatchResult>) => {
         setBatchResults((current) => current.map((item, i) => i === index ? { ...item, ...patch } : item));
@@ -959,7 +980,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 }
                 successCount += 1;
                 updateBatchResult(index, { status: 'success', outputPath });
-            } catch (batchError: any) {
+            } catch (batchError) {
                 if (batchCancelRef.current || isAbortError(batchError)) {
                     wasCancelled = true;
                     updateBatchResult(index, { status: 'cancelled' });
@@ -970,7 +991,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 errorCount += 1;
                 updateBatchResult(index, {
                     status: 'error',
-                    error: batchError?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'),
+                    error: getErrorMessage(batchError, t('preprocess.officeConvert:loi_khong_xac_dinh')),
                 });
             } finally {
                 finishRequest('batch', request);

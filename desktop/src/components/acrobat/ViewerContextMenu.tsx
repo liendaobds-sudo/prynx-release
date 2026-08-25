@@ -1,57 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { listOtherOpenPdfTargets } from './viewerContextMenuUtils';
 
 export type CrossFileTarget = { pdfUrl: string; name: string; tabId?: string; numPages?: number };
-
-/**
- * Các PDF đang mở khác (mọi tab Imposition vẫn mount trong DOM).
- * Ưu tiên marker root viewer (`data-prynx-open-pdf`) — luôn có kể cả khi đóng panel thumbnail.
- * Fallback: `.acro-thumb-scroll[data-pdf-url]` (kéo-thả cross-file).
- */
-export function listOtherOpenPdfTargets(currentPdfUrl: string | null | undefined): CrossFileTarget[] {
-    if (!currentPdfUrl) return [];
-    const seen = new Set<string>();
-    const out: CrossFileTarget[] = [];
-
-    const add = (url: string | null, name: string | null, tabId: string | null, numPagesRaw: string | null) => {
-        if (!url || url === currentPdfUrl || seen.has(url)) return;
-        seen.add(url);
-        const np = numPagesRaw ? parseInt(numPagesRaw, 10) : NaN;
-        out.push({
-            pdfUrl: url,
-            name: name || 'PDF',
-            tabId: tabId || undefined,
-            numPages: Number.isFinite(np) && np >= 0 ? np : undefined,
-        });
-    };
-
-    document.querySelectorAll('[data-prynx-open-pdf]').forEach((node) => {
-        const el = node as HTMLElement;
-        add(
-            el.getAttribute('data-prynx-open-pdf'),
-            el.getAttribute('data-file-name'),
-            el.getAttribute('data-prynx-tab-id'),
-            el.getAttribute('data-prynx-num-pages'),
-        );
-    });
-    document.querySelectorAll('.acro-thumb-scroll[data-pdf-url]').forEach((node) => {
-        const el = node as HTMLElement;
-        const root = el.closest('[data-prynx-open-pdf]') as HTMLElement | null;
-        add(
-            el.getAttribute('data-pdf-url'),
-            el.getAttribute('data-file-name') || root?.getAttribute('data-file-name') || null,
-            root?.getAttribute('data-prynx-tab-id') || null,
-            root?.getAttribute('data-prynx-num-pages') || null,
-        );
-    });
-    return out;
-}
+export type ViewerContextMenuState = { x: number; y: number; visible: boolean } | null;
 
 interface ViewerContextMenuProps {
-    contextMenu: { x: number; y: number; visible: boolean } | null;
+    contextMenu: ViewerContextMenuState;
     selectedIndices: Set<number>;
     currentPdfUrl?: string | null;
-    setContextMenu: React.Dispatch<React.SetStateAction<any>>;
+    setContextMenu: React.Dispatch<React.SetStateAction<ViewerContextMenuState>>;
     setIsInsertModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setIsExtractModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;

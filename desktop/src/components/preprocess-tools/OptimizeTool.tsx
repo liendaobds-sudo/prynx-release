@@ -116,9 +116,14 @@ export default function OptimizeTool({ tabId, pdfFile, onFileFixed }: Props) {
             } else {
                 recipeRecorder.discardPending(recipeTicket);
             }
-        } catch (e: any) {
+        } catch (e: unknown) {
             recipeRecorder.discardPending(recipeTicket);
-            setError(e.message || t('preprocess.optimize:da_xay_ra_loi_khong_xac_dinh'));
+            const message = e instanceof Error
+                ? e.message
+                : typeof e === 'object' && e !== null && 'message' in e && typeof e.message === 'string'
+                    ? e.message
+                    : '';
+            setError(message || t('preprocess.optimize:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);

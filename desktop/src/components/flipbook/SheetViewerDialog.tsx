@@ -6,7 +6,7 @@
  */
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, RotateCw, Layers, Grid3X3 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Layers, Grid3X3 } from 'lucide-react';
 import { generateBindingMap, type VirtualSheet, type PageSlot } from '../../lib/imposerEngine/VirtualMap';
 import { SPREAD_FOLD_REGISTRY, getExactPatternForPageCount, getSpreadPatternById } from '../../lib/imposerEngine/FoldPatterns';
 import { computeSpreadGrid } from '../../lib/imposerEngine/InstructionSerializer';
@@ -33,7 +33,7 @@ const BINDING_LABELS: Record<string, string> = {
 interface SheetViewerDialogProps {
     isOpen: boolean;
     onClose: () => void;
-    pdfFile?: any;
+    pdfFile?: File | null;
     pageOrder: number[];
     pageRotations?: number[];
     bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
@@ -64,7 +64,7 @@ interface SheetViewerDialogProps {
 
 // ─── Single page image ───
 const PageSlotView: React.FC<{
-    slot: PageSlot; pageOrder: number[]; pageRotations?: number[]; pdfFile?: any;
+    slot: PageSlot; pageOrder: number[]; pageRotations?: number[]; pdfFile?: File | null;
     pageWpt?: number; pageHpt?: number; bleed?: number;
     purpose?: TileRenderPurpose;
 }> = ({
@@ -150,7 +150,7 @@ const BlueprintCell: React.FC<{
     logicalIndex: number; isBlank: boolean; rotation: number;
     userRotation?: number;
     totalPages: number; bindingMode: string;
-    pdfFile?: any; pageNum?: number;
+    pdfFile?: File | null; pageNum?: number;
     currentJob?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob;
     width?: number;
     height?: number;
@@ -226,7 +226,7 @@ const BlueprintGrid: React.FC<{
     pageOrder: number[];
     pageRotations?: number[];
     bindingMode: string;
-    pdfFile?: any;
+    pdfFile?: File | null;
     currentJob?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob;
     gripperMargin?: number;
 }> = ({ pattern, sheets, currentSheetIdx, pageOrder, pageRotations = [], bindingMode, pdfFile, currentJob, gripperMargin }) => {
@@ -373,7 +373,7 @@ const DigitalPressSheetGrid: React.FC<{
     currentSheetIdx: number;
     pageOrder: number[];
     pageRotations?: number[];
-    pdfFile?: any;
+    pdfFile?: File | null;
     scaleMode: string;
     pageWpt: number;
     pageHpt: number;
@@ -481,14 +481,13 @@ const DigitalPressSheetGrid: React.FC<{
     );
 };
 
-export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
+const SheetViewerDialogContent: React.FC<SheetViewerDialogProps> = ({
     isOpen, onClose, pdfFile, pageOrder, pageRotations = [], bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0,
     pageWpt = 0, pageHpt = 0, bleed = 0, gapX = 0, gapY = 0, marginLeft = 0, marginRight = 0, marginTop = 0, marginBottom,
     blankPlacement = 'end', separateCover = false, coverPageCount = 4,
 }) => {
   const { t } = useTranslation();
     const [currentSheetIdx, setCurrentSheetIdx] = useState(0);
-    const [showBack, setShowBack] = useState(false);
     const [blueprintMode, setBlueprintMode] = useState(false);
 
     const imposedPageOrder = useMemo(() => {
@@ -503,7 +502,7 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
         return pageRotations.slice(half, pageOrder.length - half);
     }, [catalogJobs, separateCover, coverPageCount, pageOrder.length, pageRotations]);
 
-    const { sheets, report, jobMap } = useMemo(() => {
+    const { sheets, jobMap } = useMemo(() => {
         if (catalogJobs && catalogJobs.length > 0) {
             const allSheets: VirtualSheet[] = [];
             const jMap = new Map<VirtualSheet, import('../../lib/imposerEngine/CatalogPlanner').PlateJob>();
@@ -529,9 +528,9 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                     jMap.set(s, job);
                 }
             }
-            return { sheets: allSheets, report: t('misc.sheetViewerDialog:dua_tren_cau_hinh_auto_catalog'), jobMap: jMap };
+            return { sheets: allSheets, jobMap: jMap };
         } else {
-            if (!imposedPageOrder.length) return { sheets: [] as VirtualSheet[], report: '', jobMap: null };
+            if (!imposedPageOrder.length) return { sheets: [] as VirtualSheet[], jobMap: null };
             return { ...generateBindingMap(imposedPageOrder.length, bindingMode, foliosize, blankPlacement, scaleMode || '100'), jobMap: null };
         }
     }, [catalogJobs, imposedPageOrder, bindingMode, foliosize, blankPlacement, scaleMode]);
@@ -561,8 +560,6 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
         }
         return groups;
     }, [sheets]);
-
-    useEffect(() => { if (isOpen) { setCurrentSheetIdx(0); setBlueprintMode(false); } }, [isOpen, bindingMode, foliosize]);
 
     const goToSheet = useCallback((idx: number) => { setCurrentSheetIdx(idx); }, []);
 
@@ -619,7 +616,6 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
     const sig = cs.signatureIndex ?? 1;
     const sc = SIG_COLORS[Math.max(0, sig > 0 ? sig - 1 : 0) % SIG_COLORS.length];
     const cg = signatureGroups.find(g => g.sigIndex === sig);
-    const activeSide = showBack ? cs.back : cs.front;
 
     return createPortal(
         <div className="fixed inset-0 z-[9999] bg-slate-50/95 dark:bg-zinc-900/95 backdrop-blur-md select-none transition-colors duration-300">
@@ -847,4 +843,12 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
         </div>,
         document.body
     );
+};
+
+
+export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = (props) => {
+    // UIUX (audit 2026-08-23): remount theo vòng mở và cấu hình tay in để
+    // trạng thái trang/sơ đồ không rò từ phiên xem trước trước đó.
+    const resetKey = String(props.isOpen ? 'open' : 'closed') + ':' + props.bindingMode + ':' + props.foliosize;
+    return <SheetViewerDialogContent key={resetKey} {...props} />;
 };

@@ -57,9 +57,6 @@ import {
     clampEmbossHeight,
     composeAppearance,
     substrateInnerFaceColor,
-    SPOT_UV_GLOSS_CLEARCOAT,
-    SPOT_UV_GLOSS_CLEARCOAT_ROUGHNESS,
-    SPOT_UV_GLOSS_ROUGHNESS,
 } from '../../lib/mockup3d/materialLibrary';
 import { getKraftGrainBumpTexture } from '../../lib/mockup3d/proceduralTextures';
 import { applyFoldCompensation, type FoldCompensationScratch } from '../../lib/mockup3d/foldCompensation';
@@ -68,6 +65,7 @@ import { foldLive, seedFoldLiveFromStore } from '../../lib/mockup3d/foldLive';
 import { bufferToCadFaceSegPoints } from './cadFace';
 import { moveToMockupVisualOnlyLayer } from './renderLayers';
 import { useDisposableResource } from './useDisposeResources';
+import { patchSpotUvPhysicalShader } from './surfaceFinishShader';
 
 // ─── Bảng màu ───────────────────────────────────────────────────────────────
 
@@ -91,60 +89,6 @@ const MAT_INNER = 2; // cap mặt trong (−Z)
 
 /** Ngưỡng |pháp tuyến.z| để coi một tam giác là cap (mặt phẳng) thay vì tường. */
 const CAP_NORMAL_Z_THRESHOLD = 0.7;
-
-const SPOT_UV_ROUGHNESS_SHADER_TARGET = 'roughnessFactor *= texelRoughness.g;';
-
-/** Chuyển mask Spot-UV trắng thành vùng bóng, thay vì phép nhân roughness mặc định. */
-export function patchSpotUvRoughnessShader(fragmentShader: string): string {
-    return fragmentShader.replace(
-        SPOT_UV_ROUGHNESS_SHADER_TARGET,
-        `roughnessFactor = texelRoughness.g > 0.5 ? ${SPOT_UV_GLOSS_ROUGHNESS.toFixed(4)} : roughnessFactor;`,
-    );
-}
-
-/**
- * Patch clearcoat: vùng mask trắng (g channel của clearcoatMap / roughnessMap)
- * dùng clearcoat bóng UV; nền giữ clearcoatFactor gốc.
- *
- * Three.js Physical dùng `clearcoatFactor *= texelClearcoat.x` khi có CLEARCOATMAP.
- * Ta thay bằng ngưỡng 50% giống spot-UV roughness.
- */
-export function patchSpotUvClearcoatShader(fragmentShader: string): string {
-    const targets = [
-        'clearcoatFactor *= texelClearcoat.x;',
-        'clearcoatFactor *= texelClearcoat.r;',
-    ];
-    let out = fragmentShader;
-    for (const target of targets) {
-        if (out.includes(target)) {
-            out = out.replace(
-                target,
-                `clearcoatFactor = texelClearcoat.x > 0.5 ? ${SPOT_UV_GLOSS_CLEARCOAT.toFixed(4)} : clearcoatFactor;`,
-            );
-            break;
-        }
-    }
-    // clearcoatRoughness similarly if map is present
-    const roughTargets = [
-        'clearcoatRoughnessFactor *= texelClearcoatRoughness.y;',
-        'clearcoatRoughnessFactor *= texelClearcoatRoughness.g;',
-    ];
-    for (const target of roughTargets) {
-        if (out.includes(target)) {
-            out = out.replace(
-                target,
-                `clearcoatRoughnessFactor = texelClearcoatRoughness.y > 0.5 ? ${SPOT_UV_GLOSS_CLEARCOAT_ROUGHNESS.toFixed(4)} : clearcoatRoughnessFactor;`,
-            );
-            break;
-        }
-    }
-    return out;
-}
-
-/** Áp cả roughness + clearcoat spot-UV lên fragment shader Physical. */
-export function patchSpotUvPhysicalShader(fragmentShader: string): string {
-    return patchSpotUvClearcoatShader(patchSpotUvRoughnessShader(fragmentShader));
-}
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -611,7 +555,6 @@ export default function SolidPanelMesh({
             assignFaceMaterialGroups(geo);
         }
         return geo;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [panel, thickness, coneWarp, conePatchOnly, coneWarp ? resolvedFoldProgress : 0]);
 
     // ── 1b. Dải BO TRÒN tại nếp gập (fillet) — góc gập cong mượt như giấy ──
@@ -630,7 +573,6 @@ export default function SolidPanelMesh({
         for (const p of ring) { cx += p.x; cy += p.y; }
         cx /= ring.length; cy /= ring.length;
         return buildFoldFilletGeometry(piv[0], piv[1], theta, thickness, { x: cx, y: cy });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [panel, thickness, roundFolds, coneWarp, resolvedFoldProgress, depthMap, maxD]);
 
     // ── 2. UV theo ảnh nghệ thuật (Yêu cầu 5.1, 5.3, 5.4) ──
@@ -760,7 +702,6 @@ export default function SolidPanelMesh({
         return outerFaceNegativeZ
             ? [innerMaterial, wallMaterial, outerMaterial]
             : [outerMaterial, wallMaterial, innerMaterial];
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [substrateId, surfaceFinishId, edgeColor, texture, innerTexture, spotUvTexture, embossTexture, panel.stackZ, outerFaceNegativeZ, qualityTier, showPaperGrain]);
 
     // Slider emboss chỉ cập nhật uniform bumpScale, không dựng lại geometry/material
@@ -782,7 +723,6 @@ export default function SolidPanelMesh({
             envMapIntensity: appearance.phys.envMapIntensity * 0.8,
             side: THREE.DoubleSide,
         });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [substrateId, surfaceFinishId]);
 
     // ── 3b. Đường CAD cắt/cấn — bản phẳng (panel.paths) hoặc bám mặt nón ──
@@ -799,7 +739,6 @@ export default function SolidPanelMesh({
             }
             return buildPathLineGeometries(panel);
         },
-        // eslint-disable-next-line react-hooks/exhaustive-deps
         [panel, coneWarp, conePatchOnly, coneWarp ? resolvedFoldProgress : 0, thickness],
     );
     const cutGeo = lineGeometries?.[0] ?? null;

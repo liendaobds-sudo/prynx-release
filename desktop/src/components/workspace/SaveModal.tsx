@@ -1,6 +1,4 @@
-// @ts-nocheck
 import React, { useEffect } from 'react';
-import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
@@ -12,7 +10,7 @@ interface SaveModalProps {
 
 export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProps) {
   const { t } = useTranslation();
-    const { showSaveAsModal, setShowSaveAsModal, file, setReportMsg } = useWorkspaceStore();
+    const { showSaveAsModal, setShowSaveAsModal, file, reportMsg, setReportMsg } = useWorkspaceStore();
     const { batchOutput } = useImposerSettingsStore();
 
     useEffect(() => {
@@ -68,7 +66,7 @@ export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProp
                         <span className="text-[16px] text-gray-700 dark:text-gray-200 mb-4">{t('misc.save:luu_vao_thu_muc_gan_day')}</span>
 
                         <div className="flex flex-col gap-2">
-                            {batchOutput && file === (batchOutput.mergedBlob as any) ? (
+                            {batchOutput && file === batchOutput.mergedBlob ? (
                                 <>
                                     <div className="text-[12px] text-orange-600 dark:text-orange-400 font-bold mb-1">{t('misc.save:xuat_nhieu_kho_kem_auto_catalog')}</div>
 
@@ -92,14 +90,14 @@ export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProp
                                             batchOutput.docs.forEach((doc, idx) => {
                                                 setTimeout(() => {
                                                     const url = URL.createObjectURL(doc.blob);
-                                                    const a = document.createElement('link');
+                                                    const a = document.createElement('a');
                                                     a.href = url;
-                                                    (a as any).download = doc.filename;
+                                                    a.download = doc.filename;
                                                     a.click();
                                                     URL.revokeObjectURL(url);
                                                 }, idx * 500);
                                             });
-                                            setReportMsg(prev => prev + '\n\n' + t('misc.save:da_gui_lenh_tai_roi_nhieu_file'));
+                                            setReportMsg(reportMsg ? `${reportMsg}\n\n${t('misc.save:da_gui_lenh_tai_roi_nhieu_file')}` : t('misc.save:da_gui_lenh_tai_roi_nhieu_file'));
                                         }}
                                         className="flex gap-4 items-center p-3 border border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 rounded focus:outline-none text-left hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors mt-2"
                                     >

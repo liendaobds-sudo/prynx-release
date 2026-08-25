@@ -87,8 +87,13 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
                 if (committed === false) return;
             }
             setResult({ totalPages, pagesWithText, totalWords });
-        } catch (e: any) {
-            setError(e.message || t('preprocess.ocr:da_xay_ra_loi_khong_xac_dinh'));
+        } catch (e: unknown) {
+            const message = e instanceof Error
+                ? e.message
+                : typeof e === 'object' && e !== null && 'message' in e && typeof e.message === 'string'
+                    ? e.message
+                    : '';
+            setError(message || t('preprocess.ocr:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);

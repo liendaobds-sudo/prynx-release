@@ -1,6 +1,6 @@
 // Cấu hình persist — ghép partialize keys từ các slice + migrate giữ nguyên verbatim.
 import { createJSONStorage, type PersistOptions, type StateStorage } from 'zustand/middleware';
-import { DEFAULT_PONT_CONFIG } from '../PontSettingsDialog';
+import { DEFAULT_PONT_CONFIG } from '../pontConfigDefaults';
 import { DEFAULT_BOOK_REPORT_CONFIG, DEFAULT_REPORT_CONFIG } from '../types';
 import type { ImposerSettingsState } from './types';
 
@@ -18,7 +18,14 @@ import { PREPROC_PERSIST_KEYS, DEFAULT_RESIZE_SETTINGS } from './slices/preprocS
 const PERSIST_DEBOUNCE_MS = 150;
 export const LEGACY_IMPOSER_PERSIST_KEY = 'ps_imposer_settings';
 const SCOPED_IMPOSER_PERSIST_PREFIX = `${LEGACY_IMPOSER_PERSIST_KEY}:`;
+const SCOPED_IMPOSER_GC_FLAG = 'ps_imposer_scope_gc_v1';
 const pendingWrites = new Map<string, { value: string; timer: number }>();
+
+type MigratableState = Partial<ImposerSettingsState> & Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export function scopedImposerPersistName(scopeKey: string): string {
     return `${SCOPED_IMPOSER_PERSIST_PREFIX}${encodeURIComponent(scopeKey)}`;
@@ -89,15 +96,16 @@ const persistStorage = createJSONStorage<Partial<ImposerSettingsState>>(() => de
 
 if (typeof window !== 'undefined') {
     try {
-        const gcFlag = 'ps_imposer_scope_gc_v1';
-        if (window.sessionStorage.getItem(gcFlag) !== '1') {
+        if (window.localStorage.getItem(SCOPED_IMPOSER_GC_FLAG) !== '1') {
+            // UIUX (audit 2026-08-25 NEW-WINDOW): cờ migration phải dùng chung
+            // storage với dữ liệu; child WebView không được chạy GC lại và xóa state main.
+            window.localStorage.setItem(SCOPED_IMPOSER_GC_FLAG, '1');
             const staleKeys: string[] = [];
             for (let index = 0; index < window.localStorage.length; index += 1) {
                 const key = window.localStorage.key(index);
                 if (key?.startsWith(SCOPED_IMPOSER_PERSIST_PREFIX)) staleKeys.push(key);
             }
             for (const key of staleKeys) window.localStorage.removeItem(key);
-            window.sessionStorage.setItem(gcFlag, '1');
         }
     } catch { /* storage remains best effort */ }
     window.addEventListener('pagehide', flushPendingWrites);
@@ -117,7 +125,10 @@ export const PARTIALIZE_KEYS: readonly string[] = [
 ];
 
 // Migrate v1→v11 — giữ tương thích thiết lập đã lưu qua các phiên bản.
-function migrate(persistedState: any, version: number): any {
+function migrate(persistedValue: unknown, version: number): Partial<ImposerSettingsState> {
+    let persistedState: MigratableState = isRecord(persistedValue)
+        ? persistedValue as MigratableState
+        : {};
     if (version < 2) {
         // v1 → v2: add pontConfig to persisted state
         persistedState = { ...persistedState, pontConfig: persistedState.pontConfig || DEFAULT_PONT_CONFIG };
@@ -152,7 +163,7 @@ function migrate(persistedState: any, version: number): any {
     }
     if (version < 7) {
         // v6 → v7: thêm showGangCount + gangCount vào reportDisplay
-        const rd = persistedState.reportDisplay || {};
+        const rd = (persistedState.reportDisplay || {}) as typeof DEFAULT_REPORT_CONFIG;
         if (rd.showGangCount === undefined) rd.showGangCount = true;
         const fo = rd.fieldOrder || [];
         if (!fo.includes('gangCount')) {
@@ -203,8 +214,8 @@ function migrate(persistedState: any, version: number): any {
         // INKING (2026-08-12): bản UI thử nghiệm từng ghép xoay đối đầu
         // vào gridStrategy. Tách nó thành thiết lập độc lập mà không để
         // dropdown “Cách xếp” bị giá trị không hợp lệ sau khi nạp lại.
-        const migrateLegacyInking = (value: any) => {
-            if (!value || typeof value !== 'object') return value;
+        const migrateLegacyInking = <T,>(value: T): T => {
+            if (!isRecord(value)) return value;
             if (value.gridStrategy === 'inking_rows') {
                 return {
                     ...value,
@@ -237,8 +248,8 @@ export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<Impose
     version: 11,
     migrate,
     partialize: (state) => {
-        const out: Record<string, any> = {};
-        for (const k of PARTIALIZE_KEYS) out[k] = (state as any)[k];
+        const out: Record<string, unknown> = {};
+        for (const k of PARTIALIZE_KEYS) out[k] = Reflect.get(state, k) as unknown;
         return out as Partial<ImposerSettingsState>;
     },
     onRehydrateStorage: () => () => {

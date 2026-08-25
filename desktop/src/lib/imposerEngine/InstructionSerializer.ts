@@ -6,7 +6,7 @@
 //  Module này KHÔNG import pdf-lib. Chỉ làm việc với con số.
 // =========================================================================
 
-import type { VirtualSheet } from './VirtualMap';
+import type { SheetSide, VirtualSheet } from './VirtualMap';
 import type { GeometricContext } from './GeometricSolver';
 import { solvePageTransform } from './GeometricSolver';
 import type { ProcessingSettings } from '../pdfImposer';
@@ -126,6 +126,16 @@ export interface Phase2Set {
     plates: Phase2Plate[];
 }
 
+// LINT (audit 2026-08-23 LO65): mô tả đúng surface nội bộ, kể cả cờ legacy
+// `isEmpty`, để siết kiểu mà không đổi thứ tự placement hay JSON đầu ra.
+interface BookletSurface {
+    sheetIndex: number;
+    isFront: boolean;
+    slots: SheetSide;
+    sheet: VirtualSheet;
+    isEmpty?: boolean;
+}
+
 // ==================== BOOKLET SERIALIZER ====================
 
 /**
@@ -147,18 +157,23 @@ export function serializeBookletPlan(
     totalSourcePages: number,
     appendSourcePages: AppendedPageInstruction[] = [],
 ): InstructionSet {
-    const markLenPt = ((settings as any).markLength ?? 5.0) * MM_TO_POINTS;
-    const markOffPt = ((settings as any).markOffset ?? 3.0) * MM_TO_POINTS;
-    const markThickPt = ((settings as any).markThickness ?? 0.25) * MM_TO_POINTS;
+    const markLength = 'markLength' in settings ? settings.markLength : undefined;
+    const markOffset = 'markOffset' in settings ? settings.markOffset : undefined;
+    const markThickness = 'markThickness' in settings ? settings.markThickness : undefined;
+    const markLenPt = (markLength ?? 5.0) * MM_TO_POINTS;
+    const markOffPt = (markOffset ?? 3.0) * MM_TO_POINTS;
+    const markThickPt = (markThickness ?? 0.25) * MM_TO_POINTS;
 
     // ── Spread-frame layout knobs (mirror Renderer.renderBooklet phase-1) ──
     // Phase 1 luôn dùng clustered + spineGap=0 (gáy sát để gấp/khâu).
     // Gutter (lề gáy) áp cho perfect/sewn; cut_stacks "Hút gáy" xoay 180° cọc phải.
-    const bindingMode = (settings as any).bindingMode;
-    const gutterPt = ((settings as any).gutterMargin || 0) * MM_TO_POINTS;
+    const bindingMode = 'bindingMode' in settings ? settings.bindingMode : undefined;
+    const gutterMargin = 'gutterMargin' in settings ? settings.gutterMargin : undefined;
+    const gutterPt = (gutterMargin || 0) * MM_TO_POINTS;
     const isCutStackSpread = bindingMode === 'cut_stacks';
     const isSaddle = bindingMode === 'saddle';
-    const cutStackDistribution = (settings as any).spreadDistribution || 'clustered';
+    const spreadDistribution = 'spreadDistribution' in settings ? settings.spreadDistribution : undefined;
+    const cutStackDistribution = spreadDistribution || 'clustered';
     const cutStackHutGay = cutStackDistribution !== 'even';
     /** Cọc phải khi "Hút gáy & Xén úp" phải xoay 180° để 2 nửa đối xứng lề khi úp. */
     const cutStackRotates = (isFront: boolean, isLeft: boolean): boolean => {
@@ -168,9 +183,9 @@ export function serializeBookletPlan(
 
     // Fold pattern là knob riêng của Offset. Digital luôn phải đi đúng Step & Repeat,
     // kể cả persisted store còn giữ một pattern ẩn từ phiên làm việc trước.
-    const isOffsetBooklet = (settings as any).paperClassification === 'offset'
-        || (settings as any).imposerMode === 'offset';
-    const fpId = isOffsetBooklet ? (settings as any).foldPattern : undefined;
+    const isOffsetBooklet = settings.paperClassification === 'offset'
+        || settings.imposerMode === 'offset';
+    const fpId = isOffsetBooklet && 'foldPattern' in settings ? settings.foldPattern : undefined;
     let foldPattern: SpreadFoldPattern | null = null;
     if (fpId && fpId !== 'auto') {
         foldPattern = getSpreadPatternById(fpId) ?? null;
@@ -199,7 +214,7 @@ export function serializeBookletPlan(
         : (isOffsetBooklet ? interleaveMode : 'normal');
 
     // Build surface iteration order (same logic as Renderer.ts)
-    const surfaces: { sheetIndex: number; isFront: boolean; slots: any; sheet: VirtualSheet }[] = [];
+    const surfaces: BookletSurface[] = [];
 
     const isSingleSided = bindingMode === 'flush_mount';
 
@@ -228,7 +243,7 @@ export function serializeBookletPlan(
     }
 
     // ── Helper: dựng 1 placement cho slot left/right của 1 surface (spread frame) ──
-    const makePlacement = (surf: any, isLeft: boolean): PlacementInstruction => {
+    const makePlacement = (surf: BookletSurface, isLeft: boolean): PlacementInstruction => {
         const isFront = surf.isFront;
         const slot = isLeft ? surf.slots.left : surf.slots.right;
         const effSheetIndex = surf.sheet.sigLocalIndex ?? surf.sheetIndex;
@@ -259,12 +274,12 @@ export function serializeBookletPlan(
             native_angle: (srcDetail?.angle ?? 0) + (slot.userRotation ?? 0),
         };
     };
-    const buildSurfacePlacements = (surf: any): PlacementInstruction[] =>
-        (!surf || (surf as any).isEmpty) ? [] : [makePlacement(surf, true), makePlacement(surf, false)];
+    const buildSurfacePlacements = (surf: BookletSurface | undefined): PlacementInstruction[] =>
+        (!surf || surf.isEmpty) ? [] : [makePlacement(surf, true), makePlacement(surf, false)];
 
     // ── Phát hiện chế độ phase-2 (Step&Repeat / Fold Pattern / Cut&Stack) ──
-    const wantChainNup = !!(settings as any).chainNup;
-    const wantCutStack = !!(settings as any).cutStack;
+    const wantChainNup = 'chainNup' in settings && !!settings.chainNup;
+    const wantCutStack = 'cutStack' in settings && !!settings.cutStack;
     // BOOKLET (audit 2026-07-31 §A.1): không được ghép các surface một mặt của
     // dán đối lưng thành plate A/B hai mặt. UI đã chặn; đây là hàng rào engine.
     if (isSingleSided && wantCutStack) {
@@ -289,14 +304,14 @@ export function serializeBookletPlan(
                 width_pt: context.finalSheetWidth,
                 height_pt: context.finalSheetHeight,
                 front: { placements: buildSurfacePlacements(surf), marks: [] },
-                back: undefined as any,
+                back: undefined,
             });
         }
 
         const spreadW = context.finalSheetWidth;
         const spreadH = context.finalSheetHeight;
-        const pressW = ((settings as any).sheetWidth || 0) * MM_TO_POINTS;
-        const pressH = ((settings as any).sheetHeight || 0) * MM_TO_POINTS;
+        const pressW = (settings.sheetWidth || 0) * MM_TO_POINTS;
+        const pressH = (settings.sheetHeight || 0) * MM_TO_POINTS;
 
         phase2 = buildPhase2(
             phase2Mode, foldPattern, surfaces.length, spreadW, spreadH,
@@ -335,7 +350,7 @@ export function serializeBookletPlan(
                 height_pt: context.finalSheetHeight,
                 front: { placements: frontPlacements, marks: frontMarks },
                 back: isSingleSided ? undefined : { placements: backPlacements, marks: backMarks },
-            } as any;
+            };
 
             if (context.isRotated) {
                 const innerW = context.finalSheetWidth - context.margins.left - context.margins.right;
@@ -349,6 +364,7 @@ export function serializeBookletPlan(
         }
     }
 
+    const bookReport = settings.bookReport;
     return {
         version: '1.0',
         source_pdf_path: sourcePdfPath,
@@ -367,16 +383,16 @@ export function serializeBookletPlan(
         })),
         sheets,
         ...(appendSourcePages.length ? { append_source_pages: appendSourcePages } : {}),
-        ...((settings as any).bookReport?.enabled && String((settings as any).bookReport.text || '').trim()
+        ...(bookReport?.enabled && String(bookReport.text || '').trim()
             ? {
                 book_report: {
                     enabled: true,
-                    text: String((settings as any).bookReport.text),
-                    position: (settings as any).bookReport.position || 'top',
-                    centered: (settings as any).bookReport.centered !== false,
-                    offset_x_mm: Math.max(0, Number((settings as any).bookReport.offsetX) || 0),
-                    offset_y_mm: Math.max(0, Number((settings as any).bookReport.offsetY) || 0),
-                    font_size: Math.max(4, Number((settings as any).bookReport.fontSize) || 7),
+                    text: String(bookReport.text),
+                    position: bookReport.position || 'top',
+                    centered: bookReport.centered !== false,
+                    offset_x_mm: Math.max(0, Number(bookReport.offsetX) || 0),
+                    offset_y_mm: Math.max(0, Number(bookReport.offsetY) || 0),
+                    font_size: Math.max(4, Number(bookReport.fontSize) || 7),
                 },
             }
             : {}),
@@ -465,14 +481,16 @@ function buildPhase2(
     markType: string,
     settings: ProcessingSettings,
 ): Phase2Set {
-    const gapXPt = ((settings as any).gapX || 0) * MM_TO_POINTS;
-    const gapYPt = ((settings as any).gapY || 0) * MM_TO_POINTS;
-    const marginLeftPt = ((settings as any).marginLeft || 0) * MM_TO_POINTS;
-    const marginRightPt = ((settings as any).marginRight || 0) * MM_TO_POINTS;
-    const marginTopPt = ((settings as any).marginTop || 0) * MM_TO_POINTS;
-    const marginBottomPt = ((settings as any).marginBottom || 0) * MM_TO_POINTS;
-    const gripperPt = ((settings as any).gripperMargin || 0) * MM_TO_POINTS;
-    const isEven = (settings as any).spreadDistribution === 'even';
+    const gapXPt = (settings.gapX || 0) * MM_TO_POINTS;
+    const gapYPt = (settings.gapY || 0) * MM_TO_POINTS;
+    const marginLeftPt = (settings.marginLeft || 0) * MM_TO_POINTS;
+    const marginRightPt = (settings.marginRight || 0) * MM_TO_POINTS;
+    const marginTopPt = (settings.marginTop || 0) * MM_TO_POINTS;
+    const marginBottomPt = (settings.marginBottom || 0) * MM_TO_POINTS;
+    const gripperMargin = 'gripperMargin' in settings ? settings.gripperMargin : undefined;
+    const gripperPt = (gripperMargin || 0) * MM_TO_POINTS;
+    const spreadDistribution = 'spreadDistribution' in settings ? settings.spreadDistribution : undefined;
+    const isEven = spreadDistribution === 'even';
 
     // Honor the user-specified press sheet. A booklet spread is ~2× a page wide,
     // so it is often wider than a portrait press sheet — the rotation step below
@@ -504,7 +522,7 @@ function buildPhase2(
 
     const black: [number, number, number, number] = [0, 0, 0, 1];
     const red: [number, number, number, number] = [0, 1, 1, 0]; // Magenta+Yellow ≈ Đỏ (CMYK) cho dấu gấp gáy
-    const bindingMode = (settings as any).bindingMode;
+    const bindingMode = 'bindingMode' in settings ? settings.bindingMode : undefined;
     const isFoldable = bindingMode === 'saddle' || bindingMode === 'thread';
     const showMarks = !!markType && markType !== 'none';
 
@@ -738,7 +756,7 @@ function applyGridRotation(sheet: SheetInstruction, cx: number, cy: number) {
 
 function applyGridRotationToSide(side: SheetSideInstruction, cx: number, cy: number) {
     const rotX = (x: number, y: number) => cx + (y - cy);
-    const rotY = (x: number, y: number) => cy - (x - cx);
+    const rotY = (x: number) => cy - (x - cx);
 
     if (side.placements) {
         for (const p of side.placements) {
@@ -773,9 +791,9 @@ function applyGridRotationToSide(side: SheetSideInstruction, cx: number, cy: num
     if (side.marks) {
         for (const m of side.marks) {
             const nx1 = rotX(m.x1, m.y1);
-            const ny1 = rotY(m.x1, m.y1);
+            const ny1 = rotY(m.x1);
             const nx2 = rotX(m.x2, m.y2);
-            const ny2 = rotY(m.x2, m.y2);
+            const ny2 = rotY(m.x2);
             m.x1 = nx1; m.y1 = ny1;
             m.x2 = nx2; m.y2 = ny2;
         }

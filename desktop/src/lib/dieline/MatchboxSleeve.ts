@@ -15,9 +15,9 @@
 // ============================================================
 
 import {
-    BoxParams, DielineModel, Panel, PathSegment, Point2D,
+    BoxParams, Panel, PathSegment, Point2D,
 } from './types';
-import { pt, line, snap, computeBoundingBox } from './utils';
+import { pt, line, snap } from './utils';
 
 /** Khe hở giữa khay và vỏ bao ngoài (mm).
  *  1mm mỗi chiều đảm bảo khay trượt vào/ra dễ dàng

@@ -20,7 +20,6 @@ import * as THREE from 'three';
 import { useMockupStore } from '../../stores/useMockupStore';
 import { MOCKUP_VISUAL_ONLY_LAYER, moveToMockupVisualOnlyLayer } from './renderLayers';
 import {
-    DEFAULT_BACKGROUND_PRESET_ID,
     getBackgroundPreset,
 } from './backgroundPresets';
 
@@ -158,6 +157,8 @@ export default function ShadowFloor({
                 ctx.fillRect(0, 0, sizePx, sizePx);
                 tex = new THREE.CanvasTexture(canvas);
                 tex.colorSpace = THREE.SRGBColorSpace;
+                // Scene.background là thuộc tính mutable của Three.js, cần gán để cập nhật nền canvas.
+                // eslint-disable-next-line react-hooks/immutability -- mutation thuộc API render imperative.
                 scene.background = tex;
             } else {
                 scene.background = new THREE.Color(preset.backgroundColor);

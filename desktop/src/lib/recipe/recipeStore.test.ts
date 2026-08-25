@@ -5,12 +5,16 @@ import { createRecipe, serializeRecipe, type RecipeStep } from './recipeTypes';
 // ─── localStorage mock (môi trường node) ───
 function installLocalStorageMock() {
     const map = new Map<string, string>();
-    (globalThis as any).localStorage = {
+    const storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'clear'> = {
         getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
         setItem: (k: string, v: string) => { map.set(k, String(v)); },
         removeItem: (k: string) => { map.delete(k); },
         clear: () => map.clear(),
     };
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: storage,
+    });
 }
 
 const steps: RecipeStep[] = [

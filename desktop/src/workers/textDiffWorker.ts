@@ -9,23 +9,11 @@
  *   để kết quả vẫn đọc được.
  */
 import { diffWordsWithSpace, diffLines } from 'diff';
-
-interface DiffRequest {
-    a: string;
-    b: string;
-    mode: 'word' | 'line';
-    ignoreSpaces: boolean;
-}
-
-interface DiffPart {
-    value: string;
-    added: boolean;
-    removed: boolean;
-}
+import type { DiffPart, TextDiffRequest, TextDiffWorkerResponse } from './textDiffProtocol';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
-ctx.onmessage = (e: MessageEvent<DiffRequest>) => {
+ctx.onmessage = (e: MessageEvent<TextDiffRequest>) => {
     const { a, b, mode, ignoreSpaces } = e.data;
     try {
         const norm = (s: string) => (ignoreSpaces ? s.replace(/\s+/g, ' ').trim() : s);
@@ -37,8 +25,11 @@ ctx.onmessage = (e: MessageEvent<DiffRequest>) => {
             added: !!p.added,
             removed: !!p.removed,
         }));
-        ctx.postMessage({ ok: true, parts });
-    } catch (err: any) {
-        ctx.postMessage({ ok: false, error: String(err?.message || err) });
+        const response: TextDiffWorkerResponse = { ok: true, parts };
+        ctx.postMessage(response);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        const response: TextDiffWorkerResponse = { ok: false, error: message };
+        ctx.postMessage(response);
     }
 };

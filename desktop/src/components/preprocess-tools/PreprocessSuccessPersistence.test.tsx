@@ -5,13 +5,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ConvertColorsTool from './ConvertColorsTool';
 import HairlinesTool from './HairlinesTool';
 import MetadataTool from './MetadataTool';
+import PreflightTool from './PreflightTool';
 import SavePdfxTool from './SavePdfxTool';
 import TrapPresetsTool from './TrapPresetsTool';
 import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
+import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
+
+type TestFileFixed = (
+  blob: Blob,
+  name: string,
+  path?: string,
+  recipeTicket?: RecipeOperationTicket | null,
+) => void | boolean | Promise<void | boolean>;
 
 const authenticatedFetch = vi.fn();
 const uploadPDF = vi.fn();
 const prepareFileForUpload = vi.fn();
+const translate = vi.hoisted(() => (key: string) => key.split(':').at(-1) || key);
+const recipeHarness = vi.hoisted(() => ({
+  isRecordingFor: vi.fn(() => false),
+  noteOperation: vi.fn(),
+  discardPending: vi.fn(),
+}));
+const workingPdfHarness = vi.hoisted(() => ({
+  file: null as File | null,
+  pageOrder: undefined as readonly number[] | undefined,
+  pageInstanceIds: undefined as readonly string[] | undefined,
+  pageRotations: undefined as readonly number[] | undefined,
+  editGeneration: 0,
+  prepare: vi.fn(async () => undefined),
+}));
 
 vi.mock('../../lib/api', () => ({
   authenticatedFetch: (...args: unknown[]) => authenticatedFetch(...args),
@@ -20,15 +43,56 @@ vi.mock('../../lib/api', () => ({
   prepareFileForUpload: (...args: unknown[]) => prepareFileForUpload(...args),
 }));
 
-vi.mock('../../hooks/useWorkingPdf', () => ({
-  useWorkingPdf: () => async () => null,
-}));
+vi.mock('../../hooks/useWorkingPdf', () => {
+  const sameArray = <T,>(
+    left: readonly T[] | undefined,
+    right: readonly T[] | undefined,
+  ) => left === right || (
+    !!left
+    && !!right
+    && left.length === right.length
+    && left.every((value, index) => Object.is(value, right[index]))
+  );
+  const currentFile = () => {
+    if (!workingPdfHarness.file) {
+      workingPdfHarness.file = new File(['working'], 'working.pdf', { type: 'application/pdf' });
+    }
+    return workingPdfHarness.file;
+  };
+  const capture = (sourceFile?: File | null) => Object.freeze({
+    file: sourceFile ?? currentFile(),
+    viewerPageOrder: workingPdfHarness.pageOrder === undefined
+      ? undefined
+      : Object.freeze([...workingPdfHarness.pageOrder]),
+    viewerPageInstanceIds: workingPdfHarness.pageInstanceIds === undefined
+      ? undefined
+      : Object.freeze([...workingPdfHarness.pageInstanceIds]),
+    viewerPageRotations: workingPdfHarness.pageRotations === undefined
+      ? undefined
+      : Object.freeze([...workingPdfHarness.pageRotations]),
+    editGeneration: workingPdfHarness.editGeneration,
+  });
+  const resolver = Object.assign(
+    async (sourceFile?: File | null) => sourceFile ?? currentFile(),
+    {
+      prepare: () => workingPdfHarness.prepare(),
+      resolveUnprepared: async (sourceFile?: File | null) => sourceFile ?? currentFile(),
+      capture,
+      materialize: async (snapshot: ReturnType<typeof capture>) => snapshot.file,
+      isCurrent: (snapshot: ReturnType<typeof capture>) => (
+        snapshot.file === currentFile()
+        && snapshot.editGeneration === workingPdfHarness.editGeneration
+        && sameArray(snapshot.viewerPageOrder, workingPdfHarness.pageOrder)
+        && sameArray(snapshot.viewerPageInstanceIds, workingPdfHarness.pageInstanceIds)
+        && sameArray(snapshot.viewerPageRotations, workingPdfHarness.pageRotations)
+      ),
+    },
+  );
+  return { useWorkingPdf: () => resolver };
+});
 
 vi.mock('../../lib/recipe/RecipeRecorder', () => ({
-  recipeRecorder: {
-    noteOperation: vi.fn(),
-    discardPending: vi.fn(),
-  },
+  recipeRecorder: recipeHarness,
 }));
 
 vi.mock('../../i18n', () => ({
@@ -37,7 +101,7 @@ vi.mock('../../i18n', () => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key.split(':').at(-1) || key,
+    t: translate,
   }),
 }));
 
@@ -56,6 +120,16 @@ function errorResponse(detail: string, status = 500) {
     json: async () => ({ detail }),
     blob: async () => new Blob([detail], { type: 'application/json' }),
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function colorPreviewResponse({
@@ -180,6 +254,17 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
     authenticatedFetch.mockReset();
     uploadPDF.mockReset();
     prepareFileForUpload.mockReset();
+    workingPdfHarness.file = new File(['working'], 'working.pdf', { type: 'application/pdf' });
+    workingPdfHarness.pageOrder = undefined;
+    workingPdfHarness.pageInstanceIds = undefined;
+    workingPdfHarness.pageRotations = undefined;
+    workingPdfHarness.editGeneration = 0;
+    workingPdfHarness.prepare.mockReset();
+    workingPdfHarness.prepare.mockResolvedValue(undefined);
+    recipeHarness.isRecordingFor.mockReset();
+    recipeHarness.isRecordingFor.mockReturnValue(false);
+    recipeHarness.noteOperation.mockReset();
+    recipeHarness.discardPending.mockReset();
     uploadPDF.mockResolvedValue({ id: 'file-1' });
     prepareFileForUpload.mockImplementation(async (file: File) => file);
   });
@@ -246,6 +331,56 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
       });
     });
   }
+
+  it('Hairlines, Trapping và PDF/X không báo xanh khi callback commit trả false', async () => {
+    const cases = [
+      {
+        name: 'Hairlines',
+        successText: 'thanh_cong',
+        mount: (onFileFixed: TestFileFixed) => render(
+          <HairlinesTool pdfFile={workingPdfHarness.file} onFileFixed={onFileFixed} />,
+        ),
+      },
+      {
+        name: 'Trapping',
+        successText: 'da_ap_dung_overprint_den',
+        mount: (onFileFixed: TestFileFixed) => render(
+          <TrapPresetsTool pdfFile={workingPdfHarness.file} onFileFixed={onFileFixed} />,
+        ),
+      },
+      {
+        name: 'PDF/X',
+        successText: 'da_xuat_x_thanh_cong',
+        mount: (onFileFixed: TestFileFixed) => render(
+          <SavePdfxTool pdfFile={workingPdfHarness.file} onFileFixed={onFileFixed} />,
+        ),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const onFileFixed = vi.fn(async () => false);
+      uploadPDF.mockReset();
+      uploadPDF.mockResolvedValue({ id: `revision-${testCase.name}` });
+      authenticatedFetch.mockReset();
+      authenticatedFetch.mockImplementation(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/download/')) return blobResponse();
+        return jsonResponse({
+          success: true,
+          output_filename: `stale-${testCase.name}.pdf`,
+          log: [],
+          warnings: ['STALE_WARNING'],
+        });
+      });
+
+      testCase.mount(onFileFixed);
+      fireEvent.click(screen.getByRole('button', { name: 'run' }));
+      await waitFor(() => expect(onFileFixed).toHaveBeenCalledOnce());
+
+      expect(screen.queryByText(testCase.successText, { exact: false })).toBeNull();
+      expect(screen.queryByText('STALE_WARNING')).toBeNull();
+      cleanup();
+    }
+  });
 
   it('chuyển màu dùng chung profile và intent với Output Preview trong đúng tab', async () => {
     const store = createWorkspaceStore();
@@ -1058,6 +1193,218 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'kiem_tra_compliance' }));
     await waitFor(() => expect(screen.getByText(/Không đọc được PDF/)).not.toBeNull());
+  });
+
+  it('Preflight không công bố báo cáo Inspect cũ sau khi revision trang đổi', async () => {
+    const inspectGate = deferred<ReturnType<typeof jsonResponse>>();
+    authenticatedFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/preflight/inspect')) return inspectGate.promise;
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    const inputFile = new File(['input'], 'input.pdf', { type: 'application/pdf' });
+    const view = () => (
+      <PreflightTool pdfFile={inputFile} onFileFixed={vi.fn()} />
+    );
+    const { rerender } = render(view());
+
+    const rgbRule = screen.getByText('Hệ màu RGB').closest('button');
+    expect(rgbRule).not.toBeNull();
+    fireEvent.click(rgbRule as HTMLButtonElement);
+    fireEvent.click(screen.getAllByRole('button', { name: 'run' })[0]);
+    await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+
+    workingPdfHarness.pageOrder = [2, 1];
+    workingPdfHarness.pageInstanceIds = ['page-b', 'page-a'];
+    workingPdfHarness.pageRotations = [90, 0];
+    rerender(view());
+    await waitFor(() => {
+      const signal = (authenticatedFetch.mock.calls[0]?.[1] as RequestInit | undefined)?.signal;
+      expect(signal?.aborted).toBe(true);
+    });
+
+    inspectGate.resolve(jsonResponse({
+      file_name: 'stale.pdf',
+      total_pages: 2,
+      issues: [{
+        rule_id: 'COLOR_RGB_DETECTED',
+        severity: 'warning',
+        description: 'STALE_PREFLIGHT_REPORT',
+      }],
+      summary: {},
+      color_summary: {},
+      font_summary: {},
+      image_summary: {},
+    }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(screen.queryByText('STALE_PREFLIGHT_REPORT')).toBeNull();
+  });
+
+  it('PDF/X Check rồi xoay trang phải upload revision mới khi Export', async () => {
+    const onFileFixed = vi.fn(async () => undefined);
+    uploadPDF
+      .mockResolvedValueOnce({ id: 'pdfx-revision-a' })
+      .mockResolvedValueOnce({ id: 'pdfx-revision-b' });
+    authenticatedFetch.mockImplementation(async (
+      input: RequestInfo | URL,
+      options?: RequestInit,
+    ) => {
+      const url = String(input);
+      if (url.includes('/check-pdfx/')) {
+        return jsonResponse({
+          standard: 'x4',
+          standard_label: 'PDF/X-4',
+          passed: true,
+          passed_checks: 1,
+          total_checks: 1,
+          checks: [{ id: 'PDF_VERSION', label: 'PDF version', passed: true, detail: 'OK' }],
+        });
+      }
+      if (url.includes('/export-pdfx')) {
+        const body = JSON.parse(String(options?.body));
+        expect(body.file_id).toBe('pdfx-revision-b');
+        return jsonResponse({ success: true, output_filename: 'fresh-pdfx.pdf', warnings: [] });
+      }
+      if (url.includes('/download/')) return blobResponse();
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const inputFile = new File(['input'], 'input.pdf', { type: 'application/pdf' });
+    const view = () => (
+      <SavePdfxTool pdfFile={inputFile} onFileFixed={onFileFixed} />
+    );
+    const { rerender } = render(view());
+
+    fireEvent.click(screen.getByRole('button', { name: 'kiem_tra_compliance' }));
+    await waitFor(() => expect(screen.getByText('OK')).not.toBeNull());
+
+    workingPdfHarness.pageRotations = [90];
+    workingPdfHarness.pageInstanceIds = ['page-a'];
+    rerender(view());
+    await waitFor(() => expect(screen.queryByText('OK')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'run' }));
+    await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
+    expect(uploadPDF).toHaveBeenCalledTimes(2);
+  });
+
+  it('Hairlines không tải/commit response execute cũ sau khi revision đổi', async () => {
+    const executeGate = deferred<ReturnType<typeof jsonResponse>>();
+    const onFileFixed = vi.fn();
+    authenticatedFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/fix-hairlines')) return executeGate.promise;
+      if (String(input).includes('/download/')) return blobResponse();
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    const inputFile = new File(['input'], 'input.pdf', { type: 'application/pdf' });
+    const view = () => (
+      <HairlinesTool pdfFile={inputFile} onFileFixed={onFileFixed} />
+    );
+    const { rerender } = render(view());
+
+    fireEvent.click(screen.getByRole('button', { name: 'run' }));
+    await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+    workingPdfHarness.editGeneration = 1;
+    rerender(view());
+    await waitFor(() => {
+      const signal = (authenticatedFetch.mock.calls[0]?.[1] as RequestInit | undefined)?.signal;
+      expect(signal?.aborted).toBe(true);
+    });
+
+    executeGate.resolve(jsonResponse({
+      success: true,
+      output_filename: 'stale-hairlines.pdf',
+      log: [],
+    }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(authenticatedFetch).toHaveBeenCalledTimes(1);
+    expect(onFileFixed).not.toHaveBeenCalled();
+    expect(screen.queryByText('thanh_cong', { exact: true })).toBeNull();
+  });
+
+  it('Trapping không tải/commit response execute cũ sau khi revision đổi', async () => {
+    const executeGate = deferred<ReturnType<typeof jsonResponse>>();
+    const onFileFixed = vi.fn();
+    authenticatedFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/set-overprint')) return executeGate.promise;
+      if (String(input).includes('/download/')) return blobResponse();
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    const inputFile = new File(['input'], 'input.pdf', { type: 'application/pdf' });
+    const view = () => (
+      <TrapPresetsTool pdfFile={inputFile} onFileFixed={onFileFixed} />
+    );
+    const { rerender } = render(view());
+
+    fireEvent.click(screen.getByRole('button', { name: 'run' }));
+    await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+    workingPdfHarness.pageOrder = [1, 1];
+    workingPdfHarness.pageInstanceIds = ['page-a', 'page-a-copy'];
+    rerender(view());
+    await waitFor(() => {
+      const signal = (authenticatedFetch.mock.calls[0]?.[1] as RequestInit | undefined)?.signal;
+      expect(signal?.aborted).toBe(true);
+    });
+
+    executeGate.resolve(jsonResponse({
+      success: true,
+      output_filename: 'stale-trapping.pdf',
+      log: [],
+    }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(authenticatedFetch).toHaveBeenCalledTimes(1);
+    expect(onFileFixed).not.toHaveBeenCalled();
+    expect(screen.queryByText('da_ap_dung_overprint_den', { exact: false })).toBeNull();
+  });
+
+  it('Hairlines, Trapping và PDF/X đều prepare Edit trước khi note Recipe', async () => {
+    const cases = [
+      {
+        name: 'Hairlines',
+        mount: () => render(
+          <HairlinesTool tabId="tab-recipe" pdfFile={workingPdfHarness.file} onFileFixed={vi.fn()} />,
+        ),
+      },
+      {
+        name: 'Trapping',
+        mount: () => render(
+          <TrapPresetsTool tabId="tab-recipe" pdfFile={workingPdfHarness.file} onFileFixed={vi.fn()} />,
+        ),
+      },
+      {
+        name: 'PDF/X',
+        mount: () => render(
+          <SavePdfxTool tabId="tab-recipe" pdfFile={workingPdfHarness.file} onFileFixed={vi.fn()} />,
+        ),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const order: string[] = [];
+      workingPdfHarness.prepare.mockReset();
+      workingPdfHarness.prepare.mockImplementation(async () => { order.push('prepare'); });
+      recipeHarness.isRecordingFor.mockReset();
+      recipeHarness.isRecordingFor.mockReturnValue(true);
+      recipeHarness.noteOperation.mockReset();
+      recipeHarness.noteOperation.mockImplementation(() => {
+        order.push('note');
+        return { ownerTabId: 'tab-recipe' };
+      });
+      authenticatedFetch.mockReset();
+      authenticatedFetch.mockResolvedValue(jsonResponse({
+        success: false,
+        error: `stop-${testCase.name}`,
+      }));
+      uploadPDF.mockReset();
+      uploadPDF.mockResolvedValue({ id: `revision-${testCase.name}` });
+
+      testCase.mount();
+      fireEvent.click(screen.getByRole('button', { name: 'run' }));
+      await waitFor(() => expect(recipeHarness.noteOperation).toHaveBeenCalledOnce());
+      expect(order.slice(0, 2)).toEqual(['prepare', 'note']);
+      cleanup();
+    }
   });
 
   it('metadata: giu thong bao sau khi doc lai output vua luu', async () => {

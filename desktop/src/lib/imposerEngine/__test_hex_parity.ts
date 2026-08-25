@@ -1,9 +1,38 @@
 // Test script: Compare hex layout output between TS and JSX logic
 // Run: npx tsx src/lib/imposerEngine/__test_hex_parity.ts
 
+interface JsxHexItem {
+    cx: number;
+    cy: number;
+    rx: number;
+    ry: number;
+}
+
+interface JsxHexLayout {
+    totalItems: number;
+    items: JsxHexItem[];
+    widthUsed: number;
+    heightUsed: number;
+}
+
+interface TsHexCell {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    isRotated: boolean;
+}
+
+interface TsHexBlock {
+    cells: TsHexCell[];
+    width: number;
+    height: number;
+    isRotated: boolean;
+}
+
 // ============== JSX REFERENCE IMPLEMENTATION (pure port) ==============
 
-function jsx_calculateItemsBoundingBox(items: any[]) {
+function jsx_calculateItemsBoundingBox(items: JsxHexItem[]) {
     if (!items.length) return { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 };
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const it of items) {
@@ -22,16 +51,16 @@ function jsx_calculateItemsBoundingBox(items: any[]) {
 
 function jsx_calculateStaggeredHexLayoutCore(usableW: number, usableH: number, itemW: number, itemL: number, gapH: number, gapV: number) {
     const TOL = 0.001;
-    if (itemW <= TOL || itemL <= TOL) return { totalItems: 0, items: [] as any[], widthUsed: 0, heightUsed: 0 };
+    if (itemW <= TOL || itemL <= TOL) return { totalItems: 0, items: [] as JsxHexItem[], widthUsed: 0, heightUsed: 0 };
     const rx = itemW / 2.0, ry = itemL / 2.0;
-    if (usableW < itemW - TOL || usableH < itemL - TOL) return { totalItems: 0, items: [] as any[], widthUsed: 0, heightUsed: 0 };
+    if (usableW < itemW - TOL || usableH < itemL - TOL) return { totalItems: 0, items: [] as JsxHexItem[], widthUsed: 0, heightUsed: 0 };
     
     const step_x = itemW + gapH;
     const step_y = Math.sqrt(3) * (ry + gapV / 2.0);
     
-    if (step_y <= TOL && Math.abs(ry + gapV / 2.0) > TOL) return { totalItems: 0, items: [] as any[], widthUsed: 0, heightUsed: 0 };
+    if (step_y <= TOL && Math.abs(ry + gapV / 2.0) > TOL) return { totalItems: 0, items: [] as JsxHexItem[], widthUsed: 0, heightUsed: 0 };
     
-    const items: any[] = [];
+    const items: JsxHexItem[] = [];
     let maxRowsEstimate = 0;
     if (usableH >= itemL - TOL) {
         if (step_y > TOL) maxRowsEstimate = Math.floor((usableH - itemL + TOL) / step_y) + 1;
@@ -74,7 +103,7 @@ function jsx_calculateStaggeredHexLayoutCore(usableW: number, usableH: number, i
         }
     }
     
-    if (!items.length) return { totalItems: 0, items: [] as any[], widthUsed: 0, heightUsed: 0 };
+    if (!items.length) return { totalItems: 0, items: [] as JsxHexItem[], widthUsed: 0, heightUsed: 0 };
     
     const bb = jsx_calculateItemsBoundingBox(items);
     const offX = (usableW - bb.width) / 2.0 - bb.minX;
@@ -87,10 +116,10 @@ function jsx_calculateStaggeredHexLayoutCore(usableW: number, usableH: number, i
 }
 
 function jsx_calculateBestStaggeredHexLayout(usableW: number, usableH: number, itemW: number, itemL: number, gapH: number, gapV: number) {
-    function transposeLayout(layout: any) {
+    function transposeLayout(layout: JsxHexLayout) {
         return {
             totalItems: layout.totalItems,
-            items: layout.items.map((it: any) => ({ cx: it.cy, cy: it.cx, rx: it.ry, ry: it.rx })),
+            items: layout.items.map((it) => ({ cx: it.cy, cy: it.cx, rx: it.ry, ry: it.rx })),
             widthUsed: layout.heightUsed,
             heightUsed: layout.widthUsed
         };
@@ -120,7 +149,7 @@ function jsx_calculateBestStaggeredHexLayout(usableW: number, usableH: number, i
 
 // ============== TS IMPLEMENTATION (current code port) ==============
 
-function ts_calculateItemsBoundingBox(items: any[]) {
+function ts_calculateItemsBoundingBox(items: TsHexCell[]) {
     if (!items.length) return { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 };
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const it of items) {
@@ -134,16 +163,16 @@ function ts_calculateItemsBoundingBox(items: any[]) {
 
 function ts_calculateStaggeredHexLayoutCore(usableW: number, usableH: number, itemW: number, itemL: number, gapH: number, gapV: number, isRotated: boolean) {
     const TOL = 0.001;
-    if (itemW <= TOL || itemL <= TOL) return { cells: [] as any[], width: 0, height: 0, isRotated };
+    if (itemW <= TOL || itemL <= TOL) return { cells: [] as TsHexCell[], width: 0, height: 0, isRotated };
     const rx = itemW / 2.0, ry = itemL / 2.0;
-    if (usableW < itemW - TOL || usableH < itemL - TOL) return { cells: [] as any[], width: 0, height: 0, isRotated };
+    if (usableW < itemW - TOL || usableH < itemL - TOL) return { cells: [] as TsHexCell[], width: 0, height: 0, isRotated };
     
     const step_x = itemW + gapH;
     const step_y = Math.sqrt(3) * (ry + gapV / 2.0);
     
-    if (step_y <= TOL && Math.abs(ry + gapV / 2.0) > TOL) return { cells: [] as any[], width: 0, height: 0, isRotated };
+    if (step_y <= TOL && Math.abs(ry + gapV / 2.0) > TOL) return { cells: [] as TsHexCell[], width: 0, height: 0, isRotated };
     
-    const items: any[] = [];
+    const items: TsHexCell[] = [];
     let maxRowsEstimate = 0;
     if (usableH >= itemL - TOL) {
         if (step_y > TOL) maxRowsEstimate = Math.floor((usableH - itemL + TOL) / step_y) + 1;
@@ -186,7 +215,7 @@ function ts_calculateStaggeredHexLayoutCore(usableW: number, usableH: number, it
         }
     }
     
-    if (!items.length) return { cells: [] as any[], width: 0, height: 0, isRotated };
+    if (!items.length) return { cells: [] as TsHexCell[], width: 0, height: 0, isRotated };
     
     const bb = ts_calculateItemsBoundingBox(items);
     const offX = (usableW - bb.width) / 2.0 - bb.minX;
@@ -204,8 +233,8 @@ function ts_findBestHexagonalLayout(usableW: number, usableH: number, origW: num
     const colOrigRaw = ts_calculateStaggeredHexLayoutCore(usableH, usableW, origH, origW, gapY, gapX, false);
     const colRotRaw = ts_calculateStaggeredHexLayoutCore(usableH, usableW, origW, origH, gapX, gapY, true);
     
-    const transposeBlock = (b: any) => {
-        const cells = b.cells.map((c: any) => ({ ...c, x: c.y, y: c.x, width: c.height, height: c.width }));
+    const transposeBlock = (b: TsHexBlock) => {
+        const cells = b.cells.map((c) => ({ ...c, x: c.y, y: c.x, width: c.height, height: c.width }));
         return { ...b, width: b.height, height: b.width, cells };
     };
     

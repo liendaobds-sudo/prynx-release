@@ -1,0 +1,30 @@
+import type { PontConfig } from './types';
+
+/** Cấu hình ốc mặc định dùng chung cho dialog, store và migrate persist. */
+export const DEFAULT_PONT_CONFIG: PontConfig = {
+    shape: 'circle',
+    size: 5.0,
+    thickness: 0.5,
+    isGraphtec: false,
+    layerInfoName: 'SA info 0 0 0 17.01 2 -16777216 -16777216 1 1 0',
+    layerName: 'Marks_Model_',
+    groupName: 'MarkLine',
+    itemName: 'MKLINE',
+    marginTop: 7,
+    marginBottom: 7,
+    marginLeft: 7,
+    marginRight: 7,
+    guide1Enabled: false,
+    guide1Pos: 'BL',
+    guide1Length: 20,
+    guide1Thickness: 0.5,
+    guide1OffX: 0,
+    guide1OffY: 0,
+    guide2Enabled: false,
+    guide2Pos: 'BR',
+    guide2Length: 20,
+    guide2Thickness: 0.5,
+    guide2OffX: 0,
+    guide2OffY: 0,
+    disableCollision: false,
+};

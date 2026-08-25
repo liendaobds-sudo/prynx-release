@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import {
     configureTileUrlCacheForHardware,
     type TileUrlSource,
@@ -22,9 +23,53 @@ import {
     type OutputPreviewShowFilter,
 } from '../../stores/useWorkspaceStore';
 
+interface ViewerFileLike {
+    path?: string;
+    name?: string;
+    type?: string;
+    size?: number;
+    lastModified?: number;
+    createdMs?: number;
+    ctimeMs?: number;
+    fileIdentity?: string;
+}
+
+interface ViewerTextBlock {
+    type: 'text';
+    bbox: { x: number; y: number; w: number; h: number };
+    lines: Array<{
+        bbox: { x: number; y: number; w: number; h: number };
+        wmode: number;
+        dir: { x: number; y: number };
+        chars: Array<{
+            c: string;
+            origin: { x: number; y: number };
+            quad: unknown[];
+        }>;
+    }>;
+}
+
+interface PdfJsTextItem {
+    str: string;
+    transform: readonly number[];
+    width: number;
+    height: number;
+}
+
+function isPdfJsTextItem(item: unknown): item is PdfJsTextItem {
+    if (!item || typeof item !== 'object') return false;
+    const candidate = item as Partial<PdfJsTextItem>;
+    return typeof candidate.str === 'string'
+        && Array.isArray(candidate.transform)
+        && candidate.transform.length >= 6
+        && candidate.transform.every(value => typeof value === 'number')
+        && typeof candidate.width === 'number'
+        && typeof candidate.height === 'number';
+}
+
 interface UseTileRendererProps {
-    file: any;
-    pdfRef: any;
+    file: ViewerFileLike | null | undefined;
+    pdfRef: PDFDocumentProxy | null | undefined;
     pdfUrl: string | null;
     activePage: number;
     tabId?: string;
@@ -653,44 +698,43 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         }
 
         // Fallback: PDF.js canvas rendering for non-native files
-        return new Promise<TileUrlSource>(async (resolve, reject) => {
-            if (!pdfRef) return reject("No file and no PDF ref");
-            try {
-                const page = await pdfRef.getPage(pageNum);
-                const viewport = page.getViewport({ scale: zoomScale, rotation });
-                const canvas = document.createElement('canvas');
+        return (async (): Promise<TileUrlSource> => {
+            if (!pdfRef) return Promise.reject("No file and no PDF ref");
 
-                const tileW = clipW || viewport.width;
-                const tileH = clipH || viewport.height;
-                canvas.width = tileW;
-                canvas.height = tileH;
+            const page = await pdfRef.getPage(pageNum);
+            const viewport = page.getViewport({ scale: zoomScale, rotation });
+            const canvas = document.createElement('canvas');
 
-                const ctx = canvas.getContext('2d');
-                if (!ctx) return reject("Failed to get 2d context");
+            const tileW = clipW || viewport.width;
+            const tileH = clipH || viewport.height;
+            canvas.width = tileW;
+            canvas.height = tileH;
 
-                if (clipX !== undefined && clipY !== undefined) {
-                    ctx.translate(-clipX, -clipY);
-                }
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return Promise.reject("Failed to get 2d context");
 
-                await page.render({ canvasContext: ctx, viewport }).promise;
+            if (clipX !== undefined && clipY !== undefined) {
+                ctx.translate(-clipX, -clipY);
+            }
+
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            return new Promise<TileUrlSource>((resolve, reject) => {
                 canvas.toBlob(blob => {
                     if (blob) resolve({ url: URL.createObjectURL(blob), byteLength: blob.size });
                     else reject("Failed to create blob");
                 }, 'image/png');
-            } catch (e) {
-                reject(e);
-            }
-        });
+            });
+        })();
     }, [activePageRef, accurateColorEnabled, accurateColorPages, accurateDpiAnchor, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
 
     // Text extraction via pdfjs
-    const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, any[]>) => {
+    const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, ViewerTextBlock[]>) => {
         if (existingBlocks[pageNum]) return null;
         if (!pdfRef) return null;
         try {
             const page = await pdfRef.getPage(pageNum);
             const content = await page.getTextContent();
-            return content.items.map((item: any) => ({
+            return (content.items as readonly unknown[]).filter(isPdfJsTextItem).map(item => ({
                 type: 'text',
                 bbox: { x: item.transform[4], y: item.transform[5], w: item.width || 0, h: item.height || 0 },
                 lines: [{

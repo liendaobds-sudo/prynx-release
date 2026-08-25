@@ -1,10 +1,10 @@
-// @ts-nocheck
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { Divider, inputCls, Checkbox } from '../SharedUI';
-import { DEFAULT_MATERIALS, DEFAULT_REPORT_CONFIG, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFieldKey } from '../types';
+import { DEFAULT_MATERIALS, DEFAULT_REPORT_CONFIG, LAMINATION_OPTIONS, PREDEFINED_SIZES, type NupSettings, type PontConfig, type ReportDisplayConfig, type ReportFieldKey } from '../types';
+import type { SavePrintConfig } from '../store/slices/cncSlice';
 import { buildReportPreview } from '../../../lib/reportPreview';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
@@ -21,7 +21,9 @@ const REPORT_FIELD_LABELS: Record<ReportFieldKey, string> = {
     actualQty: 'SL thực', sheetCount: 'Số tờ cần in', dimensions: 'Kích thước',
     paperSize: 'Khổ giấy', cutFileRef: 'File bế', modeLabel: 'Chế độ',
 };
-const REPORT_SHOW_KEYS: Array<[string, ReportFieldKey]> = [
+type ReportShowFlag = keyof Pick<ReportDisplayConfig, 'showIdentifier' | 'showGangCount' | 'showLabelName' | 'showMaterial' | 'showLamination' | 'showLabelsPerSheet' | 'showActualQty' | 'showSheetCount' | 'showDimensions' | 'showPaperSize' | 'showModeLabel'>;
+type PontPreset = { name: string; config?: PontConfig };
+const REPORT_SHOW_KEYS: Array<[ReportShowFlag | '', ReportFieldKey]> = [
     ['', 'orderCode'], ['showIdentifier', 'identifier'], ['showGangCount', 'gangCount'], ['showLabelName', 'labelName'], ['showMaterial', 'material'],
     ['showLamination', 'lamination'], ['showLabelsPerSheet', 'labelsPerSheet'], ['showActualQty', 'actualQty'],
     ['showSheetCount', 'sheetCount'], ['showDimensions', 'dimensions'], ['showPaperSize', 'paperSize'],
@@ -29,9 +31,9 @@ const REPORT_SHOW_KEYS: Array<[string, ReportFieldKey]> = [
 ];
 const REPORT_SHOW_FLAG = Object.fromEntries(
     REPORT_SHOW_KEYS.map(([flag, key]) => [key, flag]),
-) as Record<ReportFieldKey, string>;
+) as Record<ReportFieldKey, ReportShowFlag | ''>;
 
-function orderedReportControls(fieldOrder: ReportFieldKey[]): Array<[string, ReportFieldKey]> {
+function orderedReportControls(fieldOrder: ReportFieldKey[]): Array<[ReportShowFlag | '', ReportFieldKey]> {
     const available = new Set(REPORT_SHOW_KEYS.map(([, key]) => key));
     const ordered: ReportFieldKey[] = [];
     for (const key of fieldOrder || []) {
@@ -263,6 +265,7 @@ export default function AdvancedSettingsSection({
         // Dữ liệu cho preview report inline
         previewCapacity: state.previewCapacity,
         targetQuantity: state.targetQuantity,
+        targetQuantitiesByPage: state.targetQuantitiesByPage,
         sourcePageDim: state.sourcePageDim,
         formsize: state.formsize,
         customSheetWidth: state.customSheetWidth,
@@ -298,7 +301,7 @@ export default function AdvancedSettingsSection({
         if (s.taskMode === 'step_repeat' && s.groupingStrategy !== 'none') {
             s.setGroupingStrategy('none');
         }
-    }, [s.taskMode, s.groupingStrategy, s.setGroupingStrategy]);
+    }, [s, s.taskMode, s.groupingStrategy, s.setGroupingStrategy]);
 
     useEffect(() => {
         // Tương thích trạng thái thử nghiệm cũ: Inking từng bị gộp nhầm vào Cách xếp.
@@ -311,7 +314,7 @@ export default function AdvancedSettingsSection({
             s.setGridStrategy('simple_auto');
             s.setAlternateRotation('column');
         }
-    }, [activeTool, s.gridStrategy, s.setGridStrategy, s.setAlternateRotation]);
+    }, [s, activeTool, s.gridStrategy, s.setGridStrategy, s.setAlternateRotation]);
 
     const [isExpanded, setIsExpanded] = useState(false);
     const {
@@ -482,7 +485,7 @@ export default function AdvancedSettingsSection({
                                         <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:canh_lat')}</label>
                                         <select
                                             value={s.cncFlipEdge}
-                                            onChange={e => s.setCncFlipEdge(e.target.value)}
+                                            onChange={e => s.setCncFlipEdge(e.target.value as 'long' | 'short')}
                                             className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                         >
                                             <option value="long">{t('imposition.advancedSettings:canh_dai_long_edge_mac_dinh')}</option>
@@ -512,7 +515,7 @@ export default function AdvancedSettingsSection({
                                         value={s.pontType}
                                         onChange={e => {
                                             const val = e.target.value;
-                                            s.setPontType(val);
+                                            s.setPontType(val as 'none' | 'corner' | '5mm' | 'custom');
                                             if (val === 'custom') {
                                                 s.setShowPontModal(true);
                                             } else if (val === 'corner') {
@@ -523,11 +526,19 @@ export default function AdvancedSettingsSection({
                                                 try {
                                                     const saved = localStorage.getItem('ps_pont_presets');
                                                     if (saved) {
-                                                        const presets = JSON.parse(saved);
+                                                        const parsed: unknown = JSON.parse(saved);
+                                                         const presets: PontPreset[] = Array.isArray(parsed)
+                                                             ? parsed.filter((item): item is PontPreset => (
+                                                                 typeof item === 'object' && item !== null &&
+                                                                 'name' in item && typeof item.name === 'string'
+                                                             ))
+                                                             : [];
                                                         const p = presets.find((x) => 'preset_' + x.name === val);
                                                         if (p && p.config) s.setPontConfig(p.config);
                                                     }
-                                                } catch {}
+                                                } catch {
+                                                    // Preset lỗi định dạng: giữ lựa chọn hiện tại.
+                                                }
                                             }
                                         }}
                                         className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
@@ -539,12 +550,20 @@ export default function AdvancedSettingsSection({
                                             try {
                                                 const raw = localStorage.getItem('ps_pont_presets');
                                                 if (raw) {
-                                                    const presets = JSON.parse(raw);
+                                                    const parsed: unknown = JSON.parse(raw);
+                                                     const presets: PontPreset[] = Array.isArray(parsed)
+                                                         ? parsed.filter((item): item is PontPreset => (
+                                                             typeof item === 'object' && item !== null &&
+                                                             'name' in item && typeof item.name === 'string'
+                                                         ))
+                                                         : [];
                                                     return presets.map((p) => (
                                                         <option key={p.name} value={'preset_' + p.name}>{p.name}</option>
                                                     ));
                                                 }
-                                            } catch {}
+                                            } catch {
+                                                // Preset lỗi định dạng: không làm gián đoạn dialog.
+                                            }
                                             return null;
                                         })()}
                                         <option value="custom">{t('imposition.advancedSettings:tuy_chinh')}</option>
@@ -567,7 +586,7 @@ export default function AdvancedSettingsSection({
                                         <select
                                             id={cutTypeInputId}
                                             value={s.cutType}
-                                            onChange={e => s.setCutType(e.target.value)}
+                                            onChange={e => s.setCutType(e.target.value as 'default' | 'one_dao')}
                                             className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                         >
                                             <option value="default">{t('imposition.advancedSettings:mac_dinh')}</option>
@@ -850,7 +869,7 @@ export default function AdvancedSettingsSection({
                                                         <div className="min-w-0 flex-1">
                                                             {flag ? (
                                                                 <Checkbox
-                                                                    checked={(s.reportDisplay as any)[flag] !== false}
+                                                                    checked={flag ? s.reportDisplay[flag] !== false : true}
                                                                     onChange={(v) => s.setReportDisplay(prev => ({ ...prev, [flag]: v }))}
                                                                     label={tv(REPORT_FIELD_LABELS[key])}
                                                                 />
@@ -892,7 +911,7 @@ export default function AdvancedSettingsSection({
                                         <div className="grid grid-cols-2 gap-2">
                                             <div>
                                                 <label className="text-[10px] text-slate-500 block mb-1 font-medium" title={t('imposition.advancedSettings:report_se_duoc_in_o_mep_nao_cua_to_in')}>{t('imposition.advancedSettings:vi_tri_in_tren_to')}</label>
-                                                <select value={s.reportDisplay.position} onChange={e => s.setReportDisplay(prev => ({ ...prev, position: e.target.value }))}
+                                                <select value={s.reportDisplay.position} onChange={e => s.setReportDisplay(prev => ({ ...prev, position: e.target.value as ReportDisplayConfig['position'] }))}
                                                     className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500">
                                                     <option value="top">{t('imposition.advancedSettings:mep_tren')}</option>
                                                     <option value="bottom">{t('imposition.advancedSettings:mep_duoi')}</option>
@@ -955,8 +974,7 @@ export default function AdvancedSettingsSection({
                                             );
                                             const _pageSheetRequestedQty = pageSheetMode
                                                 ? Array.from({ length: _pageSheetPageCount }, (_, pageIdx) => {
-                                                    const raw = s.targetQuantitiesByPage?.[String(pageIdx)]
-                                                        ?? s.targetQuantitiesByPage?.[pageIdx]
+                                                    const raw = s.targetQuantitiesByPage?.[pageIdx]
                                                         ?? s.targetQuantity
                                                         ?? 0;
                                                     return Math.max(0, Number(raw) || 0);
@@ -1080,7 +1098,7 @@ export default function AdvancedSettingsSection({
                                             ].map(([v, lbl, tip]) => (
                                                 <label key={v} className="flex items-center gap-1 cursor-pointer" title={tip}>
                                                     <input type="radio" name="autoNameMode" checked={s.savePrint.nameMode === v}
-                                                        onChange={() => s.setSavePrint({ nameMode: v as any })} />{lbl}
+                                                        onChange={() => s.setSavePrint({ nameMode: v as SavePrintConfig['nameMode'] })} />{lbl}
                                                 </label>
                                             ))}
                                         </div>
@@ -1147,7 +1165,7 @@ export default function AdvancedSettingsSection({
                             </div>
                             <select
                                 value={s.groupingStrategy}
-                                onChange={(e) => s.setGroupingStrategy(e.target.value as any)}
+                                onChange={(e) => s.setGroupingStrategy(e.target.value as 'none' | 'maximize_area' | 'strict_ratio' | 'cluster_tile')}
                                 className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
                                 <option value="none">{t('imposition.advancedSettings:khong_chia_cum')}</option>
@@ -1392,7 +1410,7 @@ export default function AdvancedSettingsSection({
                                     </button>
                                 </div>
                                 <select
-                                    value={s.align} onChange={(e) => s.setAlign(e.target.value as any)}
+                                    value={s.align} onChange={(e) => s.setAlign(e.target.value as NupSettings['align'])}
                                     className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                 >
                                     <option value="top-left">{t('imposition.advancedSettings:canh_goc_trai_tren')}</option>
@@ -1447,7 +1465,7 @@ export default function AdvancedSettingsSection({
                                 <select
                                     value={s.markType}
                                     onChange={e => {
-                                        const nextMark = e.target.value as any;
+                                        const nextMark = e.target.value as NupSettings['markType'];
                                         s.setMarkType(nextMark);
                                         if (!stickerLike && nextMark !== 'guillotine') {
                                             s.setGroupingStrategy('none');
@@ -1562,7 +1580,7 @@ export default function AdvancedSettingsSection({
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <select
-                                        value={s.clusterMode} onChange={e => s.setClusterMode(e.target.value as any)}
+                                        value={s.clusterMode} onChange={e => s.setClusterMode(e.target.value as NupSettings['clusterMode'])}
                                         className="flex-1 min-w-0 h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto transition-colors"
                                     >
                                         <option value="none">{t('imposition.advancedSettings:khong_chia_coc')}</option>
@@ -1685,7 +1703,7 @@ export default function AdvancedSettingsSection({
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="text-xs font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide block mb-1.5">{t('imposition.advancedSettings:khoang_cach_tu')}</label>
-                                    <select value={s.clusterGapMode} onChange={e => s.setClusterGapMode(e.target.value as any)} className="w-full h-9 px-2 border border-slate-300 dark:border-white/20 rounded-lg bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto">
+                                    <select value={s.clusterGapMode} onChange={e => s.setClusterGapMode(e.target.value as NupSettings['clusterGapMode'])} className="w-full h-9 px-2 border border-slate-300 dark:border-white/20 rounded-lg bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto">
                                         <option value="item">{t('imposition.advancedSettings:mep_tem_con')}</option>
                                         <option value="mark">{t('imposition.advancedSettings:dau_xen_ngoai')}</option>
                                     </select>

@@ -92,6 +92,8 @@ export default function PaperSizeSelect({
 
     // Đổi context (tool) → thu lại nhóm mặc định, tránh list dài bám theo
     useEffect(() => {
+        // Đổi ngữ cảnh công cụ phải đóng nhóm mặc định đang mở để không trộn preset.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- reset UI theo context ngoại vi.
         setDefaultsExpanded(false);
         setOpen(false);
     }, [paperContext]);

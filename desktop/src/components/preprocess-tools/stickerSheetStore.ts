@@ -6,6 +6,7 @@ import {
     detectStickerSource,
     exportStickerSheet,
     inspectStickerSource,
+    loadStickerSourcePreview,
     previewStickerCutline,
     refineStickerSource,
     type StickerDetectionStrategy,
@@ -39,6 +40,19 @@ export type StickerSheetStatus =
     | 'mask-ready'
     | 'exporting'
     | 'error';
+
+/**
+ * REVISION (audit 2026-08-25 §REV.05): nguồn workspace được khóa vào đúng
+ * snapshot đã materialize. Store coi revision là opaque; resolver sở hữu phép
+ * kiểm tra current để không kéo dependency Workspace vào store nghiệp vụ.
+ */
+export interface StickerWorkspaceSourceLease {
+    file: File;
+    revision: object;
+    isCurrent: () => boolean;
+}
+
+export type PrepareStickerWorkspaceSource = () => Promise<StickerWorkspaceSourceLease>;
 
 export interface NormalizedMaskPoint {
     x: number;
@@ -107,7 +121,10 @@ export interface StickerSheetTabState {
     sourceFile: File | null;
     sourceImageCount: number;
     sourceOrigin: 'workspace' | 'explicit';
+    /** Snapshot immutable tạo ra đúng `sourceFile` của workspace. */
+    sourceRevision: object | null;
     sourcePreviewUrl: string;
+    sourcePreviewReady: boolean;
     inspection: StickerSourceInspection | null;
     activeSourcePage: number;
     pages: Record<number, StickerSheetPageState>;
@@ -154,19 +171,25 @@ interface StickerSheetStore {
         file: File,
         sourceOrigin?: 'workspace' | 'explicit',
         sourceImageCount?: number,
+        sourceRevision?: object | null,
     ) => void;
     selectSources: (
         tabId: string,
         files: readonly File[],
         sourceOrigin?: 'workspace' | 'explicit',
     ) => Promise<void>;
-    inspectSource: (tabId: string) => Promise<boolean>;
+    inspectSource: (tabId: string, workspaceLease?: StickerWorkspaceSourceLease | null) => Promise<boolean>;
     detectStickers: (
         tabId: string,
         strategy?: StickerDetectionStrategy,
         pageNumber?: number,
+        prepareWorkspaceSource?: PrepareStickerWorkspaceSource,
     ) => Promise<void>;
-    detectAllStickers: (tabId: string, strategy?: StickerDetectionStrategy) => Promise<void>;
+    detectAllStickers: (
+        tabId: string,
+        strategy?: StickerDetectionStrategy,
+        prepareWorkspaceSource?: PrepareStickerWorkspaceSource,
+    ) => Promise<void>;
     setMaskTuning: (
         tabId: string,
         tuning: Partial<{ alphaThreshold: number; shadowCleanup: StickerShadowCleanup }>,
@@ -177,7 +200,9 @@ interface StickerSheetStore {
         tabId: string,
         outputFormat?: 'pdf' | 'png_zip',
         pageOrder?: number[],
+        prepareWorkspaceSource?: PrepareStickerWorkspaceSource,
     ) => Promise<StickerSheetExportPayload | null>;
+    invalidateWorkspaceSource: (tabId: string, message?: string) => void;
     finishExport: (tabId: string) => void;
     addStroke: (tabId: string, stroke: Omit<StickerMaskStroke, 'kind' | 'id'>) => void;
     mergeInstance: (tabId: string, sourceId: number, targetId: number) => void;
@@ -276,7 +301,9 @@ function defaultTabState(): StickerSheetTabState {
         sourceFile: null,
         sourceImageCount: 0,
         sourceOrigin: 'workspace',
+        sourceRevision: null,
         sourcePreviewUrl: '',
+        sourcePreviewReady: false,
         inspection: null,
         activeSourcePage: 1,
         pages: {},
@@ -311,6 +338,10 @@ function defaultTabState(): StickerSheetTabState {
         preserveExistingCut: true,
         error: '',
     };
+}
+
+function isPdfSourceFile(file: File | null): boolean {
+    return Boolean(file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')));
 }
 
 function pageState(tab: StickerSheetTabState, pageNumber: number): StickerSheetPageState {
@@ -480,6 +511,60 @@ function isRefineAssetSyncError(
     );
 }
 
+function workspaceLeaseMatches(
+    tab: StickerSheetTabState,
+    lease: StickerWorkspaceSourceLease | null | undefined,
+): boolean {
+    return tab.sourceOrigin !== 'workspace' || Boolean(
+        lease
+        && lease.isCurrent()
+        && tab.sourceFile === lease.file
+        && tab.sourceRevision === lease.revision,
+    );
+}
+
+async function prepareActionSource(
+    tabId: string,
+    prepareWorkspaceSource: PrepareStickerWorkspaceSource | undefined,
+    get: () => StickerSheetStore,
+): Promise<{
+    tab: StickerSheetTabState;
+    workspaceLease: StickerWorkspaceSourceLease | null;
+}> {
+    let tab = get().tabs[tabId];
+    if (!tab) throw new Error('Không tìm thấy phiên Tách nhiều tem.');
+    if (tab.sourceOrigin !== 'workspace') return { tab, workspaceLease: null };
+    if (!prepareWorkspaceSource) {
+        throw new Error('Không chuẩn bị được revision PDF đang hiển thị. Hãy mở lại công cụ.');
+    }
+
+    const workspaceLease = await prepareWorkspaceSource();
+    if (!workspaceLease.isCurrent()) {
+        throw new Error('Tài liệu đã thay đổi trong lúc chuẩn bị. Hãy nhận diện lại.');
+    }
+
+    // Trong lúc await, người dùng có thể đã chọn một nguồn kéo thả độc lập.
+    // Nguồn explicit là owner riêng và tuyệt đối không bị workspace ghi đè.
+    tab = get().tabs[tabId];
+    if (!tab) throw new Error('Phiên Tách nhiều tem đã đóng.');
+    if (tab.sourceOrigin !== 'workspace') return { tab, workspaceLease: null };
+
+    if (tab.sourceFile !== workspaceLease.file || tab.sourceRevision !== workspaceLease.revision) {
+        get().selectSource(
+            tabId,
+            workspaceLease.file,
+            'workspace',
+            1,
+            workspaceLease.revision,
+        );
+        tab = get().tabs[tabId];
+    }
+    if (!tab || !workspaceLeaseMatches(tab, workspaceLease)) {
+        throw new Error('Revision nguồn đã đổi trước khi bắt đầu nhận diện. Hãy thử lại.');
+    }
+    return { tab, workspaceLease };
+}
+
 export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
     tabs: {},
 
@@ -623,12 +708,26 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         });
         if (needsPreview) scheduleCurrentCutlinePreview(tabId, normalized, 0);
     },
-    selectSource: (tabId, file, sourceOrigin = 'explicit', sourceImageCount = 1) => {
+    selectSource: (
+        tabId,
+        file,
+        sourceOrigin = 'explicit',
+        sourceImageCount = 1,
+        sourceRevision = null,
+    ) => {
         const previous = get().tabs[tabId] || defaultTabState();
-        if (previous.sourceFile === file || workflowMutationLocked(previous)) return;
+        if (
+            (
+                previous.sourceFile === file
+                && previous.sourceOrigin === sourceOrigin
+                && previous.sourceRevision === sourceRevision
+            )
+            || workflowMutationLocked(previous)
+        ) return;
         cancelRequests(tabId);
         releaseAssets(previous);
         const sourcePreviewUrl = createSourcePreviewUrl(file);
+        const sourcePreviewReady = !isPdfSourceFile(file);
         // UIUX (audit 2026-08-08 §UNIFIED.1-2): chọn nguồn chỉ dựng preview gốc;
         // tuyệt đối chưa gọi model hoặc sinh mask trước thao tác Nhận diện tem.
         const page = defaultPageState('source-ready');
@@ -638,10 +737,38 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             sourceFile: file,
             sourceImageCount: Math.max(1, Math.round(sourceImageCount)),
             sourceOrigin,
+            sourceRevision,
             sourcePreviewUrl,
+            sourcePreviewReady,
             inspection: null,
             activeSourcePage: 1,
             pages: { 1: page },
+        }, 1, page);
+        set(state => ({ tabs: { ...state.tabs, [tabId]: next } }));
+    },
+    invalidateWorkspaceSource: (tabId, message = 'Tài liệu đã thay đổi. Hãy nhận diện lại.') => {
+        const previous = get().tabs[tabId];
+        if (!previous || previous.sourceOrigin !== 'workspace') return;
+        cancelRequests(tabId);
+        releaseAssets(previous);
+        const sourceFile = previous.sourceFile;
+        const page = defaultPageState(sourceFile ? 'source-ready' : 'idle');
+        page.error = message;
+        const base = defaultTabState();
+        const next = mirrorActivePage({
+            ...base,
+            mode: previous.mode,
+            productType: previous.productType,
+            model: previous.model,
+            outputSettings: previous.outputSettings,
+            sourceFile,
+            sourceImageCount: previous.sourceImageCount,
+            sourceOrigin: 'workspace',
+            sourceRevision: null,
+            sourcePreviewUrl: sourceFile ? createSourcePreviewUrl(sourceFile) : '',
+            sourcePreviewReady: sourceFile ? !isPdfSourceFile(sourceFile) : false,
+            pages: sourceFile ? { 1: page } : {},
+            error: message,
         }, 1, page);
         set(state => ({ tabs: { ...state.tabs, [tabId]: next } }));
     },
@@ -699,12 +826,18 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             }
         }
     },
-    inspectSource: async (tabId) => {
+    inspectSource: async (tabId, workspaceLease = null) => {
         const previous = get().tabs[tabId];
         if (!previous?.sourceFile) return false;
+        if (!workspaceLeaseMatches(previous, workspaceLease)) {
+            get().invalidateWorkspaceSource(tabId);
+            return false;
+        }
         if (previous.inspection) return true;
         if (previous.status === 'inspecting') return false;
         const file = previous.sourceFile;
+        const isPdfSource = isPdfSourceFile(file);
+        let keepRequestAlive = false;
         const requestKey = documentRequestKey(tabId);
         const { controller, generation } = nextRequest(requestKey);
         set(state => ({
@@ -714,7 +847,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             },
         }));
         try {
-            const payload = await inspectStickerSource(file, controller.signal);
+            const payload = await inspectStickerSource(file, controller.signal, { preview: 'defer' });
             const current = get().tabs[tabId];
             if (
                 !requestIsCurrent(requestKey, controller, generation)
@@ -724,15 +857,23 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 void closeStickerSheetSession(payload.inspection.session_id);
                 return false;
             }
-            const sourcePreviewUrl = URL.createObjectURL(payload.previewBlob);
-            revokeUrl(current.sourcePreviewUrl);
+            if (!workspaceLeaseMatches(current, workspaceLease)) {
+                void closeStickerSheetSession(payload.inspection.session_id);
+                get().invalidateWorkspaceSource(tabId);
+                return false;
+            }
+            let inspectionPublished = false;
             set(state => {
                 const latest = state.tabs[tabId];
-                if (!latest || latest.sourceFile !== file) {
-                    revokeUrl(sourcePreviewUrl);
+                if (
+                    !latest
+                    || latest.sourceFile !== file
+                    || !workspaceLeaseMatches(latest, workspaceLease)
+                ) {
                     void closeStickerSheetSession(payload.inspection.session_id);
                     return state;
                 }
+                inspectionPublished = true;
                 const pages: Record<number, StickerSheetPageState> = {};
                 for (let pageNumber = 1; pageNumber <= payload.inspection.page_count; pageNumber += 1) {
                     const page = defaultPageState('source-ready');
@@ -750,10 +891,11 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 );
                 const updated = {
                     ...latest,
-                    sourcePreviewUrl,
+                    sourcePreviewReady: !isPdfSource,
                     inspection: payload.inspection,
                     activeSourcePage,
                     pages,
+                    status: 'source-ready' as const,
                 };
                 return {
                     tabs: {
@@ -766,12 +908,111 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     },
                 };
             });
+            if (!inspectionPublished) {
+                const latest = get().tabs[tabId];
+                if (
+                    requestIsCurrent(requestKey, controller, generation)
+                    && latest?.sourceOrigin === 'workspace'
+                ) {
+                    get().invalidateWorkspaceSource(tabId);
+                }
+                return false;
+            }
+            if (!isPdfSource) return true;
+            keepRequestAlive = true;
+            void (async () => {
+                try {
+                    const previewBlob = await loadStickerSourcePreview(
+                        payload.inspection.preview_url,
+                        controller.signal,
+                    );
+                    const sourcePreviewUrl = URL.createObjectURL(previewBlob);
+                    const currentAfter = get().tabs[tabId];
+                    if (
+                        !requestIsCurrent(requestKey, controller, generation)
+                        || !currentAfter
+                        || currentAfter.sourceFile !== file
+                    ) {
+                        revokeUrl(sourcePreviewUrl);
+                        return;
+                    }
+                    if (!workspaceLeaseMatches(currentAfter, workspaceLease)) {
+                        revokeUrl(sourcePreviewUrl);
+                        get().invalidateWorkspaceSource(tabId);
+                        return;
+                    }
+                    revokeUrl(currentAfter.sourcePreviewUrl);
+                    set(state => {
+                        const latest = state.tabs[tabId];
+                        if (
+                            !latest
+                            || latest.sourceFile !== file
+                            || !workspaceLeaseMatches(latest, workspaceLease)
+                        ) {
+                            revokeUrl(sourcePreviewUrl);
+                            return state;
+                        }
+                        return {
+                            tabs: {
+                                ...state.tabs,
+                                [tabId]: {
+                                    ...latest,
+                                    sourcePreviewUrl,
+                                    sourcePreviewReady: true,
+                                },
+                            },
+                        };
+                    });
+                } catch {
+                    if (!requestIsCurrent(requestKey, controller, generation) || controller.signal.aborted) {
+                        return;
+                    }
+                    const currentAfter = get().tabs[tabId];
+                    if (currentAfter && !workspaceLeaseMatches(currentAfter, workspaceLease)) {
+                        get().invalidateWorkspaceSource(tabId);
+                        return;
+                    }
+                    set(state => {
+                        const latest = state.tabs[tabId];
+                        if (
+                            !latest
+                            || latest.sourceFile !== file
+                            || !workspaceLeaseMatches(latest, workspaceLease)
+                        ) return state;
+                        revokeUrl(latest.sourcePreviewUrl);
+                        return {
+                            tabs: {
+                                ...state.tabs,
+                                [tabId]: {
+                                    ...latest,
+                                    sourcePreviewUrl: '',
+                                    sourcePreviewReady: true,
+                                },
+                            },
+                        };
+                    });
+                } finally {
+                    if (REQUEST_CONTROLLERS.get(requestKey) === controller) {
+                        REQUEST_CONTROLLERS.delete(requestKey);
+                    }
+                    keepRequestAlive = false;
+                }
+            })();
             return true;
         } catch (error) {
             if (!requestIsCurrent(requestKey, controller, generation)) return false;
+            const latest = get().tabs[tabId];
+            if (latest && !workspaceLeaseMatches(latest, workspaceLease)) {
+                get().invalidateWorkspaceSource(tabId);
+                return false;
+            }
             set(state => {
                 const current = state.tabs[tabId];
-                if (!current || current.sourceFile !== file) return state;
+                if (
+                    !current
+                    || current.sourceFile !== file
+                    || !workspaceLeaseMatches(current, workspaceLease)
+                ) return state;
                 return {
                     tabs: {
                         ...state.tabs,
@@ -786,18 +1027,47 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             });
             return false;
         } finally {
-            if (REQUEST_CONTROLLERS.get(requestKey) === controller) REQUEST_CONTROLLERS.delete(requestKey);
+            if (!keepRequestAlive && REQUEST_CONTROLLERS.get(requestKey) === controller) {
+                REQUEST_CONTROLLERS.delete(requestKey);
+            }
         }
     },
-    detectStickers: async (tabId, strategy = 'auto', requestedPage) => {
-        let previous = get().tabs[tabId];
+    detectStickers: async (
+        tabId,
+        strategy = 'auto',
+        requestedPage,
+        prepareWorkspaceSource,
+    ) => {
+        let previous: StickerSheetTabState;
+        let workspaceLease: StickerWorkspaceSourceLease | null;
+        try {
+            const prepared = await prepareActionSource(tabId, prepareWorkspaceSource, get);
+            previous = prepared.tab;
+            workspaceLease = prepared.workspaceLease;
+        } catch (error) {
+            const current = get().tabs[tabId];
+            if (current?.sourceOrigin === 'workspace') {
+                get().invalidateWorkspaceSource(
+                    tabId,
+                    error instanceof Error ? error.message : 'Không chuẩn bị được PDF đang hiển thị.',
+                );
+            }
+            return;
+        }
         if (!previous?.sourceFile) return;
         if (!previous.inspection) {
-            const inspected = await get().inspectSource(tabId);
+            const inspected = await get().inspectSource(tabId, workspaceLease);
             if (!inspected) return;
             previous = get().tabs[tabId];
         }
-        if (!previous?.inspection || !previous.sourceFile) return;
+        if (
+            !previous?.inspection
+            || !previous.sourceFile
+            || !workspaceLeaseMatches(previous, workspaceLease)
+        ) {
+            if (previous?.sourceOrigin === 'workspace') get().invalidateWorkspaceSource(tabId);
+            return;
+        }
         const pageNumber = Math.max(1, Math.min(
             previous.inspection.page_count,
             Math.round(requestedPage ?? previous.activeSourcePage),
@@ -811,7 +1081,11 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         revokeAnalysisAssets(previousPage);
         set(state => {
             const current = state.tabs[tabId];
-            if (!current || current.sourceFile !== file) return state;
+            if (
+                !current
+                || current.sourceFile !== file
+                || !workspaceLeaseMatches(current, workspaceLease)
+            ) return state;
             return {
                 tabs: {
                     ...state.tabs,
@@ -855,6 +1129,10 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 ) void closeStickerSheetSession(payload.manifest.session_id);
                 return;
             }
+            if (!workspaceLeaseMatches(current, workspaceLease)) {
+                get().invalidateWorkspaceSource(tabId);
+                return;
+            }
             const previewUrl = URL.createObjectURL(payload.previewBlob);
             const labelsUrl = URL.createObjectURL(payload.labelsBlob);
             const uncertaintyUrl = URL.createObjectURL(payload.uncertaintyBlob);
@@ -869,6 +1147,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     !latest
                     || latest.sourceFile !== file
                     || latest.inspection?.session_id !== payload.manifest.session_id
+                    || !workspaceLeaseMatches(latest, workspaceLease)
                 ) {
                     revokeUrl(previewUrl);
                     revokeUrl(labelsUrl);
@@ -905,12 +1184,18 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             }
         } catch (error) {
             if (!requestIsCurrent(requestKey, controller, generation)) return;
+            const latest = get().tabs[tabId];
+            if (latest && !workspaceLeaseMatches(latest, workspaceLease)) {
+                get().invalidateWorkspaceSource(tabId);
+                return;
+            }
             set(state => {
                 const current = state.tabs[tabId];
                 if (
                     !current
                     || current.sourceFile !== file
                     || current.inspection?.session_id !== sessionId
+                    || !workspaceLeaseMatches(current, workspaceLease)
                 ) return state;
                 return {
                     tabs: {
@@ -935,15 +1220,33 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             }
         }
     },
-    detectAllStickers: async (tabId, strategy = 'auto') => {
-        let tab = get().tabs[tabId];
+    detectAllStickers: async (tabId, strategy = 'auto', prepareWorkspaceSource) => {
+        let tab: StickerSheetTabState;
+        let workspaceLease: StickerWorkspaceSourceLease | null;
+        try {
+            const prepared = await prepareActionSource(tabId, prepareWorkspaceSource, get);
+            tab = prepared.tab;
+            workspaceLease = prepared.workspaceLease;
+        } catch (error) {
+            const current = get().tabs[tabId];
+            if (current?.sourceOrigin === 'workspace') {
+                get().invalidateWorkspaceSource(
+                    tabId,
+                    error instanceof Error ? error.message : 'Không chuẩn bị được PDF đang hiển thị.',
+                );
+            }
+            return;
+        }
         if (!tab?.sourceFile) return;
         if (!tab.inspection) {
-            const inspected = await get().inspectSource(tabId);
+            const inspected = await get().inspectSource(tabId, workspaceLease);
             if (!inspected) return;
             tab = get().tabs[tabId];
         }
-        if (!tab?.inspection) return;
+        if (!tab?.inspection || !workspaceLeaseMatches(tab, workspaceLease)) {
+            if (tab?.sourceOrigin === 'workspace') get().invalidateWorkspaceSource(tabId);
+            return;
+        }
         const pendingPages = Array.from(
             { length: tab.inspection.page_count },
             (_unused, index) => index + 1,
@@ -952,8 +1255,12 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             return !['detecting', 'mask-review', 'confirming', 'mask-ready', 'exporting']
                 .includes(page.status);
         });
+        const preparedLease = workspaceLease;
+        const reuseWorkspaceSource = preparedLease
+            ? async () => preparedLease
+            : undefined;
         await Promise.all(pendingPages.map(pageNumber => (
-            get().detectStickers(tabId, strategy, pageNumber)
+            get().detectStickers(tabId, strategy, pageNumber, reuseWorkspaceSource)
         )));
     },
     setMaskTuning: (tabId, tuning) => {
@@ -1138,9 +1445,42 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             }
         }
     },
-    exportFile: async (tabId, outputFormat = 'pdf', requestedOrder) => {
-        const tab = get().tabs[tabId];
+    exportFile: async (
+        tabId,
+        outputFormat = 'pdf',
+        requestedOrder,
+        prepareWorkspaceSource,
+    ) => {
+        const initial = get().tabs[tabId];
+        if (!initial || initial.isExporting) return null;
+        let tab: StickerSheetTabState;
+        let workspaceLease: StickerWorkspaceSourceLease | null;
+        if (initial.sourceOrigin === 'workspace') {
+            try {
+                const prepared = await prepareActionSource(tabId, prepareWorkspaceSource, get);
+                tab = prepared.tab;
+                workspaceLease = prepared.workspaceLease;
+            } catch (error) {
+                const current = get().tabs[tabId];
+                if (current?.sourceOrigin === 'workspace') {
+                    get().invalidateWorkspaceSource(
+                        tabId,
+                        error instanceof Error ? error.message : 'Không chuẩn bị được PDF đang hiển thị.',
+                    );
+                }
+                return null;
+            }
+        } else {
+            // Nguồn explicit không có bước materialize; giữ khóa export đồng bộ
+            // trước await đầu tiên để click kế tiếp không chen sửa mask/reset nguồn.
+            tab = initial;
+            workspaceLease = null;
+        }
         if (!tab || tab.isExporting) return null;
+        if (!workspaceLeaseMatches(tab, workspaceLease)) {
+            if (tab.sourceOrigin === 'workspace') get().invalidateWorkspaceSource(tabId);
+            return null;
+        }
         const defaultOrder = tab.inspection
             ? Array.from({ length: tab.inspection.page_count }, (_unused, index) => index + 1)
             : [tab.activeSourcePage];
@@ -1161,14 +1501,27 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         const sessionId = tab.inspection?.session_id
             || exportPages[0].state.manifest?.session_id;
         if (!sessionId) return null;
+        const file = tab.sourceFile;
         const requestKey = documentRequestKey(tabId);
         const { controller, generation } = nextRequest(requestKey);
-        set(state => ({
-            tabs: {
-                ...state.tabs,
-                [tabId]: { ...tab, status: 'exporting', isExporting: true, error: '' },
-            },
-        }));
+        let exportStarted = false;
+        set(state => {
+            const current = state.tabs[tabId];
+            if (
+                !current
+                || current.sourceFile !== file
+                || current.inspection?.session_id !== sessionId
+                || !workspaceLeaseMatches(current, workspaceLease)
+            ) return state;
+            exportStarted = true;
+            return {
+                tabs: {
+                    ...state.tabs,
+                    [tabId]: { ...current, status: 'exporting', isExporting: true, error: '' },
+                },
+            };
+        });
+        if (!exportStarted) return null;
         let exportSucceeded = false;
         try {
             const canPreserveOriginal = exportPages.every(item => Boolean(
@@ -1215,8 +1568,14 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             const current = get().tabs[tabId];
             if (
                 !requestIsCurrent(requestKey, controller, generation)
+                || !current
+                || current.sourceFile !== file
                 || current?.inspection?.session_id !== sessionId
             ) return null;
+            if (!workspaceLeaseMatches(current, workspaceLease)) {
+                get().invalidateWorkspaceSource(tabId);
+                return null;
+            }
             // UIUX (audit 2026-08-08 §UNIFIED.RACE2): giữ khóa `exporting` cho tới
             // khi caller commit/lưu xong artifact. HTTP 200 chưa có nghĩa workspace
             // đã nhận file; mở khóa sớm cho phép export/source mới vượt lên trước.
@@ -1224,9 +1583,19 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             return result;
         } catch (error) {
             if (!requestIsCurrent(requestKey, controller, generation)) return null;
+            const latest = get().tabs[tabId];
+            if (latest && !workspaceLeaseMatches(latest, workspaceLease)) {
+                get().invalidateWorkspaceSource(tabId);
+                return null;
+            }
             set(state => {
                 const current = state.tabs[tabId];
-                if (!current || current.inspection?.session_id !== sessionId) return state;
+                if (
+                    !current
+                    || current.sourceFile !== file
+                    || current.inspection?.session_id !== sessionId
+                    || !workspaceLeaseMatches(current, workspaceLease)
+                ) return state;
                 const message = error instanceof Error ? error.message : 'Không tạo được file tem.';
                 return {
                     tabs: {
@@ -1244,7 +1613,12 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             if (!exportSucceeded && requestIsCurrent(requestKey, controller, generation)) {
                 set(state => {
                     const current = state.tabs[tabId];
-                    if (!current || current.inspection?.session_id !== sessionId) return state;
+                    if (
+                        !current
+                        || current.sourceFile !== file
+                        || current.inspection?.session_id !== sessionId
+                        || !workspaceLeaseMatches(current, workspaceLease)
+                    ) return state;
                     const activePage = pageState(current, current.activeSourcePage);
                     return {
                         tabs: {

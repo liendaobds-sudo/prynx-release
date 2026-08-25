@@ -1,11 +1,10 @@
-// @ts-nocheck
 /**
  * PreprocessingRouter — Routes to the correct preprocessing sub-tool.
  * 
  * Extracted from ImposerDashboard.tsx (lines 876-952 headers + 1653-1803 content).
  * Renders the appropriate sub-tool component based on activeTool.
  */
-import React from 'react';
+import React, { type ComponentProps } from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { Checkbox } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
@@ -14,7 +13,6 @@ import ShuffleTool from '../../preprocess-tools/ShuffleTool';
 import PageResizerTool from '../../preprocess-tools/PageResizerTool';
 import TrimShiftTool from '../../preprocess-tools/TrimShiftTool';
 import SplitTool from '../../preprocess-tools/SplitTool';
-import MergeTool from '../../preprocess-tools/MergeTool';
 import PreflightTool from '../../preprocess-tools/PreflightTool';
 import FontToolsTool from '../../preprocess-tools/FontToolsTool';
 import HairlinesTool from '../../preprocess-tools/HairlinesTool';
@@ -22,7 +20,6 @@ import InkManagerTool from '../../preprocess-tools/InkManagerTool';
 import ConvertColorsTool from '../../preprocess-tools/ConvertColorsTool';
 import TrapPresetsTool from '../../preprocess-tools/TrapPresetsTool';
 import SavePdfxTool from '../../preprocess-tools/SavePdfxTool';
-import DataMergeTool from '../../preprocess-tools/DataMergeTool';
 import OcrTool from '../../preprocess-tools/OcrTool';
 import OptimizeTool from '../../preprocess-tools/OptimizeTool';
 import StickerCutlineTool from '../../preprocess-tools/StickerCutlineTool';
@@ -42,6 +39,10 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
 import { CropIcon } from '../../shared/ToolIcons';
 import type { RecipeOperationTicket } from '../../../lib/recipe/RecipeRecorder';
+import type { ShuffleSettings } from '../../preprocess-tools/ShuffleTool';
+import type { PageResizerSettings } from '../../preprocess-tools/pageResizerViewLogic';
+import type { SplitSettings } from '../../preprocess-tools/SplitTool';
+import type { TrimShiftSettings } from '../../preprocess-tools/TrimShiftTool';
 
 // ─── Tool Header Definitions ────────────────────────────────────────────────
 const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc: string }> = {
@@ -78,22 +79,27 @@ const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc:
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
+type PreflightIssue = Parameters<NonNullable<ComponentProps<typeof PreflightTool>['onIssueSelect']>>[0];
+type PreprocessRunSettings<T> = T & { spawnNewTab?: boolean };
+
 interface PreprocessingRouterProps {
     tabId: string;
     activeTool: string;
     pdfFile: File | null;
     sourceImageFile?: File | null;
+    sourceImageReferenceFile?: File | null;
     getWorkingFile?: () => Promise<File>;
+    getPreparedWorkingFile?: () => Promise<File>;
     viewerActivePage?: number;
     viewerPageOrder?: number[];
+    viewerPageRotations?: number[];
     isActive?: boolean;
     isProcessing: boolean;
-    onStartShuffle?: (settings: any) => void;
-    onStartResize?: (settings: any) => void;
-    onStartTrimShift?: (settings: any) => void;
-    onStartSplit?: (settings: any) => void;
-    onStartMerge?: (settings: any) => void;
-    onIssueSelect: (issue: any) => void;
+    onStartShuffle?: (settings: PreprocessRunSettings<ShuffleSettings>) => void;
+    onStartResize?: (settings: PreprocessRunSettings<PageResizerSettings>) => void;
+    onStartTrimShift?: (settings: PreprocessRunSettings<TrimShiftSettings>) => void;
+    onStartSplit?: (settings: PreprocessRunSettings<SplitSettings>) => void;
+    onIssueSelect: (issue: PreflightIssue) => void;
     onOpenOutputPreview: () => void;
     onOpenTool?: (tool: string) => void;
     // RECIPE (audit 2026-08-17 §REC.4R): kết quả commit phải propagate về tool để
@@ -112,11 +118,27 @@ interface PreprocessingRouterProps {
 }
 
 export default function PreprocessingRouter({
-    tabId, activeTool, pdfFile, sourceImageFile, getWorkingFile, viewerActivePage, viewerPageOrder, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
-    onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
+    tabId, activeTool, pdfFile, sourceImageFile, sourceImageReferenceFile, getWorkingFile, getPreparedWorkingFile, viewerActivePage, viewerPageOrder, viewerPageRotations, isProcessing, isActive, ensureCropFileId, onCropApplied, onCropClose,
+    onStartShuffle, onStartResize, onStartTrimShift, onStartSplit,
     onIssueSelect, onOpenOutputPreview, onOpenTool, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
   const { t } = useTranslation();
+  const forwardFileFixedResult = async (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ): Promise<void | boolean> => {
+    return onFileFixed ? await onFileFixed(blob, name, path, recipeTicket) : undefined;
+  };
+  const forwardFileFixedVoid = async (
+    blob: Blob,
+    name: string,
+    path?: string,
+    recipeTicket?: RecipeOperationTicket | null,
+  ): Promise<void> => {
+    await onFileFixed?.(blob, name, path, recipeTicket);
+  };
     const s = useImposerSettingsStore(useShallow(state => ({
         spawnNewTabByTool: state.spawnNewTabByTool, setSpawnNewTab: state.setSpawnNewTab,
         shuffleSettings: state.shuffleSettings, setShuffleSettings: state.setShuffleSettings,
@@ -172,6 +194,9 @@ export default function PreprocessingRouter({
                         settings={s.resizeSettings}
                         onChange={s.setResizeSettings}
                         pdfFile={pdfFile}
+                        getWorkingFile={getWorkingFile}
+                        viewerPageOrder={viewerPageOrder}
+                        viewerPageRotations={viewerPageRotations}
                     />
                     <div className="mt-4 mb-2">
                         <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.preprocessingRouter:mo_ket_qua_sang_tab_moi')} />
@@ -230,43 +255,43 @@ export default function PreprocessingRouter({
                     onIssueSelect={onIssueSelect}
                     onOpenOutputPreview={onOpenOutputPreview}
                     onOpenFontTools={() => onOpenTool?.('font_tools')}
-                    onFileFixed={(blob, name) => onFileFixed?.(blob, name)}
+                    onFileFixed={forwardFileFixedResult}
                 />
             )}
 
             {activeTool === 'font_tools' && (
                 <FontToolsTool
                     pdfFile={pdfFile}
-                    onFileFixed={(blob, name) => onFileFixed?.(blob, name)}
+                    onFileFixed={forwardFileFixedResult}
                 />
             )}
 
             {activeTool === 'hairlines' && (
-                <HairlinesTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
+                <HairlinesTool tabId={tabId} pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'inkmanager' && (
-                <InkManagerTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
+                <InkManagerTool tabId={tabId} pdfFile={pdfFile} onFileFixed={forwardFileFixedVoid} />
             )}
 
             {activeTool === 'convertcolors' && (
-                <ConvertColorsTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
+                <ConvertColorsTool tabId={tabId} pdfFile={pdfFile} onFileFixed={forwardFileFixedVoid} />
             )}
 
             {activeTool === 'trapping' && (
-                <TrapPresetsTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
+                <TrapPresetsTool tabId={tabId} pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'pdfx' && (
-                <SavePdfxTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
+                <SavePdfxTool tabId={tabId} pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'ocr' && (
-                <OcrTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
+                <OcrTool pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'optimize' && (
-                <OptimizeTool tabId={tabId} pdfFile={pdfFile} onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)} />
+                <OptimizeTool tabId={tabId} pdfFile={pdfFile} onFileFixed={forwardFileFixedVoid} />
             )}
 
             {activeTool === 'sticker' && (
@@ -282,7 +307,7 @@ export default function PreprocessingRouter({
                         pageOrder={viewerPageOrder}
                         isActive={isActive === true}
                         onOpenTool={onOpenTool}
-                        onFileFixed={(blob, name, path, ticket) => onFileFixed?.(blob, name, path, ticket)}
+                        onFileFixed={forwardFileFixedResult}
                     />
                 </StickerToolErrorBoundary>
             )}
@@ -296,13 +321,13 @@ export default function PreprocessingRouter({
                     tabId={tabId}
                     pdfFile={pdfFile}
                     sourceImageFile={sourceImageFile}
-                    getWorkingFile={getWorkingFile}
-                    onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                    getWorkingFile={getPreparedWorkingFile}
+                    onFileFixed={forwardFileFixedResult}
                 />
             )}
 
             {activeTool === 'watermark' && (
-                <WatermarkTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
+                <WatermarkTool pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'upscale' && (
@@ -310,7 +335,10 @@ export default function PreprocessingRouter({
                     tabId={tabId}
                     pdfFile={pdfFile}
                     sourceImageFile={sourceImageFile}
-                    onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                    sourceImageReferenceFile={sourceImageReferenceFile}
+                    getWorkingFile={getPreparedWorkingFile}
+                    activeWorkingPage={viewerActivePage ?? 1}
+                    onFileFixed={forwardFileFixedVoid}
                 />
             )}
 
@@ -321,11 +349,11 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'encrypt' && (
-                <EncryptTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
+                <EncryptTool pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'metadata' && (
-                <MetadataTool pdfFile={pdfFile} onFileFixed={(blob, name) => onFileFixed?.(blob, name)} />
+                <MetadataTool pdfFile={pdfFile} onFileFixed={forwardFileFixedResult} />
             )}
 
             {activeTool === 'office_convert' && (
@@ -333,7 +361,7 @@ export default function PreprocessingRouter({
                     pdfFile={pdfFile}
                     officeSourceFile={officeSourceFile}
                     officeSourceFiles={officeSourceFiles}
-                    onFileFixed={(blob, name, path) => onFileFixed?.(blob, name, path)}
+                    onFileFixed={forwardFileFixedResult}
                 />
             )}
         </>

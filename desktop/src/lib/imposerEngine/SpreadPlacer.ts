@@ -3,6 +3,7 @@
 // Thay thế OffsetRenderer.ts — chỉ xử lý bước 2 (step & repeat theo fold pattern).
 
 import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees, StandardFonts } from 'pdf-lib';
+import type { Color, PDFEmbeddedPage, PDFPage } from 'pdf-lib';
 import { SpreadFoldPattern } from './FoldPatterns';
 import { OffsetSettings } from './SettingsTypes';
 import { drawRegistrationMarks, drawColorBar, drawPlateLabel, drawCenterMarks, drawCollationMark, drawStarTarget, drawSideIndicator, drawFolioMarks } from './MarksRenderer';
@@ -15,7 +16,7 @@ interface SpreadDetail {
 }
 
 const drawTrimMarks = (
-    page: any, x: number, y: number, w: number, h: number,
+    page: PDFPage, x: number, y: number, w: number, h: number,
     markLen: number, markOff: number, markThick: number,
     omitBottomVert: boolean = false, omitTopVert: boolean = false,
     omitLeftHoriz: boolean = false, omitRightHoriz: boolean = false
@@ -43,14 +44,14 @@ const drawTrimMarks = (
 };
 
 const drawFoldMarks = (
-    page: any, gridX: number, gridY: number,
+    page: PDFPage, gridX: number, gridY: number,
     cols: number, rows: number, spreadW: number, spreadH: number,
     totalW: number, totalH: number, markLen: number, markOff: number, markThick: number,
     gapXPt: number, gapYPt: number, isEven: boolean
 ) => {
     const colorFold = cmyk(0, 1, 1, 0); // Đỏ (CMYK) cho dấu gấp
     const colorSlit = cmyk(1, 1, 1, 1); // Registration cho dấu xẻ/chia
-    const draw = (x1: number, y1: number, x2: number, y2: number, color: any) => {
+    const draw = (x1: number, y1: number, x2: number, y2: number, color: Color) => {
         page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: markThick, color });
     };
 
@@ -111,7 +112,7 @@ const drawFoldMarks = (
 };
 
 export async function placeSpreadsByFoldPattern(
-    spreadPages: any[],         // Embedded booklet spread pages from temp PDF
+    spreadPages: Array<PDFEmbeddedPage | null>, // Embedded booklet spread pages from temp PDF
     spreadDetails: SpreadDetail[],
     pattern: SpreadFoldPattern,
     sheetWPt: number,           // Press sheet width in points
@@ -165,9 +166,6 @@ export async function placeSpreadsByFoldPattern(
     else if (gridRatio > 1 && sheetRatio < 0.95) {
         isRotated = true;
     }
-
-    const PT = 2.83465;
-    // debug log removed
 
     // When rotated, the effective usable area is swapped for grid centering
     const effUsableW = isRotated ? usableGridH : usableGridW;

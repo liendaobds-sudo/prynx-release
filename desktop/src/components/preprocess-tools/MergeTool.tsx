@@ -1,12 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef } from 'react';
 import { ChevronUp, ChevronDown, X } from 'lucide-react';
-import { 
-    ToolSectionLabel, ToolDivider, ToolCheckboxOption, 
-    ToolNumberInput, ToolInfo 
-} from './ToolUI';
+import { ToolSectionLabel, ToolInfo } from './ToolUI';
 import { useTranslation } from 'react-i18next';
-
-const inputCls = "w-full h-8 px-2.5 text-[12px] border border-slate-300 dark:border-white/20 rounded-md bg-white dark:bg-zinc-900 font-medium focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all";
 
 export type MergeMode = 'merge_files' | 'interleave' | 'insert_pages';
 
@@ -34,24 +29,6 @@ export interface MergeSettings {
     insertPagesEachTime: number;
     whenFinished: 'start_again' | 'stop';
 }
-
-export const defaultMergeSettings: MergeSettings = {
-    mode: 'merge_files',
-    filesToMerge: [],
-    oddFile: null,
-    evenFile: null,
-    insertFile: null,
-    insertWhat: 'entire',
-    insertRangeFrom: 1,
-    insertRangeTo: 1,
-    useIntervals: false,
-    startInserting: 'after_page',
-    afterPageNum: 1,
-    skipPages: 1,
-    repeatMode: 'pages',
-    insertPagesEachTime: 1,
-    whenFinished: 'stop',
-};
 
 interface Props {
     settings: MergeSettings;

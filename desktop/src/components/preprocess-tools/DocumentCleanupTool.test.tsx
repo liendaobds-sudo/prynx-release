@@ -297,6 +297,57 @@ describe('DocumentCleanupTool', () => {
         expect(screen.getByRole('img', { name: 'dung-tab.png' })).not.toBeNull();
     });
 
+    it('thay ảnh workspace cũ bằng PDF sau xoay nhưng giữ mọi item người dùng thêm', async () => {
+        vi.mocked(URL.createObjectURL).mockImplementation(blob => (
+            `blob:${blob instanceof File ? blob.name : 'result'}`
+        ));
+        const workspaceImage = new File(['workspace-image'], 'anh-tu-workspace.png', { type: 'image/png' });
+        const explicitImage = new File(['explicit-image'], 'anh-them-tay.png', { type: 'image/png' });
+        const workspacePdf = await pdfFileWithPages(3, 'scan-workspace.pdf');
+        const workingPdf = await pdfFileWithPages(2, 'scan-working.pdf');
+        const getWorkingFile = vi.fn().mockResolvedValue(workingPdf);
+        const renderWorkspace = (sourceImageFile: File | null) => (
+            <>
+                <DocumentCleanupTool
+                    tabId="tab-workspace-revision"
+                    pdfFile={workspacePdf}
+                    sourceImageFile={sourceImageFile}
+                    getWorkingFile={getWorkingFile}
+                />
+                <DocumentCleanupPreview tabId="tab-workspace-revision" isActive />
+            </>
+        );
+
+        const view = render(renderWorkspace(workspaceImage));
+        const store = useDocumentCleanupStore.getState();
+        await waitFor(() => expect(store.getTab('tab-workspace-revision').batchItems).toHaveLength(1));
+        expect(store.getTab('tab-workspace-revision').batchItems[0]).toMatchObject({
+            fileName: workspaceImage.name,
+            sourceOrigin: 'workspace',
+        });
+
+        fireEvent.drop(screen.getByTestId('document-cleanup-preview'), {
+            dataTransfer: { files: [explicitImage] },
+        });
+        await waitFor(() => expect(store.getTab('tab-workspace-revision').batchItems).toHaveLength(2));
+        expect(store.getTab('tab-workspace-revision').batchItems.find(
+            item => item.fileName === explicitImage.name,
+        )?.sourceOrigin).toBe('explicit');
+
+        // Sau rotate/edit, ImpositionTab vô hiệu sourceImageFile; Cleanup phải
+        // theo PDF workspace mới mà không materialize nền trước khi người dùng chạy.
+        view.rerender(renderWorkspace(null));
+
+        await waitFor(() => {
+            const items = store.getTab('tab-workspace-revision').batchItems;
+            expect(items).toHaveLength(2);
+            expect(items.some(item => item.fileName === workspaceImage.name)).toBe(false);
+            expect(items.find(item => item.fileName === explicitImage.name)?.sourceOrigin).toBe('explicit');
+            expect(items.find(item => item.fileName === workspacePdf.name)?.sourceOrigin).toBe('workspace');
+        });
+        expect(getWorkingFile).not.toHaveBeenCalled();
+    });
+
     it('tự detect trước rồi chỉ gửi một request xử lý thẻ', async () => {
         const output = new Blob(['png'], { type: 'image/png' });
         apiMocks.authenticatedFetch.mockImplementation(async (url: string) => {

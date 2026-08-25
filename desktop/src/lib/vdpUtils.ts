@@ -1,20 +1,60 @@
 export type VdpSortMethod = 'rows' | 'cols' | 'ushape' | 'clockwise';
 
-export const sortFieldsGeometrically = (fields: any[], method: VdpSortMethod) => {
+export interface VdpGeometricField {
+    id?: string | number;
+    x?: number;
+    y?: number;
+    position?: { x: number; y: number };
+}
+
+type PositionedVdpField<T extends VdpGeometricField> = T & { position: { x: number; y: number } };
+export interface VdpLogicCondition {
+    column: string;
+    [key: string]: unknown;
+}
+
+export interface VdpLogicRule {
+    column: string;
+    result?: string | null;
+    [key: string]: unknown;
+}
+
+export interface VdpMultiUpField extends VdpGeometricField {
+    id?: string;
+    name?: string;
+    groupId?: string;
+    textContent?: string | null;
+    conditions?: VdpLogicCondition[];
+    rules?: VdpLogicRule[];
+}
+
+export interface VdpMultiUpOutputField extends VdpMultiUpField {
+    conditions: VdpLogicCondition[];
+    rules: VdpLogicRule[];
+}
+
+interface VdpMultiUpSlot extends VdpGeometricField {
+    id?: string;
+    name?: string;
+    isSlot: true;
+
+    fields: VdpMultiUpField[];
+}
+export const sortFieldsGeometrically = <T extends VdpGeometricField>(_fields: T[], method: VdpSortMethod): T[] => {
     const tolerance = 5; // 5mm tolerance for snapping to rows/cols
 
     // Null-guard: đảm bảo mọi field có .position (fallback từ x/y) để tránh crash
     // khi được gọi với field chỉ mang toạ độ phẳng x/y.
-    fields = (fields || []).map(f =>
+    const fields: PositionedVdpField<T>[] = (_fields || []).map(f =>
         f && f.position && typeof f.position.x === 'number'
-            ? f
-            : { ...f, position: { x: f?.x ?? 0, y: f?.y ?? 0 } }
+            ? f as PositionedVdpField<T>
+            : { ...f, position: { x: f?.x ?? 0, y: f?.y ?? 0 } } as PositionedVdpField<T>
     );
 
     if (method === 'ushape') {
         if (fields.length < 3) return [...fields];
         const sortedByX = [...fields].sort((a, b) => a.position.x - b.position.x);
-        const columns: any[][] = [];
+        const columns: PositionedVdpField<T>[][] = [];
         let currentColumn = [sortedByX[0]];
         for (let i = 1; i < sortedByX.length; i++) {
             if (Math.abs(sortedByX[i].position.x - currentColumn[0].position.x) <= tolerance) {
@@ -38,9 +78,9 @@ export const sortFieldsGeometrically = (fields: any[], method: VdpSortMethod) =>
         const bottomItems = fields.filter(item => Math.abs(item.position.y - bottomMostY) <= tolerance * 2);
         bottomItems.sort((a, b) => a.position.x - b.position.x);
 
-        const finalSortedArray: any[] = [];
-        const processedIds = new Set();
-        const add = (item: any) => {
+        const finalSortedArray: PositionedVdpField<T>[] = [];
+        const processedIds = new Set<string | number | undefined>();
+        const add = (item: PositionedVdpField<T>) => {
             if (!processedIds.has(item.id)) {
                 processedIds.add(item.id);
                 finalSortedArray.push(item);
@@ -68,7 +108,7 @@ export const sortFieldsGeometrically = (fields: any[], method: VdpSortMethod) =>
             if (y > maxY) maxY = y;
         }
 
-        const topRow: any[] = [], rightCol: any[] = [], bottomRow: any[] = [], leftCol: any[] = [], middleItems: any[] = [];
+        const topRow: PositionedVdpField<T>[] = [], rightCol: PositionedVdpField<T>[] = [], bottomRow: PositionedVdpField<T>[] = [], leftCol: PositionedVdpField<T>[] = [], middleItems: PositionedVdpField<T>[] = [];
         for (let i = 0; i < fields.length; i++) {
             const item = fields[i];
             const { x, y } = item.position;
@@ -112,12 +152,12 @@ export const sortFieldsGeometrically = (fields: any[], method: VdpSortMethod) =>
 // bảng rule (tham chiếu cột gốc) trỏ vào cột không tồn tại trong record trang →
 // ConditionError/MISSING trên mọi bản ghi.
 export function buildMultiUpJobInput(
-    vdpFields: any[],
+    vdpFields: VdpMultiUpField[],
     csvHeaders: string[],
     sourceData: Record<string, string>[],
-): { fields: any[]; data: Record<string, string>[] } {
-    const slots: any[] = [];
-    const groupMap = new Map<string, any[]>();
+): { fields: VdpMultiUpOutputField[]; data: Record<string, string>[] } {
+    const slots: VdpMultiUpSlot[] = [];
+    const groupMap = new Map<string, VdpMultiUpField[]>();
     vdpFields.forEach(f => {
         if (f.groupId) {
             if (!groupMap.has(f.groupId)) groupMap.set(f.groupId, []);
@@ -127,17 +167,17 @@ export function buildMultiUpJobInput(
         }
     });
     groupMap.forEach((fieldsInGroup, groupId) => {
-        let minX = fieldsInGroup[0].x || fieldsInGroup[0].position?.x;
-        let minY = fieldsInGroup[0].y || fieldsInGroup[0].position?.y;
+        let minX = fieldsInGroup[0].x || fieldsInGroup[0].position?.x || 0;
+        let minY = fieldsInGroup[0].y || fieldsInGroup[0].position?.y || 0;
         fieldsInGroup.forEach(f => {
-            const fx = f.x || f.position?.x;
-            const fy = f.y || f.position?.y;
+            const fx = f.x || f.position?.x || 0;
+            const fy = f.y || f.position?.y || 0;
             if (fx < minX) minX = fx;
             if (fy < minY) minY = fy;
         });
         slots.push({ id: `slot_${groupId}`, name: `Group_${groupId}`, position: { x: minX, y: minY }, isSlot: true, fields: fieldsInGroup });
     });
-    slots.forEach(s => { if (!s.position) s.position = { x: s.x, y: s.y }; });
+    slots.forEach(s => { if (!s.position) s.position = { x: s.x ?? 0, y: s.y ?? 0 }; });
     const sortedSlots = sortFieldsGeometrically(slots, 'rows');
     const numSlots = sortedSlots.length;
     const totalPages = Math.ceil(sourceData.length / numSlots);
@@ -152,10 +192,10 @@ export function buildMultiUpJobInput(
     // Tập cột cần namespace: cột nguồn + tên field (fallback {name}) + cột trong
     // điều kiện/rule (phòng khi người dùng tham chiếu cột chưa có trong header).
     const refCols = new Set<string>(sourceCols);
-    sortedSlots.forEach((sl: any) => sl.fields.forEach((f: any) => {
+    sortedSlots.forEach((sl) => sl.fields.forEach((f) => {
         if (f.name) refCols.add(f.name);
-        (f.conditions || []).forEach((c: any) => { if (c.column) refCols.add(c.column); });
-        (f.rules || []).forEach((r: any) => { if (r.column) refCols.add(r.column); });
+        (f.conditions || []).forEach((c) => { if (c.column) refCols.add(c.column); });
+        (f.rules || []).forEach((r) => { if (r.column) refCols.add(r.column); });
     }));
     // Remap tên cột DÀI trước NGẮN để không khớp một phần tên cột lồng nhau.
     const refColList = Array.from(refCols).sort((a, b) => b.length - a.length);
@@ -174,23 +214,25 @@ export function buildMultiUpJobInput(
         return out;
     };
 
-    const multiUpVdpFields: any[] = [];
+    const multiUpVdpFields: VdpMultiUpOutputField[] = [];
     for (let s = 0; s < numSlots; s++) {
-        sortedSlots[s].fields.forEach((originalField: any) => {
+        sortedSlots[s].fields.forEach((originalField) => {
             // Nội dung gốc: textContent, mặc định {name} như engine backend.
             const baseContent = originalField.textContent ?? `{${originalField.name}}`;
-            const remapped: any = {
+            const remapped: VdpMultiUpOutputField = {
                 ...originalField,
                 name: `${originalField.name}_slot${s}`,
                 textContent: remapText(baseContent, s),
+                conditions: [],
+                rules: [],
             };
             if (Array.isArray(originalField.conditions)) {
-                remapped.conditions = originalField.conditions.map((c: any) => ({
+                remapped.conditions = originalField.conditions.map((c) => ({
                     ...c, column: skey(c.column, s),
                 }));
             }
             if (Array.isArray(originalField.rules)) {
-                remapped.rules = originalField.rules.map((r: any) => ({
+                remapped.rules = originalField.rules.map((r) => ({
                     ...r, column: skey(r.column, s), result: remapText(r.result, s),
                 }));
             }

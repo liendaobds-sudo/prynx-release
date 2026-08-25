@@ -123,11 +123,11 @@ function WorkspaceWrapper({ children }: { children: ReactNode }) {
     );
 }
 
-function options(tension: number) {
+function options(tension: number, documentIdentity = TEST_DOCUMENT_IDENTITY) {
     return {
         enabled: true,
         resolveSourceFile,
-        documentIdentity: TEST_DOCUMENT_IDENTITY,
+        documentIdentity,
         pageNumber: 1,
         pageInstanceId: 'instance-1',
         cutMode: 'original',
@@ -231,6 +231,44 @@ describe('useClassicCutlinePreview — realtime nhẹ', () => {
         hook.unmount();
         expect(signal.aborted).toBe(true);
         expect(apiMocks.closeStickerSheetSession).toHaveBeenCalledWith(inspection.session_id);
+    });
+
+    it('tiếp tục bơm frame mới sau khi nguồn đổi trong lúc frame cũ còn pending', async () => {
+        const first = deferred<ReturnType<typeof preview>>();
+        apiMocks.previewStickerCutline
+            .mockImplementationOnce(() => first.promise)
+            .mockResolvedValueOnce(preview('b'.repeat(64), 'M 2 2 L 5 5 Z'));
+        const hook = renderHook(
+            ({ identity }: { identity: string }) => useClassicCutlinePreview(
+                options(50, identity),
+            ),
+            {
+                initialProps: { identity: TEST_DOCUMENT_IDENTITY },
+                wrapper: WorkspaceWrapper,
+            },
+        );
+
+        await startFirstPreview();
+        expect(apiMocks.previewStickerCutline).toHaveBeenCalledTimes(1);
+        const oldSignal = apiMocks.previewStickerCutline.mock.calls[0][1].signal as AbortSignal;
+
+        hook.rerender({ identity: 'tem.pdf|order:2|rot:0' });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(380);
+        });
+        // Frame cũ chưa trả lời nên frame mới được xếp hàng, không chạy song song.
+        expect(oldSignal.aborted).toBe(true);
+        expect(apiMocks.previewStickerCutline).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            first.resolve(preview('a'.repeat(64), 'M 1 1 L 4 4 Z'));
+            await Promise.resolve();
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(80);
+        });
+        expect(apiMocks.previewStickerCutline).toHaveBeenCalledTimes(2);
+        expect(hook.result.current.preview?.fingerprint).toBe('b'.repeat(64));
+        hook.unmount();
     });
 
     it('Alpha ẩn thanh bo nên preview cũng giữ góc và tension tương thích 50', async () => {

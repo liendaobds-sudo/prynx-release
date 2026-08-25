@@ -1,15 +1,37 @@
 // src/lib/imposerEngine/NupRenderer.ts
 import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees } from 'pdf-lib';
+import type { PDFEmbeddedPage } from 'pdf-lib';
 import { MM_TO_POINTS, ProcessingSettings } from '../pdfImposer';
 import { solveOptimalNupLayout } from './NupGridSolver';
+import type { NupBlock, NupCell } from './NupGridSolver';
 import { drawMarksNup } from './MarksRenderer';
 import i18n, { tv } from '../../i18n';
+
+interface SourcePageDetail {
+    angle: number;
+}
+
+type NupRenderSettings = ProcessingSettings & {
+    layoutType?: 'repeat' | 'sequential' | 'cut_stacks';
+    gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    markType?: 'none' | 'corners' | 'guillotine';
+    markLength?: number;
+    markOffset?: number;
+    clusterMode?: 'none' | 'row' | 'column';
+    clusterCount?: number;
+    clusterGap?: number;
+    clusterGapMode?: 'item' | 'mark';
+    clusterDistribution?: 'default' | 'type';
+    clusterBorder?: boolean;
+    shapeType?: string | null;
+    shapeParams?: string | null;
+};
 
 
 export const renderNup = async (
     pageCount: number,
-    embeddedPages: any[],
-    srcPageDetails: any[],
+    embeddedPages: Array<PDFEmbeddedPage | null>,
+    srcPageDetails: SourcePageDetail[],
     maxSrcPageWidth: number,
     maxSrcPageHeight: number,
     finalSheetWidth: number,
@@ -18,7 +40,7 @@ export const renderNup = async (
     outputPdf: PDFDocument,
     setStatus: (msg: string) => void
 ) => {
-    const settings = _settings as any;
+    const settings = _settings as NupRenderSettings;
     const jobName = settings.layoutType === 'repeat' ? i18n.t('lib.nupRenderer:nhan_ban') : 'N-Up';
     setStatus(i18n.t('lib.nupRenderer:dang_phan_tich_cau_truc_ma_tran_jobname', { jobName }));
         
@@ -82,7 +104,7 @@ export const renderNup = async (
         ? settings.clusterGap * MM_TO_POINTS 
         : Math.max(gapX, gapY, 14.17); // 14.17pt = 5mm
         
-    if (((settings as any).markType === 'guillotine' || (settings as any).markType === 'corners') && 
+    if ((settings.markType === 'guillotine' || settings.markType === 'corners') &&
         (!settings.clusterGap || settings.clusterGapMode === 'mark')) {
         // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
         splitGap = 2 * markClearance;
@@ -106,15 +128,7 @@ export const renderNup = async (
     const { overallWidth: activeGridW_Full, overallHeight: activeGridH_Full, blocks } = layout;
 
     // Build the sheet-matrix rendering plan
-    interface LayoutCell {
-        c: number;
-        r: number;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-        isRotated: boolean;
-        blockId: number;
+    interface LayoutCell extends NupCell {
         srcIndex: number | null;
     }
     interface RenderSheet {
@@ -435,7 +449,7 @@ export const renderNup = async (
                     let byTrans = by;
                     let drawAngle = nativeAngle;
                     
-                    if (cell.isRotated && (cell as any).isRotated180) {
+                    if (cell.isRotated && cell.isRotated180) {
                         if (renderItem.isFront || settings.duplexFlow !== 'double') {
                             bxTrans = bx + rawH;
                             drawAngle += 90;
@@ -443,7 +457,7 @@ export const renderNup = async (
                             byTrans = by + rawW;
                             drawAngle -= 90;
                         }
-                    } else if ((cell as any).isRotated180) {
+                    } else if (cell.isRotated180) {
                         bxTrans = bx + rawW;
                         byTrans = by + rawH;
                         drawAngle += 180;
@@ -488,7 +502,7 @@ export const renderNup = async (
         
         const isMergedItemMode = settings.clusterMode !== 'none' && settings.clusterGapMode === 'item';
         if (isMergedItemMode) {
-            const superBlocks: any[] = [];
+            const superBlocks: NupBlock[] = [];
             for (let cy = 0; cy < cyCount; cy++) {
                 for (let cx = 0; cx < cxCount; cx++) {
                     const clusterBaseX = superBaseX + cx * (activeGridW + clusterGapPt);

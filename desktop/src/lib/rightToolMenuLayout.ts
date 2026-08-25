@@ -89,24 +89,72 @@ export function toolMenuRailWidth(mode: ToolMenuMode): number {
   return TOOL_MENU_ICON_WIDTH;
 }
 
-/** Tổng phần ngang menu chiếm trong Workspace/Home. Khi panel cấu hình đang mở,
- * tool active luôn giữ panel thiết lập; catalog đổi giữa đầy đủ 280px và rail 48px. */
+/**
+ * Preference width là độ rộng pane đang mở: catalog khi full + active,
+ * panel thiết lập khi icons + active, và catalog khi không có tool.
+ * Cách ghi rõ này giúp chuyển mode không làm mất khả năng kéo pane đang dùng.
+ */
+function resolveConfigWidthForCatalog(catalogWidth: number): number {
+  return Math.max(
+    TOOL_MENU_FULL_MIN_WIDTH,
+    Math.min(TOOL_MENU_FULL_DEFAULT_WIDTH, Math.round(catalogWidth)),
+  );
+}
+
+function maximumCatalogWidthForBudget(maximumTotalWidth: number): number {
+  const safeTotal = Math.max(TOOL_MENU_ICON_WIDTH, Math.floor(maximumTotalWidth));
+  if (safeTotal < TOOL_MENU_FULL_MIN_WIDTH * 2) return 0;
+  return Math.min(
+    TOOL_MENU_FULL_MAX_WIDTH,
+    Math.max(0, safeTotal - TOOL_MENU_FULL_MIN_WIDTH),
+  );
+}
+
+function resolveActiveFullSplit(
+  catalogPreference: number,
+  maximumTotalWidth: number,
+): Pick<EffectiveToolMenuLayout, 'configWidth' | 'catalogWidth' | 'totalWidth'> {
+  const safeTotal = Math.max(
+    TOOL_MENU_FULL_MIN_WIDTH * 2,
+    Math.floor(maximumTotalWidth),
+  );
+  const maximumCatalogWidth = maximumCatalogWidthForBudget(safeTotal);
+  if (maximumCatalogWidth < TOOL_MENU_FULL_MIN_WIDTH) {
+    return { configWidth: 0, catalogWidth: 0, totalWidth: 0 };
+  }
+  const catalogWidth = Math.min(
+    normalizeFullToolMenuWidth(catalogPreference),
+    maximumCatalogWidth,
+  );
+  const configWidth = Math.min(
+    resolveConfigWidthForCatalog(catalogWidth),
+    safeTotal - catalogWidth,
+  );
+  return {
+    configWidth,
+    catalogWidth,
+    totalWidth: configWidth + catalogWidth,
+  };
+}
+
 export function toolMenuTotalWidth(
   mode: ToolMenuMode,
-  fullWidth: number,
+  catalogWidth: number,
   hasActiveTool: boolean,
 ): number {
+  const normalizedCatalogWidth = normalizeFullToolMenuWidth(catalogWidth);
   if (mode === 'icons') {
     return hasActiveTool
-      ? normalizeFullToolMenuWidth(fullWidth) + TOOL_MENU_ICON_WIDTH
+      ? normalizedCatalogWidth + TOOL_MENU_ICON_WIDTH
       : TOOL_MENU_ICON_WIDTH;
   }
-  return normalizeFullToolMenuWidth(fullWidth)
-    + (hasActiveTool ? TOOL_MENU_EXPANDED_CATALOG_WIDTH : 0);
+  return normalizedCatalogWidth
+    + (hasActiveTool ? resolveConfigWidthForCatalog(normalizedCatalogWidth) : 0);
 }
 
 export function resolveEffectiveToolMenuLayout(input: {
   preferredMode: ToolMenuMode;
+  /** Độ rộng pane đang mở; full+active là catalog, icons+active là panel thiết lập. */
   preferredFullWidth: number;
   containerWidth: number;
   hasConfigPanel: boolean;
@@ -120,32 +168,249 @@ export function resolveEffectiveToolMenuLayout(input: {
     TOOL_MENU_ICON_WIDTH,
     Math.floor(input.containerWidth - viewerReservedWidth),
   );
-  const fullThreshold = input.hasConfigPanel
-    ? TOOL_MENU_FULL_MIN_WIDTH + TOOL_MENU_EXPANDED_CATALOG_WIDTH
-    : TOOL_MENU_FULL_MIN_WIDTH;
+  const preferredWidth = normalizeFullToolMenuWidth(input.preferredFullWidth);
+
+  if (!input.hasConfigPanel) {
+    const canExpandFull = maximumTotalWidth >= TOOL_MENU_FULL_MIN_WIDTH;
+    const mode = input.preferredMode === 'full' && canExpandFull ? 'full' : 'icons';
+    const catalogWidth = mode === 'full'
+      ? Math.min(preferredWidth, maximumTotalWidth)
+      : TOOL_MENU_ICON_WIDTH;
+    return {
+      mode,
+      configWidth: 0,
+      catalogWidth,
+      totalWidth: catalogWidth,
+      canExpandFull,
+    };
+  }
+
+  const configMinWidth = TOOL_MENU_FULL_MIN_WIDTH;
+  const catalogMinWidth = TOOL_MENU_FULL_MIN_WIDTH;
+  const fullThreshold = configMinWidth + catalogMinWidth;
   const canExpandFull = maximumTotalWidth >= fullThreshold;
   const mode = input.preferredMode === 'full' && canExpandFull ? 'full' : 'icons';
 
-  if (!input.hasConfigPanel) {
-    const catalogWidth = mode === 'full'
-      ? Math.min(normalizeFullToolMenuWidth(input.preferredFullWidth), maximumTotalWidth)
-      : TOOL_MENU_ICON_WIDTH;
-    return { mode, configWidth: 0, catalogWidth, totalWidth: catalogWidth, canExpandFull };
+  if (mode === 'icons') {
+    // UIUX (audit 2026-08-25): khi viewport tự ép full -> icons, giữ tổng width
+    // liên tục tại breakpoint (560 -> 559px), tránh panel nhảy lùi hơn 100px.
+    // Icons do người dùng chủ động chọn vẫn tôn trọng độ rộng config đã lưu.
+    const wasForcedByViewport = input.preferredMode === 'full' && !canExpandFull;
+    const configWidth = Math.max(
+      0,
+      wasForcedByViewport
+        ? maximumTotalWidth - TOOL_MENU_ICON_WIDTH
+        : Math.min(preferredWidth, maximumTotalWidth - TOOL_MENU_ICON_WIDTH),
+    );
+    return {
+      mode,
+      configWidth,
+      catalogWidth: TOOL_MENU_ICON_WIDTH,
+      totalWidth: configWidth + TOOL_MENU_ICON_WIDTH,
+      canExpandFull,
+    };
   }
 
-  const catalogWidth = mode === 'full'
-    ? TOOL_MENU_EXPANDED_CATALOG_WIDTH
-    : TOOL_MENU_ICON_WIDTH;
-  const configWidth = Math.max(
-    0,
-    Math.min(normalizeFullToolMenuWidth(input.preferredFullWidth), maximumTotalWidth - catalogWidth),
-  );
+  const split = resolveActiveFullSplit(preferredWidth, maximumTotalWidth);
   return {
     mode,
-    configWidth,
-    catalogWidth,
-    totalWidth: configWidth + catalogWidth,
+    configWidth: split.configWidth,
+    catalogWidth: split.catalogWidth,
+    totalWidth: split.totalWidth,
     canExpandFull,
+  };
+}
+
+/**
+ * UIUX (audit 2026-08-25): kéo divider giữa panel thiết lập và catalog chỉ
+ * phân bổ lại hai pane, không đổi tổng width nên Viewer không bị reflow.
+ */
+export function resolveToolMenuDividerLayout(
+  layout: EffectiveToolMenuLayout,
+  requestedCatalogWidth: number,
+): EffectiveToolMenuLayout {
+  if (layout.mode !== 'full' || layout.configWidth <= 0) return layout;
+
+  const minimumCatalogWidth = Math.max(
+    TOOL_MENU_FULL_MIN_WIDTH,
+    layout.totalWidth - TOOL_MENU_FULL_DEFAULT_WIDTH,
+  );
+  const maximumCatalogWidth = Math.min(
+    TOOL_MENU_FULL_MAX_WIDTH,
+    layout.totalWidth - TOOL_MENU_FULL_MIN_WIDTH,
+  );
+  if (maximumCatalogWidth < minimumCatalogWidth) return layout;
+
+  const catalogWidth = Math.round(Math.min(
+    maximumCatalogWidth,
+    Math.max(minimumCatalogWidth, requestedCatalogWidth),
+  ));
+  return {
+    ...layout,
+    configWidth: layout.totalWidth - catalogWidth,
+    catalogWidth,
+  };
+}
+
+export function resolveToolMenuDraftLayout(input: {
+  totalWidth: number;
+  mode: ToolMenuMode;
+  hasConfigPanel: boolean;
+  maximumTotalWidth: number;
+  /** Preference width lúc bắt đầu gesture, dùng để giữ plateau viewport. */
+  preferredWidth?: number;
+}): EffectiveToolMenuLayout {
+  const maximumTotalWidth = Math.max(
+    TOOL_MENU_ICON_WIDTH,
+    Math.floor(input.maximumTotalWidth),
+  );
+  const safeTotal = Math.min(
+    maximumTotalWidth,
+    Math.max(TOOL_MENU_ICON_WIDTH, Math.round(input.totalWidth)),
+  );
+  const canExpandFull = input.hasConfigPanel
+    ? maximumTotalWidth >= TOOL_MENU_FULL_MIN_WIDTH * 2
+    : maximumTotalWidth >= TOOL_MENU_FULL_MIN_WIDTH;
+
+  if (!input.hasConfigPanel) {
+    const mode = input.mode === 'full' && safeTotal >= TOOL_MENU_FULL_MIN_WIDTH
+      ? 'full'
+      : 'icons';
+    const catalogWidth = mode === 'full' ? safeTotal : TOOL_MENU_ICON_WIDTH;
+    return {
+      mode,
+      configWidth: 0,
+      catalogWidth,
+      totalWidth: catalogWidth,
+      canExpandFull,
+    };
+  }
+
+  const configMinWidth = TOOL_MENU_FULL_MIN_WIDTH;
+  const catalogMinWidth = TOOL_MENU_FULL_MIN_WIDTH;
+  const fullThreshold = configMinWidth + catalogMinWidth;
+  if (input.mode !== 'full' || safeTotal < fullThreshold || !canExpandFull) {
+    const configWidth = Math.max(0, safeTotal - TOOL_MENU_ICON_WIDTH);
+    return {
+      mode: 'icons',
+      configWidth,
+      catalogWidth: TOOL_MENU_ICON_WIDTH,
+      totalWidth: configWidth + TOOL_MENU_ICON_WIDTH,
+      canExpandFull,
+    };
+  }
+
+  const currentSplit = input.preferredWidth === undefined
+    ? null
+    : resolveActiveFullSplit(input.preferredWidth, maximumTotalWidth);
+  if (currentSplit && currentSplit.totalWidth === safeTotal) {
+    return {
+      mode: 'full',
+      ...currentSplit,
+      canExpandFull,
+    };
+  }
+
+  const requestedCatalogWidth = safeTotal <= TOOL_MENU_FULL_DEFAULT_WIDTH * 2
+    ? Math.max(catalogMinWidth, Math.floor(safeTotal / 2))
+    : Math.max(catalogMinWidth, safeTotal - TOOL_MENU_FULL_DEFAULT_WIDTH);
+  const split = resolveActiveFullSplit(requestedCatalogWidth, maximumTotalWidth);
+  return {
+    mode: 'full',
+    ...split,
+    canExpandFull,
+  };
+}
+
+export function maxFullToolMenuWidth(
+  containerWidth: number,
+  hasActiveTool: boolean,
+  minimumViewerWidth = TOOL_MENU_VIEWER_MIN_WIDTH,
+): number {
+  const maximumTotalWidth = Math.max(
+    TOOL_MENU_ICON_WIDTH,
+    Math.floor(containerWidth - minimumViewerWidth),
+  );
+  return hasActiveTool
+    ? maximumCatalogWidthForBudget(maximumTotalWidth)
+    : Math.min(TOOL_MENU_FULL_MAX_WIDTH, maximumTotalWidth);
+}
+
+/**
+ * Chốt mode ở CUỐI gesture. Trong lúc kéo component dùng draft layout có tổng
+ * khớp raw width; pointerup mới ghi mode/width vào preference.
+ */
+export function resolveToolMenuDrag(
+  totalWidth: number,
+  hasActiveTool: boolean,
+  currentFullWidth: number,
+  maximumFullWidth: number,
+): ToolMenuDragResult {
+  const configMinWidth = hasActiveTool ? TOOL_MENU_FULL_MIN_WIDTH : 0;
+  const catalogMinWidth = hasActiveTool ? TOOL_MENU_FULL_MIN_WIDTH : 0;
+  const minimumTotal = hasActiveTool
+    ? configMinWidth + TOOL_MENU_ICON_WIDTH
+    : TOOL_MENU_ICON_WIDTH;
+  const safeTotal = Math.max(minimumTotal, Math.round(totalWidth));
+
+  if (maximumFullWidth < catalogMinWidth) {
+    return {
+      mode: 'icons',
+      fullWidth: normalizeFullToolMenuWidth(currentFullWidth),
+    };
+  }
+
+  const fullThreshold = hasActiveTool
+    ? configMinWidth + catalogMinWidth
+    : TOOL_MENU_FULL_MIN_WIDTH;
+  if (safeTotal < fullThreshold) {
+    const maximumConfigWidth = hasActiveTool
+      ? Math.max(
+        TOOL_MENU_FULL_MIN_WIDTH,
+        maximumFullWidth + configMinWidth - TOOL_MENU_ICON_WIDTH,
+      )
+      : maximumFullWidth;
+    return {
+      mode: 'icons',
+      fullWidth: hasActiveTool
+        ? Math.min(
+          normalizeFullToolMenuWidth(Math.max(
+            TOOL_MENU_ICON_WIDTH,
+            safeTotal - TOOL_MENU_ICON_WIDTH,
+          )),
+          maximumConfigWidth,
+        )
+        : normalizeFullToolMenuWidth(currentFullWidth),
+    };
+  }
+
+  if (hasActiveTool) {
+    const maximumTotalWidth = maximumFullWidth + configMinWidth;
+    const currentSplit = resolveActiveFullSplit(currentFullWidth, maximumTotalWidth);
+    if (currentSplit.totalWidth === safeTotal) {
+      return {
+        mode: 'full',
+        fullWidth: normalizeFullToolMenuWidth(currentFullWidth),
+      };
+    }
+    const requestedCatalogWidth = safeTotal <= TOOL_MENU_FULL_DEFAULT_WIDTH * 2
+      ? Math.max(catalogMinWidth, Math.floor(safeTotal / 2))
+      : Math.max(catalogMinWidth, safeTotal - TOOL_MENU_FULL_DEFAULT_WIDTH);
+    return {
+      mode: 'full',
+      fullWidth: Math.min(
+        normalizeFullToolMenuWidth(requestedCatalogWidth),
+        Math.max(catalogMinWidth, maximumFullWidth),
+      ),
+    };
+  }
+
+  return {
+    mode: 'full',
+    fullWidth: Math.min(
+      normalizeFullToolMenuWidth(safeTotal),
+      Math.max(TOOL_MENU_FULL_MIN_WIDTH, maximumFullWidth),
+    ),
   };
 }
 
@@ -154,65 +419,16 @@ export function clampToolMenuDraftTotalWidth(
   maximumTotalWidth: number,
   hasConfigPanel: boolean,
 ): number {
-  const minimumTotalWidth = hasConfigPanel
+  const safeMaximumTotalWidth = Math.max(
+    TOOL_MENU_ICON_WIDTH,
+    Math.floor(maximumTotalWidth),
+  );
+  const requestedMinimumTotalWidth = hasConfigPanel
     ? TOOL_MENU_FULL_MIN_WIDTH + TOOL_MENU_ICON_WIDTH
     : TOOL_MENU_ICON_WIDTH;
+  const minimumTotalWidth = Math.min(requestedMinimumTotalWidth, safeMaximumTotalWidth);
   return Math.round(Math.min(
-    Math.max(minimumTotalWidth, maximumTotalWidth),
+    safeMaximumTotalWidth,
     Math.max(minimumTotalWidth, requestedTotalWidth),
   ));
-}
-
-export function maxFullToolMenuWidth(
-  containerWidth: number,
-  hasActiveTool: boolean,
-  minimumViewerWidth = TOOL_MENU_VIEWER_MIN_WIDTH,
-): number {
-  const railWidth = hasActiveTool ? TOOL_MENU_EXPANDED_CATALOG_WIDTH : 0;
-  return Math.min(
-    TOOL_MENU_FULL_MAX_WIDTH,
-    Math.max(0, Math.floor(containerWidth - minimumViewerWidth - railWidth)),
-  );
-}
-
-/**
- * Chốt mode ở CUỐI gesture. Trong lúc kéo component chỉ dùng draftWidth;
- * mọi độ rộng dưới ngưỡng full đều thu thẳng về thanh icon, không có mode giữa.
- */
-export function resolveToolMenuDrag(
-  totalWidth: number,
-  hasActiveTool: boolean,
-  currentFullWidth: number,
-  maximumFullWidth: number,
-): ToolMenuDragResult {
-  const minimumTotal = hasActiveTool
-    ? TOOL_MENU_FULL_MIN_WIDTH + TOOL_MENU_ICON_WIDTH
-    : TOOL_MENU_ICON_WIDTH;
-  const safeTotal = Math.max(minimumTotal, Math.round(totalWidth));
-  const fullThreshold = TOOL_MENU_FULL_MIN_WIDTH
-    + (hasActiveTool ? TOOL_MENU_EXPANDED_CATALOG_WIDTH : 0);
-
-  if (maximumFullWidth < TOOL_MENU_FULL_MIN_WIDTH) {
-    return { mode: 'icons', fullWidth: normalizeFullToolMenuWidth(currentFullWidth) };
-  }
-  if (safeTotal < fullThreshold) {
-    return {
-      mode: 'icons',
-      fullWidth: hasActiveTool
-        ? Math.min(
-          normalizeFullToolMenuWidth(safeTotal - TOOL_MENU_ICON_WIDTH),
-          Math.max(TOOL_MENU_FULL_MIN_WIDTH, maximumFullWidth),
-        )
-        : normalizeFullToolMenuWidth(currentFullWidth),
-    };
-  }
-
-  const requestedFullWidth = safeTotal - (hasActiveTool ? TOOL_MENU_EXPANDED_CATALOG_WIDTH : 0);
-  return {
-    mode: 'full',
-    fullWidth: Math.min(
-      normalizeFullToolMenuWidth(requestedFullWidth),
-      Math.max(TOOL_MENU_FULL_MIN_WIDTH, maximumFullWidth),
-    ),
-  };
 }

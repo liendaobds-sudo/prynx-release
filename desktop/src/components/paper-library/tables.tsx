@@ -24,62 +24,9 @@ import {
     type PaperFamily,
     type PaperStock,
 } from '../../lib/paperLibrary';
-import { DataTable, EmptyRow, FamilyBand } from './parts';
+import { DataTable, EmptyRow } from './parts';
 import { FAMILY_TONES } from './familyColors';
-
-/** Định dạng số theo ngôn ngữ: vi dùng dấu phẩy thập phân */
-export function fmt(n: number, digits = 3, lang = 'vi'): string {
-    const s = n.toFixed(digits);
-    return lang.startsWith('vi') ? s.replace('.', ',') : s;
-}
-
-/**
- * Định dạng số giữ ĐỦ chữ số thập phân có nghĩa — không cắt cụt.
- *
- * Dùng cho kết quả tính toán (độ dày gáy sách, chồng giấy…) cần khớp
- * chính xác từng decimal với file Excel gốc.
- *
- * - `maxDigits`: số decimal tối đa để tránh tràn (mặc định 7, đủ cho
- *   mọi ô trong workbook — ô dài nhất là 7 decimal: 1.5136875)
- * - `minDigits`: số decimal tối thiểu giữ lại (mặc định 3, khớp cách
- *   Excel hiển thị cột độ dày gáy)
- * - Sau khi toFixed(maxDigits), bỏ trailing zero nhưng giữ ≥ minDigits
- *
- * Ví dụ: fmtFull(1.755, 3) → "1,755"
- *         fmtFull(1.75,  3) → "1,750"  (giữ đủ 3 decimal)
- *         fmtFull(1.5136875, 3) → "1,5136875" (giữ hết 7 decimal có nghĩa)
- */
-export function fmtFull(n: number, minDigits = 3, lang = 'vi', maxDigits = 7): string {
-    const raw = n.toFixed(maxDigits);
-    // Bỏ trailing zero, nhưng giữ ít nhất minDigits sau dấu chấm
-    const [intPart, decPart] = raw.split('.');
-    const trimmed = decPart.replace(/0+$/, '');
-    const dec = trimmed.padEnd(minDigits, '0');
-    const s = `${intPart}.${dec}`;
-    return lang.startsWith('vi') ? s.replace('.', ',') : s;
-}
-
-/** Thứ tự họ giấy hiển thị — khớp thứ tự cột trong workbook */
-export const FAMILY_ORDER: PaperFamily[] = [
-    'couche',
-    'couche_matt',
-    'duplex',
-    'bristol',
-    'ivory',
-    'fort',
-    'art',
-    'kraft',
-    'other',
-];
-
-/** Đếm số dòng từng họ — dùng cho số bên cạnh mục sidebar */
-export const FAMILY_COUNTS: Record<PaperFamily, number> = FAMILY_ORDER.reduce(
-    (acc, f) => {
-        acc[f] = PAPER_STOCKS.filter(s => s.family === f).length;
-        return acc;
-    },
-    {} as Record<PaperFamily, number>,
-);
+import { FAMILY_ORDER, fmt } from './tableUtils';
 
 // ─────────────────────────────────────────────────────────────
 // Bảng 1 — Định lượng giấy → độ dày một tờ

@@ -30,7 +30,7 @@ import {
     type EdgeColor,
     type ExportScale,
 } from '../../lib/mockup3d';
-import { HDRI_PRESETS } from './EnvironmentRig';
+import { HDRI_PRESETS } from './environmentPresets';
 import { BACKGROUND_PRESETS } from './backgroundPresets';
 import CollapsibleSection from './CollapsibleSection';
 import { useTranslation } from 'react-i18next';

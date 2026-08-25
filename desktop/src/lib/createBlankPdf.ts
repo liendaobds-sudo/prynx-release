@@ -30,7 +30,7 @@ export async function createBlankPdfFile(opts: BlankDocOptions): Promise<File> {
         ? (name.trim().toLowerCase().endsWith('.pdf') ? name.trim() : `${name.trim()}.pdf`)
         : `Untitled_${formatMeasurement(widthMm)}x${formatMeasurement(heightMm)}mm.pdf`;
 
-    const file = new File([bytes as any], fileName, { type: 'application/pdf' });
+    const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' });
 
     // Đánh dấu là tài liệu trắng mới tạo → không thêm vào Recent Files,
     // và kèm kích thước/đếm trang để viewer dựng trang TỨC THÌ (không qua pdfjs/pdfium).

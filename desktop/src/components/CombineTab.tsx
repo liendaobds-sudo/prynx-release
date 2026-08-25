@@ -5,7 +5,7 @@ import {
   getCombineMemoryStatus,
   shouldDelegateLargePdfJob,
 } from '../lib/combineDelegation';
-import { PDFDocument, degrees } from 'pdf-lib';
+import { PDFDocument, degrees, type PDFPage } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { getFileArrayBuffer } from '../lib/utils';
 import { localFileUrl } from '../lib/localFileTransport';
@@ -42,6 +42,15 @@ function createPdfBlobFromBytes(bytes: Uint8Array, invalidMessage: string): Blob
 function createPdfFileFromBytes(bytes: Uint8Array, name: string, invalidMessage: string): File {
   if (!isCompletePdfBytes(bytes)) throw new Error(invalidMessage);
   return new File([toExactArrayBuffer(bytes)], name, { type: 'application/pdf' });
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = error.message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return String(error);
 }
 
 function createDelegatedResultFile(
@@ -81,6 +90,12 @@ export type CombineNode = {
   sizeKey?: string;
 };
 
+type CombineScaleMode = 'keep' | 'fit_a4' | 'fit_first';
+
+interface TriggerPrintDetail {
+  tabId?: string;
+}
+
 function backendCompletedNodeIds(
   nodes: CombineNode[],
   sourceFiles: File[],
@@ -108,7 +123,7 @@ interface Props {
   onDirtyChange?: (isDirty: boolean) => void;
   initialFiles?: File[];
   /** Kết quả ghép 1 file → mở tab imposition (hành vi cũ). */
-  onSpawnTab?: (file: File, extraPayload?: any) => void;
+  onSpawnTab?: (file: File, extraPayload?: Record<string, unknown>) => void;
   /** Mọi kết quả đã được mở; shell có thể đóng tab Combine nguồn. */
   onResultsOpened?: () => void;
   /**
@@ -209,9 +224,9 @@ const PdfThumbnail = React.memo(({ file, pageIndex }: { file: string | File; pag
 
   useEffect(() => {
     let isActive = true;
-    if (typeof file !== 'string' && (window as any).__TAURI_INTERNALS__ && (file as any).path) {
+    if (typeof file !== 'string' && window.__TAURI_INTERNALS__ && file.path) {
       // FILEIO (audit 2026-07-28 §FL.03): preview ngoài scope qua protocol Rust.
-      Promise.resolve(localFileUrl((file as any).path)).then((url) => {
+      Promise.resolve(localFileUrl(file.path)).then((url) => {
         if (isActive) setDocFile(url);
       });
     } else {
@@ -293,7 +308,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
     combineJobAbortRef.current = null;
   }, []);
 
-  const [scaleMode, setScaleMode] = useState<'keep' | 'fit_a4' | 'fit_first'>('keep');
+  const [scaleMode, setScaleMode] = useState<CombineScaleMode>('keep');
   /** Chia nhóm theo kích thước trang (như viewer hiển thị) — tick là sắp view ngay. */
   const [groupByPageSize, setGroupByPageSize] = useState(false);
   const [isGrouping, setIsGrouping] = useState(false);
@@ -377,7 +392,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       }));
       setNodes(initNodes);
     }
-  }, [initialFiles]);
+  }, [initialFiles, nodes.length]);
 
   // Async update page counts
   useEffect(() => {
@@ -705,7 +720,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       const maxPages = Math.max(...pdfsToInterleave.map(d => d.getPageCount()));
 
       // Tối ưu hoá tốc độ (Super Fast Batch Copy): Copy toàn bộ trang 1 lần thay vì gọi copyPages trong vòng lặp (gây thắt nút cổ chai)
-      const copiedPagesByDoc: any[][] = [];
+      const copiedPagesByDoc: PDFPage[][] = [];
       for (let j = 0; j < pdfsToInterleave.length; j++) {
         const doc = pdfsToInterleave[j];
         const indices = Array.from({ length: doc.getPageCount() }, (_, i) => i);
@@ -884,17 +899,19 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       const bytes = await combineFlatNodes(flatNodes, new Map());
       const blob = createPdfBlobFromBytes(bytes, t('lib.processHandlers:khong_ghep_duoc_pdf'));
       await openPrintDialog({ source: blob, numPages: flatNodes.length });
-    } catch (e: any) {
-      toast.error(t('tabs.combine:khong_the_in_file') + (e?.message || e));
+    } catch (error) {
+      toast.error(t('tabs.combine:khong_the_in_file') + getErrorMessage(error));
     } finally {
       setIsProcessing(false);
       setStatusMsg('');
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- LINT (audit 2026-08-24 LO140): combineFlatNodes là helper theo render; thêm vào đây sẽ tái gắn listener Ctrl+P mỗi render, còn closure hiện tại luôn đi cùng snapshot nodes.
   }, [nodes, openPrintDialog, t]);
 
   useEffect(() => {
-    const onTriggerPrint = (e: any) => {
-      if (isActive && e.detail?.tabId === tabId) handlePrint();
+    const onTriggerPrint = (event: Event) => {
+      const detail = (event as CustomEvent<TriggerPrintDetail>).detail;
+      if (isActive && detail?.tabId === tabId) handlePrint();
     };
     window.addEventListener('app-trigger-print', onTriggerPrint);
     return () => window.removeEventListener('app-trigger-print', onTriggerPrint);
@@ -945,6 +962,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       return c !== 0 ? c : a.i - b.i;
     });
     return indexed.map(x => x.n);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- LINT (audit 2026-08-24 LO140): measureNodeSizeKey là helper theo render; giữ callback ổn định để effect chia nhóm không chạy lại sau mọi render.
   }, []);
 
   /** Chạy đo + sắp nhóm; force=true khi user tick lại (bỏ qua cache sizeKey). */
@@ -962,13 +980,13 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       if (opts?.toast && nGroups > 0) {
         toast.success(t('tabs.combine:da_chia_nhom_tren_view_bam_combine', { n: nGroups }));
       }
-    } catch (e: any) {
-      toast.error(t('tabs.combine:khong_do_duoc_kich_thuoc', { msg: e?.message || e }));
+    } catch (error) {
+      toast.error(t('tabs.combine:khong_do_duoc_kich_thuoc', { msg: getErrorMessage(error) }));
     } finally {
       setIsGrouping(false);
       setStatusMsg('');
     }
-  }, [regroupNodesBySize]);
+  }, [regroupNodesBySize, t]);
 
   // Thêm file khi đang bật chia nhóm → sắp lại (không dùng cho tick ON — tick gọi runRegroup trực tiếp)
   useEffect(() => {
@@ -1496,7 +1514,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
             <span className="text-sm font-medium text-slate-600 dark:text-zinc-300">{t('tabs.combine:kich_thuoc_trang')}</span>
             <select
               value={scaleMode}
-              onChange={(e) => setScaleMode(e.target.value as any)}
+              onChange={(e) => setScaleMode(e.target.value as CombineScaleMode)}
               className="px-3 py-1.5 text-sm bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 rounded-md outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-700 dark:text-zinc-300"
             >
               <option value="keep">{t('tabs.combine:giu_nguyen_goc_khong_ep_kho')}</option>

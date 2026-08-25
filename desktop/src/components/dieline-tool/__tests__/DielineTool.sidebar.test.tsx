@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
     regenerate: vi.fn(),
     requestFeatureAction: vi.fn((_featureId: string, action: () => void) => { action(); return true; }),
     downloadPDF: vi.fn(),
-    dieline: null as any,
+    dieline: null as null | { params: { boxType: string }; allPaths: never[]; panels: never[] },
 }));
 
 // [VARIANT 2026-07-29] onSelect nhận `variant.id` (không phải boxType nữa)

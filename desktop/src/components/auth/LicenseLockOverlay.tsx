@@ -11,7 +11,7 @@ import ChangeLicenseKeyPanel from './ChangeLicenseKeyPanel';
 function RevocationCountdown() {
   const { t } = useTranslation();
   const { revokeDeadline, revokeReason } = useAuthStore();
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const [showChangeKey, setShowChangeKey] = useState(false);
 
   useEffect(() => {

@@ -12,18 +12,23 @@ import {
     createOptionalContentTransfer,
     finishOptionalContentTransfer,
 } from './pdfOptionalContent';
-import { imposeCatalogBatchViaBackend, ImpositionMode, type DieCutSettings, type GuillotineSettings, type ProcessingSettings } from '../lib/pdfImposer';
+import { imposeCatalogBatchViaBackend, ImpositionMode, type DieCutSettings, type GuillotineSettings, type OffsetSettings, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability } from '../components/imposition-tools/types';
-import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
+import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd, type PageMapping } from '../lib/preprocessEngine/ShuffleEngine';
 import { resizePages } from '../lib/preprocessEngine/PageResizer';
 import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
-import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
+import { mergePdf } from '../lib/preprocessEngine/PdfMerger';import type { PageResizerSettings } from '../components/preprocess-tools/pageResizerViewLogic';
+import type { ShuffleSettings } from '../components/preprocess-tools/ShuffleTool';
+import type { SplitSettings } from '../components/preprocess-tools/SplitTool';
+import type { TrimShiftSettings } from '../components/preprocess-tools/TrimShiftTool';
+import type { MergeSettings } from '../components/preprocess-tools/MergeTool';
 import i18n, { tv } from '../i18n';
 // UIUX (audit 2026-07-27 §D-15/§D-11): lỗi kỹ thuật → câu Việt + hướng khắc phục; toast có nút hành động
 import { formatError, isCanceled } from './errorMessages';
 import { toast } from '../components/ui/Toast';
 import { waitForAppForegroundDelay } from './appVisibility';
+import { tagArtifactLeaseToken } from './artifactLease';
 import { previewPerfLog } from './previewPerfLog';
 import type { BackendSplitPdfResult, PdfPathMetadata } from './api';
 
@@ -34,6 +39,95 @@ const LONG_TASK_HINT = () =>
 
 const NUP_SHEET_TOO_SMALL_ERROR = 'Sheet too small for source pages. Cannot fit any items.';
 const NUP_PAGE_CANNOT_FIT_ERROR = /^Trang\s+(\d+)\s+không thể xếp vào vùng giấy sử dụng\.$/u;
+type SavePrintConfig = {
+    folder: string;
+    nameMode: 'report' | 'number' | 'original';
+    folderMode: 'per_order' | 'flat';
+    includeOrderCode: boolean;
+    includeDate: boolean;
+    orderCode?: string;
+    labelName?: string;
+};
+
+/** Các field chỉ dùng ở biên serialize backend, không thuộc engine ProcessingSettings. */
+type ProcessEngineSettings = ProcessingSettings & {
+    splitGap?: number;
+    diagnosticTraceId?: string;
+    diagnosticPreviewRequestId?: string;
+    diagnosticPendingRequestId?: string;
+    diagnosticPreviewCapacity?: number;
+    diagnosticPreviewState?: 'none' | 'pending' | 'applied' | 'failed';
+    mixedExcessPercent?: number;
+    reportDisplay?: unknown;
+    reportMaterial?: string;
+    reportLamination?: number;
+    reportLaminationSides?: number;
+    reportOrderCode?: string;
+    saveByReport?: boolean;
+    exportUniqueSheets?: boolean;
+    autoSavePrint?: boolean;
+    savePrintConfig?: SavePrintConfig;
+    clusterMode?: 'none' | 'row' | 'column';
+    clusterCount?: number;
+    clusterGap?: number;
+    clusterDistribution?: 'default' | 'type';
+    clusterTileW?: number;
+    clusterTileH?: number;
+    clusterCols?: number;
+    clusterRows?: number;
+    clusterSizingMode?: 'dims' | 'split_cols' | 'split_rows';
+    clusterCombineMode?: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
+    clusterNesting?: boolean;
+    tileGapX?: number;
+    tileGapY?: number;
+    separateCutPage?: boolean;
+    pontsOnCutFile?: boolean;
+    hiddenOcgLayerIds?: number[];    gripperMargin?: number;
+    markType?: 'none' | 'corners' | 'guillotine';
+    markLength?: number;
+    markOffset?: number;
+    markThickness?: number;
+    markStyle?: 'default' | 'japanese';
+    dieSizeMode?: 'die' | 'page';
+    dieOffsetMm?: number;
+    pontType?: 'none' | 'corner' | '5mm' | 'custom';
+    pontConfig?: DieCutSettings['pontConfig'];
+    targetQuantity?: number;
+    targetQuantitiesByPage?: Record<number, number>;
+    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    cncTwoSided?: boolean;
+};
+
+type LoosePontConfig = {
+    shape: 'circle' | 'l_inverted' | 'l_corner';
+    size: number;
+    [key: string]: unknown;
+};
+type DieCutProcessInput = Omit<DieCutSettings, 'pontConfig'> & { pontConfig?: LoosePontConfig };
+type ProcessEngineInput = GuillotineSettings | DieCutProcessInput | OffsetSettings;
+
+type ProcessHandlerSettings<T extends object> = Partial<T> & { spawnNewTab?: boolean };
+
+type BatchOutput = {
+    docs: { blob: Blob; filename: string; report?: string }[];
+    mergedBlob: Blob;
+};
+
+type FileWithPath = File & { path?: string };
+
+function asBlobPart(bytes: Uint8Array | ArrayBuffer): BlobPart {
+    return bytes instanceof ArrayBuffer ? bytes : bytes as unknown as BlobPart;
+}
+
+function readPdfString(value: unknown): string {
+    if (value instanceof PDFString) return value.decodeText();
+    if (value && typeof value === 'object') {
+        const candidate = value as { decodeText?: () => string; value?: string };
+        if (typeof candidate.decodeText === 'function') return candidate.decodeText();
+        if (typeof candidate.value === 'string') return candidate.value;
+    }
+    return String(value);
+}
 
 /**
  * UIUX (audit 2026-08-04 §NUP-ERR): backend N-Up còn trả hai lỗi sức chứa
@@ -72,7 +166,7 @@ function localizeNupCapacityError(error: unknown): unknown {
 // ─── Shared context type for all handlers ───
 export interface ProcessContext {
     file: File;
-    onSpawnTab?: (file: File, extra?: any) => void;
+    onSpawnTab?: (file: File, extra?: Record<string, unknown>) => void;
     // async: playback chuỗi bytes qua commit (currentBytes cập nhật SAU await
     // blob.arrayBuffer()) → mọi call site PHẢI await, nếu không bước kế đọc bytes cũ.
     commitWorkingFile: (blob: Blob, name: string, existingPath?: string) => void | Promise<void>;
@@ -80,7 +174,7 @@ export interface ProcessContext {
     setIsProcessing: (v: boolean) => void;
     setProcessStatus: (msg: string) => void;
     setReportMsg: (msg: string) => void;
-    setBatchOutput: (v: any) => void;
+    setBatchOutput: (v: BatchOutput | null) => void;
     setCancelHandler?: (handler: (() => Promise<void>) | null) => void;
     viewerNumPages?: number;
     getWorkingBytes: () => Promise<Uint8Array>;
@@ -108,9 +202,10 @@ function processError(error: string): ProcessOutcome {
 
 export async function runProcessEngine(
     ctx: ProcessContext,
-    settings: ProcessingSettings,
+    inputSettings: ProcessEngineInput,
     spawnNewTab: boolean
 ): Promise<ProcessOutcome> {
+    const settings = inputSettings as ProcessEngineSettings;
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg } = ctx;
 
     setError('');
@@ -164,7 +259,7 @@ export async function runProcessEngine(
             let serverPath = await ctx.getWorkingSourcePath?.();
             if (!serverPath) {
                 const workingBytes = await ctx.getWorkingBytes();
-                const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+                const workingFile = new File([asBlobPart(workingBytes)], file.name, { type: 'application/pdf' });
                 serverPath = await uploadFileForNup(workingFile);
             }
 
@@ -176,12 +271,12 @@ export async function runProcessEngine(
                 marginTop: settings.marginTop || 0, marginBottom: settings.marginBottom || 0,
                 marginLeft: settings.marginLeft || 0, marginRight: settings.marginRight || 0,
                 // Gripper/nhíp chỉ N-Up offset — tem bế/CNC không cắn nhíp (tránh rò lề đáy).
-                gripperMargin: (isDieCut || isCnc) ? 0 : ((settings as any).gripperMargin || 0),
+                gripperMargin: (isDieCut || isCnc) ? 0 : (settings.gripperMargin || 0),
                 marginMode: settings.marginMode || 'labels_only',
-                markType: caps.supportsMarks ? ((settings as any).markType || 'none') : 'none',
-                markLength: (settings as any).markLength || 5, markOffset: (settings as any).markOffset || 3,
-                markThickness: (settings as any).markThickness || 0.25,
-                markStyle: (settings as any).markStyle || 'default',
+                markType: caps.supportsMarks ? (settings.markType || 'none') : 'none',
+                markLength: settings.markLength || 5, markOffset: settings.markOffset || 3,
+                markThickness: settings.markThickness || 0.25,
+                markStyle: settings.markStyle || 'default',
                 // CUT-BORDER (audit 2026-08-04 §CB.2): chỉ serialize cho Bình bài
                 // cắt xén; dấu xén và đường viền hoạt động độc lập.
                 ...(guillotineSettings && !isPageSheet ? {
@@ -190,107 +285,107 @@ export async function runProcessEngine(
                     cutBorderColor: guillotineSettings.cutBorderColor || '#000000',
                     cutBorderThickness: Number(guillotineSettings.cutBorderThickness) || 0.3,
                 } : {}),
-                gridStrategy: isGuillotine || isDieCut || isCnc ? (settings as any).gridStrategy || 'simple_auto' : 'simple_auto',
+                gridStrategy: isGuillotine || isDieCut || isCnc ? settings.gridStrategy || 'simple_auto' : 'simple_auto',
                 alternateRotation: effectiveAlternateRotation,
-                layoutType: isGuillotine || isDieCut || isCnc ? (settings as any).layoutType || 'sequential' : 'sequential',
+                layoutType: isGuillotine || isDieCut || isCnc ? settings.layoutType || 'sequential' : 'sequential',
                 align: settings.align || 'center',
                 cols: settings.cols, rows: settings.rows,
-                splitGap: (settings as any).splitGap,
-                diagnosticTraceId: (settings as any).diagnosticTraceId,
-                diagnosticPreviewRequestId: (settings as any).diagnosticPreviewRequestId,
-                diagnosticPendingRequestId: (settings as any).diagnosticPendingRequestId,
-                diagnosticPreviewCapacity: (settings as any).diagnosticPreviewCapacity,
-                diagnosticPreviewState: (settings as any).diagnosticPreviewState,
+                splitGap: settings.splitGap,
+                diagnosticTraceId: settings.diagnosticTraceId,
+                diagnosticPreviewRequestId: settings.diagnosticPreviewRequestId,
+                diagnosticPendingRequestId: settings.diagnosticPendingRequestId,
+                diagnosticPreviewCapacity: settings.diagnosticPreviewCapacity,
+                diagnosticPreviewState: settings.diagnosticPreviewState,
                 // CNC cũng là die-cut về bản chất → giữ cờ NHẤT QUÁN với UI (audit #C3).
                 // Routing backend vẫn theo imposerMode='cnc' (ưu tiên trước isDieCutMode).
                 isDieCutMode: isDieCut || isCnc,
                 page_sheet_mode: isPageSheet,
-                cutType: isDieCut ? (settings as any).cutType : undefined,
-                fillBlockGap: isDieCut ? (settings as any).fillBlockGap : undefined,
+                cutType: isDieCut ? settings.cutType : undefined,
+                fillBlockGap: isDieCut ? settings.fillBlockGap : undefined,
                 // 1 Dao: khuôn theo trang + offset co/mở (khớp resolve_one_dao_trim backend).
-                dieSizeMode: isDieCut ? (settings as any).dieSizeMode : undefined,
-                dieOffsetMm: isDieCut ? (settings as any).dieOffsetMm : undefined,
-                pontType: pontSettingsMode ? (settings as any).pontType : undefined,
-                pontConfig: pontSettingsMode ? (settings as any).pontConfig : undefined,
-                detectedShapesByPage: isDieCut || isCnc ? (settings as any).detectedShapesByPage : undefined,
-                detectedShapeParamsByPage: isDieCut || isCnc ? (settings as any).detectedShapeParamsByPage : undefined,
-                targetQuantity: (settings as any).targetQuantity || 0,
-                targetQuantitiesByPage: (settings as any).targetQuantitiesByPage || {},
+                dieSizeMode: isDieCut ? settings.dieSizeMode : undefined,
+                dieOffsetMm: isDieCut ? settings.dieOffsetMm : undefined,
+                pontType: pontSettingsMode ? settings.pontType : undefined,
+                pontConfig: pontSettingsMode ? settings.pontConfig : undefined,
+                detectedShapesByPage: isDieCut || isCnc ? settings.detectedShapesByPage : undefined,
+                detectedShapeParamsByPage: isDieCut || isCnc ? settings.detectedShapeParamsByPage : undefined,
+                targetQuantity: settings.targetQuantity || 0,
+                targetQuantitiesByPage: settings.targetQuantitiesByPage || {},
                 // Guillotine (KHÔNG die-cut) chỉ nhận 'cluster_tile' (chia cụm) hoặc
                 // 'maximize_area' (lưới đều mặc định) — cho phép cluster_tile đi qua.
                 groupingStrategy: isDieCut
-                    ? (settings as any).groupingStrategy || 'maximize_area'
-                    : ((settings as any).groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'maximize_area'),
+                    ? settings.groupingStrategy || 'maximize_area'
+                    : (settings.groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'maximize_area'),
                 // ═══ Cluster layout (chia cụm trên tờ giấy) ═══
-                clusterMode: (settings as any).clusterMode || 'none',
-                clusterCount: (settings as any).clusterCount || 2,
-                clusterGap: (settings as any).clusterGap || 0,
+                clusterMode: settings.clusterMode || 'none',
+                clusterCount: settings.clusterCount || 2,
+                clusterGap: settings.clusterGap || 0,
                 // 'type' = mỗi cọc 1 loại (chia cọc theo tỷ lệ SL); 'default' = ratio_stack trộn ô.
-                clusterDistribution: (settings as any).clusterDistribution || 'default',
-                clusterTileW: (isDieCut || (settings as any).groupingStrategy === 'cluster_tile') ? (settings as any).clusterTileW || 148 : undefined,
-                clusterTileH: (isDieCut || (settings as any).groupingStrategy === 'cluster_tile') ? (settings as any).clusterTileH || 210 : undefined,
-                clusterCols: (settings as any).clusterCols || 2,
-                clusterRows: (settings as any).clusterRows || 2,
-                clusterSizingMode: (settings as any).clusterSizingMode || 'dims',
-                clusterCombineMode: (settings as any).clusterCombineMode || 'replicate_mixed',
-                clusterNesting: (settings as any).clusterNesting !== false,
-                tileGapX: (settings as any).tileGapX || 0,
-                tileGapY: (settings as any).tileGapY || 0,
+                clusterDistribution: settings.clusterDistribution || 'default',
+                clusterTileW: (isDieCut || settings.groupingStrategy === 'cluster_tile') ? settings.clusterTileW || 148 : undefined,
+                clusterTileH: (isDieCut || settings.groupingStrategy === 'cluster_tile') ? settings.clusterTileH || 210 : undefined,
+                clusterCols: settings.clusterCols || 2,
+                clusterRows: settings.clusterRows || 2,
+                clusterSizingMode: settings.clusterSizingMode || 'dims',
+                clusterCombineMode: settings.clusterCombineMode || 'replicate_mixed',
+                clusterNesting: settings.clusterNesting !== false,
+                tileGapX: settings.tileGapX || 0,
+                tileGapY: settings.tileGapY || 0,
                 separateCutPage: isPageSheet
                     ? true
-                    : (isDieCut && (settings as any).cutType === 'one_dao'
+                    : (isDieCut && settings.cutType === 'one_dao'
                         ? true
-                        : (isDieCut ? (settings as any).separateCutPage || false : false)),
+                        : (isDieCut ? settings.separateCutPage || false : false)),
                 // FIX (audit 2026-08-05 §OC.3): CNC luôn Front + Cut; toggle này chỉ
                 // thuộc Sticker/Page Sheet, không gửi field gây kỳ vọng giả sang CNC.
                 ...((isDieCut || isPageSheet) ? {
-                    pontsOnCutFile: (settings as any).pontsOnCutFile !== false,
+                    pontsOnCutFile: settings.pontsOnCutFile !== false,
                 } : {}),
-                hiddenOcgLayerIds: isDieCut ? (settings as any).hiddenOcgLayerIds || [] : [],
-                duplexFlow: isPageSheet ? 'normal' : (settings as any).duplexFlow,
+                hiddenOcgLayerIds: isDieCut ? settings.hiddenOcgLayerIds || [] : [],
+                duplexFlow: isPageSheet ? 'normal' : settings.duplexFlow,
                 // MIXED-GUILLOTINE (audit 2026-07-30 §MG.5/§MG.8): planner materialize mặt sau theo cạnh này.
-                duplexFlipEdge: isGuillotine && (settings as any).layoutType === 'mixed_guillotine'
-                    ? ((settings as any).duplexFlipEdge || 'long')
+                duplexFlipEdge: isGuillotine && settings.layoutType === 'mixed_guillotine'
+                    ? (settings.duplexFlipEdge || 'long')
                     : undefined,
                 // MIXED-GUILLOTINE (audit 2026-07-30 §MG-A2): % in dư cho phép → tỉ lệ.
                 // Gom nhiều bản kẽm về 1 khi dư còn trong ngưỡng; preview dùng CÙNG giá trị.
-                mixedExcessTolerance: isGuillotine && (settings as any).layoutType === 'mixed_guillotine'
-                    ? Math.max(0, Number((settings as any).mixedExcessPercent ?? 0)) / 100
+                mixedExcessTolerance: isGuillotine && settings.layoutType === 'mixed_guillotine'
+                    ? Math.max(0, Number(settings.mixedExcessPercent ?? 0)) / 100
                     : undefined,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — gồm cả CNC
-                exportUniqueSheets: (isDieCut || isPageSheet || (isGuillotine && (settings as any).layoutType === 'mixed_guillotine'))
-                    ? (settings as any).exportUniqueSheets !== false : false,
-                reportDisplay: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportDisplay : undefined,
-                reportMaterial: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportMaterial : undefined,
-                reportLamination: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportLamination : undefined,
-                reportLaminationSides: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportLaminationSides : undefined,
-                reportOrderCode: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportOrderCode : undefined,
-                saveByReport: (isDieCut || isPageSheet) ? (settings as any).saveByReport : undefined,
+                exportUniqueSheets: (isDieCut || isPageSheet || (isGuillotine && settings.layoutType === 'mixed_guillotine'))
+                    ? settings.exportUniqueSheets !== false : false,
+                reportDisplay: (isDieCut || isCnc || isGuillotine) ? settings.reportDisplay : undefined,
+                reportMaterial: (isDieCut || isCnc || isGuillotine) ? settings.reportMaterial : undefined,
+                reportLamination: (isDieCut || isCnc || isGuillotine) ? settings.reportLamination : undefined,
+                reportLaminationSides: (isDieCut || isCnc || isGuillotine) ? settings.reportLaminationSides : undefined,
+                reportOrderCode: (isDieCut || isCnc || isGuillotine) ? settings.reportOrderCode : undefined,
+                saveByReport: (isDieCut || isPageSheet) ? settings.saveByReport : undefined,
                 // ═══ Bình Bế Rớt (CNC) — định tuyến renderer riêng ở backend ═══
                 imposerMode: isCnc ? 'cnc' : undefined,
-                cncTwoSided: isCnc ? (settings as any).cncTwoSided : undefined,
-                cncFlipEdge: isCnc ? (settings as any).cncFlipEdge : undefined,
-                cncDuplexMarks: isCnc ? (settings as any).cncDuplexMarks : undefined,
+                cncTwoSided: isCnc ? settings.cncTwoSided : undefined,
+                cncFlipEdge: isCnc ? settings.cncFlipEdge : undefined,
+                cncDuplexMarks: isCnc ? settings.cncDuplexMarks : undefined,
             };
 
             void previewPerfLog('nup-export START', {
-                trace_id: (settings as any).diagnosticTraceId || '',
-                preview_request_id: (settings as any).diagnosticPreviewRequestId || '',
-                pending_request_id: (settings as any).diagnosticPendingRequestId || '',
-                preview_capacity: Number((settings as any).diagnosticPreviewCapacity ?? -1),
-                preview_state: (settings as any).diagnosticPreviewState || 'none',
+                trace_id: settings.diagnosticTraceId || '',
+                preview_request_id: settings.diagnosticPreviewRequestId || '',
+                pending_request_id: settings.diagnosticPendingRequestId || '',
+                preview_capacity: Number(settings.diagnosticPreviewCapacity ?? -1),
+                preview_state: settings.diagnosticPreviewState || 'none',
                 sheet_w_mm: settings.sheetWidth,
                 sheet_h_mm: settings.sheetHeight,
                 gap_x_mm: settings.gapX || 0,
                 gap_y_mm: settings.gapY || 0,
                 bleed_mm: settings.bleed || 0,
-                split_gap_mm: Number((settings as any).splitGap ?? 0),
+                split_gap_mm: Number(settings.splitGap ?? 0),
             });
             const jobId = await startNupJobBackend(serverPath, backendSettings);
             void previewPerfLog('nup-export ACCEPTED', {
-                trace_id: (settings as any).diagnosticTraceId || '',
+                trace_id: settings.diagnosticTraceId || '',
                 job_id: jobId,
-                preview_capacity: Number((settings as any).diagnosticPreviewCapacity ?? -1),
+                preview_capacity: Number(settings.diagnosticPreviewCapacity ?? -1),
             });
             ctx.setCancelHandler?.(async () => {
                 await cancelNupJobBackend(jobId);
@@ -302,7 +397,7 @@ export async function runProcessEngine(
 
                 if (status.status === 'completed') {
                     void previewPerfLog('nup-export COMPLETE', {
-                        trace_id: (settings as any).diagnosticTraceId || '',
+                        trace_id: settings.diagnosticTraceId || '',
                         job_id: jobId,
                     });
                     done = true;
@@ -312,8 +407,11 @@ export async function runProcessEngine(
                         && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
                         && status.output_path
                     ) ? status.output_path as string : undefined;
-                    const sp = (settings as any).savePrintConfig;
-                    const autoSavePrint = !!((settings as any).autoSavePrint && sp?.folder);
+                    const artifactLease = typeof status.artifact_lease === 'string'
+                        ? status.artifact_lease
+                        : undefined;
+                    const sp = settings.savePrintConfig;
+                    const autoSavePrint = !!(settings.autoSavePrint && sp?.folder);
                     let blob: Blob;
                     if (!nativeOutputPath || autoSavePrint) {
                         setProcessStatus(i18n.t('lib.processHandlers:dang_tai_file_ket_qua_ve'));
@@ -321,9 +419,15 @@ export async function runProcessEngine(
                     } else {
                         blob = new Blob(['native-path'], { type: 'application/pdf' });
                     }
+                    // LIFECYCLE (audit 2026-08-25 §REV.11): token phải đi cùng
+                    // carrier trước khi tab/history nhận revision mới.
+                    tagArtifactLeaseToken(blob, artifactLease);
 
                     if (spawnNewTab && onSpawnTab) {
-                        const outputFile = new File([blob], newFileName, { type: 'application/pdf' });
+                        const outputFile = tagArtifactLeaseToken(
+                            new File([blob], newFileName, { type: 'application/pdf' }),
+                            artifactLease,
+                        );
                         if (nativeOutputPath) {
                             Object.defineProperty(outputFile, 'path', { value: nativeOutputPath });
                             try {
@@ -347,8 +451,8 @@ export async function runProcessEngine(
                             setProcessStatus(i18n.t('lib.processHandlers:dang_tu_dong_luu_file_in'));
                             const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../lib/savePrintFiles');
                             const cncMode = settings.imposerMode === 'cnc';
-                            const cncTwoSided = !!(settings as any).cncTwoSided;
-                            const separateCut = isPageSheet || !!(settings as any).separateCutPage;
+                            const cncTwoSided = !!settings.cncTwoSided;
+                            const separateCut = isPageSheet || !!settings.separateCutPage;
                             const { ok } = await savePrintFilesToFolder(blob, sp.folder, {
                                 nameMode: sp.nameMode, folderMode: sp.folderMode,
                                 separateCut, includeOrderCode: sp.includeOrderCode, includeDate: sp.includeDate,
@@ -366,20 +470,20 @@ export async function runProcessEngine(
                                     onClick: () => { import('@tauri-apps/plugin-shell').then(m => m.open(sp.folder)).catch(() => {}); },
                                 }
                             );
-                        } catch (e: any) {
+                        } catch (e: unknown) {
                             // UIUX (audit 2026-07-27 §D-15): câu Việt + hướng khắc phục thay vì e.message thô
                             setError(formatError(e, i18n.t('lib.processHandlers:binh_xong_nhung_luu_file_in_loi', { defaultValue: 'Bình xong nhưng tự động lưu file in lỗi' })));
                         }
                     }
                 } else if (status.status === 'failed') {
                     void previewPerfLog('nup-export FAILED', {
-                        trace_id: (settings as any).diagnosticTraceId || '',
+                        trace_id: settings.diagnosticTraceId || '',
                         job_id: jobId,
                     });
                     throw new Error(status.error || i18n.t('lib.processHandlers:loi_xu_ly_he_thong'));
                 } else if (status.status === 'cancelled') {
                     void previewPerfLog('nup-export CANCELLED', {
-                        trace_id: (settings as any).diagnosticTraceId || '',
+                        trace_id: settings.diagnosticTraceId || '',
                         job_id: jobId,
                     });
                     throw new Error("ABORT_BY_USER");
@@ -398,10 +502,11 @@ export async function runProcessEngine(
             setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_du_lieu_qua_backend_unified'));
             const { imposePdfViaBackend } = await import('../lib/pdfImposer');
             let serverPath: string;
-            if ((window as any).__TAURI_INTERNALS__ && (file as any)?.path) {
+            const filePath = (file as FileWithPath).path;
+            if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ && filePath) {
                 // Desktop backend runs on the same machine, so use the physical file directly.
                 // This avoids reading and uploading hundreds of MB before imposition.
-                serverPath = (file as any).path;
+                serverPath = filePath;
             } else {
                 const { uploadFileForNup } = await import('../lib/api');
                 serverPath = await uploadFileForNup(file);
@@ -410,7 +515,7 @@ export async function runProcessEngine(
             const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
 
             const nativeOutputPath = (
-                (window as any).__TAURI_INTERNALS__
+                (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
                 && result.outputPath
                 && result.outputPath !== 'results'
             ) ? result.outputPath : undefined;
@@ -423,7 +528,7 @@ export async function runProcessEngine(
                         try {
                             const { stat } = await import('@tauri-apps/plugin-fs');
                             const info = await stat(nativeOutputPath);
-                            Object.defineProperty(outputFile, 'size', { value: Number((info as any).size || 0) });
+                            Object.defineProperty(outputFile, 'size', { value: Number(info.size || 0) });
                         } catch {
                             // The physical path is sufficient for rendering even if size metadata is unavailable.
                         }
@@ -439,8 +544,8 @@ export async function runProcessEngine(
             }
         }
         return PROCESS_COMPLETED;
-    } catch (e: any) {
-        if (e.message === "ABORT_BY_USER") {
+    } catch (e: unknown) {
+        if (e instanceof Error && e.message === "ABORT_BY_USER") {
             // Silently abort, user cancelled
             return PROCESS_CANCELED;
         }
@@ -487,7 +592,7 @@ export async function runCatalogPlan(
 
         // Tuân thủ kết quả cuối cùng: bình catalog trên file đã áp dụng sửa đổi trang.
         const workingBytes = await ctx.getWorkingBytes();
-        const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+        const workingFile = new File([asBlobPart(workingBytes)], file.name, { type: 'application/pdf' });
         const { uploadFileForNup } = await import('../lib/api');
         const serverPath = await uploadFileForNup(workingFile);
         const batchResults = await imposeCatalogBatchViaBackend(serverPath, planResult.jobs, sheetSettings, setProcessStatus, 'results');
@@ -516,7 +621,7 @@ export async function runCatalogPlan(
             const existingUri = pg.node.get(PDFName.of('PlateInfoURI'));
             if (existingUri) {
                 globalPlateNum++;
-                let rawStr = (existingUri as any).decodeText?.() || (existingUri as any).value || String(existingUri);
+                let rawStr = readPdfString(existingUri);
                 rawStr = rawStr.replace(/^\(|\)$/g, '');
                 try {
                     const decoded = decodeURIComponent(rawStr);
@@ -529,7 +634,7 @@ export async function runCatalogPlan(
                 const existing = pg.node.get(PDFName.of('PlateInfo'));
                 if (existing) {
                     globalPlateNum++;
-                    const oldStr = (existing as any).decodeText?.() || (existing as any).value || String(existing);
+                    const oldStr = readPdfString(existing);
                     const renumbered = oldStr.replace(/^(Kẽm|Plate) \d+/, `$1 ${globalPlateNum}`);
                     pg.node.set(PDFName.of('PlateInfo'), PDFString.of(renumbered));
                 }
@@ -537,11 +642,11 @@ export async function runCatalogPlan(
         }
 
         const mergedBytes = await mergedDoc.save();
-        const mergedBlob = new Blob([mergedBytes as any], { type: 'application/pdf' });
+        const mergedBlob = new Blob([asBlobPart(mergedBytes)], { type: 'application/pdf' });
         const baseName = file.name.replace(/\.[^/.]+$/, '');
         const mergedFileName = `Kem_Gop_${baseName}_[${successCount}_Kem].pdf`;
 
-        const batchOutputPayload = {
+        const batchOutputPayload: BatchOutput = {
             docs: batchResults.filter(r => r.blob.size > 0).map(r => ({ blob: r.blob, filename: r.filename, report: r.report })),
             mergedBlob
         };
@@ -554,7 +659,7 @@ export async function runCatalogPlan(
             await commitWorkingFile(mergedBlob, mergedFileName);
         }
         return PROCESS_COMPLETED;
-    } catch (e: any) {
+    } catch (e: unknown) {
         // UIUX (audit 2026-07-27 §D-15): dịch lỗi kỹ thuật, Hủy thì không báo đỏ
         if (isCanceled(e)) return PROCESS_CANCELED;
         const message = formatError(e, i18n.t('lib.processHandlers:khong_xu_ly_duoc_catalog', { defaultValue: 'Không xử lý được Catalog' }));
@@ -570,26 +675,31 @@ export async function runCatalogPlan(
 //  Preprocess Handlers
 // ═════════════════════════════════════════════
 
-export async function runShuffle(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
-    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+export async function runShuffle(ctx: ProcessContext, settings: ProcessHandlerSettings<ShuffleSettings>): Promise<ProcessOutcome> {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;    const shufflePresetId = settings.presetId ?? '';
+    const shuffleRule = settings.rule ?? '';
+    const shuffleGroupSize = settings.groupSize ?? 1;
+    const shuffleMode = settings.mode ?? 'normal';
+    const shuffleSpecialAction = settings.specialAction ?? 'odd_first';
+    const shuffleEvenOddAction = (['odd_first', 'even_first', 'interleave', 'reverse_even'] as const).includes(shuffleSpecialAction as 'odd_first' | 'even_first' | 'interleave' | 'reverse_even') ? shuffleSpecialAction as 'odd_first' | 'even_first' | 'interleave' | 'reverse_even' : 'odd_first';
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang') + LONG_TASK_HINT());
     try {
         const buildBackendRequest = (totalPages: number) => {
             let action = 'reverse';
             let mapping: number[] = [];
-            if (settings.presetId === 'special') {
-                if (settings.specialAction === 'reverse') action = 'reverse';
-                else if (settings.specialAction === 'odd_first') action = 'odd_first';
+            if (shufflePresetId === 'special') {
+                if (shuffleSpecialAction === 'reverse') action = 'reverse';
+                else if (shuffleSpecialAction === 'odd_first') action = 'odd_first';
                 else action = 'even_first';
             } else {
                 action = 'custom';
-                const rules = parseRule(settings.rule);
+                const rules = parseRule(shuffleRule);
                 mapping = applyRule(
                     rules,
                     totalPages,
-                    Math.max(1, settings.groupSize),
-                    settings.mode,
+                    Math.max(1, shuffleGroupSize),
+                    shuffleMode,
                 ).map((item) => item.srcPage + 1);
             }
             return { action, mapping };
@@ -606,8 +716,8 @@ export async function runShuffle(ctx: ProcessContext, settings: any): Promise<Pr
             const exceedsSizeLimit = file.size > 300 * 1024 * 1024;
             const hasUnknownPathSize = !(file.size > 0);
             const mustUsePathBackend = exceedsSizeLimit || hasUnknownPathSize;
-            const simpleSpecialAction = settings.presetId === 'special'
-                && ['reverse', 'odd_first', 'even_first'].includes(settings.specialAction);
+            const simpleSpecialAction = shufflePresetId === 'special'
+                && ['reverse', 'odd_first', 'even_first'].includes(shuffleSpecialAction);
             let metadata: PdfPathMetadata | undefined;
             if (!mustUsePathBackend || !simpleSpecialAction) {
                 try {
@@ -619,7 +729,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any): Promise<Pr
             }
             const shouldUsePathBackend = mustUsePathBackend
                 || (metadata?.page_count ?? 0) > 1000;
-            if (shouldUsePathBackend && settings.presetId === 'special' && settings.specialAction === 'split_odd_even') {
+            if (shouldUsePathBackend && shufflePresetId === 'special' && shuffleSpecialAction === 'split_odd_even') {
                 if (!metadata) throw new Error(tv('Không đọc được số trang của file PDF.'));
                 const oddPages = Array.from(
                     { length: Math.ceil(metadata.page_count / 2) },
@@ -660,18 +770,18 @@ export async function runShuffle(ctx: ProcessContext, settings: any): Promise<Pr
         const srcPdf = await PDFDocument.load(inputBytes);
         const totalPages = srcPdf.getPageCount();
 
-        if ((totalPages > 1000 || file.size > 300 * 1024 * 1024) && settings.specialAction !== 'split_odd_even') {
+        if ((totalPages > 1000 || file.size > 300 * 1024 * 1024) && shuffleSpecialAction !== 'split_odd_even') {
             // UIUX (audit 2026-07-27 §D-09)
             setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang') + LONG_TASK_HINT());
             const { backendShufflePages } = await import('../lib/api');
             const { action, mapping } = buildBackendRequest(totalPages);
-            const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
+            const workingFile = new File([asBlobPart(inputBytes)], file.name, { type: 'application/pdf' });
             const blob = await backendShufflePages(workingFile, action, mapping);
             const newFileName = `Shuffled_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); }
         } else {
-            if (settings.presetId === 'special' && settings.specialAction === 'split_odd_even') {
+            if (shufflePresetId === 'special' && shuffleSpecialAction === 'split_odd_even') {
                 const odds = Array.from({ length: totalPages }, (_, i) => i).filter(i => i % 2 === 0);
                 const evens = Array.from({ length: totalPages }, (_, i) => i).filter(i => i % 2 === 1);
 
@@ -682,8 +792,8 @@ export async function runShuffle(ctx: ProcessContext, settings: any): Promise<Pr
                 const outputBytesEven = await executeShuffle(srcPdf, mappingEven);
 
                 if (onSpawnTab) {
-                    onSpawnTab(new File([new Blob([outputBytesOdd as any], { type: 'application/pdf' })], `TrangLe_${file.name}`, { type: 'application/pdf' }));
-                    onSpawnTab(new File([new Blob([outputBytesEven as any], { type: 'application/pdf' })], `TrangChan_${file.name}`, { type: 'application/pdf' }));
+                    onSpawnTab(new File([new Blob([asBlobPart(outputBytesOdd)], { type: 'application/pdf' })], `TrangLe_${file.name}`, { type: 'application/pdf' }));
+                    onSpawnTab(new File([new Blob([asBlobPart(outputBytesEven)], { type: 'application/pdf' })], `TrangChan_${file.name}`, { type: 'application/pdf' }));
                     ctx.setReportMsg('');
                 } else {
                     throw new Error(tv("Môi trường hiện tại không hỗ trợ mở nhiều Tab."));
@@ -691,24 +801,24 @@ export async function runShuffle(ctx: ProcessContext, settings: any): Promise<Pr
                 return PROCESS_COMPLETED;
             }
 
-            let mapping: any[] = [];
-            if (settings.presetId === 'special') {
-                if (settings.specialAction === 'reverse') mapping = reversePages(totalPages);
-                else mapping = shuffleEvenOdd(totalPages, settings.specialAction);
+            let mapping: PageMapping[] = [];
+            if (shufflePresetId === 'special') {
+                if (shuffleSpecialAction === 'reverse') mapping = reversePages(totalPages);
+                else mapping = shuffleEvenOdd(totalPages, shuffleEvenOddAction);
             } else {
-                const rules = parseRule(settings.rule);
+                const rules = parseRule(shuffleRule);
                 if (rules.length === 0) throw new Error(tv("Quy tắc trống hoặc không hợp lệ."));
-                mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode);
+                mapping = applyRule(rules, totalPages, Math.max(1, shuffleGroupSize), shuffleMode);
             }
             const outputBytes = await executeShuffle(srcPdf, mapping);
-            const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
+            const blob = new Blob([asBlobPart(outputBytes)], { type: 'application/pdf' });
             const newFileName = `Shuffled_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
         return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) {
+    } catch (err: unknown) {
         if (isCanceled(err)) return PROCESS_CANCELED;
         const message = formatError(err, i18n.t('lib.processHandlers:khong_xao_tron_duoc_trang', { defaultValue: 'Không xáo trộn được trang' }));
         setError(message);
@@ -717,7 +827,8 @@ export async function runShuffle(ctx: ProcessContext, settings: any): Promise<Pr
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runResize(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
+export async function runResize(ctx: ProcessContext, rawSettings: unknown): Promise<ProcessOutcome> {
+    const settings = rawSettings as ProcessHandlerSettings<PageResizerSettings>;
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
     const perfStarted = perfNow();
@@ -732,6 +843,10 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
     setError(''); setIsProcessing(true); setProcessStatus(processingStatus);
 
     const MM_TO_PT = 2.83465;
+    const targetW = settings.targetW ?? 0;
+    const targetH = settings.targetH ?? 0;
+    const scaleMode = settings.scaleMode ?? 'fit';
+    const applyToStr = settings.applyToStr ?? 'all';
     const resizeMode: string = settings.resizeMode || 'auto';
     const pageSizeMode: 'fixed' | 'fixed_width' | 'fixed_height' = settings.pageSizeMode || 'fixed';
     const lockedAxis = pageSizeMode === 'fixed_width' || pageSizeMode === 'fixed_height';
@@ -739,9 +854,9 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
     // 'center_no_scale' là ca thật: tem 5×10 đưa về chiều cao 15 → trang 7.5×15,
     // tem giữ nguyên 5×10 nằm giữa. Chỉ 'fill'/'stretch' mới phải hạ về 'fit'
     // vì khổ đích đã sinh ra đúng tỷ lệ nội dung nên không còn phần dư để xử lý.
-    const effectiveScaleMode = lockedAxis && settings.scaleMode !== 'center_no_scale'
+    const effectiveScaleMode = lockedAxis && scaleMode !== 'center_no_scale'
         ? 'fit'
-        : settings.scaleMode;
+        : scaleMode;
     const newFileName = `Resized_${file.name}`;
     // PERF (audit 2026-08-01 §RT.12): log mốc đầu để ca bị treo vẫn cho biết
     // đã vào handler với đường xử lý nào; không ghi tên/path của file khách hàng.
@@ -815,7 +930,10 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
             ['mirror', 'trajectory', 'inpaint', 'image'].includes(fillMode) && hasGapMode;
         const wantSolidFill =
             fillMode === 'solid' && hasGapMode;
-        const wantResizeByContent = settings.resizeByContent === true;
+        // RESIZE (audit 2026-08-24 §RZ-STATE): state cũ không được kéo
+        // Fill/Stretch vào worker nền động khi UI đã ẩn vùng trống.
+        const contentAwareScale = effectiveScaleMode === 'fit' || effectiveScaleMode === 'center_no_scale';
+        const wantResizeByContent = settings.resizeByContent === true && contentAwareScale;
         // RESIZE (audit 2026-08-01 §R.5): nền đã bị ẩn trong mode khóa một
         // chiều thì state cũ không được âm thầm đổi transparency/màu output.
         const effectiveFillMode = lockedAxis ? 'white' : fillMode;
@@ -834,13 +952,13 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
         const isDownsizingDimensions = (width: number, height: number): boolean => {
             if (!(width > 0 && height > 0)) return false;
             if (pageSizeMode === 'fixed_width') {
-                return settings.targetW * MM_TO_PT < width * 0.95;
+                return targetW * MM_TO_PT < width * 0.95;
             }
             if (pageSizeMode === 'fixed_height') {
-                return settings.targetH * MM_TO_PT < height * 0.95;
+                return targetH * MM_TO_PT < height * 0.95;
             }
             const srcArea = width * height;
-            const dstArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
+            const dstArea = (targetW * MM_TO_PT) * (targetH * MM_TO_PT);
             return dstArea > 0 && dstArea < srcArea * 0.9;
         };
         const isDownsizingByProbe = async (sourcePath?: string): Promise<boolean> => {
@@ -924,8 +1042,8 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
                 ? (settings.bgFillColor || '#ffffff')
                 : '#ffffff';
             await emit(await backendResizePages(
-                inputFile, settings.targetW, settings.targetH, effectiveScaleMode,
-                settings.applyToStr || 'all', targetDpi, resizeMode,
+                inputFile, targetW, targetH, effectiveScaleMode,
+                applyToStr || 'all', targetDpi, resizeMode,
                 effectiveFillMode, backendFillColor, sourcePath,
                 pageSizeMode,
                 wantResizeByContent,
@@ -968,8 +1086,8 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
                 ? settings.targetDpi
                 : ((autoDownsizeFromPath || await isDownsizingByProbe(sourcePath)) ? 300 : 0);
             await emit(await backendResizePages(
-                file, settings.targetW, settings.targetH, effectiveScaleMode,
-                settings.applyToStr || 'all', targetDpi, resizeMode,
+                file, targetW, targetH, effectiveScaleMode,
+                applyToStr || 'all', targetDpi, resizeMode,
                 wantSolidFill ? 'solid' : 'white',
                 wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
                 sourcePath,
@@ -983,20 +1101,15 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
         let inputBytes: Uint8Array;
         try {
             inputBytes = await getWorkingBytes();
-        } catch (readErr) {
-            console.warn('[resize] không đọc được bytes vào RAM, fallback backend:', readErr);
-            const { backendResizePages } = await import('../lib/api');
-            perfRoute = 'backend_upload_read_fallback';
-            await emit(await backendResizePages(
-                file, settings.targetW, settings.targetH, settings.scaleMode,
-                settings.applyToStr || 'all', 0, resizeMode,
-                wantSolidFill ? 'solid' : 'white',
-                wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
-                undefined,
-                pageSizeMode,
-                wantResizeByContent,
-            ));
-            return PROCESS_COMPLETED;
+        } catch {
+            // REVISION (audit 2026-08-25 §REV.09): backing `file` không chứng
+            // minh tương đương Viewer khi materialize order/rotation thất bại.
+            // Dừng tường minh thay vì tạo output "thành công" từ revision cũ.
+            perfRoute = 'working_bytes_failed';
+            const failure = new Error(i18n.t('lib.processHandlers:khong_doc_duoc_pdf_lam_viec', {
+                defaultValue: 'Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại.',
+            }));
+            throw failure;
         }
 
         // Soi pdf-lib để lấy số trang + quyết định downsample
@@ -1020,7 +1133,7 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
         setProcessStatus(processingStatus);
 
         // Giảm dữ liệu theo khổ mới (downsample)
-        const targetArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
+        const targetArea = (targetW * MM_TO_PT) * (targetH * MM_TO_PT);
         const isDownsizing = sourceArea > 0 && targetArea > 0 && targetArea < sourceArea * 0.9;
         const targetDpi: number = typeof settings.targetDpi === 'number'
             ? settings.targetDpi
@@ -1030,10 +1143,10 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
         const runBackend = async (): Promise<Blob> => {
             const { backendResizePages } = await import('../lib/api');
             perfRoute = 'backend_upload';
-            const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+            const workingFile = new File([asBlobPart(workingBytes)], file.name, { type: 'application/pdf' });
             return backendResizePages(
-                workingFile, settings.targetW, settings.targetH, effectiveScaleMode,
-                settings.applyToStr || 'all', targetDpi, resizeMode,
+                workingFile, targetW, targetH, effectiveScaleMode,
+                applyToStr || 'all', targetDpi, resizeMode,
                 wantSolidFill ? 'solid' : 'white',
                 wantSolidFill ? (settings.bgFillColor || '#ffffff') : '#ffffff',
                 undefined,
@@ -1049,21 +1162,21 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
         } else {
             try {
                 let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
-                if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {
-                    applyToPages = settings.applyToStr;
+                if (applyToStr === 'even' || applyToStr === 'odd' || applyToStr === 'all') {
+                    applyToPages = applyToStr;
                 } else {
-                    const ranges = parseRanges(settings.applyToStr, totalPages);
+                    const ranges = parseRanges(applyToStr, totalPages);
                     applyToPages = ranges.flatMap(([start, end]: [number, number]) => Array.from({ length: end - start + 1 }, (_, i) => start + i));
                 }
                 const outputBytes = await resizePages(workingBytes, {
-                    targetW: settings.targetW,
-                    targetH: settings.targetH,
+                    targetW: targetW,
+                    targetH: targetH,
                     scaleMode: effectiveScaleMode,
                     applyTo: applyToPages,
                     bgFillMode: wantSolidFill ? 'solid' : undefined,
                     bgFillColor: wantSolidFill ? settings.bgFillColor : undefined,
                 });
-                resizedBlob = new Blob([outputBytes as any], { type: 'application/pdf' });
+                resizedBlob = new Blob([asBlobPart(outputBytes)], { type: 'application/pdf' });
             } catch (feErr) {
                 console.warn('[resize] pdf-lib thất bại, fallback backend:', feErr);
                 resizedBlob = await runBackend();
@@ -1072,14 +1185,14 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
 
         await emit(resizedBlob);
         return PROCESS_COMPLETED;
-    } catch (err: any) {
+    } catch (err: unknown) {
         const canceled = isCanceled(err);
         logResizePerf({
             stage: 'handler_error',
             route: perfRoute,
             totalMs: roundMs(perfNow() - perfStarted),
             canceled,
-            errorType: err?.name || typeof err,
+            errorType: err instanceof Error ? err.name : typeof err,
         });
         // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
         if (canceled) return PROCESS_CANCELED;
@@ -1090,17 +1203,28 @@ export async function runResize(ctx: ProcessContext, settings: any): Promise<Pro
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runTrimShift(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
+export async function runTrimShift(ctx: ProcessContext, settings: ProcessHandlerSettings<TrimShiftSettings>): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_cat_xen_doi_noi_dung') + LONG_TASK_HINT());
     try {
         const inputBytes = await getWorkingBytes();
         const { backendTrimShift } = await import('../lib/api');
-        const { UNIT_TO_MM } = await import('../components/preprocess-tools/TrimShiftTool');
-        const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
+        const { UNIT_TO_MM } = await import('../components/preprocess-tools/trimShiftUnits');
+        const workingFile = new File([asBlobPart(inputBytes)], file.name, { type: 'application/pdf' });
         // Backend luôn nhận mm; quy đổi từ đơn vị người dùng chọn.
         const k = UNIT_TO_MM[settings.unit as keyof typeof UNIT_TO_MM] ?? 1;
+        const splitSettings = settings.split;
+        const splitCount = splitSettings?.count === 3 ? 3 : 2;
+        const splitPieces = Array.from({ length: splitCount }, (_, index) => {
+            const piece = splitSettings?.pieces?.[index] ?? { top: 0, bottom: 0, left: 0, right: 0 };
+            return {
+                top: (piece.top || 0) * k,
+                bottom: (piece.bottom || 0) * k,
+                left: (piece.left || 0) * k,
+                right: (piece.right || 0) * k,
+            };
+        });
         const config = {
             trimTop: (settings.trimTop || 0) * k,
             trimBottom: (settings.trimBottom || 0) * k,
@@ -1117,6 +1241,14 @@ export async function runTrimShift(ctx: ProcessContext, settings: any): Promise<
             mirrorFill: !!settings.mirrorFill,
             contentMode: settings.contentMode === 'clip' ? 'clip' : 'original',
             keepBleed: !!settings.keepBleed,
+            ...(splitSettings?.enabled ? {
+                split: {
+                    enabled: true,
+                    axis: splitSettings.axis === 'horizontal' ? 'horizontal' : 'vertical',
+                    count: splitCount,
+                    pieces: splitPieces,
+                },
+            } : {}),
         };
         const blob = await backendTrimShift(workingFile, settings.applyToStr || 'all', config);
         const newFileName = `TrimShift_${file.name}`;
@@ -1124,7 +1256,7 @@ export async function runTrimShift(ctx: ProcessContext, settings: any): Promise<
         else { await commitWorkingFile(blob, newFileName); }
         return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) {
+    } catch (err: unknown) {
         if (isCanceled(err)) return PROCESS_CANCELED;
         const message = formatError(err, i18n.t('lib.processHandlers:khong_cat_xen_doi_duoc', { defaultValue: 'Không cắt xén/dời được nội dung' }));
         setError(message);
@@ -1135,7 +1267,7 @@ export async function runTrimShift(ctx: ProcessContext, settings: any): Promise<
 
 async function publishBackendSplitResult(
     ctx: ProcessContext,
-    settings: any,
+    settings: ProcessHandlerSettings<SplitSettings>,
     result: BackendSplitPdfResult,
 ): Promise<ProcessOutcome> {
     if (result.kind === 'zip') {
@@ -1168,17 +1300,19 @@ async function publishBackendSplitResult(
     return PROCESS_COMPLETED;
 }
 
-export async function runSplit(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
+export async function runSplit(ctx: ProcessContext, settings: ProcessHandlerSettings<SplitSettings>): Promise<ProcessOutcome> {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg, getWorkingBytes } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_tach_pdf') + LONG_TASK_HINT());
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_tach_pdf') + LONG_TASK_HINT());    const splitMode = settings.mode ?? 'by_range';
+    const splitRanges = settings.ranges ?? '';
+    const splitPageListStr = settings.pageListStr ?? '';
     try {
         let pageList: number[] = [];
-        if (settings.mode === 'extract_pages') {
-            pageList = settings.pageListStr.split(',').map((s: string) => parseInt(s.trim())).filter((n: number) => !isNaN(n));
+        if (splitMode === 'extract_pages') {
+            pageList = splitPageListStr.split(',').map((s: string) => parseInt(s.trim())).filter((n: number) => !isNaN(n));
         }
         const pagesPerFile = Math.max(1, Math.trunc(Number(settings.pagesPerFile) || 1));
-        const needsDetachedMultiOutput = !settings.spawnNewTab && settings.mode !== 'extract_pages';
+        const needsDetachedMultiOutput = !settings.spawnNewTab && splitMode !== 'extract_pages';
 
         let sourcePath: string | undefined;
         try { sourcePath = await ctx.getWorkingSourcePath?.(); }
@@ -1201,8 +1335,8 @@ export async function runSplit(ctx: ProcessContext, settings: any): Promise<Proc
             const { backendSplitPdf } = await import('../lib/api');
             const result = await backendSplitPdf(
                 file,
-                settings.mode,
-                { ranges: settings.ranges, pagesPerFile, pageList },
+                splitMode,
+                { ranges: splitRanges, pagesPerFile, pageList },
                 sourcePath,
             );
             return publishBackendSplitResult(ctx, settings, result);
@@ -1216,24 +1350,24 @@ export async function runSplit(ctx: ProcessContext, settings: any): Promise<Proc
         if (totalPages > 1000 || file.size > 300 * 1024 * 1024 || needsDetachedMultiOutput) {
 
             const { backendSplitPdf } = await import('../lib/api');
-            const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
-            const result = await backendSplitPdf(workingFile, settings.mode, { ranges: settings.ranges, pagesPerFile, pageList });
+            const workingFile = new File([asBlobPart(inputBytes)], file.name, { type: 'application/pdf' });
+            const result = await backendSplitPdf(workingFile, splitMode, { ranges: splitRanges, pagesPerFile, pageList });
             return publishBackendSplitResult(ctx, settings, result);
         } else {
-            const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile, pageList }, file.name.replace('.pdf', ''));
+            const results = await splitPdf(inputBytes, splitMode, { ranges: splitRanges, pagesPerFile, pageList }, file.name.replace('.pdf', ''));
             if (results.length === 0) throw new Error(tv("Thao tác tách không tạo ra file nào."));
             if (settings.spawnNewTab && onSpawnTab) {
-                for (const r of results) { onSpawnTab(new File([new Blob([r.bytes as any])], r.filename, { type: 'application/pdf' })); }
+                for (const r of results) { onSpawnTab(new File([new Blob([asBlobPart(r.bytes)])], r.filename, { type: 'application/pdf' })); }
                 setReportMsg(i18n.t('lib.processHandlers:da_tao_results_length_tab_moi', { count: results.length }));
             } else {
                 const first = results[0];
-                await commitWorkingFile(new Blob([first.bytes as any], { type: 'application/pdf' }), first.filename);
+                await commitWorkingFile(new Blob([asBlobPart(first.bytes)], { type: 'application/pdf' }), first.filename);
                 setReportMsg(i18n.t('lib.processHandlers:da_tach_thanh_results_length_file', { count: results.length }));
             }
         }
         return PROCESS_COMPLETED;
     // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
-    } catch (err: any) {
+    } catch (err: unknown) {
         if (isCanceled(err)) return PROCESS_CANCELED;
         const message = formatError(err, i18n.t('lib.processHandlers:khong_tach_duoc_pdf', { defaultValue: 'Không tách được PDF' }));
         setError(message);
@@ -1242,16 +1376,16 @@ export async function runSplit(ctx: ProcessContext, settings: any): Promise<Proc
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
-export async function runMerge(ctx: ProcessContext, settings: any): Promise<ProcessOutcome> {
+export async function runMerge(ctx: ProcessContext, settings: ProcessHandlerSettings<MergeSettings>): Promise<ProcessOutcome> {
     const {
         file, onSpawnTab, commitWorkingFile, setError, setIsProcessing,
         setProcessStatus, setCancelHandler, getWorkingBytes,
     } = ctx;
     // UIUX (audit 2026-07-27 §D-09): thêm hậu tố trấn an cho tác vụ chạy dài
-    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_ghep_pdf') + LONG_TASK_HINT());
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_ghep_pdf') + LONG_TASK_HINT());    const mergeMode = settings.mode ?? 'merge_files';
 
     try {
-        const isInterleave = settings.mode === 'interleave';
+        const isInterleave = mergeMode === 'interleave';
         let workingBytes: Uint8Array | null = null;
         let workingBaseFile: File | null = null;
         let inputFiles: File[];
@@ -1260,7 +1394,7 @@ export async function runMerge(ctx: ProcessContext, settings: any): Promise<Proc
             // FILEIO (audit 2026-08-02 §COMB.1): Interleave chỉ dùng đúng hai nguồn;
             // không đọc/bake file của tab hiện tại vì engine không sử dụng nó.
             inputFiles = [settings.oddFile, settings.evenFile]
-                .filter((candidate: File | undefined): candidate is File => Boolean(candidate));
+                .filter((candidate: File | null | undefined): candidate is File => Boolean(candidate));
         } else {
             // Merge thường phải dùng bản working đã áp dụng mọi chỉnh sửa trang.
             workingBytes = await getWorkingBytes();
@@ -1316,7 +1450,7 @@ export async function runMerge(ctx: ProcessContext, settings: any): Promise<Proc
             return PROCESS_COMPLETED;
         }
 
-        const outputBytes = await mergePdf(workingBytes, settings);
+        const outputBytes = await mergePdf(workingBytes, settings as MergeSettings);
         const blob = new Blob(
             [new Uint8Array(outputBytes).buffer],
             { type: 'application/pdf' },

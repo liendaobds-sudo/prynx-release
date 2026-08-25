@@ -116,12 +116,12 @@ export async function warmupWorkspaceChunks(
  */
 export async function warmupPdfium(): Promise<void> {
     if (pdfiumWarmed) return;
-    if (!(window as any).__TAURI_INTERNALS__) return;
+    if (!window.__TAURI_INTERNALS__) return;
     pdfiumWarmed = true;
     try {
         const { createBlankPdfFile } = await import('./createBlankPdf');
         const f = await createBlankPdfFile({ widthMm: 50, heightMm: 50 });
-        const path = (f as any).path;
+        const path = f.path;
         if (!path) return;
         const { invoke } = await import('@tauri-apps/api/core');
         // PERF (audit 2026-08-08 §RENDER.2): bootstrap đi lane tương tác; metadata đi
@@ -186,15 +186,13 @@ export function scheduleWarmupPdfjs(): () => void {
             }
         })();
     };
-    const ric = (window as any).requestIdleCallback as
-        | ((cb: () => void, opts?: any) => number)
-        | undefined;
+    const ric = window.requestIdleCallback;
     if (ric) {
         // timeout NGẮN (300ms) để warmup khởi động sớm, không chờ idle lâu tới 2s.
         const id = ric(run, { timeout: 300 });
         return () => {
             cancelled = true;
-            (window as any).cancelIdleCallback?.(id);
+            window.cancelIdleCallback?.(id);
             if (pdfjsTimer !== null) clearTimeout(pdfjsTimer);
         };
     }

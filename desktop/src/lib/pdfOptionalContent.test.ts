@@ -116,6 +116,30 @@ async function copyInto(src: PDFDocument): Promise<PDFDocument> {
 }
 
 describe('pdfOptionalContent — giữ layer qua pdf-lib copyPages', () => {
+    it('không ép XObject ảnh dạng stream thành PDFDict khi bake layer', async () => {
+        const { doc } = await makeSource();
+        const imageRef = doc.context.register(doc.context.stream(
+            new Uint8Array([0]),
+            {
+                Type: 'XObject',
+                Subtype: 'Image',
+                Width: 1,
+                Height: 1,
+                ColorSpace: 'DeviceGray',
+                BitsPerComponent: 8,
+            },
+        ));
+        const page = doc.getPage(0);
+        const resources = page.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
+        resources?.set(PDFName.of('XObject'), doc.context.obj({ Im1: imageRef }));
+
+        const transfer = beginOptionalContentTransfer([doc]);
+        const out = await copyInto(doc);
+
+        expect(() => finishOptionalContentTransfer(transfer, out)).not.toThrow();
+        await expect(out.save()).resolves.toBeInstanceOf(Uint8Array);
+    });
+
     it('tái hiện bug: copyPages trơ làm mất /OCProperties', async () => {
         const { doc } = await makeSource();
         const out = await copyInto(doc);

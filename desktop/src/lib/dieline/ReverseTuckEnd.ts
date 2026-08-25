@@ -17,12 +17,9 @@ import {
 import {
     pt,
     line,
-    polyline,
-    arc,
     snap,
     computeBoundingBox,
     bezierSegment,
-    filletBezier,
 } from './utils';
 
 import { buildDustFlap, buildTuckFlap } from './sharedHelpers';
@@ -296,12 +293,9 @@ export function generateReverseTuckEnd(params: BoxParams): DielineModel {
     //    Chiều cao = W - T (bù trừ fold loss)
     //    Rãnh gài (slit lock) ở 2 bên tay gấp
     // ============================================================
-    const closureH = snap(W - T);
-
     // Kích thước rãnh gài (tham khảo script "6. Nô lệ hộp mềm.jsx")
     const sx1 = snap(SLIT_OFFSET_MM); // Vị trí rãnh gài từ mép
     const slitDropT = snap(SLIT_DEPTH_MM); // Chiều sâu khe gài
-    const reliefR = snap(T); // Bán kính bo giảm lực tại góc nhọn
 
     // --- D1. Closure Panel trên (trên Front Panel) ---
     const closureTopY = snap(yTop + T);

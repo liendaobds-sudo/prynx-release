@@ -119,12 +119,12 @@ describe('OfficeConvertTool lifecycle', () => {
     canUseMock.mockClear();
     prepareFileForUpload.mockImplementation(async (file: File) => file);
     installDefaultApi();
-    delete (window as any).__TAURI_INTERNALS__;
+    delete window.__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
     cleanup();
-    delete (window as any).__TAURI_INTERNALS__;
+    delete window.__TAURI_INTERNALS__;
   });
 
   it('khóa oracle 11 Office và mọi dạng Google file được hỗ trợ', () => {
@@ -233,7 +233,7 @@ describe('OfficeConvertTool lifecycle', () => {
   });
 
   it('Tauri single dùng native result path và không đọc PDF blob', async () => {
-    (window as any).__TAURI_INTERNALS__ = {};
+    window.__TAURI_INTERNALS__ = {};
     let fileForm: FormData | undefined;
     authenticatedFetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url.endsWith('/office-convert/status')) return Promise.resolve(jsonResponse(fullCapability));
@@ -258,7 +258,7 @@ describe('OfficeConvertTool lifecycle', () => {
   });
 
   it('Tauri batch truyền path kết quả thẳng sang copy native, không ghi lại bytes PDF', async () => {
-    (window as any).__TAURI_INTERNALS__ = {};
+    window.__TAURI_INTERNALS__ = {};
     tauriOpen.mockResolvedValue('D:/Output');
     tauriInvoke.mockImplementation((command: string, args?: Record<string, string>) => {
       if (command === 'copy_batch_pdf') {
@@ -328,7 +328,7 @@ describe('OfficeConvertTool lifecycle', () => {
   });
 
   it('Dừng batch abort file hiện tại thay vì chỉ dừng trước file kế tiếp', async () => {
-    (window as any).__TAURI_INTERNALS__ = {};
+    window.__TAURI_INTERNALS__ = {};
     tauriOpen.mockResolvedValue('D:\\Output');
     tauriInvoke.mockResolvedValue(undefined);
     let batchSignal: AbortSignal | undefined;
@@ -356,7 +356,7 @@ describe('OfficeConvertTool lifecycle', () => {
   });
 
   it('hạ quyền khi batch đang chờ sẽ abort request và không copy PDF cục bộ', async () => {
-    (window as any).__TAURI_INTERNALS__ = {};
+    window.__TAURI_INTERNALS__ = {};
     tauriOpen.mockResolvedValue('D:\\Output');
     let batchSignal: AbortSignal | undefined;
     authenticatedFetch.mockImplementation((url: string, init?: RequestInit) => {

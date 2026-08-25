@@ -15,6 +15,7 @@
 
 import { MM_TO_POINTS } from '../pdfImposer';
 import { solveOptimalNupLayout } from './NupGridSolver';
+import type { NupBlock, NupCell } from './NupGridSolver';
 import { generateBindingMap } from './VirtualMap';
 
 // ==================== TYPES ====================
@@ -176,9 +177,11 @@ export function recommendInNhanh(input: ProductInput): RecommendResult {
         return { options: [], errors };
     }
 
-    const rotatedSheet = (layout.cells[0] as any)?.isRotated === true;
-    const cols = (layout.blocks?.[0] as any)?.cols ?? 0;
-    const rows = (layout.blocks?.[0] as any)?.rows ?? 0;
+    const firstCell: NupCell | undefined = layout.cells[0];
+    const firstBlock: NupBlock | undefined = layout.blocks[0];
+    const rotatedSheet = firstCell?.isRotated === true;
+    const cols = firstBlock?.cols ?? 0;
+    const rows = firstBlock?.rows ?? 0;
     const sheetsPerCopy_ = sheetsPerCopy(input.pageCount, sigMode, foliosize);
     const sheetAreaPt = usableW * usableH;
     const spreadAreaPt = spread.w * spread.h;

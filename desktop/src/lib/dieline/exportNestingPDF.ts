@@ -254,7 +254,7 @@ export async function downloadNestingPDF(
         const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
         const svgElement = svgDoc.documentElement;
 
-        await (doc as any).svg(svgElement, {
+        await doc.svg(svgElement, {
             x: 0,
             y: 0,
             width: pageW,
@@ -309,7 +309,7 @@ export async function buildNestingPdfBlob(
     const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
     const svgElement = svgDoc.documentElement;
 
-    await (doc as any).svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
+    await doc.svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
 
     return doc.output('blob');
 }
@@ -341,7 +341,7 @@ async function renderSvgPage(
 ): Promise<void> {
     const parsed = new DOMParser().parseFromString(svgString, 'image/svg+xml');
     if (parsed.querySelector('parsererror')) throw new Error('SVG xếp khuôn không hợp lệ.');
-    await (doc as any).svg(parsed.documentElement, { x: 0, y: 0, width, height });
+    await doc.svg(parsed.documentElement, { x: 0, y: 0, width, height });
 }
 
 /** Build the correct one-page combined or two-page split tray/sleeve proof PDF. */

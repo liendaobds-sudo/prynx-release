@@ -77,6 +77,8 @@ export default function DielineCanvas2D({ rightSlot, isActive = true }: {
     // ratio in the store so both the 2D and 3D renderers use the same geometry.
     useEffect(() => {
         if (!artworkUrl) {
+            // Không có artwork thì xóa ratio đã dò để 2D/3D không giữ dữ liệu file cũ.
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- đồng bộ state dò ảnh với nguồn ngoại vi.
             setDetectedArtworkAspect(null);
             return;
         }
@@ -557,6 +559,9 @@ export default function DielineCanvas2D({ rightSlot, isActive = true }: {
                 </div>
             )}
             </div>
+            {/* UIUX (audit 2026-08-23 §DIELINE.LINT.01): chế độ chia đôi đã có
+                preview 3D thật; nhãn nổi chỉ thuộc canvas 2D đơn như hợp đồng cũ. */}
+            {!rightSlot && <PreviewThumbnail boxType={dieline.params.boxType} />}
         </div>
     );
 }
@@ -745,7 +750,7 @@ function PanelAnnotations({ panels, scale }: { panels: Panel[]; scale: number })
                                 x={cx}
                                 y={cy}
                                 textAnchor={ann.anchor || 'middle'}
-                                dominantBaseline={(ann.baseline || 'central') as any}
+                                dominantBaseline={(ann.baseline || 'central') as React.SVGProps<SVGTextElement>['dominantBaseline']}
                                 fill="#ff00ff"
                                 fontSize={fontSize}
                                 fontWeight="bold"
@@ -810,14 +815,6 @@ function SegmentLabels({ dieline, scale }: { dieline: DielineModel; scale: numbe
     // Dragged offsets per label
     const [offsets, setOffsets] = React.useState<Record<number, { dx: number; dy: number }>>({});
     const [dragState, setDragState] = React.useState<{ idx: number; sx: number; sy: number; odx: number; ody: number; sc: number } | null>(null);
-
-    const screenToSvg = React.useCallback((e: React.PointerEvent) => {
-        const svg = (e.target as Element).closest('svg') as SVGSVGElement | null;
-        if (!svg) return { x: 0, y: 0 };
-        const ctm = svg.getScreenCTM();
-        if (!ctm) return { x: 0, y: 0 };
-        return { x: (e.clientX - ctm.e) / ctm.a, y: (e.clientY - ctm.f) / ctm.d };
-    }, []);
 
     const onDown = React.useCallback((idx: number, e: React.PointerEvent) => {
         e.stopPropagation(); e.preventDefault();
@@ -1071,6 +1068,25 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
                 <Dim scale={scale} x1={trayRightX} y1={W + D} x2={trayRightX} y2={W + D + tG} label={`G=${tG}`} side="right" color="#88ee88" small />
                 {/* TH = tab (right) */}
                 <Dim scale={scale} x1={trayRightX} y1={W + D + tG + (D - 2 * T)} x2={trayRightX} y2={W + D + tG + (D - 2 * T) + tTH} label={`TH=${tTH}`} side="right" color="#88ee88" small />
+
+                {/* UIUX (audit 2026-08-23 §DIELINE.LINT.02): vỏ hộp diêm là
+                    một phần của model tray; hiển thị đủ L và chuỗi panel G/W/D/W/D. */}
+                {hasSleeve && (
+                    <>
+                        <Dim scale={scale} x1={sMinX} y1={sleeveTopY} x2={sMaxX} y2={sleeveTopY}
+                            label={`Vỏ L=${sL}`} side="top" color="#c084fc" />
+                        <Dim scale={scale} x1={sleeveRightX} y1={sMinY} x2={sleeveRightX} y2={sMinY + sG}
+                            label={`Mí=${sG}`} side="right" color="#c084fc" small />
+                        <Dim scale={scale} x1={sleeveRightX + offset * 3} y1={sMinY + sG} x2={sleeveRightX + offset * 3} y2={sMinY + sG + sW}
+                            label={`Vỏ W=${sW}`} side="right" color="#c084fc" />
+                        <Dim scale={scale} x1={sleeveRightX} y1={sMinY + sG + sW} x2={sleeveRightX} y2={sMinY + sG + sW + sD}
+                            label={`Vỏ D=${sD}`} side="right" color="#c084fc" small />
+                        <Dim scale={scale} x1={sleeveRightX + offset * 3} y1={sMinY + sG + sW + sD} x2={sleeveRightX + offset * 3} y2={sMinY + sG + sW * 2 + sD}
+                            label={`Vỏ W=${sW}`} side="right" color="#c084fc" />
+                        <Dim scale={scale} x1={sleeveRightX} y1={sMinY + sG + sW * 2 + sD} x2={sleeveRightX} y2={sMaxY}
+                            label={`Vỏ D=${sD}`} side="right" color="#c084fc" small />
+                    </>
+                )}
             </g>
         );
     }

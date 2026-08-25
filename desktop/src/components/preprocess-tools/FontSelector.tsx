@@ -15,6 +15,8 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
     const [fontSearch, setFontSearch] = useState('');
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
+    const isTauriRuntime = typeof window !== 'undefined'
+        && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
     useEffect(() => {
         getSystemFonts().then(setSystemFonts).catch(console.error);
@@ -45,7 +47,7 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
     return (
         <div className="relative w-full" ref={containerRef}>
             {/* Inject font-face for the currently selected font if it has a file */}
-            {fontFile && (window as any).__TAURI_INTERNALS__ && (
+            {fontFile && isTauriRuntime && (
                 <style>{`
                     @font-face {
                         font-family: "${value}_local";
@@ -77,13 +79,13 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
                             <div 
                                 key={`${font.name}_${idx}`}
                                 className="px-3 py-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/30 flex flex-col group border-b border-slate-100 dark:border-zinc-700/50 last:border-0"
-                                onClick={(e) => {
+                                onClick={() => {
                                     onChange(font.name, font.path || undefined);
                                     setIsOpen(false);
                                 }}
                             >
                                 {/* Inject preview font-face just-in-time */}
-                                {isCustom && (window as any).__TAURI_INTERNALS__ && (
+                                {isCustom && isTauriRuntime && (
                                     <style>{`
                                         @font-face {
                                             font-family: "${font.name}_preview";

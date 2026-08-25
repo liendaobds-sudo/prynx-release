@@ -7,7 +7,6 @@ import {
     isRecipeStep,
     RECIPE_SCHEMA_VERSION,
     type RecipeStep,
-    type Recipe,
 } from './recipeTypes';
 
 const sampleSteps: RecipeStep[] = [
@@ -17,6 +16,14 @@ const sampleSteps: RecipeStep[] = [
     { opId: 'datamerge', label: 'Trộn dữ liệu (CSV)', params: {}, recordable: true, needsExternalInput: 'csv' },
     { opId: 'object_edit', label: 'Sửa object (phụ thuộc file)', params: { id: 'x' }, recordable: false },
 ];
+
+function getStringArrayParam(step: RecipeStep, key: string): string[] {
+    const value = step.params[key];
+    if (!Array.isArray(value) || !value.every((item: unknown) => typeof item === 'string')) {
+        throw new TypeError(`Tham số ${key} phải là mảng chuỗi.`);
+    }
+    return value;
+}
 
 describe('recipeTypes — createRecipe', () => {
     it('gán id/timestamps/schemaVersion + clone steps', () => {
@@ -29,8 +36,8 @@ describe('recipeTypes — createRecipe', () => {
         expect(r.hints?.sourcePageCount).toBe(16);
         expect(r.steps).toHaveLength(sampleSteps.length);
         // clone sâu: sửa recipe không ảnh hưởng nguồn
-        (r.steps[0].params as any).conversions.push('x');
-        expect((sampleSteps[0].params as any).conversions).toEqual(['rgb_to_cmyk']);
+        getStringArrayParam(r.steps[0], 'conversions').push('x');
+        expect(getStringArrayParam(sampleSteps[0], 'conversions')).toEqual(['rgb_to_cmyk']);
     });
 });
 
@@ -48,7 +55,7 @@ describe('recipeTypes — type guards', () => {
         expect(isRecipe(r)).toBe(true);
         expect(isRecipe({})).toBe(false);
         expect(isRecipe({ ...r, steps: [{ bad: 1 }] })).toBe(false);
-        expect(isRecipe({ ...r, schemaVersion: '1' as any })).toBe(false);
+        expect(isRecipe({ ...r, schemaVersion: '1' })).toBe(false);
     });
 });
 

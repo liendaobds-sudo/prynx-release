@@ -30,7 +30,8 @@ import {
     type PaperFamily,
 } from '../../lib/paperLibrary';
 import { NavItem, NavSubItem, NumberField, ResultTile, SectionLabel, SelectField } from './parts';
-import { FAMILY_COUNTS, FAMILY_ORDER, FilmTable, fmt, fmtFull, PaperStockTable, ThreadSewingTable } from './tables';
+import { FilmTable, PaperStockTable, ThreadSewingTable } from './tables';
+import { FAMILY_COUNTS, FAMILY_ORDER, fmt, fmtFull } from './tableUtils';
 import { FAMILY_TONES } from './familyColors';
 import { canUse } from '../../lib/license/features';
 import { useAuthStore } from '../../stores/useAuthStore';

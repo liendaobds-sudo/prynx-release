@@ -74,6 +74,33 @@ describe('DielineCanvas2D interactions', () => {
         expect(bleedPath.getAttribute('stroke-width')).toBe('1.1');
         expect(bleedPath.getAttribute('stroke-dasharray')).toBe('4,2');
     });
+
+    it('chỉ hiện nhãn loại hộp trong chế độ 2D đơn', () => {
+        const dieline = generateDieline({ ...DEFAULT_PARAMS, boxType: 'rte' });
+        useBoxStore.setState({ dieline, isModelCurrent: true });
+
+        const view = render(React.createElement(DielineCanvas2D));
+        expect(view.container.querySelector('.dt-preview-thumbnail')?.textContent).toContain('Hộp Nắp Cài');
+
+        view.rerender(<DielineCanvas2D rightSlot={<div data-testid="mockup-3d" />} />);
+        expect(view.container.querySelector('.dt-preview-thumbnail')).toBeNull();
+    });
+
+    it('hiển thị đủ chuỗi kích thước của vỏ hộp diêm', () => {
+        const dieline = generateDieline({ ...DEFAULT_PARAMS, boxType: 'tray' });
+        useBoxStore.setState({ dieline, isModelCurrent: true });
+
+        const view = render(React.createElement(DielineCanvas2D));
+        const labels = Array.from(view.container.querySelectorAll('.dimensions text'))
+            .map(element => element.textContent);
+        const sleeveGlue = Math.min(dieline.params.sleeveGlue ?? 15, (dieline.params.D + 1) / 2);
+
+        expect(labels).toContain(`Vỏ L=${dieline.params.L + 1}`);
+        expect(labels).toContain(`Mí=${sleeveGlue}`);
+        expect(labels).toContain(`Vỏ W=${dieline.params.W + 1}`);
+        expect(labels.filter(label => label === `Vỏ D=${dieline.params.D + 1}`)).toHaveLength(2);
+    });
+
     it('renders 100% artwork with its intrinsic aspect ratio', async () => {
         const dieline = generateDieline({ ...DEFAULT_PARAMS, boxType: 'rte' });
         useBoxStore.setState({ dieline, isModelCurrent: true });

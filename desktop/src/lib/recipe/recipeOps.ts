@@ -90,9 +90,29 @@ export function opBaseLabel(opId: RecipeOpId): string {
     return RECIPE_OP_META[opId]?.label ?? opId;
 }
 
+interface RecipeSummaryParams {
+    sheetWidth?: string | number;
+    sheetHeight?: string | number;
+    cols?: string | number;
+    rows?: string | number;
+    gridStrategy?: string;
+    conversions?: readonly string[];
+    standard?: string;
+    targetW?: string | number;
+    targetH?: string | number;
+    scaleMode?: string;
+    mode?: string;
+    productType?: string;
+    bleedMm?: string | number;
+    preset?: string;
+    specialAction?: string;
+    presetId?: string;
+    watermarkType?: string;
+}
+
 /** Tóm tắt ngắn gọn tham số cho nhãn hiển thị (không bắt buộc đầy đủ). */
 export function summarizeParams(opId: RecipeOpId, params: Record<string, unknown> = {}): string {
-    const p = params as any;
+    const p = params as RecipeSummaryParams;
     switch (opId) {
         case 'booklet':
         case 'nup':

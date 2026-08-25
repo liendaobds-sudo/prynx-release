@@ -32,6 +32,27 @@ export interface NupLayoutResult {
     cells: NupCell[]; // Flattened list for sequence mapping
 }
 
+interface NupShapeParams {
+    effective_body_w_ratio?: number;
+    bigEndAxisFrac?: number;
+    waistRatio?: number;
+    bigEndFirst?: boolean;
+    smallD?: number;
+    bodyW?: number;
+    asymmOffset?: number;
+    smallAsymmOffset?: number;
+    gapMultiplierH?: number;
+    deltaW?: number;
+    peakHeightRatio?: number;
+    pentagonOrientation?: string;
+    leftOH?: number;
+    rightOH?: number;
+    bbW?: number;
+    isHorizontal?: boolean;
+    overhangX?: number;
+    overhangY?: number;
+}
+
 function calculateBasicGrid(
     usableW: number, usableH: number,
     itemW: number, itemH: number,
@@ -311,7 +332,6 @@ function calculateHammerColLayout(
     origW: number, origH: number,
     gapX: number, gapY: number,
     blockId: number, offsetX: number, offsetY: number,
-    _bigEndAxisFrac: number = 0.65,
     bigEndFirst: boolean = true,
     effectiveTailW: number = 0,
     safeAsymmBuffer: number = 0
@@ -371,7 +391,6 @@ function calculateHammerRowLayout(
     origW: number, origH: number,
     gapX: number, gapY: number,
     blockId: number, offsetX: number, offsetY: number,
-    _bigEndAxisFrac: number = 0.65,
     bigEndFirst: boolean = true,
     effectiveTailW: number = 0,
     safeAsymmBuffer: number = 0
@@ -438,6 +457,8 @@ function calculateDumbbellColLayout(
     bodyW: number = 0,
     smallAsymm: number = 0
 ): NupBlock {
+    // Giữ tham số legacy để không làm lệch thứ tự đối số của các caller hiện tại.
+    void _waistRatio;
     const emptyBlock: NupBlock = { id: blockId, cols: 0, rows: 0, startX: 0, startY: 0, width: 0, height: 0, isRotated: false, cells: [] };
     const items: NupCell[] = [];
 
@@ -555,6 +576,8 @@ function calculateDumbbellRowLayout(
     bodyW: number = 0,
     smallAsymm: number = 0
 ): NupBlock {
+    // Giữ tham số legacy để không làm lệch thứ tự đối số của các caller hiện tại.
+    void _waistRatio;
     const emptyBlock: NupBlock = { id: blockId, cols: 0, rows: 0, startX: 0, startY: 0, width: 0, height: 0, isRotated: false, cells: [] };
     const items: NupCell[] = [];
 
@@ -664,35 +687,6 @@ function calculateDumbbellRowLayout(
 // =====================================================================
 
 
-
-function findBestHexagonalLayout(
-    usableW: number, usableH: number, origW: number, origH: number,
-    gapX: number, gapY: number
-): NupLayoutResult {
-    // 4 strategies: row/col × original/rotated
-    const rowOrig = calculateStaggeredHexLayoutCore(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, false);
-    const rowRot = calculateStaggeredHexLayoutCore(usableW, usableH, origH, origW, gapY, gapX, 0, 0, 0, true);
-
-    // For column layout, transpose usable dims and item dims
-    const colOrigRaw = calculateStaggeredHexLayoutCore(usableH, usableW, origH, origW, gapY, gapX, 0, 0, 0, false);
-    const colRotRaw = calculateStaggeredHexLayoutCore(usableH, usableW, origW, origH, gapX, gapY, 0, 0, 0, true);
-
-    const transposeBlock = (b: NupBlock): NupBlock => {
-        const cells = b.cells.map(c => ({ ...c, x: c.y, y: c.x, width: c.height, height: c.width }));
-        return { ...b, width: b.height, height: b.width, cells };
-    };
-
-    const colOrig = transposeBlock(colOrigRaw);
-    const colRot = transposeBlock(colRotRaw);
-
-    const candidates = [rowOrig, rowRot, colOrig, colRot];
-    let best = candidates[0];
-    for (const c of candidates) {
-        if (c.cells.length > best.cells.length) best = c;
-    }
-
-    return { totalItems: best.cells.length, overallWidth: best.width, overallHeight: best.height, blocks: [best], cells: best.cells };
-}
 
 // =====================================================================
 // TRIANGLE LAYOUTS (Diamond interlock up/down, horizontal left/right)
@@ -1029,9 +1023,9 @@ export function solveOptimalNupLayout(
 
     // AUTO OVERRIDE cho Búa/Tạ khi để chế độ optimal_auto
     if (strategy === 'optimal_auto') {
-        let parsedParams: any = {};
+        let parsedParams: NupShapeParams = {};
         if (shapeParams) {
-            try { parsedParams = JSON.parse(shapeParams); } catch {}
+            try { parsedParams = JSON.parse(shapeParams) as NupShapeParams; } catch { /* Tham số shape tùy chọn không hợp lệ; dùng mặc định. */ }
         }
 
         if (shapeType === 'HAMMER' || shapeType === 'DUMBBELL') {
@@ -1041,7 +1035,6 @@ export function solveOptimalNupLayout(
             const smallD = parsedParams.smallD || 0;
             const bodyW = parsedParams.bodyW || 0;
             const smallAsymm = parsedParams.asymmOffset || parsedParams.smallAsymmOffset || 0;
-            const bigEndFrac = parsedParams.bigEndAxisFrac || parsedParams.bigDAlongAxisFrac || 0.37;
 
             const evaluateUnifiedAsymmetric = (uW: number, uH: number, origW: number, origH: number, gapX: number, gapY: number, forceRotated: boolean, blockOffset: number, oX: number, oY: number): NupBlock => {
                 const evalW = forceRotated ? origH : origW;
@@ -1051,8 +1044,8 @@ export function solveOptimalNupLayout(
 
                 let cands: NupBlock[] = [];
                 if (shapeType === 'HAMMER') {
-                    const hr = calculateHammerRowLayout(uW, uH, evalW, evalH, eGapX, eGapY, blockOffset, oX, oY, bigEndFrac, bigEndFirst, 0, 0);
-                    const hc = calculateHammerColLayout(uW, uH, evalW, evalH, eGapX, eGapY, blockOffset, oX, oY, bigEndFrac, bigEndFirst, 0, 0);
+                    const hr = calculateHammerRowLayout(uW, uH, evalW, evalH, eGapX, eGapY, blockOffset, oX, oY, bigEndFirst, 0, 0);
+                    const hc = calculateHammerColLayout(uW, uH, evalW, evalH, eGapX, eGapY, blockOffset, oX, oY, bigEndFirst, 0, 0);
                     cands = [hr, hc];
                 } else {
                     const dr = calculateDumbbellRowLayout(uW, uH, evalW, evalH, eGapX, eGapY, blockOffset, oX, oY, effectiveW, waistRatio, bigEndFirst, smallD, bodyW, smallAsymm);
@@ -1136,7 +1129,7 @@ export function solveOptimalNupLayout(
                 try {
                     const parsed = JSON.parse(shapeParams);
                     if (parsed.hexOrientation) hexOrientation = parsed.hexOrientation;
-                } catch {}
+                } catch { /* Tham số shape tùy chọn không hợp lệ; dùng mặc định. */ }
             }
             const hexResult = findBestHexTilingLayout(usableW, usableH, origW, origH, gapX, gapY, hexOrientation);
             if (hexResult.totalItems > 0) return hexResult;
@@ -1236,9 +1229,9 @@ export function solveOptimalNupLayout(
     }
 
     if (strategy === 'row_alt') {
-        let parsedParams: any = {};
+        let parsedParams: NupShapeParams = {};
         if (shapeParams) {
-            try { parsedParams = JSON.parse(shapeParams); } catch {}
+            try { parsedParams = JSON.parse(shapeParams) as NupShapeParams; } catch { /* Tham số shape tùy chọn không hợp lệ; dùng mặc định. */ }
         }
 
         if (shapeType === 'DUMBBELL') {
@@ -1251,9 +1244,8 @@ export function solveOptimalNupLayout(
             const block = calculateDumbbellRowLayout(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, effectiveW, waistRatio, bigEndFirst, smallD, bodyW, smallAsymm);
             return { totalItems: block.cells.length, overallWidth: block.width, overallHeight: block.height, blocks: [block], cells: block.cells };
         } else {
-            const bigEndFrac = parsedParams.bigEndAxisFrac || parsedParams.bigDAlongAxisFrac || 0.37;
             const bigEndFirst = parsedParams.bigEndFirst ?? true;
-            const block = calculateHammerRowLayout(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, bigEndFrac, bigEndFirst);
+            const block = calculateHammerRowLayout(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, bigEndFirst);
             return { totalItems: block.cells.length, overallWidth: block.width, overallHeight: block.height, blocks: [block], cells: block.cells };
         }
     }
@@ -1267,9 +1259,9 @@ export function solveOptimalNupLayout(
     }
 
     if (strategy === 'head_to_tail') {
-        let parsedParams: any = {};
+        let parsedParams: NupShapeParams = {};
         if (shapeParams) {
-            try { parsedParams = JSON.parse(shapeParams); } catch {}
+            try { parsedParams = JSON.parse(shapeParams) as NupShapeParams; } catch { /* Tham số shape tùy chọn không hợp lệ; dùng mặc định. */ }
         }
 
         if (shapeType === 'DUMBBELL') {
@@ -1291,11 +1283,10 @@ export function solveOptimalNupLayout(
             return p1.totalItems >= p2.totalItems ? p1 : p2;
 
         } else {
-            const bigEndFrac = parsedParams.bigEndAxisFrac || parsedParams.bigDAlongAxisFrac || 0.37;
             const bigEndFirst = parsedParams.bigEndFirst ?? true;
 
             const tryPass = (w: number, h: number, gx: number, gy: number, isRot: boolean) => {
-                const block = calculateHammerColLayout(usableW, usableH, w, h, gx, gy, 0, 0, 0, bigEndFrac, bigEndFirst);
+                const block = calculateHammerColLayout(usableW, usableH, w, h, gx, gy, 0, 0, 0, bigEndFirst);
                 if (isRot) block.cells.forEach(c => c.isRotated = !c.isRotated); // Mark as rotated
                 return { totalItems: block.cells.length, overallWidth: block.width, overallHeight: block.height, blocks: [block], cells: block.cells };
             };
@@ -1351,7 +1342,7 @@ export function solveOptimalNupLayout(
                 try {
                     const parsed = JSON.parse(shapeParams);
                     if (parsed.hexOrientation) hexOrientation = parsed.hexOrientation;
-                } catch {}
+                } catch { /* Tham số shape tùy chọn không hợp lệ; dùng mặc định. */ }
             }
             return findBestHexTilingLayout(usableW, usableH, origW, origH, gapX, gapY, hexOrientation);
         }

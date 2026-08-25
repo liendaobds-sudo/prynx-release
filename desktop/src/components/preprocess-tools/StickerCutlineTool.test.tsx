@@ -16,6 +16,13 @@ import StickerCutlineTool from './StickerCutlineTool';
 import { useStickerSheetStore } from './stickerSheetStore';
 
 
+const workingPdfMock = vi.hoisted(() => ({
+    prepare: vi.fn(),
+    capture: vi.fn(),
+    materialize: vi.fn(),
+    isCurrent: vi.fn(),
+}));
+
 vi.mock('./StickerTool', () => ({
     default: ({
         pdfFile,
@@ -41,6 +48,9 @@ vi.mock('../../lib/stickerSheetApi', () => ({
     exportStickerSheet: vi.fn(),
     inspectStickerSource: vi.fn(),
     previewStickerCutline: vi.fn(),
+}));
+vi.mock('../../hooks/useWorkingPdf', () => ({
+    useWorkingPdf: () => workingPdfMock,
 }));
 
 function inspection(): StickerSourceInspectPayload {
@@ -91,6 +101,15 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         window.localStorage.clear();
         useStickerSheetStore.setState({ tabs: {} });
         vi.clearAllMocks();
+        const revision = {
+            file: new File(['working'], 'working.pdf', { type: 'application/pdf' }),
+        };
+        workingPdfMock.prepare.mockResolvedValue(undefined);
+        workingPdfMock.capture.mockReturnValue(revision);
+        workingPdfMock.materialize.mockImplementation(async (
+            snapshot: { file: File },
+        ) => snapshot.file);
+        workingPdfMock.isCurrent.mockReturnValue(true);
         Object.defineProperty(URL, 'createObjectURL', {
             configurable: true,
             value: vi.fn(() => 'blob:asset'),
@@ -175,6 +194,43 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         expect(useStickerSheetStore.getState().getTab('ai-tab').status).toBe('mask-ready');
     });
 
+    it('materialize Working PDF trước khi inspect và khóa kết quả vào đúng revision', async () => {
+        const source = new File(['source'], 'source.pdf', { type: 'application/pdf' });
+        const materialized = new File(['rotated'], 'working-rotated.pdf', {
+            type: 'application/pdf',
+        });
+        const revision = { file: source, viewerPageRotations: { 1: 90 } };
+        workingPdfMock.capture.mockReturnValue(revision);
+        workingPdfMock.materialize.mockResolvedValue(materialized);
+
+        render(
+            <StickerCutlineTool
+                tabId="revision-tab"
+                pdfFile={source}
+                sourceImageFile={null}
+                isActive
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
+
+        await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
+        expect(workingPdfMock.prepare).toHaveBeenCalledTimes(1);
+        expect(workingPdfMock.materialize).toHaveBeenCalledWith(revision);
+        expect(inspectStickerSource).toHaveBeenCalledWith(
+            materialized,
+            expect.any(AbortSignal),
+            { preview: 'defer' },
+        );
+        expect(workingPdfMock.materialize.mock.invocationCallOrder[0])
+            .toBeLessThan(vi.mocked(inspectStickerSource).mock.invocationCallOrder[0]);
+        const tab = useStickerSheetStore.getState().getTab('revision-tab');
+        expect(tab.sourceFile).toBe(materialized);
+        expect(tab.sourceRevision).toBe(revision);
+    });
+
     it('AI giữ trạng thái cần xem lại nhưng cho phép sửa trực tiếp trên Viewer', async () => {
         vi.mocked(detectStickerSource).mockResolvedValueOnce(detection(true));
         const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
@@ -216,7 +272,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         expect(inspectStickerSource).not.toHaveBeenCalled();
     });
 
-    it('đổi thumbnail chỉ đổi trang AI đang thao tác và không tự nhận diện', async () => {
+    it('trang AI bám vị trí working khi một source page được nhân bản', async () => {
         const document = new File(['pdf'], '2_anh_nhieu_tem.pdf', { type: 'application/pdf' });
         useStickerSheetStore.getState().initTab('page-tab');
         useStickerSheetStore.getState().setMode('page-tab', 'ai-sheet');
@@ -227,8 +283,9 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 tabId="page-tab"
                 pdfFile={document}
                 sourceImageFile={null}
-                activeSourcePage={2}
-                pageOrder={[1, 2]}
+                activeSourcePage={1}
+                activeWorkingPage={2}
+                pageOrder={[1, 1]}
                 isActive
                 onFileFixed={vi.fn()}
             />,
@@ -285,7 +342,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         expect(useStickerSheetStore.getState().getTab('switch-tab').mode).toBe('existing');
     });
 
-    it('đổi tài liệu Viewer thì nguồn AI bám tài liệu mới, không giữ file riêng trong panel', async () => {
+    it('nguồn chọn riêng không bị tài liệu Viewer ghi đè', async () => {
         const oldSource = new File(['old'], 'old.png', { type: 'image/png' });
         const viewerDocument = new File(['pdf'], 'viewer.pdf', { type: 'application/pdf' });
         useStickerSheetStore.getState().initTab('viewer-source-tab');
@@ -304,9 +361,9 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
 
         await waitFor(() => expect(
             useStickerSheetStore.getState().getTab('viewer-source-tab').sourceFile,
-        ).toBe(viewerDocument));
+        ).toBe(oldSource));
         expect(useStickerSheetStore.getState().getTab('viewer-source-tab').sourceOrigin)
-            .toBe('workspace');
+            .toBe('explicit');
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
     });
@@ -383,6 +440,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                     ...current,
                     status: 'mask-ready',
                     sourceFile: source,
+                    sourceOrigin: 'explicit',
                     inspection: inspection().inspection,
                     manifest: detection().manifest,
                 },
@@ -454,7 +512,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         expect(onOpenTool).toHaveBeenNthCalledWith(2, 'cnc_imposer');
     });
 
-    it('chuyển đúng thứ tự thumbnail hiện tại vào cả lệnh xuất PDF', async () => {
+    it('duplicate source page được xuất theo hai vị trí độc lập của Working PDF', async () => {
         useStickerSheetStore.getState().initTab('order-tab');
         const source = new File(['image'], 'current.png', { type: 'image/png' });
         const current = useStickerSheetStore.getState().getTab('order-tab');
@@ -503,7 +561,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 pdfFile={null}
                 sourceImageFile={null}
                 activeSourcePage={1}
-                pageOrder={[2, 1]}
+                pageOrder={[1, 1]}
                 isActive
                 onFileFixed={vi.fn()}
             />,
@@ -513,7 +571,12 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);
 
-        await waitFor(() => expect(exportAction).toHaveBeenCalledWith('order-tab', 'pdf', [2, 1]));
+        await waitFor(() => expect(exportAction).toHaveBeenCalledWith(
+            'order-tab',
+            'pdf',
+            [1, 2],
+            expect.any(Function),
+        ));
         exportAction.mockRestore();
     });
 });

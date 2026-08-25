@@ -1,4 +1,11 @@
-import { ResizeOptions, type BackgroundFillMode, type ScaleMode } from '../../lib/preprocessEngine/PageResizer';
+import type { BackgroundFillMode, ResizeOptions, ScaleMode } from '../../lib/preprocessEngine/PageResizer';
+import {
+    applyPageSizeMode,
+    allowedScaleModes,
+    shouldShowBackgroundFill,
+    type PageResizerSettings,
+    type PageSizeMode,
+} from './pageResizerViewLogic';
 import { 
     ToolSectionLabel, ToolCardOption,
     ToolCheckboxOption, ToolNumberInput,
@@ -10,7 +17,6 @@ import { useEffect, useState } from 'react';
 import { inspectResizeTransparency } from '../../lib/api';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
-const selectCls = "w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm font-medium focus:outline-none focus:border-indigo-500";
 
 // UIUX (audit 2026-08-01 §R.11): đồng bộ engine với Xén vuông góc, đồng thời
 // cho phép giữ vùng giấy trống thay vì ép người dùng phải sinh thêm màu nền.
@@ -35,8 +41,6 @@ const COMMON_SIZES = [
     { id: 'custom', name: 'Tùy chỉnh', desc: 'Nhập W × H', w: 0, h: 0 },
 ];
 
-export type PageSizeMode = 'fixed' | 'fixed_width' | 'fixed_height';
-
 // RESIZE (audit 2026-08-06 §G.10): danh sách kiểu tỷ lệ tách ra hàm để khối
 // "Kiểu tỷ lệ" luôn hiển thị được, kể cả khi khổ khóa một chiều chỉ còn 1 lựa chọn.
 const SCALE_MODE_OPTIONS = (
@@ -48,101 +52,85 @@ const SCALE_MODE_OPTIONS = (
     { value: 'center_no_scale', title: t('preprocess.pageResizer:giu_nguyen_o_giua'), desc: t('preprocess.pageResizer:giu_nguyen_kich_thuoc_noi_dung_goc_chi') },
 ];
 
-/** Kiểu tỷ lệ engine chấp nhận theo cách đặt khổ.
- *
- * RESIZE (audit 2026-08-06 §G.11): khổ khóa một chiều dùng được CẢ 'center_no_scale'
- * — tem 5×10 đưa về chiều cao 15 ra trang 7.5×15 với tem giữ nguyên 5×10 ở giữa.
- * 'fill'/'stretch' vẫn bị loại vì khổ đích sinh ra đã đúng tỷ lệ nội dung nên
- * không còn phần dư để lấp hay bóp (`resize_background_engine` ném ValueError). */
-export function allowedScaleModes(pageSizeMode: PageSizeMode = 'fixed'): ScaleMode[] {
-    return pageSizeMode === 'fixed'
-        ? ['fit', 'fill', 'stretch', 'center_no_scale']
-        : ['fit', 'center_no_scale'];
-}
-
-export interface PageResizerSettings extends ResizeOptions {
-    sizePresetId: string;
-    applyToStr: string;
-    pageSizeMode?: PageSizeMode;
-    // Giảm dữ liệu theo khổ mới (giống PDF Optimizer). undefined = tự động
-    // (downsample 300 DPI khi thu nhỏ khổ), 0 = tắt (giữ nguyên chất lượng),
-    // >0 = DPI cụ thể. resizeMode: 'auto' | 'vector' | 'raster'.
-    targetDpi?: number;
-    resizeMode?: string;
-    // Khử viền trắng trước khi resize (auto-trim → resize)
-    autoTrimBefore?: boolean;
-    autoTrimMarginMm?: number;
-    // Chỉ bỏ canvas alpha ngoài nội dung khi người dùng chủ động bật.
-    resizeByContent?: boolean;
-}
-
 const DPI_PRESETS = [150, 300, 600];
+
+type DpiChoice = 'auto' | 'off' | 'custom';
+type ResizeRasterMode = 'auto' | 'vector' | 'raster';
 
 interface Props {
     settings: PageResizerSettings;
     onChange: (settings: PageResizerSettings) => void;
     pdfFile?: File | null;
+    getWorkingFile?: () => Promise<File>;
+    viewerPageOrder?: number[];
+    viewerPageRotations?: number[];
 }
 
-export function shouldShowBackgroundFill(
-    _autoTrimBefore: boolean | undefined,
-    scaleMode: ScaleMode,
-    pageSizeMode: PageSizeMode = 'fixed',
-): boolean {
-    // Nền chỉ có ý nghĩa khi phép co giãn thật sự tạo vùng trống.
-    // RESIZE (audit 2026-08-06 §G.11): khóa một chiều + 'fit' thì khổ đích vừa khít
-    // nội dung nên KHÔNG có vùng trống; nhưng + 'center_no_scale' thì có (tem 5×10
-    // trong trang 7.5×15) → phải cho chọn nền.
-    if (pageSizeMode !== 'fixed') return scaleMode === 'center_no_scale';
-    return scaleMode === 'fit' || scaleMode === 'center_no_scale';
-}
-
-export function applyPageSizeMode(
-    settings: PageResizerSettings,
-    mode: PageSizeMode,
-): PageResizerSettings {
-    // RESIZE (audit 2026-08-06 §G.11): chỉ hạ về 'fit' khi kiểu đang chọn KHÔNG
-    // còn hợp lệ ở chế độ mới; 'center_no_scale' được giữ nguyên qua chuyển chế độ.
-    return {
-        ...settings,
-        pageSizeMode: mode,
-        sizePresetId: mode === 'fixed' ? settings.sizePresetId : 'custom',
-        scaleMode: allowedScaleModes(mode).includes(settings.scaleMode)
-            ? settings.scaleMode
-            : 'fit',
-    };
-}
-
-export default function PageResizerTool({ settings, onChange, pdfFile }: Props) {
-  const { t } = useTranslation();
+export default function PageResizerTool({
+    settings,
+    onChange,
+    pdfFile,
+    getWorkingFile,
+    viewerPageOrder,
+    viewerPageRotations,
+}: Props) {
+    const { t } = useTranslation();
     const pageSizeMode: PageSizeMode = settings.pageSizeMode || 'fixed';
-    const [transparentPages, setTransparentPages] = useState<number[]>([]);
+    const [transparencyInspection, setTransparencyInspection] = useState<{
+        file: File;
+        pageOrder?: number[];
+        pageRotations?: number[];
+        pages: number[];
+    } | null>(null);
+    const transparentPages = transparencyInspection !== null
+        && transparencyInspection.file === pdfFile
+        && transparencyInspection.pageOrder === viewerPageOrder
+        && transparencyInspection.pageRotations === viewerPageRotations
+        ? transparencyInspection.pages
+        : [];
 
     useEffect(() => {
-        setTransparentPages([]);
         if (!pdfFile) return;
         const controller = new AbortController();
-        const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-        const nativePath = isTauri
-            ? (pdfFile as File & { path?: string }).path
-            : undefined;
-        // RESIZE (audit 2026-08-03 §TR.4): nhận diện object graph của PDF đang mở,
-        // không suy đoán theo tên PNG/JPEG/PDF.
-        void inspectResizeTransparency(pdfFile, nativePath, controller.signal)
-            .then((result) => {
-                if (!controller.signal.aborted) {
-                    setTransparentPages(result.transparent_pages);
-                }
-            })
-            .catch((error: unknown) => {
+        void (async () => {
+            try {
+                // REVISION (audit 2026-08-25 §REV.12): policy transparency phải
+                // inspect cùng Working PDF mà nút Chạy sẽ dùng, không đọc backing file.
+                const inspectionFile = getWorkingFile
+                    ? await getWorkingFile()
+                    : pdfFile;
+                controller.signal.throwIfAborted();
+                const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+                const nativePath = isTauri
+                    ? (inspectionFile as File & { path?: string }).path
+                    : undefined;
+                const result = await inspectResizeTransparency(
+                    inspectionFile,
+                    nativePath,
+                    controller.signal,
+                );
+                controller.signal.throwIfAborted();
+                setTransparencyInspection({
+                    file: pdfFile,
+                    pageOrder: viewerPageOrder,
+                    pageRotations: viewerPageRotations,
+                    pages: result.transparent_pages,
+                });
+            } catch (error: unknown) {
                 if ((error as { name?: string })?.name !== 'AbortError') {
                     // Inspection chỉ điều khiển lựa chọn bổ sung; backend Resize vẫn
                     // tự kiểm tra alpha để không làm giảm chất lượng nếu UI không tải được.
-                    setTransparentPages([]);
+                    setTransparencyInspection({
+                        file: pdfFile,
+                        pageOrder: viewerPageOrder,
+                        pageRotations: viewerPageRotations,
+                        pages: [],
+                    });
                 }
-            });
+            }
+        })();
         return () => controller.abort();
-    }, [pdfFile]);
+    }, [getWorkingFile, pdfFile, viewerPageOrder, viewerPageRotations]);
     
     const handlePresetChange = (presetId: string) => {
         const preset = COMMON_SIZES.find(p => p.id === presetId);
@@ -382,7 +370,10 @@ export default function PageResizerTool({ settings, onChange, pdfFile }: Props) 
                         <>
                             <RichSelect
                                 value={dpiChoice}
-                                onChange={(v: string) => setChoice(v as any)}
+                                onChange={(v: string) => {
+                                    const choice: DpiChoice = v === 'off' || v === 'custom' ? v : 'auto';
+                                    setChoice(choice);
+                                }}
                                 options={[
                                     { value: 'auto', title: t('preprocess.pageResizer:tu_dong'), desc: t('preprocess.pageResizer:giam_mau_300_dpi_khi_thu_nho_kho_khuyen') },
                                     { value: 'custom', title: t('preprocess.pageResizer:chon_dpi'), desc: t('preprocess.pageResizer:tu_dat_do_phan_giai_dich_cho_anh') },
@@ -417,7 +408,10 @@ export default function PageResizerTool({ settings, onChange, pdfFile }: Props) 
                                     <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5 ml-0.5">{t('preprocess.pageResizer:che_do_xu_ly')}</div>
                                     <RichSelect
                                         value={mode}
-                                        onChange={(v: string) => onChange({ ...settings, resizeMode: v as any })}
+                                        onChange={(v: string) => {
+                                            const resizeMode: ResizeRasterMode = v === 'vector' || v === 'raster' ? v : 'auto';
+                                            onChange({ ...settings, resizeMode });
+                                        }}
                                         options={[
                                             { value: 'auto', title: t('preprocess.pageResizer:tu_dong'), desc: t('preprocess.pageResizer:tu_chon_theo_noi_dung_trang') },
                                             { value: 'vector', title: t('preprocess.pageResizer:uu_tien_chat_luong'), desc: t('preprocess.pageResizer:giu_chu_vector_mau_cmyk_chi_giam_anh') },

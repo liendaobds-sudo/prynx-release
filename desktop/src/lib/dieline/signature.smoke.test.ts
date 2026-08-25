@@ -129,11 +129,11 @@ function makeClosedModel(): DielineModel {
 beforeEach(() => {
     vi.clearAllMocks();
     // Stub DOMParser cho môi trường node (luồng ghi file dùng new DOMParser()).
-    (globalThis as any).DOMParser = class {
-        parseFromString(_str: string, _type: string) {
+    vi.stubGlobal('DOMParser', class {
+        parseFromString() {
             return { documentElement: {} };
         }
-    };
+    });
 });
 
 // ============================================================

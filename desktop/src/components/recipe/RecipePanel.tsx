@@ -371,7 +371,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                                                             {paramKeys.length === 0 ? (
                                                                 <div className="text-[11px] text-slate-400">{t('recipe.recipe:buoc_nay_khong_co_tham_so')}</div>
                                                             ) : paramKeys.map(k => (
-                                                                <ParamField key={k} name={k} value={(s.params as any)[k]}
+                                                                <ParamField key={k} name={k} value={s.params[k]}
                                                                     onChange={(v) => setParam(r, i, k, v)} />
                                                             ))}
                                                             <p className="text-[10px] text-slate-400 pt-1">{t('recipe.recipe:sua_tham_so_nang_cao_nhap_sai_co_the')}</p>

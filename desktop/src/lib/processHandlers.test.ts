@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { ImpositionMode } from './pdfImposer';
+import { ImpositionMode, type DieCutSettings, type GuillotineSettings } from './pdfImposer';
+import type { PdfPathMetadata } from './api';
+import type { PontConfig } from '../components/imposition-tools/types';
+import { readArtifactLeaseToken } from './artifactLease';
 import {
     runProcessEngine,
     runResize,
@@ -27,6 +30,7 @@ const api = vi.hoisted(() => ({
     backendTrimShift: vi.fn(),
 }));
 const saveBlobMock = vi.hoisted(() => vi.fn());
+const ARTIFACT_LEASE_TOKEN = 'a'.repeat(64);
 
 vi.mock('./api', () => api);
 vi.mock('./saveBlob', () => ({ saveBlob: saveBlobMock }));
@@ -44,6 +48,7 @@ describe('runProcessEngine N-Up native fast path', () => {
             progress: '1/1',
             report: 'ok',
             output_path: 'D:\\results\\nup_job-1.pdf',
+            artifact_lease: ARTIFACT_LEASE_TOKEN,
         });
         api.downloadNupJob.mockResolvedValue(
             new Blob(['downloaded'], { type: 'application/pdf' }),
@@ -67,14 +72,13 @@ describe('runProcessEngine N-Up native fast path', () => {
             getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\sheet.pdf'),
         };
 
-        await runProcessEngine(
-            context,
-            {
+        const settings = {
                 impositionMode: ImpositionMode.NUp,
                 imposerMode: 'guillotine',
                 pageSheetMode: true,
                 sheetWidth: 320,
                 sheetHeight: 450,
+                paperThickness: 0,
                 bleed: 3,
                 markType: 'guillotine',
                 cutType: 'one_dao',
@@ -87,9 +91,15 @@ describe('runProcessEngine N-Up native fast path', () => {
                 cutBorderPosition: 'bleed',
                 cutBorderColor: '#FF0000',
                 cutBorderThickness: 0.6,
-            } as any,
-            false,
-        );
+            } satisfies GuillotineSettings & {
+                cutType: 'one_dao';
+                pontType: 'corner';
+                pontConfig: { shape: 'l_corner'; size: number };
+                pontsOnCutFile: boolean;
+                separateCutPage: boolean;
+                exportUniqueSheets: boolean;
+        };
+        await runProcessEngine(context, settings, false);
 
         const payload = api.startNupJobBackend.mock.calls[0][1];
         expect(payload).toMatchObject({
@@ -126,13 +136,14 @@ describe('runProcessEngine N-Up native fast path', () => {
             getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\cnc.pdf'),
         };
 
-        await runProcessEngine(
-            context,
-            {
+        const settings = {
                 impositionMode: ImpositionMode.NUp,
                 imposerMode: 'cnc',
+                isDieCutMode: true,
                 sheetWidth: 320,
                 sheetHeight: 450,
+                paperThickness: 0,
+                bleed: 0,
                 pontType: 'custom',
                 pontConfig: {
                     shape: 'circle',
@@ -141,12 +152,28 @@ describe('runProcessEngine N-Up native fast path', () => {
                     layerName: 'Marks_Model_',
                     groupName: 'MarkLine',
                     itemName: 'MKLINE',
+                    marginTop: 0,
+                    marginBottom: 0,
+                    marginLeft: 0,
+                    marginRight: 0,
+                    guide1Enabled: false,
+                    guide1Pos: 'TL',
+                    guide1Length: 10,
+                    guide1Thickness: 0.3,
+                    guide1OffX: 0,
+                    guide1OffY: 0,
+                    guide2Enabled: false,
+                    guide2Pos: 'BR',
+                    guide2Length: 10,
+                    guide2Thickness: 0.3,
+                    guide2OffX: 0,
+                    guide2OffY: 0,
+                    disableCollision: false,
                 },
                 pontsOnCutFile: false,
                 cncTwoSided: false,
-            } as any,
-            false,
-        );
+        } satisfies Omit<DieCutSettings, 'pontConfig'> & { pontConfig: PontConfig };
+        await runProcessEngine(context, settings, false);
 
         const payload = api.startNupJobBackend.mock.calls[0][1];
         expect(payload.imposerMode).toBe('cnc');
@@ -178,10 +205,11 @@ describe('runProcessEngine N-Up native fast path', () => {
                 isDieCutMode: true,
                 sheetWidth: 320,
                 sheetHeight: 450,
+                paperThickness: 0,
                 bleed: 0,
                 alternateRotation: 'row',
                 detectedShapesByPage,
-            } as any,
+            } satisfies DieCutSettings,
             false,
         );
 
@@ -254,6 +282,43 @@ describe('runProcessEngine N-Up native fast path', () => {
             'Imposed_input_.pdf',
             'D:\\results\\nup_job-1.pdf',
         );
+        const committedBlob = commitWorkingFile.mock.calls[0]?.[0] as Blob;
+        expect(readArtifactLeaseToken(committedBlob)).toBe(ARTIFACT_LEASE_TOKEN);
+    });
+
+    it('gắn lease token lên File khi Bình tem bế mở tab mới', async () => {
+        const onSpawnTab = vi.fn();
+        const context: ProcessContext = {
+            file: new File(['source'], 'sticker.pdf', { type: 'application/pdf' }),
+            onSpawnTab,
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(),
+            getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\sticker.pdf'),
+        };
+
+        await runProcessEngine(
+            context,
+            {
+                impositionMode: ImpositionMode.NUp,
+                imposerMode: 'diecut',
+                isDieCutMode: true,
+                sheetWidth: 320,
+                sheetHeight: 450,
+                paperThickness: 0,
+                bleed: 0,
+            } satisfies DieCutSettings,
+            true,
+        );
+
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+        expect(onSpawnTab).toHaveBeenCalledOnce();
+        const outputFile = onSpawnTab.mock.calls[0]?.[0] as File;
+        expect(readArtifactLeaseToken(outputFile)).toBe(ARTIFACT_LEASE_TOKEN);
     });
 
     it.each([
@@ -506,6 +571,29 @@ describe('runResize unified dynamic-background pipeline', () => {
         expect(context.commitWorkingFile).toHaveBeenCalled();
     });
 
+    it('fail-closed khi không materialize được Working PDF, không fallback file gốc', async () => {
+        const file = new File(['source'], 'stale-backing.pdf', { type: 'application/pdf' });
+        const getWorkingBytes = vi.fn(async () => {
+            throw new Error('materialize revision failed');
+        });
+        const context = makeContext(file, getWorkingBytes);
+        context.getWorkingSourcePath = vi.fn().mockResolvedValue(undefined);
+
+        const outcome = await runResize(context, {
+            ...resizeSettings,
+            bgFillMode: 'white',
+            targetDpi: 0,
+        });
+
+        expect(outcome).toMatchObject({ status: 'error' });
+        expect(getWorkingBytes).toHaveBeenCalledTimes(1);
+        expect(api.backendResizePages).not.toHaveBeenCalled();
+        expect(context.commitWorkingFile).not.toHaveBeenCalled();
+        expect(context.setError).toHaveBeenLastCalledWith(
+            expect.stringContaining('Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại.'),
+        );
+    });
+
     it.each(['mirror', 'inpaint', 'image'] as const)('sends %s directly to the unified backend job', async (bgFillMode) => {
         const sourceDoc = await PDFDocument.create();
         sourceDoc.addPage([100, 100]);
@@ -622,6 +710,8 @@ describe('runResize unified dynamic-background pipeline', () => {
                 scaleMode,
                 targetDpi: 300,
                 bgFillMode: 'mirror',
+                // State cũ có thể còn bật dù khối nền không hiển thị với Fill/Stretch.
+                resizeByContent: true,
             });
 
             expect(api.backendResizePages).toHaveBeenCalledWith(
@@ -1379,7 +1469,7 @@ describe('processHandlers — native path PDF lớn không nạp vào WebView', 
                 media_height_pt: 2384,
                 rotation: 0,
             }],
-        } as any);
+        } satisfies PdfPathMetadata);
         const unknownSize = () => {
             const context = largePathContext();
             Object.defineProperty(context.file, 'size', { value: 0, configurable: true });

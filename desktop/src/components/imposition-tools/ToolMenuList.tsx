@@ -24,7 +24,12 @@ const SectionToggle = ({ sectionKey, label, collapsed, onToggle }: { sectionKey:
     </button>
 );
 
-export default function ToolMenuList({ setActiveTool, setTaskMode, activeTool = 'none' }: ToolMenuListProps) {
+export default function ToolMenuList({
+    setActiveTool,
+    setTaskMode,
+    onActiveToolChange,
+    activeTool = 'none',
+}: ToolMenuListProps) {
   const { t } = useTranslation();
     const hiddenTools = useAppSettingsStore(state => state.hiddenTools);
     const favoriteTools = useAppSettingsStore(state => state.favoriteTools);
@@ -76,18 +81,28 @@ export default function ToolMenuList({ setActiveTool, setTaskMode, activeTool = 
 
     const keyOf = getToolUniqueKey;
     const isDashboardTool = (tool: ToolDefinition) => isWorkspaceTool(keyOf(tool)) && keyOf(tool) !== 'none';
-    const open = (tool: ToolDefinition) => requestActivation(tool, () => {
+    const open = (tool: ToolDefinition) => {
         const toolKey = keyOf(tool);
-        // Chỉ đổi tool — switchToolProfile (ImposerDashboard) lưu/nạp taskMode
-        // theo từng công cụ. Không setTaskMode(lockedMode) ở đây (trước đây ép
-        // sticker_imposer/cnc → mất Bình trang; và race với snapshot profile).
-        setActiveTool(toolKey);
-        // Booklet không qua LAYOUT_TASK profile restore khi prev='none' đã set
-        // taskMode booklet trong switchToolProfile; các tool preprocess không cần.
-        if (tool.defaultPayload?.lockedMode === 'booklet') {
-            setTaskMode('booklet');
+        // UIUX (feedback 2026-08-23 §MENU.TOGGLE): click lại đúng công cụ đang
+        // mở phải đóng panel thiết lập. Parent có thể dọn thêm crop/object-edit;
+        // các dashboard cũ không truyền callback thì fallback về setter trực tiếp.
+        if (activeTool === toolKey) {
+            if (onActiveToolChange) onActiveToolChange('none');
+            else setActiveTool('none');
+            return;
         }
-    });
+        requestActivation(tool, () => {
+            // Chỉ đổi tool — switchToolProfile (ImposerDashboard) lưu/nạp taskMode
+            // theo từng công cụ. Không setTaskMode(lockedMode) ở đây (trước đây ép
+            // sticker_imposer/cnc → mất Bình trang; và race với snapshot profile).
+            setActiveTool(toolKey);
+            // Booklet không qua LAYOUT_TASK profile restore khi prev='none' đã set
+            // taskMode booklet trong switchToolProfile; các tool preprocess không cần.
+            if (tool.defaultPayload?.lockedMode === 'booklet') {
+                setTaskMode('booklet');
+            }
+        });
+    };
 
     // Filter out standalone apps (category: 'qc')
     const dashboardCategories = TOOL_CATEGORIES.filter(cat => cat.id !== 'qc');

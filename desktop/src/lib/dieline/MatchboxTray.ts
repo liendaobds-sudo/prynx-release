@@ -81,7 +81,6 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
     const panels: Panel[] = [];
 
     const beamW = snap(G);
-    const secH = snap(D);
     const tabH = snap(TH);
     const tabR = snap(Math.min(TAB_FILLET_MAX_R, tabH * TAB_FILLET_RATIO));
 

@@ -32,7 +32,7 @@ export function sortedClusterOrder(clusters: Cluster[], sortMethod: SortMethod):
         clusters.map(c => ({ id: c.id, position: { x: c.x, y: c.y } })),
         toVdpSort(sortMethod),
     );
-    return sorted.map((s: any) => s.id);
+    return sorted.map((s: { id: string }) => s.id);
 }
 
 /**

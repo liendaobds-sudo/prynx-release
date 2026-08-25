@@ -24,77 +24,11 @@
 import { useEffect, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useMockupStore, type CameraPreset } from '../../stores/useMockupStore';
+import { useMockupStore } from '../../stores/useMockupStore';
+import { BASE_FOV_DEG, computeTargetPose, easeInOutCubic } from './cameraRigPresets';
 
 /** Thời lượng chuyển cảnh mặc định (ms). Phải < 500ms (Yêu cầu 7.2). */
 export const DEFAULT_TRANSITION_MS = 450;
-
-/** FOV cơ sở cho các preset phối cảnh thường. */
-const BASE_FOV_DEG = 45;
-
-/** FOV "tele" để mô phỏng phép chiếu trực giao (tia gần song song). */
-const ORTHO_FOV_DEG = 12;
-
-const deg2rad = (d: number) => (d * Math.PI) / 180;
-
-/**
- * Hệ số khoảng cách cho preset orthographic: khi giảm FOV từ 45° xuống
- * 12°, tăng khoảng cách tương ứng để giữ kích thước biểu kiến của hộp
- * không đổi (tan(fov/2) tỉ lệ nghịch với khoảng cách).
- */
-const ORTHO_DISTANCE_SCALE =
-    Math.tan(deg2rad(BASE_FOV_DEG / 2)) / Math.tan(deg2rad(ORTHO_FOV_DEG / 2));
-
-interface PresetDef {
-    /** Hướng (đã chuẩn hóa) từ tâm nhìn tới vị trí camera. */
-    dir: THREE.Vector3;
-    /** FOV (độ) áp cho camera ở preset này. */
-    fov: number;
-    /** Hệ số nhân khoảng cách cơ sở. */
-    distanceScale: number;
-}
-
-/** Định nghĩa 4 preset camera (Yêu cầu 7.1). */
-export const PRESETS: Record<CameraPreset, PresetDef> = {
-    front: {
-        dir: new THREE.Vector3(0, 0, 1).normalize(),
-        fov: BASE_FOV_DEG,
-        distanceScale: 1,
-    },
-    top: {
-        // epsilon nhỏ theo Z để tránh trùng phương với vector up (gimbal)
-        dir: new THREE.Vector3(0, 1, 0.0001).normalize(),
-        fov: BASE_FOV_DEG,
-        distanceScale: 1,
-    },
-    isometric: {
-        dir: new THREE.Vector3(1, 0.8, 1).normalize(),
-        fov: BASE_FOV_DEG,
-        distanceScale: 1,
-    },
-    orthographic: {
-        dir: new THREE.Vector3(1, 0.8, 1).normalize(),
-        fov: ORTHO_FOV_DEG,
-        distanceScale: ORTHO_DISTANCE_SCALE,
-    },
-};
-
-/** easeInOutCubic — chuyển cảnh êm ở đầu/cuối. */
-function easeInOutCubic(t: number): number {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-/** Tính tư thế camera mục tiêu cho một preset. */
-export function computeTargetPose(
-    preset: CameraPreset,
-    center: THREE.Vector3,
-    distance: number,
-): { position: THREE.Vector3; fov: number } {
-    const def = PRESETS[preset];
-    const effDist = distance * def.distanceScale;
-    const position = center.clone().add(def.dir.clone().multiplyScalar(effDist));
-    return { position, fov: def.fov };
-}
 
 interface OrbitLikeControls {
     target: THREE.Vector3;

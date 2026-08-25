@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createPlaybackPublisher, type PlaybackRevision } from './playbackPublisher';
+import { readArtifactLeaseToken, tagArtifactLeaseToken } from '../artifactLease';
 
 function setup() {
     let seq = 0;
@@ -16,6 +17,8 @@ function setup() {
 }
 
 const pdf = (n = 1) => new Blob([new Uint8Array([n])], { type: 'application/pdf' });
+const LEASE_A = 'a'.repeat(64);
+const LEASE_B = 'b'.repeat(64);
 
 describe('playbackPublisher — §PLAY.14 vòng đời blob URL', () => {
     it('chỉ giữ MỘT blob URL trung gian; thu hồi cái trước mỗi bước', () => {
@@ -46,5 +49,18 @@ describe('playbackPublisher — §PLAY.14 vòng đời blob URL', () => {
         expect(revisions[0].path).toBeUndefined();
         expect(revisions[1].url).toBe('localfile://D:/out/native.pdf');
         expect((revisions[1].file as File & { path?: string }).path).toBe('D:/out/native.pdf');
+    });
+
+    it('giữ lease token của carrier trên File revision cuối cho cả blob và path native', () => {
+        const { publisher, revisions } = setup();
+        publisher.publish(tagArtifactLeaseToken(pdf(1), LEASE_A), 'blob.pdf');
+        publisher.publish(
+            tagArtifactLeaseToken(pdf(2), LEASE_B),
+            'native.pdf',
+            'D:/out/native.pdf',
+        );
+
+        expect(readArtifactLeaseToken(revisions[0].file)).toBe(LEASE_A);
+        expect(readArtifactLeaseToken(revisions[1].file)).toBe(LEASE_B);
     });
 });

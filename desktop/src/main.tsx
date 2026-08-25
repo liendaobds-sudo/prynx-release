@@ -7,6 +7,16 @@ import App from './App'
 import { ErrorBoundary } from './ErrorBoundary'
 import { installBackendFetchAuth } from './lib/api'
 import { APP_VERSION } from './lib/uiErrorDiagnostics'
+import {
+  takeDocumentWindowBootstrap,
+  type DocumentWindowBootstrap,
+} from './lib/documentWindow'
+
+type TauriGlobal = {
+  core?: {
+    invoke?: typeof import('@tauri-apps/api/core').invoke
+  }
+}
 
 // ══════════════════════════════════════════════════════════════
 // VECTOR #3+#13 FIX: Freeze Tauri IPC bridge AND capture invoke.
@@ -14,10 +24,10 @@ import { APP_VERSION } from './lib/uiErrorDiagnostics'
 // imports create new references. Solution: capture the REAL invoke
 // at startup and expose it via a frozen global that api.ts uses.
 // ══════════════════════════════════════════════════════════════
-if ((window as any).__TAURI__) {
+const tauri = (window as Window & { __TAURI__?: TauriGlobal }).__TAURI__;
+if (tauri) {
   try {
-    const tauri = (window as any).__TAURI__;
-    
+
     // Capture the REAL invoke function before anything can override it
     const realInvoke = tauri.core?.invoke;
     if (realInvoke) {
@@ -64,8 +74,30 @@ installBackendFetchAuth();
 // (doubleInvokeEffectsOnFiber) → nhân đôi mọi fetch metadata/colorspace + tile load
 // lúc mở file → góp phần gây "đơ ~7s" trên cây component lớn (đo được trong Performance
 // profile: doubleInvoke + jsxDEV). Production vốn KHÔNG double-invoke nên không đổi hành vi.
-createRoot(document.getElementById('root')!).render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>,
-)
+async function renderApplication(): Promise<void> {
+  const root = createRoot(document.getElementById('root')!);
+  let documentWindowBootstrap: DocumentWindowBootstrap | undefined;
+
+  try {
+    documentWindowBootstrap = await takeDocumentWindowBootstrap() ?? undefined;
+  } catch (error) {
+    // UIUX/SEC (audit 2026-08-25 §NW.3): bootstrap không đi qua URL/localStorage.
+    // Token one-shot lỗi thì đóng child ẩn; Destroyed dọn pending snapshot native.
+    console.error('[DOCUMENT-WINDOW] Bootstrap thất bại:', error);
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().destroy();
+    } catch {
+      // Native sẽ dọn pending theo TTL/startup nếu WebView hỏng trước Destroyed.
+    }
+    return;
+  }
+
+  root.render(
+    <ErrorBoundary>
+      <App documentWindowBootstrap={documentWindowBootstrap} />
+    </ErrorBoundary>,
+  );
+}
+
+void renderApplication();

@@ -1,9 +1,36 @@
-import { useContext, useEffect } from 'react';
+import { useCallback, useContext, useEffect } from 'react';
 import { WorkspaceContext } from '@/stores/useWorkspaceStore'; // UIUX (audit 2026-07-27 §D-02) fix-verify
 
+export interface VdpToolField {
+    id: string;
+    name: string;
+    type?: string;
+    pageNum?: number;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    position?: { x: number; y: number };
+    groupId?: string;
+    textContent?: string | null;
+    fontName?: string;
+    fontFile?: string;
+    fontStyle?: string;
+    fontSize?: number;
+    lineHeight?: number;
+    characterSpacing?: number;
+    alignment?: string;
+    fontColor?: string;
+    rotation?: number;
+    [property: string]: unknown;
+}
+
+export type VdpFieldsUpdater = VdpToolField[] | ((previous: VdpToolField[]) => VdpToolField[]);
+export type SetVdpFields = (updater: VdpFieldsUpdater) => void;
+
 export function useVdpTool(
-    vdpFields: any[], 
-    setVdpFields: (updater: any) => void, 
+    vdpFields: VdpToolField[],
+    setVdpFields: SetVdpFields | undefined,
     selectedFieldIds: string[], 
     onSelectField?: (ids: string[]) => void,
     isActive: boolean = true
@@ -13,27 +40,27 @@ export function useVdpTool(
     // getState() tại thời điểm bấm phím để không dính closure stale.
     const workspaceStore = useContext(WorkspaceContext);
 
-    const updateSelectedField = (changes: any) => {
+    const updateSelectedField = useCallback((changes: Partial<VdpToolField>) => {
         if (!setVdpFields || selectedFieldIds.length === 0) return;
-        setVdpFields((prev: any[]) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, ...changes } : f));
-    };
+        setVdpFields((prev) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, ...changes } : f));
+    }, [selectedFieldIds, setVdpFields]);
 
-    const deleteSelectedField = () => {
+    const deleteSelectedField = useCallback(() => {
         if (!setVdpFields || selectedFieldIds.length === 0) return;
-        setVdpFields((prev: any[]) => prev.filter(f => !selectedFieldIds.includes(f.id)));
+        setVdpFields((prev) => prev.filter(f => !selectedFieldIds.includes(f.id)));
         if (onSelectField) onSelectField([]);
-    };
+    }, [selectedFieldIds, setVdpFields, onSelectField]);
 
-    const handleGroupFields = () => {
+    const handleGroupFields = useCallback(() => {
         if (!setVdpFields || selectedFieldIds.length < 2) return;
         const newGroupId = `group_${Date.now()}`;
-        setVdpFields((prev: any[]) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, groupId: newGroupId } : f));
-    };
+        setVdpFields((prev) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, groupId: newGroupId } : f));
+    }, [selectedFieldIds, setVdpFields]);
 
-    const handleUngroupFields = () => {
+    const handleUngroupFields = useCallback(() => {
         if (!setVdpFields || selectedFieldIds.length === 0) return;
-        setVdpFields((prev: any[]) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, groupId: undefined } : f));
-    };
+        setVdpFields((prev) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, groupId: undefined } : f));
+    }, [selectedFieldIds, setVdpFields]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -61,7 +88,7 @@ export function useVdpTool(
                 // (AcrobatViewer set = mm thật × 96/72; VdpAlignPanel cũng dùng thẳng
                 // pageDimMm.w với f.x/f.width) → kẹp trực tiếp, không đổi đơn vị.
                 const dims = workspaceStore?.getState().viewerPageDimMm ?? null;
-                setVdpFields((prev: any[]) => prev.map(f => {
+                setVdpFields((prev) => prev.map(f => {
                     if (!selectedFieldIds.includes(f.id)) return f;
                     let nx = (f.x || 0) + dx * step;
                     let ny = (f.y || 0) + dy * step;
@@ -91,7 +118,7 @@ export function useVdpTool(
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedFieldIds, setVdpFields, onSelectField, isActive, workspaceStore]);
+    }, [selectedFieldIds, setVdpFields, onSelectField, isActive, workspaceStore, deleteSelectedField, handleGroupFields, handleUngroupFields]);
 
     return {
         updateSelectedField,

@@ -17,13 +17,13 @@ function jsonResponse(status: number, body: unknown): Response {
 
 describe('uploadPDF local-path fallback', () => {
   beforeEach(() => {
-    (window as any).__TAURI_INTERNALS__ = {};
-    (window as any).__PRYNX_INVOKE__ = vi.fn(async () => ({}));
+    window.__TAURI_INTERNALS__ = {};
+    window.__PRYNX_INVOKE__ = vi.fn(async () => ({})) as typeof window.__PRYNX_INVOKE__;
   });
 
   afterEach(() => {
-    delete (window as any).__TAURI_INTERNALS__;
-    delete (window as any).__PRYNX_INVOKE__;
+    delete window.__TAURI_INTERNALS__;
+    delete window.__PRYNX_INVOKE__;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });

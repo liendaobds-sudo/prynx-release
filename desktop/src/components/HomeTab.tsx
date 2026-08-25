@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, toolMatchesQuery, type ToolDefinition, type AppToolId } from '../lib/toolRegistry';
+import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, toolMatchesQuery, type ToolDefinition, type AppToolId, type ToolCategoryId } from '../lib/toolRegistry';
 import { OFFICE_EXTENSIONS } from '../lib/officeFileTypes';
 import { IMAGE_ACCEPT_ATTR, SUPPORTED_IMAGE_EXTENSIONS } from '../lib/imageFileTypes';
 import { createPathBackedFile, dispatchSupportedSystemFiles } from '../lib/nativeFileAccess';
@@ -28,8 +28,10 @@ const HOME_FILE_ACCEPT = [
   ...OFFICE_EXTENSIONS.map((ext) => `.${ext}`),
 ].join(',');
 
+type OpenAppHandler = (appId: AppToolId, payload?: ToolDefinition['defaultPayload']) => void;
+
 interface Props {
-  onOpenApp: (appId: AppToolId, payload?: any) => void;
+  onOpenApp: OpenAppHandler;
   isActive?: boolean;
 }
 
@@ -52,7 +54,7 @@ interface ToolItemProps {
   isFavorite?: boolean;
   isMiniMode: boolean;
 
-  onOpenApp: (id: AppToolId, payload?: any) => void;
+  onOpenApp: OpenAppHandler;
   onToggleFavorite: (key: string) => void;
 }
 
@@ -345,8 +347,8 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
         : effectiveHomeLayout.totalWidth;
 
     // ── Render danh sách tool của 1 category (chỉ chế độ list) ──
-    const renderToolSection = (categoryId: string) => {
-        const allTools = getToolsByCategory(categoryId as any);
+    const renderToolSection = (categoryId: ToolCategoryId) => {
+        const allTools = getToolsByCategory(categoryId);
         const tools = allTools.filter(t => !hiddenTools.includes(toolKey(t)) && matchesQuery(t) && !favoriteTools.includes(toolKey(t)));
         if (tools.length === 0) return null;
         const enabledTools = tools.filter(t => t.isEnabled);
@@ -513,7 +515,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
 
                     {/* Render Favorite Category */}
                     {(() => {
-                        const allTools = TOOL_CATEGORIES.flatMap(c => getToolsByCategory(c.id as any));
+                        const allTools = TOOL_CATEGORIES.flatMap(c => getToolsByCategory(c.id));
                         const favTools = allTools.filter(t => favoriteTools.includes(toolKey(t)) && !hiddenTools.includes(toolKey(t)) && matchesQuery(t));
                         if (favTools.length === 0) return null;
                         const enabledTools = favTools.filter(t => t.isEnabled);
@@ -544,7 +546,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
 
                     {/* Render all categories dynamically from registry */}
                     {TOOL_CATEGORIES.map((cat) => {
-                        const catTools = getToolsByCategory(cat.id as any).filter(t => !hiddenTools.includes(toolKey(t)) && !favoriteTools.includes(toolKey(t)) && matchesQuery(t));
+                        const catTools = getToolsByCategory(cat.id).filter(t => !hiddenTools.includes(toolKey(t)) && !favoriteTools.includes(toolKey(t)) && matchesQuery(t));
                         if (catTools.length === 0) return null;
                         const isCollapsed = !isMiniMode && !_q && !!collapsedSections[cat.id];
                         return (

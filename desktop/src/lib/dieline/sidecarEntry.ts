@@ -2,7 +2,6 @@ import { runDielineEngine } from './engine';
 import { assertEngineRequest } from './runtimeValidation';
 
 declare global {
-    // eslint-disable-next-line no-var
     var __prynxGenerateDieline: ((requestJson: string) => string) | undefined;
 }
 

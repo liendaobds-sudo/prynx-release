@@ -1,79 +1,60 @@
-// @ts-nocheck
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { PontConfig } from './types';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
 import { getPontConfigValidationError } from './pontConfigValidation';
 
-export const DEFAULT_PONT_CONFIG: PontConfig = {
-    shape: 'circle',
-    size: 5.0,
-    thickness: 0.5,
-    isGraphtec: false,
-    layerInfoName: 'SA info 0 0 0 17.01 2 -16777216 -16777216 1 1 0',
-    layerName: 'Marks_Model_',
-    groupName: 'MarkLine',
-    itemName: 'MKLINE',
-    marginTop: 7,
-    marginBottom: 7,
-    marginLeft: 7,
-    marginRight: 7,
-    guide1Enabled: false,
-    guide1Pos: 'BL',
-    guide1Length: 20,
-    guide1Thickness: 0.5,
-    guide1OffX: 0,
-    guide1OffY: 0,
-    guide2Enabled: false,
-    guide2Pos: 'BR',
-    guide2Length: 20,
-    guide2Thickness: 0.5,
-    guide2OffX: 0,
-    guide2OffY: 0,
-    disableCollision: false
-};
+import { DEFAULT_PONT_CONFIG } from './pontConfigDefaults';
 
 interface Preset {
     name: string;
     config: PontConfig;
 }
 
-export const PontSettingsDialog = ({
-    isOpen,
-    onClose,
-    config,
-    onSave
-}: {
+interface PontSettingsDialogProps {
     isOpen: boolean;
     onClose: () => void;
     config: PontConfig;
     onSave: (cfg: PontConfig) => void;
-}) => {
-  const { t } = useTranslation();
-    const [localCfg, setLocalCfg] = useState<PontConfig>(config);
+}
+
+function readSavedPresets(): Preset[] {
+    if (typeof window === 'undefined') return [];
+    const savedPresets = window.localStorage.getItem('ps_pont_presets');
+    if (!savedPresets) return [];
+    try {
+        const parsed: unknown = JSON.parse(savedPresets);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.flatMap((value): Preset[] => {
+            if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
+            const record = value as Record<string, unknown>;
+            if (
+                typeof record.name !== 'string'
+                || typeof record.config !== 'object'
+                || record.config === null
+                || Array.isArray(record.config)
+            ) return [];
+            return [{
+                name: record.name,
+                config: { ...DEFAULT_PONT_CONFIG, ...(record.config as Partial<PontConfig>) },
+            }];
+        });
+    } catch {
+        // UIUX (audit 2026-08-24 §LINT.87): preset hỏng không được làm dialog lỗi khi mở.
+        return [];
+    }
+}
+
+function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSettingsDialogProps, 'isOpen'>) {
+    const { t } = useTranslation();
+    const [localCfg, setLocalCfg] = useState<PontConfig>(() => ({ ...DEFAULT_PONT_CONFIG, ...config }));
     const [presetName, setPresetName] = useState('');
-    const [presets, setPresets] = useState<Preset[]>([]);
+    const [presets, setPresets] = useState<Preset[]>(readSavedPresets);
     const validationErrorKey = getPontConfigValidationError(localCfg);
     const validationError = validationErrorKey
         ? t(`imposition.pontSettingsDialog:${validationErrorKey}`)
         : '';
-
-    useEffect(() => {
-        if (isOpen) {
-            setLocalCfg({ ...DEFAULT_PONT_CONFIG, ...config });
-            const savedPresets = localStorage.getItem('ps_pont_presets');
-            if (savedPresets) {
-                try {
-                    setPresets(JSON.parse(savedPresets));
-                } catch (e) {
-                    // UIUX (audit 2026-07-27 §D-14)
-                    // nuốt chủ đích: dữ liệu preset trong localStorage hỏng định dạng khi mở dialog —
-                    // không phải thao tác user chủ động, bỏ qua và coi như chưa có mẫu lưu (không toast).
-                }
-            }
-        }
-    }, [isOpen, config]);
 
     const savePreset = () => {
         if (validationError) {
@@ -86,7 +67,7 @@ export const PontSettingsDialog = ({
         }
         const newPresets = [...presets.filter(p => p.name !== presetName.trim()), { name: presetName.trim(), config: localCfg }];
         setPresets(newPresets);
-        localStorage.setItem('ps_pont_presets', JSON.stringify(newPresets));
+        window.localStorage.setItem('ps_pont_presets', JSON.stringify(newPresets));
         toast.success(t('imposition.pontSettingsDialog:da_luu_mau_cau_hinh') + presetName.trim() + t('imposition.pontSettingsDialog:thanh_cong'));
     };
 
@@ -102,15 +83,13 @@ export const PontSettingsDialog = ({
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (isOpen && e.key === 'Escape') onClose();
+            if (e.key === 'Escape') onClose();
         };
-        if (isOpen) document.addEventListener('keydown', handleKeyDown);
+        document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, onClose]);
-
-    if (!isOpen) return null;
+    }, [onClose]);
     
-    const updateLocal = (key: keyof PontConfig, val: any) => {
+    const updateLocal = <K extends keyof PontConfig>(key: K, val: PontConfig[K]) => {
         setLocalCfg((prev: PontConfig) => ({ ...prev, [key]: val }));
     };
 
@@ -192,7 +171,7 @@ export const PontSettingsDialog = ({
                                     <label className={labelCls}>{t('imposition.pontSettingsDialog:hinh_dang')}</label>
                                     <select 
                                         value={localCfg.shape} 
-                                        onChange={e => updateLocal('shape', e.target.value)}
+                                        onChange={e => updateLocal('shape', e.target.value as PontConfig['shape'])}
                                         className={selectCls}
                                     >
                                         <option value="circle">{t('imposition.pontSettingsDialog:hinh_tron')}</option>
@@ -411,3 +390,12 @@ export const PontSettingsDialog = ({
         document.body
     );
 };
+
+
+// UIUX (audit 2026-08-24 §LINT.87): mount theo phiên mở để khởi tạo cấu hình
+// từ props, tránh effect reset state đồng bộ và giữ Fast Refresh thuần component.
+export function PontSettingsDialog(props: PontSettingsDialogProps) {
+    if (!props.isOpen) return null;
+    const configKey = JSON.stringify(props.config);
+    return <PontSettingsDialogContent key={configKey} config={props.config} onClose={props.onClose} onSave={props.onSave} />;
+}

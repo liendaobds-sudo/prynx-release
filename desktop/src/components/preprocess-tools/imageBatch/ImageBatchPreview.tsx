@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { ImageBatchStore } from './store';
 import { normalizeAndAddFiles, openFilePicker } from './helpers';
@@ -121,21 +121,20 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
     }, [isActive]);
 
     // Slider drag
-    const handleSliderMove = useCallback((clientX: number) => {
-        if (!containerRef.current) return;
-        const rect = containerRef.current.getBoundingClientRect();
-        const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
-        setSliderPos((x / rect.width) * 100);
-    }, []);
-
     React.useEffect(() => {
         if (!isSliderDragging) return;
-        const onMove = (e: MouseEvent) => handleSliderMove(e.clientX);
+        const onMove = (e: MouseEvent) => {
+            const node = containerRef.current;
+            if (!node) return;
+            const rect = node.getBoundingClientRect();
+            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+            setSliderPos((x / rect.width) * 100);
+        };
         const onUp = () => setIsSliderDragging(false);
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
         return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-    }, [isSliderDragging, handleSliderMove]);
+    }, [isSliderDragging]);
 
     // Pan drag
     React.useEffect(() => {
@@ -157,22 +156,22 @@ export function ImageBatchPreview<O>({ tabId, isActive, store, labels }: Props<O
     const maxZoom = baseScale !== null && baseScale > 0
         ? Math.max(10, (1 / baseScale) * 2)
         : 10;
-    const handleWheel = useCallback((e: React.WheelEvent) => {
+    const handleWheel = (e: React.WheelEvent) => {
         e.stopPropagation();
         setZoom(prev => Math.max(0.2, Math.min(maxZoom, prev * (e.deltaY < 0 ? 1.15 : 0.87))));
-    }, [maxZoom]);
+    };
 
     // Space+click, Middle-click, or Ctrl+click to pan
-    const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const handleMouseDown = (e: React.MouseEvent) => {
         if (e.button === 1 || (e.button === 0 && (e.ctrlKey || spaceHeld.current))) {
             e.preventDefault();
             setIsPanning(true);
             panStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
         }
-    }, [pan]);
+    };
 
     // Double-click to reset zoom
-    const handleDoubleClick = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
+    const handleDoubleClick = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
 
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();

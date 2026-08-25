@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useDialogLifecycle } from './AcrobatModals';
+import { useDialogLifecycle } from './dialogLifecycle';
 
 // ═══════ ROTATE PAGES MODAL ═══════
 export function RotatePagesModal({ numPages, onConfirm, onClose }: {
@@ -139,7 +139,7 @@ export function InsertBlankPageModal({ pageCount, onConfirm, onClose }: {
                             </div>
                             <div className="flex items-center justify-between mt-2">
                                 <span className="text-slate-700 dark:text-zinc-300">{t('misc.acrobatModals2:vi_tri')}</span>
-                                <select value={insertLocation} onChange={e => setInsertLocation(e.target.value as any)} className="w-[200px] bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-zinc-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer">
+                                <select value={insertLocation} onChange={e => setInsertLocation(e.target.value as 'after' | 'before')} className="w-[200px] bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-zinc-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer">
                                     <option value="after">Sau (After)</option>
                                     <option value="before">{t('misc.acrobatModals2:truoc_before')}</option>
                                 </select>

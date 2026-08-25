@@ -588,7 +588,7 @@ export default function DocumentCleanupTool({ tabId, pdfFile, sourceImageFile, g
     const tab = useDocumentCleanupStore(state => state.tabs[tabId] || defaultDocumentCleanupTabState);
     const store = useDocumentCleanupStore.getState();
     const { batchItems, selectedId, options, isProcessing, progress, error } = tab;
-    const added = useRef(new Set<string>());
+    const workspaceInputKeyRef = useRef<string | null>(null);
     const mountedRef = useRef(true);
 
     React.useEffect(() => {
@@ -603,21 +603,40 @@ export default function DocumentCleanupTool({ tabId, pdfFile, sourceImageFile, g
 
     React.useEffect(() => {
         store.initTab(tabId);
-        if (store.getTab(tabId).isProcessing) return;
+        if (isProcessing) return;
         const input = sourceImageFile || pdfFile;
-        if (!input || !(input.type.startsWith('image/') || input.type === 'application/pdf' || /\.(png|jpe?g|webp|tiff?|bmp|pdf)$/i.test(input.name))) return;
+        const inputKey = input ? `${tabId}|${sourceKey(input)}` : `${tabId}|<none>`;
+        const workspaceInputChanged = workspaceInputKeyRef.current !== inputKey;
+        workspaceInputKeyRef.current = inputKey;
+        // Store còn đổi khi xử lý/hoàn tác/cập nhật thumbnail. Không dùng các
+        // render nội bộ đó làm tín hiệu thay nguồn vì prop workspace chưa chắc
+        // đã kịp phản ánh callback publish vừa hoàn tất.
+        if (!workspaceInputChanged) return;
         const currentItems = store.getTab(tabId).batchItems;
+        // REVISION (audit 2026-08-25 §REV.06): nguồn tự lấy từ workspace chỉ
+        // sống cùng revision đang hiển thị. Khi ảnh shadow bị vô hiệu sau xoay/
+        // sửa trang, bỏ đúng item workspace cũ nhưng giữ nguyên toàn bộ file mà
+        // người dùng đã chủ động chọn hoặc kéo thả.
+        const staleWorkspaceItems = currentItems.filter(item => (
+            item.sourceOrigin === 'workspace'
+            && (!input || !isDocumentCleanupInputAlreadyTracked([item], input))
+        ));
+        for (const item of staleWorkspaceItems) store.removeItem(tabId, item.id);
+
+        if (!input || !(input.type.startsWith('image/') || input.type === 'application/pdf' || /\.(png|jpe?g|webp|tiff?|bmp|pdf)$/i.test(input.name))) return;
+        const remainingItems = store.getTab(tabId).batchItems;
         // UIUX (feedback 2026-08-21 §DOC.HANDOFF.01): ảnh/PDF kết quả đã được
         // commit lại workspace không được ingest thành thumbnail pending thứ hai,
         // kể cả khi người dùng rời công cụ rồi quay lại.
-        if (isDocumentCleanupInputAlreadyTracked(currentItems, input)) return;
-        if (!sourceImageFile && currentItems.length > 0) return;
-        const key = sourceKey(input);
-        if (added.current.has(key)) return;
-        added.current.add(key);
+        if (isDocumentCleanupInputAlreadyTracked(remainingItems, input)) return;
         switchToScanForPdf(tabId, [input]);
-        void normalizeAndAddFiles([input], tabId, useDocumentCleanupStore, { allowPdf: true });
-    }, [pdfFile, sourceImageFile, store, tabId]);
+        // Chỉ ingest metadata/bytes sẵn có như luồng auto cũ. PDF revision thật
+        // vẫn được materialize bằng getWorkingFile khi người dùng bấm Xử lý.
+        void normalizeAndAddFiles([input], tabId, useDocumentCleanupStore, {
+            allowPdf: true,
+            sourceOrigin: 'workspace',
+        });
+    }, [isProcessing, pdfFile, sourceImageFile, store, tabId]);
 
     const selected = batchItems.find(item => item.id === selectedId);
     const hasPending = batchItems.some(item => item.status === 'pending' || item.status === 'error');

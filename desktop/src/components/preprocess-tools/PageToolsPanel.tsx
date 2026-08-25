@@ -54,7 +54,7 @@ export default function PageToolsPanel({ tabId }: PageToolsPanelProps) {
     const [extractEnd, setExtractEnd] = useState(activePage);
     const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
 
-    const dispatchAction = (action: string, payload: any) => {
+    const dispatchAction = (action: string, payload: unknown) => {
         window.dispatchEvent(createPageToolsActionEvent(tabId, action, payload));
     };
 

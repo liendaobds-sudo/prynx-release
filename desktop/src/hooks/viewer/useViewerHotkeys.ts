@@ -4,6 +4,10 @@ import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { matchesShortcut } from '../../lib/keyboardShortcuts';
 import { toast } from '../../components/ui/Toast'; // UIUX (audit 2026-07-27 §C-07)
 import i18n from '../../i18n'; // UIUX (audit 2026-07-27 §C-07)
+import type { ViewerContextMenuState } from '../../components/acrobat/ViewerContextMenu';
+import type { Guide } from '../../components/acrobat/GuideLayer';
+import type { VirtuosoHandle } from 'react-virtuoso';
+import type { ViewerSnapshot } from './usePdfLoader';
 
 /** Chống 2 listener (nhiều tab mount) toggle DIM 2 lần trong 1 cú nhấn → kẹt ON. */
 const handledDimensionKeyEvents = new WeakSet<KeyboardEvent>();
@@ -19,13 +23,6 @@ const dispatchViewerCommand = (cmd: string): void => {
     window.dispatchEvent(new CustomEvent('prynx-menu-command', { detail: { cmd } }));
 };
 
-interface ViewerSnapshot {
-    order: number[];
-    selection: number[];
-    lastSelected: number | null;
-    rotations: Record<string, number>;
-}
-
 interface UseViewerHotkeysProps {
     containerRef: React.RefObject<HTMLDivElement | null>;
     sidebarRef: React.RefObject<HTMLDivElement | null>;
@@ -40,7 +37,14 @@ interface UseViewerHotkeysProps {
     activePage: number;
     numPages: number;
     // State setters
-    setPageOrder: React.Dispatch<React.SetStateAction<number[]>>;
+    applyPageRevision?: (
+        order: number[],
+        instanceIds: string[],
+        rotations: Record<string, number>,
+    ) => void;
+    /** Fallback tương thích cho caller cũ; production dùng applyPageRevision. */
+    setPageOrder?: React.Dispatch<React.SetStateAction<number[]>>;
+    setPageInstanceIds?: React.Dispatch<React.SetStateAction<string[]>>;
     setSelectedIndices: React.Dispatch<React.SetStateAction<Set<number>>>;
     setLastSelectedIndex: React.Dispatch<React.SetStateAction<number | null>>;
     setPageRotations: React.Dispatch<React.SetStateAction<Record<string, number>>>;
@@ -61,19 +65,19 @@ interface UseViewerHotkeysProps {
     setIsExtractModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setIsInsertModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;
-    setContextMenu: React.Dispatch<React.SetStateAction<any>>;
+    setContextMenu: React.Dispatch<React.SetStateAction<ViewerContextMenuState>>;
     // Guide system
-    guides: any[];
-    setGuides: React.Dispatch<React.SetStateAction<any[]>>;
-    guidesHistory: any[][];
-    setGuidesHistory: React.Dispatch<React.SetStateAction<any[][]>>;
+    guides: Guide[];
+    setGuides: React.Dispatch<React.SetStateAction<Guide[]>>;
+    guidesHistory: Guide[][];
+    setGuidesHistory: React.Dispatch<React.SetStateAction<Guide[][]>>;
     selectedGuideId: string | null;
     setSelectedGuideId: React.Dispatch<React.SetStateAction<string | null>>;
     toggleRulers: () => void;
     // Navigation
     navigatePage: (newPage: number) => void;
     // Virtuoso ref
-    mainVirtuosoRef: React.RefObject<any>;
+    mainVirtuosoRef: React.RefObject<VirtuosoHandle | null>;
     internalScrollRef: React.MutableRefObject<HTMLElement | null>;
     // Object Edit Mode: Ctrl+Z/Ctrl+Y hoàn tác/làm lại thao tác edit-object.
     isObjectEditMode?: boolean;
@@ -86,14 +90,14 @@ interface UseViewerHotkeysProps {
 export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     const {
         containerRef, sidebarRef, isActive = true,
-        pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
-        setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
+        pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, activePage,
+        applyPageRevision, setPageOrder, setPageInstanceIds,
+        setSelectedIndices, setLastSelectedIndex, setPageRotations,
         pastStack, futureStack, setPastStack, setFutureStack,
-        toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
+        toolMode, setToolMode, isVdpMode,
         setIsDeleteModalOpen, setIsExtractModalOpen, setIsInsertModalOpen, setExtractPagesStrForModal, setContextMenu,
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
-        mainVirtuosoRef, internalScrollRef,
         isObjectEditMode, onEditUndo, onEditRedo, onDocumentUndo,
     } = props;
 
@@ -158,12 +162,29 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     const commitSnapshot = useCallback(() => {
         setPastStack(prev => [...prev, {
             order: [...pageOrder],
+            instanceIds: [...pageInstanceIds],
             selection: Array.from(selectedIndices),
             lastSelected: lastSelectedIndex,
             rotations: { ...pageRotations }
         }]);
         setFutureStack([]);
-    }, [pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack]);
+    }, [pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack]);
+
+    const restorePageRevision = useCallback((snapshot: ViewerSnapshot) => {
+        if (applyPageRevision) {
+            applyPageRevision(
+                [...snapshot.order],
+                [...snapshot.instanceIds],
+                { ...snapshot.rotations },
+            );
+            return;
+        }
+        // Caller cũ chỉ tồn tại ở contract test; giữ tương thích mà không làm yếu
+        // đường production đã đi qua applyOrderChange nguyên khối trong AcrobatViewer.
+        setPageOrder?.([...snapshot.order]);
+        setPageInstanceIds?.([...snapshot.instanceIds]);
+        setPageRotations({ ...snapshot.rotations });
+    }, [applyPageRevision, setPageInstanceIds, setPageOrder, setPageRotations]);
 
     // UIUX (audit 2026-07-27 §C-07): timestamp toast gần nhất — throttle 3s để giữ R liên tục không spam.
     const rotateHintShownAtRef = useRef(0);
@@ -201,18 +222,20 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         const newPast = pastStack.slice(0, -1);
 
         setFutureStack(prevFuture => [{
-            order: pageOrder,
+            order: [...pageOrder],
+            instanceIds: [...pageInstanceIds],
             selection: Array.from(selectedIndices),
             lastSelected: lastSelectedIndex,
-            rotations: pageRotations
+            rotations: { ...pageRotations },
         }, ...prevFuture]);
 
         setPastStack(newPast);
-        setPageOrder(prev.order);
+        // REVISION (audit 2026-08-25 §REV.08): order, instance ID và rotation
+        // là một revision duy nhất; phục hồi qua cùng transaction của Viewer.
+        restorePageRevision(prev);
         setSelectedIndices(new Set(prev.selection));
         setLastSelectedIndex(prev.lastSelected);
-        setPageRotations(prev.rotations);
-    }, [pastStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, onDocumentUndo]);
+    }, [pastStack, pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, restorePageRevision, setSelectedIndices, setLastSelectedIndex, onDocumentUndo]);
 
     const redo = useCallback(() => {
         if (futureStack.length === 0) return;
@@ -220,18 +243,18 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         const newFuture = futureStack.slice(1);
 
         setPastStack(prevPast => [...prevPast, {
-            order: pageOrder,
+            order: [...pageOrder],
+            instanceIds: [...pageInstanceIds],
             selection: Array.from(selectedIndices),
             lastSelected: lastSelectedIndex,
-            rotations: pageRotations
+            rotations: { ...pageRotations },
         }]);
 
         setFutureStack(newFuture);
-        setPageOrder(next.order);
+        restorePageRevision(next);
         setSelectedIndices(new Set(next.selection));
         setLastSelectedIndex(next.lastSelected);
-        setPageRotations(next.rotations);
-    }, [futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations]);
+    }, [futureStack, pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, restorePageRevision, setSelectedIndices, setLastSelectedIndex]);
 
     // True khi IME (Unikey/Telex…) đang compose — không chạy hotkey.
     // Telex "dd"→"đ" hay phát Backspace giả; nếu hotkey xóa trang bắt Backspace
@@ -586,7 +609,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             } else if (matchesShortcut(e, 'viewer.extract_pages')) {
                 e.preventDefault();
                 const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b).map(i => i + 1);
-                let str = sortedSel.length > 0 ? sortedSel.join(', ') : '';
+                const str = sortedSel.length > 0 ? sortedSel.join(', ') : '';
                 setExtractPagesStrForModal(str);
                 setIsExtractModalOpen(true);
             }

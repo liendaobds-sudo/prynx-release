@@ -280,8 +280,6 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
     // ============================================================
     let fanToLidR: PathSegment | undefined;
     let fanToLidL: PathSegment | undefined;
-    let secTabRightPaths: PathSegment[] = [];
-    let secTabLeftPaths: PathSegment[] = [];
     {
         const secH = D;                       // Chiều cao nắp phụ = D
         const ySecBot = yLidTop;              // Nối với top nắp chính (CREASE)
@@ -408,7 +406,6 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
             allPaths.push(line(pt(cx, cy), pt(cx, snap(cy + tabR)), 'CREASE'));
             allPaths.push(...tabSegs);
-            secTabRightPaths = tabSegs;
             fanToLidR = undefined; // bản lề đã trùng mép tai nắp, không cần đường nối
             panels.push({
                 name: 'sec_tab_right', label: 'Tai quạt phải', paths: tabSegs,
@@ -435,7 +432,6 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
             allPaths.push(line(pt(cx, cy), pt(cx, snap(cy + tabR)), 'CREASE'));
             allPaths.push(...tabSegs);
-            secTabLeftPaths = tabSegs;
             fanToLidL = undefined; // bản lề đã trùng mép tai nắp, không cần đường nối
             panels.push({
                 name: 'sec_tab_left', label: 'Tai quạt trái', paths: tabSegs,

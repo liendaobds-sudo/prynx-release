@@ -95,7 +95,7 @@ export default function GussetMesh({
         const creaseInner = new THREE.BufferGeometry().setFromPoints(creaseSeq.map((v) => off(v, dn)));
 
         return [surface, cutOuter, cutInner, creaseOuter, creaseInner];
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
     }, [panel, allPanels, foldProgress, depthMap, maxD, thickness]);
 
     // Vật liệu mặt ngoài (finish) + mặt trong (giấy bồi) — khớp panel hộp (Physical).
@@ -114,7 +114,7 @@ export default function GussetMesh({
             envMapIntensity: phys.envMapIntensity,
             side: THREE.FrontSide,
         });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
     }, [substrateId, surfaceFinishId]);
 
     const innerMaterial = useDisposableResource<THREE.MeshPhysicalMaterial>(() => {
@@ -130,7 +130,7 @@ export default function GussetMesh({
             envMapIntensity: 0.35,
             side: THREE.BackSide,
         });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
     }, [substrateId]);
 
     if (!geos || geos.length < 5 || !outerMaterial || !innerMaterial) return null;

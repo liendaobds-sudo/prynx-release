@@ -73,7 +73,7 @@ export default function ProductFirstPanel({
             quantity: quantity > 0 ? quantity : undefined,
             foliosize,
         });
-    }, [binding, sheetKey, finW, finH, pc, quantity, foliosize]);
+    }, [binding, sheetKey, finW, finH, pc, quantity, foliosize, t]);
 
     const apply = (opt: RecommendationOption) => {
         if (!store) return;

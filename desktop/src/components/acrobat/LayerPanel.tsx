@@ -14,6 +14,7 @@ interface OcgLayerObject {
     type: 'xobject' | 'path' | 'text' | 'clip' | string;
     name: string;
     page: number;
+    color?: string | null;
 }
 
 interface OcgLayer {
@@ -34,7 +35,7 @@ interface OcgLayer {
 
 // ─── Object Row (memo) — mỗi dòng object CHỈ re-render khi trạng thái ẩn CỦA NÓ đổi.
 const ObjectRow = React.memo(function ObjectRow({ obj, objKey, depth }: {
-    obj: any; objKey: string; depth: number;
+    obj: OcgLayerObject; objKey: string; depth: number;
 }) {
   const { t } = useTranslation();
     const isObjHidden = useWorkspaceStore(s => s.hiddenObjectKeys.includes(objKey));
@@ -204,7 +205,7 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
             {/* Objects inside this layer (flat — page grouping now done by backend children) */}
             {isExpanded && layer.objects && layer.objects.length > 0 && (
                 <div className="border-l border-slate-200 dark:border-zinc-700/50 ml-4">
-                    {layer.objects.map((obj: any, idx: number) => (
+                    {layer.objects.map((obj, idx) => (
                         <ObjectRow key={`obj-${layer.id}-${idx}`} obj={obj} objKey={`${layer.id}-${idx}`} depth={depth} />
                     ))}
                 </div>
@@ -219,6 +220,11 @@ type OcgLayerNode = {
     visible?: boolean;
     children?: OcgLayerNode[];
 };
+
+function getNativeFilePath(file: File | null): string | null {
+    if (!file || !('path' in file) || typeof file.path !== 'string') return null;
+    return file.path || null;
+}
 
 export default function LayerPanel() {
   const { t } = useTranslation();
@@ -261,7 +267,7 @@ export default function LayerPanel() {
     // ─── Fetch layers when panel opens ──────────────────────
     useEffect(() => {
         if (!isLayerPanelOpen || !file) return;
-        const filePath = (file as any)?.path;
+        const filePath = getNativeFilePath(file);
         if (!filePath) return;
 
         const fetchLayers = async () => {
@@ -305,7 +311,7 @@ export default function LayerPanel() {
 
     // ─── Render preview when hidden layers change ────────────
     useEffect(() => {
-        const filePath = (file as any)?.path;
+        const filePath = getNativeFilePath(file);
         if (!filePath || !isLayerPanelOpen) return;
         const sourcePage = activePageIdentity.sourcePage;
         if (sourcePage == null) {
@@ -347,8 +353,12 @@ export default function LayerPanel() {
                         setOcgPreviewUrl(data.preview_b64);
                     }
                 }
-            } catch (err: any) {
-                if (err.name !== 'AbortError') {
+            } catch (err: unknown) {
+                const isAbortError = typeof err === 'object'
+                    && err !== null
+                    && 'name' in err
+                    && err.name === 'AbortError';
+                if (!isAbortError) {
                     console.error('Layer preview render failed:', err);
                 }
             } finally {

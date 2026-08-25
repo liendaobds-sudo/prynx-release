@@ -14,6 +14,18 @@ interface Props {
     onFileFixed?: (blob: Blob, filename: string) => void | boolean | Promise<void | boolean>;
 }
 
+// TYPE (audit 2026-08-23 §P2.65): giữ các boundary legacy ở kiểu cụ thể.
+type TargetType = 'all' | 'even' | 'odd' | 'range';
+
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = (error as { message?: unknown }).message;
+        if (typeof message === 'string' && message) return message;
+    }
+    return fallback;
+}
+
 export default function StickTextNumberTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
     const [isProcessing, setIsProcessing] = useState(false);
@@ -49,7 +61,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed }: Props) {
     const [rotation, setRotation] = useState(0);
 
     // Pages
-    const [targetType, setTargetType] = useState<'all' | 'even' | 'odd' | 'range'>('all');
+    const [targetType, setTargetType] = useState<TargetType>('all');
     const [rangeStart, setRangeStart] = useState(1);
     const [rangeEnd, setRangeEnd] = useState(999);
 
@@ -93,7 +105,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed }: Props) {
             // Load Font
             let font;
             // 1) Font tuỳ chỉnh người dùng chọn (Tauri đọc file .ttf/.otf).
-            if (fontFile && (window as any).__TAURI_INTERNALS__) {
+            if (fontFile && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
                 try {
                     const { readFile } = await import('@tauri-apps/plugin-fs');
                     const fontBytes = await readFile(fontFile);
@@ -213,15 +225,15 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed }: Props) {
             }
 
             const pdfBytes = await doc.save();
-            const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
+            const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
 
             if (onFileFixed) {
                 // RECIPE (audit 2026-08-17 §REC.4R): commit bị chặn → không báo thành công.
                 const committed = await onFileFixed(blob, `Stamped_${pdfFile.name}`);
                 if (committed !== false) setIsSuccess(true);
             }
-        } catch (e: any) {
-            setError(e.message || t('preprocess.stickTextNumber:da_xay_ra_loi_khi_xu_ly'));
+        } catch (error: unknown) {
+            setError(getErrorMessage(error, t('preprocess.stickTextNumber:da_xay_ra_loi_khi_xu_ly')));
         } finally {
             setIsProcessing(false);
         }
@@ -379,7 +391,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed }: Props) {
                     </div>
                     <div className="flex flex-col gap-1">
                         <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:pham_vi_trang')}</label>
-                        <select value={targetType} onChange={(e) => setTargetType(e.target.value as any)} className="bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded h-8 px-2 text-sm outline-none">
+                        <select value={targetType} onChange={(e) => setTargetType(e.target.value as TargetType)} className="bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded h-8 px-2 text-sm outline-none">
                             <option value="all">{t('preprocess.stickTextNumber:tat_ca_trang')}</option>
                             <option value="even">{t('preprocess.stickTextNumber:chi_trang_chan')}</option>
                             <option value="odd">{t('preprocess.stickTextNumber:chi_trang_le')}</option>

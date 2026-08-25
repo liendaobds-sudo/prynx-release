@@ -1,7 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
-import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
+import {
+  createRevisionScopedPdfUploadCache,
+  type RevisionScopedPdfUploadLease,
+} from '../../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -14,7 +18,7 @@ interface Props {
     name: string,
     path?: string,
     recipeTicket?: RecipeOperationTicket | null,
-  ) => void | Promise<void>;
+  ) => void | boolean | Promise<void | boolean>;
 }
 
 interface CheckItem {
@@ -22,6 +26,23 @@ interface CheckItem {
   label: string;
   passed: boolean;
   detail: string;
+}
+
+interface PdfxComplianceResponse {
+  standard: 'x1a' | 'x4';
+  standard_label: string;
+  passed: boolean;
+  passed_checks: number;
+  total_checks: number;
+  checks: CheckItem[];
+}
+
+interface ExportPdfxResponse {
+  success: boolean;
+  output_filename?: string | null;
+  warnings?: unknown;
+  engine?: string | null;
+  detail?: string;
 }
 
 const STANDARDS = [
@@ -85,6 +106,27 @@ const CHECK_HELP: Record<string, CheckHelp> = {
   },
 };
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
+interface ActivePdfxRequest {
+  generation: number;
+  controller: AbortController;
+  snapshot: WorkingPdfRevisionSnapshot | null;
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 async function responseError(response: Response, fallback: string): Promise<string> {
   try {
     const payload = await response.json();
@@ -98,10 +140,9 @@ async function responseError(response: Response, fallback: string): Promise<stri
 
 export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
-  const [fileId, setFileId] = useState('');
   const [standard, setStandard] = useState<'x1a' | 'x4'>('x4');
   const [checks, setChecks] = useState<CheckItem[]>([]);
-  const [compliance, setCompliance] = useState<any>(null);
+  const [compliance, setCompliance] = useState<PdfxComplianceResponse | null>(null);
   const [checking, setChecking] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState('');
@@ -114,7 +155,6 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
     // UIUX (audit 2026-07-28 §PF.1): giữ thông báo khi viewer nhận đúng file vừa xuất.
     const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
     expectedOutputNameRef.current = null;
-    setFileId('');
     setChecks([]);
     setCompliance(null);
     setWarnings([]);
@@ -130,51 +170,150 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
   }, [helpFor]);
 
   const getWorkingFile = useWorkingPdf();
-  const ensureUploaded = useCallback(async (): Promise<string> => {
-    if (fileId) return fileId;
-    if (!pdfFile) throw new Error(t('preprocess.savePdfx:chua_co_file_pdf'));
-    const r = await uploadPDF((await getWorkingFile()) || pdfFile);
-    setFileId(r.id);
-    return r.id;
-  }, [fileId, pdfFile, getWorkingFile, t]);
+  const uploadCache = useMemo(() => createRevisionScopedPdfUploadCache({
+    resolver: getWorkingFile,
+    upload: uploadPDF,
+    missingFileError: () => new Error(t('preprocess.savePdfx:chua_co_file_pdf')),
+  }), [getWorkingFile, t]);
+  const requestGenerationRef = useRef(0);
+  const activeRequestRef = useRef<ActivePdfxRequest | null>(null);
+  const abortActiveRequest = useCallback(() => {
+    requestGenerationRef.current += 1;
+    const active = activeRequestRef.current;
+    activeRequestRef.current = null;
+    if (active && !active.controller.signal.aborted) {
+      active.controller.abort(createAbortError('Revision PDF đã thay đổi.'));
+    }
+  }, []);
+  const beginRequest = useCallback((): ActivePdfxRequest => {
+    abortActiveRequest();
+    const request = {
+      generation: ++requestGenerationRef.current,
+      controller: new AbortController(),
+      snapshot: getWorkingFile.capture?.() ?? null,
+    };
+    activeRequestRef.current = request;
+    return request;
+  }, [abortActiveRequest, getWorkingFile]);
+  const isRequestCurrent = useCallback((request: ActivePdfxRequest): boolean => (
+    activeRequestRef.current === request
+    && request.generation === requestGenerationRef.current
+    && !request.controller.signal.aborted
+  ), []);
+  const assertRequestCurrent = useCallback((
+    request: ActivePdfxRequest,
+    lease: RevisionScopedPdfUploadLease,
+  ) => {
+    if (!isRequestCurrent(request)) {
+      throw request.controller.signal.reason ?? createAbortError('Lượt PDF/X đã hết hiệu lực.');
+    }
+    lease.assertCurrent();
+  }, [isRequestCurrent]);
+  const finishRequest = useCallback((request: ActivePdfxRequest): boolean => {
+    if (!isRequestCurrent(request)) return false;
+    activeRequestRef.current = null;
+    return true;
+  }, [isRequestCurrent]);
+  const renderedRevision = getWorkingFile.capture?.();
+  const renderedRevisionFile = renderedRevision?.file ?? pdfFile;
+  const renderedRevisionKey = JSON.stringify([
+    renderedRevision?.viewerPageOrder ?? null,
+    renderedRevision?.viewerPageInstanceIds ?? null,
+    renderedRevision?.viewerPageRotations ?? null,
+    renderedRevision?.editGeneration ?? 0,
+  ]);
+  useEffect(() => {
+    // REVISION (audit 2026-08-25 §REV.04): compliance chỉ có giá trị cho đúng
+    // revision đã Check; page edit phải hủy request và xóa báo cáo cũ.
+    const active = activeRequestRef.current;
+    if (!active?.snapshot || !getWorkingFile.isCurrent(active.snapshot)) {
+      uploadCache.invalidate();
+      abortActiveRequest();
+    }
+    setChecking(false);
+    setExporting(false);
+    setChecks([]);
+    setCompliance(null);
+    setWarnings([]);
+  }, [abortActiveRequest, getWorkingFile, pdfFile, renderedRevisionFile, renderedRevisionKey, uploadCache]);
+  useEffect(() => () => {
+    abortActiveRequest();
+    uploadCache.dispose();
+  }, [abortActiveRequest, uploadCache]);
 
   const checkCompliance = async () => {
     setChecking(true); setStatus(''); setCompliance(null);
     try {
-      const fid = await ensureUploaded();
-      const res = await authenticatedFetch(`${getApiUrl()}/preflight/check-pdfx/${fid}/${standard}`);
-      const data = await res.json();
+      await getWorkingFile.prepare();
+    } catch (error: unknown) {
+      setStatus(`❌ ${getErrorMessage(error, t('preprocess.savePdfx:loi_xuat_pdf_x'))}`);
+      setChecking(false);
+      return;
+    }
+    const request = beginRequest();
+    try {
+      const lease = await uploadCache.ensureLease(request.controller.signal);
+      assertRequestCurrent(request, lease);
+      const res = await authenticatedFetch(
+        `${getApiUrl()}/preflight/check-pdfx/${lease.fileId}/${standard}`,
+        { signal: request.controller.signal },
+      );
+      assertRequestCurrent(request, lease);
+      const payload = await res.json() as unknown;
+      assertRequestCurrent(request, lease);
       if (!res.ok) {
         throw new Error(
-          typeof data?.detail === 'string'
-            ? data.detail
+          typeof payload === 'object' && payload !== null && 'detail' in payload && typeof payload.detail === 'string'
+            ? payload.detail
             : `${t('preprocess.savePdfx:loi_xuat_pdf_x')} (HTTP ${res.status})`,
         );
       }
+      const data = payload as PdfxComplianceResponse;
+      assertRequestCurrent(request, lease);
       setCompliance(data);
       setChecks(data.checks || []);
-    } catch (e: any) { setStatus(`❌ ${e.message}`); }
-    setChecking(false);
+    } catch (error: unknown) {
+      if (isRequestCurrent(request) && !isAbortError(error)) {
+        setStatus(`❌ ${getErrorMessage(error, t('preprocess.savePdfx:loi_xuat_pdf_x'))}`);
+      }
+    } finally {
+      if (finishRequest(request)) setChecking(false);
+    }
   };
 
   const exportPdfx = async () => {
     setExporting(true); setStatus(''); setWarnings([]);
+    try {
+      // REVISION (audit 2026-08-25 §REV.01/04): Recipe chỉ được ghi sau khi
+      // Edit PDF đã commit và file/revision thực thi cuối cùng đã được công bố.
+      await getWorkingFile.prepare();
+    } catch (error: unknown) {
+      setStatus(`❌ ${getErrorMessage(error, t('preprocess.savePdfx:loi_xuat_pdf_x'))}`);
+      setExporting(false);
+      return;
+    }
+    const request = beginRequest();
     const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
     const recipeTicket = shouldRecord
       ? recipeRecorder.noteOperation('pdfx', { standard }, undefined, tabId)
       : null;
     if (shouldRecord && !recipeTicket) {
+      abortActiveRequest();
       setStatus(`❌ ${t('tabs.imposition:dang_xu_ly_file')}`);
       setExporting(false);
       return;
     }
     try {
-      const fid = await ensureUploaded();
+      const lease = await uploadCache.ensureLease(request.controller.signal);
+      assertRequestCurrent(request, lease);
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/export-pdfx`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fid, standard }),
+        body: JSON.stringify({ file_id: lease.fileId, standard }),
+        signal: request.controller.signal,
       });
-      const data = await res.json();
+      assertRequestCurrent(request, lease);
+      const data = await res.json() as ExportPdfxResponse;
+      assertRequestCurrent(request, lease);
       if (!res.ok || !data.success) {
         recipeRecorder.discardPending(recipeTicket);
         setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`);
@@ -184,15 +323,27 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
         throw new Error(t('preprocess.savePdfx:loi_xuat_pdf_x'));
       }
       if (onFileFixed) {
-        const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+        const dl = await authenticatedFetch(
+          `${getApiUrl()}/preflight/download/${data.output_filename}`,
+          { signal: request.controller.signal },
+        );
+        assertRequestCurrent(request, lease);
         if (!dl.ok) {
           throw new Error(await responseError(dl, t('preprocess.savePdfx:loi_xuat_pdf_x')));
         }
         const artifact = await dl.blob();
+        assertRequestCurrent(request, lease);
         expectedOutputNameRef.current = data.output_filename;
-        await onFileFixed(artifact, data.output_filename, undefined, recipeTicket);
+        const committed = await onFileFixed(artifact, data.output_filename, undefined, recipeTicket);
+        // REVISION (audit 2026-08-25 §REV.03/04): stale commit trả false phải
+        // giữ panel ở trạng thái chưa thành công và không hiện warning artifact cũ.
+        if (committed === false) {
+          expectedOutputNameRef.current = null;
+          return;
+        }
       } else {
         recipeRecorder.discardPending(recipeTicket);
+        return;
       }
       setWarnings(
         Array.isArray(data.warnings)
@@ -200,13 +351,15 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
           : [],
       );
       setStatus(`✅ ${t('preprocess.savePdfx:da_xuat_x_thanh_cong', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}`);
-    } catch (e: any) {
+    } catch (error: unknown) {
       expectedOutputNameRef.current = null;
       setWarnings([]);
       recipeRecorder.discardPending(recipeTicket);
-      setStatus(`❌ ${e.message}`);
+      if (isRequestCurrent(request) && !isAbortError(error)) {
+        setStatus(`❌ ${getErrorMessage(error, t('preprocess.savePdfx:loi_xuat_pdf_x'))}`);
+      }
     }
-    finally { setExporting(false); }
+    finally { if (finishRequest(request)) setExporting(false); }
   };
 
   if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.savePdfx:vui_long_mo_file_pdf_truoc')}</div>;
@@ -278,7 +431,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
 
             {/* Check Compliance Button */}
             <div style={{ marginTop: '12px' }} className="flex gap-2">
-              <button onClick={checkCompliance} disabled={checking}
+              <button onClick={checkCompliance} disabled={checking || exporting}
                 className="flex-1 px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
                 {checking ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.savePdfx:dang_kiem_tra')}</>) : (<>{t('preprocess.savePdfx:kiem_tra_compliance')}</>)}
               </button>
@@ -334,7 +487,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
 
       {/* ═══ SECTION 2: XUẤT FILE ═══ */}
       <div className="h-px w-full bg-slate-200 dark:bg-zinc-700" />
-      <button onClick={exportPdfx} disabled={exporting}
+      <button onClick={exportPdfx} disabled={checking || exporting}
         className="w-full px-2.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-teal-700">
         {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>) : (<>{t('preprocess.common:run')}</>)}
       </button>

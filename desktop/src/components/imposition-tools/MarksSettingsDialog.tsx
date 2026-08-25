@@ -2,38 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../Button';
 import { useTranslation } from 'react-i18next';
+import { DEFAULT_MARKS_CONFIG, type CropMarksConfig } from './marksConfig';
 
-export interface CropMarksConfig {
-    style: number; // 1 or 2
-    distance: number; // mm
-    length: number; // mm
-    thickness: number; // mm
-}
+export type { CropMarksConfig } from './marksConfig';
 
-export const DEFAULT_MARKS_CONFIG: CropMarksConfig = {
-    style: 1,
-    distance: 3.0,
-    length: 5.0,
-    thickness: 0.25
-};
-
-export const MarksSettingsDialog = ({
-    isOpen,
-    onClose,
-    config,
-    onSave
-}: {
+interface MarksSettingsDialogProps {
     isOpen: boolean;
     onClose: () => void;
     config: CropMarksConfig;
     onSave: (cfg: CropMarksConfig) => void;
-}) => {
+}
+
+function MarksSettingsDialogContent({ isOpen, onClose, config, onSave }: MarksSettingsDialogProps) {
   const { t } = useTranslation();
     const [localCfg, setLocalCfg] = useState<CropMarksConfig>(config);
 
-    useEffect(() => {
-        if (isOpen) setLocalCfg(config);
-    }, [isOpen, config]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -46,7 +29,6 @@ export const MarksSettingsDialog = ({
     if (!isOpen) return null;
 
     const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors";
-    const labelCls = "block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5";
 
     return createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -131,4 +113,10 @@ export const MarksSettingsDialog = ({
         </div>,
         document.body
     );
+};
+
+
+export const MarksSettingsDialog = (props: MarksSettingsDialogProps) => {
+    if (!props.isOpen) return null;
+    return <MarksSettingsDialogContent key={JSON.stringify(props.config)} {...props} />;
 };

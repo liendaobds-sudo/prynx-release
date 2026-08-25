@@ -58,6 +58,9 @@ import { useTranslation } from 'react-i18next';
 
 interface Pt { x: number; y: number }
 
+/** Khoảng cách thị giác giữa hai tờ ở chế độ tách vật liệu (mm trong SVG). */
+const SPLIT_SHEET_GAP_MM = 30;
+
 function segStart(seg: PathSegment): Pt {
     if (seg.type === 'bezier' && seg.controlPoints) return seg.controlPoints[0];
     return seg.points[0];
@@ -258,18 +261,32 @@ export default function NestingCanvas({ isActive = true }: {
         if (!nestingResult || !svgEl) return;
         const rect = svgEl.getBoundingClientRect();
         const { actualSheet } = nestingResult;
+        // UIUX (audit 2026-08-23 §DIELINE.LINT.03): split render hai tờ cạnh
+        // nhau, nên fit phải đo toàn bộ cụm; đo riêng tờ khay làm tờ vỏ tràn khỏi view.
+        const splitSheet = (
+            (params.boxType === 'tray' || params.boxType === 'double_tray')
+            && nestingConfig.trayNestingMode === 'split'
+        ) ? sleeveNestingResult?.actualSheet : undefined;
+        const contentWidth = splitSheet
+            ? actualSheet.width + SPLIT_SHEET_GAP_MM + splitSheet.width
+            : actualSheet.width;
+        const contentHeight = splitSheet
+            ? Math.max(actualSheet.height, splitSheet.height)
+            : actualSheet.height;
         const padding = 40;
-        const scaleX = (rect.width - padding * 2) / actualSheet.width;
-        const scaleY = (rect.height - padding * 2) / actualSheet.height;
+        const scaleX = (rect.width - padding * 2) / contentWidth;
+        const scaleY = (rect.height - padding * 2) / contentHeight;
         const scale = mode === 'width' ? Math.min(scaleX, 3) : Math.min(scaleX, scaleY, 3);
         updateTransform({
-            x: (rect.width - actualSheet.width * scale) / 2,
-            y: (rect.height - actualSheet.height * scale) / 2,
+            x: (rect.width - contentWidth * scale) / 2,
+            y: (rect.height - contentHeight * scale) / 2,
             scale,
         });
-    }, [nestingResult, svgEl, updateTransform]);
+    }, [nestingResult, nestingConfig.trayNestingMode, params.boxType, sleeveNestingResult, svgEl, updateTransform]);
 
     // Auto-fit on first render or when result changes
+    // Auto-fit đo DOM rồi đồng bộ transform với layout canvas sau khi result đổi.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- lệnh layout imperative có chủ đích.
     useEffect(() => { fitSheetToView('page'); }, [fitSheetToView]);
 
     // UIUX (audit menu 2026-07-28 §MB.1): nhận nhóm lệnh zoom/fit từ thanh menu.
@@ -595,9 +612,7 @@ export default function NestingCanvas({ isActive = true }: {
     if (isSplit && sleeveNestingResult && trayBB && sleeveBB) {
         const traySheet = nestingResult.actualSheet;
         const sleeveSheet = sleeveNestingResult.actualSheet;
-        const gap = 30; // visual gap between sheets
-        const totalW = traySheet.width + gap + sleeveSheet.width;
-        const maxH = Math.max(traySheet.height, sleeveSheet.height);
+        const gap = SPLIT_SHEET_GAP_MM;
 
         return (
             <div className="dt-canvas-2d-container" style={{ position: 'relative' }}>

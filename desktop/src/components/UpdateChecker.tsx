@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater';
 
 /**
  * Tự động kiểm tra bản cập nhật (Tauri updater) khi khởi động.
@@ -9,7 +10,7 @@ import { useTranslation } from 'react-i18next';
  */
 export default function UpdateChecker() {
   const { t } = useTranslation();
-    const [update, setUpdate] = useState<any>(null);
+    const [update, setUpdate] = useState<Update | null>(null);
     const [status, setStatus] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle');
     const [percent, setPercent] = useState(0);
     const [dismissed, setDismissed] = useState(false);
@@ -18,7 +19,7 @@ export default function UpdateChecker() {
         let cancelled = false;
         (async () => {
             try {
-                if (!(window as any).__TAURI_INTERNALS__) return; // chỉ trong app desktop
+                if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return; // chỉ trong app desktop
                 const { check } = await import('@tauri-apps/plugin-updater');
                 const found = await check();
                 if (!cancelled && found) setUpdate(found);
@@ -36,7 +37,7 @@ export default function UpdateChecker() {
             setStatus('downloading');
             let total = 0;
             let got = 0;
-            await update.downloadAndInstall((ev: any) => {
+            await update.downloadAndInstall((ev: DownloadEvent) => {
                 if (ev.event === 'Started') {
                     total = ev.data?.contentLength || 0;
                 } else if (ev.event === 'Progress') {

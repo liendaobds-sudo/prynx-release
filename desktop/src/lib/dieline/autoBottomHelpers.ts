@@ -250,7 +250,7 @@ export function computeDeepBottomKeyPoints(
 
     // Tai — mẫu: outer x ≈ B − gap (gần B), đáy yD, đỉnh M depth ≈ 1.71·step
     const earZone = Math.max(0, xB - xE);
-    let xEarR = snap(xB - Math.min(Math.max(gap, st * 0.12), earZone * 0.12, 4));
+    const xEarR = snap(xB - Math.min(Math.max(gap, st * 0.12), earZone * 0.12, 4));
     let xEarL = snap(xEarR - Math.min(earW, earZone * 0.4, Math.max(2, (xEarR - xE) * 0.45)));
     if (xEarL < xE + 0.5) xEarL = snap(xE + Math.min(1, Math.max(0.5, earZone * 0.1)));
     const hasEar = xEarR > xEarL + 0.5 && earZone >= 2.5 && hDeepEff > hWing + 1;
@@ -616,14 +616,6 @@ export function buildWingBottomAnnotations(panel: {
         { text: 'WbR — Đáy tai phải', anchor: 'end' as const, baseline: 'hanging' as const },
         { text: 'Wf — Mép tự do tai (đoạn gấp)', anchor: 'end' as const, baseline: 'hanging' as const },
     ];
-
-    // Sắp: y cao (gần fold) trước theo x, rồi y thấp
-    const sorted = [...chain].sort((a, b) => {
-        const ya = Math.round(a.y * 10) / 10;
-        const yb = Math.round(b.y * 10) / 10;
-        if (Math.abs(ya - yb) > 0.5) return yb - ya; // fold (y≈0) trước
-        return a.x - b.x;
-    });
 
     // 2 điểm fold (y max) trái→phải = W, Wf; 2 điểm đáy trái→phải = WbL, WbR
     const byY = [...chain].sort((a, b) => b.y - a.y);

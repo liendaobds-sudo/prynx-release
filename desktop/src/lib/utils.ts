@@ -2,6 +2,22 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { fetchLocalFileBuffer } from './localFileTransport';
 
+type NativePathBlob = Blob & { path?: string };
+
+interface RuntimeMetadataFile extends File {
+  isTempUploadPath?: boolean;
+  isGenerated?: boolean;
+  __pathMaterializationFailed?: boolean;
+  __editCommit?: boolean;
+  __pathRebaseOnly?: boolean;
+  __nativePathPending?: boolean;
+  isBlank?: boolean;
+  blankWidthPt?: number;
+  blankHeightPt?: number;
+  blankPageCount?: number;
+  __prynxArtifactLeaseToken?: string;
+}
+
 /**
  * Utility to merge tailwind classes with standard overrides,
  * preventing conflicts when applying dynamic atomic classes.
@@ -11,11 +27,21 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer> => {
-    const path = (file as any).path as string | undefined;
-    if ((window as any).__TAURI_INTERNALS__ && path) {
+    const path = (file as NativePathBlob).path;
+    if (window.__TAURI_INTERNALS__ && path) {
         // FILEIO (audit 2026-07-28 §FL.04): một kênh Rust có Range thay cho phép thử
         // asset-403 + fallback IPC. Không làm chậm file lớn trên máy mạnh.
-        return fetchLocalFileBuffer(path);
+        try {
+            return await fetchLocalFileBuffer(path);
+        } catch (error) {
+            if ((file as NativePathBlob & { __prynxArtifactLeaseToken?: string }).__prynxArtifactLeaseToken) {
+                throw new Error(
+                    'Không đọc được artifact làm việc đang được tab giữ; file có thể đã bị dọn hoặc lease đã hết hạn.',
+                    { cause: error },
+                );
+            }
+            throw error;
+        }
     }
     return file.arrayBuffer();
 };
@@ -30,7 +56,7 @@ export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer
  * fallback / blob) → GIỮ NGUYÊN file (fallback bytes) → hành vi y hệt hiện tại.
  */
 export function stripBytesIfOnDisk<T extends File | null>(file: T): T {
-    if (!file || !(window as any).__TAURI_INTERNALS__ || !(file as any).path) return file;
+    if (!file || !window.__TAURI_INTERNALS__ || !file.path) return file;
 
     const light = new File([], file.name, {
         type: file.type,
@@ -60,11 +86,13 @@ export function stripBytesIfOnDisk<T extends File | null>(file: T): T {
         'blankHeightPt',
         'blankPageCount',
         'isInMemory',
+        '__prynxArtifactLeaseToken',
     ] as const;
+    const source = file as RuntimeMetadataFile;
     for (const key of runtimeMetadataKeys) {
-        if (!(key in (file as any))) continue;
+        if (!(key in source)) continue;
         Object.defineProperty(light, key, {
-            value: (file as any)[key],
+            value: source[key],
             configurable: true,
         });
     }
@@ -79,14 +107,14 @@ export async function detectColorSpace(file: File): Promise<string | null> {
     if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
         try {
             // If in Tauri and path is available, try the backend first for 100% accuracy (decompressing streams)
-            if ((window as any).__TAURI_INTERNALS__ && (file as any).path) {
+            if (window.__TAURI_INTERNALS__ && file.path) {
                 try {
                     const { getApiUrl } = await import('./api');
                     const apiUrl = getApiUrl();
                     const res = await fetch(`${apiUrl}/imposition/quick-color-space`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: (file as any).path })
+                        body: JSON.stringify({ path: file.path })
                     });
                     if (res.ok) {
                         const data = await res.json();
@@ -100,11 +128,11 @@ export async function detectColorSpace(file: File): Promise<string | null> {
             }
 
             const fetchChunk = async (start: number, end: number) => {
-                if ((window as any).__TAURI_INTERNALS__ && (file as any).path) {
+                if (window.__TAURI_INTERNALS__ && file.path) {
                     // FILEIO (audit 2026-07-28 §FL.02): helper bắt status lỗi và dùng
                     // protocol đọc file thật; body 403 không còn bị phân tích như PDF.
                     return fetchLocalFileBuffer(
-                        (file as any).path,
+                        file.path,
                         end > start ? { start, endExclusive: end } : undefined,
                     );
                 } else {

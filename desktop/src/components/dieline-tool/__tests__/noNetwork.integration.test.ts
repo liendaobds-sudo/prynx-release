@@ -51,7 +51,7 @@ import type { BBox, FinishId } from '../../../lib/mockup3d';
 import type { Panel } from '../../../lib/dieline/types';
 // Định nghĩa môi trường studio "thủ tục" (procedural) của EnvironmentRig —
 // import từ chính component render layer để kiểm tính KHÔNG-mạng của nó.
-import { HDRI_PRESETS, getHdriPreset } from '../EnvironmentRig';
+import { HDRI_PRESETS, getHdriPreset } from '../environmentPresets';
 
 // ─── Spy network primitives ─────────────────────────────────────────────────
 

@@ -39,6 +39,7 @@ const useConfirmStore = create<ConfirmState>((set, get) => ({
  * Trả về Promise<boolean>: true nếu xác nhận, false nếu hủy.
  *   if (!(await confirmDialog({ message: 'Xóa?', danger: true }))) return;
  */
+// eslint-disable-next-line react-refresh/only-export-components -- LINT (audit 2026-08-23 §LINT.36): API Promise và host phải dùng chung một Zustand store.
 export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   return useConfirmStore.getState().show(options);
 }

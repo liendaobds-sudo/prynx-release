@@ -270,6 +270,31 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
     "sameAllEdges": false,
     "shiftX": 0,
     "shiftY": 0,
+    "split": {
+      "axis": "vertical",
+      "count": 2,
+      "enabled": false,
+      "pieces": [
+        {
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+        },
+        {
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+        },
+        {
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "top": 0,
+        },
+      ],
+    },
     "trimBottom": 0,
     "trimLeft": 0,
     "trimRight": 0,

@@ -12,7 +12,7 @@ import type { jsPDF } from 'jspdf';
 
 /** Đang chạy trong cửa sổ Tauri (WebView2) hay không. */
 function isTauri(): boolean {
-    return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+    return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 }
 
 /** Fallback trình duyệt: tải blob bằng thẻ `<a download>` (dev/web thường). */

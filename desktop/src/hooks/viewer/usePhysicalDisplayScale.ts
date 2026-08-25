@@ -83,7 +83,7 @@ const publish = (next: PhysicalDisplayScaleSnapshot) => {
 };
 
 const refreshDisplayMetrics = async () => {
-    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
+    if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return;
     const generation = ++refreshGeneration;
     try {
         const { invoke } = await import('@tauri-apps/api/core');
@@ -119,7 +119,7 @@ const startDisplayTracking = () => {
     if (started || typeof window === 'undefined') return;
     started = true;
     void refreshDisplayMetrics();
-    if (!(window as any).__TAURI_INTERNALS__) return;
+    if (!window.__TAURI_INTERNALS__) return;
 
     void import('@tauri-apps/api/window')
         .then(async ({ getCurrentWindow }) => {

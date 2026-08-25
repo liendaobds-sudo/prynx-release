@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * AutoCatalogSection — Auto Catalog Planner UI for Offset booklet.
  * 
@@ -12,6 +11,7 @@ import { Checkbox } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
 import { HIDE_OFFSET_BOOKLET } from '../../../lib/featureFocus';
+import type { ImposerSettingsState } from '../useImposerSettingsStore';
 
 export default function AutoCatalogSection() {
   const { t } = useTranslation();
@@ -26,15 +26,17 @@ export default function AutoCatalogSection() {
         optimalData: state.optimalData,
         catalogPreview: state.catalogPreview,
     })));
+    const { paperClassification, setPaperClassification, setAutoCatalog } = s;
+
 
     // Cờ tập trung in nhanh: ép state persist cũ (localStorage 'offset') về in_nhanh
     // để không kẹt UI offset khi nút toggle đã ẩn. Lật cờ false là khôi phục.
     useEffect(() => {
-        if (HIDE_OFFSET_BOOKLET && s.paperClassification === 'offset') {
-            s.setPaperClassification('in_nhanh');
-            s.setAutoCatalog(false);
+        if (HIDE_OFFSET_BOOKLET && paperClassification === 'offset') {
+            setPaperClassification('in_nhanh');
+            setAutoCatalog(false);
         }
-    }, [s.paperClassification]);
+    }, [paperClassification, setAutoCatalog, setPaperClassification]);
 
     if (s.taskMode !== 'booklet') return null;
 
@@ -97,7 +99,7 @@ export default function AutoCatalogSection() {
                                 <label className="text-[10px] font-bold text-slate-500 uppercase">{t('imposition.autoCatalog:khoa_tay_sach_uu_tien')}</label>
                                 <select 
                                     value={s.catalogMasterSigOverride}
-                                    onChange={(e) => s.setCatalogMasterSigOverride(e.target.value as any)}
+                                    onChange={(e) => s.setCatalogMasterSigOverride(e.target.value as ImposerSettingsState['catalogMasterSigOverride'])}
                                     className="h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-purple-500"
                                 >
                                     <option value="auto">{t('imposition.autoCatalog:tu_dong_toi_uu_de_xuat')}</option>
@@ -112,7 +114,7 @@ export default function AutoCatalogSection() {
                                     <label className="text-[10px] font-bold text-slate-500 uppercase">{t('imposition.autoCatalog:vi_tri_tay_du_ghep_long')}</label>
                                     <select 
                                         value={s.catalogRemainderPlacement}
-                                        onChange={(e) => s.setCatalogRemainderPlacement(e.target.value as any)}
+                                        onChange={(e) => s.setCatalogRemainderPlacement(e.target.value as ImposerSettingsState['catalogRemainderPlacement'])}
                                         className="h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-purple-500"
                                     >
                                         <option value="outside">{t('imposition.autoCatalog:tay_bu_boc_ngoai_sat_bia_nhua')}</option>

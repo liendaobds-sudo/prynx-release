@@ -1,4 +1,8 @@
 import type { ImposerSlice } from '../sliceType';
+import type { ShuffleSettings } from '../../../preprocess-tools/ShuffleTool';
+import type { PageResizerSettings } from '../../../preprocess-tools/pageResizerViewLogic';
+import type { SplitSettings } from '../../../preprocess-tools/SplitTool';
+import type { TrimShiftSettings } from '../../../preprocess-tools/TrimShiftTool';
 
 /** Mặc định co giãn trang — dùng khi init + merge persist. */
 export const DEFAULT_RESIZE_SETTINGS = {
@@ -20,14 +24,14 @@ export const DEFAULT_RESIZE_SETTINGS = {
 };
 
 export interface PreprocSlice {
-    shuffleSettings: any;
-    setShuffleSettings: (v: any) => void;
-    resizeSettings: any;
-    setResizeSettings: (v: any) => void;
-    splitSettings: any;
-    setSplitSettings: (v: any) => void;
-    trimShiftSettings: any;
-    setTrimShiftSettings: (v: any) => void;
+    shuffleSettings: ShuffleSettings;
+    setShuffleSettings: (v: ShuffleSettings) => void;
+    resizeSettings: PageResizerSettings;
+    setResizeSettings: (v: PageResizerSettings) => void;
+    splitSettings: SplitSettings;
+    setSplitSettings: (v: SplitSettings) => void;
+    trimShiftSettings: TrimShiftSettings;
+    setTrimShiftSettings: (v: TrimShiftSettings) => void;
 }
 
 /** Lưu thiết lập preprocess qua localStorage (lần chạy sau nhớ lại). */
@@ -49,6 +53,16 @@ export const createPreprocSlice: ImposerSlice<PreprocSlice> = (set) => ({
         mirrorFill: false,
         contentMode: 'original', keepBleed: false,
         applyToStr: 'all',
+        split: {
+            enabled: false,
+            axis: 'vertical',
+            count: 2,
+            pieces: [
+                { top: 0, bottom: 0, left: 0, right: 0 },
+                { top: 0, bottom: 0, left: 0, right: 0 },
+                { top: 0, bottom: 0, left: 0, right: 0 },
+            ],
+        },
     },
     setTrimShiftSettings: (v) => set({ trimShiftSettings: v }),
 });

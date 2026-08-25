@@ -172,7 +172,7 @@ describe('validateParams', () => {
     // ─── Pizza box constraints ───────────────────────────────
 
     it('allows W > L for pizza box (rectangular tray)', () => {
-        const { params, wasClamped: _wasClamped, warnings } = validateParams(
+        const { params, warnings } = validateParams(
             make({ boxType: 'pizza', L: 250, W: 350, D: 40 })
         );
         // Should NOT clamp W down to L

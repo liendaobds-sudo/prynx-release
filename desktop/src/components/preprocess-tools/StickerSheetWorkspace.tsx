@@ -218,8 +218,10 @@ export default function StickerSheetWorkspace({
     );
     const isPdfSource = state.sourceFile?.type === 'application/pdf'
         || /\.pdf$/i.test(state.sourceFile?.name || '');
+    const sourcePreviewLoading = Boolean(state.inspection && !state.sourcePreviewReady);
     const sourcePreviewVisible = Boolean(
         state.sourceFile
+        && state.sourcePreviewReady
         && state.sourcePreviewUrl
         && (state.inspection || !isPdfSource),
     );
@@ -687,7 +689,7 @@ export default function StickerSheetWorkspace({
                 <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-bold text-white backdrop-blur-sm">
                     {state.status === 'detecting'
                         ? tv('Đang nhận diện · vẫn giữ preview gốc')
-                        : state.status === 'inspecting'
+                        : state.status === 'inspecting' || sourcePreviewLoading
                             ? tv('Đang chuẩn bị preview gốc')
                             : tv('File gốc · chưa nhận diện')}
                 </div>

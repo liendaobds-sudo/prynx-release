@@ -8,6 +8,16 @@ import type {
 } from '../stores/useWorkspaceStore';
 import { useTranslation } from 'react-i18next';
 
+// TYPE (audit 2026-08-23 §P2.68): response lỗi là boundary không tin cậy.
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = (error as { message?: unknown }).message;
+        if (message) return String(message);
+    }
+    return fallback;
+}
+
 interface SoftProofPanelProps {
     fileId?: string;
     pageNum?: number;
@@ -111,9 +121,9 @@ export default function SoftProofPanel({
             setEngineInfo(eng);
             if (data.warning) setWarning(data.warning);
             else if (data.accuracy === 'rip_softproof') setWarning('');
-        } catch (err: any) {
+        } catch (error: unknown) {
             if (controller.signal.aborted || generation !== requestGenerationRef.current) return;
-            setWarning(err.message || t('misc.softProof:loi_khi_tao_soft_proof'));
+            setWarning(getErrorMessage(error, t('misc.softProof:loi_khi_tao_soft_proof')));
         } finally {
             if (generation === requestGenerationRef.current) {
                 requestAbortRef.current = null;

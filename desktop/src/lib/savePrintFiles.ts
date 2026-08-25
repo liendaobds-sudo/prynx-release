@@ -21,6 +21,10 @@ export interface SavePrintOptions {
     onProgress?: (done: number, total: number) => void;
 }
 
+interface FileExistenceApi {
+    exists?: (path: string) => Promise<boolean>;
+}
+
 /** Tách PDF kết quả theo kế hoạch và ghi từng file ra `folder`. */
 export async function savePrintFilesToFolder(
     resultBlob: Blob,
@@ -97,7 +101,7 @@ export async function savePrintFilesToFolder(
 }
 
 /** Kiểm tra file tồn tại trên đĩa (an toàn nếu plugin không có `exists`). */
-async function fileExists(fs: any, path: string): Promise<boolean> {
+async function fileExists(fs: FileExistenceApi, path: string): Promise<boolean> {
     try {
         if (typeof fs.exists === 'function') return await fs.exists(path);
     } catch { /* coi như chưa tồn tại */ }

@@ -7,30 +7,133 @@
 import { describe, it, expect } from 'vitest';
 import { generateBindingMap } from '../VirtualMap';
 import { solveGeometry } from '../GeometricSolver';
-import { serializeBookletPlan } from '../InstructionSerializer';
+import {
+    serializeBookletPlan,
+    type InstructionSet,
+    type Phase2Plate,
+    type Phase2Placement,
+} from '../InstructionSerializer';
+import { ImpositionMode } from '../SettingsTypes';
+import type {
+    BookReportRenderSettings,
+    GuillotineSettings,
+    OffsetSettings,
+} from '../SettingsTypes';
+import type { BookletSettings } from '../../../components/imposition-tools/types';
 
 const MM = 2.83465;
 const W = 105 * MM, H = 148 * MM; // A6
 const PAGES = 16;
 
-function buildForPages(pageCount: number, s: any) {
-    const bMode = s.bindingMode || 'saddle';
-    const map = generateBindingMap(pageCount, bMode, s.foliosize, 'end', s.scaleMode || (s.cutStack ? 'cut_stack' : '100')).sheets;
+type BindingMode = NonNullable<GuillotineSettings['bindingMode']>;
+type ScaleMode = '100' | 'fit' | 'chain_nup' | 'cut_stack';
+
+/** Các knob mà regression này cần; helper sẽ bổ sung phần bắt buộc của settings thật. */
+type SettingsOverrides = {
+    bindingMode?: BindingMode;
+    bleed?: number;
+    bookReport?: BookReportRenderSettings;
+    chainNup?: boolean;
+    cutStack?: boolean;
+    foldPattern?: string;
+    gripperMargin?: number;
+    gutterMargin?: number;
+    imposerMode?: GuillotineSettings['imposerMode'] | OffsetSettings['imposerMode'];
+    interleave?: NonNullable<GuillotineSettings['interleave']>;
+    marginBottom?: number;
+    marginLeft?: number;
+    marginMode?: NonNullable<GuillotineSettings['marginMode']>;
+    marginRight?: number;
+    marginTop?: number;
+    markLength?: number;
+    markOffset?: number;
+    markThickness?: number;
+    markType?: NonNullable<GuillotineSettings['markType']>;
+    paperClassification?: NonNullable<GuillotineSettings['paperClassification']>;
+    scaleMode?: ScaleMode;
+    sheetHeight?: number;
+    sheetWidth?: number;
+    spreadDistribution?: NonNullable<GuillotineSettings['spreadDistribution']>;
+    foliosize?: number;
+};
+
+type TestSettings = (GuillotineSettings | OffsetSettings) & { scaleMode: ScaleMode };
+
+function makeSettings(overrides: SettingsOverrides = {}): TestSettings {
+    const isOffset = overrides.imposerMode === 'offset' || overrides.paperClassification === 'offset';
+    const common = {
+        ...overrides,
+        impositionMode: ImpositionMode.Booklet,
+        sheetWidth: overrides.sheetWidth ?? 0,
+        sheetHeight: overrides.sheetHeight ?? 0,
+        paperThickness: 0,
+        bleed: overrides.bleed ?? 0,
+        scaleMode: overrides.scaleMode ?? '100',
+    };
+
+    if (isOffset) {
+        const settings: OffsetSettings & { scaleMode: ScaleMode } = {
+            ...common,
+            imposerMode: 'offset',
+            paperClassification: 'offset',
+        };
+        return settings;
+    }
+
+    const settings: GuillotineSettings & { scaleMode: ScaleMode } = {
+        ...common,
+        imposerMode: 'guillotine',
+        paperClassification: overrides.paperClassification ?? 'in_nhanh',
+    };
+    return settings;
+}
+
+function makeGeometrySettings(s: SettingsOverrides, formsize: string): BookletSettings {
+    const isOffset = s.imposerMode === 'offset' || s.paperClassification === 'offset';
+    return {
+        paperClassification: isOffset ? 'offset' : 'in_nhanh',
+        signatureMode: s.bindingMode ?? 'saddle',
+        foliosize: s.foliosize ?? 16,
+        formsize,
+        customSheetWidth: s.sheetWidth ?? 0,
+        customSheetHeight: s.sheetHeight ?? 0,
+        bleed: s.bleed ?? 0,
+        paperThickness: 0,
+        markType: s.markType ?? 'none',
+        markOffset: s.markOffset,
+        markLength: s.markLength,
+        markThickness: s.markThickness,
+        interleave: s.interleave ?? 'normal',
+        scaleMode: s.scaleMode ?? '100',
+        foldPattern: s.foldPattern,
+        gripperMargin: s.gripperMargin,
+        marginTop: s.marginTop,
+        marginBottom: s.marginBottom,
+        marginLeft: s.marginLeft,
+        marginRight: s.marginRight,
+        marginMode: s.marginMode,
+        spreadDistribution: s.spreadDistribution,
+        gutterMargin: s.gutterMargin,
+        spawnNewTab: false,
+    };
+}
+
+function buildForPages(pageCount: number, s: SettingsOverrides): InstructionSet {
+    const settings = makeSettings(s);
+    const bMode = settings.bindingMode || 'saddle';
+    const map = generateBindingMap(pageCount, bMode, settings.foliosize, 'end', settings.scaleMode || (s.cutStack ? 'cut_stack' : '100')).sheets;
     const pageDetails = Array.from({ length: pageCount }, () => ({ visualW: W, visualH: H, angle: 0 }));
     const fp = s.foldPattern;
     const phase2 = !!s.chainNup || (!!fp && fp !== '');
-    const pseudo = {
-        formsize: (!(s.sheetWidth) || phase2) ? 'auto_100' : 'custom',
-        customSheetWidth: s.sheetWidth || 0, customSheetHeight: s.sheetHeight || 0,
-        bleed: s.bleed, signatureMode: bMode, spreadDistribution: s.spreadDistribution,
-    } as any;
+    const formsize = (!(s.sheetWidth) || phase2) ? 'auto_100' : 'custom';
+    const pseudo = makeGeometrySettings(s, formsize);
     const geo = solveGeometry(W, H, pseudo, {}, MM);
-    return serializeBookletPlan(map, pageDetails, geo, (s.bleed || 0) * MM, 0,
-        bMode === 'saddle' || bMode === 'thread', s.markType || 'none',
-        s.interleave || 'normal', s, 'src.pdf', 'out', pageCount);
+    return serializeBookletPlan(map, pageDetails, geo, (settings.bleed || 0) * MM, 0,
+        bMode === 'saddle' || bMode === 'thread', settings.markType || 'none',
+        settings.interleave || 'normal', settings, 'src.pdf', 'out', pageCount);
 }
 
-function build(s: any) {
+function build(s: SettingsOverrides): InstructionSet {
     return buildForPages(PAGES, s);
 }
 
@@ -140,12 +243,10 @@ describe('serializeBookletPlan — phase-2 contract', () => {
         const map = generateBindingMap(4, 'saddle').sheets;
         map[0].front.left.userRotation = 90;
         const pageDetails = Array.from({ length: 4 }, () => ({ visualW: W, visualH: H, angle: 0 }));
-        const geo = solveGeometry(W, H, {
-            formsize: 'auto_100', bleed: 0, signatureMode: 'saddle',
-        } as any, {}, MM);
+        const geo = solveGeometry(W, H, makeGeometrySettings({ bindingMode: 'saddle' }, 'auto_100'), {}, MM);
         const p = serializeBookletPlan(
             map, pageDetails, geo, 0, 0, true, 'none', 'normal',
-            { bindingMode: 'saddle' } as any, 'src.pdf', 'out', 4,
+            makeSettings({ bindingMode: 'saddle' }), 'src.pdf', 'out', 4,
         );
         expect(p.sheets[0].front.placements[0].native_angle).toBe(90);
     });
@@ -192,16 +293,18 @@ describe('serializeBookletPlan — phase-2 contract', () => {
 function boxOf(rot: number, sw: number, sh: number) {
     return (rot % 180 !== 0) ? { w: sh, h: sw } : { w: sw, h: sh };
 }
-function allInBounds(plan: any): boolean {
-    const { spread_w_pt: sw, spread_h_pt: sh, plates } = plan.phase2;
-    return plates.every((pl: any) => pl.placements.every((p: any) => {
+function allInBounds(plan: InstructionSet): boolean {
+    const phase2 = plan.phase2;
+    if (!phase2) return false;
+    const { spread_w_pt: sw, spread_h_pt: sh, plates } = phase2;
+    return plates.every((pl: Phase2Plate) => pl.placements.every((p: Phase2Placement) => {
         const b = boxOf(p.rotation_deg, sw, sh);
         return p.x_pt >= -0.5 && p.y_pt >= -0.5 &&
             p.x_pt + b.w <= pl.width_pt + 0.5 && p.y_pt + b.h <= pl.height_pt + 0.5;
     }));
 }
-function noOverlap(plate: any, sw: number, sh: number): boolean {
-    const boxes = plate.placements.map((p: any) => {
+function noOverlap(plate: Phase2Plate, sw: number, sh: number): boolean {
+    const boxes = plate.placements.map((p: Phase2Placement) => {
         const b = boxOf(p.rotation_deg, sw, sh);
         return { x: p.x_pt, y: p.y_pt, w: b.w, h: b.h };
     });
@@ -218,15 +321,15 @@ function noOverlap(plate: any, sw: number, sh: number): boolean {
 describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', () => {
     it('step_repeat khổ ngang → KHÔNG xoay (rot 0), trong khổ, không chồng', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 640, sheetHeight: 450, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
+        expect(p.phase2!.plates.every((pl: Phase2Plate) => pl.placements.every((q: Phase2Placement) => q.rotation_deg === 0))).toBe(true);
         expect(allInBounds(p)).toBe(true);
-        expect(p.phase2!.plates.every((pl: any) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
+        expect(p.phase2!.plates.every((pl: Phase2Plate) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
     });
 
     it('step_repeat khổ dọc → xuất khổ NGANG, spread đứng 100% (rot 0)', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 450, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
         // Digital: xếp xong xoay TỜ sang ngang, nội dung đứng thẳng 100% (KHÔNG xoay content).
-        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
+        expect(p.phase2!.plates.every((pl: Phase2Plate) => pl.placements.every((q: Phase2Placement) => q.rotation_deg === 0))).toBe(true);
         expect(allInBounds(p)).toBe(true);
         // Khổ tờ xoay sang NGANG: 450×320 (từ khổ đặt 320×450).
         expect(Math.round(p.phase2!.plates[0].width_pt)).toBe(Math.round(450 * MM));
@@ -235,7 +338,7 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
 
     it('fold_pattern khổ dọc → slot 0/180 cộng 90 thành 90/270', () => {
         const p = build({ imposerMode: 'offset', paperClassification: 'offset', bindingMode: 'saddle', bleed: 3, foldPattern: 'sig_16p', sheetWidth: 500, sheetHeight: 700, marginLeft: 10, marginRight: 10, marginTop: 10, gripperMargin: 10 });
-        const rots = new Set<number>(p.phase2!.plates.flatMap((pl: any) => pl.placements.map((q: any) => q.rotation_deg)));
+        const rots = new Set<number>(p.phase2!.plates.flatMap((pl: Phase2Plate) => pl.placements.map((q: Phase2Placement) => q.rotation_deg)));
         expect(rots.has(90)).toBe(true);
         expect(rots.has(270)).toBe(true);
         expect(allInBounds(p)).toBe(true);
@@ -248,38 +351,38 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
         const PW = 209 * MM, PH = 299 * MM;
         const details2 = Array.from({ length: PAGES }, () => ({ visualW: PW, visualH: PH, angle: 0 }));
         const map = generateBindingMap(PAGES, 'saddle', undefined, 'end').sheets;
-        const pseudo = { formsize: 'auto_100', customSheetWidth: 320, customSheetHeight: 430, bleed: 3, signatureMode: 'saddle' } as any;
+        const pseudo = makeGeometrySettings({ bindingMode: 'saddle', bleed: 3, sheetWidth: 320, sheetHeight: 430 }, 'auto_100');
         const geo = solveGeometry(PW, PH, pseudo, {}, MM);
         const p = serializeBookletPlan(map, details2, geo, 3 * MM, 0, true, 'none', 'normal',
-            { bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 430, gripperMargin: 10 } as any,
+            makeSettings({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 430, gripperMargin: 10 }),
             'src.pdf', 'out', PAGES);
         expect(p.phase2?.mode).toBe('step_repeat');
         // Tờ xuất ra NẰM NGANG: 430×320 (từ khổ đặt 320×430).
         expect(Math.round(p.phase2!.plates[0].width_pt)).toBe(Math.round(430 * MM));
         expect(Math.round(p.phase2!.plates[0].height_pt)).toBe(Math.round(320 * MM));
         // Content KHÔNG xoay — spread đặt đứng thẳng 100%.
-        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
+        expect(p.phase2!.plates.every((pl: Phase2Plate) => pl.placements.every((q: Phase2Placement) => q.rotation_deg === 0))).toBe(true);
         expect(allInBounds(p)).toBe(true);
     });
 
     it('cut_stack → mặt A (surface chẵn) + mặt B (surface lẻ), phủ đủ, không chồng', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 450, sheetHeight: 320, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
         expect(p.phase2!.mode).toBe('cut_stack');
-        const fronts = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 0).flatMap((pl: any) => pl.placements.map((q: any) => q.spread_index));
-        const backs = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 1).flatMap((pl: any) => pl.placements.map((q: any) => q.spread_index));
+        const fronts = p.phase2!.plates.filter((_: Phase2Plate, i: number) => i % 2 === 0).flatMap((pl: Phase2Plate) => pl.placements.map((q: Phase2Placement) => q.spread_index));
+        const backs = p.phase2!.plates.filter((_: Phase2Plate, i: number) => i % 2 === 1).flatMap((pl: Phase2Plate) => pl.placements.map((q: Phase2Placement) => q.spread_index));
         expect(fronts.every((s: number) => s % 2 === 0)).toBe(true); // mặt A = surface chẵn (front spread)
         expect(backs.every((s: number) => s % 2 === 1)).toBe(true);  // mặt B = surface lẻ (back spread)
         expect(new Set([...fronts, ...backs]).size).toBe(8);         // phủ đủ 8 surface
-        expect(p.phase2!.plates.every((pl: any) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
+        expect(p.phase2!.plates.every((pl: Phase2Plate) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
     });
 
     it('cut_stack nhiều cọc (stackDepth>1) → collation cell*depth liên tục khi xén chồng', () => {
         // khổ chỉ chứa 2 cell, 16p (B=4) → stackDepth=2, 2 tờ × 2 mặt = 4 plates
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 460, sheetHeight: 165, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        const A = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 0); // mặt A các tờ
+        const A = p.phase2!.plates.filter((_: Phase2Plate, i: number) => i % 2 === 0); // mặt A các tờ
         // cell0 qua các tờ (depth) → booklet sheet 0,1 ; cell1 → 2,3
         // mặt A surface = 2*bsi: tờ1 cell0=surf0, cell1=surf4 ; tờ2 cell0=surf2, cell1=surf6
-        expect(A[0].placements.map((q: any) => q.spread_index)).toEqual([0, 4]);
-        expect(A[1].placements.map((q: any) => q.spread_index)).toEqual([2, 6]);
+        expect(A[0].placements.map((q: Phase2Placement) => q.spread_index)).toEqual([0, 4]);
+        expect(A[1].placements.map((q: Phase2Placement) => q.spread_index)).toEqual([2, 6]);
     });
 });

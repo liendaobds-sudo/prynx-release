@@ -1,10 +1,10 @@
-// @ts-nocheck
 /**
  * NupSettingsSection — N-Up / Step & Repeat settings UI.
  * 
  * Extracted from ImposerDashboard.tsx.
  * Renders: Layout type, duplex flow for N-Up and Step&Repeat modes.
  */
+import type { NupSettings } from '../types';
 import React from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { RichSelect } from '../SharedUI';
@@ -30,7 +30,7 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                         <RichSelect
                             value={s.layoutType}
                             onChange={(v) => {
-                                s.setLayoutType(v as any);
+                                s.setLayoutType(v as NupSettings['layoutType']);
                                 if (v === 'cut_stacks' && s.duplexFlow === 'double') {
                                     s.setDuplexFlow('normal');
                                 }

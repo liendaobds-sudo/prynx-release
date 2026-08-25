@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveTrapezoidPreviewRatios } from "./GridPreview";
+import { resolveTrapezoidPreviewRatios } from "./gridPreviewHelpers";
 
 describe("resolveTrapezoidPreviewRatios", () => {
   it("fallback khi response width-profile cũ thiếu bbox", () => {

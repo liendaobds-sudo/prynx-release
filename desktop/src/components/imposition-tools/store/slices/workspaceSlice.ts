@@ -9,6 +9,16 @@ import {
     resolveLayoutTypeForTaskMode,
 } from '../profiles';
 
+interface ConfirmBookletSettings {
+    settings: Record<string, unknown>;
+    spawnNewTab: boolean;
+    report: string;
+    totalPages: number;
+    paddedPages: number;
+}
+
+type ToolProfile = Record<string, unknown>;
+
 export interface WorkspaceSlice {
     taskMode: TaskMode;
     setTaskMode: (mode: TaskMode) => void;
@@ -16,9 +26,9 @@ export interface WorkspaceSlice {
     setActiveDashboardTool: (tool: string) => void;
     batchOutput: { docs: { blob: Blob; filename: string; report?: string }[]; mergedBlob: Blob } | null;
     setBatchOutput: (output: { docs: { blob: Blob; filename: string; report?: string }[]; mergedBlob: Blob } | null) => void;
-    confirmBookletSettings: { settings: any; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null;
-    setConfirmBookletSettings: (settings: { settings: any; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null) => void;
-    toolProfiles: Record<string, Record<string, any>>;
+    confirmBookletSettings: ConfirmBookletSettings | null;
+    setConfirmBookletSettings: (settings: ConfirmBookletSettings | null) => void;
+    toolProfiles: Record<string, ToolProfile>;
     switchToolProfile: (prevTool: string, nextTool: string) => void;
     /** Nạp taskMode và tuỳ chọn đơn vị bình đã nhớ cho một công cụ. */
     restoreTaskModeForTool: (tool: string) => void;
@@ -40,11 +50,11 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
             // dùng layoutType='repeat' sót khi UI đã hiện "Dàn nhiều mẫu".
             const nextLayoutType = resolveLayoutTypeForTaskMode(
                 layoutMode,
-                (state as any).layoutType,
+                state.layoutType,
                 tool,
             );
 
-            const updates: Record<string, any> = {
+            const updates: Record<string, unknown> = {
                 taskMode: layoutMode,
                 layoutType: nextLayoutType,
             };
@@ -62,7 +72,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                     },
                 };
             }
-            return updates as any;
+            return updates as Partial<typeof state>;
         });
     },
     activeDashboardTool: 'none',
@@ -81,8 +91,8 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
 
             // Lưu snapshot tool CŨ chỉ khi tool đó nằm trong PROFILED_TOOLS
             if (PROFILED_TOOLS.includes(prevTool)) {
-                const snap: Record<string, any> = {};
-                for (const k of ALGO_PROFILE_KEYS) snap[k] = (state as any)[k];
+                const snap: ToolProfile = {};
+                for (const k of ALGO_PROFILE_KEYS) snap[k] = Reflect.get(state, k) as unknown;
                 if ('taskMode' in snap) {
                     snap.taskMode = normalizeProfileTaskMode(snap.taskMode, prevTool);
                 }
@@ -102,7 +112,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 newProfiles[prevTool] = snap;
             }
 
-            const updates: Record<string, any> = { toolProfiles: newProfiles };
+            const updates: Record<string, unknown> = { toolProfiles: newProfiles };
             const restored = newProfiles[nextTool];
             if (restored) {
                 for (const k of ALGO_PROFILE_KEYS) {
@@ -127,12 +137,12 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 : 'sticker';
 
             // taskMode + layoutType phải khớp trước preview fetch đầu tiên.
-            const nextTaskMode = (updates.taskMode !== undefined
+            const nextTaskMode = updates.taskMode !== undefined
                 ? updates.taskMode
-                : (state as any).taskMode) as string;
+                : state.taskMode;
             const candidateLayout = updates.layoutType !== undefined
                 ? updates.layoutType
-                : (state as any).layoutType;
+                : state.layoutType;
             updates.layoutType = resolveLayoutTypeForTaskMode(
                 nextTaskMode,
                 candidateLayout,
@@ -144,7 +154,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
             if (nextTool === 'sticker_imposer' || nextTool === 'cnc_imposer') {
                 Object.assign(updates, DIE_CUT_SESSION_DEFAULTS);
             }
-            return updates as any;
+            return updates as Partial<typeof state>;
         });
     },
 
@@ -172,7 +182,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
         const rememberedLayout = state.toolProfiles[tool]?.layoutType;
         const nextLayoutType = resolveLayoutTypeForTaskMode(
             next,
-            rememberedLayout ?? (state as any).layoutType,
+            rememberedLayout ?? state.layoutType,
             tool,
         );
         set((s) => ({

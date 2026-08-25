@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, forwardRef, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, forwardRef, type ReactNode, type UIEventHandler } from 'react';
 import { pdfjs } from 'react-pdf';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
-import { Virtuoso } from 'react-virtuoso';
+import { Virtuoso, type Components, type ListProps, type ScrollerProps, type VirtuosoHandle } from 'react-virtuoso';
 import {
     outputPreviewProofIdentity,
     useWorkspaceStore,
@@ -14,7 +14,7 @@ import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { useActiveViewerStore } from '../stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { LivePageFrame, clearEditObjectsCache, clearTileUrlCache } from './workspace/LivePageFrame';
+import { LivePageFrame, clearEditObjectsCache } from './workspace/LivePageFrame';
 import { shouldPrefetchViewerPage } from './workspace/renderZoomPolicy';
 import ExportImageModal, { type ExportImageTab } from './workspace/ExportImageModal';
 import { uploadPDF, getApiUrl, authenticatedFetch } from '../lib/api';
@@ -39,6 +39,8 @@ import { useVdpHistory } from '../hooks/useVdpHistory';
 import { useWorkingPdf } from '../hooks/useWorkingPdf'; // EXPORT (audit 2026-07-30 §IMG-04)
 import type { UseEditSession } from '../hooks/useEditSession';
 import { useTranslation } from 'react-i18next';
+import { createViewerVirtualizationContext, matchesPageOverlayTarget, renderPageOverlayForFrame, selectionAfterViewerScroll, shouldCenterVirtuosoList, shouldRemovePagesAfterExtract, type PageOverlayRenderer } from "./AcrobatViewer.helpers";
+export type { PageOverlayRenderContext } from './AcrobatViewer.helpers';
 import { capturePageViewportAnchor, restorePageViewportAnchor, type PageViewportAnchor } from '../lib/pageViewport';
 import {
     resolveActiveViewerIndexAfterRemoval,
@@ -46,6 +48,8 @@ import {
     resolveViewerPageIdentity,
     viewerRowIndexForPosition,
 } from '../lib/viewerPageIdentity';
+import type { DocumentWindowViewState } from '../lib/documentWindow';
+import type { WorkspaceHistoryEntry } from '../lib/workspaceHistory';
 
 const getRenderedPageElement = (scroller: HTMLElement, page: number): HTMLElement | null => {
     const container = scroller.querySelector<HTMLElement>(`#pdf-page-container-${page}`);
@@ -53,6 +57,94 @@ const getRenderedPageElement = (scroller: HTMLElement, page: number): HTMLElemen
     return (container.lastElementChild as HTMLElement | null) || container;
 };
 
+
+type ViewerFile = File & {
+    path?: string;
+    isBlank?: boolean;
+    __editCommit?: boolean;
+};
+
+type ViewerPdfObject = {
+    type?: string;
+    bbox?: unknown;
+    xref?: number | string;
+    [key: string]: unknown;
+};
+
+type NativeTextBlock = {
+    type: 'text';
+    bbox: { x: number; y: number; w: number; h: number };
+    lines: Array<{
+        bbox: { x: number; y: number; w: number; h: number };
+        wmode: number;
+        dir: { x: number; y: number };
+        chars: Array<{
+            c: string;
+            origin: { x: number; y: number };
+            quad: unknown[];
+        }>;
+    }>;
+};
+
+type ViewerVirtuosoHandle = VirtuosoHandle & {
+    __thumbClickActive?: boolean;
+};
+
+type ViewerRow = {
+    type: 'single' | 'two';
+    indices: number[];
+    pages: number[];
+};
+
+type PageToolsPayload = {
+    targetType: 'current' | 'all' | 'range' | 'before_first' | 'after_last' | 'after_page';
+    range: [number, number];
+    copies: number;
+    collate: boolean;
+    startPage: number;
+    endPage: number;
+    targetPage: number;
+    filter: string;
+    degrees: number;
+    location: 'after' | 'before';
+    target: 'first' | 'last' | 'page';
+    count: number;
+    deleteAfter: boolean;
+};
+
+type PageToolsActionDetail = {
+    tabId?: string;
+    action?: string;
+    payload?: PageToolsPayload;
+};
+
+type CrossFileDropDetail = {
+    sourcePdfUrl?: string;
+    sourcePageNums?: number[];
+    targetPdfUrl?: string;
+    targetTabId?: string;
+    dropIndex?: number | null;
+    mode?: 'move' | 'copy';
+    sourceIndices?: number[];
+    fromMenu?: boolean;
+};
+
+type CrossFileSourceRemoveDetail = {
+    sourcePdfUrl?: string;
+    sourceIndices?: number[];
+};
+
+type CrossFilePageOrder = {
+    pdfUrl: string;
+    order: number[];
+    focusIndex: number;
+};
+
+function errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    return String(error ?? '');
+}
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 // Overlay preview OCG: giữ ảnh ĐÃ LOAD cuối cùng, chỉ swap khi ảnh mới decode xong
@@ -87,8 +179,8 @@ interface Props {
     /** ID tab App (để copy/move trang → chuyển sang tab đích). */
     tabId?: string;
     onViewerDirtyChange?: (isDirty: boolean) => void;
-    onExtractPages?: (indices: number[], deleteAfter: boolean) => void;
-    onObjectDelete?: (objs: any[], pageNum: number) => void;
+    onExtractPages?: (viewerIndices: number[], deleteAfter: boolean) => Promise<boolean>;
+    onObjectDelete?: (objs: ViewerPdfObject[], pageNum: number) => void;
     fetchObjectsForPage?: (pageNum: number) => void;
     onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
     /** Commit crop through the workspace history/save pipeline. */
@@ -112,65 +204,21 @@ interface Props {
     pageOverlayRenderer?: PageOverlayRenderer;
     /** Trạng thái nghiệp vụ theo số trang nguồn, hiển thị trên thumbnail. */
     pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
+    /** Revision Undo vừa hydrate vốn đã dirty trước tool; giữ cờ này sau khi xóa stack nội bộ. */
+    restoredHistoryDirty?: boolean;
     /** PHIÊN chỉnh sửa trong bộ nhớ (spec `pdf-edit-session`) — sở hữu bởi ImpositionTab,
         chuyển tiếp xuống LivePageFrame để Apply_In_Memory + overlay clip (task 11.1). */
     editSession?: UseEditSession;
+    /** Viewport của cửa sổ nguồn; chỉ áp một lần sau khi loader đã dựng pageOrder. */
+    initialViewState?: DocumentWindowViewState;
+    onInitialViewStateApplied?: () => void;
+    /** Snapshot Undo generic; chỉ hydrate sau khi loader của đúng File đã sẵn sàng. */
+    pendingHistoryEntry?: WorkspaceHistoryEntry | null;
+    onHistoryEntryHydrated?: (entry: WorkspaceHistoryEntry) => void;
 }
 
-export interface PageOverlayRenderContext {
-    /** Số trang trong tài liệu nguồn, một-based. */
-    originalPageNum: number;
-    /** Vị trí trang hiện tại trong Viewer sau reorder/xóa/nhân bản, một-based. */
-    viewerPagePosition: number;
-    /** ID ổn định của đúng instance trang trong Viewer. */
-    pageInstanceId: string;
-    /** Chỉ đúng với khung trang đang active; các trang còn lại vẫn được phép preview. */
-    isActivePage: boolean;
-}
 
-export type PageOverlayRenderer = (context: PageOverlayRenderContext) => ReactNode;
-
-// Hàm thuần giữ contract: renderer được gọi cho từng frame, kể cả frame không active.
-// eslint-disable-next-line react-refresh/only-export-components
-export function renderPageOverlayForFrame(
-    renderer: PageOverlayRenderer | undefined,
-    context: PageOverlayRenderContext,
-): ReactNode {
-    return renderer?.(context) ?? null;
-}
-
-// Hàm thuần được export để khóa hồi quy reorder/duplicate mà không mount Viewer nặng.
-// eslint-disable-next-line react-refresh/only-export-components
-export function matchesPageOverlayTarget(input: {
-    originalPageNum: number;
-    viewerPagePosition: number;
-    pageInstanceId: string;
-    targetSourcePage: number;
-    targetViewerPage?: number;
-    targetInstanceId?: string | null;
-}): boolean {
-    if (input.targetInstanceId) return input.pageInstanceId === input.targetInstanceId;
-    if (input.targetViewerPage !== undefined) {
-        return input.viewerPagePosition === input.targetViewerPage;
-    }
-    return input.originalPageNum === input.targetSourcePage;
-}
-
-// Hàm thuần khóa hồi quy scroll: ID DOM là vị trí trang Viewer (1-based), không
-// phải số trang nguồn trong pageOrder. Trả lại cùng Set nếu không có thay đổi để
-// React/Virtuoso không khởi động một vòng đo layout mới.
-// eslint-disable-next-line react-refresh/only-export-components
-export function selectionAfterViewerScroll(
-    current: Set<number>,
-    viewerPage: number,
-    pageCount: number,
-): Set<number> {
-    const index = viewerPage - 1;
-    if (index < 0 || index >= pageCount || current.size > 1) return current;
-    return current.size === 1 && current.has(index) ? current : new Set([index]);
-}
-
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated }: Props) {
   const { t } = useTranslation();
     const {
         scale: physicalDisplayScale,
@@ -180,14 +228,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
-        selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId,
+        setSelectedObjectIds, selectionFileId,
         isObjectEditMode, isCropMode, undoCropSelection, redoCropSelection,
-        hiddenOcgLayerIds,
-        vdpFields, selectedVdpFieldIds,
-        setSelectedVdpFieldIds, setVdpFields,
+        vdpFields, setVdpFields,
         setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty,
         setViewerSelectedPageIndices,
-        error, setError,
         setIsProcessing, setProcessStatus,
         viewerZoom: zoom, setViewerZoom: setZoom,
         viewerFitMode: fitMode, setViewerFitMode: setFitMode,
@@ -209,14 +254,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         outputPreviewPageBackgroundRgb,
     } = useWorkspaceStore(useShallow(state => ({
         file: state.file, setFile: state.setFile, pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, bleedView: state.bleedView, highlightedIssue: state.highlightedIssue,
-        selectedObjectIds: state.selectedObjectIds,
-        setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, selectionFileId: state.selectionFileId,
-        hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        setSelectedObjectIds: state.setSelectedObjectIds, selectionFileId: state.selectionFileId,
         isObjectEditMode: state.isObjectEditMode,
         isCropMode: state.isCropMode,
         undoCropSelection: state.undoCropSelection,
         redoCropSelection: state.redoCropSelection,
-        vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
+        vdpFields: state.vdpFields,
         // PERF (audit 2026-08-10 §OP.6): các overlay Preflight được LivePageFrame
         // tiêu thụ trực tiếp. Subscribe ở Viewer cha làm toàn bộ trang/toolbar render
         // lại dù component này không hề đọc các giá trị đó.
@@ -224,7 +267,6 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         setVdpFields: state.setVdpFields,
         setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds, setViewerPageRotations: state.setViewerPageRotations, setViewerDirty: state.setViewerDirty,
         setViewerSelectedPageIndices: state.setViewerSelectedPageIndices,
-        error: state.error, setError: state.setError,
         setIsProcessing: state.setIsProcessing, setProcessStatus: state.setProcessStatus,
         viewerZoom: state.viewerZoom, setViewerZoom: state.setViewerZoom,
         viewerFitMode: state.viewerFitMode, setViewerFitMode: state.setViewerFitMode,
@@ -314,7 +356,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         return res.id;
     }, [file, getWorkingFile, setSelectionFileId, t]);
 
-    const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
+    const onVdpBoxSelect = () => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
 
     // ── Export ảnh (PNG/JPEG/TIFF) — tương tự Acrobat "Export To > Image" ──
@@ -327,17 +369,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const openExportImage = useCallback(async (initialTab: ExportImageTab = 'export') => {
         if (!file) { toast.info(t('misc.acrobatViewer:chua_co_file_de_xuat_anh')); return; }
         try {
-            const p = (file as any)?.path;
+            const p = (file as ViewerFile)?.path;
             if (p) { setExportFilePath(p); setExportFileId(undefined); }
             else { const fid = await ensureCropFileId(); setExportFileId(fid); setExportFilePath(undefined); }
             setIsExportImageOpen(true);
             setExportImageInitialTab(initialTab);
         } catch (e) {
-            toast.error('Không chuẩn bị được file để xuất ảnh: ' + ((e as any)?.message || e));
+            toast.error('Không chuẩn bị được file để xuất ảnh: ' + errorMessage(e));
         }
     }, [file, ensureCropFileId, t]);
 
-    // ── Khử viền trắng (Auto-trim whitespace) ──
+    // ── Khử viền dư (Auto-trim excess border) ──
     const [isAutoTrimOpen, setIsAutoTrimOpen] = useState(false);
     const [autoTrimBusy, setAutoTrimBusy] = useState(false);
     const [autoTrimMargin, setAutoTrimMargin] = useState(0);
@@ -382,7 +424,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             setIsAutoTrimOpen(false);
         } catch (e) {
             toast.dismiss(loadingId);
-            toast.error(t('misc.acrobatViewer:khu_vien_that_bai', { msg: (e as any)?.message || e }));
+            toast.error(t('misc.acrobatViewer:khu_vien_that_bai', { msg: errorMessage(e) }));
         } finally {
             setAutoTrimBusy(false);
         }
@@ -391,7 +433,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // ═══ DOM Refs ═══
     const containerRef = useRef<HTMLDivElement>(null);
     const sidebarRef = useRef<HTMLDivElement>(null);
-    const mainVirtuosoRef = useRef<any>(null);
+    const mainVirtuosoRef = useRef<ViewerVirtuosoHandle>(null);
     const internalScrollRef = useRef<HTMLElement | null>(null);
     const geometryActivePageRef = useRef(activePage);
     geometryActivePageRef.current = activePage;
@@ -407,6 +449,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const [isInsertModalOpen, setIsInsertModalOpen] = useState(false);
     const [isExtractModalOpen, setIsExtractModalOpen] = useState(false);
     const [extractPagesStrForModal, setExtractPagesStrForModal] = useState('');
+    const extractInFlightRef = useRef(false);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; visible: boolean } | null>(null);
     /** Copy/Move sang file khác — chờ chọn vị trí chèn (đầu/cuối/trước/sau trang N). */
     const [crossFileInsertPending, setCrossFileInsertPending] = useState<CrossFileInsertPending | null>(null);
@@ -421,9 +464,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // ═══ Text Content ═══
     const [nativeTextCache, setNativeTextCache] = useState<{
         documentIdentity: string;
-        blocksBySource: Record<number, any[]>;
+        blocksBySource: Record<number, NativeTextBlock[]>;
     }>({ documentIdentity: '', blocksBySource: {} });
-    const [isZoomReadyLocal, setIsZoomReadyLocal] = useState(false);
 
     // ═══ Hook: PDF Loader ═══
     const loader = usePdfLoader({
@@ -474,7 +516,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // COLOR (audit 2026-08-07 §GV.3): tự bật cho PDF rủi ro cao, nhưng cho phép
     // người dùng tắt/bật theo từng file. Không ghi global store để tab khác không bị ảnh hưởng.
-    const accurateColorSourceKey = [pdfUrl || '', (file as any)?.path || '', (file as any)?.size || 0, (file as any)?.lastModified || 0].join('|');
+    const accurateColorSourceKey = [pdfUrl || '', (file as ViewerFile)?.path || '', (file as ViewerFile)?.size || 0, (file as ViewerFile)?.lastModified || 0].join('|');
     const [accurateColorPreference, setAccurateColorPreference] = useState<{ sourceKey: string; enabled: boolean } | null>(null);
     const accurateColorPages = useMemo(
         () => colorRisk?.pages.filter(page => page.accurateColorRecommended).map(page => page.page) || [],
@@ -501,12 +543,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Helper: mọi thao tác đổi thứ tự trang PHẢI cập nhật pageOrder VÀ pageInstanceIds
     // cùng lúc (bất biến: 2 mảng luôn cùng độ dài). Rotation keyed theo instance-id nên
     // nếu 2 mảng lệch → gán góc nhầm trang. Gói qua đây để không quên đồng bộ ở handler nào.
-    const applyOrderChange = useCallback((newOrder: number[], newIds: string[]) => {
+    const applyOrderChange = useCallback((
+        newOrder: number[],
+        newIds: string[],
+        restoredRotations?: Record<string, number>,
+    ) => {
         if (newOrder.length !== newIds.length) {
             console.error('[applyOrderChange] order/ids length mismatch', newOrder.length, newIds.length);
         }
         setPageOrder(newOrder);
         setPageInstanceIds(newIds);
+        if (restoredRotations) setPageRotations(restoredRotations);
         // Đồng bộ NGAY sang store dùng chung của bộ bình. Trước đây chỉ dựa vào
         // useEffect(pageOrder) bên dưới nên khi nhân bản liên tiếp, preview có thể
         // chạy trong khe giữa hai render và vẫn lấy order cũ (vd 28 thay vì 45).
@@ -514,8 +561,19 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // preview và file xuất luôn thấy cùng một phiên bản thứ tự trang.
         setViewerPageOrder(newOrder);
         setViewerPageInstanceIds(newIds);
+        if (restoredRotations) {
+            setViewerPageRotations(flattenRotations(newIds, restoredRotations));
+        }
         setNumPages(newOrder.length);
-    }, [setPageOrder, setPageInstanceIds, setViewerPageOrder, setViewerPageInstanceIds, setNumPages]);
+    }, [
+        setPageOrder,
+        setPageInstanceIds,
+        setPageRotations,
+        setViewerPageOrder,
+        setViewerPageInstanceIds,
+        setViewerPageRotations,
+        setNumPages,
+    ]);
 
     // LƯU Ý: KHÔNG return sớm ở đây. Trước kia `if (loadError) return ...` đặt
     // TRƯỚC hàng loạt hook bên dưới (useTileRenderer, useViewerZoom, useEffect...),
@@ -577,22 +635,30 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     useEffect(() => {
         let cancelled = false;
         const targetFid = selectionFileId;
+        const commitAndCloseCurrent = async (): Promise<boolean> => {
+            const current = editSessionRef.current;
+            if (!current?.sessionId) return true;
+            try {
+                // REVISION (audit 2026-08-25 §REV.01-02): gọi commit cả khi
+                // dirty=false vì op cuối có thể vẫn đang bay và chưa kịp set dirty.
+                await current.commit();
+            } catch {
+                toast.error(t('tabs.imposition:khong_the_chot_edit_pdf', {
+                    defaultValue: 'Không thể chốt thay đổi Edit PDF. Phiên chỉnh sửa được giữ lại để bạn thử lại.',
+                }));
+                return false;
+            }
+            await current.closeSession();
+            return true;
+        };
 
         // Tuần tự hóa đóng/mở: đổi Working File nhanh không được để cleanup phiên cũ
         // chạy chồng và đóng nhầm phiên mới vừa mở.
         editSessionLifecycleRef.current = editSessionLifecycleRef.current
             .catch(() => { /* cho phép chuỗi lifecycle tiếp tục sau lỗi trước đó */ })
             .then(async () => {
-                const current = editSessionRef.current;
-                if (!current) return;
-
-                if (current.sessionId) {
-                    try {
-                        if (current.dirty) await current.commit();
-                    } finally {
-                        await current.closeSession();
-                    }
-                }
+                const closed = await commitAndCloseCurrent();
+                if (!closed) return;
 
                 if (!cancelled && isObjectEditMode && targetFid) {
                     await editSessionRef.current?.openSession(targetFid);
@@ -603,17 +669,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             cancelled = true;
             editSessionLifecycleRef.current = editSessionLifecycleRef.current
                 .catch(() => { /* vẫn phải dọn phiên khi bước trước lỗi */ })
-                .then(async () => {
-                    const current = editSessionRef.current;
-                    if (!current?.sessionId) return;
-                    try {
-                        if (current.dirty) await current.commit();
-                    } finally {
-                        await current.closeSession();
-                    }
-                });
+                .then(commitAndCloseCurrent)
+                .then(() => undefined);
         };
-    }, [isObjectEditMode, selectionFileId]);
+    }, [isObjectEditMode, selectionFileId, t]);
 
     // UIUX/PERF (feedback 2026-08-21 §EDIT.THUMB1): preview là state chung của
     // phiên, nên chỉ Viewer cha được dọn khi revision tài liệu THẬT SỰ đổi.
@@ -703,9 +762,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     ]);
     const textDocumentIdentity = [
         pdfUrl || '',
-        (file as any)?.path || '',
-        (file as any)?.size || 0,
-        (file as any)?.lastModified || 0,
+        (file as ViewerFile)?.path || '',
+        (file as ViewerFile)?.size || 0,
+        (file as ViewerFile)?.lastModified || 0,
     ].join('|');
     const nativeTextBlocks = useMemo(
         () => nativeTextCache.documentIdentity === textDocumentIdentity
@@ -747,8 +806,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         if (!canScanText || !file || sourcePage == null) return;
         if (nativeTextBlocks[sourcePage]) return;
         let cancelled = false;
-        const nativePath = (file as any)?.path;
-        const cacheBlocks = (blocks: any[]) => {
+        const nativePath = (file as ViewerFile)?.path;
+        const cacheBlocks = (blocks: NativeTextBlock[]) => {
             setNativeTextCache(previous => {
                 const currentBlocks = previous.documentIdentity === textDocumentIdentity
                     ? previous.blocksBySource
@@ -774,7 +833,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 } else {
                     const blocks = await getTextBlocksForPage(sourcePage, nativeTextBlocks);
                     if (blocks && !cancelled) {
-                        cacheBlocks(blocks);
+                        cacheBlocks(blocks as NativeTextBlock[]);
                     }
                 }
             } catch { /* text không quét được (file scan/outline) → bỏ qua, không phải lỗi */ }
@@ -818,13 +877,6 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         }
     }, [numPages, activePage, pageDisplayMode, setSelectedIndices, setLastSelectedIndex, setActivePage]);
 
-    const prevAcroPage = () => {
-        if (activePage > 1) navigatePage(activePage - 1);
-    };
-    const nextAcroPage = () => {
-        if (activePage < pageOrder.length) navigatePage(activePage + 1);
-    };
-
     // ═══ Hook: Object Edit Undo/Redo (Ctrl+Z hoàn tác move/delete/rotate...) ═══
     const objectEdit = useObjectEditHistory();
 
@@ -835,7 +887,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // undefined (caller cũ) → coi như active + fallback DOM.
         isActive: isActive !== false,
         pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
-        setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
+        applyPageRevision: applyOrderChange,
+        setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
         toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
         setIsDeleteModalOpen, setIsExtractModalOpen, setIsInsertModalOpen, setExtractPagesStrForModal, setContextMenu,
@@ -867,8 +920,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // ═══ Hook: Zoom & Gestures ═══
     const {
-        mainWidth, mainHeight, isZoomReady,
-        thumbBaseWidth, setThumbBaseWidth,
+        isZoomReady,
+        thumbBaseWidth,
         isZoomingRef,
         applyFitWidth, applyFitPage,
         handleDragStart,
@@ -882,12 +935,129 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         navigatePage, toolMode,
     });
 
+    // UIUX (audit 2026-08-25 §NW.4): usePdfLoader reset page/zoom khi đổi file,
+    // nên seed cửa sổ con chỉ được áp sau trạng thái `ready` + pageOrder thật.
+    const initialViewAppliedRef = useRef(false);
+    const initialViewCompletedRef = useRef(false);
+    const initialViewRafRef = useRef<number | null>(null);
+    const initialViewTimerRef = useRef<number | null>(null);
+    const pendingInitialViewScrollRef = useRef<{
+        targetIndex: number;
+        pageDisplayMode: DocumentWindowViewState['pageDisplayMode'];
+    } | null>(null);
+    const initialViewCallbackRef = useRef(onInitialViewStateApplied);
+    initialViewCallbackRef.current = onInitialViewStateApplied;
+
+    const completeInitialView = useCallback(() => {
+        if (initialViewCompletedRef.current) return;
+        initialViewCompletedRef.current = true;
+        if (initialViewRafRef.current !== null) {
+            cancelAnimationFrame(initialViewRafRef.current);
+            initialViewRafRef.current = null;
+        }
+        if (initialViewTimerRef.current !== null) {
+            window.clearTimeout(initialViewTimerRef.current);
+            initialViewTimerRef.current = null;
+        }
+        initialViewCallbackRef.current?.();
+    }, []);
+
+    const applyPendingInitialViewScroll = useCallback((): boolean => {
+        const pending = pendingInitialViewScrollRef.current;
+        if (!pending) return true;
+        // Layout fit lấy trang hiện tại trực tiếp từ activePage, không có row cần cuộn.
+        if (!pending.pageDisplayMode.endsWith('_scroll')) {
+            pendingInitialViewScrollRef.current = null;
+            return true;
+        }
+        if (!isZoomReady || pageDisplayMode !== pending.pageDisplayMode) return false;
+        const virtuoso = mainVirtuosoRef.current;
+        if (!virtuoso) return false;
+        virtuoso.scrollToIndex({
+            index: viewerRowIndexForPosition(pending.targetIndex, pending.pageDisplayMode),
+            behavior: 'auto',
+            align: 'start',
+        });
+        pendingInitialViewScrollRef.current = null;
+        return true;
+    }, [isZoomReady, pageDisplayMode]);
+
+    useEffect(() => {
+        if (!initialViewState || initialViewAppliedRef.current) return;
+        if (loadError || loadStatus === 'error' || loadStatus === 'cancelled') {
+            initialViewAppliedRef.current = true;
+            pendingInitialViewScrollRef.current = null;
+            completeInitialView();
+            return;
+        }
+        if (loadStatus !== 'ready' || pageOrder.length === 0) return;
+
+        initialViewAppliedRef.current = true;
+        const requestedPage = Number.isFinite(initialViewState.activePage)
+            ? Math.trunc(initialViewState.activePage)
+            : 1;
+        const targetIndex = Math.max(0, Math.min(pageOrder.length - 1, requestedPage - 1));
+        const targetPage = targetIndex + 1;
+        pendingInitialViewScrollRef.current = {
+            targetIndex,
+            pageDisplayMode: initialViewState.pageDisplayMode,
+        };
+        setPageDisplayMode(initialViewState.pageDisplayMode);
+        setFitMode(initialViewState.fitMode);
+        setZoom(initialViewState.zoom);
+        setSelectedIndices(new Set([targetIndex]));
+        setLastSelectedIndex(targetIndex);
+        setActivePage(targetPage);
+
+        const finishInitialView = () => {
+            applyPendingInitialViewScroll();
+            completeInitialView();
+        };
+        // WebView native còn ẩn có thể ngừng rAF; timer phải được tạo song song để
+        // callback luôn cho native hiện cửa sổ, rồi layout effect sẽ retry scroll.
+        initialViewRafRef.current = requestAnimationFrame(finishInitialView);
+        initialViewTimerRef.current = window.setTimeout(finishInitialView, 50);
+    }, [
+        applyPendingInitialViewScroll,
+        completeInitialView,
+        initialViewState,
+        loadError,
+        loadStatus,
+        pageOrder.length,
+        setActivePage,
+        setFitMode,
+        setLastSelectedIndex,
+        setPageDisplayMode,
+        setSelectedIndices,
+        setZoom,
+    ]);
+
+    useEffect(() => () => {
+        if (initialViewRafRef.current !== null) cancelAnimationFrame(initialViewRafRef.current);
+        if (initialViewTimerRef.current !== null) window.clearTimeout(initialViewTimerRef.current);
+        initialViewRafRef.current = null;
+        initialViewTimerRef.current = null;
+        pendingInitialViewScrollRef.current = null;
+    }, []);
+    // REVISION (audit 2026-08-25 §REV.08): lần render đầu còn mang `ready` của file cũ;
+    // arm một nhịp để loader của đúng File có cơ hội reset/bootstrap trước khi hydrate.
+    const hydratedHistoryEntryRef = useRef<WorkspaceHistoryEntry | null>(null);
+    const [historyHydrationArm, setHistoryHydrationArm] = useState<WorkspaceHistoryEntry | null>(null);
+    const historyHydrationPendingForCurrentFile = pendingHistoryEntry?.file === file
+        && hydratedHistoryEntryRef.current !== pendingHistoryEntry;
+
     // ═══ Sync Effects ═══
     // Fallback cho các thay đổi pageOrder không đi qua applyOrderChange (nạp file,
     // undo/redo, copy liên file). Các handler trực tiếp đã đồng bộ ngay phía trên.
-    useEffect(() => { setViewerPageOrder(pageOrder); setNumPages(pageOrder.length); }, [pageOrder, setViewerPageOrder, setNumPages]);
-    useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage]);
-    useEffect(() => { setViewerPageInstanceIds(pageInstanceIds); }, [pageInstanceIds, setViewerPageInstanceIds]);
+    useEffect(() => {
+        if (historyHydrationPendingForCurrentFile) return;
+        setViewerPageOrder(pageOrder); setNumPages(pageOrder.length);
+    }, [historyHydrationPendingForCurrentFile, pageOrder, setViewerPageOrder, setNumPages]);
+    useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage, setActivePage]);
+    useEffect(() => {
+        if (historyHydrationPendingForCurrentFile) return;
+        setViewerPageInstanceIds(pageInstanceIds);
+    }, [historyHydrationPendingForCurrentFile, pageInstanceIds, setViewerPageInstanceIds]);
     useEffect(() => {
         // UIUX (audit 2026-08-11 §PRINTRANGE.2): snapshot theo store CỦA TAB để
         // Ctrl+P đọc đúng selection mà không làm shell global render lại khi cuộn.
@@ -897,8 +1067,64 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Trong viewer rotation keyed theo instance-id (xoay độc lập bản nhân bản), nhưng ra
     // store/backend chỉ cần góc-theo-vị-trí (thứ tự mảng đã cố định). Backend impose + bake
     // đều lặp theo vị trí nên nhận trực tiếp. Xem flattenRotations (per-instance rotation).
-    useEffect(() => { setViewerPageRotations?.(flattenRotations(pageInstanceIds, pageRotations)); }, [pageRotations, pageInstanceIds]);
-    useEffect(() => { setViewerDirty(pastStack.length > 0); }, [pastStack.length, setViewerDirty]);
+    useEffect(() => {
+        if (historyHydrationPendingForCurrentFile) return;
+        setViewerPageRotations?.(flattenRotations(pageInstanceIds, pageRotations));
+    }, [historyHydrationPendingForCurrentFile, pageRotations, pageInstanceIds, setViewerPageRotations]);
+    useEffect(() => {
+        setViewerDirty(pastStack.length > 0 || restoredHistoryDirty);
+    }, [pastStack.length, restoredHistoryDirty, setViewerDirty]);
+    useEffect(() => {
+        const pending = pendingHistoryEntry;
+        if (!pending || pending.file !== file) {
+            hydratedHistoryEntryRef.current = null;
+            if (historyHydrationArm !== null) setHistoryHydrationArm(null);
+            return;
+        }
+        if (hydratedHistoryEntryRef.current === pending) return;
+        if (historyHydrationArm !== pending) {
+            setHistoryHydrationArm(pending);
+            return;
+        }
+        if (loadStatus !== 'ready' || pageOrder.length === 0) return;
+
+        // IDs được snapshot theo instance; rotation phẳng phải dựng lại map bằng
+        // chính IDs đó trước khi đi qua transaction E1a.
+        const revision = pending.pageRevision;
+        if (revision) {
+            const restoredOrder = [...revision.pageOrder];
+            const restoredIds = revision.pageInstanceIds.length === restoredOrder.length
+                ? [...revision.pageInstanceIds]
+                : genPageIds(restoredOrder.length);
+            const restoredRotations = restoredIds.reduce<Record<string, number>>((result, id, index) => {
+                result[id] = revision.pageRotations[index] ?? 0;
+                return result;
+            }, {});
+            applyOrderChange(restoredOrder, restoredIds, restoredRotations);
+            setSelectedIndices(new Set([0]));
+            setLastSelectedIndex(0);
+            setActivePage(1);
+        }
+
+        setPastStack([]);
+        setFutureStack([]);
+        hydratedHistoryEntryRef.current = pending;
+        setHistoryHydrationArm(null);
+        onHistoryEntryHydrated?.(pending);
+    }, [
+        applyOrderChange,
+        file,
+        historyHydrationArm,
+        loadStatus,
+        onHistoryEntryHydrated,
+        pageOrder.length,
+        pendingHistoryEntry,
+        setActivePage,
+        setFutureStack,
+        setLastSelectedIndex,
+        setPastStack,
+        setSelectedIndices,
+    ]);
     // Vào Object Edit / VDP → về pointer (tắt DIM nếu đang bật).
     // Bật DIM (phím D) luôn set isObjectEditMode=false trước nên effect không đè ngược.
     useEffect(() => {
@@ -913,8 +1139,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Reset zoom state on new file
     useEffect(() => {
         // Edit-commit: giữ nguyên zoom/scroll (cùng cấu trúc trang) → không reset.
-        if ((file as any)?.__editCommit) return;
-        setIsZoomReadyLocal(false);
+        if ((file as ViewerFile)?.__editCommit) return;
         if (internalScrollRef.current) internalScrollRef.current = null;
     }, [pdfUrl, file]);
 
@@ -1068,7 +1293,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // mới được phép tiêu tốn PDF.js; thumbnail ngoài viewport vẫn render
         // on-demand trong ThumbSidebar.
         if (isActive === false) return;
-        if (!thumbPdfRef && !(file as any)?.path) return;
+        if (!thumbPdfRef && !(file as ViewerFile)?.path) return;
         if (numPages === 0 || !isThumbMenuOpen) return;
         let cancelled = false;
         const maxThumbsToGen = Math.min(numPages, 30);
@@ -1087,19 +1312,26 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         return () => { cancelled = true; };
     }, [isActive, thumbPdfRef, file, numPages, pageRotations, generateThumb, isThumbMenuOpen, thumbBaseWidth]);
 
+    const pageToolsHandlersRef = useRef<{
+        duplicate: (target: 'current' | 'all' | 'range', range: [number, number], copies: number, collate: boolean) => void;
+        move: (startPage: number, endPage: number, targetType: string, targetPage: number) => void;
+        delete: (target: 'current' | 'range', range: [number, number], filter: string) => void;
+        rotate: (target: string, range: [number, number], filter: string, degrees: number) => void;
+        insertBlank: (location: 'after' | 'before', target: 'first' | 'last' | 'page', targetPage: number, count: number) => void;
+        extract: (range: [number, number], deleteAfter: boolean) => void;
+    } | null>(null);
     // PageTools event listener
     useEffect(() => {
-        const handlePageToolsAction = (e: any) => {
-            const { tabId: targetTabId, action, payload } = e.detail || {};
-            // NAV (audit điều hướng tab 2026-07-28): mọi viewer vẫn mounted,
-            // nên chỉ tab đích đang hiển thị mới được phép sửa cấu trúc trang.
-            if (!isActive || !tabId || targetTabId !== tabId) return;
-            if (action === 'duplicate') handlePageToolsDuplicate(payload.targetType, payload.range, payload.copies, payload.collate);
-            else if (action === 'move') handlePageToolsMove(payload.startPage, payload.endPage, payload.targetType, payload.targetPage);
-            else if (action === 'delete') handlePageToolsDelete(payload.targetType, payload.range, payload.filter);
-            else if (action === 'rotate') handlePageToolsRotate(payload.targetType, payload.range, payload.filter, payload.degrees);
-            else if (action === 'insert_blank') handlePageToolsInsertBlank(payload.location, payload.target, payload.targetPage, payload.count);
-            else if (action === 'extract') handlePageToolsExtract(payload.range, payload.deleteAfter);
+        const handlePageToolsAction = (event: Event) => {
+            const { tabId: targetTabId, action, payload } = (event as CustomEvent<PageToolsActionDetail>).detail ?? {};
+            const handlers = pageToolsHandlersRef.current;
+            if (!isActive || !tabId || targetTabId !== tabId || !payload || !handlers) return;
+            if (action === 'duplicate') handlers.duplicate(payload.targetType as 'current' | 'all' | 'range', payload.range, payload.copies, payload.collate);
+            else if (action === 'move') handlers.move(payload.startPage, payload.endPage, payload.targetType, payload.targetPage);
+            else if (action === 'delete') handlers.delete(payload.targetType as 'current' | 'range', payload.range, payload.filter);
+            else if (action === 'rotate') handlers.rotate(payload.targetType, payload.range, payload.filter, payload.degrees);
+            else if (action === 'insert_blank') handlers.insertBlank(payload.location, payload.target, payload.targetPage, payload.count);
+            else if (action === 'extract') handlers.extract(payload.range, payload.deleteAfter);
         };
         window.addEventListener('prynx-pagetools-action', handlePageToolsAction);
         return () => window.removeEventListener('prynx-pagetools-action', handlePageToolsAction);
@@ -1108,7 +1340,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // ═══ Page Tool Handlers ═══
     const handleQuickDeleteConfirm = () => {
         commitSnapshot();
-        const keep = (_: any, idx: number) => !selectedIndices.has(idx);
+        const keep = (_: unknown, idx: number) => !selectedIndices.has(idx);
         const newOrder = pageOrder.filter(keep);
         const newIds = pageInstanceIds.filter(keep);
         applyOrderChange(newOrder, newIds);
@@ -1278,7 +1510,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const handlePageToolsDelete = (target: 'current' | 'range', range: [number, number], filter: string) => {
         commitSnapshot();
-        let deleteIndices = new Set<number>();
+        const deleteIndices = new Set<number>();
         if (target === 'current') { deleteIndices.add(activePage - 1); }
         else {
             const s = Math.max(0, range[0] - 1); const e = Math.min(pageOrder.length - 1, range[1] - 1);
@@ -1289,7 +1521,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 deleteIndices.add(i);
             }
         }
-        const keep = (_: any, idx: number) => !deleteIndices.has(idx);
+        const keep = (_: unknown, idx: number) => !deleteIndices.has(idx);
         const afterDelete = pageOrder.filter(keep);
         const afterIds = pageInstanceIds.filter(keep);
         applyOrderChange(afterDelete, afterIds);
@@ -1301,7 +1533,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const handlePageToolsRotate = (target: string, range: [number, number], filter: string, degrees: number) => {
         commitSnapshot();
-        let rotateIndices = new Set<number>();
+        const rotateIndices = new Set<number>();
         if (target === 'current') { rotateIndices.add(activePage - 1); }
         else if (target === 'all') { for (let i = 0; i < pageOrder.length; i++) { const pn = i + 1; if (filter === 'odd' && pn % 2 === 0) continue; if (filter === 'even' && pn % 2 !== 0) continue; rotateIndices.add(i); } }
         else { const s = Math.max(0, range[0] - 1); const e = Math.min(pageOrder.length - 1, range[1] - 1); for (let i = s; i <= e; i++) { const pn = i + 1; if (filter === 'odd' && pn % 2 === 0) continue; if (filter === 'even' && pn % 2 !== 0) continue; rotateIndices.add(i); } }
@@ -1333,8 +1565,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         setContextMenu(null);
     };
 
-    const handleExtractPages = (extractPagesStr: string, extractDeleteAfter: boolean) => {
-        commitSnapshot();
+    const handleExtractPages = async (extractPagesStr: string, extractDeleteAfter: boolean) => {
+        if (extractInFlightRef.current) return;
         const indicesToExtract = new Set<number>();
         const parts = extractPagesStr.split(',');
         for (const p of parts) {
@@ -1347,9 +1579,20 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         }
         if (indicesToExtract.size > 0 && onExtractPages) {
             const sorted = Array.from(indicesToExtract).sort((a, b) => a - b);
-            onExtractPages(sorted.map(idx => pageOrder[idx]), extractDeleteAfter);
-            if (extractDeleteAfter) {
-                const keep = (_: any, idx: number) => !indicesToExtract.has(idx);
+            extractInFlightRef.current = true;
+            let extracted = false;
+            try {
+                // REVISION (audit 2026-08-25 §REV.07): parent nhận VỊ TRÍ Working
+                // PDF. Chỉ ghi Undo/xóa trang sau khi artifact đã tạo và mở tab thành công.
+                extracted = await onExtractPages(sorted, extractDeleteAfter);
+            } catch (error) {
+                toast.error(error instanceof Error ? error.message : t('misc.acrobatViewer:loi_trich_xuat'));
+            } finally {
+                extractInFlightRef.current = false;
+            }
+            if (shouldRemovePagesAfterExtract(extracted, extractDeleteAfter)) {
+                commitSnapshot();
+                const keep = (_: unknown, idx: number) => !indicesToExtract.has(idx);
                 const afterOrder = pageOrder.filter(keep);
                 const afterIds = pageInstanceIds.filter(keep);
                 applyOrderChange(afterOrder, afterIds);
@@ -1384,9 +1627,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const handlePageToolsExtract = (range: [number, number], deleteAfter: boolean) => {
         const start = Math.min(range[0], range[1]);
         const end = Math.max(range[0], range[1]);
-        handleExtractPages(`${start}-${end}`, deleteAfter);
+        void handleExtractPages(`${start}-${end}`, deleteAfter);
     };
 
+    pageToolsHandlersRef.current = {
+        duplicate: handlePageToolsDuplicate,
+        move: handlePageToolsMove,
+        delete: handlePageToolsDelete,
+        rotate: handlePageToolsRotate,
+        insertBlank: handlePageToolsInsertBlank,
+        extract: handlePageToolsExtract,
+    };
     // Copy/Move trang từ file khác vào file này (kéo-thả + menu chuột phải).
     // mode='move' → sau khi copy xong báo file nguồn xóa trang (event riêng).
     // notify=true chỉ khi gọi từ menu (kéo-thả giữ im lặng như cũ).
@@ -1419,7 +1670,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             copiedPages.forEach(p => tgtDoc.addPage(p));
 
             const newBytes = await tgtDoc.save();
-            const newFile = new File([newBytes as any], file?.name || 'Merged.pdf', { type: 'application/pdf' });
+            const newFile = new File([newBytes.buffer as ArrayBuffer], file?.name || 'Merged.pdf', { type: 'application/pdf' });
             // Đánh dấu in-memory — buộc Lưu trước khi thoát (file blob mới).
             try { Object.defineProperty(newFile, 'isInMemory', { value: true }); } catch { /* ignore */ }
 
@@ -1432,7 +1683,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             }
             const newPdfUrl = URL.createObjectURL(newFile);
             // Scope theo URL đích — tránh tab khác nuốt order rồi xóa global.
-            (window as any).__prynx_cross_file_page_order = {
+            (window as Window & { __prynx_cross_file_page_order?: CrossFilePageOrder }).__prynx_cross_file_page_order = {
                 pdfUrl: newPdfUrl,
                 order: newOrder,
                 focusIndex: firstNewVisualIdx,
@@ -1521,13 +1772,16 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         setCrossFileInsertPending(null);
     };
 
+    const handleCrossFileDropRef = useRef(handleCrossFileDrop);
+    handleCrossFileDropRef.current = handleCrossFileDrop;
+
     useEffect(() => {
-        const handleCrossFileEvent = (e: any) => {
-            const { sourcePdfUrl, sourcePageNums, targetPdfUrl, targetTabId, dropIndex, mode, sourceIndices, fromMenu } = e.detail || {};
-            if (targetPdfUrl === pdfUrl) {
+        const handleCrossFileEvent = (event: Event) => {
+            const { sourcePdfUrl, sourcePageNums, targetPdfUrl, targetTabId, dropIndex, mode, sourceIndices, fromMenu } = (event as CustomEvent<CrossFileDropDetail>).detail ?? {};
+            if (targetPdfUrl === pdfUrl && sourcePdfUrl && sourcePageNums) {
                 const insertIdx = dropIndex !== null && dropIndex !== undefined ? dropIndex : pageOrder.length;
                 // Gắn tabId đích vào handler (để sau khi xong chuyển tab) — ưu tiên detail.
-                const run = handleCrossFileDrop(
+                const run = handleCrossFileDropRef.current(
                     sourcePdfUrl,
                     sourcePageNums,
                     insertIdx,
@@ -1554,8 +1808,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // Move sang file khác: file nguồn nhận event và xóa các trang đã chuyển.
     useEffect(() => {
-        const handleSourceRemove = (e: any) => {
-            const { sourcePdfUrl, sourceIndices } = e.detail || {};
+        const handleSourceRemove = (event: Event) => {
+            const { sourcePdfUrl, sourceIndices } = (event as CustomEvent<CrossFileSourceRemoveDetail>).detail ?? {};
             if (sourcePdfUrl !== pdfUrl) return;
             if (!Array.isArray(sourceIndices) || sourceIndices.length === 0) return;
 
@@ -1572,7 +1826,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         };
         window.addEventListener('prynx-cross-file-source-remove', handleSourceRemove);
         return () => window.removeEventListener('prynx-cross-file-source-remove', handleSourceRemove);
-    }, [pdfUrl, pageOrder, pageInstanceIds, commitSnapshot, applyOrderChange]);
+    }, [pdfUrl, pageOrder, pageInstanceIds, activePage, commitSnapshot, applyOrderChange, setActivePage, setLastSelectedIndex, setSelectedIndices]);
 
     // ═══ Guide handlers ═══
     const guidesRef = useRef<Guide[]>([]);
@@ -1720,7 +1974,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         const handleMouseUp = (upEvent: MouseEvent) => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
-            let uClientPos = orientation === 'horizontal' ? upEvent.clientY - rect.top : upEvent.clientX - rect.left;
+            const uClientPos = orientation === 'horizontal' ? upEvent.clientY - rect.top : upEvent.clientX - rect.left;
             if (uClientPos < 0) { setDraggingGuide(null); setSelectedGuideId(null); return; }
             const finalPos = clientToGuidePos(upEvent.clientX, upEvent.clientY, orientation);
             setGuidesHistory(prev => [...prev, guidesRef.current]);
@@ -1747,7 +2001,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         const handleMouseUp = (upEvent: MouseEvent) => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
-            let uClientPos = guide.type === 'horizontal' ? upEvent.clientY - rect.top : upEvent.clientX - rect.left;
+            const uClientPos = guide.type === 'horizontal' ? upEvent.clientY - rect.top : upEvent.clientX - rect.left;
             if (uClientPos < 0) { setDraggingGuide(null); setSelectedGuideId(null); return; }
             const finalPos = clientToGuidePos(upEvent.clientX, upEvent.clientY, guide.type);
             setGuides(prev => [...prev, { ...guide, pos: finalPos }]);
@@ -1804,12 +2058,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const scrollAnchorRef = useRef(lastSelectedIndex);
     scrollAnchorRef.current = lastSelectedIndex;
 
-    const handleMainScroll = useCallback((e: any) => {
-        const scrollSource = (e.currentTarget || e.target) as HTMLElement | null;
+    const handleMainScroll = useCallback((e: Event) => {
+        const scrollSource = e.currentTarget instanceof HTMLElement ? e.currentTarget : e.target instanceof HTMLElement ? e.target : null;
         if (!isActive || !scrollSource) return;
         if (scrollSource.dataset.isNavigating === 'true') return;
         if (pageDisplayMode.includes('_fit') || isZoomingRef.current) return;
-        if ((mainVirtuosoRef.current as any)?.__thumbClickActive) return;
+        if (mainVirtuosoRef.current?.__thumbClickActive) return;
         if (scrollTimeout.current) window.clearTimeout(scrollTimeout.current);
         scrollTimeout.current = window.setTimeout(() => {
             scrollTimeout.current = null;
@@ -1856,7 +2110,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 }
             }
         }, 150);
-    }, [isActive, numPages, pageDisplayMode, pageOrder.length, setActivePage, setSelectedIndices, setLastSelectedIndex]);
+    }, [isActive, numPages, pageDisplayMode, pageOrder.length, setActivePage, setSelectedIndices, setLastSelectedIndex, isZoomingRef]);
 
     useEffect(() => () => {
         if (scrollTimeout.current) window.clearTimeout(scrollTimeout.current);
@@ -1869,14 +2123,31 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // nhất qua ref nên không cần phụ thuộc identity của handleMainScroll/updateViewportRect.
     const scrollHandlersRef = useRef({ handleMainScroll, updateViewportRect });
     scrollHandlersRef.current = { handleMainScroll, updateViewportRect };
+    const centerVirtuosoListRef = useRef(false);
 
-    const virtuosoComponents = useMemo(() => ({
-        Scroller: forwardRef<HTMLDivElement, any>((props, ref) => (
-            <div {...props} ref={ref} onScroll={(e) => { scrollHandlersRef.current.handleMainScroll(e); scrollHandlersRef.current.updateViewportRect(); if ('onScroll' in props && typeof props.onScroll === 'function') (props as any).onScroll(e); }} className="acro-scroll outline-none" style={{ height: '100%', width: '100%', ...props.style, overflowX: 'auto', overflowY: 'auto' }} />
+    const virtuosoComponents = useMemo<Components<ViewerRow, unknown>>(() => ({
+        Scroller: forwardRef<HTMLDivElement, ScrollerProps & { onScroll?: UIEventHandler<HTMLDivElement> }>((props, ref) => (
+            <div {...props} ref={ref} onScroll={(e) => { scrollHandlersRef.current.handleMainScroll(e.nativeEvent); scrollHandlersRef.current.updateViewportRect(); props.onScroll?.(e); }} className="acro-scroll outline-none" style={{ height: '100%', width: '100%', ...props.style, overflowX: 'auto', overflowY: 'auto' }} />
         )),
-        List: forwardRef<HTMLDivElement, any>((props, ref) => (
-            <div {...props} ref={ref} style={{ minHeight: '100%', ...props.style, minWidth: '100%', width: 'max-content' }} />
-        )),
+        List: forwardRef<HTMLDivElement, ListProps>((props, ref) => {
+            const centerSingleRow = centerVirtuosoListRef.current;
+            return (
+                <div
+                    {...props}
+                    ref={ref}
+                    data-prynx-center-single-row={centerSingleRow ? 'true' : undefined}
+                    style={{
+                        minHeight: '100%',
+                        ...props.style,
+                        minWidth: '100%',
+                        width: 'max-content',
+                        ...(centerSingleRow
+                            ? { display: 'flex', flexDirection: 'column', justifyContent: 'safe center' }
+                            : {}),
+                    }}
+                />
+            );
+        }),
     }), []);
     // Virtuoso gắn listener + phát trạng thái scroll đồng bộ mỗi khi scrollerRef đổi
     // identity. Callback inline biến mọi parent render thành một lượt đo layout mới.
@@ -1885,9 +2156,93 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, []);
 
 
-    // Ổn định các prop object của Virtuoso: object literal mới mỗi render buộc Virtuoso
-    // đo lại → góp phần vào vòng lặp khi zoom/mode đổi. Chỉ tạo mới khi giá trị nguồn đổi.
-    const virtuosoContext = useMemo(() => ({ highlightBoxes }), [highlightBoxes]);
+    // UIUX (audit 2026-08-23 §VIEWER.STALE.01): itemContent giữ identity qua ref
+    // nên Virtuoso không tự gọi lại item đang mount khi một overlay/đầu vào trình bày
+    // đổi. Revision này chỉ theo dõi dữ liệu hiển thị đổi theo sự kiện (không theo zoom
+    // hoặc pan nóng), nhờ đó edit/OCG/Output Preview/reorder/text async xuất hiện ngay.
+    const virtuosoPresentationRevision = useMemo(() => ({
+        pageOrder,
+        pageInstanceIds,
+        pageRotations,
+        pageDisplayMode,
+        activePage,
+        allPageDims,
+        pageDim,
+        actualWidth100,
+        physicalDisplayScale,
+        physicalDisplayDpr,
+        physicalRawDpi,
+        bleedView,
+        ocgPreviewUrl,
+        viewerSimulationProfileId,
+        viewerSimulationIntent,
+        viewerOutputPreviewProofIdentity,
+        accurateColorEnabled,
+        accurateColorPages,
+        viewerEngineMode,
+        nativeTextBlocks,
+        plateLabels,
+        detectedDimensionsByPage,
+        editPreviews: editSession?.previews,
+        pageOverlayPage,
+        pageOverlayViewerPage,
+        pageOverlayInstanceId,
+        pdfUrl,
+        isActive,
+        isVdpMode,
+        activeDashboardTool,
+        renderOwnerId,
+        renderDocumentToken,
+        accuratePrefetchReady,
+        toolMode,
+    }), [
+        pageOrder,
+        pageInstanceIds,
+        pageRotations,
+        pageDisplayMode,
+        activePage,
+        allPageDims,
+        pageDim,
+        actualWidth100,
+        physicalDisplayScale,
+        physicalDisplayDpr,
+        physicalRawDpi,
+        bleedView,
+        ocgPreviewUrl,
+        viewerSimulationProfileId,
+        viewerSimulationIntent,
+        viewerOutputPreviewProofIdentity,
+        accurateColorEnabled,
+        accurateColorPages,
+        viewerEngineMode,
+        nativeTextBlocks,
+        plateLabels,
+        detectedDimensionsByPage,
+        editSession?.previews,
+        pageOverlayPage,
+        pageOverlayViewerPage,
+        pageOverlayInstanceId,
+        pdfUrl,
+        isActive,
+        isVdpMode,
+        activeDashboardTool,
+        renderOwnerId,
+        renderDocumentToken,
+        accuratePrefetchReady,
+        toolMode,
+    ]);
+
+    // Ổn định context khi không có thay đổi trình bày; khi revision đổi, Virtuoso
+    // render lại các row đang mount mà không cần người dùng zoom/scroll để đánh thức.
+    const virtuosoContext = useMemo(
+        () => createViewerVirtualizationContext(
+            highlightBoxes,
+            pageOverlay,
+            pageOverlayRenderer,
+            virtuosoPresentationRevision,
+        ),
+        [highlightBoxes, pageOverlay, pageOverlayRenderer, virtuosoPresentationRevision],
+    );
     const virtuosoOverscan = useMemo(() => {
         const margin = Math.max(1000, 2000 / zoom);
         return { top: margin, bottom: margin };
@@ -1898,11 +2253,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const scrollRowsMemo = useMemo(() => {
         if (!pageOrder || pageOrder.length === 0) return [];
-        if (pageDisplayMode === 'single_scroll') return pageOrder.map((p, i) => ({ type: 'single', indices: [i], pages: [p] }));
+        if (pageDisplayMode === 'single_scroll') return pageOrder.map((p, i): ViewerRow => ({ type: 'single', indices: [i], pages: [p] }));
         if (pageDisplayMode === 'two_scroll') {
-            const rows = [];
+            const rows: ViewerRow[] = [];
             for (let i = 0; i < pageOrder.length; i += 2) {
-                const row: any = { type: 'two', indices: [i], pages: [pageOrder[i]] };
+                const row: ViewerRow = { type: 'two', indices: [i], pages: [pageOrder[i]] };
                 if (i + 1 < pageOrder.length) { row.indices.push(i + 1); row.pages.push(pageOrder[i + 1]); }
                 rows.push(row);
             }
@@ -1925,7 +2280,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             [rowStart - 2, rowStart, rowStart + 2].forEach(r => { if (r >= 0 && r < pageOrder.length) { visitedIndicesRef.current.delete(r); visitedIndicesRef.current.add(r); } });
             while (visitedIndicesRef.current.size > 15) { const oldest = visitedIndicesRef.current.values().next().value; if (oldest !== undefined) visitedIndicesRef.current.delete(oldest); else break; }
             return Array.from(visitedIndicesRef.current).filter(r => r % 2 === 0).sort((a, b) => a - b).map(r => {
-                const row: any = { type: 'two', indices: [r], pages: [pageOrder[r]] };
+                const row: ViewerRow = { type: 'two', indices: [r], pages: [pageOrder[r]] };
                 if (r + 1 < pageOrder.length) { row.indices.push(r + 1); row.pages.push(pageOrder[r + 1]); }
                 return row;
             });
@@ -1934,6 +2289,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [pageOrder, pageDisplayMode, activePage]);
 
     const renderRows = pageDisplayMode.includes('scroll') ? scrollRowsMemo : fitRowsMemo;
+    centerVirtuosoListRef.current = shouldCenterVirtuosoList(pageDisplayMode, renderRows.length);
+
+    useLayoutEffect(() => {
+        if (!isZoomReady || renderRows.length === 0) return;
+        applyPendingInitialViewScroll();
+    }, [applyPendingInitialViewScroll, isZoomReady, renderRows.length]);
 
     const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
 
@@ -1999,9 +2360,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         onFirstPageRenderReady={handleActivePageRenderReady}
                         textBlocks={nativeTextBlocks[originalPageNum]}
                         setHoveredPdfPosition={setHoveredPdfPosition}
-                        isBlankDoc={!!(file as any)?.isBlank}
+                        isBlankDoc={!!(file as ViewerFile)?.isBlank}
                         isImageFile={isImage}
-                        nativeFilePath={(file as any)?.path}
+                        nativeFilePath={(file as ViewerFile)?.path}
                         previewRevision={pdfUrl}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession} totalPages={numPages}
@@ -2021,7 +2382,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, fetchObjectsForPage, numPages, onEditCommit, onObjectDelete, onVdpBoxCreate, onVdpFieldsChange, pdfUrl, setHoveredPdfPosition]);
 
     const virtuosoItemContentRef = useRef<(index: number) => ReactNode>(() => null);
     virtuosoItemContentRef.current = (index: number) => {
@@ -2112,7 +2473,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             <span className="tb-label">{t('misc.acrobatViewer:xuat_anh')}</span>
                         </button>
                     )}
-                    {/* Nút khử viền trắng */}
+                    {/* Nút khử viền dư */}
                     {file && (
                         <div className="relative" ref={autoTrimPopRef}>
                             <button
@@ -2152,6 +2513,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                             {t('misc.acrobatViewer:trang_hien_tai')}
                                         </button>
                                     </div>
+                                    <p className="mb-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">
+                                        {t('misc.acrobatViewer:khu_vien_du_hint')}
+                                    </p>
                                     {/* Margin */}
                                     <label className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('misc.acrobatViewer:le_bo_sung_mm')}</label>
                                     <input type="number" min={0} max={20} step={0.5} value={autoTrimMargin}
@@ -2171,7 +2535,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     {toolbarExtra}
                 </>}
                 extraActionsRight={<>
-                    {!!(file as any)?.path && accurateColorPages.length > 0 && (
+                    {!!(file as ViewerFile)?.path && accurateColorPages.length > 0 && (
                         <button
                             type="button"
                             onClick={() => setAccurateColorPreference({

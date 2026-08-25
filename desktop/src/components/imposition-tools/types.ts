@@ -1,5 +1,9 @@
-// @ts-nocheck
 import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
+import type { PlanConfig } from '../../lib/imposerEngine/CatalogPlanner';
+import type { PageResizerSettings } from '../preprocess-tools/pageResizerViewLogic';
+import type { ShuffleSettings } from '../preprocess-tools/ShuffleTool';
+import type { SplitSettings } from '../preprocess-tools/SplitTool';
+import type { TrimShiftSettings } from '../preprocess-tools/TrimShiftTool';
 /**
  * Shared types, interfaces, and constants for the Imposer Dashboard.
  * 
@@ -207,8 +211,9 @@ export interface NupSettings {
     shapeType?: string | null;
     shapeParams?: string | null;
     detectedShapesByPage?: Record<number, string>;
-    detectedShapeParamsByPage?: Record<number, any>;
-    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile';
+    detectedShapeParamsByPage?: Record<number, Record<string, unknown>>;
+    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    mixedExcessPercent?: number;
     // ═══ Report & xuất tờ duy nhất (spec: binh-tem-be-report) ═══
     exportUniqueSheets?: boolean;
     reportDisplay?: ReportDisplayConfig;
@@ -464,12 +469,12 @@ export interface ImposerDashboardProps {
     isActive?: boolean;
     onStartBooklet: (settings: BookletSettings) => void;
     onStartNup: (settings: NupSettings) => void;
-    onStartShuffle?: (settings: any) => void;
-    onStartResize?: (settings: any) => void;
-    onStartTrimShift?: (settings: any) => void;
-    onStartSplit?: (settings: any) => void;
+    onStartShuffle?: (settings: ShuffleSettings) => void;
+    onStartResize?: (settings: PageResizerSettings) => void;
+    onStartTrimShift?: (settings: TrimShiftSettings) => void;
+    onStartSplit?: (settings: SplitSettings) => void;
     onStartMerge?: (settings: MergeSettings) => void;
-    onStartCatalogPlan?: (planConfig: any, sheetSettings: any) => void;
+    onStartCatalogPlan?: (planConfig: PlanConfig, sheetSettings: Record<string, unknown>) => void;
     initialFeature?: string;
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     onBleedUpdate?: (show: boolean, mm: number) => void;
@@ -487,8 +492,12 @@ export interface ImposerDashboardProps {
     officeSourceFiles?: File[];
     /** Ảnh gốc trước khi workspace chuẩn hóa thành PDF một trang. */
     sourceImageFile?: File | null;
+    /** Ảnh gốc chỉ làm tham chiếu mật độ raster khi revision PDF đã thay đổi. */
+    sourceImageReferenceFile?: File | null;
     /** PDF đã bake sửa viewer (xoay/xóa/sắp trang) — preview dùng CÙNG nguồn với output. */
     getWorkingFile?: () => Promise<File>;
+    /** Resolver execution: chờ Edit barrier và kiểm revision trước khi chạy tool. */
+    getPreparedWorkingFile?: () => Promise<File>;
     ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;
     onCropApplied?: (blob: Blob, filename: string, openInNewTab: boolean) => void | Promise<void>;
     onCropClose?: () => void;

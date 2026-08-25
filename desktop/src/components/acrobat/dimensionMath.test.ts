@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  fitThumbnailPageSize,
   findDimensionCandidate,
   formatDimension,
   formatPageSizeMm,
@@ -41,6 +42,24 @@ describe('dimensionMath', () => {
     expect(formatRotatedPageSizePx96(widthPx, heightPx, 180)).toEqual(portrait);
     expect(formatRotatedPageSizePx96(widthPx, heightPx, 270)).toEqual(landscape);
     expect(formatRotatedPageSizePx96(widthPx, heightPx, -90)).toEqual(landscape);
+  });
+  it('giữ cùng footprint thumbnail trước và sau khi bake góc xoay 90 độ', () => {
+    const displayWidth = 120;
+    const cases: Array<[number, number, { width: number; height: number }]> = [
+      [160, 100, { width: 120, height: 192 }],
+      [100, 160, { width: 120, height: 75 }],
+    ];
+
+    for (const [sourceWidth, sourceHeight, expectedFootprint] of cases) {
+      for (const rotation of [90, 270, -90]) {
+        const source = fitThumbnailPageSize(sourceWidth, sourceHeight, displayWidth, rotation);
+        const sourceAfterCssRotation = { width: source.height, height: source.width };
+        const baked = fitThumbnailPageSize(sourceHeight, sourceWidth, displayWidth, 0);
+
+        expect(sourceAfterCssRotation).toEqual(expectedFootprint);
+        expect(baked).toEqual(sourceAfterCssRotation);
+      }
+    }
   });
   it('creates a horizontal DIM between vertical guides', () => {
     expect(findDimensionCandidate(guides.slice(0, 2), 0.3, 0.5, 600, 800)).toEqual({ orientation: 'horizontal', guideAId: 'v1', guideBId: 'v2' });

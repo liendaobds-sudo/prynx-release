@@ -1,5 +1,6 @@
-// @ts-nocheck
-import bwipjs from 'bwip-js';
+import bwipjs from 'bwip-js/browser';
+
+type BwipRenderOptions = Parameters<typeof bwipjs.toSVG>[0];
 import i18n from '../../i18n';
 
 // ─── Barcode Types ───────────────────────────────────────
@@ -219,7 +220,7 @@ export async function generateBarcodeToCanvas(
     // Convert quietZone from mm to points (bwip-js uses points: 1mm = 72/25.4 pts)
     const qzPts = Math.round((options.quietZone ?? 2) * 72 / 25.4);
 
-    const bwipOpts: Record<string, any> = {
+    const bwipOpts: BwipRenderOptions = {
       bcid: getBwipEncoder(options.type),
       text: options.data,
       scale: options.scale || 3,
@@ -244,9 +245,10 @@ export async function generateBarcodeToCanvas(
     else bwipOpts.rotate = 'N';
     if (options.width != null) bwipOpts.width = options.width;
 
-    bwipjs.toCanvas(canvas, bwipOpts as any);
-  } catch (e: any) {
-    throw new Error(i18n.t('misc.barcodeEngine:loi_tao_ma_vach_e_message_e', { msg: e.message || e }));
+    bwipjs.toCanvas(canvas, bwipOpts);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(i18n.t('misc.barcodeEngine:loi_tao_ma_vach_e_message_e', { msg: message }));
   }
 }
 
@@ -281,7 +283,7 @@ export function generateBarcodeSVG(options: BarcodeOptions): string {
   // Convert quietZone from mm to points (bwip-js uses points: 1mm = 72/25.4 pts)
   const qzPts = Math.round((options.quietZone ?? 2) * 72 / 25.4);
 
-  const bwipOpts: Record<string, any> = {
+  const bwipOpts: BwipRenderOptions = {
     bcid: getBwipEncoder(options.type),
     text: options.data,
     scale: options.scale || 3,
@@ -306,7 +308,7 @@ export function generateBarcodeSVG(options: BarcodeOptions): string {
   else bwipOpts.rotate = 'N';
   if (options.width != null) bwipOpts.width = options.width;
 
-  return bwipjs.toSVG(bwipOpts as any);
+  return bwipjs.toSVG(bwipOpts);
 }
 
 // ─── canvas → Blob utility ───────────────────────────────

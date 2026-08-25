@@ -12,6 +12,8 @@ import { lazy, type LazyExoticComponent, type ComponentType, type ReactNode } fr
 // [VARIANT 2026-07-29] Hàm chuẩn hoá tìm kiếm ở module thuần (không React)
 import { LOGO_REBUILD_ENABLED } from '../components/imposition-tools/sections/preprocessRouterTools';
 import type { FeatureId } from './license/features';
+import type { RecoverySnapshot } from './recovery';
+import type { DocumentWindowTabApi, DocumentWindowViewState } from './documentWindow';
 import { normalizeSearch } from './textSearch';
 
 // ─── Tool Category IDs ───
@@ -19,6 +21,56 @@ export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | '
 
 // ─── Tool App IDs (used as tab type) ───
 export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'cnc' | 'booklet' | 'paper_library';
+
+export interface ToolBatchOutput {
+  docs: Array<{ blob: Blob; filename: string; report?: string }>;
+  mergedBlob: Blob;
+}
+
+export interface ToolLaunchPayload {
+  focusFeature?: string;
+  /** Gợi ý legacy cho tab viewer; shell có thể chuyển thành initialFeature khi cần. */
+  initialFeature?: string;
+  lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
+  file?: File;
+  report?: string;
+  title?: string;
+  initialRecovery?: RecoverySnapshot;
+  batchOutput?: ToolBatchOutput;
+  systemMergeFiles?: File[];
+  officeSourceFile?: File | null;
+  officeSourceFiles?: File[];
+  files?: File[];
+  [key: string]: unknown;
+}
+
+export interface ToolRuntimeProps {
+  tabId?: string;
+  isActive?: boolean;
+  onTitleChange?: (title: string) => void;
+  onDirtyChange?: (isDirty: boolean) => void;
+  onSpawnTab?: (file: File, extraPayload?: ToolLaunchPayload) => void;
+  initialFile?: File;
+  initialReport?: string;
+  initialFeature?: string;
+  lockedMode?: ToolLaunchPayload['lockedMode'];
+  batchOutput?: ToolBatchOutput;
+  systemMergeFiles?: File[];
+  officeSourceFile?: File | null;
+  officeSourceFiles?: File[];
+  initialRecovery?: RecoverySnapshot;
+  onRequestHome?: () => void;
+  initialFiles?: File[];
+  onResultsOpened?: () => void;
+  onSpawnCombineTabs?: (results: Array<{ file: File; title: string }>) => void;
+  documentWindow?: {
+    saveAsOnly: boolean;
+    disableRecovery: boolean;
+    initialViewState?: DocumentWindowViewState;
+    onInitialViewStateApplied?: () => void;
+  };
+  onDocumentWindowApiChange?: (tabId: string, api: DocumentWindowTabApi | null) => void;
+}
 
 export interface ToolDefinition {
   /** Unique tool identifier, used as tab type */
@@ -36,7 +88,7 @@ export interface ToolDefinition {
   /** Category grouping */
   category: ToolCategoryId;
   /** Lazy-loaded component */
-  component: LazyExoticComponent<ComponentType<any>>;
+  component: LazyExoticComponent<ComponentType<ToolRuntimeProps>>;
   /** Is this tool currently available? false = "sắp ra mắt" */
   isEnabled: boolean;
   /** Capability Free/Pro bắt buộc; registry là nguồn chân lý duy nhất cho mọi cửa mở tool. */
@@ -44,7 +96,7 @@ export interface ToolDefinition {
   /** Max simultaneous tab instances. undefined = unlimited */
   maxInstances?: number;
   /** Payload to pass when opening this tool */
-  defaultPayload?: any;
+  defaultPayload?: ToolLaunchPayload;
   /** Styling: hover border color class */
   hoverColor: string;
   /** Styling: expanded card hover border class */

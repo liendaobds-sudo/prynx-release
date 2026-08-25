@@ -16,7 +16,7 @@
  */
 import React from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
-import { RichSelect, Checkbox, SectionLabel, Divider } from '../SharedUI';
+import { RichSelect, SectionLabel, Divider } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
 import { HIDE_OFFSET_BOOKLET } from '../../../lib/featureFocus';
@@ -51,7 +51,7 @@ export default function BookletSettingsSection() {
                 <SectionLabel>{t('imposition.bookletSettings:kieu_dong_sach')}</SectionLabel>
                 <RichSelect
                     value={s.signatureMode}
-                    onChange={(v) => s.setSignatureMode(v as any)}
+                    onChange={(v) => s.setSignatureMode(v as 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount')}
                     options={[
                         { value: 'saddle', title: t('imposition.bookletSettings:bam_kim_giua_saddle_stitched'), desc: t('imposition.bookletSettings:long_toan_bo_trang_thanh_1_cuon_duy') },
                         { value: 'thread', title: t('imposition.bookletSettings:khau_chi_chia_tep_thread_sewn'), desc: t('imposition.bookletSettings:chia_file_thanh_nhieu_tep_nho_bang_nhau') },
@@ -128,7 +128,7 @@ export default function BookletSettingsSection() {
                         <SectionLabel>{t('imposition.bookletSettings:so_cuon_tren_to_in')}</SectionLabel>
                         <RichSelect
                             value={s.scaleMode}
-                            onChange={(v) => s.setScaleMode(v as any)}
+                            onChange={(v) => s.setScaleMode(v as '100' | 'fit' | 'chain_nup' | 'cut_stack')}
                             options={[
                                 { value: '100', title: t('imposition.bookletSettings:1_cuon_to_100'), desc: t('imposition.bookletSettings:giu_nguyen_kich_thuoc_trang_khong_vua') },
                                 { value: 'fit', title: t('imposition.bookletSettings:1_cuon_to_bop_vua_kho'), desc: t('imposition.bookletSettings:thu_noi_dung_cho_vua_kho_giay_da_chon') },
@@ -180,7 +180,7 @@ export default function BookletSettingsSection() {
                         <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">{t('imposition.bookletSettings:the_phoi_sap_trang')}</label>
                         <RichSelect
                             value={s.interleave}
-                            onChange={(v) => s.setInterleave(v as any)}
+                            onChange={(v) => s.setInterleave(v as 'normal' | 'all_fronts_first' | 'reverse_backs' | 'reverse_backs_180')}
                             options={[
                                 { value: 'normal', title: t('imposition.bookletSettings:binh_thuong'), desc: t('imposition.bookletSettings:trai_deu_truoc_sau_xen_ke') },
                                 { value: 'all_fronts_first', title: t('imposition.bookletSettings:tach_rieng'), desc: t('imposition.bookletSettings:ra_het_mat_truoc_roi_den_mat_sau') },

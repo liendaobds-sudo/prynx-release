@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
     requestActivation: vi.fn(),
     setActiveTool: vi.fn(),
     setTaskMode: vi.fn(),
+    onActiveToolChange: vi.fn(),
 }));
 
 vi.mock('../../hooks/useToolActivationGuard', () => ({
@@ -35,11 +36,16 @@ vi.mock('react-i18next', () => ({
 }));
 vi.mock('../../i18n', () => ({ tv: (value: string) => value }));
 
-function renderToolMenu() {
+function renderToolMenu(activeTool = 'none', onActiveToolChange?: (tool: string) => void) {
     const workspaceStore = createWorkspaceStore();
     return render(
         <WorkspaceContext.Provider value={workspaceStore}>
-            <ToolMenuList setActiveTool={mocks.setActiveTool} setTaskMode={mocks.setTaskMode} />
+            <ToolMenuList
+                setActiveTool={mocks.setActiveTool}
+                setTaskMode={mocks.setTaskMode}
+                activeTool={activeTool}
+                onActiveToolChange={onActiveToolChange}
+            />
         </WorkspaceContext.Provider>,
     );
 }
@@ -56,6 +62,7 @@ describe('ToolMenuList entitlement', () => {
         mocks.requestActivation.mockReset();
         mocks.setActiveTool.mockReset();
         mocks.setTaskMode.mockReset();
+        mocks.onActiveToolChange.mockReset();
         mocks.requestActivation.mockImplementation(() => false);
     });
     afterEach(cleanup);
@@ -84,5 +91,22 @@ describe('ToolMenuList entitlement', () => {
         renderToolMenu();
         clickTool('Chữ & Font');
         expect(mocks.setActiveTool).toHaveBeenCalledWith('font_tools');
+    });
+
+    it('click lại tool đang mở sẽ đóng panel thiết lập', () => {
+        renderToolMenu('font_tools');
+        clickTool('Chữ & Font');
+
+        expect(mocks.requestActivation).not.toHaveBeenCalled();
+        expect(mocks.setActiveTool).toHaveBeenCalledWith('none');
+    });
+
+    it('cho parent xử lý cleanup khi đóng tool đang mở', () => {
+        renderToolMenu('font_tools', mocks.onActiveToolChange);
+        clickTool('Chữ & Font');
+
+        expect(mocks.requestActivation).not.toHaveBeenCalled();
+        expect(mocks.onActiveToolChange).toHaveBeenCalledWith('none');
+        expect(mocks.setActiveTool).not.toHaveBeenCalled();
     });
 });

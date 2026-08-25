@@ -26,6 +26,14 @@ interface Props {
     disabled?: boolean;
 }
 
+function errorMessageOf(error: unknown): string {
+    if (error && typeof error === 'object' && 'message' in error) {
+        const message = (error as { message?: unknown }).message;
+        if (typeof message === 'string' && message) return message;
+    }
+    return String(error);
+}
+
 export default function RecipeRecordControl({
     tabId,
     onOpenPanel,
@@ -154,8 +162,8 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
             await saveRecipe(recipe);
             toast.success(t('recipe.recipe:da_luu_quy_trinh', { name: trimmed, count: steps.length }));
             onClose();
-        } catch (e: any) {
-            toast.error(t('recipe.recipe:luu_that_bai', { msg: e?.message || e }));
+        } catch (error: unknown) {
+            toast.error(t('recipe.recipe:luu_that_bai', { msg: errorMessageOf(error) }));
         } finally {
             setSaving(false);
             savingRef.current = false;

@@ -55,4 +55,26 @@ describe('workspace edit object selection context', () => {
 
         expect(store.getState().objectSelectionContext).toBeNull();
     });
+
+    it('invalidates the edit file id when the visible page revision changes', () => {
+        const store = createWorkspaceStore();
+        store.getState().setViewerPageOrder([1, 2]);
+        store.getState().setViewerPageInstanceIds(['page-a', 'page-b']);
+        store.getState().setViewerPageRotations([0, 0]);
+        store.getState().setSelectionFileId('edit-v1');
+        store.getState().setSelectedObjectIds(['vector-2']);
+
+        // Đồng bộ lại cùng nội dung không phải revision mới và không được làm mất ID.
+        store.getState().setViewerPageOrder([1, 2]);
+        expect(store.getState().selectionFileId).toBe('edit-v1');
+
+        store.getState().setViewerPageRotations([90, 0]);
+        expect(store.getState().selectionFileId).toBe('');
+        expect(store.getState().selectionDocumentIdentity).toBe('');
+        expect(store.getState().selectedObjectIds).toEqual([]);
+
+        store.getState().setSelectionFileId('edit-v2');
+        store.getState().setViewerPageInstanceIds(['page-b', 'page-a']);
+        expect(store.getState().selectionFileId).toBe('');
+    });
 });

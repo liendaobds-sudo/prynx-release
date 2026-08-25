@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Download, ImagePlus, Loader2, OctagonX, Plus, Redo2, Trash2, Undo2, WandSparkles } from 'lucide-react';
 
 import { tv as translateVi } from '../../i18n';
@@ -7,6 +7,7 @@ import {
   createLogoRebuildPreview,
   getLogoRebuildCapabilities,
   preflightLogoRebuild,
+  type LogoCurvePreset,
   type LogoRebuildCapabilities,
   type LogoRebuildEngine,
   type LogoRebuildMode,
@@ -24,6 +25,33 @@ type SelectionMode = 'full' | 'crop' | 'perspective';
 const LOGO_REBUILD_I18N_NS = 'preprocess.logoRebuild';
 const DEFAULT_LOGO_ENGINE: LogoRebuildEngine = 'prynx_core';
 
+const CURVE_PRESET_OPTIONS: ReadonlyArray<{
+  value: LogoCurvePreset;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'automatic',
+    label: 'Tự động (Khuyến nghị)',
+    description: 'Tự chọn hình học và mức làm mượt theo từng quỹ đạo.',
+  },
+  {
+    value: 'faithful',
+    label: 'Bám sát bản gốc',
+    description: 'Giữ chi tiết nhỏ, chấp nhận nhiều node hơn.',
+  },
+  {
+    value: 'balanced',
+    label: 'Cân bằng',
+    description: 'Giảm node thận trọng và bảo toàn góc thật.',
+  },
+  {
+    value: 'trajectory_completion',
+    label: 'Hoàn thiện quỹ đạo',
+    description: 'Ưu tiên đường hình học sạch trong sai số được kiểm chứng.',
+  },
+];
+
 function tv(value: string | undefined | null): string {
   return translateVi(value, LOGO_REBUILD_I18N_NS);
 }
@@ -31,6 +59,7 @@ function tv(value: string | undefined | null): string {
 interface LogoRebuildWorkspaceProps {
   hasOtherDirtyChanges?: boolean;
   isActive?: boolean;
+  isLocked?: boolean;
   onDirtyChange?: (isDirty: boolean) => void;
   tabId?: string;
 }
@@ -58,6 +87,7 @@ interface EditorState {
   crop: { x: number; y: number; width: number; height: number };
   perspective: NormalizedPoint[];
   smoothing: number;
+  curvePreset: LogoCurvePreset;
   despeckle: number;
   illumination: boolean;
   physicalWidthMm: number | null;
@@ -71,6 +101,8 @@ const DEFAULT_PALETTE = ['#000000', '#ffffff'];
 // hơn N×N px nguồn (dấu tiếng Việt, chấm, ®), nên ảnh nhỏ phải mặc định 0.
 const UPSCALE_SHORTEST_SIDE_PX = 600;
 const DEFAULT_DESPECKLE_SIZE_PX = 4;
+const MAX_LOGO_UPLOAD_BYTES = 500 * 1024 * 1024;
+const ACCEPTED_LOGO_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 function willUpscaleSource(source: { width_px: number; height_px: number } | null): boolean {
   return source !== null && Math.min(source.width_px, source.height_px) < UPSCALE_SHORTEST_SIDE_PX;
@@ -93,6 +125,7 @@ const INITIAL_EDITOR_STATE: EditorState = {
   crop: { x: 0, y: 0, width: 100, height: 100 },
   perspective: DEFAULT_PERSPECTIVE,
   smoothing: 0,
+  curvePreset: 'automatic',
   despeckle: DEFAULT_DESPECKLE_SIZE_PX,
   illumination: false,
   physicalWidthMm: null,
@@ -128,7 +161,16 @@ function clampPercent(value: number, minimum = 0, maximum = 100): number {
 }
 
 function roundMillimeters(value: number): number {
-  return Math.round(value * 10_000) / 10_000;
+  // LOGO-REBUILD (audit 2026-08-24 §LR5.05): sáu chữ số tránh sai tỷ lệ
+  // vượt tolerance khi người dùng xác nhận kích thước rất nhỏ.
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function formatCoverage(ratio: number): string {
+  if (!Number.isFinite(ratio) || ratio <= 0) return '0%';
+  if (ratio < 0.005) return '<0.5%';
+  const digits = ratio < 0.1 ? 2 : 1;
+  return `${(ratio * 100).toFixed(digits).replace(/\\.?0+$/, '')}%`;
 }
 
 function selectionValidationCode(state: EditorState): 'crop' | 'perspective' | null {
@@ -160,6 +202,7 @@ function selectionValidationCode(state: EditorState): 'crop' | 'perspective' | n
 export default function LogoRebuildWorkspace({
   hasOtherDirtyChanges = false,
   isActive = true,
+  isLocked = false,
   onDirtyChange,
   tabId = '',
 }: LogoRebuildWorkspaceProps) {
@@ -209,6 +252,7 @@ export default function LogoRebuildWorkspace({
     crop,
     perspective,
     smoothing,
+    curvePreset,
     despeckle,
     illumination,
     physicalWidthMm,
@@ -404,6 +448,8 @@ export default function LogoRebuildWorkspace({
   }, [isActive, redo, undo]);
 
   const engineReady = capabilities?.preview_engine_enabled === true;
+  const supportedCurvePresets = capabilities?.engine?.curve_presets ?? [];
+  const supportsCurvePresets = supportedCurvePresets.length > 0;
   const selectionError = selectionValidationCode(editor);
   const uniquePalette = useMemo(
     () => [...new Set(palette.map(color => color.toLowerCase()))],
@@ -421,7 +467,10 @@ export default function LogoRebuildWorkspace({
       setPreviewUrl('');
     }
     setPreview(result);
-    setReviewAccepted(result.status === 'ready');
+    // UIUX (audit 2026-08-24 §LR5.11): trạng thái ready là kết quả QC,
+    // không phải bằng chứng người dùng đã xem artifact. State này chỉ dùng cho
+    // override review; không tự ghi nhận một hành động người dùng chưa làm.
+    setReviewAccepted(false);
     markDirty();
   };
 
@@ -435,6 +484,7 @@ export default function LogoRebuildWorkspace({
         ? { background_color: source.backgroundColor.toLowerCase() }
         : {}),
       smoothing: source.smoothing,
+      ...(supportsCurvePresets ? { curve_preset: source.curvePreset } : {}),
       despeckle_size_px: source.despeckle,
       illumination_correction: source.illumination,
       ...(source.physicalWidthMm !== null && source.physicalHeightMm !== null
@@ -514,9 +564,20 @@ export default function LogoRebuildWorkspace({
   };
 
   const selectFile = (selected?: File | null) => {
-    if (!selected) return;
+    if (isLocked || !selected) return;
     if (!/\.(png|jpe?g|webp)$/i.test(selected.name)) {
       setError(tv('Chỉ hỗ trợ ảnh PNG, JPEG hoặc WebP.'));
+      return;
+    }
+    // UIUX (audit 2026-08-24 §LR5.10): chặn sớm file đổi đuôi hoặc vượt
+    // giới hạn backend; MIME rỗng vẫn cho phép vì File path-backed trên Tauri
+    // có thể không được WebView gắn type.
+    if (selected.type && !ACCEPTED_LOGO_MIME_TYPES.has(selected.type.toLowerCase())) {
+      setError(tv('File không khớp định dạng ảnh; hãy chọn lại PNG, JPEG hoặc WebP.'));
+      return;
+    }
+    if (selected.size > MAX_LOGO_UPLOAD_BYTES) {
+      setError(tv('File logo quá lớn. Tối đa 500MB.'));
       return;
     }
     invalidatePreview();
@@ -610,7 +671,7 @@ export default function LogoRebuildWorkspace({
   });
 
   useEffect(() => {
-    if (!isActive || !tabId) return;
+    if (!isActive || isLocked || !tabId) return;
     const handleIncomingFiles = (event: Event) => {
       const detail = (event as CustomEvent<LogoIncomingFilesDetail>).detail;
       if (detail?.tabId !== tabId || !detail.files?.length) return;
@@ -625,7 +686,7 @@ export default function LogoRebuildWorkspace({
     return () => {
       window.removeEventListener(IMAGE_BATCH_DROP_EVENTS.logo_rebuild, handleIncomingFiles);
     };
-  }, [isActive, tabId]);
+  }, [isActive, isLocked, tabId]);
 
   const handleWorkspaceDragOver = (event: DragEvent<HTMLDivElement>) => {
     const hasFiles = event.dataTransfer.files?.length > 0
@@ -796,7 +857,9 @@ export default function LogoRebuildWorkspace({
     }
   };
 
-  useEffect(() => {
+  // UIUX (audit 2026-08-24 §LR5.14): layout effect chạy ngay sau commit DOM;
+  // event save từ queue không thể rơi vào khoảng trống trước passive effect.
+  useLayoutEffect(() => {
     exportSvgRef.current = exportSvg;
   });
 
@@ -834,23 +897,32 @@ export default function LogoRebuildWorkspace({
 
   const sourceAspectRatio = (() => {
     if (!sourceInfo || sourceInfo.width_px <= 0 || sourceInfo.height_px <= 0) return null;
+    const width = sourceInfo.width_px;
+    const height = sourceInfo.height_px;
+    let selectedWidth = width;
+    let selectedHeight = height;
     if (selectionMode === 'crop') {
-      return (sourceInfo.width_px * crop.width) / (sourceInfo.height_px * crop.height);
-    }
-    if (selectionMode === 'perspective') {
+      // LOGO-REBUILD (audit 2026-08-24 §LR5.05): dùng đúng floor/ceil của
+      // worker, thay vì tỷ lệ crop liên tục rồi để backend từ chối sau lượng tử hóa.
+      const left = Math.max(0, Math.min(width - 1, Math.floor((crop.x / 100) * width)));
+      const top = Math.max(0, Math.min(height - 1, Math.floor((crop.y / 100) * height)));
+      const right = Math.max(left + 1, Math.min(width, Math.ceil(((crop.x + crop.width) / 100) * width)));
+      const bottom = Math.max(top + 1, Math.min(height, Math.ceil(((crop.y + crop.height) / 100) * height)));
+      selectedWidth = right - left;
+      selectedHeight = bottom - top;
+    } else if (selectionMode === 'perspective') {
       const points = perspective.map(point => ({
-        x: point.x * (sourceInfo.width_px - 1),
-        y: point.y * (sourceInfo.height_px - 1),
+        x: point.x * (width - 1),
+        y: point.y * (height - 1),
       }));
       const distance = (left: NormalizedPoint, right: NormalizedPoint) => Math.hypot(
         right.x - left.x,
         right.y - left.y,
       );
-      const targetWidth = Math.max(distance(points[0], points[1]), distance(points[2], points[3]));
-      const targetHeight = Math.max(distance(points[1], points[2]), distance(points[3], points[0]));
-      return targetWidth > 0 && targetHeight > 0 ? targetWidth / targetHeight : null;
+      selectedWidth = Math.max(1, Math.round(Math.max(distance(points[0], points[1]), distance(points[2], points[3]))));
+      selectedHeight = Math.max(1, Math.round(Math.max(distance(points[1], points[2]), distance(points[3], points[0]))));
     }
-    return sourceInfo.width_px / sourceInfo.height_px;
+    return selectedWidth > 0 && selectedHeight > 0 ? selectedWidth / selectedHeight : null;
   })();
   const dpiSuggestedSize = selectionMode === 'full' && sourceInfo?.dpi
     ? {
@@ -1059,7 +1131,7 @@ export default function LogoRebuildWorkspace({
                           />
                           <code className="flex-1 uppercase">{suggestion.color}</code>
                           <span className="text-slate-500">
-                            {Math.round(suggestion.coverage_ratio * 100)}%
+                            {formatCoverage(suggestion.coverage_ratio)}
                           </span>
                           <button
                             type="button"
@@ -1275,13 +1347,51 @@ export default function LogoRebuildWorkspace({
             </section>
 
             <section className="space-y-3">
-              <label className="block text-xs font-semibold">
-                {tv('Độ mượt đường cong')}: {smoothing.toFixed(1)}
-                <input aria-label={tv('Độ mượt đường cong')} type="range" min={0} max={1} step={0.1} value={smoothing} onChange={event => commitEditor('smoothing', current => ({ ...current, smoothing: Number(event.target.value) }))} className="mt-1 w-full" />
-                <span className="mt-1 block text-[11px] font-normal text-slate-500 dark:text-zinc-400">
-                  {tv('0 = trung thực nét; 1 = mượt và gọn node hơn.')}
-                </span>
-              </label>
+              {supportsCurvePresets ? (
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-semibold">{tv('Mục tiêu đường cong')}</legend>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {CURVE_PRESET_OPTIONS
+                      .filter(option => supportedCurvePresets.includes(option.value))
+                      .map(option => (
+                        <label
+                          key={option.value}
+                          className={`cursor-pointer rounded-lg border px-3 py-2 text-xs transition-colors ${curvePreset === option.value
+                            ? 'border-violet-500 bg-violet-50 text-violet-900 dark:bg-violet-950/30 dark:text-violet-100'
+                            : 'border-slate-200 hover:border-violet-300 dark:border-zinc-700'}`}
+                        >
+                          <span className="flex items-center gap-2 font-semibold">
+                            <input
+                              type="radio"
+                              name="logo-curve-preset"
+                              value={option.value}
+                              checked={curvePreset === option.value}
+                              onChange={() => commitEditor('curve-preset', current => ({
+                                ...current,
+                                curvePreset: option.value,
+                              }))}
+                            />
+                            {tv(option.label)}
+                          </span>
+                          <span className="mt-1 block pl-5 text-[11px] font-normal text-slate-500 dark:text-zinc-400">
+                            {tv(option.description)}
+                          </span>
+                        </label>
+                      ))}
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                    {tv('Hình tròn/elip có thể còn 4 hoặc 8 điểm neo; đường tự do không bị ép về một số node cố định nếu sai số sẽ tăng.')}
+                  </p>
+                </fieldset>
+              ) : (
+                <label className="block text-xs font-semibold">
+                  {tv('Độ mượt đường cong')}: {smoothing.toFixed(1)}
+                  <input aria-label={tv('Độ mượt đường cong')} type="range" min={0} max={1} step={0.1} value={smoothing} onChange={event => commitEditor('smoothing', current => ({ ...current, smoothing: Number(event.target.value) }))} className="mt-1 w-full" />
+                  <span className="mt-1 block text-[11px] font-normal text-slate-500 dark:text-zinc-400">
+                    {tv('0 = trung thực nét; 1 = mượt và gọn node hơn.')}
+                  </span>
+                </label>
+              )}
               <label className="block text-xs font-semibold">
                 {tv('Khử hạt nhỏ (px)')}
                 <input aria-label={tv('Khử hạt nhỏ')} type="number" min={0} max={128} value={despeckle} onChange={event => commitEditor('despeckle', current => ({ ...current, despeckle: clampPercent(Number(event.target.value), 0, 128) }))} className="mt-1 w-full rounded border border-slate-200 bg-transparent px-2 py-1.5 dark:border-zinc-700" />
@@ -1336,6 +1446,7 @@ export default function LogoRebuildWorkspace({
               onCropChange={nextCrop => commitEditor('crop-overlay', current => ({ ...current, crop: nextCrop }))}
               onPerspectiveChange={nextPoints => commitEditor('perspective-overlay', current => ({ ...current, perspective: nextPoints }))}
               sourceUrl={sourceUrl}
+              previewSvg={preview?.svg ?? null}
               previewUrl={previewUrl}
               labels={{
                 viewport: tv('Vùng so sánh logo'),
@@ -1355,6 +1466,9 @@ export default function LogoRebuildWorkspace({
                 previewAlt: tv('SVG vector đã dựng'),
                 selection: selectionMode === 'crop' ? tv('Crop chữ nhật') : tv('Nắn phối cảnh 4 điểm'),
                 point: tv('Điểm'),
+                showAnchors: tv('Hiện điểm neo'),
+                comparisonWarning: tv('Chọn toàn ảnh để so sánh Chia đôi/Chồng lớp; khi crop hoặc nắn phối cảnh hãy dùng Gốc hoặc Vector.'),
+                keyboardHint: tv('Phím mũi tên chỉnh tay nắm; Shift + phím mũi tên bước lớn'),
               }}
             />
 
@@ -1382,13 +1496,33 @@ export default function LogoRebuildWorkspace({
                     {tv('Độ phức tạp SVG')}: {preview.complexity.path_count} path · {preview.complexity.node_count} node · {preview.complexity.removed_redundant_paths} {tv('mảng dư đã dọn')}
                   </p>
                   {preview.native_metrics && (
-                    <section aria-label={tv('Chất lượng artifact')} className="mt-2 grid gap-1 rounded-lg bg-slate-50 px-3 py-2 dark:bg-zinc-950/50 sm:grid-cols-2">
-                      <p><strong>IoU</strong>: {preview.native_metrics.iou.toFixed(4)} · <strong>MAE</strong>: {preview.native_metrics.mae.toFixed(4)}</p>
-                      <p>{tv('Lớp / thành phần')}: {preview.native_metrics.layer_count} / {preview.native_metrics.component_count}</p>
+                    <section aria-label={tv('Độ sạch đường cong')} className="mt-2 grid gap-1 rounded-lg bg-slate-50 px-3 py-2 dark:bg-zinc-950/50 sm:grid-cols-2">
+                      <p className="font-semibold text-violet-700 dark:text-violet-300">
+                        {tv('Điểm neo nguồn / đầu ra')}: {preview.native_metrics.source_nodes} → {preview.native_metrics.output_nodes}
+                        {preview.native_metrics.source_nodes > 0
+                          ? ` (−${Math.max(0, Math.round((1 - preview.native_metrics.output_nodes / preview.native_metrics.source_nodes) * 100))}%)`
+                          : ''}
+                      </p>
+                      {typeof preview.native_metrics.line_segments === 'number'
+                        && typeof preview.native_metrics.cubic_segments === 'number' && (
+                        <p>{tv('Đoạn thẳng / Bézier')}: {preview.native_metrics.line_segments} / {preview.native_metrics.cubic_segments}</p>
+                      )}
+                      {typeof preview.native_metrics.circle_count === 'number'
+                        && typeof preview.native_metrics.ellipse_count === 'number' && (
+                        <p>{tv('Hình tròn / elip')}: {preview.native_metrics.circle_count} / {preview.native_metrics.ellipse_count}</p>
+                      )}
+                      <p>{tv('Sai số hai chiều lớn nhất')}: {(preview.native_metrics.max_symmetric_distance_px ?? preview.native_metrics.max_error_px).toFixed(4)} px</p>
+                      {typeof preview.native_metrics.artifact_max_tangent_jump_degrees === 'number' ? (
+                        <p>{tv('Lệch tiếp tuyến SVG cuối lớn nhất')}: {preview.native_metrics.artifact_max_tangent_jump_degrees.toFixed(2)}°</p>
+                      ) : typeof preview.native_metrics.max_smooth_tangent_jump_degrees === 'number' ? (
+                        <p>{tv('Lệch tiếp tuyến mượt lớn nhất')}: {preview.native_metrics.max_smooth_tangent_jump_degrees.toFixed(2)}°</p>
+                      ) : null}
                       <p>{tv('Biên ngoài / lỗ')}: {preview.native_metrics.outer_count} / {preview.native_metrics.hole_count}</p>
-                      <p>{tv('Node nguồn / đầu ra')}: {preview.native_metrics.source_nodes} / {preview.native_metrics.output_nodes}</p>
-                      <p>{tv('Sai số lớn nhất')}: {preview.native_metrics.max_error_px.toFixed(4)} px</p>
-                      <p>{tv('Tỷ lệ raster')}: {preview.native_metrics.raster_scale}×</p>
+                      <details className="sm:col-span-2">
+                        <summary className="cursor-pointer font-semibold">{tv('Độ khớp raster')}</summary>
+                        <p className="mt-1"><strong>IoU</strong>: {preview.native_metrics.iou.toFixed(4)} · <strong>MAE</strong>: {preview.native_metrics.mae.toFixed(4)} · {preview.native_metrics.raster_scale}×</p>
+                        <p>{tv('Lớp / thành phần')}: {preview.native_metrics.layer_count} / {preview.native_metrics.component_count}</p>
+                      </details>
                     </section>
                   )}
                   {preview.artifact_sha256 && (

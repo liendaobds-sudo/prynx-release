@@ -1,5 +1,6 @@
 import type { ImposerSlice } from '../sliceType';
 import type { PlateJob } from '../../../../lib/imposerEngine/CatalogPlanner';
+import type { OptimizationResult } from '../../../../lib/imposerEngine/SheetOptimizer';
 
 export interface CatalogSlice {
     autoCatalog: boolean;
@@ -19,8 +20,8 @@ export interface CatalogSlice {
     setSourceMediaPageDim: (v: { w: number; h: number } | null) => void;
     sourceMediaPageDims: { w: number; h: number }[];
     setSourceMediaPageDims: (v: { w: number; h: number }[]) => void;
-    optimalData: any;
-    setOptimalData: (v: any) => void;
+    optimalData: OptimizationResult | null;
+    setOptimalData: (v: OptimizationResult | null) => void;
     catalogPreview: string;
     setCatalogPreview: (v: string) => void;
     catalogJobsState: PlateJob[] | null;

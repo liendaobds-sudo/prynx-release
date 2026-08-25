@@ -7,12 +7,13 @@ import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-04)
 import { confirmDialog } from '../ui/confirmDialog'; // UIUX (audit 2026-07-27 §D-06)
 import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
 import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
-import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
+import { generateBarcodeDataURL, type BarcodeType } from '@/engine/barcode/barcodeEngine';
 import { FontSelector } from './FontSelector';
 import { ToolDivider, ToolNumberInput } from './ToolUI';
-import { useVdpTool } from '@/hooks/useVdpTool';
+import { useVdpTool, type SetVdpFields, type VdpToolField } from '@/hooks/useVdpTool';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { tagArtifactLeaseToken } from '@/lib/artifactLease';
 import { useTranslation } from 'react-i18next';
 import { tv } from '@/i18n';
 
@@ -138,6 +139,32 @@ interface VdpRule {
     value: string;
     result: string;
 }
+type DataMergeField = VdpToolField & {
+    conditions?: VdpFieldCondition[];
+    rules?: VdpRule[];
+    barcodeType?: BarcodeType;
+    barHeight?: number;
+    quietZone?: number;
+    showText?: boolean;
+    data?: string;
+    textAlign?: 'center' | 'left' | 'right';
+    barColor?: string;
+    bgColor?: string;
+    transparentBg?: boolean;
+    autoFit?: boolean;
+    errorCorrection?: 'L' | 'M' | 'Q' | 'H';
+    qrStyle?: { dotType?: string; dotColor?: string; bgColor?: string; transparentBg?: boolean };
+    imageBaseDir?: string;
+    imagePath?: string;
+    imageShape?: string;
+    imageFit?: string;
+};
+
+type DataMergeChange = Partial<DataMergeField>;
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
 
 // Toán tử so sánh hỗ trợ (Req 2.9) — nhãn tiếng Việt.
 const VDP_OPERATORS: { value: VdpOperator; label: string }[] = [
@@ -154,10 +181,10 @@ const operatorNeedsValue = (op: VdpOperator) => op !== 'empty' && op !== 'not_em
 // Panel cấu hình điều kiện ẩn/hiện (conditions) và bảng rule (rules) cho field
 // đang chọn. Persist qua onChange → updateSelectedField để gửi kèm field tới backend.
 function VdpLogicPanel({ field, csvHeaders, onChange, isActive }: {
-    field: any;
+    field: DataMergeField;
     isActive: boolean;
     csvHeaders: string[];
-    onChange: (changes: any) => void;
+    onChange: (changes: DataMergeChange) => void;
 }) {
   const { t } = useTranslation();
     const conditions: VdpFieldCondition[] = Array.isArray(field.conditions) ? field.conditions : [];
@@ -442,8 +469,8 @@ function VdpLogicPanel({ field, csvHeaders, onChange, isActive }: {
 interface Props {
   pdfFile: File | null;
   getWorkingFile?: () => Promise<File>;
-  vdpFields?: any[];
-  setVdpFields?: React.Dispatch<React.SetStateAction<any[]>>;
+  vdpFields?: DataMergeField[];
+  setVdpFields?: (updater: never) => void;
   selectedFieldIds?: string[];
   onSelectField?: (ids: string[]) => void;
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
@@ -462,6 +489,9 @@ export default function DataMergeTool({
     isActive = true
 }: Props) {
   const { t } = useTranslation();
+    const setDataMergeFields: SetVdpFields | undefined = setVdpFields
+        ? (updater) => setVdpFields(updater as never)
+        : undefined;
     const [csvData, setCsvData] = useState<Record<string, string>[]>([]);
     const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
     const [dataMode, setDataMode] = useState<'csv' | 'manual' | 'xlsx' | 'gsheet'>('csv');
@@ -545,7 +575,7 @@ export default function DataMergeTool({
         const newSet = new Set(newHeaders);
         const oldSet = new Set(csvHeaders);
         const missing = [...new Set(
-            vdpFields.map((f: any) => f?.name).filter((n: any) => n && oldSet.has(n) && !newSet.has(n))
+            vdpFields.map((f: DataMergeField) => f?.name).filter((n): n is string => Boolean(n && oldSet.has(n) && !newSet.has(n)))
         )] as string[];
         if (missing.length > 0) {
             toast.info(t('preprocess.dataMerge:nguon_moi_thieu_cot_can_map_lai', {
@@ -617,9 +647,9 @@ export default function DataMergeTool({
         try {
             const result = await readVdpDatasource({ kind: 'xlsx', file, sheet, hasHeader: csvHasHeader });
             applySourceResult(result, `Excel · ${sheet}`);
-        } catch (err: any) {
+        } catch (err: unknown) {
             clearSourceState();
-            setSourceError(err?.message || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
+            setSourceError(errorMessage(err) || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
             setStatusMessage(t('preprocess.dataMerge:loi_doc_file_excel'));
         } finally {
             setSourceLoading(false);
@@ -650,10 +680,10 @@ export default function DataMergeTool({
                 setSourceError(t('preprocess.dataMerge:file_excel_khong_co_sheet_nao'));
                 setStatusMessage(t('preprocess.dataMerge:file_excel_rong'));
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             setSourceLoading(false);
             setXlsxFile(null);
-            setSourceError(err?.message || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
+            setSourceError(errorMessage(err) || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
             setStatusMessage(t('preprocess.dataMerge:loi_doc_file_excel'));
         }
     };
@@ -674,9 +704,9 @@ export default function DataMergeTool({
         try {
             const result = await readVdpDatasource({ kind: 'gsheet', url, hasHeader: csvHasHeader });
             applySourceResult(result, 'Google Sheets');
-        } catch (err: any) {
+        } catch (err: unknown) {
             clearSourceState();
-            setSourceError(err?.message || t('preprocess.dataMerge:khong_lay_duoc_du_lieu_google_sheets'));
+            setSourceError(errorMessage(err) || t('preprocess.dataMerge:khong_lay_duoc_du_lieu_google_sheets'));
             setStatusMessage(t('preprocess.dataMerge:loi_lay_du_lieu_google_sheets'));
         } finally {
             setSourceLoading(false);
@@ -699,8 +729,8 @@ export default function DataMergeTool({
         setStatusMessage(t('preprocess.dataMerge:nhap_tay_x_ban_ghi_cot_y', { x: lines.length, y: col }));
     };
 
-    const updateSelectedField = (changes: any) => {
-        if (!setVdpFields || selectedFieldIds.length === 0) return;
+    const updateSelectedField = (changes: DataMergeChange) => {
+        if (!setDataMergeFields || selectedFieldIds.length === 0) return;
 
         // Khi đổi góc xoay: hoán width↔height cho MỌI loại field khi chuyển
         // dọc↔ngang (90/270 ↔ 0/180). Backend render_one_record giả định
@@ -738,7 +768,7 @@ export default function DataMergeTool({
             }
         }
 
-        setVdpFields(prev => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, ...changes } : f));
+        setDataMergeFields(prev => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, ...changes } : f));
         
         // Auto-fit barcode frame using aspect ratio
         const barcodeTriggers = ['barcodeType', 'barHeight', 'quietZone', 'showText', 'fontSize', 'textAlign', 'data'];
@@ -754,7 +784,7 @@ export default function DataMergeTool({
                 };
                 const bt = updatedField.barcodeType || 'code128';
                 generateBarcodeDataURL({
-                    type: bt,
+                    type: bt as BarcodeType,
                     data: updatedField.data || sampleData[bt] || 'SAMPLE-12345',
                     height: updatedField.barHeight || 12,
                     showText: updatedField.showText !== false,
@@ -767,7 +797,7 @@ export default function DataMergeTool({
                         const aspect = img.width / img.height;
                         const h = updatedField.height || 15;
                         const newWidth = Math.round(h * aspect * 10) / 10;
-                        setVdpFields(prev => prev.map(f => f.id === selectedFieldIds[0] ? { ...f, width: newWidth } : f));
+                        setDataMergeFields(prev => prev.map(f => f.id === selectedFieldIds[0] ? { ...f, width: newWidth } : f));
                     };
                     img.src = dataUrl;
                 }).catch(() => {});
@@ -775,7 +805,7 @@ export default function DataMergeTool({
         }
     };
 
-    const { deleteSelectedField } = useVdpTool(vdpFields, setVdpFields as any, selectedFieldIds, onSelectField, isActive);
+    const { deleteSelectedField } = useVdpTool(vdpFields, setDataMergeFields, selectedFieldIds, onSelectField, isActive);
 
     const selectedFieldId = selectedFieldIds[0];
     const selectedField = vdpFields.find(f => f.id === selectedFieldId);
@@ -818,7 +848,7 @@ export default function DataMergeTool({
         return `{${splitCol}[${splitPart}|${d}]${fmt}}`;
     };
 
-    const insertSplitToken = (target: any) => {
+    const insertSplitToken = (target: DataMergeField) => {
         const tok = buildSplitToken();
         if (!tok || !target) return;
         const cur = target.textContent !== undefined ? target.textContent : '';
@@ -828,7 +858,7 @@ export default function DataMergeTool({
 
     // ─── Thu gọn chiều cao khung text vừa khít nội dung (ở cỡ chữ hiện tại) ───
     const fitHeightToText = () => {
-        if (!setVdpFields || !selectedField || selectedField.type !== 'text') return;
+        if (!setDataMergeFields || !selectedField || selectedField.type !== 'text') return;
         const f = selectedField;
         const text = (f.textContent !== undefined ? f.textContent : `{${f.name}}`) || '';
         const fontPt = f.fontSize || 13;
@@ -840,7 +870,7 @@ export default function DataMergeTool({
         const family = f.fontName === 'Times-Roman' ? '"Times New Roman", serif' : f.fontName === 'Courier' ? 'Courier, monospace' : (f.fontName ? `"${f.fontName}", sans-serif` : 'Arial, sans-serif');
         ctx.font = `${italic}${weight}${fontPt}px ${family}`;
         const MM_TO_PT = 72 / 25.4;
-        const boxWpt = f.width * MM_TO_PT;
+        const boxWpt = (f.width || 0) * MM_TO_PT;
         let totalLines = 0;
         for (const ln of text.split('\n')) {
             const words = ln.split(' ');
@@ -874,13 +904,13 @@ export default function DataMergeTool({
                         return name;
                     }
                 } : {}),
-                complete: (res: any) => {
+                complete: (res: Papa.ParseResult<unknown>) => {
                     if (hasHeader) {
-                        const data = ((res.data as any[]) || []).filter(Boolean) as Record<string, string>[];
+                        const data = ((res.data as unknown[]) || []).filter((row): row is Record<string, string> => Boolean(row && typeof row === 'object' && !Array.isArray(row)));
                         const headers = data.length ? Object.keys(data[0]) : (res.meta?.fields || []);
                         resolve({ headers, data, duplicated: Array.from(dup) });
                     } else {
-                        const rows = ((res.data as any[]) || []).filter((r: any) => Array.isArray(r) && r.some((c: any) => c !== '' && c != null)) as string[][];
+                        const rows = ((res.data as unknown[]) || []).filter((r): r is string[] => Array.isArray(r) && r.some((c) => typeof c === 'string' && c !== ''));
                         const colCount = rows.reduce((m, r) => Math.max(m, r.length), 0);
                         const headers = Array.from({ length: colCount }, (_, i) => `Cột ${i + 1}`);
                         const data = rows.map(r => {
@@ -943,11 +973,11 @@ export default function DataMergeTool({
                             }));
                         }
                         runnable.push({ csvFile, tag, data, warn });
-                    } catch (vErr: any) {
-                        setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_kiem_tra_du_lieu_bo_qua', { e: vErr?.message || vErr })}`);
+                    } catch (vErr: unknown) {
+                        setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_kiem_tra_du_lieu_bo_qua', { e: errorMessage(vErr) })}`);
                         continue;
                     }
-                } catch (err: any) {
+                } catch (err: unknown) {
                     if (isCanceled(err)) return; // UIUX (audit 2026-07-27 §D-15)
                     setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_x', { e: formatError(err) })}`); // UIUX (audit 2026-07-27 §D-15)
                 }
@@ -984,18 +1014,20 @@ export default function DataMergeTool({
                     // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} cho ProgressBar
                     const result = await pollVdpJob(jobId, (m, info) => { setStatusMessage(`${item.tag}: ${m}`); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
                     if (!result.blob) { setStatusMessage(`${item.tag}: ${t('preprocess.dataMerge:loi_khong_co_ket_qua')}`); continue; }
+                    // LIFECYCLE (audit 2026-08-25 §REV.11): gắn lease trước khi giao artifact cho tab đích.
+                    const outputBlob = tagArtifactLeaseToken(result.blob, result.artifactLease);
                     const baseName = item.csvFile.name.replace(/\.[^/.]+$/, '') || `VDP_${ri + 1}`;
-                    onSpawnTab(result.blob, `${baseName}.pdf`, result.path ?? undefined);
+                    onSpawnTab(outputBlob, `${baseName}.pdf`, result.path ?? undefined);
                     ok++;
                     // Nhường UI một nhịp giữa các file
                     await new Promise(r => setTimeout(r, 50));
-                } catch (err: any) {
+                } catch (err: unknown) {
                     if (isCanceled(err)) return; // UIUX (audit 2026-07-27 §D-15)
                     setStatusMessage(`${item.tag}: ${formatError(err, t('preprocess.dataMerge:khong_chay_duoc_vdp', 'Không chạy được VDP'))}`); // UIUX (audit 2026-07-27 §D-15)
                 }
             }
             setStatusMessage(t('preprocess.dataMerge:hoan_thanh_ok_tren_tong_file_csv', { ok, total: files.length }));
-        } catch (e: any) {
+        } catch (e: unknown) {
             if (isCanceled(e)) return; // UIUX (audit 2026-07-27 §D-15)
             setStatusMessage(formatError(e, t('preprocess.dataMerge:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)
         } finally {
@@ -1081,9 +1113,9 @@ export default function DataMergeTool({
             // Nếu backend kẹp chỉ số, đồng bộ ô nhập về chỉ số thực tế (Req 4.5).
             if (result.clamped) setPreviewIndex(result.record_index);
             setPreviewMsg(result.message || '');
-        } catch (err: any) {
-            if (err?.name === 'AbortError' || ac.signal.aborted) return;
-            setPreviewMsg(err?.message || t('preprocess.dataMerge:loi_tao_ban_xem_truoc'));
+        } catch (err: unknown) {
+            if (err instanceof DOMException && err.name === 'AbortError' || ac.signal.aborted) return;
+            setPreviewMsg(errorMessage(err) || t('preprocess.dataMerge:loi_tao_ban_xem_truoc'));
         } finally {
             clearTimeout(slowTimer);
             if (!ac.signal.aborted) {
@@ -1183,8 +1215,8 @@ export default function DataMergeTool({
             if (result.gating === 'allow') setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_khong_co_loi_san_sang'));
             else if (result.gating === 'needs_confirmation') setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_n_canh_bao_can_xac_nhan', { n: warnCount }));
             else setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_n_loi_chan_phai_khac_phuc', { n: errCount }));
-        } catch (err: any) {
-            setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: err?.message || err }));
+        } catch (err: unknown) {
+            setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: errorMessage(err) }));
         } finally {
             setValidating(false);
         }
@@ -1222,8 +1254,8 @@ export default function DataMergeTool({
                 return true;
             }
             return true; // allow
-        } catch (err: any) {
-            setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: err?.message || err }));
+        } catch (err: unknown) {
+            setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: errorMessage(err) }));
             return false;
         } finally {
             setValidating(false);
@@ -1247,8 +1279,8 @@ export default function DataMergeTool({
                 });
             }
             setStatusMessage(t('preprocess.dataMerge:da_xuat_bao_cao_loi_csv'));
-        } catch (err: any) {
-            setStatusMessage(t('preprocess.dataMerge:loi_xuat_bao_cao_loi_x', { x: err?.message || err }));
+        } catch (err: unknown) {
+            setStatusMessage(t('preprocess.dataMerge:loi_xuat_bao_cao_loi_x', { x: errorMessage(err) }));
         } finally {
             setReportLoading(false);
         }
@@ -1294,6 +1326,8 @@ export default function DataMergeTool({
             const blob = result.blob;
             const path = result.path;
             if (!blob) throw new Error(t('preprocess.dataMerge:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
+            // LIFECYCLE (audit 2026-08-25 §REV.11): giữ token cho cả native-path stub và Blob tải về.
+            const outputBlob = tagArtifactLeaseToken(blob, result.artifactLease);
 
             const originalName = pdfFile.name.replace(/\.[^/.]+$/, "") || "Document";
             const outName = `VDP_${originalName}_${fullData.length || 1}records.pdf`;
@@ -1302,15 +1336,15 @@ export default function DataMergeTool({
                 setStatusMessage(t('preprocess.dataMerge:dang_mo_file_ket_qua_n_ban_ghi', { n: fullData.length }));
                 // Small delay so the UI updates with the message before the heavy tab creation
                 await new Promise(r => setTimeout(r, 100));
-                onSpawnTab(blob, outName, path ?? undefined);
+                onSpawnTab(outputBlob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.dataMerge:hoan_thanh_da_tao_tab_pdf_moi'));
             } else if (onApplyResult) {
                 setStatusMessage(t('preprocess.dataMerge:dang_mo_file_ket_qua'));
                 await new Promise(r => setTimeout(r, 100));
-                await onApplyResult(blob, outName, path ?? undefined);
+                await onApplyResult(outputBlob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.dataMerge:hoan_thanh_da_de_du_lieu_len_file_hien'));
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
             if (isCanceled(error)) { setStatusMessage(t('preprocess.dataMerge:da_huy', 'Đã hủy')); return; }
             console.error("PDF Generation Error:", error);
@@ -1702,7 +1736,7 @@ export default function DataMergeTool({
                         {selectedFieldIds.length >= 1 && (
                             <VdpAlignPanel
                                 vdpFields={vdpFields}
-                                setVdpFields={setVdpFields}
+                                setVdpFields={setDataMergeFields}
                                 selectedFieldIds={selectedFieldIds}
                                 pageDimMm={viewerPageDimMm}
                             />
@@ -1724,7 +1758,7 @@ export default function DataMergeTool({
                                 <option value={270}>270°</option>
                             </select>
                         </div>
-                        {['text', 'qrcode', 'barcode'].includes(selectedField.type) && (
+                        {['text', 'qrcode', 'barcode'].includes(selectedField.type ?? '') && (
                             <div className="flex flex-col gap-3 mt-1">
                                 <div className="flex flex-col gap-1">
                                     <span className="text-[10px] font-medium text-slate-500 block mb-1">
@@ -1733,7 +1767,7 @@ export default function DataMergeTool({
                                     </span>
                                     <input 
                                         type="text" 
-                                        value={selectedField.textContent !== undefined ? selectedField.textContent : `{${selectedField.name}}`}
+                                        value={selectedField.textContent ?? `{${selectedField.name || ''}}`}
                                         onChange={(e) => updateSelectedField({ textContent: e.target.value })}
                                         placeholder={`Ví dụ: ${selectedField.type === 'qrcode' ? 'https://example.com/?id=' : 'Mã '}{${selectedField.name || 'Cột'}}`}
                                         className="w-full h-8 px-2.5 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
@@ -1961,7 +1995,7 @@ export default function DataMergeTool({
                                         <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:sua_loi_muc')}</span>
                                         <select 
                                             value={selectedField.errorCorrection || 'M'}
-                                            onChange={(e) => updateSelectedField({ errorCorrection: e.target.value })}
+                                            onChange={(e) => updateSelectedField({ errorCorrection: e.target.value as DataMergeField['errorCorrection'] })}
                                             className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                         >
                                             <option value="L">L (7%)</option>
@@ -2014,7 +2048,7 @@ export default function DataMergeTool({
                                         <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:loai_ma_vach')}</span>
                                         <select 
                                             value={selectedField.barcodeType || 'code128'}
-                                            onChange={(e) => updateSelectedField({ barcodeType: e.target.value })}
+                                            onChange={(e) => updateSelectedField({ barcodeType: e.target.value as BarcodeType })}
                                             className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                         >
                                             <option value="code128">{t('preprocess.dataMerge:code_128_da_nang_moi_ky_tu')}</option>
@@ -2088,7 +2122,7 @@ export default function DataMergeTool({
                                                     <div className="flex items-center gap-1.5">
                                                         <select 
                                                             value={selectedField.textAlign || 'center'}
-                                                            onChange={(e) => updateSelectedField({ textAlign: e.target.value })}
+                                                            onChange={(e) => updateSelectedField({ textAlign: e.target.value as DataMergeField['textAlign'] })}
                                                             className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                                         >
                                                             <option value="left">{t('preprocess.dataMerge:trai')}</option>
@@ -2114,7 +2148,7 @@ export default function DataMergeTool({
                                     <div className="flex flex-col gap-1">
                                         <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:thu_muc_goc_anh_neu_cot_chua_ten_file')}</span>
                                         <input
-                                            value={selectedField.imageBaseDir || ''}
+                                            value={String(selectedField.imageBaseDir ?? '')}
                                             onChange={(e) => updateSelectedField({ imageBaseDir: e.target.value })}
                                             placeholder="VD: D:\\anh_san_pham"
                                             className="w-full h-9 px-2 text-[12px] font-mono bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
@@ -2123,7 +2157,7 @@ export default function DataMergeTool({
                                     <div className="flex flex-col gap-1">
                                         <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:anh_mac_dinh_khi_cot_rong_khong_bat')}</span>
                                         <input
-                                            value={selectedField.imagePath || ''}
+                                            value={String(selectedField.imagePath ?? '')}
                                             onChange={(e) => updateSelectedField({ imagePath: e.target.value })}
                                             placeholder="VD: D:\\anh_san_pham\\default.png"
                                             className="w-full h-9 px-2 text-[12px] font-mono bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
@@ -2406,7 +2440,7 @@ export default function DataMergeTool({
                 {isGenerating && activeVdpJobId && (
                     <button
                         type="button"
-                        onClick={() => void cancelActiveVdp().catch((err) => setStatusMessage(err?.message || String(err)))}
+                        onClick={() => void cancelActiveVdp().catch((err) => setStatusMessage(errorMessage(err)))}
                         className="mt-2 w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white transition-colors hover:bg-red-700"
                     >
                         {t('tabs.imposition:huy_bo_cancel')}

@@ -42,9 +42,26 @@ export type ChangeLicenseKeyResult = {
 const LICENSE_STORAGE_KEY = 'prynx_lk_v2';
 const HWID_STORAGE_KEY = 'prynx_hwid_cache';
 
+type PrynXRuntimeGlobal = typeof globalThis & {
+  __TAURI_INTERNALS__?: unknown;
+  __PRYNX_INVOKE__?: unknown;
+};
+
+type LicenseVerifyResponse = {
+  status?: string;
+  message?: string;
+  max_devices?: number;
+  remaining_days?: number | null;
+  expires_at?: string | null;
+  token?: string;
+  plan?: string;
+  features?: unknown;
+};
+
 function isNativeRuntime(): boolean {
+  const runtime = globalThis as PrynXRuntimeGlobal;
   return typeof window !== 'undefined'
-    && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__PRYNX_INVOKE__);
+    && Boolean(runtime.__TAURI_INTERNALS__ || runtime.__PRYNX_INVOKE__);
 }
 
 // ── DPAPI-backed credential storage (primary) ──
@@ -589,11 +606,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return true;
       }
 
-      const isValid = data && data.status === 'VALID';
+      const response = data as LicenseVerifyResponse | null;
+      const isValid = response?.status === 'VALID';
       
       // VECTOR #7: Device limit exceeded
-      if (data && data.status === 'DEVICE_LIMIT') {
-        const maxDevices = data.max_devices || 2;
+      if (response && response.status === 'DEVICE_LIMIT') {
+        const maxDevices = response.max_devices || 2;
         logSecurityEvent('device_limit', { maxDevices });
         set({
           licenseValid: false,
@@ -604,7 +622,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       
       // VECTOR #8: Rate limited
-      if (data && data.status === 'RATE_LIMITED') {
+      if (response && response.status === 'RATE_LIMITED') {
         // Vẫn nạp cache Rust để không bị 403 backend khi Supabase rate-limit (hay gặp khi
         // chạy dev + release cùng máy cùng license → đập RPC quá nhiều).
         await ensureKeyRegisteredInRust(licenseKey);
@@ -630,16 +648,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // Verification and token issuance are one atomic Edge Function call. This avoids
         // exposing the SECURITY DEFINER verification RPC to the renderer and prevents a
         // status/token time-of-check gap.
-        const freshToken = typeof (data as any)?.token === 'string' ? (data as any).token : '';
+        const freshToken = typeof response?.token === 'string' ? response.token : '';
         if (!freshToken) {
           throw new Error('License server returned VALID without a signed token');
         }
         const claims = readLicenseTokenClaims(freshToken);
         set({
           licenseToken: freshToken,
-          licensePlan: normalizePlan((data as any)?.plan || claims?.plan || 'free'),
-          licenseFeatures: Array.isArray((data as any)?.features)
-            ? (data as any).features
+          licensePlan: normalizePlan(response?.plan || claims?.plan || 'free'),
+          licenseFeatures: Array.isArray(response?.features)
+            ? response.features.filter((feature): feature is string => typeof feature === 'string')
             : (claims?.features ?? null),
         });
         await saveTokenToDPAPI(freshToken);
@@ -650,15 +668,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         licenseValid: isValid,
         lastValidated: Date.now(),
         licenseToken: isValid ? get().licenseToken : null,
-        remainingDays: (data && typeof data.remaining_days === 'number') ? data.remaining_days : null,
-        licenseExpiresAt: (data && data.expires_at) ? data.expires_at : null,
+        remainingDays: (response && typeof response.remaining_days === 'number') ? response.remaining_days : null,
+        licenseExpiresAt: (response && response.expires_at) ? response.expires_at : null,
       });
       
       if (!isValid) {
-        console.warn('[AUTH] License revoked or invalid:', data?.message);
+        console.warn('[AUTH] License revoked or invalid:', response?.message);
         // SEC (audit 2026-08-22 §SEC.LIC.3): status thu hồi rõ ràng phải khóa cứng
         // ngay trong phiên; không cho token cũ/Rust cache tiếp tục ký request.
-        const st = data?.status;
+        const st = response?.status;
         const hardRevocationStatuses = [
           'INVALID',
           'EXPIRED',
@@ -668,7 +686,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           'PRODUCT_MISMATCH',
           'MAX_ACTIVATIONS_REACHED',
         ];
-        if (hardRevocationStatuses.includes(st)) {
+        if (typeof st === 'string' && hardRevocationStatuses.includes(st)) {
           const reasonByStatus: Record<string, string> = {
             EXPIRED: 'Bản quyền đã hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.',
             MACHINE_REVOKED: 'Máy này đã bị quản trị viên reset khỏi license. Liên hệ quản trị viên để cấp lại quyền.',

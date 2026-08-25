@@ -6,38 +6,11 @@
  * thuộc tab đó, ngăn memory leak.
  */
 
-import React, { createContext, useContext, useCallback, useRef } from 'react';
-
-// ─── Types ───
-interface ManagedFile {
-  id: string;
-  name: string;
-  blobUrl: string;
-  size: number;
-  tabId: string;
-  createdAt: number;
-}
-
-interface FileContextAPI {
-  /** Register a new blob URL owned by a specific tab */
-  registerBlobUrl: (tabId: string, blobUrl: string, name?: string, size?: number) => string;
-  /** Register a File object, creating a blob URL, owned by a specific tab */
-  registerFile: (tabId: string, file: File) => ManagedFile;
-  /** Get all files for a specific tab */
-  getFilesForTab: (tabId: string) => ManagedFile[];
-  /** Release all resources associated with a tab (call when tab closes) */
-  releaseTab: (tabId: string) => void;
-  /** Release a specific blob URL */
-  releaseBlobUrl: (blobUrl: string) => void;
-  /** Cleanup all resources (call on app shutdown) */
-  releaseAll: () => void;
-  /** Get stats for debugging */
-  getStats: () => { totalFiles: number; totalBlobUrls: number; tabCounts: Record<string, number> };
-}
-
-const FileContext = createContext<FileContextAPI | null>(null);
+import React, { useCallback, useRef } from 'react';
+import { FileContext, type FileContextAPI, type ManagedFile } from './fileContextCore';
 
 // ─── Provider ───
+
 export function FileProvider({ children }: { children: React.ReactNode }) {
   const filesRef = useRef<Map<string, ManagedFile>>(new Map());
   const blobUrlsRef = useRef<Map<string, string>>(new Map()); // blobUrl → tabId
@@ -83,7 +56,11 @@ export function FileProvider({ children }: { children: React.ReactNode }) {
     const toRemove: string[] = [];
     for (const [id, file] of filesRef.current.entries()) {
       if (file.tabId === tabId) {
-        try { URL.revokeObjectURL(file.blobUrl); } catch {}
+        try {
+          URL.revokeObjectURL(file.blobUrl);
+        } catch {
+          // URL đã được giải phóng hoặc không còn hợp lệ.
+        }
         blobUrlsRef.current.delete(file.blobUrl);
         toRemove.push(id);
       }
@@ -97,8 +74,11 @@ export function FileProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const releaseBlobUrl = useCallback((blobUrl: string) => {
-    try { URL.revokeObjectURL(blobUrl); } catch {}
-    const tabId = blobUrlsRef.current.get(blobUrl);
+    try {
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      // URL đã được giải phóng hoặc không còn hợp lệ.
+    }
     blobUrlsRef.current.delete(blobUrl);
     // Remove from files map
     for (const [id, file] of filesRef.current.entries()) {
@@ -111,7 +91,11 @@ export function FileProvider({ children }: { children: React.ReactNode }) {
 
   const releaseAll = useCallback(() => {
     for (const file of filesRef.current.values()) {
-      try { URL.revokeObjectURL(file.blobUrl); } catch {}
+      try {
+        URL.revokeObjectURL(file.blobUrl);
+      } catch {
+        // URL đã được giải phóng hoặc không còn hợp lệ.
+      }
     }
     const count = filesRef.current.size;
     filesRef.current.clear();
@@ -148,25 +132,4 @@ export function FileProvider({ children }: { children: React.ReactNode }) {
       {children}
     </FileContext.Provider>
   );
-}
-
-// ─── Hook ───
-export function useFileContext(): FileContextAPI {
-  const ctx = useContext(FileContext);
-  if (!ctx) {
-    // Return a no-op implementation if used outside provider (graceful degradation)
-    return {
-      registerBlobUrl: () => '',
-      registerFile: (_tabId: string, file: File) => ({
-        id: '', name: file.name, blobUrl: URL.createObjectURL(file),
-        size: file.size, tabId: '', createdAt: Date.now(),
-      }),
-      getFilesForTab: () => [],
-      releaseTab: () => {},
-      releaseBlobUrl: () => {},
-      releaseAll: () => {},
-      getStats: () => ({ totalFiles: 0, totalBlobUrls: 0, tabCounts: {} }),
-    };
-  }
-  return ctx;
 }

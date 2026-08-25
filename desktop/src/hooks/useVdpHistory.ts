@@ -10,9 +10,11 @@
  */
 import { useCallback, useEffect, useRef } from 'react';
 
-interface Options {
-    vdpFields: any[];
-    setVdpFields: (updater: any) => void;
+type VdpFieldsUpdater<TField> = TField[] | ((previous: TField[]) => TField[]);
+
+interface Options<TField> {
+    vdpFields: TField[];
+    setVdpFields: (updater: VdpFieldsUpdater<TField>) => void;
     enabled: boolean;
     containerRef: React.RefObject<HTMLElement | null>;
 }
@@ -20,12 +22,12 @@ interface Options {
 const COALESCE_MS = 400;
 const MAX_HISTORY = 100;
 
-export function useVdpHistory({ vdpFields, setVdpFields, enabled, containerRef }: Options) {
-    const pastRef = useRef<any[][]>([]);
-    const futureRef = useRef<any[][]>([]);
-    const prevRef = useRef<any[]>(vdpFields);
-    const burstBaseRef = useRef<any[] | null>(null);
-    const burstTimerRef = useRef<any>(null);
+export function useVdpHistory<TField>({ vdpFields, setVdpFields, enabled, containerRef }: Options<TField>) {
+    const pastRef = useRef<TField[][]>([]);
+    const futureRef = useRef<TField[][]>([]);
+    const prevRef = useRef<TField[]>(vdpFields);
+    const burstBaseRef = useRef<TField[] | null>(null);
+    const burstTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const skipRef = useRef(false);
 
     // Ghi lịch sử khi vdpFields đổi (gộp các thay đổi liên tiếp).

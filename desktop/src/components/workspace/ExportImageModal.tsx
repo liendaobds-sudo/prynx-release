@@ -15,6 +15,15 @@ import { exportImagesBatch, uploadPDF } from '../../lib/api';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2 } from 'lucide-react';
+import { buildExportJobs, parsePageRange } from './exportImagePlan';
+import type {
+    ExportImageFormat as Fmt,
+    ExportImageSubFolderMode as SubFolderMode,
+    ExportPlanJob,
+    ScaleRow,
+} from './exportImagePlan';
+
+export type { ExportPlanJob, ScaleRow } from './exportImagePlan';
 
 interface Props {
     open: boolean;
@@ -33,84 +42,28 @@ interface Props {
     pageHeightPt?: number;
 }
 
-type Fmt = 'png' | 'jpeg' | 'tiff' | 'webp';
 type RangeMode = 'all' | 'current' | 'custom';
-type SubFolderMode = 'none' | 'scale' | 'format';
 export type ExportImageTab = 'export' | 'screens';
-
-export interface ScaleRow {
-    scale: number;
-    suffix: string;
-    format: Fmt;
-}
 
 const DEFAULT_SCALE_ROW: ScaleRow = { scale: 1, suffix: '', format: 'png' };
 const SCALE_OPTIONS = [1, 2, 3, 4];
-export interface ExportPlanJob {
-    dpi: number;
-    format: Fmt;
-    suffix: string;
-    subDir: string;
-}
-
-/** Lập và kiểm tra TOÀN BỘ batch trước upload/render để không sinh output dở dang. */
-export function buildExportJobs(input: {
-    dpi: number;
-    format: Fmt;
-    colorMode: 'rgb' | 'gray' | 'cmyk';
-    multiScaleEnabled: boolean;
-    scaleRows: ScaleRow[];
-    subFolderMode: SubFolderMode;
-}): ExportPlanJob[] {
-    const rows = input.multiScaleEnabled && input.scaleRows.length > 0
-        ? input.scaleRows
-        : [{ scale: 1, suffix: '', format: input.format }];
-    if (rows.length > 8) throw new Error('Mỗi batch chỉ được tối đa 8 đầu ra.');
-
-    return rows.map(row => {
-        const effectiveDpi = input.dpi * row.scale;
-        if (!Number.isInteger(effectiveDpi) || effectiveDpi < 36 || effectiveDpi > 1200) {
-            throw new Error(`Độ phân giải ${effectiveDpi} DPI vượt giới hạn 36–1200 DPI.`);
-        }
-        if (input.colorMode === 'cmyk' && (row.format === 'png' || row.format === 'webp')) {
-            throw new Error('PNG/WebP không hỗ trợ CMYK. Hãy dùng TIFF hoặc JPEG.');
-        }
-        let subDir = '';
-        if (input.subFolderMode === 'scale') subDir = `${row.scale}x`;
-        else if (input.subFolderMode === 'format') subDir = row.format.toUpperCase();
-        return { dpi: effectiveDpi, format: row.format, suffix: row.suffix, subDir };
-    });
-}
-
-
-/** Parse "1-3, 5, 8-10" → [1,2,3,5,8,9,10] (giới hạn trong [1..max], khử trùng, giữ thứ tự). */
-export function parsePageRange(input: string, max: number): number[] {
-    const out: number[] = [];
-    const seen = new Set<number>();
-    for (const partRaw of input.split(',')) {
-        const part = partRaw.trim();
-        if (!part) continue;
-        const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
-        if (m) {
-            let a = parseInt(m[1], 10);
-            let b = parseInt(m[2], 10);
-            if (a > b) [a, b] = [b, a];
-            // EXPORT (audit 2026-07-30 §IMG-08): clamp endpoint trước vòng lặp,
-            // tránh "1-999999999" khóa WebView.
-            a = Math.max(1, a);
-            b = Math.min(max, b);
-            for (let p = a; p <= b; p++) {
-                if (!seen.has(p)) { seen.add(p); out.push(p); }
-            }
-        } else if (/^\d+$/.test(part)) {
-            const p = parseInt(part, 10);
-            if (p >= 1 && p <= max && !seen.has(p)) { seen.add(p); out.push(p); }
-        }
-    }
-    return out;
-}
 
 const DPI_OPTIONS = [72, 150, 300, 600];
+
+// TYPE (audit 2026-08-23 §P2.68): đọc lỗi ngoài boundary mà không lan any.
+function getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = (error as { message?: unknown }).message;
+        if (message) return String(message);
+    }
+    return error == null ? '' : String(error);
+}
+
+function isAbortError(error: unknown): boolean {
+    return typeof error === 'object' && error !== null && 'name' in error
+        && (error as { name?: unknown }).name === 'AbortError';
+}
 
 export default function ExportImageModal({ open, onClose, initialTab = 'export', fileId, filePath, numPages, currentPage, baseName, getWorkingFile, pageWidthPt, pageHeightPt }: Props) {
   const { t } = useTranslation();
@@ -238,8 +191,8 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
             const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
             const dir = await openDialog({ directory: true, multiple: false, title: t('misc.exportImage:chon_thu_muc_luu_anh') });
             if (typeof dir === 'string') setOutputDir(dir);
-        } catch (e) {
-            toast.error(t('misc.exportImage:khong_mo_duoc_hop_thoai_chon_thu_muc', { msg: (e as any)?.message || e }));
+        } catch (error: unknown) {
+            toast.error(t('misc.exportImage:khong_mo_duoc_hop_thoai_chon_thu_muc', { msg: getErrorMessage(error) }));
         }
     };
 
@@ -312,12 +265,12 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                 } catch { /* không mở được — bỏ qua */ }
             }
             onClose();
-        } catch (e) {
-            if ((e as any)?.name === 'AbortError' || controller.signal.aborted) {
+        } catch (error: unknown) {
+            if (isAbortError(error) || controller.signal.aborted) {
                 // Người dùng chủ động hủy → không hiện lỗi
                 toast.info(t('misc.exportImage:da_huy_xuat_anh'));
             } else {
-                toast.error(t('misc.exportImage:loi_xuat_anh', { msg: (e as any)?.message || e }));
+                toast.error(t('misc.exportImage:loi_xuat_anh', { msg: getErrorMessage(error) }));
             }
         } finally {
             if (abortRef.current === controller) abortRef.current = null;

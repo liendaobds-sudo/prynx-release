@@ -14,7 +14,7 @@ const canvasRect = {
     toJSON: () => ({}),
 } as DOMRect;
 
-function nestingResult(): NestingResult {
+function nestingResult(width = 790, height = 1090): NestingResult {
     return {
         positions: [],
         countPerSheet: 1,
@@ -22,7 +22,7 @@ function nestingResult(): NestingResult {
         cols: 1,
         utilization: 10,
         usableArea: { width: 770, height: 1068 },
-        actualSheet: { width: 790, height: 1090 },
+        actualSheet: { width, height },
         cellSize: { width: 100, height: 100 },
         label: 'Test',
         superTile: null,
@@ -102,4 +102,37 @@ describe('NestingCanvas — zoom bằng con lăn', () => {
             await expectWheelZooms(view.container);
         },
     );
+
+    it('fit-page bao trọn cả hai tờ ở chế độ tách vật liệu', async () => {
+        const params = { ...DEFAULT_PARAMS, boxType: 'double_tray' as const };
+        const traySheet = { width: 400, height: 300 };
+        const lidSheet = { width: 600, height: 200 };
+        useBoxStore.setState({
+            params,
+            dieline: generateDieline(params),
+            nestingConfig: {
+                ...structuredClone(DEFAULT_NESTING_CONFIG),
+                trayNestingMode: 'split',
+            },
+            nestingResult: nestingResult(traySheet.width, traySheet.height),
+            sleeveNestingResult: nestingResult(lidSheet.width, lidSheet.height),
+        });
+
+        const view = render(<NestingCanvas />);
+        const transform = await waitFor(() => {
+            const svg = view.container.querySelector('svg');
+            const content = Array.from(svg?.children ?? []).find(child => child.tagName.toLowerCase() === 'g');
+            const value = content?.getAttribute('transform') ?? '';
+            expect(value).toMatch(/^translate\(.+\) scale\(.+\)$/);
+            return value;
+        });
+        const match = transform.match(/^translate\(([^,]+), ([^)]+)\) scale\(([^)]+)\)$/);
+        expect(match).not.toBeNull();
+
+        const x = Number(match?.[1]);
+        const scale = Number(match?.[3]);
+        const totalWidth = traySheet.width + 30 + lidSheet.width;
+        expect(x).toBeCloseTo(40, 6);
+        expect(x + totalWidth * scale).toBeCloseTo(canvasRect.width - 40, 6);
+    });
 });

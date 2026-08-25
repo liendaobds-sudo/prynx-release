@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -29,6 +30,7 @@ vi.mock('../../lib/api', () => ({
 import EncryptTool from './EncryptTool';
 
 const LOCK_SUCCESS = 'preprocess.encrypt:khoa_thanh_cong';
+type EncryptCommit = NonNullable<ComponentProps<typeof EncryptTool>['onFileFixed']>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -40,11 +42,11 @@ beforeEach(() => {
   });
 });
 
-function renderLockAndRun(onFileFixed: (blob: Blob, name: string) => unknown) {
+function renderLockAndRun(onFileFixed: EncryptCommit) {
   render(
     <EncryptTool
       pdfFile={new File(['source'], 'source.pdf', { type: 'application/pdf' })}
-      onFileFixed={onFileFixed as any}
+      onFileFixed={onFileFixed}
     />,
   );
   // Nhập mật khẩu user để qua guard, rồi bấm "Chạy".

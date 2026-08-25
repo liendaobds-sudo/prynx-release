@@ -23,4 +23,5 @@ describe('ThumbSidebar — trạng thái nhận diện AI theo trang nguồn', (
         expect(badge.getAttribute('data-workflow-status')).toBe(status);
         expect(badge.getAttribute('title')).toBe(label);
     });
+
 });

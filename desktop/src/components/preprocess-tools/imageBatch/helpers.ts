@@ -24,6 +24,7 @@ export function mimeFromName(name: string): string {
 interface BatchFileOptions {
     allowPdf?: boolean;
     onFilesSelected?: (files: File[]) => void;
+    sourceOrigin?: BatchItem['sourceOrigin'];
 }
 
 const SOURCE_LOADING_PREVIEW = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
@@ -91,6 +92,9 @@ export async function normalizeAndAddFiles<O>(files: File[], tabId: string, stor
                 status: isNativePath ? 'processing' : 'pending',
                 fileObj: isNativePath ? undefined : file,
                 sourceIdentity: identity,
+                // File từ picker/drop là dữ liệu người dùng chủ động thêm; caller
+                // tự đồng bộ workspace phải khai báo rõ để được phép thay về sau.
+                sourceOrigin: options.sourceOrigin ?? 'explicit',
             },
         });
     }

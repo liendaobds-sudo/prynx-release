@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ImpositionMode } from './pdfImposer';
+import { ImpositionMode, type GuillotineSettings } from './pdfImposer';
 import { runProcessEngine, type ProcessContext } from './processHandlers';
 
 const api = vi.hoisted(() => ({
@@ -48,22 +48,25 @@ describe('payload Dàn nhiều kích thước', () => {
             getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\mixed.pdf'),
         };
 
+        const settings: GuillotineSettings & { exportUniqueSheets: boolean } = {
+            impositionMode: ImpositionMode.NUp,
+            imposerMode: 'guillotine',
+            layoutType: 'mixed_guillotine',
+            sheetWidth: 320,
+            sheetHeight: 450,
+            paperThickness: 0,
+            bleed: 3,
+            alternateRotation: 'column',
+            gapX: 2,
+            gapY: 2,
+            duplexFlow: 'double',
+            duplexFlipEdge: 'short',
+            exportUniqueSheets: true,
+        };
+
         await runProcessEngine(
             context,
-            {
-                impositionMode: ImpositionMode.NUp,
-                imposerMode: 'guillotine',
-                layoutType: 'mixed_guillotine',
-                sheetWidth: 320,
-                sheetHeight: 450,
-                bleed: 3,
-                alternateRotation: 'column',
-                gapX: 2,
-                gapY: 2,
-                duplexFlow: 'double',
-                duplexFlipEdge: 'short',
-                exportUniqueSheets: true,
-            } as any,
+            settings,
             false,
         );
 

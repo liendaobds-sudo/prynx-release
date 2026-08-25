@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
 import { previewPerfLog } from "../../../lib/previewPerfLog";
 import { getFileArrayBuffer } from "../../../lib/utils";
-import type { ActiveToolType, CutBorderConfig, NupSettings } from "../types";
+import type { ActiveToolType, CutBorderConfig, NupSettings, PontConfig } from "../types";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
 import { materializePreviewViewerPdf, parsePreviewViewerState, previewViewerStateRequiresMaterialization, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
 import { canUseCutBorder } from "../cutBorderPolicy";
@@ -10,36 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { ImposerSettingsContext } from "../useImposerSettingsStore";
 // UIUX (audit 2026-07-27 §B-05): lỗi kỹ thuật → câu Việt + hướng khắc phục
 import { formatError } from "../../../lib/errorMessages";
-
-const SAME_SIZE_ONLY_MESSAGE = "chỉ hỗ trợ các trang cùng kích thước";
-
-export function shouldAutoSwitchToMixedGuillotine({
-  status,
-  message,
-  taskMode,
-  layoutType,
-  isDieCut,
-  pageSheetMode,
-  imposerMode,
-}: {
-  status: number;
-  message: string;
-  taskMode: string;
-  layoutType?: string;
-  isDieCut?: boolean;
-  pageSheetMode?: boolean;
-  imposerMode?: string;
-}): boolean {
-  return (
-    status === 422 &&
-    taskMode === "nup" &&
-    !isDieCut &&
-    !pageSheetMode &&
-    imposerMode !== "cnc" &&
-    ["sequential", "cut_stacks", "ratio_stack"].includes(layoutType || "") &&
-    message.toLocaleLowerCase("vi").includes(SAME_SIZE_ONLY_MESSAGE)
-  );
-}
+import { resolveCellDirectionDegrees, resolveTrapezoidPreviewRatios, shouldAutoSwitchToMixedGuillotine, type CellDirectionDegrees } from "./gridPreviewHelpers";
 
 export interface GridPreviewProps {
   activeTool?: ActiveToolType | string;
@@ -84,10 +55,10 @@ export interface GridPreviewProps {
   sourceTotalPages?: number;
   shapeParams?: string | null;
   shapesByPage?: Record<number, string>;
-  shapeParamsByPage?: Record<number, any>;
+  shapeParamsByPage?: Record<number, Record<string, unknown>>;
   isDetectingShape?: boolean;
   pontType?: string;
-  pontConfig?: any;
+  pontConfig?: PontConfig;
   onCapacityChange?: (capacity: number) => void;
   onMixedPlacedByPage?: (m: Record<number, number>) => void;
   fileId?: string;
@@ -152,6 +123,8 @@ interface BackendLayoutCell {
   blockId: number;
   /** ratio_stack / mixed: chỉ số trang nguồn gán cho ô này */
   pageIdx?: number;
+  /** Đường bế thật theo polyline, cùng hệ tọa độ backend. */
+  diePolylines?: number[][][];
 }
 interface BackendCutSegment {
   axis: "x" | "y";
@@ -159,6 +132,23 @@ interface BackendCutSegment {
   start: number;
   end: number;
   kind?: string;
+}
+
+interface BackendLayoutSheet {
+  cells: BackendLayoutCell[];
+  overallWidth: number;
+  overallHeight: number;
+  totalItems: number;
+  cutLines?: { v: number[]; h: number[] };
+  cutSegments?: BackendCutSegment[];
+  cutTree?: { rect?: { x: number; y: number; width: number; height: number } };
+  side?: "front" | "back";
+  physicalSheetIndex?: number;
+  runCount?: number;
+  planHash?: string;
+  planVersion?: string;
+  coordinateSpace?: string;
+  usableRect?: { x: number; y: number; width: number; height: number };
 }
 
 interface BackendLayoutResult {
@@ -175,6 +165,10 @@ interface BackendLayoutResult {
   absPlacement?: boolean;
   // Đường bế THẬT của tem (phân số 0..1, Y-up) — dùng vẽ búa/tạ đúng outline (Bug A).
   diePolygon?: number[][] | null;
+  diePolygonsByPage?: Record<string, number[][]>;
+  isCncPreview?: boolean;
+  cncFlipEdge?: "long" | "short";
+  cncTwoSided?: boolean;
   /** ratio_stack / CNC: số tờ logic cần in (PDF có thể chỉ 1 trang mẫu). */
   sheetsNeeded?: number;
   /** Chế độ 1 khuôn dùng chung cho mọi trang nội dung. */
@@ -200,22 +194,7 @@ interface BackendLayoutResult {
   /** §MG-B2: cảnh báo nghiệp vụ (lề bất đối xứng khi lật) — không phải lỗi. */
   warnings?: string[];
   /** chia cụm zone modes: MỌI tờ (mỗi tờ 1 bộ loại) để lật ◄ n/N ► không fetch lại. */
-  sheets?: Array<{
-    cells: BackendLayoutCell[];
-    overallWidth: number;
-    overallHeight: number;
-    totalItems: number;
-    cutLines?: { v: number[]; h: number[] };
-    cutSegments?: BackendCutSegment[];
-    cutTree?: unknown;
-    side?: "front" | "back";
-    physicalSheetIndex?: number;
-    runCount?: number;
-    planHash?: string;
-    planVersion?: string;
-    coordinateSpace?: string;
-    usableRect?: { x: number; y: number; width: number; height: number };
-  }>;
+  sheets?: BackendLayoutSheet[];
 }
 
 // =====================================================================
@@ -350,7 +329,36 @@ const BLOCK_COLORS = [
 
 const ROTATED180_OPACITY = 0.55;
 
-export type CellDirectionDegrees = 0 | 90 | 180 | 270;
+type WorkspaceFileLike = File & { path?: string };
+type RuntimeWindow = Window & { __TAURI_INTERNALS__?: unknown };
+type SvgPreviewCell = {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  isRotated: boolean;
+  is180: boolean;
+  blockId: number;
+  diePolylinesPx?: number[][][];
+  idx: number;
+};
+
+function numericShapeProp(props: Record<string, unknown> | null, key: string, fallback: number): number {
+  const value = props?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function pageValue<T>(map: Record<number, T> | undefined, page: number): T | undefined {
+  if (!map) return undefined;
+  const byString = map as unknown as Record<string, T>;
+  return map[page] ?? byString[String(page)];
+}
+
+function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException) return error.name === "AbortError";
+  if (error instanceof Error) return error.name === "AbortError";
+  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "AbortError";
+}
 
 const CELL_DIRECTION_STYLES: Record<
   CellDirectionDegrees,
@@ -366,13 +374,6 @@ const CELL_DIRECTION_STYLES: Record<
  * INKING (2026-08-12): hướng đầu nội dung sau khi cộng xoay bố cục (90°)
  * và xoay đối đầu (180°). Marker preview phải đọc đúng cả trường hợp 270°.
  */
-export function resolveCellDirectionDegrees(
-  isRotated: boolean,
-  isRotated180: boolean,
-): CellDirectionDegrees {
-  return (((isRotated ? 90 : 0) + (isRotated180 ? 180 : 0)) % 360) as CellDirectionDegrees;
-}
-
 function renderCellDirectionIndicator(
   sx: number,
   sy: number,
@@ -462,37 +463,6 @@ const DEBOUNCE_MS = 250;
  *
  * Inputs `sx, sy, sw, sh` are the final SVG pixel coordinates of this cell's bounding box.
  */
-export function resolveTrapezoidPreviewRatios(
-  shapeProps: Record<string, unknown> | null,
-): { isHorizontal: boolean; longRatio: number; shortRatio: number } | null {
-  if (!shapeProps) return null;
-
-  const isHorizontal = shapeProps.isHorizontal === true;
-  const longBase = Number(shapeProps.longBase);
-  const shortBase = Number(shapeProps.shortBase);
-  const bboxExtent = Number(isHorizontal ? shapeProps.bbW : shapeProps.bbH);
-
-  // UIUX (audit 2026-08-02 §TRAP-NaN): cache cũ có thể thiếu bbox.
-  // Không để phép chia undefined tạo NaN rồi truyền xuống thuộc tính SVG.
-  if (
-    !Number.isFinite(longBase) ||
-    !Number.isFinite(shortBase) ||
-    !Number.isFinite(bboxExtent) ||
-    longBase <= 0 ||
-    shortBase <= 0 ||
-    bboxExtent <= 0
-  ) {
-    return null;
-  }
-
-  return {
-    isHorizontal,
-    longRatio: longBase / bboxExtent,
-    shortRatio: shortBase / bboxExtent,
-  };
-}
-
-
 function renderCellShape(
   sx: number,
   sy: number,
@@ -502,7 +472,7 @@ function renderCellShape(
   is180: boolean,
   blockId: number,
   shapeType: string,
-  shapeProps: Record<string, any> | null,
+  shapeProps: Record<string, unknown> | null,
   idx: number,
   diePolygon?: number[][] | null,
   showInkingDirection = false,
@@ -602,10 +572,7 @@ function renderCellShape(
     }
 
     case "PENTAGON": {
-      const peakH =
-        shapeProps?.peakHeightRatio !== undefined
-          ? shapeProps.peakHeightRatio
-          : 0.25;
+      const peakH = numericShapeProp(shapeProps, "peakHeightRatio", 0.25);
       // House shape pointing UP. Peak is at TOP.
       const pts = [
         `${cx},${oy}`,
@@ -743,9 +710,9 @@ function renderCellShape(
       const isDumbbell = shapeKey === "DUMBBELL";
 
       // Use actual shape proportions from classifier when available
-      const waistRatio = shapeProps?.waistRatio ?? (isDumbbell ? 0.35 : 0.4);
+      const waistRatio = numericShapeProp(shapeProps, "waistRatio", isDumbbell ? 0.35 : 0.4);
       const bigEndFrac =
-        shapeProps?.bigDAlongAxisFrac ?? (isDumbbell ? 0.3 : 0.37);
+        numericShapeProp(shapeProps, "bigDAlongAxisFrac", isDumbbell ? 0.3 : 0.37);
 
       let pts = "";
       if (isHorizontal) {
@@ -1126,7 +1093,7 @@ export default function GridPreview(props: GridPreviewProps) {
     if (getWorkingFileRef.current) {
       try {
         const wf = await getWorkingFileRef.current();
-        const nativePath = (wf as any)?.path as string | undefined;
+        const nativePath = (wf as WorkspaceFileLike)?.path;
 
         // Chưa sửa trang + có path đĩa → dùng luôn (nhanh).
         if (nativePath && !mustBake) {
@@ -1152,7 +1119,7 @@ export default function GridPreview(props: GridPreviewProps) {
         }
 
         if (bytes) {
-          if ((window as any).__TAURI_INTERNALS__) {
+          if ((window as RuntimeWindow).__TAURI_INTERNALS__) {
             try {
               const { tempDir, join } = await import("@tauri-apps/api/path");
               const { writeFile } = await import("@tauri-apps/plugin-fs");
@@ -1206,7 +1173,7 @@ export default function GridPreview(props: GridPreviewProps) {
     if (!shapeParams) return null;
     try {
       return JSON.parse(shapeParams);
-    } catch (e) {
+    } catch {
       return null;
     }
   }, [shapeParams]);
@@ -1264,9 +1231,6 @@ export default function GridPreview(props: GridPreviewProps) {
   const _layoutIgnoresViewPage =
     _singleMoldFamily || _multiPackLayout;
 
-  const _pageIdxDep = _singleMoldFamily
-    ? _geometryPageIdx
-    : (_layoutIgnoresViewPage ? 0 : pageIdx);
   const _shapesByPageKey = useMemo(() => {
     if (!shapesByPage || typeof shapesByPage !== "object") return "";
     try {
@@ -1288,12 +1252,11 @@ export default function GridPreview(props: GridPreviewProps) {
     if (!_layoutIgnoresViewPage) return `${shapeType}|${itemW}|${itemH}|${shapeParams || ""}`;
     let st = "CUSTOM";
     if (shapesByPage) {
-      const preferred = (shapesByPage as any)[_geometryPageIdx]
-        ?? (shapesByPage as any)[String(_geometryPageIdx)];
+      const preferred = pageValue(shapesByPage, _geometryPageIdx);
       if (preferred && preferred !== "CUSTOM") st = String(preferred);
       else {
         for (const k of Object.keys(shapesByPage)) {
-          const v = (shapesByPage as any)[k];
+          const v = shapesByPage[Number(k)];
           if (v && v !== "CUSTOM") {
             st = String(v);
             break;
@@ -1391,7 +1354,7 @@ export default function GridPreview(props: GridPreviewProps) {
   }, [
     usableW,
     usableH,
-    _layoutIgnoresViewPage,
+    mixedExcessPercent,
     _itemWDep,
     _itemHDep,
     gapX,
@@ -1550,11 +1513,10 @@ export default function GridPreview(props: GridPreviewProps) {
             return shapeType && shapeType !== "CUSTOM" ? shapeType : "CUSTOM";
           }
           if (shapesByPage && typeof shapesByPage === "object") {
-            const preferred = (shapesByPage as any)[_geometryPageIdx]
-              ?? (shapesByPage as any)[String(_geometryPageIdx)];
+            const preferred = pageValue(shapesByPage, _geometryPageIdx);
             if (preferred && preferred !== "CUSTOM") return String(preferred);
             for (const k of Object.keys(shapesByPage)) {
-              const v = (shapesByPage as any)[k];
+              const v = shapesByPage[Number(k)];
               if (v && v !== "CUSTOM") return String(v);
             }
           }
@@ -1563,8 +1525,7 @@ export default function GridPreview(props: GridPreviewProps) {
         const _reqShapeProps = (() => {
           if (!_layoutIgnoresViewPage) return shapePropsParsed || {};
           if (shapeParamsByPage && typeof shapeParamsByPage === "object") {
-            const preferred = (shapeParamsByPage as any)[_geometryPageIdx]
-              ?? (shapeParamsByPage as any)[String(_geometryPageIdx)];
+            const preferred = pageValue(shapeParamsByPage, _geometryPageIdx);
             if (preferred && typeof preferred === "object") return preferred;
           }
           return shapePropsParsed || {};
@@ -1772,8 +1733,8 @@ export default function GridPreview(props: GridPreviewProps) {
               height: cell.height * PT_TO_MM,
               // Đường bế THẬT (backend đã áp đúng transform của file xuất) — pt→mm,
               // toạ độ TOP-DOWN trang. Frontend chỉ vẽ y nguyên, KHÔNG tự xoay/lật.
-              diePolylines: (cell as any).diePolylines
-                ? (cell as any).diePolylines.map((pl: number[][]) =>
+              diePolylines: cell.diePolylines
+                ? cell.diePolylines.map((pl: number[][]) =>
                     pl.map(([px, py]) => [px * PT_TO_MM, py * PT_TO_MM]),
                   )
                 : undefined,
@@ -1787,7 +1748,7 @@ export default function GridPreview(props: GridPreviewProps) {
               (data.isMixedPreview || cells.some((c) => c.pageIdx != null))
             ) {
               const uniq = new Set(
-                cells.map((c) => (c as any).pageIdx).filter((p) => typeof p === "number"),
+                cells.map((c) => c.pageIdx).filter((p) => typeof p === "number"),
               );
               if (uniq.size > viewerPageCount) {
                 console.warn(
@@ -1823,8 +1784,8 @@ export default function GridPreview(props: GridPreviewProps) {
                   }))
                 : undefined,
               // sheets (chia cụm zone modes) — convert MỌI tờ pt→mm để lật không fetch lại.
-              sheets: Array.isArray((data as any).sheets)
-                ? (data as any).sheets.map((sh: any) => ({
+              sheets: Array.isArray(data.sheets)
+                ? data.sheets.map((sh: BackendLayoutSheet) => ({
                     ...sh,
                     overallWidth: (sh.overallWidth || 0) * PT_TO_MM,
                     overallHeight: (sh.overallHeight || 0) * PT_TO_MM,
@@ -1836,7 +1797,7 @@ export default function GridPreview(props: GridPreviewProps) {
                           width: Number(sh.cutTree.rect.width) * PT_TO_MM,
                           height: Number(sh.cutTree.rect.height) * PT_TO_MM,
                         } : undefined,
-                    cells: (sh.cells || []).map((cell: any) => ({
+                    cells: (sh.cells || []).map((cell: BackendLayoutCell) => ({
                       ...cell,
                       x: cell.x * PT_TO_MM,
                       y: cell.y * PT_TO_MM,
@@ -1887,7 +1848,7 @@ export default function GridPreview(props: GridPreviewProps) {
               ms: Math.round(performance.now() - _tPrev),
               capacity: convertedResult.totalItems,
               strategy: data.strategyUsed || "",
-              mixed: !!(data as any).isMixedPreview,
+              mixed: !!data.isMixedPreview,
               split_gap_mm: splitGap,
             });
             if (onCapacityChangeRef.current)
@@ -1921,7 +1882,7 @@ export default function GridPreview(props: GridPreviewProps) {
               } else if (data.isMixedPreview && Array.isArray(data.cells)) {
                 const m: Record<number, number> = {};
                 for (const cell of data.cells) {
-                  const pi = (cell as any).pageIdx;
+                  const pi = cell.pageIdx;
                   if (typeof pi === "number") m[pi] = (m[pi] || 0) + 1;
                 }
                 onMixedPlacedByPageRef.current(m);
@@ -1941,8 +1902,8 @@ export default function GridPreview(props: GridPreviewProps) {
           }
           setIsLoading(false);
         }
-      } catch (err: any) {
-        if (err.name === "AbortError") {
+      } catch (err: unknown) {
+        if (isAbortError(err)) {
           onDiagnosticEventRef.current?.({
             traceId: diagnosticTraceId,
             requestId,
@@ -2005,7 +1966,7 @@ export default function GridPreview(props: GridPreviewProps) {
         let hasRequestedQuantity = false;
         for (let idx = 0; idx < count; idx++) {
           const hasOverride = Object.prototype.hasOwnProperty.call(byPage, idx);
-          const value = Number(hasOverride ? (byPage as any)[idx] : _qtyPerType);
+          const value = Number(hasOverride ? byPage[idx] : _qtyPerType);
           if (Number.isFinite(value) && value > 0) {
             sum += value;
             hasRequestedQuantity = true;
@@ -2100,7 +2061,7 @@ export default function GridPreview(props: GridPreviewProps) {
   const svgBaseYConst = sheetHeight - pdfBaseY - gridH; // Constant part of svgY
 
   // Build SVG cells with final pixel coordinates
-  const svgCells = useMemo(() => {
+  const svgCells = useMemo<SvgPreviewCell[]>(() => {
     if (!layoutResult || !layoutResult.cells) return [];
 
     // SSOT: backend đã trả toạ độ TUYỆT ĐỐI (sau căn giữa + va chạm). Frontend CHỈ vẽ.
@@ -2135,14 +2096,14 @@ export default function GridPreview(props: GridPreviewProps) {
         isRotated: !!cell.isRotated,
         is180: !!cell.isRotated180,
         blockId: resolvePreviewCellType(
-          (cell as any).pageIdx ?? cell.blockId,
+          cell.pageIdx ?? cell.blockId,
           pageIdx,
           taskMode,
           !!isDieCut,
         ),
         // Đường bế THẬT → pixel (mm top-down * scale). Vẽ y nguyên, không xoay/lật.
-        diePolylinesPx: (cell as any).diePolylines
-          ? (cell as any).diePolylines.map((pl: number[][]) =>
+        diePolylinesPx: cell.diePolylines
+          ? cell.diePolylines.map((pl: number[][]) =>
               pl.map(([xm, ym]) => [pad + xm * scale, pad + ym * scale]),
             )
           : undefined,
@@ -2203,10 +2164,10 @@ export default function GridPreview(props: GridPreviewProps) {
   const cutHpx = cutSegmentsPx.length === 0 ? (_cutLines?.h || []).map((h) => pad + (sheetHeight - h) * scale) : [];
 
   // Lật gương Mặt sau theo cạnh lật (CNC). Mặc định long-edge = lật ngang.
-  const _isCncPreview = !!(layoutResult as any)?.isCncPreview;
+  const _isCncPreview = !!layoutResult?.isCncPreview;
   const _cncShortFlip =
     _isCncPreview &&
-    ((layoutResult as any)?.cncFlipEdge || cncFlipEdge) === "short";
+    (layoutResult?.cncFlipEdge || cncFlipEdge) === "short";
   // CNC mặt sau = PHẢN CHIẾU thật, KHỚP output cnc_render (mirror_x/mirror_y):
   //   long-edge → lật NGANG quanh tâm tờ; short-edge → lật DỌC.
   // Phép scale ở mức GROUP phản chiếu CẢ vị trí lẫn nội dung (giống duplex thường),
@@ -2233,7 +2194,7 @@ export default function GridPreview(props: GridPreviewProps) {
     // được +1 thẳng (từng làm mặt sau trang 1 hiện "2b" và sản phẩm 2 hiện "3a").
     if (_isPairDuplex)
       return `${Math.floor(blockId / 2) + 1}${isBack ? "b" : "a"}`;
-    if (isBack && _isCncPreview && (layoutResult as any)?.cncTwoSided)
+    if (isBack && _isCncPreview && layoutResult?.cncTwoSided)
       return blockId + 2;
     return blockId + 1;
   };
@@ -2720,14 +2681,14 @@ export default function GridPreview(props: GridPreviewProps) {
                         : shapePropsParsed;
                     // Đường bế THẬT theo trang (mixed) → vẽ đúng contour mỗi ô (kể cả CUSTOM).
                     const itemDiePoly =
-                      (isMixed && (layoutResult as any)?.diePolygonsByPage
-                        ? (layoutResult as any).diePolygonsByPage[String(c.blockId)]
-                        : null) ?? (layoutResult as any)?.diePolygon;
+                      (isMixed && layoutResult?.diePolygonsByPage
+                        ? layoutResult.diePolygonsByPage[String(c.blockId)]
+                        : null) ?? layoutResult?.diePolygon;
                     return (
                       <g key={c.idx}>
-                        {(c as any).diePolylinesPx ? (
+                        {c.diePolylinesPx ? (
                           <polygon
-                            points={(c as any).diePolylinesPx
+                            points={c.diePolylinesPx
                               .flat()
                               .map((pt: number[]) => `${pt[0]},${pt[1]}`)
                               .join(" ")}
@@ -3002,9 +2963,9 @@ export default function GridPreview(props: GridPreviewProps) {
 
                         // Đường bế THẬT theo trang (CNC mixed) → contour đúng mỗi ô.
                         const itemDiePoly =
-                          (isMixed && (layoutResult as any)?.diePolygonsByPage
-                            ? (layoutResult as any).diePolygonsByPage[String(c.blockId)]
-                            : null) ?? (layoutResult as any)?.diePolygon;
+                          (isMixed && layoutResult?.diePolygonsByPage
+                            ? layoutResult.diePolygonsByPage[String(c.blockId)]
+                            : null) ?? layoutResult?.diePolygon;
 
                         return (
                           <g key={c.idx}>

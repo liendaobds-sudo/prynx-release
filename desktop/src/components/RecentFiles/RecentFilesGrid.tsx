@@ -63,7 +63,7 @@ export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
       handleToggleSelect(rf.path);
       return;
     }
-    if ((window as any).__TAURI_INTERNALS__) {
+    if (window.__TAURI_INTERNALS__) {
       // §RF.1 (audit menu 2026-07-28): stat qua helper dùng chung của store, không tự
       // import plugin-fs ở đây nữa — cờ "file đã mất" nhờ vậy dùng chung với thumbnail
       // và menu Mở gần đây.

@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     createWorkingArtifactController,
     createWorkingArtifactProcessContext,
+    resolveInitialWorkingArtifact,
 } from './workingArtifact';
 import type { ProcessContext } from '../processHandlers';
 import { runRecipe } from './PlaybackRunner';
 import { createRecipe, type RecipeStep } from './recipeTypes';
+import { readArtifactLeaseToken, tagArtifactLeaseToken } from '../artifactLease';
 
 function makeContext(): ProcessContext {
     return {
@@ -25,7 +27,95 @@ function recipeStep(opId: RecipeStep['opId']): RecipeStep {
     return { opId, label: opId, params: {}, recordable: true };
 }
 
+const LEASE_A = 'a'.repeat(64);
+const LEASE_B = 'b'.repeat(64);
+
 describe('WorkingArtifact — chuỗi nguồn phát Recipe', () => {
+    it('khởi tạo từ Working bytes và fail-closed khi materialize lỗi', async () => {
+        const backingFile = new File([new Uint8Array([99])], 'backing.pdf', {
+            type: 'application/pdf',
+        });
+        const backingRead = vi.spyOn(backingFile, 'arrayBuffer');
+        const materializeError = new Error('Không materialize được revision');
+
+        await expect(resolveInitialWorkingArtifact({
+            getWorkingSourcePath: vi.fn(async () => undefined),
+            getWorkingBytes: vi.fn(async () => { throw materializeError; }),
+        }, backingFile)).rejects.toBe(materializeError);
+
+        expect(backingRead).not.toHaveBeenCalled();
+    });
+
+    it('path native lỗi vẫn được phép materialize bytes của cùng revision', async () => {
+        const workingBytes = new Uint8Array([7, 8, 9]);
+        const artifact = await resolveInitialWorkingArtifact({
+            getWorkingSourcePath: vi.fn(async () => { throw new Error('path unavailable'); }),
+            getWorkingBytes: vi.fn(async () => workingBytes),
+        }, new File([], 'working.pdf', { type: 'application/pdf' }));
+
+        expect(artifact).toEqual({
+            kind: 'bytes',
+            name: 'working.pdf',
+            mimeType: 'application/pdf',
+            bytes: workingBytes,
+        });
+    });
+
+    it('giữ lease token qua initial bytes, commit bytes và facade của bước kế', async () => {
+        const source = tagArtifactLeaseToken(
+            new File([new Uint8Array([1])], 'working.pdf', { type: 'application/pdf' }),
+            LEASE_A,
+        );
+        const initial = await resolveInitialWorkingArtifact({
+            getWorkingSourcePath: vi.fn(async () => undefined),
+            getWorkingBytes: vi.fn(async () => new Uint8Array([1])),
+        }, source);
+        const controller = createWorkingArtifactController(initial, {
+            readPath: vi.fn(),
+        });
+
+        expect(readArtifactLeaseToken(controller.toFile())).toBe(LEASE_A);
+
+        const output = tagArtifactLeaseToken(
+            new Blob([new Uint8Array([2])], { type: 'application/pdf' }),
+            LEASE_B,
+        );
+        await controller.commit(output, 'step-1.pdf', undefined, async () => undefined);
+
+        const nextContext = createWorkingArtifactProcessContext(
+            makeContext(),
+            controller,
+            vi.fn(),
+        );
+        expect(readArtifactLeaseToken(controller.toFile())).toBe(LEASE_B);
+        expect(readArtifactLeaseToken(nextContext.file)).toBe(LEASE_B);
+    });
+
+    it('giữ lease token trên path-backed sentinel khi carrier không chứa bytes PDF', async () => {
+        const controller = createWorkingArtifactController({
+            kind: 'bytes',
+            name: 'input.pdf',
+            mimeType: 'application/pdf',
+            bytes: new Uint8Array([1]),
+        }, { readPath: vi.fn() });
+        const carrier = tagArtifactLeaseToken(
+            new Blob([], { type: 'application/pdf' }),
+            LEASE_A,
+        );
+
+        await controller.commit(
+            carrier,
+            'nup.pdf',
+            'D:\\results\\nup.pdf',
+            async () => undefined,
+        );
+
+        const nextFile = controller.toFile() as File & { path?: string };
+        expect(nextFile.path).toBe('D:\\results\\nup.pdf');
+        expect(nextFile.size).toBe(Number.MAX_SAFE_INTEGER);
+        expect(readArtifactLeaseToken(nextFile)).toBe(LEASE_A);
+    });
+
     it('giữ native path làm nguồn chân lý và không đọc carrier 0 byte', async () => {
         const readPath = vi.fn(async () => new Uint8Array([8, 9]));
         const statPath = vi.fn(async () => 987_654);

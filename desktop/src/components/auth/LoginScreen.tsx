@@ -1,10 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { useTranslation } from 'react-i18next';
+
+type AuthUrlEventDetail = {
+  url?: string;
+};
+
+function getAuthErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = error.message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return fallback;
+}
 
 export default function LoginScreen() {
   const { t } = useTranslation();
@@ -19,7 +32,6 @@ export default function LoginScreen() {
   // Deep Link Listener for OAuth Callback
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    let pollInterval: NodeJS.Timeout;
     
     async function processUrls(urls: string[]) {
       for (const url of urls) {
@@ -38,9 +50,11 @@ export default function LoginScreen() {
                   const { error } = await supabase.auth.setSession({ access_token, refresh_token });
                   if (error) throw error;
               }
-            } catch (err: any) {
+            } catch (err: unknown) {
               console.error('Deep link auth error:', err);
-              setErrorMsg(t('misc.login:loi_xu_ly_dang_nhap_tu_trinh_duyet', { msg: err.message }));
+              setErrorMsg(t('misc.login:loi_xu_ly_dang_nhap_tu_trinh_duyet', {
+                msg: getAuthErrorMessage(err, t('misc.login:loi_khong_xac_dinh')),
+              }));
             } finally {
               setLoading(false);
             }
@@ -48,10 +62,11 @@ export default function LoginScreen() {
         }
     }
 
-    const handleCustomEvent = (e: any) => {
-        if (e.detail && e.detail.url) {
-            // console.log('Deep link received via custom event:', e.detail.url);
-            processUrls([e.detail.url]);
+    const handleCustomEvent = (e: Event) => {
+        const detail = (e as CustomEvent<AuthUrlEventDetail>).detail;
+        if (detail?.url) {
+            // console.log('Deep link received via custom event:', detail.url);
+            void processUrls([detail.url]);
         }
     };
 
@@ -72,16 +87,9 @@ export default function LoginScreen() {
       if (unlisten) unlisten();
       window.removeEventListener('auth-url-received', handleCustomEvent);
     };
-  }, []);
+  }, [t]);
 
-  // Auto Discovery Effect
-  useEffect(() => {
-    if (user && !licenseKey) {
-      autoDiscoverLicense();
-    }
-  }, [user, licenseKey]);
-
-  const autoDiscoverLicense = async () => {
+  const autoDiscoverLicense = useCallback(async () => {
     if (!user?.email) return;
     try {
       setLoading(true);
@@ -112,12 +120,19 @@ export default function LoginScreen() {
       } else {
         // console.log('[AUTO-DISCOVERY] No active license found automatically.');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Auto discovery error:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [changeLicenseKey, t, user?.email]);
+
+  // Auto Discovery Effect
+  useEffect(() => {
+    if (user && !licenseKey) {
+      void autoDiscoverLicense();
+    }
+  }, [autoDiscoverLicense, licenseKey, user]);
 
   // Handle Google Login via Deep Link
   const handleGoogleLogin = async () => {
@@ -139,8 +154,8 @@ export default function LoginScreen() {
       } else {
         throw new Error(t('misc.login:khong_lay_duoc_url_dang_nhap'));
       }
-    } catch (err: any) {
-      setErrorMsg(err.message || t('misc.login:loi_dang_nhap_google'));
+    } catch (err: unknown) {
+      setErrorMsg(getAuthErrorMessage(err, t('misc.login:loi_dang_nhap_google')));
       setLoading(false);
     }
   };
@@ -157,8 +172,8 @@ export default function LoginScreen() {
       // changeLicenseKey xác minh tại Edge Function trước khi lưu key vào DPAPI.
       const result = await changeLicenseKey(inputKey.trim());
       if (!result.ok) throw new Error(result.message || t('misc.login:key_khong_hop_le'));
-    } catch (err: any) {
-      setErrorMsg(err.message || t('misc.login:loi_xac_thuc_ban_quyen'));
+    } catch (err: unknown) {
+      setErrorMsg(getAuthErrorMessage(err, t('misc.login:loi_xac_thuc_ban_quyen')));
     } finally {
       setLoading(false);
     }

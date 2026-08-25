@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { ToolSectionLabel, ToolNumberInput, ToolCheckboxOption } from './ToolUI';
 import { RichSelect } from '../imposition-tools/SharedUI';
-import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, StandardFonts, type PDFEmbeddedPage, type PDFImage } from 'pdf-lib';
 import { getFileArrayBuffer } from '../../lib/utils';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { imageBytesToPdfDoc, embedImagePreserveCompression } from '../../lib/imageNormalizer';
@@ -47,7 +47,6 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const [isProcessing, setIsProcessing] = useState(false);
-    const [progress, setProgress] = useState('');
     const [error, setError] = useState('');
     const [isSuccess, setIsSuccess] = useState(false);
 
@@ -115,7 +114,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
         return () => {
             setWatermarkPreview(null);
         };
-    }, [watermarkType, watermarkText, batesStart, batesPadding, watermarkImageUrl, layerZIndex, targetType, rangeStart, rangeEnd, color, fontSize, opacity, rotation, spacing, isRepeated, scaleMode, imageScale, positionXMode, offsetX, positionYMode, offsetY, wmWidth, wmHeight]);
+    }, [setWatermarkPreview, watermarkType, watermarkText, batesStart, batesPadding, watermarkImageUrl, layerZIndex, targetType, rangeStart, rangeEnd, color, fontSize, opacity, rotation, spacing, isRepeated, scaleMode, imageScale, positionXMode, offsetX, positionYMode, offsetY, wmWidth, wmHeight]);
 
     // Clean up object URL ONLY when component unmounts or image actually changes
     React.useEffect(() => {
@@ -141,7 +140,6 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
         setIsSuccess(false);
         setIsProcessing(true);
         setError('');
-        setProgress(t('preprocess.watermark:dang_dong_dau_ban_quyen'));
 
         try {
             const buf = await getFileArrayBuffer((await getWorkingFile()) || pdfFile);
@@ -160,7 +158,8 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
             const outputPdf = await PDFDocument.create();
 
             // Embed watermark image if type is image
-            let embeddedWmElement: any = null;
+            let embeddedWmImage: PDFImage | null = null;
+            let embeddedWmPage: PDFEmbeddedPage | null = null;
             let wmElementWidth = 0;
             let wmElementHeight = 0;
 
@@ -171,13 +170,13 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                 if (wmLowerName.endsWith('.pdf') || watermarkImageFile.type === 'application/pdf') {
                     const wmPdf = await PDFDocument.load(wmBuf, { ignoreEncryption: true });
                     const [embeddedPdfPage] = await outputPdf.embedPages([wmPdf.getPage(0)]);
-                    embeddedWmElement = embeddedPdfPage;
+                    embeddedWmPage = embeddedPdfPage;
                     wmElementWidth = embeddedPdfPage.width;
                     wmElementHeight = embeddedPdfPage.height;
                 } else {
-                    embeddedWmElement = await embedImagePreserveCompression(outputPdf, wmBuf, watermarkImageFile.name);
-                    wmElementWidth = embeddedWmElement.width;
-                    wmElementHeight = embeddedWmElement.height;
+                    embeddedWmImage = await embedImagePreserveCompression(outputPdf, wmBuf, watermarkImageFile.name);
+                    wmElementWidth = embeddedWmImage.width;
+                    wmElementHeight = embeddedWmImage.height;
                 }
             }
             
@@ -247,7 +246,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                     .replace(/\[TIME\]/g, timeStr)
                     .replace(/\[BATES\]/g, (batesStart + processCounter).toString().padStart(batesPadding, '0'));
                 
-                if (watermarkType === 'image' && embeddedWmElement) {
+                if (watermarkType === 'image' && (embeddedWmImage || embeddedWmPage)) {
                     if (scaleMode === 'fit_page') {
                         const rad = rotation * Math.PI / 180;
                         const rotatedWmWidth = Math.abs(wmElementWidth * Math.cos(rad)) + Math.abs(wmElementHeight * Math.sin(rad));
@@ -271,13 +270,12 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                 }
 
                 const drawElement = (x: number, y: number) => {
-                    if (watermarkType === 'image' && embeddedWmElement) {
-                        const isPdfSource = watermarkImageFile && (watermarkImageFile.name.toLowerCase().endsWith('.pdf') || watermarkImageFile.type === 'application/pdf');
-                        if (isPdfSource) {
+                    if (watermarkType === 'image' && (embeddedWmImage || embeddedWmPage)) {
+                        if (embeddedWmPage) {
                             // It's an embedded PDF page
-                            targetPage.drawPage(embeddedWmElement, { x, y, width: elemWidth, height: elemHeight, opacity: opacity, rotate: degrees(rotation) });
-                        } else {
-                            targetPage.drawImage(embeddedWmElement, { x, y, width: elemWidth, height: elemHeight, opacity: opacity, rotate: degrees(rotation) });
+                            targetPage.drawPage(embeddedWmPage, { x, y, width: elemWidth, height: elemHeight, opacity: opacity, rotate: degrees(rotation) });
+                        } else if (embeddedWmImage) {
+                            targetPage.drawImage(embeddedWmImage, { x, y, width: elemWidth, height: elemHeight, opacity: opacity, rotate: degrees(rotation) });
                         }
                     } else if (font) {
                         targetPage.drawText(currentText, { x, y, size: fontSize, font, color: textColor, opacity: opacity, rotate: degrees(rotation) });
@@ -323,18 +321,18 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
             }
 
             const pdfBytes = await outputPdf.save();
-            const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
+            const blobBytes = new Uint8Array(pdfBytes.byteLength);
+            blobBytes.set(pdfBytes);
+            const blob = new Blob([blobBytes.buffer], { type: 'application/pdf' });
 
-            setProgress('');
             if (onFileFixed) {
                 // RECIPE (audit 2026-08-17 §REC.4R): chỉ báo thành công khi commit
                 // thực sự xảy ra; commit bị chặn (đang ghi quy trình) trả về false.
                 const committed = await onFileFixed(blob, `watermarked_${pdfFile.name}`);
                 if (committed !== false) setIsSuccess(true);
             }
-        } catch (e: any) {
-            setError(e.message || t('preprocess.watermark:da_xay_ra_loi_khong_xac_dinh'));
-            setProgress('');
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : t('preprocess.watermark:da_xay_ra_loi_khong_xac_dinh'));
         } finally {
             setIsProcessing(false);
         }
@@ -544,7 +542,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                     </div>
                     <div className="relative z-[50]">
                         <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:ap_dung_cho_trang')}</span>
-                        <RichSelect compact={true} value={targetType} onChange={v => setTargetType(v as any)} options={TARGET_OPTIONS} />
+                        <RichSelect compact={true} value={targetType} onChange={v => setTargetType(v === 'even' || v === 'odd' || v === 'range' ? v : 'all')} options={TARGET_OPTIONS} />
                         
                         {targetType === 'range' && (
                             <div className="flex items-center gap-2 mt-2">
@@ -572,7 +570,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                         <>
                             <div className="relative z-[40]">
                                 <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:che_do_scale')}</span>
-                                <RichSelect compact={true} value={scaleMode} onChange={v => setScaleMode(v as any)} options={SCALE_OPTIONS} />
+                                <RichSelect compact={true} value={scaleMode} onChange={v => setScaleMode(v === 'fit_page' || v === 'stretch' ? v : 'absolute')} options={SCALE_OPTIONS} />
                             </div>
                             {scaleMode === 'absolute' && (
                                 <ToolNumberInput label={t('preprocess.watermark:ty_le_kich_thuoc')} value={imageScale * 100} onChange={v => setImageScale(v / 100)} suffix="%" />
@@ -605,7 +603,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="relative z-[30]">
                                     <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:goc_toa_do_doc')}</span>
-                                    <RichSelect compact={true} value={positionYMode} onChange={v => setPositionYMode(v as any)} options={POS_Y_OPTIONS} />
+                                    <RichSelect compact={true} value={positionYMode} onChange={v => setPositionYMode(v === 'top' || v === 'bottom' ? v : 'center')} options={POS_Y_OPTIONS} />
                                 </div>
                                 <div>
                                     <ToolNumberInput label={t('preprocess.watermark:dich_chuyen_doc')} value={offsetY} onChange={setOffsetY} suffix="mm" />
@@ -614,7 +612,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                             <div className="grid grid-cols-2 gap-4 border-t border-slate-200 dark:border-zinc-700 pt-4">
                                 <div className="relative z-[20]">
                                     <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:goc_toa_do_ngang')}</span>
-                                    <RichSelect compact={true} value={positionXMode} onChange={v => setPositionXMode(v as any)} options={POS_X_OPTIONS} />
+                                    <RichSelect compact={true} value={positionXMode} onChange={v => setPositionXMode(v === 'left' || v === 'right' ? v : 'center')} options={POS_X_OPTIONS} />
                                 </div>
                                 <div>
                                     <ToolNumberInput label={t('preprocess.watermark:dich_chuyen_ngang')} value={offsetX} onChange={setOffsetX} suffix="mm" />

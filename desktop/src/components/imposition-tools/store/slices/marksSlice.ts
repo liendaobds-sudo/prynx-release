@@ -1,7 +1,6 @@
 import type { ImposerSlice } from '../sliceType';
-import type { CropMarksConfig } from '../../MarksSettingsDialog';
-import { DEFAULT_MARKS_CONFIG } from '../../MarksSettingsDialog';
-import { DEFAULT_PONT_CONFIG } from '../../PontSettingsDialog';
+import { DEFAULT_MARKS_CONFIG, type CropMarksConfig } from '../../marksConfig';
+import { DEFAULT_PONT_CONFIG } from '../../pontConfigDefaults';
 import type { PontConfig } from '../../types';
 import { loadFromLocalStorage } from '../_util';
 

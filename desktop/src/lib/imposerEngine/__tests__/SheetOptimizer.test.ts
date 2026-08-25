@@ -19,8 +19,6 @@ const MM_TO_POINTS = 72 / 25.4;
 
 /** Create A5 page dimensions (in pt) */
 const A5_PT: PageDimensions = { width: 148 * MM_TO_POINTS, height: 210 * MM_TO_POINTS };
-/** Create A4 page dimensions (in pt) */
-const A4_PT: PageDimensions = { width: 210 * MM_TO_POINTS, height: 297 * MM_TO_POINTS };
 /** Create very large page (in pt) */
 const HUGE_PT: PageDimensions = { width: 400 * MM_TO_POINTS, height: 500 * MM_TO_POINTS };
 

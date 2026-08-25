@@ -21,16 +21,20 @@ export default function ReportModal({ onClose }: ReportModalProps) {
 
   const { results, summary, fileA, fileB } = useComparisonStore();
 
-  const s = summary as Record<string, any> | null;
-  const overallStatus = s?.overall_status ?? 'N/A';
-  const avgSim = s?.average_similarity ?? 0;
-  const totalDiffs = s?.total_diff_count ?? 0;
-  const pagesPass = s?.pages_pass ?? 0;
-  const pagesFail = s?.pages_fail ?? 0;
-  const pagesWarning = s?.pages_warning ?? 0;
-  const totalInstances = s?.total_instances ?? 0;
-  const failedInstances = s?.failed_instances ?? 0;
-  const llmWarnings: string[] = s?.llm_warnings ?? [];
+  const summaryNumber = (key: string): number => {
+    const value = summary?.[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  };
+  const overallStatus = typeof summary?.overall_status === 'string' ? summary.overall_status : 'N/A';
+  const avgSim = summaryNumber('average_similarity');
+  const pagesPass = summaryNumber('pages_pass');
+  const pagesFail = summaryNumber('pages_fail');
+  const pagesWarning = summaryNumber('pages_warning');
+  const totalInstances = summaryNumber('total_instances');
+  const failedInstances = summaryNumber('failed_instances');
+  const llmWarnings = Array.isArray(summary?.llm_warnings)
+    ? summary.llm_warnings.filter((warning): warning is string => typeof warning === 'string')
+    : [];
 
   const statusColor =
     overallStatus === 'PASS' ? 'text-green-400' :

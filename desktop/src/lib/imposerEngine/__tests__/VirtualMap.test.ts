@@ -283,10 +283,12 @@ describe('GeometricSolver â€” Gutter', () => {
 
 describe('GeometricSolver â€” Fit overflow detection', () => {
     it('flags needsScaleDown when the sheet is smaller than the spread', () => {
-        const settings: any = {
+        const settings: Parameters<typeof solveGeometry>[2] = {
+            paperClassification: 'offset', foliosize: 4, paperThickness: 0,
             formsize: 'custom', customSheetWidth: 100, customSheetHeight: 100,
             bleed: 0, signatureMode: 'saddle', spreadDistribution: 'clustered',
             marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0, markType: 'none',
+            interleave: 'normal', scaleMode: 'fit', spawnNewTab: false,
         };
         const g = solveGeometry(400, 480, settings, {}, 2.83465);
         expect(g.needsScaleDown).toBe(true);

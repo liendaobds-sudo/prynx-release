@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
+import type { ComponentProps } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { authenticatedFetch } from '../../lib/api';
-import CropDialog from './CropDialog';
+import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
+import CropDialogComponent from './CropDialog';
 
 vi.mock('../../lib/api', () => ({
     authenticatedFetch: vi.fn(),
@@ -35,6 +37,16 @@ const fakeJsonResponse = (data: unknown, ok = true) => ({
     blob: async () => new Blob(['pdf'], { type: 'application/pdf' }),
 }) as Response;
 
+let workspaceStore = createWorkspaceStore();
+
+function CropDialog(props: ComponentProps<typeof CropDialogComponent>) {
+    return (
+        <WorkspaceContext.Provider value={workspaceStore}>
+            <CropDialogComponent {...props} />
+        </WorkspaceContext.Provider>
+    );
+}
+
 function openCropDialog(overrides: Record<string, unknown> = {}) {
     act(() => {
         window.dispatchEvent(new CustomEvent('prynx-crop-open', {
@@ -52,8 +64,14 @@ function openCropDialog(overrides: Record<string, unknown> = {}) {
 describe('CropDialog interaction safety', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-    });
         localStorage.clear();
+        workspaceStore = createWorkspaceStore();
+        const state = workspaceStore.getState();
+        state.setFile(new File(['pdf'], 'source.pdf', { type: 'application/pdf' }));
+        state.setViewerPageOrder([1, 2, 3]);
+        state.setViewerPageInstanceIds(['page-1', 'page-2', 'page-3']);
+        state.setViewerPageRotations([0, 0, 0]);
+    });
 
     afterEach(() => {
         cleanup();
@@ -429,5 +447,172 @@ describe('CropDialog interaction safety', () => {
         expect(reopenedOutput.value).toBe('regions_only');
         expect(reopenedNewTab.checked).toBe(false);
         expect(screen.getByRole('button', { name: 'align_right' }).getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('rebinds the crop to the latest file ID, page position, and rotation after a workspace revision', async () => {
+        const ensureFileId = vi.fn()
+            .mockResolvedValueOnce('old-fid')
+            .mockResolvedValue('new-fid');
+        let cropBody: { file_id: string; page: number; pages: number[] } | undefined;
+        vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) {
+                const page = target.endsWith('/2') ? 2 : 1;
+                return Promise.resolve(fakeJsonResponse({ ...pageBoxes, page }));
+            }
+            if (target.includes('/crop-regions')) {
+                cropBody = JSON.parse(String(init?.body));
+                return Promise.resolve(fakeJsonResponse({ success: true, output_filename: 'latest.pdf' }));
+            }
+            if (target.includes('/download/latest.pdf')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        render(<CropDialog ensureFileId={ensureFileId} onApplied={onApplied} onClose={vi.fn()} />);
+        openCropDialog();
+
+        await waitFor(() => expect(vi.mocked(authenticatedFetch).mock.calls.some(([url]) =>
+            String(url).includes('/page-boxes/old-fid/1'))).toBe(true));
+
+        act(() => workspaceStore.setState({
+            viewerPageOrder: [2, 1, 3],
+            viewerPageInstanceIds: ['page-2', 'page-1', 'page-3'],
+            viewerPageRotations: [0, 90, 0],
+            editGeneration: 1,
+        }));
+
+        await waitFor(() => expect(vi.mocked(authenticatedFetch).mock.calls.some(([url]) =>
+            String(url).includes('/page-boxes/new-fid/2'))).toBe(true));
+        const applyButton = await screen.findByRole('button', { name: 'apply_crop' });
+        await waitFor(() => expect((applyButton as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(applyButton);
+
+        await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+        expect(cropBody).toMatchObject({
+            file_id: 'new-fid',
+            page: 2,
+            pages: [2],
+        });
+    });
+
+    it('resets the crop instead of falling through to another page when its owner was deleted', async () => {
+        render(<CropDialog ensureFileId={async () => 'fid'} onApplied={vi.fn()} onClose={vi.fn()} />);
+        openCropDialog({ totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+        await screen.findByRole('dialog');
+
+        act(() => workspaceStore.setState({
+            viewerPageOrder: [2, 3],
+            viewerPageInstanceIds: ['page-2', 'page-3'],
+            viewerPageRotations: [0, 0],
+            editGeneration: 1,
+        }));
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        expect(screen.queryByRole('button', { name: 'apply_crop' })).toBeNull();
+        expect(vi.mocked(authenticatedFetch).mock.calls.some(([url]) =>
+            String(url).includes('/crop-regions'))).toBe(false);
+    });
+
+    it('ignores a late edge-detection response from an older workspace revision', async () => {
+        let currentFileId = 'old-fid';
+        let oldDetectSignal: AbortSignal | undefined;
+        let resolveOldDetection: ((response: Response) => void) | undefined;
+        let cropBody: { rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }> } | undefined;
+        const oldRegion = {
+            rect_mm: { x0: 5, y0: 5, x1: 50, y1: 50 },
+            changed: true,
+            safe_to_apply: true,
+            method: 'object',
+            confidence: 'high',
+        };
+        const newRegion = {
+            rect_mm: { x0: 30, y0: 40, x1: 180, y1: 250 },
+            changed: true,
+            safe_to_apply: true,
+            method: 'object',
+            confidence: 'high',
+        };
+        vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
+            if (target.includes('/detect-crop-regions')) {
+                const body = JSON.parse(String(init?.body)) as { file_id: string };
+                if (body.file_id === 'old-fid') {
+                    oldDetectSignal = init?.signal || undefined;
+                    return new Promise<Response>((resolve) => {
+                        resolveOldDetection = resolve;
+                    });
+                }
+                return Promise.resolve(fakeJsonResponse({ regions: [newRegion] }));
+            }
+            if (target.includes('/crop-regions')) {
+                cropBody = JSON.parse(String(init?.body));
+                return Promise.resolve(fakeJsonResponse({ success: true, output_filename: 'detected.pdf' }));
+            }
+            if (target.includes('/download/detected.pdf')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        render(<CropDialog ensureFileId={async () => currentFileId} onApplied={onApplied} onClose={vi.fn()} />);
+        openCropDialog({ totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+        fireEvent.click(await screen.findByRole('checkbox', { name: /process_excess_edges/ }));
+        await waitFor(() => expect(oldDetectSignal).toBeDefined());
+
+        currentFileId = 'new-fid';
+        act(() => workspaceStore.getState().advanceEditGeneration());
+        await waitFor(() => expect(oldDetectSignal?.aborted).toBe(true));
+        await waitFor(() => expect(vi.mocked(authenticatedFetch).mock.calls.some(([, init]) =>
+            String(init?.body).includes('new-fid'))).toBe(true));
+
+        await act(async () => {
+            resolveOldDetection?.(fakeJsonResponse({ regions: [oldRegion] }));
+            await Promise.resolve();
+        });
+
+        const applyButton = screen.getByRole('button', { name: 'apply_crop' });
+        await waitFor(() => expect((applyButton as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(applyButton);
+        await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+        expect(cropBody?.rects_mm[0]).toEqual(newRegion.rect_mm);
+    });
+
+    it('aborts an apply from an older workspace revision and never publishes its late result', async () => {
+        let currentFileId = 'old-fid';
+        let cropSignal: AbortSignal | undefined;
+        let resolveCrop: ((response: Response) => void) | undefined;
+        vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
+            if (target.includes('/crop-regions')) {
+                cropSignal = init?.signal || undefined;
+                return new Promise<Response>((resolve) => {
+                    resolveCrop = resolve;
+                });
+            }
+            if (target.includes('/download/')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        render(<CropDialog ensureFileId={async () => currentFileId} onApplied={onApplied} onClose={vi.fn()} />);
+        openCropDialog({ totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+        const applyButton = await screen.findByRole('button', { name: 'apply_crop' });
+        await waitFor(() => expect((applyButton as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(applyButton);
+        await waitFor(() => expect(cropSignal).toBeDefined());
+
+        currentFileId = 'new-fid';
+        act(() => workspaceStore.getState().advanceEditGeneration());
+        await waitFor(() => expect(cropSignal?.aborted).toBe(true));
+        await act(async () => {
+            resolveCrop?.(fakeJsonResponse({ success: true, output_filename: 'stale.pdf' }));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => expect(onApplied).not.toHaveBeenCalled());
+        expect(vi.mocked(authenticatedFetch).mock.calls.some(([url]) =>
+            String(url).includes('/download/stale.pdf'))).toBe(false);
     });
 });

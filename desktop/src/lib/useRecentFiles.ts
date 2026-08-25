@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { statNativeSystemFile } from './nativeFileAccess';
+import {
+  statNativeSystemFile,
+  type NativeFileStatResult,
+} from './nativeFileAccess';
 import { isOutputFile } from './constants';
 
 export interface RecentFile {
@@ -165,23 +168,32 @@ export function addOpenPayloadToRecent(payload?: OpenPayloadWithSources | null):
   return added;
 }
 /**
- * Kiểm một mục "mở gần đây" qua command native dùng được với D:/USB/UNC.
- * Chỉ `missing` đã được xác nhận mới trả `null`; timeout/quyền/NAS offline vẫn trả
- * `{ size: 0 }` để caller thử mở bằng native path và không xóa nhầm mục Recent.
+ * Probe giữ nguyên trạng thái native để thumbnail không biến timeout/NAS offline
+ * thành một request tile chắc chắn lỗi. Chỉ `missing` mới cập nhật cờ mất file.
  */
-export async function statRecentFile(path: string): Promise<{ size: number } | null> {
-  if (!('__TAURI_INTERNALS__' in window)) return { size: 0 };
-
+export async function probeRecentFile(path: string): Promise<NativeFileStatResult> {
+  if (!('__TAURI_INTERNALS__' in window)) {
+    return { status: 'available', size: 0 };
+  }
   // FILEIO (audit 2026-08-02 §OPEN.2): plugin-fs mất scope sau restart và từ chối
   // ổ D/USB/UNC; dùng cùng contract native với Open With/Home.
   const info = await statNativeSystemFile(path);
   if (info.status === 'available') {
     useRecentFiles.getState().clearMissing(path);
-    return { size: info.size };
+    return info;
   }
   if (info.status === 'missing') {
     useRecentFiles.getState().markMissing(path);
-    return null;
   }
-  return { size: 0 };
+  return info;
+}
+
+/**
+ * Contract cho thao tác Mở: timeout/quyền/NAS offline vẫn được thử bằng native path
+ * và không bị xóa nhầm khỏi Recent; chỉ `missing` chắc chắn mới trả `null`.
+ */
+export async function statRecentFile(path: string): Promise<{ size: number } | null> {
+  const info = await probeRecentFile(path);
+  if (info.status === 'missing') return null;
+  return { size: info.status === 'available' ? info.size : 0 };
 }

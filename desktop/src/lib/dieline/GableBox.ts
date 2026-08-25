@@ -19,10 +19,11 @@ import {
     snap,
     computeBoundingBox,
     bezierSegment,
-    arc,
 } from './utils';
 
 import { tracePerimeter } from './tracePerimeter';
+
+type DielineAnnotation = NonNullable<Panel['annotations']>[number];
 
 import {
     computeSnapLockPairs,
@@ -48,7 +49,7 @@ import { GLUE_TAPER_RATIO } from './constants';
  * Gốc tọa độ (0,0) = góc dưới-trái của panel ngoài cùng bên trái.
  */
 export function generateGableBox(params: BoxParams): DielineModel {
-    const { L, W, D, T, G, glueSide, panelOrder, HH, HW, HHL, handleShape, SLP } = params;
+    const { L, W, D, T, G, glueSide, panelOrder, HW, HHL, handleShape, SLP } = params;
 
     const allPaths: PathSegment[] = [];
     const panels: Panel[] = [];
@@ -592,12 +593,12 @@ function buildGablePanel(
     gableStyle: 'flat' | 'pitched' = 'flat', // Kiểu mái
     overrideTRW: number = 0, // Bề rộng ngàm (0 = auto L/9)
     ratioSLH: number = 85 // Tỷ lệ chiều cao ngàm / rãnh so với tay cầm (%)
-): { paths: PathSegment[], holes: PathSegment[], basePaths: PathSegment[], handlePaths: PathSegment[], baseOutline: Point2D[], handleOutline: Point2D[], annotations: any[] } {
+): { paths: PathSegment[], holes: PathSegment[], basePaths: PathSegment[], handlePaths: PathSegment[], baseOutline: Point2D[], handleOutline: Point2D[], annotations: DielineAnnotation[] } {
     const paths: PathSegment[] = [];
     const holes: PathSegment[] = [];
     const basePaths: PathSegment[] = [];
     const handlePaths: PathSegment[] = [];
-    const annotations: any[] = [];
+    const annotations: DielineAnnotation[] = [];
 
     // === Step 1: Trapezoid ABCD (base width = L, top width = 5/6 L if pitched, L if flat) ===
     const h1 = snap(gableStyle === 'pitched' ? sideW / Math.sqrt(3) : sideW / 2);
@@ -843,11 +844,11 @@ function buildSideTriFlap(
     ratioSLH: number = 85,
     overrideTRW: number = 0,
     overrideHFH: number = 0  // HFH — cao tay cầm (bám theo buildGablePanel để rãnh khớp ngàm)
-): { paths: PathSegment[], holes: PathSegment[], annotations: any[] } {
+): { paths: PathSegment[], holes: PathSegment[], annotations: DielineAnnotation[] } {
 
     const paths: PathSegment[] = [];
     const holes: PathSegment[] = [];
-    const annotations: any[] = [];
+    const annotations: DielineAnnotation[] = [];
     
     const h1 = snap(gableStyle === 'pitched' ? sideW / Math.sqrt(3) : sideW / 2);
     const h2 = snap(overrideHFH > 0 ? overrideHFH : 0.9 * h1);  // bám theo HFH như buildGablePanel

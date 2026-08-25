@@ -57,7 +57,7 @@ export interface ImpositionPreset {
   
   // N-Up settings (chỉ khi taskMode = 'nup')
   nup?: {
-    layoutType: 'repeat' | 'sequential' | 'cut_stacks';
+    layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine';
     columns: number;
     rows: number;
     gridStrategy: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
@@ -69,6 +69,7 @@ export interface ImpositionPreset {
     clusterCount: number;
     clusterGap: number;
     clusterGapMode: 'item' | 'mark';
+    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     /** Tùy chọn để preset cũ vẫn nạp được và mặc định về tắt. */
     cutBorder?: {
       enabled: boolean;
@@ -88,8 +89,10 @@ function generateId(): string {
 }
 
 // ─── Try to use Tauri filesystem, fallback to localStorage ───
-let tauriFs: any = null;
-let tauriPath: any = null;
+// Giữ module Tauri dưới dạng type import để dev/test vẫn nạp động như trước,
+// nhưng không làm mất hợp đồng API ở biên lưu preset.
+let tauriFs: typeof import('@tauri-apps/plugin-fs') | null = null;
+let tauriPath: typeof import('@tauri-apps/api/path') | null = null;
 
 async function initTauri() {
   try {

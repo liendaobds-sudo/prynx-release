@@ -5,24 +5,30 @@ import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 20
 import { CmykColorPicker } from './DataMergeTool';
 import { ToolNumberInput } from './ToolUI';
 import { FontSelector } from './FontSelector';
-import { useVdpTool } from '@/hooks/useVdpTool';
+import { useVdpTool, type SetVdpFields, type VdpToolField } from '@/hooks/useVdpTool';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import { sortFieldsGeometrically, VdpSortMethod } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useNumberingJobStore } from '@/stores/useNumberingJobStore';
 import { useTranslation } from 'react-i18next';
+import { tagArtifactLeaseToken } from '@/lib/artifactLease';
 
 interface Props {
   pdfFile: File | null;
   getWorkingFile?: () => Promise<File>;
-  vdpFields?: any[];
-  setVdpFields?: React.Dispatch<React.SetStateAction<any[]>>;
+  vdpFields?: VdpToolField[];
+  setVdpFields?: SetVdpFields;
   selectedFieldIds?: string[];
   onSelectField?: (ids: string[]) => void;
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
   onApplyResult?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
   isActive?: boolean;
+}
+
+interface NumberingSlot extends VdpToolField {
+  isSlot: true;
+  fields: VdpToolField[];
 }
 
 export default function NumberingTool({
@@ -111,7 +117,7 @@ export default function NumberingTool({
         deleteSelectedField,
         handleGroupFields,
         handleUngroupFields
-    } = useVdpTool(vdpFields, setVdpFields as any, selectedFieldIds, onSelectField, isActive);
+    } = useVdpTool(vdpFields, setVdpFields, selectedFieldIds, onSelectField, isActive);
 
     // Sync vdpFields names to "Slot 1", "Slot 2" automatically
     useEffect(() => {
@@ -139,11 +145,13 @@ export default function NumberingTool({
             return f;
         });
         if (needsUpdate) setVdpFields(updated);
+    // LINT (audit 2026-08-24 LO140): chỉ đồng bộ khi số field đổi; thay đổi nội dung cùng độ dài không được ghi đè thao tác người dùng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [vdpFields.length]); // Only run when field count changes
 
 
 
-    const generateSequence = () => {
+    const generateSequence = React.useCallback(() => {
         // Trần an toàn số phần tử để preview/sinh không làm đơ app với range/bộ quá lớn.
         const MAX_SEQUENCE = 200000;
         const rawSequence: string[] = [];
@@ -227,15 +235,18 @@ export default function NumberingTool({
             }
         }
         return rawSequence;
-    };
+    }, [
+        genMethod, increment, startNum, endNum, padZero, padLength, prefix, suffix,
+        setStartStr, setTotal, seqTotal, seqStart, formatTemplate, isShuffle,
+    ]);
 
     // Gom field thành slot (theo groupId) rồi SORT theo sortMethod. Dùng CHUNG cho
     // cả sinh dữ liệu (generateDataMatrix) và preview để preview KHÔNG lệch output:
     // preview trước đây tính numSlots = vdpFields.length và bỏ qua group/sort nên
     // hiển thị sai số ô + sai thứ tự ngay khi người dùng group hoặc đổi kiểu quét.
     const buildSortedSlots = React.useCallback(() => {
-        const slots: any[] = [];
-        const groupMap = new Map<string, any[]>();
+        const slots: NumberingSlot[] = [];
+        const groupMap = new Map<string, VdpToolField[]>();
 
         vdpFields.forEach(f => {
             if (f.groupId) {
@@ -248,11 +259,11 @@ export default function NumberingTool({
 
         groupMap.forEach((fieldsInGroup, groupId) => {
             // Representative coordinate is the top-left-most field
-            let minX = fieldsInGroup[0].x || fieldsInGroup[0].position?.x;
-            let minY = fieldsInGroup[0].y || fieldsInGroup[0].position?.y;
+            let minX = (fieldsInGroup[0].x || fieldsInGroup[0].position?.x)!;
+            let minY = (fieldsInGroup[0].y || fieldsInGroup[0].position?.y)!;
             fieldsInGroup.forEach(f => {
-                const fx = f.x || f.position?.x;
-                const fy = f.y || f.position?.y;
+                const fx = (f.x || f.position?.x)!;
+                const fy = (f.y || f.position?.y)!;
                 if (fx < minX) minX = fx;
                 if (fy < minY) minY = fy;
             });
@@ -267,7 +278,7 @@ export default function NumberingTool({
 
         // Ensure all slots have position for sorting
         slots.forEach(s => {
-            if (!s.position) s.position = { x: s.x, y: s.y };
+            if (!s.position) s.position = { x: s.x ?? 0, y: s.y ?? 0 };
         });
 
         return sortFieldsGeometrically(slots, sortMethod);
@@ -297,7 +308,7 @@ export default function NumberingTool({
                 
                 // Assign the same sequence number to ALL fields in this Slot
                 const slotValue = rawSequence[indexInSequence] || "";
-                sortedSlots[s].fields.forEach((originalField: any) => {
+                sortedSlots[s].fields.forEach((originalField) => {
                     row[originalField.name] = slotValue;
                 });
             }
@@ -328,16 +339,18 @@ export default function NumberingTool({
             const blob = result.blob;
             const path = result.path;
             if (!blob) throw new Error(t('preprocess.numbering:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
+            // LIFECYCLE (audit 2026-08-25 §REV.11): callback luôn nhận artifact kèm lease backend.
+            const outputBlob = tagArtifactLeaseToken(blob, result.artifactLease);
             const outName = `Numbered_${pdfFile.name}`;
             
             if (spawnNewTab && onSpawnTab) {
-                onSpawnTab(blob, outName, path ?? undefined);
+                onSpawnTab(outputBlob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.numbering:hoan_thanh_da_tao_tab_pdf_moi'));
             } else if (onApplyResult) {
-                await onApplyResult(blob, outName, path ?? undefined);
+                await onApplyResult(outputBlob, outName, path ?? undefined);
                 setStatusMessage(t('preprocess.numbering:hoan_thanh_da_ghi_de_file_hien_tai'));
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
             if (isCanceled(error)) { setStatusMessage(t('preprocess.numbering:da_huy', 'Đã hủy')); return; }
             console.error(error);
@@ -387,7 +400,7 @@ export default function NumberingTool({
         } catch {
             return [t('preprocess.numbering:loi_cau_hinh_day_so')];
         }
-    }, [genMethod, startNum, endNum, increment, padZero, padLength, prefix, suffix, setTotal, setStartStr, seqTotal, seqStart, formatTemplate, isShuffle, applyStyle, buildSortedSlots]);
+    }, [applyStyle, buildSortedSlots, generateSequence, t, vdpFields.length]);
 
     return (
         <div className="flex w-full flex-col gap-4">

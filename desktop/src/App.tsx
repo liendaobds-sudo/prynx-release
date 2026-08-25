@@ -11,16 +11,18 @@ import { scheduleWarmupPdfjs } from './lib/pdfWarmup';
 import { appPerf } from './lib/perfMarks';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
-import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolForLaunch, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, isImpositionFamilyTool, type AppToolId } from './lib/toolRegistry';
+import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolForLaunch, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, isImpositionFamilyTool, type AppToolId, type ToolLaunchPayload } from './lib/toolRegistry';
 import { MenuBar, type MenuDef } from './components/MenuBar';
-import AboutModal, { SUPPORT } from './components/AboutModal';
+import AboutModal from './components/AboutModal';
+import { SUPPORT } from './lib/supportContact';
 import { useAppSettingsStore } from './stores/appSettingsStore';
 import { useActiveViewerStore } from './stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
 import { useTheme } from './hooks/useTheme';
 import { addOpenPayloadToRecent, useRecentFiles, statRecentFile } from './lib/useRecentFiles';
 import { createPathBackedFile, dispatchSupportedSystemFiles, systemFileMime } from './lib/nativeFileAccess';
 import { SUPPORTED_IMAGE_EXTENSIONS } from './lib/imageFileTypes';
-import { FileProvider, useFileContext } from './lib/fileContext';
+import { FileProvider } from './lib/fileContext';
+import { useFileContext } from './lib/fileContextCore';
 import { isOutputFile } from './lib/constants';
 import { useAuthStore } from './stores/useAuthStore';
 import LoginScreen from './components/auth/LoginScreen';
@@ -32,7 +34,16 @@ import { ToastViewport, toast } from './components/ui/Toast';
 // UIUX (audit 2026-07-27 §D-13): câu lỗi tiếng Việt + hướng khắc phục thay vì "Min/Max/Close Error"
 import { formatError } from './lib/errorMessages';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
-import { listSnapshots, clearAllSnapshots, deleteSnapshot, writeSnapshot, type RecoverySnapshot } from './lib/recovery';
+import {
+  bindRecoverySourceFingerprint,
+  clearAllSnapshots,
+  deleteSnapshot,
+  isRecoverySourceCurrent,
+  listSnapshots,
+  readRecoverySourceFingerprint,
+  writeSnapshot,
+  type RecoverySnapshot,
+} from './lib/recovery';
 import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
@@ -43,9 +54,28 @@ import { hasDirtySessions, isDirtySession } from './lib/dirtySession';
 import { useIncomingFileDispatcher } from './hooks/useIncomingFileDispatcher';
 import { useToolActivationGuard } from './hooks/useToolActivationGuard';
 import FeatureAccessOverlay from './components/license/FeatureAccessOverlay';
+import {
+  createDocumentWindow,
+  createDocumentWindowBootstrapFile,
+  showDocumentWindowReady,
+  type DocumentWindowBootstrap,
+  type DocumentWindowTabApi,
+  type PreparedDocumentWindow,
+} from './lib/documentWindow';
 
 type AppTabType = 'home' | AppToolId;
 type OpenAppResult = { tabId: string; created: boolean } | null;
+type AppRuntimeGlobal = typeof globalThis & { __TAURI_INTERNALS__?: unknown };
+interface AppProps { documentWindowBootstrap?: DocumentWindowBootstrap }
+
+function isNativeRuntime(): boolean {
+  return typeof window !== 'undefined'
+    && Boolean((globalThis as AppRuntimeGlobal).__TAURI_INTERNALS__);
+}
+
+function isLockedMode(value: string | undefined): value is NonNullable<ToolLaunchPayload['lockedMode']> {
+  return value === 'booklet' || value === 'nup' || value === 'sticker_imposer' || value === 'cnc_imposer';
+}
 
 // ── BẢNG NĂNG LỰC TAB (audit menu 2026-07-28 §MB.1/§MB.2) ──────────────────
 // Menu bar phát lệnh bằng sự kiện window; tab nào KHÔNG có listener thì bấm menu
@@ -88,17 +118,17 @@ interface AppTab {
   type: AppTabType;
   title: string;
   isClosable: boolean;
-  payload?: any;
+  payload?: ToolLaunchPayload;
   isDirty?: boolean;
 }
 
 // Custom Frameless Window Titlebar (OhMyShot style)
-function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
+function TitleBar({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { t } = useTranslation();
   // UIUX (audit 2026-07-27 §A-10): theo dõi trạng thái phóng to để đổi icon + title nút maximize
   const [isMaximized, setIsMaximized] = useState(false);
   useEffect(() => {
-    if (!(window as any).__TAURI_INTERNALS__) return; // chỉ áp cho desktop Tauri
+    if (!isNativeRuntime()) return; // chỉ áp cho desktop Tauri
     const win = getCurrentWindow();
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -143,7 +173,7 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div className="flex items-center gap-2 mr-4">
           <button
             onClick={onOpenSettings}
-            className="w-[26px] h-[26px] rounded-md text-slate-500 hover:text-slate-800 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/10 flex items-center justify-center transition-colors border border-transparent hover:border-black/10 dark:hover:border-white/10"
+            className={`${onOpenSettings ? '' : 'hidden '}w-[26px] h-[26px] rounded-md text-slate-500 hover:text-slate-800 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/10 flex items-center justify-center transition-colors border border-transparent hover:border-black/10 dark:hover:border-white/10`}
             title={t('shell:cai_dat_he_thong_cau_hinh_api_mo_hinh')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -158,7 +188,7 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           className="w-12 h-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer group text-slate-700 dark:text-zinc-300"
           onClick={() => {
             // UIUX (audit 2026-07-27 §D-13): lỗi tiếng Việt qua formatError
-            getCurrentWindow().minimize().catch((e: any) => toast.error(formatError(e, t('shell:khong_thu_nho_duoc_cua_so', 'Không thu nhỏ được cửa sổ'))));
+            getCurrentWindow().minimize().catch((e: unknown) => toast.error(formatError(e, t('shell:khong_thu_nho_duoc_cua_so', 'Không thu nhỏ được cửa sổ'))));
           }}
           title={t('shell:thu_nho')}
           role="button"
@@ -172,7 +202,7 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           className="w-12 h-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer group text-slate-700 dark:text-zinc-300"
           onClick={() => {
             // UIUX (audit 2026-07-27 §D-13): lỗi tiếng Việt qua formatError
-            getCurrentWindow().toggleMaximize().catch((e: any) => toast.error(formatError(e, t('shell:khong_phong_to_duoc_cua_so', 'Không phóng to được cửa sổ'))));
+            getCurrentWindow().toggleMaximize().catch((e: unknown) => toast.error(formatError(e, t('shell:khong_phong_to_duoc_cua_so', 'Không phóng to được cửa sổ'))));
           }}
           // UIUX (audit 2026-07-27 §A-10): title + icon đổi theo trạng thái phóng to
           title={isMaximized ? t('shell:khoi_phuc', 'Khôi phục') : t('shell:phong_to')}
@@ -215,17 +245,19 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
 /** Minimum time to keep brand intro visible (~light animation + short hold). */
 const SPLASH_MIN_MS = 3000;
 
-export default function App() {
-  const { licenseKey, licenseValid, isChecking, checkSession, setUser, isLicenseLocked } = useAuthStore();
-  const [splashMinElapsed, setSplashMinElapsed] = useState(false);
-  const [splashExiting, setSplashExiting] = useState(false);
-  const [splashDone, setSplashDone] = useState(false);
+export default function App({ documentWindowBootstrap }: AppProps) {
+  const isDocumentWindow = Boolean(documentWindowBootstrap);
+  const { licenseKey, licenseValid, isChecking, checkSession, setUser } = useAuthStore();
+  const [splashMinElapsed, setSplashMinElapsed] = useState(isDocumentWindow);
+  const [splashExiting, setSplashExiting] = useState(isDocumentWindow);
+  const [splashDone, setSplashDone] = useState(isDocumentWindow);
 
   useEffect(() => {
+    if (isDocumentWindow) return;
     appPerf.mark('app-mounted');
     const t = window.setTimeout(() => setSplashMinElapsed(true), SPLASH_MIN_MS);
     return () => window.clearTimeout(t);
-  }, []);
+  }, [isDocumentWindow]);
 
   useEffect(() => {
     appPerf.mark('warmup-scheduled');
@@ -235,6 +267,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (isDocumentWindow) return;
     checkSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -244,11 +277,13 @@ export default function App() {
     return () => {
       subscription.unsubscribe();
     };
-  }, [checkSession, setUser]);
+  }, [checkSession, isDocumentWindow, setUser]);
 
   // When session is ready and min intro time elapsed → play exit cinematic.
   useEffect(() => {
     if (!isChecking && splashMinElapsed && !splashExiting && !splashDone) {
+      // Chuyển sang pha exit là đồng bộ state với điều kiện sẵn sàng; giữ trigger để animation chạy đúng một lần.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- state machine splash có chủ đích.
       setSplashExiting(true);
     }
   }, [isChecking, splashMinElapsed, splashExiting, splashDone]);
@@ -268,6 +303,18 @@ export default function App() {
     );
   }
 
+  // UIUX/SEC (audit 2026-08-25 §NW.4–§NW.5): child được tạo từ một main đã
+  // xác thực, bỏ intro/login/updater và không trở thành startup owner thứ hai.
+  if (documentWindowBootstrap) {
+    return (
+      <FileProvider>
+        <AppInner documentWindowBootstrap={documentWindowBootstrap} />
+        <ToastViewport />
+        <ConfirmDialogHost />
+      </FileProvider>
+    );
+  }
+
   // [KEY-FIRST ACTIVATION 2026-08-18] Gmail chỉ hỗ trợ tìm lại key; quyền mở app
   // phải dựa trên key đã được xác minh, không phụ thuộc phiên đăng nhập Google.
   const isAuthenticated = Boolean(licenseKey && licenseValid);
@@ -284,12 +331,21 @@ export default function App() {
   );
 }
 
-function AppInner() {
+function AppInner({ documentWindowBootstrap }: AppProps) {
   const { t } = useTranslation();
-  const [tabs, setTabs] = useState<AppTab[]>([
-    { id: 'home', type: 'home', title: 'Home', isClosable: false }
-  ]);
-  const [activeTabId, setActiveTabId] = useState<string>('home');
+  const documentTabId = documentWindowBootstrap
+    ? `document-view:${documentWindowBootstrap.windowLabel}`
+    : null;
+  const [tabs, setTabs] = useState<AppTab[]>(() => documentWindowBootstrap && documentTabId
+    ? [{
+        id: documentTabId,
+        type: 'imposition',
+        title: `${documentWindowBootstrap.documentTitle}:${documentWindowBootstrap.windowNumber}`,
+        isClosable: false,
+        payload: { file: createDocumentWindowBootstrapFile(documentWindowBootstrap) },
+      }]
+    : [{ id: 'home', type: 'home', title: 'Home', isClosable: false }]);
+  const [activeTabId, setActiveTabId] = useState<string>(() => documentTabId ?? 'home');
   const [tabToConfirmClose, setTabToConfirmClose] = useState<string | null>(null);
   /**
    * Hàng đợi hỏi-lưu: hỏi TỪNG file dirty (như Acrobat), không gộp 1 popup tất cả.
@@ -318,6 +374,7 @@ function AppInner() {
   // AppInner là mốc shell đã được mount sau splash. Warm-up được khởi động ở
   // App() để không đợi hết splash và không cần render toàn bộ tab tree.
   useEffect(() => {
+    if (documentWindowBootstrap) return;
     appPerf.mark('app-inner-mounted');
     appPerf.measure('startup-to-app-inner', 'app-mounted', 'app-inner-mounted');
     // PERF (audit 2026-08-05 §PERF.5): mốc cuối nối log native với lúc Home
@@ -325,12 +382,12 @@ function AppInner() {
     void import('@tauri-apps/api/core')
       .then(({ invoke }) => invoke('mark_frontend_interactive'))
       .catch(() => undefined);
-  }, []);
+  }, [documentWindowBootstrap]);
 
   // ── CRASH RECOVERY: quét snapshot còn sót lúc khởi động (chỉ có nếu lần trước
   //    CRASH — thoát sạch đã xóa hết). Có → hỏi user khôi phục. ──────────────────
   useEffect(() => {
-    if (!(window as any).__TAURI_INTERNALS__) return;
+    if (documentWindowBootstrap || !isNativeRuntime()) return;
     let cancelled = false;
     (async () => {
       try {
@@ -339,28 +396,10 @@ function AppInner() {
       } catch { /* bỏ qua nếu lỗi */ }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [documentWindowBootstrap]);
   
   // Drag hover to switch tab logic
   const tabHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const handleTabDragOver = useCallback((e: React.DragEvent, id: string) => {
-    e.preventDefault(); // Necessary to allow dropping over the tab
-    if (activeTabIdRef.current !== id) {
-      if (!tabHoverTimeoutRef.current) {
-        tabHoverTimeoutRef.current = setTimeout(() => {
-          setActiveTabId(id);
-        }, 500); // 500ms delay to switch tab
-      }
-    }
-  }, []);
-
-  const handleTabDragLeave = useCallback(() => {
-    if (tabHoverTimeoutRef.current) {
-      clearTimeout(tabHoverTimeoutRef.current);
-      tabHoverTimeoutRef.current = null;
-    }
-  }, []);
 
   // ── Kéo-thả sắp xếp lại tab (mượt như Chrome) ──────────────────────────────
   // KHÔNG dùng HTML5 draggable (Tauri dragDropEnabled nuốt sự kiện). Dùng pointer
@@ -512,8 +551,10 @@ function AppInner() {
   }, [tabs]);
 
   useEffect(() => {
-    const handleTabHoverEvent = (e: any) => {
+    const handleTabHoverEvent = (event: Event) => {
+        const e = event as CustomEvent<{ tabId?: string }>;
         const tabId = e.detail.tabId;
+        if (typeof tabId !== 'string') return;
         if (activeTabIdRef.current !== tabId) {
             if (!tabHoverTimeoutRef.current) {
                 tabHoverTimeoutRef.current = setTimeout(() => {
@@ -537,7 +578,10 @@ function AppInner() {
   }, []);
 
   const requestToolActivation = useToolActivationGuard();
-  const handleOpenApp = useCallback((appId: AppToolId, payload?: any): OpenAppResult => {
+  const handleOpenApp = useCallback((appId: AppToolId, payload?: ToolLaunchPayload): OpenAppResult => {
+    // UIUX (New Window 2026-08-25): child là một tài liệu chuyên dụng; mọi đường mở
+    // tool/tab nội bộ phải fail-closed, kể cả event hoặc callback không đi qua menu.
+    if (documentWindowBootstrap) return null;
     const toolKey = payload?.focusFeature || payload?.lockedMode || appId;
     const hasExplicitToolKey = typeof payload?.focusFeature === 'string' || typeof payload?.lockedMode === 'string';
     const requestedTool = findToolForLaunch(appId, payload);
@@ -579,7 +623,7 @@ function AppInner() {
     setTabs(prev => [...prev, { id: newId, type: appId, title, isClosable: true, payload, isDirty: !!isSpawnedDirty }]);
     setActiveTabId(newId);
     return { tabId: newId, created: true };
-  }, [requestToolActivation, tabs]);
+  }, [documentWindowBootstrap, requestToolActivation, tabs]);
 
   const tabsRef = useRef(tabs);
   const activeTabIdRef = useRef(activeTabId);
@@ -588,17 +632,26 @@ function AppInner() {
   // Khôi phục các phiên chưa lưu từ snapshot (mở lại tab + áp thao tác sửa lên file gốc).
   const restoreSnapshots = useCallback(async (snaps: RecoverySnapshot[]) => {
     setRecoverySnaps(null);
-    const { stat } = await import('@tauri-apps/plugin-fs');
     for (const snap of snaps) {
       try {
-        const fileStat = await stat(snap.originalPath);
-        const fileObj = new File([], snap.originalName || 'document.pdf', { type: 'application/pdf' });
+        // REVISION (audit 2026-08-25 §REV.08): không áp page ops của snapshot lên
+        // một file cùng path nhưng đã bị thay nội dung sau autosave.
+        const sourceFingerprint = await readRecoverySourceFingerprint(snap.originalPath);
+        if (!isRecoverySourceCurrent(snap, sourceFingerprint) || !sourceFingerprint) {
+          toast.error(t('shell:khong_khoi_phuc_duoc', { title: snap.title }));
+          continue;
+        }
+        const restoredSnapshot = bindRecoverySourceFingerprint(snap, sourceFingerprint);
+        const fileObj = new File([], snap.originalName || 'document.pdf', {
+          type: 'application/pdf',
+          lastModified: sourceFingerprint.mtimeMs,
+        });
         Object.defineProperty(fileObj, 'path', { value: snap.originalPath });
-        Object.defineProperty(fileObj, 'size', { value: (fileStat as any).size || 0 });
+        Object.defineProperty(fileObj, 'size', { value: sourceFingerprint.size });
         const opened = handleOpenApp('imposition', {
           file: fileObj,
-          initialRecovery: snap,
-          lockedMode: snap.lockedMode,
+          initialRecovery: restoredSnapshot,
+          lockedMode: isLockedMode(snap.lockedMode) ? snap.lockedMode : undefined,
           focusFeature: snap.feature,
         });
         if (!opened?.created) continue;
@@ -607,7 +660,7 @@ function AppInner() {
         // replacement mang tabId mới đã được ghi atomic thành công. Bị chặn
         // entitlement, file gốc lỗi hoặc ghi thất bại đều giữ snapshot để thử lại.
         const replacementWritten = await writeSnapshot({
-          ...snap,
+          ...restoredSnapshot,
           tabId: opened.tabId,
           savedAt: new Date().toISOString(),
         });
@@ -621,8 +674,8 @@ function AppInner() {
 
   const dismissRecovery = useCallback(async () => {
     setRecoverySnaps(null);
-    await clearAllSnapshots();
-  }, []);
+    if (!documentWindowBootstrap) await clearAllSnapshots();
+  }, [documentWindowBootstrap]);
 
   // Sync refs safely
   tabsRef.current = tabs;
@@ -642,7 +695,9 @@ function AppInner() {
       .catch(() => {});
     // Đóng tab CHỦ ĐỘNG (có xác nhận nếu dirty) = thoát sạch tab này → xóa snapshot
     // recovery để lần mở sau không hỏi khôi phục nhầm.
-    void deleteSnapshot(id);
+    if (!documentWindowBootstrap) {
+      void deleteSnapshot(id);
+    }
 
     setTabs(prev => {
       const idx = prev.findIndex(t => t.id === id);
@@ -655,7 +710,7 @@ function AppInner() {
       return nextTabs;
     });
     setTabToConfirmClose(null);
-  }, [fileCtx]);
+  }, [documentWindowBootstrap, fileCtx]);
 
   const handleCloseTab = useCallback((id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -728,11 +783,15 @@ function AppInner() {
   /** Đóng thật ứng dụng — dùng chung cho mọi đường kết thúc hàng đợi mode 'quit'. */
   const destroyAppWindow = useCallback(() => {
     forceCloseRef.current = true;
+    if (documentWindowBootstrap) {
+      getCurrentWindow().destroy().catch((e: unknown) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
+      return;
+    }
     clearAllSnapshots().finally(() => {
       // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
-      getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
+      getCurrentWindow().destroy().catch((e: unknown) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
     });
-  }, [t]);
+  }, [documentWindowBootstrap, t]);
 
   /** Mở hàng đợi hỏi-lưu cho danh sách tab dirty. Rỗng → gọi ngay onEmpty. */
   const beginDirtyQueue = useCallback((ids: string[], mode: 'quit' | 'close-all') => {
@@ -828,7 +887,7 @@ function AppInner() {
   // onCloseRequested: nếu có tab dirty → preventDefault + hỏi TỪNG file. Bao
   // trùm cả nút X (gọi close()), Alt+F4, và đóng từ taskbar (đều phát close-requested).
   useEffect(() => {
-    if (!(window as any).__TAURI_INTERNALS__) return;  // chỉ áp cho desktop Tauri
+    if (!isNativeRuntime()) return;  // chỉ áp cho desktop Tauri
     let unlisten: (() => void) | undefined;
     let disposed = false;
     getCurrentWindow()
@@ -852,17 +911,17 @@ function AppInner() {
   // listener close-requested). Có tab dirty → hỏi từng file thay vì đóng thẳng.
   useEffect(() => {
     const onQuit = () => {
-      if (!(window as any).__TAURI_INTERNALS__) return;
+      if (!isNativeRuntime()) return;
       if (!forceCloseRef.current && hasDirtySessions(tabsRef.current)) {
         beginQuitWithDirtyPrompt();
         return;
       }
       // UIUX (audit 2026-07-27 §D-13) fix-verify: destroy() đóng ỨNG DỤNG, không phải tab → sửa câu lỗi
-      getCurrentWindow().destroy().catch((e: any) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
+      getCurrentWindow().destroy().catch((e: unknown) => toast.error(formatError(e, t('shell:khong_dong_duoc_ung_dung', 'Không đóng được ứng dụng'))));
     };
     window.addEventListener('prynx-request-quit', onQuit);
     return () => window.removeEventListener('prynx-request-quit', onQuit);
-  }, [beginQuitWithDirtyPrompt]);
+  }, [beginQuitWithDirtyPrompt, t]);
 
   // Copy/Move trang sang file khác (menu thumbnail) → nhảy sang tab đích để thấy trang mới.
   useEffect(() => {
@@ -880,7 +939,7 @@ function AppInner() {
   // Mở file (PDF/ảnh/Office) — Ctrl+O và menu File > Mở.
   // Office → tab Word/Excel/Google convert; PDF/ảnh → viewer như cũ.
   const handleOpenFile = useCallback(() => {
-    if ((window as any).__TAURI_INTERNALS__) {
+    if (isNativeRuntime()) {
       import('@tauri-apps/plugin-dialog').then(async ({ open }) => {
         try {
           const { OFFICE_EXTENSIONS } = await import('./lib/officeFileTypes');
@@ -917,6 +976,10 @@ function AppInner() {
       }
       if (e.ctrlKey && (e.code === 'KeyW' || e.key.toLowerCase() === 'w')) {
         e.preventDefault();
+        if (documentWindowBootstrap) {
+          window.dispatchEvent(new CustomEvent('prynx-request-quit'));
+          return;
+        }
         if (activeTabIdRef.current !== 'home') {
           handleCloseTab(activeTabIdRef.current);
         }
@@ -937,14 +1000,17 @@ function AppInner() {
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        if (documentWindowBootstrap) return;
         setIsGlobalSettingsOpen(prev => !prev);
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
+        if (documentWindowBootstrap) return;
         setIsNewDocOpen(true);
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
+        if (documentWindowBootstrap) return;
         handleOpenFile();
       }
       // UIUX (audit menu 2026-07-28 §MB.13): Ctrl+Tab / Ctrl+Shift+Tab chuyển tab.
@@ -962,6 +1028,7 @@ function AppInner() {
       // UIUX (audit menu 2026-07-28 §MB.14): F1 = trợ giúp → mở bảng phím tắt.
       if (matchesShortcut(e, 'global.help')) {
         e.preventDefault();
+        if (documentWindowBootstrap) return;
         setSettingsInitialTab('shortcuts');
         setIsGlobalSettingsOpen(true);
         return;
@@ -971,6 +1038,7 @@ function AppInner() {
       if (e.ctrlKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         e.stopPropagation();
+        if (documentWindowBootstrap) return;
         void import('./lib/nativePrint').then(m => m.logPrintEvent('App: Ctrl+P keydown')).catch(() => undefined);
         const activeTab = tabsRef.current.find(tab => tab.id === activeTabIdRef.current);
         if (activeTab && activeTab.type !== 'home' && NATIVE_PRINT_TOOL_TYPES.has(activeTab.type)) {
@@ -984,7 +1052,7 @@ function AppInner() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleCloseTab, handleOpenApp, handleOpenFile, t]);
+  }, [documentWindowBootstrap, handleCloseTab, handleOpenApp, handleOpenFile, t]);
 
   useIncomingFileDispatcher({
     onOpenApp: handleOpenApp,
@@ -1002,6 +1070,95 @@ function AppInner() {
   const activeViewerPageDisplayMode = useActiveViewerStore((s) => s.pageDisplayMode);
   const activeViewerFitMode = useActiveViewerStore((s) => s.fitMode);
   const activeViewerNumPages = useActiveViewerStore((s) => s.numPages);
+  const [documentWindowApis, setDocumentWindowApis] = useState<ReadonlyMap<string, DocumentWindowTabApi>>(() => new Map());
+  const [isCreatingDocumentWindow, setIsCreatingDocumentWindow] = useState(false);
+  const documentWindowShownRef = useRef(false);
+
+  const registerDocumentWindowApi = useCallback((tabId: string, api: DocumentWindowTabApi | null) => {
+    setDocumentWindowApis(previous => {
+      const current = previous.get(tabId);
+      if (current === api || (!current && !api)) return previous;
+      const next = new Map(previous);
+      if (api) next.set(tabId, api);
+      else next.delete(tabId);
+      return next;
+    });
+  }, []);
+
+  const showBootstrappedDocumentWindow = useCallback(() => {
+    if (!documentWindowBootstrap || documentWindowShownRef.current) return;
+    documentWindowShownRef.current = true;
+    void showDocumentWindowReady().catch(error => {
+      documentWindowShownRef.current = false;
+      console.error('[DOCUMENT-WINDOW] Không hiện được child sau bootstrap:', error);
+    });
+  }, [documentWindowBootstrap]);
+
+  useEffect(() => {
+    if (!documentWindowBootstrap) return;
+    // Fail-safe: PDF hỏng/metadata treo vẫn phải hiện shell để user thấy lỗi và đóng.
+    const timer = window.setTimeout(showBootstrappedDocumentWindow, 15_000);
+    return () => window.clearTimeout(timer);
+  }, [documentWindowBootstrap, showBootstrappedDocumentWindow]);
+
+  const handleCreateDocumentWindow = useCallback(async () => {
+    if (isCreatingDocumentWindow) return;
+    const tabId = activeTabIdRef.current;
+    const api = documentWindowApis.get(tabId);
+    if (!api) {
+      toast.error(t(
+        'shell:cua_so_moi_chua_san_sang',
+        'Trình xem PDF chưa sẵn sàng để mở cửa sổ mới. Hãy đợi file tải xong rồi thử lại.',
+      ));
+      return;
+    }
+
+    setIsCreatingDocumentWindow(true);
+    // UIUX (audit 2026-08-25 §NW.10): tạo snapshot + WebView2 có thể mất vài giây
+    // với PDF lớn; luôn cho người dùng biết lệnh đã được nhận và dọn toast ở mọi nhánh.
+    const progressToastId = toast.info(t(
+      'shell:dang_mo_cua_so_moi',
+      'Đang mở cửa sổ mới…',
+    ));
+    let prepared: PreparedDocumentWindow | null = null;
+    try {
+      prepared = await api.prepareNewWindow();
+      const ownerLabel = documentWindowBootstrap?.windowLabel ?? 'main';
+      const documentSessionId = documentWindowBootstrap && tabId === documentTabId
+        ? documentWindowBootstrap.documentSessionId
+        : `${ownerLabel}:${tabId}`;
+      await createDocumentWindow(documentSessionId, prepared);
+    } catch (error) {
+      toast.error(formatError(
+        error,
+        t('shell:khong_mo_duoc_cua_so_moi', 'Không mở được cửa sổ PDF mới'),
+      ));
+    } finally {
+      try {
+        if (prepared) await prepared.dispose();
+      } finally {
+        toast.dismiss(progressToastId);
+        setIsCreatingDocumentWindow(false);
+      }
+    }
+  }, [
+    documentTabId,
+    documentWindowApis,
+    documentWindowBootstrap,
+    isCreatingDocumentWindow,
+    t,
+  ]);
+
+  const activeTabForDocumentWindow = tabs.find(tab => tab.id === activeTabId);
+  const canCreateDocumentWindow = Boolean(
+    isNativeRuntime()
+    && activeTabForDocumentWindow?.type !== 'home'
+    && activeTabForDocumentWindow?.type
+    && isImpositionFamilyTool(activeTabForDocumentWindow.type)
+    && activeViewerNumPages > 0
+    && documentWindowApis.has(activeTabId)
+    && !isCreatingDocumentWindow
+  );
   const viewerCmd = useCallback((cmd: string) => {
     window.dispatchEvent(new CustomEvent('prynx-menu-command', { detail: { cmd } }));
   }, []);
@@ -1062,7 +1219,7 @@ function AppInner() {
   // trước như RecentFilesGrid (§D-13): còn thì lấy DUNG LƯỢNG THẬT (size lưu trong
   // store có thể cũ), mất thì báo tiếng Việt kèm đường dẫn và gỡ khỏi danh sách.
   const openRecentFile = useCallback(async (rf: { path: string; name: string; size: number }) => {
-    if (!(window as any).__TAURI_INTERNALS__) return;
+    if (!isNativeRuntime()) return;
     // §RF.1: kiểm tồn tại qua helper dùng chung — nó tự đánh dấu/bỏ dấu "file đã mất"
     // trong store nên lưới Home và thumbnail thấy cùng một sự thật.
     const info = await statRecentFile(rf.path);
@@ -1080,7 +1237,7 @@ function AppInner() {
 
   const openExternal = useCallback(async (url: string) => {
     try {
-      if ((window as any).__TAURI_INTERNALS__) {
+      if (isNativeRuntime()) {
         const { open } = await import('@tauri-apps/plugin-shell');
         await open(url);
       } else {
@@ -1143,7 +1300,16 @@ function AppInner() {
   const menus: MenuDef[] = [
     {
       label: t('shell:menu_file', 'Tệp'), // UIUX (audit 2026-07-27 §A-12)
-      items: [
+      items: documentWindowBootstrap ? [
+        // UIUX (New Window 2026-08-25): child chỉ có quyền Save As và quản lý
+        // chính cửa sổ; không để lộ action tạo/mở/in cần capability khác.
+        { label: tv('Lưu'), shortcut: getShortcutLabel('global.save'), disabled: !canSaveActiveTab || activeViewerNumPages === 0,
+          onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
+        { label: tv('Lưu thành…'), shortcut: getShortcutLabel('global.save_as'), disabled: !canSaveActiveTab || activeViewerNumPages === 0,
+          onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
+        { separator: true },
+        { label: t('shell:dong_cua_so'), shortcut: getShortcutLabel('global.close_tab'), onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },
+      ] : [
         // UIUX (audit menu 2026-07-28 §MB.12): nhãn phím tắt lấy từ bảng trung tâm,
         // không hardcode — đổi binding trong keyboardShortcuts là menu đổi theo.
         { label: tv('Tài liệu mới'), shortcut: getShortcutLabel('global.new_document'), onClick: () => setIsNewDocOpen(true) },
@@ -1224,7 +1390,11 @@ function AppInner() {
         // UIUX (audit menu 2026-07-28 §MB.14): "Cài đặt & Cấu hình" chuyển từ Trợ giúp
         // sang cuối menu Sửa — đúng chỗ Preferences của Acrobat và chuẩn Windows. Mục
         // "Phím tắt" GIỮ ở Trợ giúp vì đó là nội dung tra cứu, không phải thiết lập.
-        { label: t('shell:menu_tuy_chon'), shortcut: getShortcutLabel('global.settings'), onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
+        ...(!documentWindowBootstrap ? [{
+          label: t('shell:menu_tuy_chon'),
+          shortcut: getShortcutLabel('global.settings'),
+          onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); },
+        }] : []),
       ],
     },
     {
@@ -1267,12 +1437,20 @@ function AppInner() {
     {
       label: t('shell:menu_window', 'Cửa sổ'), // UIUX (audit 2026-07-27 §A-12)
       items: [
-        ...(tabs.length > 1 ? windowTabItems : [{ label: tv('Chỉ có tab Home'), disabled: true }]),
-        // UIUX (audit menu 2026-07-28 §MB.13): trước đây menu Cửa sổ chỉ là danh sách tab.
+        { label: t('shell:menu_cua_so_moi', 'Cửa sổ mới'), disabled: !canCreateDocumentWindow,
+          onClick: () => { void handleCreateDocumentWindow(); } },
         { separator: true },
-        { label: t('shell:menu_tab_ke_tiep'), shortcut: getShortcutLabel('global.next_tab'), disabled: tabs.length < 2, onClick: () => stepActiveTab(1) },
-        { label: t('shell:menu_tab_truoc'), shortcut: getShortcutLabel('global.prev_tab'), disabled: tabs.length < 2, onClick: () => stepActiveTab(-1) },
-        { label: t('shell:menu_dong_tat_ca_tab'), disabled: tabs.length < 2, onClick: closeAllTabs },
+        ...(documentWindowBootstrap || tabs.length > 1
+          ? windowTabItems
+          : [{ label: tv('Chỉ có tab Home'), disabled: true }]),
+        // UIUX (audit 2026-08-25 §NW.5): child chỉ có một tài liệu native;
+        // không vẽ các lệnh chuyển/đóng nhiều tab vô hiệu hóa.
+        ...(!documentWindowBootstrap ? [
+          { separator: true },
+          { label: t('shell:menu_tab_ke_tiep'), shortcut: getShortcutLabel('global.next_tab'), disabled: tabs.length < 2, onClick: () => stepActiveTab(1) },
+          { label: t('shell:menu_tab_truoc'), shortcut: getShortcutLabel('global.prev_tab'), disabled: tabs.length < 2, onClick: () => stepActiveTab(-1) },
+          { label: t('shell:menu_dong_tat_ca_tab'), disabled: tabs.length < 2, onClick: closeAllTabs },
+        ] : []),
       ],
     },
     {
@@ -1293,14 +1471,16 @@ function AppInner() {
         { label: tv('Giới thiệu PrynX'), onClick: () => { setAboutAutoCheck(false); setIsAboutOpen(true); } },
       ],
     },
-  ];
+  ].filter((menu) => !documentWindowBootstrap
+    || (menu.label !== t('shell:menu_tools', 'Công cụ')
+      && menu.label !== t('shell:menu_help', 'Trợ giúp')));
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#e6e8eb] dark:bg-[#1a1a1a] select-none text-slate-800 dark:text-zinc-200 relative">
-      <SystemIntegrations />
-      <UpdateChecker />
+      {!documentWindowBootstrap && <SystemIntegrations />}
+      {!documentWindowBootstrap && <UpdateChecker />}
 
-      <TitleBar onOpenSettings={() => setIsGlobalSettingsOpen(true)} />
+      <TitleBar onOpenSettings={documentWindowBootstrap ? undefined : () => setIsGlobalSettingsOpen(true)} />
 
       {/* MENU BAR (kiểu Acrobat) — bật/tắt trong Cài đặt > Không gian làm việc */}
       {showMenuBar && (
@@ -1378,17 +1558,19 @@ function AppInner() {
                 <span className="truncate">{tab.title}</span>
               </div>
 
-              <button
-                onClick={(e) => handleCloseTab(tab.id, e)}
-                className={`w-5 h-5 shrink-0 ml-1.5 flex items-center justify-center rounded transition-colors
-                  ${isActive ? 'opacity-100 hover:bg-black/10 dark:hover:bg-white/10' : 'opacity-0 group-hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10'}
-                `}
-                title="Close Tab"
-              >
-                <svg width="8" height="8" viewBox="0 0 10 10" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M1 1L9 9M1 9L9 1" strokeLinecap="round" />
-                </svg>
-              </button>
+              {tab.isClosable && (
+                <button
+                  onClick={(e) => handleCloseTab(tab.id, e)}
+                  className={`w-5 h-5 shrink-0 ml-1.5 flex items-center justify-center rounded transition-colors
+                    ${isActive ? 'opacity-100 hover:bg-black/10 dark:hover:bg-white/10' : 'opacity-0 group-hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10'}
+                  `}
+                  title="Close Tab"
+                >
+                  <svg width="8" height="8" viewBox="0 0 10 10" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M1 1L9 9M1 9L9 1" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
             </div>
           );
         })}
@@ -1430,12 +1612,21 @@ function AppInner() {
                       initialFeature={tab.payload?.focusFeature}
                       lockedMode={tab.payload?.lockedMode}
                       initialRecovery={tab.payload?.initialRecovery}
+                      documentWindow={documentWindowBootstrap ? {
+                        saveAsOnly: tab.id === documentTabId && documentWindowBootstrap.saveAsOnly,
+                        disableRecovery: true,
+                        initialViewState: tab.id === documentTabId ? documentWindowBootstrap.viewState : undefined,
+                        onInitialViewStateApplied: tab.id === documentTabId
+                          ? showBootstrappedDocumentWindow
+                          : undefined,
+                      } : undefined}
+                      onDocumentWindowApiChange={registerDocumentWindowApi}
                       batchOutput={tab.payload?.batchOutput} // Note: batchOutput now primarily from imposerStore in context, this is legacy payload
                       systemMergeFiles={tab.payload?.systemMergeFiles}
                       officeSourceFile={tab.payload?.officeSourceFile}
                       officeSourceFiles={tab.payload?.officeSourceFiles}
-                      onRequestHome={() => setActiveTabId('home')}
-                      onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
+                      onRequestHome={documentWindowBootstrap ? undefined : () => setActiveTabId('home')}
+                      onSpawnTab={documentWindowBootstrap ? undefined : (file: File, extraPayload?: ToolLaunchPayload) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
                     />
                   </Suspense>
                 );
@@ -1449,7 +1640,7 @@ function AppInner() {
                       onTitleChange={(title: string) => updateTabTitle(tab.id, title)}
                       onDirtyChange={(isDirty: boolean) => updateTabDirty(tab.id, isDirty)}
                       initialFiles={tab.payload?.files}
-                      onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
+                      onSpawnTab={(file: File, extraPayload?: ToolLaunchPayload) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
                       onResultsOpened={() => {
                         // UIUX (audit 2026-08-02 §COMB.UI): giữ active tab kết quả.
                         commitCloseTab(tab.id, true);

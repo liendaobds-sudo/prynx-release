@@ -52,6 +52,7 @@ function emit(type: ToastType, message: string, action?: ToastAction): number {
  *   toast.info('Vui lòng nhập ...')
  *   toast.success('Đã lưu 5 file', { label: 'Mở thư mục', onClick: () => ... })
  */
+// eslint-disable-next-line react-refresh/only-export-components -- LINT (audit 2026-08-23 §LINT.36): API và viewport phải dùng chung một Zustand store.
 export const toast = {
   success: (message: string, action?: ToastAction) => emit('success', message, action),
   error: (message: string, action?: ToastAction) => emit('error', message, action),

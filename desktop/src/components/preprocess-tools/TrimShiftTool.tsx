@@ -9,13 +9,6 @@ const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 r
 
 export type TrimUnit = 'mm' | 'cm' | 'pt' | 'inch';
 
-/** Hệ số quy đổi 1 đơn vị → mm (backend luôn nhận mm). */
-export const UNIT_TO_MM: Record<TrimUnit, number> = {
-    mm: 1,
-    cm: 10,
-    pt: 25.4 / 72,
-    inch: 25.4,
-};
 
 const UNIT_OPTIONS: { id: TrimUnit; label: string }[] = [
     { id: 'mm', label: 'mm' },
@@ -25,6 +18,22 @@ const UNIT_OPTIONS: { id: TrimUnit; label: string }[] = [
 ];
 
 export type ContentMode = 'original' | 'clip';
+
+export type TrimSplitAxis = 'vertical' | 'horizontal';
+
+export interface TrimSplitPieceMargins {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+}
+
+export interface TrimSplitSettings {
+    enabled: boolean;
+    axis: TrimSplitAxis;
+    count: 2 | 3;
+    pieces: TrimSplitPieceMargins[];
+}
 
 export interface TrimShiftSettings {
     unit: TrimUnit;
@@ -45,6 +54,8 @@ export interface TrimShiftSettings {
     contentMode: ContentMode;
     keepBleed: boolean;
     applyToStr: string;
+    /** Chế độ tách trang ngay trong Trim & Shift để bình lại. */
+    split: TrimSplitSettings;
 }
 
 interface Props {
@@ -57,6 +68,51 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
     const u = settings.unit || 'mm';
     const [advancedOpen, setAdvancedOpen] = useState(false);
+    const split = settings.split ?? {
+        enabled: false,
+        axis: 'vertical' as const,
+        count: 2 as const,
+        pieces: [],
+    };
+    const splitEnabled = split.enabled;
+    const splitCount = split.count === 3 ? 3 : 2;
+    const splitPieceValues = Array.isArray(split.pieces) ? split.pieces : [];
+    const splitPieces = Array.from({ length: splitCount }, (_, index) => splitPieceValues[index] ?? ({
+        top: 0, bottom: 0, left: 0, right: 0,
+    }));
+
+    const updateSplit = (patch: Partial<TrimSplitSettings>) => {
+        onChange({
+            ...settings,
+            split: {
+                ...split,
+                ...patch,
+                pieces: patch.pieces ?? splitPieces,
+            },
+        });
+    };
+
+    const setSplitPiece = (
+        index: number,
+        edge: keyof TrimSplitPieceMargins,
+        value: number,
+    ) => {
+        const pieces = splitPieces.map((piece, pieceIndex) => (
+            pieceIndex === index ? { ...piece, [edge]: Math.max(0, value) } : piece
+        ));
+        updateSplit({ pieces });
+    };
+
+    const splitPiecePosition = (index: number) => {
+        if (split.axis === 'vertical') {
+            if (index === 0) return t('preprocess.trimShift:ben_trai');
+            if (index === splitCount - 1) return t('preprocess.trimShift:ben_phai');
+        } else {
+            if (index === 0) return t('preprocess.trimShift:ben_tren');
+            if (index === splitCount - 1) return t('preprocess.trimShift:ben_duoi');
+        }
+        return t('preprocess.trimShift:ben_giua');
+    };
 
     const handleApplyToChange = (val: string) => {
         onChange({ ...settings, applyToStr: val });
@@ -110,6 +166,66 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                 </div>
             </div>
 
+            {/* UIUX (audit 2026-08-24 §TRIM.F1): hai workflow phải nằm trong
+                cùng Trim & Shift để tách trang đã bình rồi bình lại. */}
+            <div className="grid grid-cols-2 gap-2">
+                <ToolCardOption
+                    selected={!splitEnabled}
+                    onClick={() => updateSplit({ enabled: false })}
+                    label={t('preprocess.trimShift:che_do_chinh_le_doi')}
+                    desc={t('preprocess.trimShift:che_do_chinh_le_doi_mo_ta')}
+                />
+                <ToolCardOption
+                    selected={splitEnabled}
+                    onClick={() => updateSplit({ enabled: true })}
+                    label={t('preprocess.trimShift:che_do_tach_manh')}
+                    desc={t('preprocess.trimShift:che_do_tach_manh_mo_ta')}
+                />
+            </div>
+
+            {splitEnabled && (
+                <div className="flex flex-col gap-3">
+                    <ToolSectionLabel>{t('preprocess.trimShift:tao_manh_de_binh_lai')}</ToolSectionLabel>
+                    <div className="grid grid-cols-2 gap-2">
+                        <ToolCardOption
+                            selected={split.axis === 'vertical'}
+                            onClick={() => updateSplit({ axis: 'vertical' })}
+                            label={t('preprocess.trimShift:cat_doc')}
+                            desc={t('preprocess.trimShift:cat_doc_mo_ta')}
+                        />
+                        <ToolCardOption
+                            selected={split.axis === 'horizontal'}
+                            onClick={() => updateSplit({ axis: 'horizontal' })}
+                            label={t('preprocess.trimShift:cat_ngang')}
+                            desc={t('preprocess.trimShift:cat_ngang_mo_ta')}
+                        />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                        <ToolCardOption selected={split.count === 2} onClick={() => updateSplit({ count: 2 })} label={t('preprocess.trimShift:hai_manh')} />
+                        <ToolCardOption selected={split.count === 3} onClick={() => updateSplit({ count: 3 })} label={t('preprocess.trimShift:ba_manh')} />
+                    </div>
+                    <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 ml-1 leading-relaxed">
+                        {t('preprocess.trimShift:le_trang_tung_manh_mo_ta')}
+                    </div>
+                    <div className="flex flex-col gap-3">
+                        {splitPieces.map((piece, index) => (
+                            <div key={index} className="p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
+                                <div className="text-[12px] font-bold text-teal-700 dark:text-teal-300 mb-2">
+                                    {t('preprocess.trimShift:manh_so_vi_tri', { number: index + 1, position: splitPiecePosition(index) })}
+                                </div>
+                                <div className="grid grid-cols-4 gap-2">
+                                    <ToolNumberInput label={t('preprocess.trimShift:canh_tren')} value={piece.top} onChange={value => setSplitPiece(index, 'top', value)} step={0.1} min={0} />
+                                    <ToolNumberInput label={t('preprocess.trimShift:canh_duoi')} value={piece.bottom} onChange={value => setSplitPiece(index, 'bottom', value)} step={0.1} min={0} />
+                                    <ToolNumberInput label={t('preprocess.trimShift:canh_trai')} value={piece.left} onChange={value => setSplitPiece(index, 'left', value)} step={0.1} min={0} />
+                                    <ToolNumberInput label={t('preprocess.trimShift:canh_phai')} value={piece.right} onChange={value => setSplitPiece(index, 'right', value)} step={0.1} min={0} />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {!splitEnabled && (<>
             {/* ══ CƠ BẢN: Cắt xén / thêm lề từng cạnh ══ */}
             <div className="flex flex-col gap-2">
                 <ToolSectionLabel>{t('preprocess.trimShift:cat_xen_them_le_moi_canh')}</ToolSectionLabel>
@@ -129,16 +245,23 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
             </div>
 
             <ToolDivider />
+            </>)}
 
-            {/* ══ CƠ BẢN: Phạm vi trang ══ */}
+            {/* ══ Phạm vi trang nguồn: khi tách, chỉ các trang này được thay bằng mảnh mới ══ */}
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>{t('preprocess.trimShift:ap_dung_cho')}</ToolSectionLabel>
+                <ToolSectionLabel>{t(splitEnabled ? 'preprocess.trimShift:trang_nguon_can_tach' : 'preprocess.trimShift:ap_dung_cho')}</ToolSectionLabel>
                 <div className="grid grid-cols-2 gap-2">
-                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label={t('preprocess.trimShift:tat_ca_trang')} />
-                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label={t('preprocess.trimShift:trang_chan')} />
-                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label={t('preprocess.trimShift:trang_le')} />
-                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label={t('preprocess.trimShift:tuy_chinh')} />
+                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label={t(splitEnabled ? 'preprocess.trimShift:tat_ca_trang_nguon' : 'preprocess.trimShift:tat_ca_trang')} />
+                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label={t(splitEnabled ? 'preprocess.trimShift:trang_nguon_chan' : 'preprocess.trimShift:trang_chan')} />
+                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label={t(splitEnabled ? 'preprocess.trimShift:trang_nguon_le' : 'preprocess.trimShift:trang_le')} />
+                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label={t(splitEnabled ? 'preprocess.trimShift:chon_trang_nguon' : 'preprocess.trimShift:tuy_chinh')} />
                 </div>
+
+                {splitEnabled && (
+                    <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 ml-1 leading-relaxed">
+                        {t('preprocess.trimShift:trang_nguon_can_tach_mo_ta')}
+                    </div>
+                )}
 
                 {!['all', 'even', 'odd'].includes(settings.applyToStr) && (
                     <div className="mt-3">
@@ -146,7 +269,7 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                             type="text"
                             value={settings.applyToStr === 'custom' ? '' : settings.applyToStr}
                             onChange={e => handleApplyToChange(e.target.value)}
-                            placeholder="VD: 1, 3, 5-10"
+                            placeholder={splitEnabled ? t('preprocess.trimShift:vi_du_trang_nguon') : 'VD: 1, 3, 5-10'}
                             className={inputCls}
                         />
                         <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1.5 ml-1">{t('preprocess.trimShift:nhap_so_trang_cach_nhau_bang_dau_phay')}</div>
@@ -154,7 +277,8 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                 )}
             </div>
 
-            {/* ══ NÂNG CAO (đóng sẵn) ══ */}
+            {!splitEnabled && (<>
+                        {/* ══ NÂNG CAO (đóng sẵn) ══ */}
             <div className="border border-slate-200 dark:border-white/10 rounded-lg overflow-hidden">
                 <button
                     onClick={() => setAdvancedOpen(v => !v)}
@@ -281,8 +405,9 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                     </div>
                 )}
             </div>
+            </>)}
 
-            <ToolInfo desc={t('preprocess.trimShift:co_ban_chi_can_chon_luong_cat_them_le')} />
+            <ToolInfo desc={t(splitEnabled ? 'preprocess.trimShift:tach_info' : 'preprocess.trimShift:co_ban_chi_can_chon_luong_cat_them_le')} />
         </div>
     );
 }

@@ -81,6 +81,10 @@ export interface StickerSourceInspection {
     preview_url: string;
 }
 
+export interface StickerSourceInspectOptions {
+    preview?: 'eager' | 'defer';
+}
+
 export interface StickerSourceDetection extends StickerSheetManifest {
     stage: 'mask-review';
     source_kind: StickerSourceKind;
@@ -195,6 +199,13 @@ async function fetchAsset(path: string, signal?: AbortSignal): Promise<Blob> {
     return response.blob();
 }
 
+export async function loadStickerSourcePreview(
+    previewUrl: string,
+    signal?: AbortSignal,
+): Promise<Blob> {
+    return fetchAsset(previewUrl, signal);
+}
+
 async function fetchRefinedAsset(path: string): Promise<Blob> {
     try {
         return await fetchAsset(path);
@@ -214,12 +225,14 @@ function appendSource(form: FormData, file: File): void {
 export async function inspectStickerSource(
     file: File,
     signal?: AbortSignal,
+    options: StickerSourceInspectOptions = {},
 ): Promise<StickerSourceInspectPayload> {
     const inspection = await inspectStickerSourceManifest(file, signal);
+    if (options.preview === 'defer') return { inspection, previewBlob: new Blob() };
     try {
         return {
             inspection,
-            previewBlob: await fetchAsset(inspection.preview_url, signal),
+            previewBlob: await loadStickerSourcePreview(inspection.preview_url, signal),
         };
     } catch (error) {
         void closeStickerSheetSession(inspection.session_id);

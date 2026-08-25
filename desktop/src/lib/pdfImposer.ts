@@ -1,5 +1,6 @@
 // src/lib/pdfImposer.ts
 import { PDFDocument } from 'pdf-lib';
+import type { PDFEmbeddedPage, PDFPage } from 'pdf-lib';
 import type { PlateJob } from './imposerEngine/CatalogPlanner';
 import { generateBindingMap } from './imposerEngine/VirtualMap';
 import { solveGeometry } from './imposerEngine/GeometricSolver';
@@ -8,25 +9,48 @@ import { renderNup } from './imposerEngine/NupRenderer';
 import { getSpreadPatternById, getExactPatternForPageCount } from './imposerEngine/FoldPatterns';
 import { placeSpreadsByFoldPattern } from './imposerEngine/SpreadPlacer';
 import { serializeBookletPlan } from './imposerEngine/InstructionSerializer';
-import type { InstructionSet } from './imposerEngine/InstructionSerializer';
 import { getFileArrayBuffer } from './utils';
 
 export const MM_TO_POINTS = 2.83465;
 
 import { ImpositionMode } from './imposerEngine/SettingsTypes';
 import type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings } from './imposerEngine/SettingsTypes';
+import type { BookletSettings } from '../components/imposition-tools/types';
 import { tv } from '../i18n';
 import i18n from '../i18n';
 import { formatMeasurement } from './measurementFormat';
 export type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings };
 export { ImpositionMode };
 
-const sanitizeNumber = (value: any, defaultValue = 0): number => {
+type RuntimeProcessingSettings = ProcessingSettings & Partial<BookletSettings> & {
+    chainNup?: boolean;
+    cutStack?: boolean;
+    isCover?: boolean;
+    bindingMode?: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
+    foliosize?: number;
+    blankPlacement?: 'end' | 'center';
+    spreadDistribution?: 'clustered' | 'even';
+    foldPattern?: string;
+    gripperMargin?: number;
+    markType?: 'none' | 'corners' | 'guillotine';
+    markOffset?: number;
+    markLength?: number;
+    markThickness?: number;
+    markStyle?: 'default' | 'japanese';
+};
+
+const asRuntimeSettings = (settings: ProcessingSettings): RuntimeProcessingSettings => settings as RuntimeProcessingSettings;
+
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+const asBlobPart = (bytes: Uint8Array): BlobPart => bytes as unknown as BlobPart;
+
+
+const sanitizeNumber = (value: unknown, defaultValue = 0): number => {
     const num = Number(value);
     return isNaN(num) ? defaultValue : num;
 };
 
-const effectivePdfLibPageBox = (page: any) => {
+const effectivePdfLibPageBox = (page: PDFPage) => {
     const media = page.getMediaBox?.() || page.getSize?.();
     const crop = page.getCropBox?.();
     if (!media || !crop || media.width <= 0 || media.height <= 0 || crop.width <= 0 || crop.height <= 0) {
@@ -50,39 +74,43 @@ export const imposePdf = async (
     console.warn('[DEPRECATED] Local imposePdf used for imposition - migrate to viaBackend for unified engine.');
     setStatus(i18n.t('lib.pdfImposer:dang_phan_tich_va_nap_tep_pdf'));
     const arrayBuffer = await getFileArrayBuffer(pdfFile);
+    const runtimeSettings = asRuntimeSettings(settings);
     let reportMsg = '';
 
-    const isEncryptionError = (err: any) => {
-        const msg = String(err?.message || err || '').toLowerCase();
-        return msg.includes('compression') || msg.includes('encrypt') || msg.includes('flate') 
+    const isEncryptionError = (err: unknown) => {
+        const msg = errorMessage(err).toLowerCase();
+        return msg.includes('compression') || msg.includes('encrypt') || msg.includes('flate')
             || msg.includes('stream') || msg.includes('unknown') || msg.includes('invalid');
     };
 
     const runPipeline = async (buffer: ArrayBuffer) => {
         const srcPdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
         const outputPdf = await PDFDocument.create();
-        
+
         // Copy metadata safely
         const propsToCopy = ['getTitle', 'getAuthor', 'getSubject', 'getKeywords', 'getCreator', 'getCreationDate'] as const;
         const propsToSet = ['setTitle', 'setAuthor', 'setSubject', 'setKeywords', 'setCreator', 'setCreationDate'] as const;
         propsToCopy.forEach((getter, index) => {
             try {
                 const value = srcPdf[getter]();
-                if (value) (outputPdf as any)[propsToSet[index]](value);
+                if (value) {
+                    const setter = (outputPdf as unknown as Record<string, (metadata: string | Date) => void>)[propsToSet[index]];
+                    setter(value);
+                }
             } catch { /* Skip garbled/encrypted metadata fields */ }
         });
         outputPdf.setProducer('PrintSolutions.vn - Super Imposer V2');
         outputPdf.setModificationDate(new Date());
 
         const pageCount = srcPdf.getPageCount();
-        const embeddedPages: any[] = [];
+        const embeddedPages: Array<PDFEmbeddedPage | null> = [];
         const srcPageDetails: { visualW: number, visualH: number, angle: number, x: number, y: number }[] = [];
         let maxSrcPageWidth = 0;
         let maxSrcPageHeight = 0;
 
         const srcPagesTemp = srcPdf.getPages();
-        const orderedIndices = settings.pageOrder 
-            ? settings.pageOrder.map(n => n === -1 ? -1 : n - 1) 
+        const orderedIndices = settings.pageOrder
+            ? settings.pageOrder.map(n => n === -1 ? -1 : n - 1)
             : Array.from({length: pageCount}, (_, i) => i);
 
         for (let i = 0; i < orderedIndices.length; i++) {
@@ -102,7 +130,7 @@ export const imposePdf = async (
             if (settings.pageRotations && settings.pageRotations[i]) {
                 angle += settings.pageRotations[i];
             }
-            
+
             // Giữ MediaBox cho bleed nhỏ; dùng CropBox khi MediaBox là canvas lớn
             // chứa nhiều trang logic đặt cạnh nhau.
             const { x, y, width, height } = effectivePdfLibPageBox(p);
@@ -112,7 +140,7 @@ export const imposePdf = async (
             const visualW = (angle % 180 !== 0) ? ep.height : ep.width;
             const visualH = (angle % 180 !== 0) ? ep.width : ep.height;
             srcPageDetails.push({ visualW, visualH, angle, x, y });
-            
+
             if (visualW > maxSrcPageWidth) maxSrcPageWidth = visualW;
             if (visualH > maxSrcPageHeight) maxSrcPageHeight = visualH;
         }
@@ -135,7 +163,7 @@ export const imposePdf = async (
         if (thicknessInput > 10) thicknessInput = thicknessInput / 1000;
         const paperThickness = thicknessInput * MM_TO_POINTS;
         const bleed = sanitizeNumber(settings.bleed) * MM_TO_POINTS;
-        const gutterPt = sanitizeNumber((settings as any).gutterMargin) * MM_TO_POINTS;
+        const gutterPt = sanitizeNumber(runtimeSettings.gutterMargin) * MM_TO_POINTS;
         const reqSheetW = sanitizeNumber(settings.sheetWidth);
         const reqSheetH = sanitizeNumber(settings.sheetHeight);
 
@@ -143,7 +171,7 @@ export const imposePdf = async (
         // Vì SheetOptimizer đã tính toán fit trên khổ gốc (hoặc xoay).
         // Nếu tự động xoay ở đây, nó sẽ làm hỏng grid nếu grid chỉ vừa ở dạng Portrait.
         // (Offset printers usually want Landscape, but if it only fits Portrait, we must use Portrait).
-        
+
         if (settings.impositionMode === ImpositionMode.NUp) {
             await renderNup(
                 orderedIndices.length, embeddedPages, srcPageDetails, maxSrcPageWidth, maxSrcPageHeight,
@@ -153,9 +181,9 @@ export const imposePdf = async (
             // Cover separation: tách bìa ra khỏi phần bình ruột
             let coverIndices: number[] = [];
             let bodyOrderedIndices = orderedIndices;
-            
-            const wantSeparateCover = (settings as any).separateCover;
-            const coverCount = (settings as any).coverPageCount || 4;
+
+            const wantSeparateCover = runtimeSettings.separateCover;
+            const coverCount = runtimeSettings.coverPageCount || 4;
             if (wantSeparateCover && orderedIndices.length >= coverCount + 4) {
                 const half = Math.floor(coverCount / 2);
                 // Trang bìa: half đầu + half cuối
@@ -169,21 +197,21 @@ export const imposePdf = async (
             }
 
             setStatus(i18n.t('lib.pdfImposer:giai_doan_1_dang_thiet_lap_so_do_trang'));
-            const bMode = (settings as any).bindingMode || 'saddle';
+            const bMode = runtimeSettings.bindingMode || 'saddle';
             const orderedLen = bodyOrderedIndices.length;
-            const mapResult = generateBindingMap(orderedLen, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end', (settings as any).scaleMode || '100');
+            const mapResult = generateBindingMap(orderedLen, bMode, runtimeSettings.foliosize, runtimeSettings.blankPlacement || 'end', runtimeSettings.scaleMode || '100');
             const virtualMap = mapResult.sheets;
             if (mapResult.report) reportMsg += (reportMsg ? '\n' : '') + mapResult.report;
 
             setStatus(i18n.t('lib.pdfImposer:giai_doan_2_dang_tinh_toan_kich_thuoc'));
             const pseudoSettings = {
-                formsize: (reqSheetW === 0 || (settings as any).chainNup) ? 'auto_100' : 'custom',
+                formsize: (reqSheetW === 0 || runtimeSettings.chainNup) ? 'auto_100' : 'custom',
                 customSheetWidth: reqSheetW,
                 customSheetHeight: reqSheetH,
                 bleed: settings.bleed,
                 signatureMode: bMode
-            } as any;
-            
+            } as unknown as BookletSettings;
+
             const geoContext = solveGeometry(maxSrcPageWidth, maxSrcPageHeight, pseudoSettings, {}, MM_TO_POINTS);
 
             // Cảnh báo tràn khổ: khổ giấy chọn nhỏ hơn khổ trải trang → nội dung sẽ bị cắt mép.
@@ -193,13 +221,13 @@ export const imposePdf = async (
             }
 
             const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
-            
-            if ((settings as any).chainNup) {
+
+            if (runtimeSettings.chainNup) {
                 setStatus(i18n.t('lib.pdfImposer:giai_doan_3_dang_sap_xep_du_lieu'));
                 const tempPdf = await PDFDocument.create();
 
                 setStatus(i18n.t('lib.pdfImposer:dang_tai_du_lieu_hinh_anh'));
-                const tempEmbeddedPages = [];
+                const tempEmbeddedPages: Array<PDFEmbeddedPage | null> = [];
                 for (let i = 0; i < orderedIndices.length; i++) {
                     const pOriginalIndex = orderedIndices[i];
                     if (pOriginalIndex === -1) {
@@ -217,34 +245,34 @@ export const imposePdf = async (
                 // so creep compensation would cause misaligned fold axes between signatures on the same press sheet.
                 await renderBooklet(
                     virtualMap, tempEmbeddedPages, srcPageDetails, geoContext, tempPdf,
-                    bleed, 0, isSaddleOrThread, 'none', settings.interleave || 'normal', setStatus, settings as any, gutterPt
+                    bleed, 0, isSaddleOrThread, 'none', settings.interleave || 'normal', setStatus, runtimeSettings as unknown as GuillotineSettings | OffsetSettings, gutterPt
                 );
-                
+
                 setStatus(i18n.t('lib.pdfImposer:giai_doan_4_dang_xu_ly_hinh_anh_va_do'));
                 const tempBytes = await tempPdf.save();
                 const tempSrcPdf = await PDFDocument.load(tempBytes, { ignoreEncryption: true });
                 const tempPages = tempSrcPdf.getPages();
-                
-                const chainEmbeddedPages = [];
+
+                const chainEmbeddedPages: Array<PDFEmbeddedPage | null> = [];
                 setStatus(i18n.t('lib.pdfImposer:giai_doan_5_dang_nap_trang_vao_khuon'));
                 for (let i=0; i<tempPages.length; i++) {
                     const ep = await outputPdf.embedPage(tempPages[i]);
                     chainEmbeddedPages.push(ep);
                 }
-                
+
                 const cw = geoContext.finalSheetWidth;
                 const ch = geoContext.finalSheetHeight;
                 const chainSourceDetails = tempPages.map(() => ({ visualW: cw, visualH: ch, angle: 0, x: 0, y: 0 }));
 
                 // Route: Fold Pattern → SpreadPlacer, otherwise → NupRenderer
-                const allowFoldPattern = (settings as any).paperClassification === 'offset'
-                    || (settings as any).imposerMode === 'offset';
-                let foldPattern = allowFoldPattern && (settings as any).foldPattern && (settings as any).foldPattern !== 'auto'
-                    ? getSpreadPatternById((settings as any).foldPattern)
+                const allowFoldPattern = runtimeSettings.paperClassification === 'offset'
+                    || runtimeSettings.imposerMode === 'offset';
+                let foldPattern = allowFoldPattern && runtimeSettings.foldPattern && runtimeSettings.foldPattern !== 'auto'
+                    ? getSpreadPatternById(runtimeSettings.foldPattern)
                     : null;
-                
+
                 // Auto-detect: pick best pattern based on signature page count
-                if (allowFoldPattern && (settings as any).foldPattern === 'auto' && virtualMap.length > 0) {
+                if (allowFoldPattern && runtimeSettings.foldPattern === 'auto' && virtualMap.length > 0) {
                     // Detect pages per signature from the first sig
                     const firstSigSheets = virtualMap[0].sigTotalSheets ?? virtualMap.length;
                     const pagesPerSig = firstSigSheets * 4;
@@ -258,11 +286,13 @@ export const imposePdf = async (
                 }
                 if (foldPattern) {
                     setStatus(i18n.t('lib.pdfImposer:giai_doan_6_dang_xep_trang_len_kho_in'));
-                    const spreadDetails = chainEmbeddedPages.map(ep => ({ width: ep.width, height: ep.height }));
+                    const spreadDetails = chainEmbeddedPages
+                        .filter((ep): ep is PDFEmbeddedPage => ep !== null)
+                        .map(ep => ({ width: ep.width, height: ep.height }));
                     const spreadReport = await placeSpreadsByFoldPattern(
                         chainEmbeddedPages, spreadDetails, foldPattern,
                         reqSheetW * MM_TO_POINTS, reqSheetH * MM_TO_POINTS,
-                        outputPdf, settings as any, setStatus
+                        outputPdf, runtimeSettings as unknown as OffsetSettings, setStatus
                     );
                     if (spreadReport) reportMsg += (reportMsg ? '\n' : '') + spreadReport;
                 } else {
@@ -272,10 +302,10 @@ export const imposePdf = async (
                     //   - Cut & Stack (cut_stack): pair different sheets → cut & stack → 1 booklet
                     const chainNupSettings: ProcessingSettings = {
                         ...settings,
-                        layoutType: (settings as any).cutStack ? 'cut_stacks' : 'repeat',
-                        duplexFlow: (settings as any).cutStack ? 'double' : 'normal',
-                    } as any;
-                    setStatus((settings as any).cutStack
+                        layoutType: runtimeSettings.cutStack ? 'cut_stacks' : 'repeat',
+                        duplexFlow: runtimeSettings.cutStack ? 'double' : 'normal',
+                    } as unknown as ProcessingSettings;
+                    setStatus(runtimeSettings.cutStack
                         ? i18n.t('lib.pdfImposer:giai_doan_6_dang_ghep_to_booklet_xen')
                         : i18n.t('lib.pdfImposer:giai_doan_6_dang_nhan_ban_trang_in_step')
                     );
@@ -288,7 +318,7 @@ export const imposePdf = async (
             } else {
                 await renderBooklet(
                     virtualMap, embeddedPages, srcPageDetails, geoContext, outputPdf,
-                    bleed, paperThickness, isSaddleOrThread, (settings as any).markType, settings.interleave || 'normal', setStatus, settings as any, gutterPt
+                    bleed, paperThickness, isSaddleOrThread, runtimeSettings.markType, settings.interleave || 'normal', setStatus, runtimeSettings as unknown as GuillotineSettings | OffsetSettings, gutterPt
                 );
             }
 
@@ -305,9 +335,9 @@ export const imposePdf = async (
 
         setStatus(i18n.t('lib.pdfImposer:don_dep_bo_nho_va_dong_tep_pdf'));
         const pdfBytes = await outputPdf.save(); // THIS is where lazy flate decoding fails!
-        return { 
-            blob: new Blob([pdfBytes as any], { type: 'application/pdf' }), 
-            report: reportMsg 
+        return {
+            blob: new Blob([asBlobPart(pdfBytes)], { type: 'application/pdf' }),
+            report: reportMsg
         };
     };
 
@@ -320,7 +350,7 @@ export const imposePdf = async (
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-            
+
             const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8321';
             const response = await fetch(`${API_BASE}/api/imposition/unlock-pdf`, {
                 method: 'POST',
@@ -336,29 +366,29 @@ export const imposePdf = async (
 
             setStatus(i18n.t('lib.pdfImposer:giai_ma_thanh_cong_dang_nap_lai_tai'));
             return await response.arrayBuffer();
-        } catch (e: any) {
-            if (e.name === 'AbortError') {
+        } catch (e: unknown) {
+            if (e instanceof DOMException && e.name === 'AbortError') {
                 throw new Error(tv('Hệ thống giải mã không phản hồi sau 30 giây (Vui lòng thử lại sau).'));
             }
-            throw new Error(i18n.t('lib.pdfImposer:xu_ly_tap_tin_that_bai_e_message', { message: e.message }));
+            throw new Error(i18n.t('lib.pdfImposer:xu_ly_tap_tin_that_bai_e_message', { message: errorMessage(e) }));
         }
     };
 
     try {
         setStatus(i18n.t('lib.pdfImposer:dang_tai_va_xu_ly_khung_pdf_vao'));
         return await runPipeline(arrayBuffer);
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error("Pipeline failed:", err);
         if (isEncryptionError(err)) {
             try {
                 const cleanBuffer = await decryptPdfViaBackend(arrayBuffer, setStatus);
                 return await runPipeline(cleanBuffer);
-            } catch (decryptErr: any) {
+            } catch (decryptErr: unknown) {
                 console.error("Backend Decryption failed:", decryptErr);
-                throw new Error(i18n.t('lib.pdfImposer:loi_giai_ma') + ' ' + (decryptErr.message || decryptErr));
+                throw new Error(i18n.t('lib.pdfImposer:loi_giai_ma') + ' ' + (errorMessage(decryptErr)));
             }
         } else {
-            throw new Error(i18n.t('lib.pdfImposer:loi_boc_tach_pdf') + ' ' + (err.message || err));
+            throw new Error(i18n.t('lib.pdfImposer:loi_boc_tach_pdf') + ' ' + errorMessage(err));
         }
     }
 };
@@ -386,7 +416,7 @@ export const imposeCatalogBatch = async (
     const results: CatalogBatchResult[] = [];
     const srcBuffer = await getFileArrayBuffer(pdfFile);
     const srcPdf = await PDFDocument.load(srcBuffer, { ignoreEncryption: true });
-    
+
     setStatus(i18n.t('lib.pdfImposer:bat_dau_xu_ly_jobs_length_tam_kem', { count: jobs.length }));
 
     for (let i = 0; i < jobs.length; i++) {
@@ -414,12 +444,13 @@ export const imposeCatalogBatch = async (
 
         const subPdfBytes = await subPdf.save();
         const subFile = new File(
-            [subPdfBytes as any],
+            [asBlobPart(subPdfBytes)],
             `sub_${job.id}.pdf`,
             { type: 'application/pdf' }
         );
 
         // Bước 2: Chuẩn bị settings riêng cho job này
+        const baseRuntimeSettings = asRuntimeSettings(baseSettings as ProcessingSettings);
         const jobSettings: ProcessingSettings = {
             impositionMode: ImpositionMode.Booklet,
             bindingMode: job.bindingMode === 'saddle' ? 'saddle' : 'thread',
@@ -429,15 +460,15 @@ export const imposeCatalogBatch = async (
             sheetWidth: baseSettings.sheetWidth || 0,
             sheetHeight: baseSettings.sheetHeight || 0,
             chainNup: true, // Luôn dùng chain_nup cho offset catalog
-            markType: (baseSettings as any).markType,
-            markOffset: (baseSettings as any).markOffset,
-            markLength: (baseSettings as any).markLength,
-            markThickness: (baseSettings as any).markThickness,
-            markStyle: (baseSettings as any).markStyle,
+            markType: baseRuntimeSettings.markType,
+            markOffset: baseRuntimeSettings.markOffset,
+            markLength: baseRuntimeSettings.markLength,
+            markThickness: baseRuntimeSettings.markThickness,
+            markStyle: baseRuntimeSettings.markStyle,
             interleave: 'normal',
             foldPattern: job.foldPatternId,
             isCover: job.isCover,
-            gripperMargin: (baseSettings as any).gripperMargin,
+            gripperMargin: baseRuntimeSettings.gripperMargin,
             marginTop: baseSettings.marginTop,
             marginBottom: baseSettings.marginBottom,
             marginLeft: baseSettings.marginLeft,
@@ -445,9 +476,9 @@ export const imposeCatalogBatch = async (
             marginMode: baseSettings.marginMode,
             gapX: baseSettings.gapX,
             gapY: baseSettings.gapY,
-            spreadDistribution: (baseSettings as any).spreadDistribution || 'clustered',
-            paperClassification: (baseSettings as any).paperClassification || 'in_nhanh'
-        } as any;
+            spreadDistribution: baseRuntimeSettings.spreadDistribution || 'clustered',
+            paperClassification: baseRuntimeSettings.paperClassification || 'in_nhanh'
+        } as unknown as ProcessingSettings;
 
         // Bước 3: Chạy pipeline
         try {
@@ -462,13 +493,13 @@ export const imposeCatalogBatch = async (
                 report: result.report,
                 jobId: job.id,
             });
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error(`Job ${job.id} failed:`, err);
             results.push({
                 blob: new Blob(),
                 filename: job.filename,
-                label: i18n.t('lib.pdfImposer:job_label_loi_err_message', { label: job.label, message: err.message }),
-                report: i18n.t('lib.pdfImposer:loi_err_message', { message: err.message }),
+                label: i18n.t('lib.pdfImposer:job_label_loi_err_message', { label: job.label, message: errorMessage(err) }),
+                report: i18n.t('lib.pdfImposer:loi_err_message', { message: errorMessage(err) }),
                 jobId: job.id,
             });
         }
@@ -507,10 +538,10 @@ const BACKEND_API = import.meta.env.VITE_API_URL || 'http://localhost:8321';
 
 /**
  * Booklet imposition via Backend (Planner → Executor).
- * 
+ *
  * Chỉ chạy Planner modules (VirtualMap, GeometricSolver, FoldPatterns)
  * để tính toán tọa độ, rồi đẩy JSON cho Backend Python thực thi.
- * 
+ *
  * File PDF gốc KHÔNG được nạp vào RAM của Webview.
  * Backend dùng pypdfium2 (memory-mapped I/O) để đọc file trực tiếp từ ổ cứng.
  */
@@ -522,16 +553,17 @@ export const imposePdfViaBackend = async (
 ): Promise<{ outputPath: string; report: string; blob: Blob }> => {
 
     setStatus(i18n.t('lib.pdfImposer:dang_tinh_toan_so_do_binh_trang'));
+    const runtimeSettings = asRuntimeSettings(settings);
 
     // Defense-in-depth: không cho knob Offset ẩn rò vào job Digital.
-    const isOffsetBooklet = (settings as any).paperClassification === 'offset'
-        || (settings as any).imposerMode === 'offset';
+    const isOffsetBooklet = runtimeSettings.paperClassification === 'offset'
+        || runtimeSettings.imposerMode === 'offset';
     settings = {
         ...settings,
         paperClassification: isOffsetBooklet ? 'offset' : 'in_nhanh',
-        foldPattern: isOffsetBooklet ? (settings as any).foldPattern : undefined,
-        gripperMargin: isOffsetBooklet ? (settings as any).gripperMargin : 0,
-        interleave: !isOffsetBooklet || (settings as any).foldPattern ? 'normal' : (settings.interleave || 'normal'),
+        foldPattern: isOffsetBooklet ? runtimeSettings.foldPattern : undefined,
+        gripperMargin: isOffsetBooklet ? runtimeSettings.gripperMargin : 0,
+        interleave: !isOffsetBooklet || runtimeSettings.foldPattern ? 'normal' : (settings.interleave || 'normal'),
     } as ProcessingSettings;
 
     // ──── STEP 1: Đọc metadata cơ bản từ file (chỉ lấy số trang + kích thước) ────
@@ -584,7 +616,7 @@ export const imposePdfViaBackend = async (
 
     // ──── STEP 2: Chạy Planner modules (thuần toán, 0 byte PDF trong RAM) ────
     setStatus(i18n.t('lib.pdfImposer:dang_thiet_lap_so_do_trang'));
-            const bMode = (settings as any).bindingMode || 'saddle';
+            const bMode = runtimeSettings.bindingMode || 'saddle';
     // pageOrder (thứ tự trang do người dùng sắp trong viewer, 1-based; -1 = trang trắng
     // đã chèn) là NGUỒN SỰ THẬT — GIỐNG HỆT "Xem Bài In" (SheetViewer dùng pageOrder.length).
     // Trước đây nhánh này dựng map từ pageCount THÔ của file gốc → generateBindingMap tự pad
@@ -593,11 +625,11 @@ export const imposePdfViaBackend = async (
     // (index logic vào pageOrder) → index TRANG THẬT trong file gốc, hoặc null nếu là slot
     // trắng. source_page/backend giữ nguyên; slot null được backend skip (fix trang trắng
     // lệch mặt 2026-07-07).
-    const pageOrder: number[] = Array.isArray((settings as any).pageOrder)
-        ? [...(settings as any).pageOrder]
+    const pageOrder: number[] = Array.isArray(runtimeSettings.pageOrder)
+        ? [...runtimeSettings.pageOrder]
         : Array.from({ length: pageCount }, (_, i) => i + 1);
-    const pageRotations: number[] = Array.isArray((settings as any).pageRotations)
-        ? [...(settings as any).pageRotations]
+    const pageRotations: number[] = Array.isArray(runtimeSettings.pageRotations)
+        ? [...runtimeSettings.pageRotations]
         : Array.from({ length: pageOrder.length }, () => 0);
 
     // Tách bìa trong chính pipeline backend đang hoạt động.
@@ -605,8 +637,8 @@ export const imposePdfViaBackend = async (
     let bodyRotations = pageRotations;
     const appendSourcePages: { source_page: number; rotation_deg?: number }[] = [];
     let separatedCoverCount = 0;
-    const wantSeparateCover = !!(settings as any).separateCover;
-    const coverCount = Math.max(2, Number((settings as any).coverPageCount) || 4);
+    const wantSeparateCover = !!runtimeSettings.separateCover;
+    const coverCount = Math.max(2, Number(runtimeSettings.coverPageCount) || 4);
     if (wantSeparateCover && pageOrder.length >= coverCount + 4) {
         const half = Math.floor(coverCount / 2);
         const coverPositions = [
@@ -625,7 +657,7 @@ export const imposePdfViaBackend = async (
     }
 
     const effectiveCount = bodyOrder.length;
-    const mapResult = generateBindingMap(effectiveCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end', (settings as any).scaleMode || '100');
+    const mapResult = generateBindingMap(effectiveCount, bMode, runtimeSettings.foliosize, runtimeSettings.blankPlacement || 'end', runtimeSettings.scaleMode || '100');
     const virtualMap = mapResult.sheets;
     const remapSlot = (slot: { srcIndex: number | null; userRotation?: number }) => {
         if (slot.srcIndex === null) return;
@@ -672,14 +704,14 @@ export const imposePdfViaBackend = async (
     // (Offset printers usually want Landscape, but if it only fits Portrait, we must use Portrait).
     // Phase-2 (chain_nup / fold pattern): phase-1 PHẢI dựng spread ở khung auto_100
     // (khổ = 1 spread) rồi serializer sắp nhiều spread lên khổ kẽm lớn ở phase-2.
-    const _fp = (settings as any).foldPattern;
-    const _phase2 = !!(settings as any).chainNup || (!!_fp && _fp !== '');
+    const _fp = runtimeSettings.foldPattern;
+    const _phase2 = !!runtimeSettings.chainNup || (!!_fp && _fp !== '');
 
     // ── Booklet 1-up (non-phase2): chọn HƯỚNG KHỔ GIẤY cho vừa spread (xoay KHỔ,
     // KHÔNG xoay nội dung — 2 trang luôn đứng đọc được). Hai chế độ:
     //   • 'fit' : BÓP nội dung cho vừa khổ (thu nhỏ nếu lớn hơn), canh giữa.
     //   • '100' : GIỮ NGUYÊN 100%. Nếu không vừa (kể cả xoay khổ) → CẢNH BÁO, không co.
-    const _scaleMode = (settings as any).scaleMode || '100';
+    const _scaleMode = runtimeSettings.scaleMode || '100';
     if (!_phase2 && reqSheetW > 0 && reqSheetH > 0) {
         const spreadWmm = (maxSrcW * 2) / MM_TO_POINTS;
         const spreadHmm = maxSrcH / MM_TO_POINTS;
@@ -715,7 +747,7 @@ export const imposePdfViaBackend = async (
         customSheetHeight: reqSheetH,
         bleed: settings.bleed,
         signatureMode: bMode,
-    } as any;
+    } as unknown as BookletSettings;
 
     const geoContext = solveGeometry(maxSrcW, maxSrcH, pseudoSettings, {}, MM_TO_POINTS);
     const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
@@ -747,7 +779,7 @@ export const imposePdfViaBackend = async (
         bleedPt,
         paperThicknessPt,
         isSaddleOrThread,
-        (settings as any).markType || 'none',
+        runtimeSettings.markType || 'none',
         settings.interleave || 'normal',
         settings,
         sourcePdfPath,
@@ -756,15 +788,15 @@ export const imposePdfViaBackend = async (
         appendSourcePages,
     );
 
-    if ((settings as any).foldPattern && instructionSet.phase2?.mode !== 'fold_pattern') {
-        const warn = `Sơ đồ gấp ${(settings as any).foldPattern} không khớp toàn bộ tay sách; đã chuyển sang Step & Repeat an toàn.`;
+    if (runtimeSettings.foldPattern && instructionSet.phase2?.mode !== 'fold_pattern') {
+        const warn = `Sơ đồ gấp ${runtimeSettings.foldPattern} không khớp toàn bộ tay sách; đã chuyển sang Step & Repeat an toàn.`;
         report += (report ? '\n' : '') + warn;
     }
 
 
     // ──── STEP 4: Gửi JSON cho Backend Python thực thi ────
     setStatus(i18n.t('lib.pdfImposer:dang_gui_ke_hoach_xu_ly'));
-    const preferNativePath = !!(window as any).__TAURI_INTERNALS__;
+    const preferNativePath = '__TAURI_INTERNALS__' in window;
     const response = await fetch(`${BACKEND_API}/api/imposition/execute-plan-json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -807,7 +839,7 @@ export const imposePdfViaBackend = async (
 
 /**
  * Catalog Batch Imposition via Backend (Planner → Executor).
- * 
+ *
  * Giống imposeCatalogBatch nhưng mỗi kẽm được xử lý bởi Backend.
  * Sau mỗi kẽm, file output được ghi xuống ổ cứng qua Tauri FS API
  * và RAM được giải phóng hoàn toàn.
@@ -823,9 +855,11 @@ export const imposeCatalogBatchViaBackend = async (
 
     setStatus(i18n.t('lib.pdfImposer:bat_dau_xu_ly_jobs_length_tam_kem', { count: jobs.length }));
 
+    const baseRuntimeSettings = baseSettings as Partial<RuntimeProcessingSettings>;
+
     for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        const sheetSettings = { ...baseSettings } as any;
+        const sheetSettings = { ...baseSettings } as Partial<RuntimeProcessingSettings>;
         setStatus(i18n.t('lib.pdfImposer:kem_i_1_jobs_length_job_label', { current: i + 1, total: jobs.length, label: job.label }));
 
         const jobSettings: ProcessingSettings = {
@@ -834,19 +868,19 @@ export const imposeCatalogBatchViaBackend = async (
             foliosize: job.pageIndices.length,
             paperThickness: baseSettings.paperThickness || 0,
             bleed: baseSettings.bleed || 0,
-            paperClassification: (sheetSettings as any).paperClassification || 'in_nhanh',
+            paperClassification: sheetSettings.paperClassification || 'in_nhanh',
             sheetWidth: baseSettings.sheetWidth || 0,
             sheetHeight: baseSettings.sheetHeight || 0,
             chainNup: true,
-            markType: (baseSettings as any).markType,
-            markOffset: (baseSettings as any).markOffset,
-            markLength: (baseSettings as any).markLength,
-            markThickness: (baseSettings as any).markThickness,
-            markStyle: (baseSettings as any).markStyle,
+            markType: baseRuntimeSettings.markType,
+            markOffset: baseRuntimeSettings.markOffset,
+            markLength: baseRuntimeSettings.markLength,
+            markThickness: baseRuntimeSettings.markThickness,
+            markStyle: baseRuntimeSettings.markStyle,
             interleave: 'normal',
             foldPattern: job.foldPatternId,
             isCover: job.isCover,
-            gripperMargin: (baseSettings as any).gripperMargin,
+            gripperMargin: baseRuntimeSettings.gripperMargin,
             marginTop: baseSettings.marginTop,
             marginBottom: baseSettings.marginBottom,
             marginLeft: baseSettings.marginLeft,
@@ -854,10 +888,10 @@ export const imposeCatalogBatchViaBackend = async (
             marginMode: baseSettings.marginMode,
             gapX: baseSettings.gapX,
             gapY: baseSettings.gapY,
-            spreadDistribution: (baseSettings as any).spreadDistribution || 'clustered',
-            bookReport: (baseSettings as any).bookReport,
+            spreadDistribution: baseRuntimeSettings.spreadDistribution || 'clustered',
+            bookReport: baseRuntimeSettings.bookReport,
             pageOrder: job.pageIndices.map(idx => idx + 1), // Convert 0-based → 1-based
-        } as any;
+        } as unknown as ProcessingSettings;
 
         try {
             const result = await imposePdfViaBackend(
@@ -874,13 +908,13 @@ export const imposeCatalogBatchViaBackend = async (
                 report: result.report,
                 jobId: job.id,
             });
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error(`Job ${job.id} failed:`, err);
             results.push({
                 blob: new Blob(),
                 filename: job.filename,
-                label: i18n.t('lib.pdfImposer:job_label_loi_err_message', { label: job.label, message: err.message }),
-                report: i18n.t('lib.pdfImposer:loi_err_message', { message: err.message }),
+                label: i18n.t('lib.pdfImposer:job_label_loi_err_message', { label: job.label, message: errorMessage(err) }),
+                report: i18n.t('lib.pdfImposer:loi_err_message', { message: errorMessage(err) }),
                 jobId: job.id,
             });
         }

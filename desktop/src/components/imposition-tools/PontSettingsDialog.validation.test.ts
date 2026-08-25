@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    DEFAULT_PONT_CONFIG,
-} from './PontSettingsDialog';
+import { DEFAULT_PONT_CONFIG } from './pontConfigDefaults';
 import { getPontConfigValidationError } from './pontConfigValidation';
 import type { PontConfig } from './types';
 

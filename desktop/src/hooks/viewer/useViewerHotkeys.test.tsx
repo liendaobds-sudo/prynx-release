@@ -17,7 +17,7 @@ const makeProps = (overrides: Record<string, unknown> = {}) => ({
     pageRotations: {},
     activePage: 1,
     numPages: 1,
-    setPageOrder: vi.fn(),
+    applyPageRevision: vi.fn(),
     setSelectedIndices: vi.fn(),
     setLastSelectedIndex: vi.fn(),
     setPageRotations: vi.fn(),
@@ -74,18 +74,55 @@ describe('useViewerHotkeys document undo fallback', () => {
 
     it('ưu tiên hoàn tác thao tác trang trước file đã xử lý', () => {
         const onDocumentUndo = vi.fn();
-        const setPageOrder = vi.fn();
+        const applyPageRevision = vi.fn();
         renderHook(() => useViewerHotkeys(makeProps({
             pageOrder: [1, 2],
-            pastStack: [{ order: [2, 1], selection: [1], lastSelected: 1, rotations: {} }],
-            setPageOrder,
+            pageInstanceIds: ['instance-1', 'instance-2'],
+            pageRotations: { 'instance-1': 90, 'instance-2': 0 },
+            pastStack: [{
+                order: [2, 1],
+                instanceIds: ['instance-2', 'instance-1'],
+                selection: [1],
+                lastSelected: 1,
+                rotations: { 'instance-2': 180, 'instance-1': 90 },
+            }],
+            applyPageRevision,
             onDocumentUndo,
         })), { wrapper: makeWrapper() });
 
         fireEvent.keyDown(document, { key: 'z', code: 'KeyZ', ctrlKey: true });
 
-        expect(setPageOrder).toHaveBeenCalledWith([2, 1]);
+        expect(applyPageRevision).toHaveBeenCalledWith(
+            [2, 1],
+            ['instance-2', 'instance-1'],
+            { 'instance-2': 180, 'instance-1': 90 },
+        );
         expect(onDocumentUndo).not.toHaveBeenCalled();
+    });
+
+    it('Redo phục hồi đồng thời order, instance IDs và rotation theo instance', () => {
+        const applyPageRevision = vi.fn();
+        renderHook(() => useViewerHotkeys(makeProps({
+            pageOrder: [2, 1],
+            pageInstanceIds: ['instance-2', 'instance-1'],
+            pageRotations: { 'instance-2': 180, 'instance-1': 90 },
+            futureStack: [{
+                order: [1, 1, 2],
+                instanceIds: ['instance-1', 'instance-copy', 'instance-2'],
+                selection: [1],
+                lastSelected: 1,
+                rotations: { 'instance-1': 90, 'instance-copy': 270, 'instance-2': 180 },
+            }],
+            applyPageRevision,
+        })), { wrapper: makeWrapper() });
+
+        fireEvent.keyDown(document, { key: 'y', code: 'KeyY', ctrlKey: true });
+
+        expect(applyPageRevision).toHaveBeenCalledWith(
+            [1, 1, 2],
+            ['instance-1', 'instance-copy', 'instance-2'],
+            { 'instance-1': 90, 'instance-copy': 270, 'instance-2': 180 },
+        );
     });
 
     it('không cướp Ctrl+Z của ô nhập liệu', () => {
@@ -305,6 +342,12 @@ describe('useViewerHotkeys document undo fallback', () => {
             'instance-b': 0,
         });
         expect(setPastStack).toHaveBeenCalledTimes(2);
+        const firstSnapshotUpdater = setPastStack.mock.calls[0][0];
+        expect(firstSnapshotUpdater([])[0]).toMatchObject({
+            order: [1, 1],
+            instanceIds: ['instance-a', 'instance-b'],
+            rotations: { 'instance-a': 0, 'instance-b': 90 },
+        });
     });
 
     it('selects and clears all page thumbnails with Ctrl+A variants', () => {

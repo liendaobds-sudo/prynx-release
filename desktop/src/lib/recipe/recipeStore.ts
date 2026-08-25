@@ -17,12 +17,12 @@ function generateId(): string {
 }
 
 // ─── Tauri (chỉ khi thực sự chạy trong app desktop) ───
-let tauriFs: any = null;
-let tauriPath: any = null;
+let tauriFs: typeof import('@tauri-apps/plugin-fs') | null = null;
+let tauriPath: typeof import('@tauri-apps/api/path') | null = null;
 let _tauriTried = false;
 
 function isTauri(): boolean {
-    return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+    return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 }
 
 async function initTauri() {

@@ -49,9 +49,42 @@ export interface SessionOpOutcome {
     full: boolean;
     page: number;
     /** Gồm bbox MỚI để FE cập nhật overlay object tại chỗ (KHÔNG refetch). */
-    opResult: Record<string, any>;
+    opResult: SessionOpResult;
     canUndo: boolean;
     canRedo: boolean;
+}
+
+/** Kiểu chi tiết riêng của event objectVisibility sau khi narrow tại điểm dùng. */
+interface ObjectVisibilityDetail {
+    target_ids?: string[];
+    visible?: boolean;
+}
+
+/** Payload động theo loại EditOp; backend có thể trả dict/list lồng nhau. */
+interface SessionOpResult {
+    [key: string]: unknown;
+}
+
+/** Hợp đồng JSON dùng chung cho các endpoint của edit session. */
+interface SessionApiResponse {
+    session_id?: string;
+    page_count?: number;
+    success?: boolean;
+    preview?: string | null;
+    clipRect?: unknown;
+    full?: boolean;
+    page?: number | null;
+    opResult?: SessionOpResult;
+    canUndo?: boolean;
+    canRedo?: boolean;
+    output_fid?: string;
+    output_url?: string;
+    output_path?: string;
+    output_filename?: string;
+    artifact_lease?: string;
+    warning?: string | null;
+    closed?: boolean;
+    [key: string]: unknown;
 }
 
 /** Một lớp overlay xem-trước tích lũy trong phiên (mỗi op/undo/redo đẩy thêm 1 lớp).
@@ -72,6 +105,8 @@ export interface SessionCommitResult {
     output_url?: string;
     output_path?: string;
     output_filename?: string;
+    /** Token bí mật giữ Working File backend sống theo owner tab. */
+    artifact_lease?: string;
     /**
      * Cảnh báo suy giảm chất lượng dù thao tác THÀNH CÔNG. Hiện có: flatten phải
      * raster hoá nên file ra mất vector/CMYK/màu pha (Pantone, kênh bế). Bắt buộc
@@ -89,6 +124,11 @@ export interface UseEditSessionOptions {
      *  RECIPE (audit 2026-08-17 §REC.11A): cho phép trả Promise để lifecycle await
      *  consumer publish xong trước khi kết thúc commit. */
     onCommit?: (result: SessionCommitResult) => void | Promise<void>;
+    /**
+     * REVISION (audit 2026-08-25 §REV.03): báo trước khi gửi mỗi op/undo/redo
+     * để kết quả tool đang chạy trên revision cũ bị vô hiệu ngay lập tức.
+     */
+    onEditRevisionStart?: () => void;
     /** Gọi khi phiên hỏng/không tồn tại (410) → FE chuyển sang Legacy_Commit_Flow. */
     onSessionFailed?: () => void;
 }
@@ -144,6 +184,9 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
     const sessionIdRef = useRef<string | null>(null);
     const dirtyRef = useRef(false);
     const committingRef = useRef(false);     // có commit đang chạy? (chặn commit chồng)
+    const commitPromiseRef = useRef<Promise<SessionCommitResult | null> | null>(null);
+    const pendingOperationCountRef = useRef(0);
+    const operationDrainWaitersRef = useRef<Array<() => void>>([]);
     const optsRef = useRef(options);
     optsRef.current = options;
 
@@ -155,6 +198,13 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
     const setDirtyFlag = useCallback((v: boolean) => {
         dirtyRef.current = v;
         setDirty(v);
+    }, []);
+
+    const waitForPendingOperations = useCallback((): Promise<void> => {
+        if (pendingOperationCountRef.current === 0) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+            operationDrainWaitersRef.current.push(resolve);
+        });
     }, []);
 
     /** Đánh dấu phiên hỏng → FE báo lỗi (không fallback — người dùng đã chọn). */
@@ -173,7 +223,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
     const request = useCallback(async (
         path: string,
         init: RequestInit,
-    ): Promise<any> => {
+    ): Promise<SessionApiResponse> => {
         const res = await authenticatedFetch(`${getApiUrl()}/edit/session${path}`, init);
         if (res.status === 410) throw new SessionGoneError();
         if (!res.ok) {
@@ -197,44 +247,79 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
     // sửa; commit gộp TẤT CẢ op thành MỘT Working_File khi kết thúc. Trả kết quả cho
     // caller (ImpositionTab) đổi pdfUrl sang tile thật — reload DUY NHẤT, ở điểm tự nhiên.
     const doCommit = useCallback(async (): Promise<SessionCommitResult | null> => {
+        // REVISION (audit 2026-08-25 §REV.01-02): mọi consumer cùng await đúng
+        // commit đang bay. Trả null ở đây từng làm Crop/tool đọc backing PDF cũ.
+        if (commitPromiseRef.current) return commitPromiseRef.current;
         const sid = sessionIdRef.current;
         if (!sid) return null;
-        // Chặn commit chồng: nếu đang commit thì bỏ qua lần gọi này (commit-on-exit
-        // chỉ gọi 1 lần, guard này chỉ phòng double-invoke hiếm).
-        if (committingRef.current) return null;
-        committingRef.current = true;
+
+        const pending = (async (): Promise<SessionCommitResult | null> => {
+            // Op cuối có thể chưa kịp đặt dirty=true. Chờ response và publish
+            // overlay/state trước khi quyết định phiên có cần commit hay không.
+            await waitForPendingOperations();
+            if (sessionIdRef.current !== sid) {
+                throw new Error(t('hooks.useEditSession:phien_chinh_sua_da_het_han', {
+                    defaultValue: 'Phiên chỉnh sửa PDF đã hết hạn. Thay đổi chưa được chốt; vui lòng thử lại.',
+                }));
+            }
+            if (!dirtyRef.current) return null;
+            // committingRef không có commitPromise chỉ có thể là luồng Flatten.
+            if (committingRef.current) return null;
+            committingRef.current = true;
+            try {
+                const data = await request('/commit', jsonPost({ session_id: sid }));
+                const result: SessionCommitResult = {
+                    success: !!data?.success,
+                    output_fid: data?.output_fid,
+                    output_url: data?.output_url,
+                    output_path: data?.output_path,
+                    output_filename: data?.output_filename,
+                    artifact_lease: data?.artifact_lease,
+                };
+                if (
+                    !result.success
+                    || !result.output_fid
+                    || !result.output_url
+                    || !result.output_path
+                    || !result.output_filename
+                    || !result.artifact_lease
+                ) {
+                    throw new Error(t('hooks.useEditSession:commit_thieu_artifact', {
+                        defaultValue: 'Edit PDF không trả đủ Working File mới. Phiên được giữ lại để thử lại.',
+                    }));
+                }
+                // Await consumer publish Working File; barrier chỉ mở sau khi file mới
+                // đã vào store, không chỉ sau khi backend trả response.
+                await optsRef.current.onCommit?.(result);
+                setDirtyFlag(false);
+                return result;
+            } catch (e) {
+                if (e instanceof SessionGoneError) {
+                    markFailed();
+                    throw new Error(t('hooks.useEditSession:phien_chinh_sua_da_het_han', {
+                        defaultValue: 'Phiên chỉnh sửa PDF đã hết hạn. Thay đổi chưa được chốt; vui lòng thử lại.',
+                    }));
+                }
+                // Commit thất bại → GIỮ NGUYÊN trạng thái phiên trong RAM để thử lại.
+                throw e;
+            } finally {
+                committingRef.current = false;
+            }
+        })();
+        commitPromiseRef.current = pending;
         try {
-            const data = await request('/commit', jsonPost({ session_id: sid }));
-            // Commit thành công → không còn thay đổi chưa ghi.
-            setDirtyFlag(false);
-            const result: SessionCommitResult = {
-                success: !!data?.success,
-                output_fid: data?.output_fid,
-                output_url: data?.output_url,
-                output_path: data?.output_path,
-                output_filename: data?.output_filename,
-            };
-            // Báo caller (ImpositionTab.onCommit → handleEditCommit) đổi pdfUrl sang
-            // tile thật. Đây là RELOAD DUY NHẤT của cả phiên sửa — tại điểm thoát/Lưu.
-            // Await để publish xong trước khi commit kết thúc (§REC.11A).
-            try { await optsRef.current.onCommit?.(result); } catch { /* nuốt lỗi callback */ }
-            return result;
-        } catch (e) {
-            if (e instanceof SessionGoneError) { markFailed(); return null; }
-            // Commit thất bại → GIỮ NGUYÊN trạng thái phiên trong RAM để thử lại
-            // (Yêu cầu 10.5); không xóa dirty.
-            throw e;
+            return await pending;
         } finally {
-            committingRef.current = false;
+            if (commitPromiseRef.current === pending) commitPromiseRef.current = null;
         }
-    }, [request, jsonPost, setDirtyFlag, markFailed]);
+    }, [request, jsonPost, setDirtyFlag, markFailed, waitForPendingOperations, t]);
 
     // ── Mở phiên ──────────────────────────────────────────────────────────────
     const openSession = useCallback(async (fid: string): Promise<number | null> => {
         if (!fid) return null;
         try {
             const data = await request('/open', jsonPost({ fid }));
-            const sid: string = data?.session_id;
+            const sid = data?.session_id;
             if (!sid) throw new Error(t('hooks.useEditSession:open_thieu_session_id'));
             setSession(sid);
             setSessionFailed(false);
@@ -256,7 +341,13 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         body: Record<string, unknown>,
     ): Promise<SessionOpOutcome | null> => {
         const sid = sessionIdRef.current;
-        if (!sid) return null;
+        if (!sid || commitPromiseRef.current) return null;
+        pendingOperationCountRef.current += 1;
+        try {
+            optsRef.current.onEditRevisionStart?.();
+        } catch {
+            // Fence revision là bảo vệ phụ; callback UI không được làm mất thao tác edit.
+        }
         try {
             const data = await request(path, jsonPost({ session_id: sid, ...body }));
             const outcome: SessionOpOutcome = {
@@ -278,7 +369,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
                 window.dispatchEvent(new CustomEvent("refresh-ocg-layers", { detail: { tabId: optsRef.current.eventScopeId } }));
             }
             if (outcomeKind === "objectVisibility") {
-                const detail = outcome.opResult?.detail || {};
+                const detail = (outcome.opResult?.detail ?? {}) as ObjectVisibilityDetail;
                 window.dispatchEvent(new CustomEvent("edit-object-visibility-changed", {
                     detail: {
                         ...(optsRef.current.eventScopeId ? { tabId: optsRef.current.eventScopeId } : {}),
@@ -323,6 +414,12 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             // Lỗi op (409/422/504...) → GIỮ NGUYÊN phiên + Op_Log (Yêu cầu 10.2, 10.3);
             // ném lại để caller hiển thị lỗi mà KHÔNG fallback.
             throw e;
+        } finally {
+            pendingOperationCountRef.current = Math.max(0, pendingOperationCountRef.current - 1);
+            if (pendingOperationCountRef.current === 0) {
+                const waiters = operationDrainWaitersRef.current.splice(0);
+                waiters.forEach(resolve => resolve());
+            }
         }
     }, [request, jsonPost, setDirtyFlag, markFailed]);
 
@@ -340,9 +437,20 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
 
     // ── Commit thủ công (người dùng Lưu / thoát edit mode — commit-on-exit) ─────
     const flatten = useCallback(async (): Promise<SessionCommitResult | null> => {
+        if (commitPromiseRef.current) return commitPromiseRef.current;
         const sid = sessionIdRef.current;
-        if (!sid || committingRef.current) return null;
-        committingRef.current = true;
+        if (!sid) return null;
+        const pending = (async (): Promise<SessionCommitResult | null> => {
+            // REVISION (audit 2026-08-25 §REV.01-02): Flatten cũng là một lần
+            // publish Working File; commit/chuyển tool phải join cùng Promise này.
+            await waitForPendingOperations();
+            if (sessionIdRef.current !== sid) {
+                throw new Error(t('hooks.useEditSession:phien_chinh_sua_da_het_han', {
+                    defaultValue: 'Phiên chỉnh sửa PDF đã hết hạn. Thay đổi chưa được chốt; vui lòng thử lại.',
+                }));
+            }
+            if (committingRef.current) return null;
+            committingRef.current = true;
         try {
             const data = await request('/flatten', jsonPost({ session_id: sid }));
             const result: SessionCommitResult = {
@@ -351,21 +459,46 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
                 output_url: data?.output_url,
                 output_path: data?.output_path,
                 output_filename: data?.output_filename,
+                artifact_lease: data?.artifact_lease,
                 warning: data?.warning ?? null,
             };
+            if (
+                !result.success
+                || !result.output_fid
+                || !result.output_url
+                || !result.output_path
+                || !result.output_filename
+                || !result.artifact_lease
+            ) {
+                throw new Error(t('hooks.useEditSession:commit_thieu_artifact', {
+                    defaultValue: 'Edit PDF không trả đủ Working File mới. Phiên được giữ lại để thử lại.',
+                }));
+            }
+            await optsRef.current.onCommit?.(result);
             setDirtyFlag(false);
             setCanUndo(false);
             setCanRedo(false);
             setPreviews([]);
-            try { await optsRef.current.onCommit?.(result); } catch { /* callback best-effort */ }
             return result;
         } catch (e) {
-            if (e instanceof SessionGoneError) { markFailed(); return null; }
+            if (e instanceof SessionGoneError) {
+                markFailed();
+                throw new Error(t('hooks.useEditSession:phien_chinh_sua_da_het_han', {
+                    defaultValue: 'Phiên chỉnh sửa PDF đã hết hạn. Thay đổi chưa được chốt; vui lòng thử lại.',
+                }));
+            }
             throw e;
         } finally {
             committingRef.current = false;
         }
-    }, [request, jsonPost, setDirtyFlag, markFailed]);
+        })();
+        commitPromiseRef.current = pending;
+        try {
+            return await pending;
+        } finally {
+            if (commitPromiseRef.current === pending) commitPromiseRef.current = null;
+        }
+    }, [request, jsonPost, setDirtyFlag, markFailed, waitForPendingOperations, t]);
 
     const commit = useCallback(async (): Promise<SessionCommitResult | null> => {
         if (!sessionIdRef.current) return null;

@@ -1,5 +1,23 @@
+/** Object thô từ endpoint edit/preflight, giữ nguyên bbox theo hệ tọa độ nguồn. */
+export interface CachedPdfObject {
+    id: string;
+    type: string;
+    bbox: number[];
+    xref?: number | null;
+    drawIndex?: number;
+    content?: string | null;
+    ocgIds?: number[];
+    ocgNames?: string[];
+    matrix?: number[] | null;
+    color?: number[] | null;
+    fontName?: string | null;
+    [key: string]: unknown;
+}
+
+type PdfObjectPageMap = Record<number, CachedPdfObject[]>;
+
 export class PdfObjectCache {
-    private objectsByFile: Record<string, Record<number, any[]>> = {};
+    private objectsByFile: Record<string, PdfObjectPageMap> = {};
     private listenersByFile: Record<string, Set<() => void>> = {};
 
     subscribe = (fileKey: string, listener: () => void) => {
@@ -14,13 +32,13 @@ export class PdfObjectCache {
         }
     }
 
-    setPageObjects(fileKey: string, pageNum: number, objs: any[]) {
+    setPageObjects(fileKey: string, pageNum: number, objs: CachedPdfObject[]) {
         if (!this.objectsByFile[fileKey]) this.objectsByFile[fileKey] = {};
         this.objectsByFile[fileKey][pageNum] = objs;
         this.notify(fileKey);
     }
 
-    setAllObjects(fileKey: string, objMap: Record<number, any[]>) {
+    setAllObjects(fileKey: string, objMap: PdfObjectPageMap) {
         this.objectsByFile[fileKey] = objMap;
         this.notify(fileKey);
     }

@@ -1,7 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
-import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
+import {
+  createRevisionScopedPdfUploadCache,
+  type RevisionScopedPdfUploadLease,
+} from '../../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -21,7 +25,41 @@ interface Props {
     name: string,
     path?: string,
     recipeTicket?: RecipeOperationTicket | null,
-  ) => void | Promise<void>;
+  ) => void | boolean | Promise<void | boolean>;
+}
+
+interface HairlineLogEntry {
+  message: string;
+  duration_ms: number;
+}
+
+interface FixHairlinesResponse {
+  success: boolean;
+  output_filename?: string | null;
+  log?: HairlineLogEntry[];
+  error?: string | null;
+  detail?: string | null;
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
+interface ActiveHairlineRequest {
+  generation: number;
+  controller: AbortController;
+  snapshot: WorkingPdfRevisionSnapshot | null;
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 const PRESETS = [
@@ -32,12 +70,11 @@ const PRESETS = [
 
 export default function HairlinesTool({ tabId, pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
-  const [fileId, setFileId] = useState('');
   const [threshold, setThreshold] = useState(0.1);
   const [replaceWith, setReplaceWith] = useState(0.25);
   const [selectedPreset, setSelectedPreset] = useState('standard');
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<FixHairlinesResponse | null>(null);
   const [error, setError] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
   const expectedOutputNameRef = useRef<string | null>(null);
@@ -46,19 +83,87 @@ export default function HairlinesTool({ tabId, pdfFile, onFileFixed }: Props) {
     // UIUX (audit 2026-07-28 §PF.1): giữ kết quả khi viewer nhận đúng file vừa xử lý.
     const preserveSuccess = expectedOutputNameRef.current === pdfFile?.name;
     expectedOutputNameRef.current = null;
-    setFileId('');
     if (!preserveSuccess) setResult(null);
     setError('');
   }, [pdfFile]);
 
   const getWorkingFile = useWorkingPdf();
-  const ensureUploaded = useCallback(async (): Promise<string> => {
-    if (fileId) return fileId;
-    if (!pdfFile) throw new Error(t('preprocess.hairlines:chua_co_file_pdf'));
-    const r = await uploadPDF((await getWorkingFile()) || pdfFile);
-    setFileId(r.id);
-    return r.id;
-  }, [fileId, pdfFile, getWorkingFile, t]);
+  const uploadCache = useMemo(() => createRevisionScopedPdfUploadCache({
+    resolver: getWorkingFile,
+    upload: uploadPDF,
+    missingFileError: () => new Error(t('preprocess.hairlines:chua_co_file_pdf')),
+  }), [getWorkingFile, t]);
+  const requestGenerationRef = useRef(0);
+  const activeRequestRef = useRef<ActiveHairlineRequest | null>(null);
+  const abortActiveRequest = useCallback(() => {
+    requestGenerationRef.current += 1;
+    const active = activeRequestRef.current;
+    activeRequestRef.current = null;
+    if (active && !active.controller.signal.aborted) {
+      active.controller.abort(createAbortError('Revision PDF đã thay đổi.'));
+    }
+  }, []);
+  const beginRequest = useCallback((): ActiveHairlineRequest => {
+    abortActiveRequest();
+    const request = {
+      generation: ++requestGenerationRef.current,
+      controller: new AbortController(),
+      snapshot: getWorkingFile.capture?.() ?? null,
+    };
+    activeRequestRef.current = request;
+    return request;
+  }, [abortActiveRequest, getWorkingFile]);
+  const isRequestCurrent = useCallback((request: ActiveHairlineRequest): boolean => (
+    activeRequestRef.current === request
+    && request.generation === requestGenerationRef.current
+    && !request.controller.signal.aborted
+  ), []);
+  const assertRequestCurrent = useCallback((
+    request: ActiveHairlineRequest,
+    lease: RevisionScopedPdfUploadLease,
+  ) => {
+    if (!isRequestCurrent(request)) {
+      throw request.controller.signal.reason ?? createAbortError('Lượt sửa nét mảnh đã hết hiệu lực.');
+    }
+    lease.assertCurrent();
+  }, [isRequestCurrent]);
+  const finishRequest = useCallback((request: ActiveHairlineRequest): boolean => {
+    if (!isRequestCurrent(request)) return false;
+    activeRequestRef.current = null;
+    return true;
+  }, [isRequestCurrent]);
+  const renderedRevision = getWorkingFile.capture?.();
+  const renderedRevisionFile = renderedRevision?.file ?? pdfFile;
+  const renderedPageRevisionKey = JSON.stringify([
+    renderedRevision?.viewerPageOrder ?? null,
+    renderedRevision?.viewerPageInstanceIds ?? null,
+    renderedRevision?.viewerPageRotations ?? null,
+    renderedRevision?.editGeneration ?? 0,
+  ]);
+  const previousRevisionRef = useRef({
+    file: renderedRevisionFile,
+    key: renderedPageRevisionKey,
+  });
+  useEffect(() => {
+    const previous = previousRevisionRef.current;
+    previousRevisionRef.current = { file: renderedRevisionFile, key: renderedPageRevisionKey };
+    const active = activeRequestRef.current;
+    if (!active?.snapshot || !getWorkingFile.isCurrent(active.snapshot)) {
+      uploadCache.invalidate();
+      abortActiveRequest();
+    }
+    setRunning(false);
+    // REVISION (audit 2026-08-25 §REV.04): chỉ xóa success khi chính file đang
+    // xem bị sửa trang; đổi sang output vừa tạo vẫn theo cơ chế preserve tên cũ.
+    if (previous.file === renderedRevisionFile && previous.key !== renderedPageRevisionKey) {
+      setResult(null);
+      setError('');
+    }
+  }, [abortActiveRequest, getWorkingFile, renderedPageRevisionKey, renderedRevisionFile, uploadCache]);
+  useEffect(() => () => {
+    abortActiveRequest();
+    uploadCache.dispose();
+  }, [abortActiveRequest, uploadCache]);
 
   const selectPreset = (key: string) => {
     setSelectedPreset(key);
@@ -68,6 +173,15 @@ export default function HairlinesTool({ tabId, pdfFile, onFileFixed }: Props) {
 
   const run = async () => {
     setRunning(true); setResult(null); setError('');
+    try {
+      // REVISION (audit 2026-08-25 §REV.01/04): không ghi Recipe trước khi
+      // Edit PDF pending đã commit thành Working File.
+      await getWorkingFile.prepare();
+    } catch (error: unknown) {
+      setError(getErrorMessage(error, t('preprocess.hairlines:that_bai')));
+      setRunning(false);
+      return;
+    }
     const shouldRecord = !!tabId && recipeRecorder.isRecordingFor(tabId);
     const recipeTicket = shouldRecord
       ? recipeRecorder.noteOperation(
@@ -82,25 +196,50 @@ export default function HairlinesTool({ tabId, pdfFile, onFileFixed }: Props) {
       setRunning(false);
       return;
     }
+    const request = beginRequest();
     try {
-      const fid = await ensureUploaded();
+      const lease = await uploadCache.ensureLease(request.controller.signal);
+      assertRequestCurrent(request, lease);
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/fix-hairlines`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fid, threshold_pt: threshold, replace_pt: replaceWith }),
+        body: JSON.stringify({ file_id: lease.fileId, threshold_pt: threshold, replace_pt: replaceWith }),
+        signal: request.controller.signal,
       });
-      const data = await res.json();
+      assertRequestCurrent(request, lease);
+      const data = await res.json() as FixHairlinesResponse;
+      assertRequestCurrent(request, lease);
       if (data.success) {
-        setResult(data);
         if (data.output_filename && onFileFixed) {
-          const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+          const dl = await authenticatedFetch(
+            `${getApiUrl()}/preflight/download/${data.output_filename}`,
+            { signal: request.controller.signal },
+          );
+          assertRequestCurrent(request, lease);
+          if (!dl.ok) throw new Error(t('preprocess.hairlines:that_bai'));
+          const artifact = await dl.blob();
+          assertRequestCurrent(request, lease);
           expectedOutputNameRef.current = data.output_filename;
-          await onFileFixed(await dl.blob(), data.output_filename, undefined, recipeTicket);
+          const committed = await onFileFixed(artifact, data.output_filename, undefined, recipeTicket);
+          // REVISION (audit 2026-08-25 §REV.03/04): parent từ chối kết quả stale
+          // thì panel không được báo xanh như thể Viewer đã nhận file.
+          if (committed === false) {
+            expectedOutputNameRef.current = null;
+            return;
+          }
+          setResult(data);
         } else {
           recipeRecorder.discardPending(recipeTicket);
         }
       } else { recipeRecorder.discardPending(recipeTicket); setError(data.error || data.detail || t('preprocess.hairlines:that_bai')); }
-    } catch (e: any) { recipeRecorder.discardPending(recipeTicket); setError(e.message); }
-    finally { setRunning(false); }
+    } catch (error: unknown) {
+      expectedOutputNameRef.current = null;
+      recipeRecorder.discardPending(recipeTicket);
+      if (isRequestCurrent(request) && !isAbortError(error)) {
+        setError(getErrorMessage(error, t('preprocess.hairlines:that_bai')));
+      }
+    } finally {
+      if (finishRequest(request)) setRunning(false);
+    }
   };
 
   if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.hairlines:vui_long_mo_file_pdf_truoc')}</div>;
@@ -178,7 +317,7 @@ export default function HairlinesTool({ tabId, pdfFile, onFileFixed }: Props) {
       {result && (
         <div className="p-3 rounded-lg border bg-emerald-500/10 border-emerald-500/20">
           <h4 className="text-[11px] font-bold mb-1 text-emerald-600">{t('preprocess.hairlines:thanh_cong')}</h4>
-          {result.log?.map((l: any, i: number) => (
+          {result.log?.map((l, i) => (
             <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">✅ {l.message} ({l.duration_ms}ms)</p>
           ))}
           <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.hairlines:file_da_duoc_cap_nhat_tren_viewer')}</p>

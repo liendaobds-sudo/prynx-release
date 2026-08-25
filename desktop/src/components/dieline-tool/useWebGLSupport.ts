@@ -71,6 +71,8 @@ export function useWebGLSupport(): WebGLSupportState {
     const [supported, setSupported] = useState<boolean | null>(null);
 
     useEffect(() => {
+        // WebGL chỉ được dò sau mount để tránh truy cập canvas trong lúc render/SSR.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- đồng bộ kết quả capability ngoại vi.
         setSupported(detectWebGLSupport());
     }, []);
 

@@ -42,28 +42,121 @@ import React from 'react';
 import { render, act, cleanup } from '@testing-library/react';
 import * as THREE from 'three';
 import { toast } from 'sonner';
+import type { SolidPanelMeshProps } from '../SolidPanelMesh';
+import type { GussetMeshProps } from '../GussetMesh';
+import type { WindowPaneMeshProps } from '../WindowPaneMesh';
 
 const e = React.createElement;
+
+/** Các thuộc tính renderer mà test đọc sau khi Canvas được dựng. */
+interface RendererStubProps {
+    antialias?: boolean;
+    alpha?: boolean;
+    preserveDrawingBuffer?: boolean;
+    toneMapping?: number;
+    toneMappingExposure?: number;
+    outputColorSpace?: string;
+}
+
+/** Props tối thiểu của Canvas stub trong môi trường jsdom. */
+interface CanvasStubProps {
+    children?: React.ReactNode;
+    gl: RendererStubProps;
+    onCreated: (state: { gl: RendererStubProps }) => void;
+    frameloop?: string;
+    dpr?: readonly [number, number];
+}
+
+/** Texture giả: chỉ giữ các trường mà BoxScene cấu hình và test quan sát. */
+interface TextureStub {
+    colorSpace: string;
+    generateMipmaps: boolean;
+    minFilter: number;
+    magFilter: number;
+    anisotropy: number;
+    wrapS: number;
+    wrapT: number;
+    flipY: boolean;
+    needsUpdate: boolean;
+    dispose: () => void;
+}
+
+/** Props SolidPanelMesh sau mock, cho phép texture giả có shape tối thiểu. */
+type ObservedSolidPanelProps = Omit<SolidPanelMeshProps, 'texture' | 'innerTexture' | 'spotUvTexture' | 'embossTexture'> & {
+    texture?: THREE.Texture | TextureStub | null;
+    innerTexture?: THREE.Texture | TextureStub | null;
+    spotUvTexture?: THREE.Texture | TextureStub | null;
+    embossTexture?: THREE.Texture | TextureStub | null;
+};
+
+/** Renderer giả dùng chung cho useThree và useSceneExport. */
+interface FakeGl {
+    domElement: HTMLCanvasElement;
+    getPixelRatio: () => number;
+    setPixelRatio: (value: number) => void;
+    setSize: (width: number, height: number) => void;
+    render: (scene: THREE.Scene, camera: THREE.Camera) => void;
+    getRenderTarget: () => THREE.WebGLRenderTarget | null;
+    setRenderTarget: (target: THREE.WebGLRenderTarget | null) => void;
+    clear: (color?: boolean, depth?: boolean, stencil?: boolean) => void;
+    readRenderTargetPixels: (...args: unknown[]) => void;
+    capabilities: {
+        getMaxAnisotropy: () => number;
+        maxTextureSize?: number;
+        maxSamples?: number;
+        isWebGL2?: boolean;
+    };
+    getClearColor: (target: THREE.Color) => THREE.Color;
+    getClearAlpha: () => number;
+    setClearColor: (color: THREE.ColorRepresentation, alpha?: number) => void;
+    toneMapping: number;
+    toneMappingExposure: number;
+    outputColorSpace: string;
+}
+
+interface FakeThreeState {
+    gl: FakeGl;
+    scene: THREE.Scene;
+    camera: THREE.PerspectiveCamera;
+    size: { width: number; height: number };
+    controls: { target: THREE.Vector3; update: () => void };
+    invalidate: () => void;
+}
+
+interface ChildStubProps {
+    children?: React.ReactNode;
+}
 
 // ─── Hộp chứa trạng thái chia sẻ giữa mock và test (hoisted) ────────────────
 
 const h = vi.hoisted(() => ({
     /** Props mà mock <Canvas> nhận được (để kiểm tone mapping). */
-    canvasProps: [] as any[],
+    canvasProps: [] as CanvasStubProps[],
     /** Callback đăng ký qua useFrame (để mô phỏng vòng render). */
     frameCallbacks: [] as Array<(state?: unknown, delta?: number) => void>,
     /** Props ContactShadows để khóa hành vi giữ/chụp bóng quanh animation. */
     contactShadowProps: [] as Array<{ frames?: number }>,
     /** Trạng thái giả cho useThree (gl/scene/camera/size/controls/invalidate). */
-    threeState: null as any,
+    threeState: null as FakeThreeState | null,
     /** Texture giả trả về từ useLoader. */
-    fakeTexture: { colorSpace: '', generateMipmaps: false, minFilter: 0, flipY: false } as any,
+    fakeTexture: {
+        colorSpace: '',
+        generateMipmaps: false,
+        minFilter: 0,
+        magFilter: 0,
+        anisotropy: 1,
+        wrapS: 0,
+        wrapT: 0,
+        flipY: false,
+        needsUpdate: false,
+        dispose: () => undefined,
+    } satisfies TextureStub,
     /** Props mà SolidPanelMesh (mock) nhận được (để kiểm wiring từ dieline). */
-    solidPanelProps: [] as any[],
+    solidPanelProps: [] as ObservedSolidPanelProps[],
     /** Props của bốn miếng góc khay để kiểm tra công tắc đường kỹ thuật. */
-    gussetProps: [] as any[],
+    gussetProps: [] as GussetMeshProps[],
     /** [HANGING-WINDOW 2026-07-27] Props của màng cửa sổ trong suốt. */
-    windowPaneProps: [] as any[],
+    windowPaneProps: [] as WindowPaneMeshProps[],
     /** Kết quả parseAsync của GLTFExporter mock. */
     glbResult: null as unknown,
     /** Cho phép GLTFExporter.parseAsync reject để kiểm nhánh lỗi. */
@@ -74,13 +167,16 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@react-three/fiber', () => ({
     // <Canvas> stub: ghi lại props rồi render children qua react-dom.
-    Canvas: (props: any) => {
+    Canvas: (props: CanvasStubProps) => {
         h.canvasProps.push(props);
         return props.children ?? null;
     },
     // useThree dạng selector: trả về lát cắt của threeState giả.
-    useThree: (selector?: (s: any) => unknown) =>
-        selector ? selector(h.threeState) : h.threeState,
+    useThree: (selector?: (s: FakeThreeState) => unknown) => {
+        const state = h.threeState;
+        if (!state) throw new Error('Fake three state chưa được khởi tạo.');
+        return selector ? selector(state) : state;
+    },
     // useFrame: ghi lại callback để test tự "tick" vòng render.
     useFrame: (cb: (state?: unknown, delta?: number) => void) => {
         h.frameCallbacks.push(cb);
@@ -92,9 +188,9 @@ vi.mock('@react-three/fiber', () => ({
 // ─── Mock @react-three/drei ─────────────────────────────────────────────────
 
 vi.mock('@react-three/drei', () => ({
-    Environment: (props: any) => props.children ?? null,
+    Environment: (props: ChildStubProps) => props.children ?? null,
     Lightformer: () => null,
-    Html: (props: any) => props.children ?? null,
+    Html: (props: ChildStubProps) => props.children ?? null,
     ContactShadows: (props: { frames?: number }) => {
         h.contactShadowProps.push(props);
         return null;
@@ -103,7 +199,7 @@ vi.mock('@react-three/drei', () => ({
     // View cube định hướng (DielineScene3D import GizmoHelper + GizmoViewcube).
     // GizmoHelper bọc viewcube làm children → render children để wiring khớp;
     // GizmoViewcube là stub vô hại trả null (không cần WebGL trong jsdom).
-    GizmoHelper: (props: any) => props.children ?? null,
+    GizmoHelper: (props: ChildStubProps) => props.children ?? null,
     GizmoViewcube: () => null,
 }));
 
@@ -128,25 +224,24 @@ vi.mock('sonner', () => ({
 // Stub ghi lại props để kiểm DielineScene3D nối đúng dữ liệu dieline.
 
 vi.mock('../SolidPanelMesh', () => ({
-    default: (props: any) => {
+    default: (props: ObservedSolidPanelProps) => {
         h.solidPanelProps.push(props);
         return null;
     },
 }));
 vi.mock('../GussetMesh', () => ({
-    default: (props: any) => {
+    default: (props: GussetMeshProps) => {
         h.gussetProps.push(props);
         return null;
     },
 }));
 // [HANGING-WINDOW 2026-07-27] Màng cửa sổ trong suốt — chỉ ghi props để kiểm wiring.
 vi.mock('../WindowPaneMesh', () => ({
-    default: (props: any) => {
+    default: (props: WindowPaneMeshProps) => {
         h.windowPaneProps.push(props);
         return null;
     },
 }));
-
 // ─── Import sau khi mock đã đăng ký ─────────────────────────────────────────
 
 import MockupCanvas from '../MockupCanvas';
@@ -292,7 +387,7 @@ describe('MockupCanvas — tone mapping ACES Filmic (Yêu cầu 3.4)', () => {
         expect(typeof props.onCreated).toBe('function');
 
         // Mô phỏng renderer được tạo: onCreated phải đặt tone mapping tường minh.
-        const fakeGl: any = {};
+        const fakeGl: RendererStubProps = {};
         props.onCreated({ gl: fakeGl });
         expect(fakeGl.toneMapping).toBe(THREE.ACESFilmicToneMapping);
         expect(fakeGl.outputColorSpace).toBe(THREE.SRGBColorSpace);
@@ -498,13 +593,16 @@ describe('DielineScene3D — composition wiring (Yêu cầu 3.1, 3.5, 7.2)', () 
 
 describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
     function mountExportHarness() {
-        const api: { current: ReturnType<typeof useSceneExport> | null } = { current: null };
+        const apiRef: { current: ReturnType<typeof useSceneExport> | null } = { current: null };
         function Harness() {
-            api.current = useSceneExport();
+            const hookApi = useSceneExport();
+            React.useEffect(() => {
+                apiRef.current = hookApi;
+            }, [hookApi]);
             return null;
         }
         render(e(Harness));
-        return api;
+        return apiRef;
     }
 
     it('xuất PNG thành công qua render target riêng, không resize canvas hiển thị', async () => {
@@ -522,7 +620,7 @@ describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
         expect(gl.setRenderTarget).toHaveBeenLastCalledWith(null);
         expect(gl.setSize).not.toHaveBeenCalled();
         // Tải file phía client: tạo object URL.
-        expect((URL.createObjectURL as any).mock.calls.length).toBeGreaterThan(0);
+        expect(vi.mocked(URL.createObjectURL).mock.calls.length).toBeGreaterThan(0);
         // Báo thành công.
         expect(toast.success).toHaveBeenCalled();
     });
@@ -557,13 +655,16 @@ describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
 
 describe('useSceneExport — exportGLB (Yêu cầu 6.3, 6.6)', () => {
     function mountExportHarness() {
-        const api: { current: ReturnType<typeof useSceneExport> | null } = { current: null };
+        const apiRef: { current: ReturnType<typeof useSceneExport> | null } = { current: null };
         function Harness() {
-            api.current = useSceneExport();
+            const hookApi = useSceneExport();
+            React.useEffect(() => {
+                apiRef.current = hookApi;
+            }, [hookApi]);
             return null;
         }
         render(e(Harness));
-        return api;
+        return apiRef;
     }
 
     it('xuất GLB thành công qua GLTFExporter: kích hoạt tải file nhị phân', async () => {
@@ -577,7 +678,7 @@ describe('useSceneExport — exportGLB (Yêu cầu 6.3, 6.6)', () => {
         });
 
         expect(ok).toBe(true);
-        expect((URL.createObjectURL as any).mock.calls.length).toBeGreaterThan(0);
+        expect(vi.mocked(URL.createObjectURL).mock.calls.length).toBeGreaterThan(0);
         expect(toast.success).toHaveBeenCalled();
     });
 

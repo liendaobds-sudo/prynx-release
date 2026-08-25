@@ -57,16 +57,21 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const {
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode,
-        fitPageSizes, pageDisplayMode, setPageDisplayMode, activePage, actualWidth100,
+        fitPageSizes, pageDisplayMode, activePage, actualWidth100,
         navigatePage, toolMode,
     } = props;
 
     const [mainWidth, setMainWidth] = useState(0);
     const [mainHeight, setMainHeight] = useState(0);
+    const mainWidthRef = useRef(0);
     const [isZoomReady, setIsZoomReady] = useState(false);
     const [thumbBaseWidth, setThumbBaseWidth] = useState(110);
 
     // Khi user kéo thu hẹp panel thumbnail → clamp base width để không cắt nửa phải.
+    useEffect(() => {
+        mainWidthRef.current = mainWidth;
+    }, [mainWidth]);
+
     useEffect(() => {
         const onPanelResize = (e: Event) => {
             const w = (e as CustomEvent).detail?.width as number | undefined;
@@ -85,7 +90,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     useEffect(() => { activePageRef.current = activePage; }, [activePage]);
     const zoomTargetRef = useRef<ViewerZoomTarget | null>(null);
     const isZoomingRef = useRef(false);
-    const zoomTimeoutRef = useRef<any>(null);
+    const zoomTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingZoomRef = useRef<number | null>(null);
     // Trạng thái điều hướng trang bằng wheel (chuẩn hoá chuột + trackpad) — xem wheelPageNav.ts.
     const wheelNavStateRef = useRef(createWheelNavState());
@@ -178,6 +183,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     }, [calcFitPageZoom, setZoom, setFitMode, notifyFitNoop]);
 
     // ═══ Auto-zoom on fitMode / container resize ═══
+    /* eslint-disable react-hooks/set-state-in-effect -- state zoom/isReady đồng bộ layout viewport chủ đích. */
     useEffect(() => {
         const hasFitGeometry = getFitGeometry() !== null;
         if (fitMode === 'width' && hasFitGeometry && (mainWidth > 50 || internalScrollRef.current)) {
@@ -192,7 +198,8 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         } else if (hasFitGeometry && fitMode === 'custom') {
             setIsZoomReady(true);
         }
-    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom]);
+    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom, internalScrollRef]);
+    /* eslint-enable react-hooks/set-state-in-effect */
 
     // Sau fit: căn giữa THEO TRANG ĐANG XEM (anchor #pdf-page-container-N), không theo
     // tổng scrollWidth/Height. UIUX (audit 2026-07-27 §C-02) fix-verify: cách cũ
@@ -243,6 +250,10 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         };
     }, [pageDisplayMode, mainWidth, internalScrollRef]);
 
+    // Callback được dùng bởi các effect khai báo trước hàm updateViewportRect bên dưới.
+    // Ref giữ closure mới nhất mà không đổi thứ tự hook/listener.
+    const updateViewportRectRef = useRef<() => void>(() => undefined);
+
     // ═══ Fallback measurement when numPages changes ═══
     useEffect(() => {
         if (numPages > 0) {
@@ -258,7 +269,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             }, 50);
             return () => clearTimeout(timer);
         }
-    }, [numPages]);
+    }, [numPages, containerRef]);
 
     // ═══ ResizeObserver ═══
     useEffect(() => {
@@ -270,13 +281,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 clearTimeout(timeoutId);
                 const w = entries[0].contentRect.width - 2;
                 const h = entries[0].contentRect.height;
-                const delay = mainWidth === 0 ? 100 : 150;
+                const delay = mainWidthRef.current === 0 ? 100 : 150;
                 timeoutId = setTimeout(() => {
                     cancelAnimationFrame(frame);
                     frame = requestAnimationFrame(() => {
                         setMainWidth(w);
                         setMainHeight(h);
-                        updateViewportRect();
+                        // Callback được gọi sau khi hook khởi tạo; giữ thứ tự để tránh tạo closure mới mỗi render.
+                        updateViewportRectRef.current();
                     });
                 }, delay);
             }
@@ -287,7 +299,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             observer.disconnect();
             cancelAnimationFrame(frame);
         };
-    }, [numPages]);
+    }, [numPages, containerRef]);
 
     // ═══ Zoom anchor (giữ điểm focus sau khi zoom) ═══
     // Ghi lại điểm trang ở TÂM khung nhìn (trước khi zoom kế tiếp). Dùng cho nút +/-,
@@ -322,7 +334,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             if (centered && centerPage && restorePageViewportAnchor(el, centerPage, centered.anchor)) {
                 trackCenterAnchor();
                 zoomTargetRef.current = null;
-                updateViewportRect();
+                updateViewportRectRef.current();
                 return;
             }
             focal = { mouseX: el.clientWidth / 2, mouseY: el.clientHeight / 2, ratio: zoom / old };
@@ -356,7 +368,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                     el.scrollTop = (el.scrollTop + snapshot.mouseY) * snapshot.ratio - snapshot.mouseY;
                 }
             }
-            updateViewportRect();
+            updateViewportRectRef.current();
         };
         zoomTargetRef.current = null;
         runAnchor();
@@ -366,20 +378,10 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             runAnchor();
             requestAnimationFrame(() => {
                 runAnchor();
-                if (import.meta.env.DEV) {
-                    const page = snapshot.pageId ? renderedZoomPage(el, snapshot.pageId) : null;
-                    const r = page?.getBoundingClientRect();
-                    // eslint-disable-next-line no-console
-                    console.warn(
-                        `[ZOOM final] pageW=${r?.width?.toFixed(0)} pageH=${r?.height?.toFixed(0)} `
-                        + `scrollLeft=${el.scrollLeft.toFixed(0)} scrollTop=${el.scrollTop.toFixed(0)} `
-                        + `scrollW=${el.scrollWidth} clientW=${el.clientWidth}`,
-                    );
-                }
                 trackCenterAnchor();
             });
         });
-    }, [zoom, fitMode, trackCenterAnchor]);
+    }, [zoom, fitMode, trackCenterAnchor, internalScrollRef]);
 
     // Cập nhật điểm-tâm khi người dùng cuộn/pan để lần zoom bằng nút/menu kế tiếp neo
     // đúng chỗ đang xem. Gom bằng rAF; bỏ qua trong lúc zoom tự điều chỉnh scroll.
@@ -533,7 +535,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             window.removeEventListener('wheel', handleWheel, { capture: true });
             if (zoomRafRef.current != null) { cancelAnimationFrame(zoomRafRef.current); zoomRafRef.current = null; }
         };
-    }, [pageDisplayMode, activePage, numPages]);
+    }, [pageDisplayMode, activePage, numPages, containerRef, sidebarRef, internalScrollRef, setFitMode, setZoom, navigatePage]);
 
     // ═══ Hand-tool drag (pan) ═══
     const isDragging = useRef(false);
@@ -571,7 +573,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
 
         window.addEventListener('mousemove', handleDragMove);
         window.addEventListener('mouseup', handleDragEnd);
-    }, [toolMode]);
+    }, [toolMode, internalScrollRef]);
 
     // ═══ Viewport rect indicator (thumb minimap) ═══
     const updateViewportRect = useCallback(() => {
@@ -623,7 +625,13 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         indicatorEl.style.width = `${(w / pageRect.width) * 100}%`;
         indicatorEl.style.height = `${(h / pageRect.height) * 100}%`;
         indicatorEl.style.boxShadow = '0 0 0 9999px rgba(0,0,0,0.35)';
-    }, [activePage, zoom, internalScrollRef]);
+    }, [activePage, internalScrollRef, sidebarRef]);
+
+
+
+    useEffect(() => {
+        updateViewportRectRef.current = updateViewportRect;
+    }, [updateViewportRect]);
 
     // Attach scroll/resize listeners for viewport rect
     useEffect(() => {
@@ -637,14 +645,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 window.removeEventListener('resize', updateViewportRect);
             };
         }
-    }, [updateViewportRect]);
+    }, [updateViewportRect, internalScrollRef]);
 
     // Ref to hold active viewport drag cleanup
     const activeViewportDragCleanup = useRef<(() => void) | null>(null);
 
     // Handle viewport rect dragging
     useEffect(() => {
-        const handleViewportDragStart = (e: any) => {
+        const handleViewportDragStart = (e: Event) => {
             // Bỏ qua nếu viewer này thuộc tab nền (ID trùng giữa các tab mounted).
             if (!containerRef.current || containerRef.current.closest('.opacity-0')) return;
             // Clean up any existing drag first to prevent multiple listeners
@@ -662,8 +670,9 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 || pageWrap;
             if (!el || !pageEl) return;
 
-            const startX = typeof e.detail?.x === 'number' ? e.detail.x : 0;
-            const startY = typeof e.detail?.y === 'number' ? e.detail.y : 0;
+            const detail = (e as CustomEvent<{ x?: unknown; y?: unknown }>).detail;
+            const startX = typeof detail?.x === 'number' ? detail.x : 0;
+            const startY = typeof detail?.y === 'number' ? detail.y : 0;
             const startScrollX = el.scrollLeft || 0;
             const startScrollY = el.scrollTop || 0;
 
@@ -721,7 +730,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 activeViewportDragCleanup.current();
             }
         };
-    }, [activePage]);
+    }, [activePage, containerRef, internalScrollRef, sidebarRef]);
 
     return {
         mainWidth, mainHeight, isZoomReady,

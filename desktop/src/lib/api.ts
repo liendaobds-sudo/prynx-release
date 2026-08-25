@@ -614,7 +614,12 @@ export async function downloadVdpJob(jobId: string): Promise<Blob> {
 // UIUX (audit 2026-07-27 §D-07): onProgress nhận thêm {processed,total} (tùy chọn) để các tool
 // VDP vẽ progress bar % thật thay vì chỉ một dòng text. Caller cũ chỉ đọc msg vẫn chạy nguyên.
 export type VdpProgressInfo = { processed?: number; total?: number; stage: 'processing' | 'saving' | 'downloading' | 'done' };
-export async function pollVdpJob(jobId: string, onProgress: (msg: string, info?: VdpProgressInfo) => void, skipDownload: boolean = false, signal?: AbortSignal): Promise<{ blob: Blob | null, path: string | null }> {
+export type VdpPollResult = {
+  blob: Blob | null;
+  path: string | null;
+  artifactLease: string | null;
+};
+export async function pollVdpJob(jobId: string, onProgress: (msg: string, info?: VdpProgressInfo) => void, skipDownload: boolean = false, signal?: AbortSignal): Promise<VdpPollResult> {
   while (true) {
       if (signal?.aborted) throw new DOMException('VDP polling aborted', 'AbortError');
       const status = await getVdpJobStatus(jobId);
@@ -623,14 +628,26 @@ export async function pollVdpJob(jobId: string, onProgress: (msg: string, info?:
       } else if (status.status === 'saving') {
           onProgress(i18nT('lib.api:vdp_dang_dong_goi', 'Đang đóng gói file PDF...'), { stage: 'saving' }); // UIUX §D-16
       } else if (status.status === 'completed') {
+          const resultPath = typeof status.result === 'string' ? status.result : null;
+          const artifactLease = typeof status.artifact_lease === 'string'
+              ? status.artifact_lease
+              : null;
           if (skipDownload) {
               onProgress(i18nT('lib.api:vdp_hoan_tat', 'Hoàn tất tạo file!'), { stage: 'done' }); // UIUX §D-16
               // Return a tiny dummy blob just so the File constructor doesn't fail, 
               // and the absolute path so useTileRenderer can use tile:// native loader.
-              return { blob: new Blob(['dummy'], { type: 'application/pdf' }), path: status.result };
+              return {
+                  blob: new Blob(['dummy'], { type: 'application/pdf' }),
+                  path: resultPath,
+                  artifactLease,
+              };
           }
           onProgress(i18nT('lib.api:vdp_dang_tai', 'Đang tải file kết quả...'), { stage: 'downloading' }); // UIUX §D-16
-          return { blob: await downloadVdpJob(jobId), path: status.result };
+          return {
+              blob: await downloadVdpJob(jobId),
+              path: resultPath,
+              artifactLease,
+          };
       } else if (status.status === 'failed') {
           throw new Error(status.error);
       } else if (status.status === 'cancelled') {

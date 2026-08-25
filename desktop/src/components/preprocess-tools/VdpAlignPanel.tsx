@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { SetVdpFields, VdpToolField } from '../../hooks/useVdpTool';
 
 // ─── Icon căn chỉnh kiểu Illustrator ───
 function AlignIcon({ type }: { type: string }) {
@@ -22,13 +23,13 @@ const BTN = "h-9 flex items-center justify-center text-slate-600 dark:text-zinc-
 type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'bottom';
 
 interface Props {
-    vdpFields: any[];
-    setVdpFields?: React.Dispatch<React.SetStateAction<any[]>>;
+    vdpFields: VdpToolField[];
+    setVdpFields?: SetVdpFields;
     selectedFieldIds: string[];
     pageDimMm?: { w: number; h: number } | null;
 }
 
-export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageDimMm }: Props) {
+export function VdpAlignPanel({ setVdpFields, selectedFieldIds, pageDimMm }: Props) {
   const { t } = useTranslation();
     const [open, setOpen] = useState(true);
     if (!selectedFieldIds || selectedFieldIds.length < 1) return null;
@@ -48,10 +49,10 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
                 minX = 0; maxX = pageDimMm.w; minY = 0; maxY = pageDimMm.h;
             } else {
                 // Căn theo bounding box của nhóm
-                minX = Math.min(...sel.map(f => f.x));
-                maxX = Math.max(...sel.map(f => f.x + f.width));
-                minY = Math.min(...sel.map(f => f.y));
-                maxY = Math.max(...sel.map(f => f.y + f.height));
+                minX = Math.min(...sel.map(f => f.x ?? 0));
+                maxX = Math.max(...sel.map(f => (f.x ?? 0) + (f.width ?? 0)));
+                minY = Math.min(...sel.map(f => f.y ?? 0));
+                maxY = Math.max(...sel.map(f => (f.y ?? 0) + (f.height ?? 0)));
             }
             const cx = (minX + maxX) / 2;
             const cy = (minY + maxY) / 2;
@@ -59,11 +60,11 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
                 if (!selectedFieldIds.includes(f.id)) return f;
                 switch (mode) {
                     case 'left': return { ...f, x: minX };
-                    case 'right': return { ...f, x: maxX - f.width };
-                    case 'hcenter': return { ...f, x: cx - f.width / 2 };
+                    case 'right': return { ...f, x: maxX - (f.width ?? 0) };
+                    case 'hcenter': return { ...f, x: cx - (f.width ?? 0) / 2 };
                     case 'top': return { ...f, y: minY };
-                    case 'bottom': return { ...f, y: maxY - f.height };
-                    case 'vmiddle': return { ...f, y: cy - f.height / 2 };
+                    case 'bottom': return { ...f, y: maxY - (f.height ?? 0) };
+                    case 'vmiddle': return { ...f, y: cy - (f.height ?? 0) / 2 };
                     default: return f;
                 }
             });
@@ -76,9 +77,9 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
             const sel = prev.filter(f => selectedFieldIds.includes(f.id));
             if (sel.length < 3) return prev;
             const key = axis === 'h' ? 'x' : 'y';
-            sel.sort((a, b) => a[key] - b[key]);
-            const min = sel[0][key];
-            const max = sel[sel.length - 1][key];
+            sel.sort((a, b) => (a[key] ?? 0) - (b[key] ?? 0));
+            const min = sel[0]?.[key] ?? 0;
+            const max = sel[sel.length - 1]?.[key] ?? 0;
             const gap = (max - min) / (sel.length - 1);
             const posMap = new Map(sel.map((f, i) => [f.id, min + gap * i]));
             return prev.map(f => posMap.has(f.id) ? { ...f, [key]: posMap.get(f.id)! } : f);

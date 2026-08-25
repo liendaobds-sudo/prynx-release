@@ -394,7 +394,7 @@ describe('StickerSheetPanel', () => {
         expect(screen.queryByText('Kích thước và đường cắt')).toBeNull();
         expect(screen.queryByRole('button', { name: 'Xóa bóng' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
-        expect(detectAction).toHaveBeenCalledWith('source-tab', 'auto', 1);
+        expect(detectAction).toHaveBeenCalledWith('source-tab', 'auto', 1, undefined);
         detectAction.mockRestore();
     });
 
@@ -425,7 +425,7 @@ describe('StickerSheetPanel', () => {
             name: 'Nhận diện tất cả trang (2)',
         }));
 
-        expect(detectAllAction).toHaveBeenCalledWith('viewer-pdf-tab', 'auto');
+        expect(detectAllAction).toHaveBeenCalledWith('viewer-pdf-tab', 'auto', undefined);
         expect(detectPageAction).not.toHaveBeenCalled();
         detectAllAction.mockRestore();
         detectPageAction.mockRestore();
@@ -458,7 +458,7 @@ describe('StickerSheetPanel', () => {
         expect(screen.queryByRole('button', { name: 'Chọn ảnh khác' })).toBeNull();
         expect(screen.queryByText(/Ảnh mới chỉ được nạp để xem trước/)).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tất cả trang (3)' }));
-        expect(detectAllAction).toHaveBeenCalledWith('multi-tab', 'auto');
+        expect(detectAllAction).toHaveBeenCalledWith('multi-tab', 'auto', undefined);
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
         detectAllAction.mockRestore();
