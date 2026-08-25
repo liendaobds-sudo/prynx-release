@@ -39,6 +39,7 @@ import { useVdpHistory } from '../hooks/useVdpHistory';
 import { useWorkingPdf } from '../hooks/useWorkingPdf'; // EXPORT (audit 2026-07-30 §IMG-04)
 import type { UseEditSession } from '../hooks/useEditSession';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 import { createViewerVirtualizationContext, matchesPageOverlayTarget, renderPageOverlayForFrame, selectionAfterViewerScroll, shouldCenterVirtuosoList, shouldRemovePagesAfterExtract, type PageOverlayRenderer } from "./AcrobatViewer.helpers";
 export type { PageOverlayRenderContext } from './AcrobatViewer.helpers';
 import { capturePageViewportAnchor, restorePageViewportAnchor, type PageViewportAnchor } from '../lib/pageViewport';
@@ -116,6 +117,15 @@ type PageToolsActionDetail = {
     tabId?: string;
     action?: string;
     payload?: PageToolsPayload;
+};
+
+type AutoTrimSide = 'top' | 'right' | 'bottom' | 'left';
+const AUTO_TRIM_SIDES: readonly AutoTrimSide[] = ['top', 'right', 'bottom', 'left'];
+const AUTO_TRIM_SIDE_LABEL: Record<AutoTrimSide, string> = {
+    top: 'Trên',
+    right: 'Phải',
+    bottom: 'Dưới',
+    left: 'Trái',
 };
 
 type CrossFileDropDetail = {
@@ -384,7 +394,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const [autoTrimBusy, setAutoTrimBusy] = useState(false);
     const [autoTrimMargin, setAutoTrimMargin] = useState(0);
     const [autoTrimScope, setAutoTrimScope] = useState<'all' | 'current'>('all');
+    const [autoTrimSides, setAutoTrimSides] = useState<AutoTrimSide[]>([...AUTO_TRIM_SIDES]);
     const autoTrimPopRef = useRef<HTMLDivElement>(null);
+
+    const toggleAutoTrimSide = useCallback((side: AutoTrimSide) => {
+        setAutoTrimSides(previous => previous.includes(side)
+            ? previous.filter(value => value !== side)
+            : AUTO_TRIM_SIDES.filter(value => value === side || previous.includes(value)));
+    }, []);
 
     // Đóng popover khi click ngoài
     useEffect(() => {
@@ -406,7 +423,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             const res = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: fid, pages, margin_mm: autoTrimMargin }),
+                body: JSON.stringify({
+                    file_id: fid,
+                    pages,
+                    margin_mm: autoTrimMargin,
+                    trim_sides: autoTrimSides,
+                }),
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
@@ -428,7 +450,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         } finally {
             setAutoTrimBusy(false);
         }
-    }, [file, ensureCropFileId, autoTrimScope, autoTrimMargin, activePage, numPages, onEditCommit, t]);
+    }, [file, ensureCropFileId, autoTrimScope, autoTrimMargin, autoTrimSides, activePage, numPages, onEditCommit, t]);
 
     // ═══ DOM Refs ═══
     const containerRef = useRef<HTMLDivElement>(null);
@@ -2514,17 +2536,46 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                         </button>
                                     </div>
                                     <p className="mb-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">
-                                        {t('misc.acrobatViewer:khu_vien_du_hint')}
+                                        {t(
+                                            'misc.acrobatViewer:khu_vien_canh_bat_buoc_hint',
+                                            'Cạnh đã chọn là bắt buộc. Nếu không dò được phần dư ở một cạnh, PrynX sẽ dừng và không đổi file.',
+                                        )}
                                     </p>
+                                    {/* UIUX (feedback 2026-08-26 §TRIM.SIDES): cạnh bật là
+                                        điều kiện bắt buộc; backend không được âm thầm bỏ qua. */}
+                                    <div
+                                        role="group"
+                                        aria-label={t('misc.acrobatViewer:khu_vien_trang_desc')}
+                                        className="grid grid-cols-4 gap-1 mb-2"
+                                    >
+                                        {AUTO_TRIM_SIDES.map(side => {
+                                            const selected = autoTrimSides.includes(side);
+                                            return (
+                                                <button
+                                                    key={side}
+                                                    type="button"
+                                                    aria-pressed={selected}
+                                                    onClick={() => toggleAutoTrimSide(side)}
+                                                    className={`h-7 rounded border text-[10px] font-semibold transition-colors ${
+                                                        selected
+                                                            ? 'border-indigo-600 bg-indigo-600 text-white'
+                                                            : 'border-slate-300 bg-slate-50 text-slate-500 dark:border-white/15 dark:bg-zinc-700 dark:text-zinc-300'
+                                                    }`}
+                                                >
+                                                    {selected ? '✓ ' : ''}{tv(AUTO_TRIM_SIDE_LABEL[side])}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
                                     {/* Margin */}
                                     <label className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('misc.acrobatViewer:le_bo_sung_mm')}</label>
                                     <input type="number" min={0} max={20} step={0.5} value={autoTrimMargin}
-                                        onChange={e => setAutoTrimMargin(Math.max(0, parseFloat(e.target.value) || 0))}
+                                        onChange={e => setAutoTrimMargin(Math.min(20, Math.max(0, parseFloat(e.target.value) || 0)))}
                                         className="w-full h-7 px-2 mt-0.5 mb-2 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-700 text-sm" />
                                     {/* Nút áp dụng */}
                                     <button
                                         onClick={handleAutoTrim}
-                                        disabled={autoTrimBusy}
+                                        disabled={autoTrimBusy || autoTrimSides.length === 0}
                                         className="w-full h-8 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold">
                                         {autoTrimBusy ? t('misc.acrobatViewer:dang_xu_ly_khu_vien') : t('misc.acrobatViewer:ap_dung')}
                                     </button>

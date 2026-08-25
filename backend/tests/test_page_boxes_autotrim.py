@@ -12,6 +12,7 @@ import pytest
 from app.core.page_boxes import (
     PT_PER_MM,
     PageBoxesEngine,
+    _find_edge_background_content_detection,
     _find_edge_background_content_bbox,
     _find_nonwhite_content_bbox,
     _pixel_bbox_to_cropbox,
@@ -284,6 +285,33 @@ def test_edge_background_bbox_refuses_ambiguous_gradient():
     assert _find_edge_background_content_bbox(arr, 9) is None
 
 
+def test_explicit_four_sides_ignores_thin_edge_rail_and_keeps_footer():
+    """Cạnh bắt buộc phải bỏ rail raster mảnh nhưng vẫn giữ số trang nhỏ."""
+    height, width = 120, 160
+    arr = np.full((height, width, 3), 255, dtype=np.uint8)
+    arr[20:100, 30:130, :3] = 55
+    arr[108:112, 8:14, :3] = 0
+
+    # Mô phỏng XObject mảnh sát mép phải: phần lõi xám chạy suốt chiều cao,
+    # outer-line có p95=20 nên vẫn đi qua bước nhận nền và tới blocker.
+    arr[:, -2, :3] = 160
+    outer_line = np.where(np.arange(height) % 2 == 0, 80, 120).astype(np.uint8)
+    outer_line[[0, -1]] = 160
+    arr[:, -1, :3] = outer_line[:, None]
+
+    required_sides = frozenset({"left", "top", "right", "bottom"})
+    detection = _find_edge_background_content_detection(
+        arr,
+        min_area=4,
+        trim_sides=required_sides,
+    )
+
+    assert detection is not None
+    bbox, _content_pixels, detected_sides = detection
+    assert bbox == (8, 20, 129, 111)
+    assert detected_sides == required_sides
+
+
 def test_auto_trim_fast_path_preserves_geometry_for_all_rotations(tmp_path):
     """Đường bitmap→NumPy nhanh vẫn xén đúng cùng nội dung ở bốn góc xoay."""
     pytest.importorskip("pypdfium2")
@@ -340,6 +368,154 @@ def test_auto_trim_colored_border_preserves_geometry_for_all_rotations(tmp_path)
             media_box = [float(value) for value in page.obj["/MediaBox"]]
             assert media_box == pytest.approx([40.0, 10.0, 160.0, 90.0], abs=0.5)
             assert int(page.get("/Rotate", 0) or 0) == rotate
+
+
+def _write_flat_four_edge_border_pdf(path, rotate: int = 0) -> None:
+    """Tạo trang có bốn viền phẳng rõ ràng quanh nội dung."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(200.0, 100.0))
+    page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+        pdf,
+        (
+            b"0.13 0.31 0.57 rg 0 0 200 100 re f\n"
+            b"0.93 0.88 0.16 rg 40 10 120 80 re f\n"
+        ),
+    )
+    page.obj[pikepdf.Name("/Rotate")] = rotate
+    pdf.save(path)
+    pdf.close()
+
+
+@pytest.mark.parametrize(
+    ("rotate", "expected_box"),
+    [
+        (0, [40.0, 0.0, 200.0, 100.0]),
+        # Cạnh trái trên ảnh hiển thị của /Rotate=90 là cạnh dưới trong hệ PDF gốc.
+        (90, [0.0, 10.0, 200.0, 100.0]),
+    ],
+)
+def test_auto_trim_explicit_left_only_trims_display_left(
+    tmp_path,
+    rotate,
+    expected_box,
+):
+    """Chọn trái không được tiện thể xén ba cạnh phẳng còn lại."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / f"explicit-left-four-borders-r{rotate}.pdf"
+    _write_flat_four_edge_border_pdf(source, rotate)
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(str(source), trim_sides=["left"])
+
+    with pikepdf.Pdf.open(output) as result:
+        media_box = [float(value) for value in result.pages[0].obj["/MediaBox"]]
+        assert media_box == pytest.approx(expected_box, abs=0.5)
+        assert int(result.pages[0].get("/Rotate", 0) or 0) == rotate
+
+
+def test_auto_trim_explicit_four_sides_trims_all_display_edges(tmp_path):
+    """Chọn đủ bốn cạnh chỉ thành công khi cả bốn đều được xén."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "explicit-four-borders.pdf"
+    _write_flat_four_edge_border_pdf(source)
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(
+        str(source),
+        trim_sides=["left", "top", "right", "bottom"],
+    )
+
+    with pikepdf.Pdf.open(output) as result:
+        media_box = [float(value) for value in result.pages[0].obj["/MediaBox"]]
+        assert media_box == pytest.approx([40.0, 10.0, 160.0, 90.0], abs=0.5)
+
+
+def test_auto_trim_explicit_missing_side_fails_without_output(tmp_path):
+    """Yêu cầu cạnh trên nhưng file chỉ có viền trái phải fail, không lưu PDF dở."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "explicit-only-left.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(200.0, 100.0))
+    checker_commands: list[bytes] = []
+    for row in range(10):
+        for col in range(20):
+            shade = b"0.08 0.08 0.08" if (row + col) % 2 == 0 else b"0.92 0.92 0.92"
+            checker_commands.append(
+                shade
+                + f" rg {col * 10} {row * 10} 10 10 re f".encode("ascii")
+            )
+    checker_commands.append(b"0.13 0.31 0.57 rg 0 0 17 100 re f")
+    page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+        pdf,
+        b"\n".join(checker_commands) + b"\n",
+    )
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    with pytest.raises(
+        ValueError,
+        match=r"Trang 1: .*cạnh trên",
+    ):
+        engine.auto_trim(str(source), trim_sides=["top"])
+
+    assert list(tmp_path.glob("explicit-only-left_trimmed_*.pdf")) == []
+
+
+def test_auto_trim_explicit_failure_on_later_page_is_atomic(tmp_path):
+    """Trang đầu đạt nhưng trang sau thiếu cạnh bắt buộc vẫn không được lưu file dở."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "explicit-atomic.pdf"
+    pdf = pikepdf.Pdf.new()
+
+    first = pdf.add_blank_page(page_size=(200.0, 100.0))
+    first.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+        pdf,
+        (
+            b"0.13 0.31 0.57 rg 0 0 200 100 re f\n"
+            b"0.93 0.88 0.16 rg 40 10 120 80 re f\n"
+        ),
+    )
+
+    second = pdf.add_blank_page(page_size=(200.0, 100.0))
+    checker_commands: list[bytes] = []
+    for row in range(10):
+        for col in range(20):
+            shade = b"0.08 0.08 0.08" if (row + col) % 2 == 0 else b"0.92 0.92 0.92"
+            checker_commands.append(
+                shade + f" rg {col * 10} {row * 10} 10 10 re f".encode("ascii")
+            )
+    checker_commands.append(b"0.13 0.31 0.57 rg 0 0 17 100 re f")
+    second.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+        pdf,
+        b"\n".join(checker_commands) + b"\n",
+    )
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    with pytest.raises(ValueError, match=r"Trang 2: .*cạnh trên"):
+        engine.auto_trim(str(source), trim_sides=["top"])
+
+    assert list(tmp_path.glob("explicit-atomic_trimmed_*.pdf")) == []
+
+
+def test_auto_trim_explicit_margin_cannot_cancel_required_trim(tmp_path):
+    """Lề bổ sung phủ hết viền đã chọn phải báo lỗi thay vì trả file không đổi."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "explicit-margin-cancels-trim.pdf"
+    _write_flat_four_edge_border_pdf(source)
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    with pytest.raises(ValueError, match=r"Trang 1: .*cạnh trái"):
+        engine.auto_trim(str(source), margin_mm=20, trim_sides=["left"])
+
+    assert list(tmp_path.glob("explicit-margin-cancels-trim_trimmed_*.pdf")) == []
 
 
 def test_auto_trim_partial_colored_border_preserves_other_sides_for_all_rotations(tmp_path):

@@ -379,7 +379,14 @@ class CropRegionsRequest(BaseModel):
 class AutoTrimRequest(BaseModel):
     file_id: str
     pages: Optional[List[int]] = None
-    margin_mm: float = 0
+    margin_mm: float = Field(default=0, ge=0, le=20)
+    # UIUX (feedback 2026-08-26): None giữ hành vi tự động của client cũ;
+    # danh sách tường minh là các cạnh bắt buộc xén trên mọi trang đã chọn.
+    trim_sides: Optional[List[Literal["left", "top", "right", "bottom"]]] = Field(
+        default=None,
+        min_length=1,
+        max_length=4,
+    )
 
 class AddBleedRequest(BaseModel):
     file_id: str

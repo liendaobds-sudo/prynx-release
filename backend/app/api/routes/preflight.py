@@ -1184,7 +1184,7 @@ async def crop_regions(req: CropRegionsRequest):
 
 @router.post("/preflight/auto-trim", response_model=FixFileResponse)
 async def auto_trim(req: AutoTrimRequest):
-    """Xóa lề trắng tự động."""
+    """Xén viền dư màu phẳng; cạnh được chọn tường minh là bắt buộc."""
     file_path = _get_file_path(req.file_id)
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
@@ -1192,7 +1192,7 @@ async def auto_trim(req: AutoTrimRequest):
         # RESIZE (audit 2026-07-31 §C.2): render PDFium + OpenCV là việc đồng bộ;
         # không chặn event loop trong lúc xóa viền cho PDF nhiều trang.
         output = await run_in_threadpool(
-            engine.auto_trim, file_path, req.pages, req.margin_mm,
+            engine.auto_trim, file_path, req.pages, req.margin_mm, req.trim_sides,
         )
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:

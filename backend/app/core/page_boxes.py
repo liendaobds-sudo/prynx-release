@@ -229,10 +229,117 @@ def _find_nonwhite_content_bbox(
     return bbox, content_pixels
 
 
-def _find_edge_background_content_bbox(
+_DISPLAY_TRIM_SIDE_LABELS = {
+    "top": "trên",
+    "bottom": "dưới",
+    "left": "trái",
+    "right": "phải",
+}
+
+
+def _normalise_explicit_trim_sides(trim_sides: list[str]) -> frozenset[str]:
+    """Chuẩn hoá danh sách cạnh bắt buộc trong hệ hiển thị của trang."""
+    if not trim_sides:
+        raise ValueError("Cần chọn ít nhất một cạnh để khử viền dư")
+    invalid = sorted({str(side) for side in trim_sides} - set(_DISPLAY_TRIM_SIDE_LABELS))
+    if invalid:
+        raise ValueError(f"Cạnh khử viền dư không hợp lệ: {', '.join(invalid)}")
+    return frozenset(trim_sides)
+
+
+def _pixel_bbox_trimmed_sides(
+    bbox: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> frozenset[str]:
+    """Các cạnh hiển thị thực sự đã dịch vào trong ở bbox pixel."""
+    x0, y0, x1, y1 = bbox
+    sides: set[str] = set()
+    if x0 > 0:
+        sides.add("left")
+    if y0 > 0:
+        sides.add("top")
+    if x1 < width - 1:
+        sides.add("right")
+    if y1 < height - 1:
+        sides.add("bottom")
+    return frozenset(sides)
+
+
+def _pixel_bbox_effective_trim_sides(
+    bbox: tuple[int, int, int, int],
+    pix_w: int,
+    pix_h: int,
+    crop_box: list[float],
+    rotate: int,
+    margin_pt: float,
+) -> frozenset[str]:
+    """Các cạnh hiển thị vẫn thật sự được xén sau khi cộng lề bổ sung."""
+    width = crop_box[2] - crop_box[0]
+    height = crop_box[3] - crop_box[1]
+    if rotate % 360 in (90, 270):
+        display_width, display_height = height, width
+    else:
+        display_width, display_height = width, height
+    scale_x = pix_w / display_width if display_width else 1.0
+    scale_y = pix_h / display_height if display_height else 1.0
+    x0, y0, x1, y1 = bbox
+    trim_depths = {
+        "left": x0 / scale_x - margin_pt,
+        "top": y0 / scale_y - margin_pt,
+        "right": display_width - ((x1 + 1) / scale_x) - margin_pt,
+        "bottom": display_height - ((y1 + 1) / scale_y) - margin_pt,
+    }
+    return frozenset(
+        side for side, depth in trim_depths.items()
+        if depth > 1e-6
+    )
+
+
+def _remove_explicit_edge_rail_components(
+    foreground: np.ndarray,
+    labels: np.ndarray,
+    stats: np.ndarray,
+    min_area: int,
+) -> bool:
+    """Bỏ component mảnh nằm trọn trong dải biên khi user bắt buộc xén."""
+    import cv2
+
+    height, width = foreground.shape[:2]
+    edge_depth = max(1, int(math.ceil(math.sqrt(max(1, min_area)))))
+    removed_labels: list[int] = []
+
+    for label in range(1, stats.shape[0]):
+        left = int(stats[label, cv2.CC_STAT_LEFT])
+        top = int(stats[label, cv2.CC_STAT_TOP])
+        component_width = int(stats[label, cv2.CC_STAT_WIDTH])
+        component_height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        right = left + component_width
+        bottom = top + component_height
+        if (
+            right <= edge_depth
+            or left >= width - edge_depth
+            or bottom <= edge_depth
+            or top >= height - edge_depth
+        ):
+            removed_labels.append(label)
+
+    if not removed_labels:
+        return False
+
+    # UIUX (feedback 2026-08-26 §TRIM.FORCE): cạnh explicit là lệnh xén;
+    # rail raster mảnh sát mép không được chặn các cạnh user đã chọn.
+    remove_lookup = np.zeros(stats.shape[0], dtype=bool)
+    remove_lookup[removed_labels] = True
+    foreground[remove_lookup[labels]] = 0
+    return True
+
+
+def _find_edge_background_content_detection(
     arr: np.ndarray,
     min_area: int,
-) -> tuple[tuple[int, int, int, int], int] | None:
+    trim_sides: frozenset[str] | None = None,
+) -> tuple[tuple[int, int, int, int], int, frozenset[str]] | None:
     """Tìm nội dung sau khi bỏ độc lập các viền màu phẳng nối với từng cạnh.
 
     UIUX (feedback 2026-08-25 §TRIM.COLOR): màu và độ tin cậy được đo riêng
@@ -255,14 +362,19 @@ def _find_edge_background_content_bbox(
     if height < 4 or width < 4:
         return None
 
-    edge_samples = np.concatenate((
-        rgb[0, :, :3],
-        rgb[-1, :, :3],
-        rgb[1:-1, 0, :3],
-        rgb[1:-1, -1, :3],
-    )).astype(np.int16)
-    overall_background = np.median(edge_samples, axis=0)
-    near_white = bool(np.min(overall_background) >= 240)
+    # Chỉ đường legacy tự động mới được nhìn toàn chu vi để chạy fallback nền trắng.
+    # Chế độ explicit phải phân tích đúng các cạnh user chọn, không mượn bằng chứng
+    # từ cạnh khác rồi báo thành công giả.
+    near_white = False
+    if trim_sides is None:
+        edge_samples = np.concatenate((
+            rgb[0, :, :3],
+            rgb[-1, :, :3],
+            rgb[1:-1, 0, :3],
+            rgb[1:-1, -1, :3],
+        )).astype(np.int16)
+        overall_background = np.median(edge_samples, axis=0)
+        near_white = bool(np.min(overall_background) >= 240)
 
     side_edges = {
         "top": rgb[0, :, :3],
@@ -284,6 +396,8 @@ def _find_edge_background_content_bbox(
     profile_cache: dict[tuple[str, int, int], np.ndarray] = {}
 
     for side, edge in side_edges.items():
+        if trim_sides is not None and side not in trim_sides:
+            continue
         edge_length = edge.shape[0]
         guard = max(1, int(round(edge_length * 0.10)))
         if edge_length - (2 * guard) < 4:
@@ -404,8 +518,13 @@ def _find_edge_background_content_bbox(
     if not side_backgrounds:
         # Giữ tương thích với tài liệu trắng cũ chỉ khi không cạnh màu phẳng
         # nào được nhận. Cạnh đã bị loại vì gradient thì tuyệt đối không fallback.
-        if near_white and not saw_flat_side:
-            return _find_nonwhite_content_bbox(arr, min_area)
+        if near_white and not saw_flat_side and trim_sides is None:
+            legacy_detection = _find_nonwhite_content_bbox(arr, min_area)
+            if legacy_detection is None:
+                return None
+            legacy_bbox, content_pixels = legacy_detection
+            detected_sides = _pixel_bbox_trimmed_sides(legacy_bbox, width, height)
+            return legacy_bbox, content_pixels, detected_sides
         return None
 
     active_sides = set(side_backgrounds)
@@ -421,6 +540,19 @@ def _find_edge_background_content_bbox(
             foreground,
             connectivity=8,
         )
+        if (
+            trim_sides is not None
+            and _remove_explicit_edge_rail_components(
+                foreground,
+                labels,
+                stats,
+                min_area,
+            )
+        ):
+            count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+                foreground,
+                connectivity=8,
+            )
         blocked: set[str] = set()
         min_contact_depth = max(2, int(np.ceil(np.sqrt(max(1, min_area)))))
         for side in active_sides:
@@ -472,7 +604,27 @@ def _find_edge_background_content_bbox(
     bbox = (x0, y0, x1, y1)
     if bbox == (0, 0, width - 1, height - 1):
         return None
+    detected_sides = frozenset(active_sides) & _pixel_bbox_trimmed_sides(
+        bbox,
+        width,
+        height,
+    )
+    if not detected_sides:
+        return None
+    return bbox, content_pixels, detected_sides
+
+
+def _find_edge_background_content_bbox(
+    arr: np.ndarray,
+    min_area: int,
+) -> tuple[tuple[int, int, int, int], int] | None:
+    """Hợp đồng legacy: tự dò cạnh và chỉ trả bbox + số pixel nội dung."""
+    detection = _find_edge_background_content_detection(arr, min_area)
+    if detection is None:
+        return None
+    bbox, content_pixels, _detected_sides = detection
     return bbox, content_pixels
+
 
 def _normalise_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list[list[float]]]:
     """Validate and clamp crop rectangles to the page's visible CropBox."""
@@ -1394,11 +1546,19 @@ class PageBoxesEngine:
         )
         return output_path
 
-    def auto_trim(self, file_path: str, pages: list[int] | None = None, margin_mm: float = 0) -> str:
+    def auto_trim(
+        self,
+        file_path: str,
+        pages: list[int] | None = None,
+        margin_mm: float = 0,
+        trim_sides: list[str] | None = None,
+    ) -> str:
         """
         Phát hiện viền dư màu phẳng và set CropBox tự động.
         Màu nền được đo độc lập ở chu vi từng trang; trường hợp mơ hồ giữ nguyên.
         margin_mm: lề bổ sung xung quanh nội dung (mm).
+        trim_sides: cạnh bắt buộc theo hệ HIỂN THỊ. None giữ chế độ tự dò legacy;
+        danh sách explicit chỉ thành công khi mọi trang xén được đủ mọi cạnh đã chọn.
 
         Bền với file thực tế (audit 2026-07-08):
         - Render 200 DPI (không phải 72) → biên xén chính xác ~0.13mm/px thay vì
@@ -1414,23 +1574,40 @@ class PageBoxesEngine:
 
         from app.core.pdfium_lock import pdfium_guard
 
+        required_sides = (
+            None
+            if trim_sides is None
+            else _normalise_explicit_trim_sides(trim_sides)
+        )
         doc = pikepdf.Pdf.open(file_path)
-        # KIENTRUC (audit 2026-07-29 §C.1): khóa THEO TỪNG TRANG (mở/render/đóng), phần
-        # cv2 + numpy dò lề để ngoài khóa — auto-trim nhiều trang không được chặn các
-        # request preview khác suốt thời gian chạy.
-        with pdfium_guard("auto_trim_open"):
-            pdf_render = pdfium.PdfDocument(file_path)
+        pdf_render = None
+        try:
+            # KIENTRUC (audit 2026-07-29 §C.1): khóa THEO TỪNG TRANG
+            # (mở/render/đóng), phần cv2 + numpy để ngoài khóa.
+            with pdfium_guard("auto_trim_open"):
+                pdf_render = pdfium.PdfDocument(file_path)
 
-        target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
-        # 200 DPI đủ nét cho tem nhỏ mà vẫn nhanh (dò lề, không phải xuất).
-        DETECT_SCALE = 200.0 / 72.0
+            target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
+            # 200 DPI đủ nét cho tem nhỏ mà vẫn nhanh (dò lề, không phải xuất).
+            DETECT_SCALE = 200.0 / 72.0
 
-        for pnum in target_pages:
-            if 1 <= pnum <= len(doc.pages):
+            for pnum in target_pages:
+                if not 1 <= pnum <= len(doc.pages):
+                    if required_sides is not None:
+                        side_names = ", ".join(
+                            label
+                            for side, label in _DISPLAY_TRIM_SIDE_LABELS.items()
+                            if side in required_sides
+                        )
+                        raise ValueError(
+                            f"Trang {pnum} không tồn tại nên không thể xén cạnh {side_names}"
+                        )
+                    continue
+
                 page = doc.pages[pnum - 1]
 
                 # Hệ quy chiếu là CROPBOX (chưa xoay); pdfium render đúng vùng
-                # CropBox rồi áp /Rotate. .cropbox tự fallback về MediaBox.
+                # CropBox rồi áp /Rotate. Các cạnh explicit vẫn thuộc ảnh hiển thị này.
                 cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
                 rotate = int(page.get("/Rotate", 0) or 0) % 360
                 user_unit = _page_user_unit(page)
@@ -1448,18 +1625,52 @@ class PageBoxesEngine:
                         arr = np.array(bitmap.to_numpy(), copy=True)
                         pix_h, pix_w = arr.shape[:2]
                     finally:
-                        if bitmap is not None:
-                            bitmap.close()
-                        if render_page is not None:
-                            render_page.close()
+                        try:
+                            if bitmap is not None:
+                                bitmap.close()
+                        finally:
+                            if render_page is not None:
+                                render_page.close()
 
                 # Ngưỡng ~ (0.3mm)^2 ở DPI hiện tại — nhỏ hơn coi là nhiễu.
                 min_side_px = max(2, int(0.3 * PT_PER_MM * DETECT_SCALE))
                 min_area = min_side_px * min_side_px
-                detection = _find_edge_background_content_bbox(arr, min_area)
+                detection = _find_edge_background_content_detection(
+                    arr,
+                    min_area,
+                    required_sides,
+                )
+
+                if required_sides is not None:
+                    confirmed_sides: frozenset[str] = frozenset()
+                    if detection is not None:
+                        bbox, _content_pixels, detected_sides = detection
+                        confirmed_sides = (
+                            detected_sides
+                            & _pixel_bbox_effective_trim_sides(
+                                bbox,
+                                pix_w,
+                                pix_h,
+                                cb,
+                                rotate,
+                                margin_pt,
+                            )
+                        )
+                    missing_sides = required_sides - confirmed_sides
+                    if missing_sides:
+                        side_names = ", ".join(
+                            label
+                            for side, label in _DISPLAY_TRIM_SIDE_LABELS.items()
+                            if side in missing_sides
+                        )
+                        raise ValueError(
+                            f"Trang {pnum}: không phát hiện hoặc không xén được "
+                            f"viền dư ở cạnh {side_names}"
+                        )
+
                 if detection is None:
-                    continue  # Trang trống hoặc không có cạnh đủ rõ → giữ nguyên box
-                (x0, y0, x1, y1), content_pixels = detection
+                    continue  # Legacy: trang mơ hồ giữ nguyên như trước.
+                (x0, y0, x1, y1), content_pixels, _detected_sides = detection
 
                 if logger.isEnabledFor(logging.DEBUG):
                     content_ratio = content_pixels / max(1, pix_w * pix_h) * 100
@@ -1480,23 +1691,34 @@ class PageBoxesEngine:
                     [round(v, 2) for v in new_cb],
                 )
                 # Set cả MediaBox lẫn CropBox → triệt để: các tool downstream
-                # (resize, viewer, imposition) đọc MediaBox = vùng nội dung thực,
-                # không còn viền trắng ẩn ngoài CropBox.
+                # (resize, viewer, imposition) đọc MediaBox = vùng nội dung thực.
                 page[pikepdf.Name("/MediaBox")] = pikepdf.Array(new_cb)
                 page[pikepdf.Name("/CropBox")] = pikepdf.Array(new_cb)
-                # Xóa TrimBox/BleedBox/ArtBox cũ (nếu có) vì chúng có thể lớn hơn
-                # MediaBox mới → gây nhầm lẫn cho downstream.
                 for box_name in ("/TrimBox", "/BleedBox", "/ArtBox"):
                     if pikepdf.Name(box_name) in page:
                         del page[pikepdf.Name(box_name)]
 
-        with pdfium_guard("auto_trim_close"):
-            pdf_render.close()
+            # Đóng PDFium trước khi ghi artifact; lỗi cleanup không được để lại
+            # một file nhìn như thành công.
+            with pdfium_guard("auto_trim_close"):
+                pdf_render.close()
+            pdf_render = None
 
-        output_name = f"{Path(file_path).stem}_trimmed_{uuid.uuid4().hex[:6]}.pdf"
-        output_path = str(self.output_dir / output_name)
-        doc.save(output_path)
-        doc.close()
+            # Chỉ tạo artifact sau khi MỌI trang/cạnh explicit đã đạt hợp đồng.
+            output_name = f"{Path(file_path).stem}_trimmed_{uuid.uuid4().hex[:6]}.pdf"
+            output_path = str(self.output_dir / output_name)
+            try:
+                doc.save(output_path)
+            except Exception:
+                Path(output_path).unlink(missing_ok=True)
+                raise
+        finally:
+            try:
+                if pdf_render is not None:
+                    with pdfium_guard("auto_trim_close"):
+                        pdf_render.close()
+            finally:
+                doc.close()
 
         logger.info(f"Auto-trimmed {len(target_pages)} pages → {output_path}")
         return output_path
