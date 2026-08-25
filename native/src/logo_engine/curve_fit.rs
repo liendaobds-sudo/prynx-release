@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+mod primitive_fit;
+
 use super::contour::{GridRing, CONTOUR_COORDINATE_SCALE};
 use super::scene::{ScenePath, ScenePoint, SceneSegment};
 use super::simplify::{
@@ -14,6 +16,8 @@ use std::collections::BTreeSet;
 pub(super) struct CurveFitOptions {
     pub(super) tolerance_px: f64,
     pub(super) corner_angle_degrees: f64,
+    /// Ưu tiên cubic liền mạch trên nhịp trơn; chỉ nhận khi sai số hai chiều đạt.
+    pub(super) prefer_fair_curves: bool,
 }
 
 impl Default for CurveFitOptions {
@@ -21,8 +25,15 @@ impl Default for CurveFitOptions {
         Self {
             tolerance_px: 0.35,
             corner_angle_degrees: 55.0,
+            prefer_fair_curves: false,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReconstructedPrimitive {
+    Circle,
+    Ellipse,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,9 +42,10 @@ pub(super) struct CurveFitResult {
     pub(super) source_nodes: usize,
     pub(super) simplified_nodes: usize,
     pub(super) output_nodes: usize,
-    /// Cận trên bảo thủ từ mẫu contour nguồn tới chính ScenePath cuối.
+    /// Sai số hình học cực đại hai chiều giữa contour nguồn và ScenePath cuối.
     pub(super) max_error_px: f64,
     pub(super) hard_corner_count: usize,
+    pub(super) primitive: Option<ReconstructedPrimitive>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,24 +76,62 @@ pub(super) fn fit_closed_ring(
         return Err("Contour curve-fit chứa tọa độ không hữu hạn".to_string());
     }
 
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-05): primitive phải được thử trên
+    // contour gốc trước khi răng cưa pixel bị hiểu nhầm thành hard corner.
+    if let Some(mut fitted) = primitive_fit::fit_closed_primitive(&source, options.tolerance_px) {
+        loop {
+            fitted.path.validate()?;
+            let boundary_error = path_symmetric_boundary_error(
+                &source,
+                &fitted.path,
+                true,
+                options.tolerance_px * 0.001,
+            );
+            if boundary_error <= options.tolerance_px {
+                let output_nodes = fitted.path.node_count();
+                return Ok(CurveFitResult {
+                    path: fitted.path,
+                    source_nodes: source.len(),
+                    simplified_nodes: source.len(),
+                    output_nodes,
+                    max_error_px: boundary_error,
+                    hard_corner_count: 0,
+                    primitive: Some(fitted.kind),
+                });
+            }
+
+            // Đo trực tiếp source ↔ output sau mỗi cấp 4/8/16… để không
+            // suy diễn sai số từ bán kính và luôn chọn số điểm neo nhỏ nhất.
+            if !fitted.refine_path(source.len()) {
+                break;
+            }
+        }
+    }
+
     let protected = ring
         .vertices
         .iter()
         .enumerate()
         .filter_map(|(index, point)| {
-            ((point.x2 % CONTOUR_COORDINATE_SCALE != 0)
-                || (point.y2 % CONTOUR_COORDINATE_SCALE != 0))
-                .then_some(index)
+            let half = CONTOUR_COORDINATE_SCALE / 2;
+            let is_saddle_half_pixel = point.x2.rem_euclid(CONTOUR_COORDINATE_SCALE) == half
+                || point.y2.rem_euclid(CONTOUR_COORDINATE_SCALE) == half;
+            (ring.saddle_cuts > 0 && is_saddle_half_pixel).then_some(index)
         })
         .collect::<Vec<_>>();
-    let simplify_tolerance = options.tolerance_px * 0.25;
+    let simplify_tolerance = options.tolerance_px
+        * if options.prefer_fair_curves {
+            0.15
+        } else {
+            0.25
+        };
     let fit_tolerance = options.tolerance_px - simplify_tolerance;
     let points = simplify_closed(&source, simplify_tolerance, &protected);
 
     let corner_probe_distance = (options.tolerance_px * 4.0).max(1.0);
     let hard_corners = (0..points.len())
         .filter(|index| {
-            is_half_pixel(points[*index])
+            (!options.prefer_fair_curves && is_half_pixel(points[*index]))
                 || turn_angle_degrees_at_distance(&points, *index, corner_probe_distance)
                     >= options.corner_angle_degrees
         })
@@ -121,6 +171,7 @@ pub(super) fn fit_closed_ring(
             start_tangent,
             end_tangent,
             fit_tolerance,
+            options.prefer_fair_curves,
             &mut segments,
             &mut max_fit_error,
         )?;
@@ -133,7 +184,8 @@ pub(super) fn fit_closed_ring(
     };
     path.validate()?;
     debug_assert!(max_fit_error <= fit_tolerance + 1e-9);
-    let boundary_error = path_boundary_error(&source, &path, options.tolerance_px * 0.001);
+    let boundary_error =
+        path_symmetric_boundary_error(&source, &path, true, options.tolerance_px * 0.001);
     if boundary_error > options.tolerance_px {
         return Err(format!(
             "Curve-fit vượt sai số cho phép: {boundary_error:.6} px > {:.6} px",
@@ -148,6 +200,7 @@ pub(super) fn fit_closed_ring(
         output_nodes,
         max_error_px: boundary_error,
         hard_corner_count: hard_corners.len(),
+        primitive: None,
     })
 }
 
@@ -174,6 +227,7 @@ pub(super) fn fit_open_with_tangents(
         start_tangent,
         end_tangent,
         options.tolerance_px,
+        options.prefer_fair_curves,
         &mut segments,
         &mut max_error,
     )?;
@@ -184,7 +238,8 @@ pub(super) fn fit_open_with_tangents(
     };
     path.validate()?;
     debug_assert!(max_error <= options.tolerance_px + 1e-9);
-    let boundary_error = path_boundary_error(points, &path, options.tolerance_px * 0.001);
+    let boundary_error =
+        path_symmetric_boundary_error(points, &path, false, options.tolerance_px * 0.001);
     if boundary_error > options.tolerance_px {
         return Err(format!(
             "Curve-fit vượt sai số cho phép: {boundary_error:.6} px > {:.6} px",
@@ -199,7 +254,55 @@ pub(super) fn fit_open_with_tangents(
         output_nodes,
         max_error_px: boundary_error,
         hard_corner_count: 0,
+        primitive: None,
     })
+}
+
+/// Fit một chuỗi cạnh lưới dùng chung giữa hai nhãn màu.
+///
+/// Chuỗi được fit theo hướng truyền vào; phía đối diện có thể đảo ngược
+/// ScenePath mà không chạy fitter lần hai, nhờ vậy hai mảng màu không tạo
+/// khe hở do hai bộ tiếp tuyến/điểm chia khác nhau.
+pub(super) fn fit_shared_open_chain(
+    points: &[super::contour::GridPoint],
+    options: CurveFitOptions,
+) -> Result<CurveFitResult, String> {
+    if points.len() < 2 {
+        return Err("Chuỗi biên dùng chung cần ít nhất hai điểm".to_string());
+    }
+    let source = points
+        .iter()
+        .map(|point| FitPoint {
+            x: point.x2 as f64 / CONTOUR_COORDINATE_SCALE as f64,
+            y: point.y2 as f64 / CONTOUR_COORDINATE_SCALE as f64,
+        })
+        .collect::<Vec<_>>();
+    if source.iter().any(|point| !point.is_finite()) {
+        return Err("Chuỗi biên dùng chung chứa tọa độ không hữu hạn".to_string());
+    }
+    let start_tangent = shared_chain_tangent(&source, true)
+        .ok_or_else(|| "Không xác định được tiếp tuyến đầu biên dùng chung".to_string())?;
+    let end_tangent = shared_chain_tangent(&source, false)
+        .ok_or_else(|| "Không xác định được tiếp tuyến cuối biên dùng chung".to_string())?;
+    fit_open_with_tangents(&source, start_tangent, end_tangent, options)
+}
+
+fn shared_chain_tangent(points: &[FitPoint], at_start: bool) -> Option<FitPoint> {
+    if points.len() < 2 {
+        return None;
+    }
+    if at_start {
+        (1..points.len())
+            .map(|index| points[index].subtract(points[0]))
+            .find_map(FitPoint::normalize)
+    } else {
+        (1..points.len())
+            .map(|offset| {
+                let index = points.len() - 1 - offset;
+                points[points.len() - 1].subtract(points[index])
+            })
+            .find_map(FitPoint::normalize)
+    }
 }
 
 fn fit_span(
@@ -207,6 +310,7 @@ fn fit_span(
     start_tangent: FitPoint,
     end_tangent: FitPoint,
     tolerance: f64,
+    prefer_fair_curves: bool,
     output: &mut Vec<SceneSegment>,
     max_output_error: &mut f64,
 ) -> Result<(), String> {
@@ -217,7 +321,9 @@ fn fit_span(
         .iter()
         .map(|point| point_segment_distance(*point, points[0], points[points.len() - 1]))
         .fold(0.0_f64, f64::max);
-    if points.len() == 2 || line_error <= tolerance {
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-03): trajectory không dùng line-first
+    // cho nhịp còn cong; cạnh thẳng tuyệt đối và nhịp hai điểm vẫn là Line.
+    if points.len() == 2 || line_error <= if prefer_fair_curves { 1e-9 } else { tolerance } {
         output.push(SceneSegment::Line {
             to: to_scene_point(points[points.len() - 1]),
         });
@@ -225,9 +331,39 @@ fn fit_span(
         return Ok(());
     }
 
-    let parameters = chord_length_parameters(points)?;
-    let cubic = generate_cubic(points, &parameters, start_tangent, end_tangent);
-    let (max_error, mut split) = maximum_cubic_error(points, &parameters, cubic);
+    let mut parameters = chord_length_parameters(points)?;
+    let mut cubic = generate_cubic(points, &parameters, start_tangent, end_tangent);
+    let (forward_error, mut split) = maximum_cubic_error(points, &parameters, cubic);
+    let mut max_error =
+        cubic_fit_error(points, cubic, forward_error, tolerance, prefer_fair_curves);
+
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-03): Schneider đầy đủ cần
+    // tái tham số hóa để cubic bám quỹ đạo, thay vì chia đoạn ngay sau lần fit đầu.
+    for _ in 0..4 {
+        if max_error <= tolerance {
+            break;
+        }
+        let Some(refined) = reparameterize(points, cubic, &parameters) else {
+            break;
+        };
+        let candidate = generate_cubic(points, &refined, start_tangent, end_tangent);
+        let (candidate_forward_error, candidate_split) =
+            maximum_cubic_error(points, &refined, candidate);
+        let candidate_error = cubic_fit_error(
+            points,
+            candidate,
+            candidate_forward_error,
+            tolerance,
+            prefer_fair_curves,
+        );
+        if candidate_error >= max_error * (1.0 - 1e-9) {
+            break;
+        }
+        parameters = refined;
+        cubic = candidate;
+        max_error = candidate_error;
+        split = candidate_split;
+    }
     if max_error <= tolerance {
         output.push(SceneSegment::Cubic {
             control_1: to_scene_point(cubic.control_1),
@@ -250,6 +386,7 @@ fn fit_span(
         start_tangent,
         center_tangent,
         tolerance,
+        prefer_fair_curves,
         output,
         max_output_error,
     )?;
@@ -258,9 +395,34 @@ fn fit_span(
         center_tangent,
         end_tangent,
         tolerance,
+        prefer_fair_curves,
         output,
         max_output_error,
     )
+}
+
+fn cubic_fit_error(
+    points: &[FitPoint],
+    cubic: CubicBezier,
+    forward_error: f64,
+    tolerance: f64,
+    prefer_fair_curves: bool,
+) -> f64 {
+    if !prefer_fair_curves {
+        return forward_error;
+    }
+    // Đo source ↔ cubic theo cùng cổng hai chiều với kết quả cuối. Điều này
+    // ngăn một cubic nhìn đúng tại sample nhưng phình ra giữa hai sample.
+    let candidate = ScenePath {
+        start: to_scene_point(cubic.start),
+        segments: vec![SceneSegment::Cubic {
+            control_1: to_scene_point(cubic.control_1),
+            control_2: to_scene_point(cubic.control_2),
+            to: to_scene_point(cubic.end),
+        }],
+        closed: false,
+    };
+    path_symmetric_boundary_error(points, &candidate, false, (tolerance * 0.001).max(1e-4))
 }
 
 fn generate_cubic(
@@ -334,6 +496,67 @@ fn chord_length_parameters(points: &[FitPoint]) -> Result<Vec<f64>, String> {
         *parameter /= total;
     }
     Ok(parameters)
+}
+fn reparameterize(points: &[FitPoint], cubic: CubicBezier, parameters: &[f64]) -> Option<Vec<f64>> {
+    let mut refined = Vec::with_capacity(parameters.len());
+    refined.push(0.0);
+    for index in 1..parameters.len() - 1 {
+        let parameter = newton_raphson_parameter(cubic, points[index], parameters[index]);
+        if !parameter.is_finite() || parameter <= refined[index - 1] + 1e-6 || parameter >= 1.0 {
+            return None;
+        }
+        refined.push(parameter);
+    }
+    refined.push(1.0);
+    Some(refined)
+}
+
+fn newton_raphson_parameter(cubic: CubicBezier, point: FitPoint, parameter: f64) -> f64 {
+    let curve_point = evaluate_cubic(cubic, parameter);
+    let first = evaluate_cubic_derivative(cubic, parameter);
+    let second = evaluate_cubic_second_derivative(cubic, parameter);
+    let residual = curve_point.subtract(point);
+    let denominator = first.dot(first) + residual.dot(second);
+    if denominator.abs() <= 1e-12 || !denominator.is_finite() {
+        return parameter;
+    }
+    (parameter - residual.dot(first) / denominator).clamp(0.0, 1.0)
+}
+
+fn evaluate_cubic_derivative(cubic: CubicBezier, parameter: f64) -> FitPoint {
+    let inverse = 1.0 - parameter;
+    cubic
+        .control_1
+        .subtract(cubic.start)
+        .scale(3.0 * inverse * inverse)
+        .add(
+            cubic
+                .control_2
+                .subtract(cubic.control_1)
+                .scale(6.0 * inverse * parameter),
+        )
+        .add(
+            cubic
+                .end
+                .subtract(cubic.control_2)
+                .scale(3.0 * parameter * parameter),
+        )
+}
+
+fn evaluate_cubic_second_derivative(cubic: CubicBezier, parameter: f64) -> FitPoint {
+    let inverse = 1.0 - parameter;
+    cubic
+        .control_2
+        .subtract(cubic.control_1.scale(2.0))
+        .add(cubic.start)
+        .scale(6.0 * inverse)
+        .add(
+            cubic
+                .end
+                .subtract(cubic.control_2.scale(2.0))
+                .add(cubic.control_1)
+                .scale(6.0 * parameter),
+        )
 }
 
 fn maximum_cubic_error(
@@ -413,6 +636,96 @@ fn path_boundary_error(points: &[FitPoint], path: &ScenePath, precision: f64) ->
         .iter()
         .map(|point| index.distance_upper_bound(*point, precision.max(1e-9), f64::INFINITY))
         .fold(0.0_f64, f64::max)
+}
+
+fn path_symmetric_boundary_error(
+    points: &[FitPoint],
+    path: &ScenePath,
+    source_closed: bool,
+    precision: f64,
+) -> f64 {
+    let source_to_output = path_boundary_error(points, path, precision);
+    let flattened = flatten_path(path, precision.max(0.01));
+    let output_to_source = flattened
+        .iter()
+        .map(|point| point_polyline_distance(*point, points, source_closed))
+        .fold(0.0_f64, f64::max);
+    let error = source_to_output.max(output_to_source);
+    if error <= 1e-12 {
+        0.0
+    } else {
+        error
+    }
+}
+
+fn flatten_path(path: &ScenePath, precision: f64) -> Vec<FitPoint> {
+    let mut flattened = vec![from_scene_point(path.start)];
+    let mut current = from_scene_point(path.start);
+    for segment in &path.segments {
+        match segment {
+            SceneSegment::Line { to } => {
+                let end = from_scene_point(*to);
+                append_line_samples(current, end, precision, &mut flattened);
+                current = end;
+            }
+            SceneSegment::Cubic {
+                control_1,
+                control_2,
+                to,
+            } => {
+                let cubic = CubicBezier {
+                    start: current,
+                    control_1: from_scene_point(*control_1),
+                    control_2: from_scene_point(*control_2),
+                    end: from_scene_point(*to),
+                };
+                append_cubic_samples(cubic, precision, &mut flattened);
+                current = cubic.end;
+            }
+        }
+    }
+    let start = from_scene_point(path.start);
+    if path.closed && current != start {
+        append_line_samples(current, start, precision, &mut flattened);
+    }
+    flattened
+}
+
+fn append_line_samples(start: FitPoint, end: FitPoint, precision: f64, output: &mut Vec<FitPoint>) {
+    let spacing = (precision * 4.0).max(0.05);
+    let steps = (start.distance(end) / spacing).ceil().max(1.0) as usize;
+    for step in 1..=steps {
+        let parameter = step as f64 / steps as f64;
+        output.push(start.scale(1.0 - parameter).add(end.scale(parameter)));
+    }
+}
+
+fn append_cubic_samples(cubic: CubicBezier, precision: f64, output: &mut Vec<FitPoint>) {
+    let mut stack = vec![cubic];
+    while let Some(candidate) = stack.pop() {
+        if cubic_flatness(candidate) <= precision {
+            output.push(candidate.end);
+        } else {
+            let (left, right) = split_cubic(candidate);
+            stack.push(right);
+            stack.push(left);
+        }
+    }
+}
+
+fn point_polyline_distance(point: FitPoint, polyline: &[FitPoint], closed: bool) -> f64 {
+    let mut best = polyline
+        .windows(2)
+        .map(|pair| point_segment_distance(point, pair[0], pair[1]))
+        .fold(f64::INFINITY, f64::min);
+    if closed && polyline.len() > 2 {
+        best = best.min(point_segment_distance(
+            point,
+            polyline[polyline.len() - 1],
+            polyline[0],
+        ));
+    }
+    best
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -52,9 +52,10 @@ pub(super) fn build_vector_layers(
             .map(|ring| i128::from(ring.saddle_cuts))
             .sum::<i128>();
         let scale_squared = i128::from(CONTOUR_COORDINATE_SCALE).pow(2);
+        let saddle_area_twice = saddle_cuts * scale_squared / 4;
         let expected_area_twice =
             i128::from(artifact.label_pixel_counts[label_index]) * 2 * scale_squared;
-        if signed_area_twice + saddle_cuts != expected_area_twice {
+        if signed_area_twice + saddle_area_twice != expected_area_twice {
             return Err(format!(
                 "Diện tích contour nhãn {label_index} không khớp raster sau bù saddle: {signed_area_twice} + {saddle_cuts} so với {expected_area_twice}"
             ));

@@ -423,6 +423,112 @@ fn qc_rejects_wrong_physical_confirmation_and_nan() {
 }
 
 #[test]
+fn qc_accepts_nonadjacent_shared_endpoint_without_crossing() {
+    let mut scene = VectorScene::empty(2, 2, provenance());
+    scene.layers.push(VectorLayer {
+        paint: SolidPaint {
+            rgba: [0, 0, 0, 255],
+        },
+        geometry: vec![SceneGeometry::StrokePath {
+            path: ScenePath {
+                start: ScenePoint { x: 0.0, y: 0.0 },
+                segments: vec![
+                    SceneSegment::Line {
+                        to: ScenePoint { x: 2.0, y: 0.0 },
+                    },
+                    SceneSegment::Line {
+                        to: ScenePoint { x: 1.0, y: 1.0 },
+                    },
+                    SceneSegment::Line {
+                        to: ScenePoint { x: 0.0, y: 0.0 },
+                    },
+                    SceneSegment::Line {
+                        to: ScenePoint { x: 0.0, y: 2.0 },
+                    },
+                ],
+                closed: false,
+            },
+            width_px: 0.25,
+        }],
+    });
+
+    let artifact = write_svg(&scene, SvgWriteOptions::default()).unwrap();
+
+    inspect_svg_artifact(&artifact.svg, &scene, None, ArtifactQcOptions::default()).unwrap();
+}
+
+#[test]
+fn open_polyline_does_not_create_phantom_closing_join() {
+    let mut scene = VectorScene::empty(4, 2, provenance());
+    scene.layers.push(VectorLayer {
+        paint: SolidPaint {
+            rgba: [0, 0, 0, 255],
+        },
+        geometry: vec![SceneGeometry::StrokePath {
+            path: ScenePath {
+                start: ScenePoint { x: 0.0, y: 1.0 },
+                segments: vec![
+                    SceneSegment::Line {
+                        to: ScenePoint { x: 2.0, y: 1.0 },
+                    },
+                    SceneSegment::Line {
+                        to: ScenePoint { x: 4.0, y: 1.0 },
+                    },
+                ],
+                closed: false,
+            },
+            width_px: 0.5,
+        }],
+    });
+
+    let artifact = write_svg(&scene, SvgWriteOptions::default()).unwrap();
+    let report =
+        inspect_svg_artifact(&artifact.svg, &scene, None, ArtifactQcOptions::default()).unwrap();
+
+    assert_eq!(report.max_artifact_tangent_jump_degrees, 0.0);
+}
+
+#[test]
+fn qc_reports_max_tangent_jump_from_final_svg() {
+    let scene = rectangle_scene(4, 2);
+    let artifact = write_svg(&scene, SvgWriteOptions::default()).unwrap();
+
+    let report =
+        inspect_svg_artifact(&artifact.svg, &scene, None, ArtifactQcOptions::default()).unwrap();
+
+    assert!((report.max_artifact_tangent_jump_degrees - 90.0).abs() < 1.0e-6);
+}
+
+#[test]
+fn qc_rejects_bow_tie_after_svg_parse() {
+    let scene = rectangle_scene(4, 2);
+    let artifact = write_svg(&scene, SvgWriteOptions::default()).unwrap();
+    let tampered = artifact
+        .svg
+        .replace("M 0 0 L 4 0 L 4 2 L 0 2 Z", "M 0 0 L 4 2 L 4 0 L 0 2 Z");
+
+    let error =
+        inspect_svg_artifact(&tampered, &scene, None, ArtifactQcOptions::default()).unwrap_err();
+
+    assert!(error.contains("tự giao cắt"), "{error}");
+}
+
+#[test]
+fn qc_rejects_cubic_loop_after_svg_parse() {
+    let scene = rectangle_scene(16, 16);
+    let artifact = write_svg(&scene, SvgWriteOptions::default()).unwrap();
+    let tampered = artifact.svg.replace(
+        "M 0 0 L 16 0 L 16 16 L 0 16 Z",
+        "M 0 0 C 10 10 -10 10 8 0 Z",
+    );
+
+    let error =
+        inspect_svg_artifact(&tampered, &scene, None, ArtifactQcOptions::default()).unwrap_err();
+
+    assert!(error.contains("tự giao cắt"), "{error}");
+}
+
+#[test]
 fn qc_rejects_tampered_view_box_and_topology() {
     let scene = rectangle_scene(4, 2);
     let artifact = write_svg(&scene, SvgWriteOptions::default()).unwrap();

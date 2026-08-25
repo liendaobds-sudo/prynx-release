@@ -1,6 +1,6 @@
 use super::profiles::{trace_core_profile, CoreProfileOptions, CoreProfileOutput};
 use super::request::LogoEngineRequest;
-use super::scene::{RingRole, SceneGeometry, SceneSegment};
+use super::scene::{RingRole, SceneGeometry, ScenePath, SceneSegment};
 
 fn silhouette_request(rows: &[&str]) -> LogoEngineRequest {
     let width = rows[0].len();
@@ -59,6 +59,46 @@ fn flat_request_with_options(
 
 fn trace_silhouette(rows: &[&str]) -> CoreProfileOutput {
     trace_core_profile(&silhouette_request(rows), CoreProfileOptions::default()).unwrap()
+}
+
+fn silhouette_ellipse_request(
+    width: usize,
+    height: usize,
+    radius_x: f64,
+    radius_y: f64,
+    smoothing: f64,
+) -> LogoEngineRequest {
+    let center_x = width as f64 * 0.5;
+    let center_y = height as f64 * 0.5;
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let dx = (x as f64 + 0.5 - center_x) / radius_x;
+            let dy = (y as f64 + 0.5 - center_y) / radius_y;
+            let alpha = if dx * dx + dy * dy <= 1.0 { 255 } else { 0 };
+            rgba.extend_from_slice(&[0, 0, 0, alpha]);
+        }
+    }
+    LogoEngineRequest::from_legacy_api(width, height, rgba, "monochrome", vec![], smoothing, 0)
+        .unwrap()
+}
+fn antialiased_circle_request(
+    size: usize,
+    radius: f64,
+    center_offset: (f64, f64),
+) -> LogoEngineRequest {
+    let center_x = size as f64 * 0.5 + center_offset.0;
+    let center_y = size as f64 * 0.5 + center_offset.1;
+    let mut rgba = Vec::with_capacity(size * size * 4);
+    for y in 0..size {
+        for x in 0..size {
+            let distance = (x as f64 + 0.5 - center_x).hypot(y as f64 + 0.5 - center_y);
+            let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            let alpha = (coverage * 255.0).round() as u8;
+            rgba.extend_from_slice(&[0, 0, 0, alpha]);
+        }
+    }
+    LogoEngineRequest::from_legacy_api(size, size, rgba, "monochrome", vec![], 1.0, 0).unwrap()
 }
 
 #[test]
@@ -174,6 +214,164 @@ fn flat_color_keeps_shared_boundaries_as_exact_lines() {
 }
 
 #[test]
+fn flat_color_curved_shared_boundary_uses_identical_primitive_geometry() {
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-07): outer của màu trong và hole
+    // của màu ngoài phải dùng cùng quỹ đạo, chỉ đảo winding.
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    let width = 96;
+    let height = 96;
+    let center = 48.0;
+    let radius = 30.0;
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f64 + 0.5 - center;
+            let dy = y as f64 + 0.5 - center;
+            pixels.push(if dx * dx + dy * dy <= radius * radius {
+                RED
+            } else {
+                BLUE
+            });
+        }
+    }
+    let output = trace_core_profile(
+        &flat_request_with_options(&pixels, width, height, 1.0, 0),
+        CoreProfileOptions::default(),
+    )
+    .unwrap();
+
+    let mut hole_anchors = None;
+    let mut outer_anchor_sets = Vec::new();
+    for layer in &output.scene.layers {
+        for geometry in &layer.geometry {
+            let SceneGeometry::FillRegion { rings } = geometry else {
+                continue;
+            };
+            for ring in rings {
+                match ring.role {
+                    RingRole::Hole => hole_anchors = Some(canonical_anchor_set(&ring.path)),
+                    RingRole::Outer => outer_anchor_sets.push(canonical_anchor_set(&ring.path)),
+                }
+            }
+        }
+    }
+    let hole_anchors = hole_anchors.expect("fixture phải có hole màu ngoài");
+    assert_eq!(hole_anchors.len(), 4);
+    assert!(outer_anchor_sets.contains(&hole_anchors));
+    assert_eq!(output.metrics.circle_count, 2);
+}
+
+#[test]
+fn flat_color_freeform_shared_boundary_reuses_exact_reversed_cubics() {
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-07): a freeform boundary shared
+    // by two colors must be fitted once, then reversed exactly for the peer.
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    let width = 96;
+    let height = 160;
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let phase = std::f64::consts::TAU * y as f64 / 72.0;
+        let boundary = (width as f64 * 0.5 + 6.0 * phase.sin()).round() as usize;
+        for x in 0..width {
+            pixels.push(if x < boundary { RED } else { BLUE });
+        }
+    }
+    let request = flat_request_with_options(&pixels, width, height, 1.0, 0)
+        .with_curve_preset(Some("trajectory_completion"))
+        .unwrap();
+    let output = trace_core_profile(&request, CoreProfileOptions::default()).unwrap();
+
+    let cubic_sets = output
+        .scene
+        .layers
+        .iter()
+        .map(|layer| {
+            let mut signatures = Vec::new();
+            for geometry in &layer.geometry {
+                let SceneGeometry::FillRegion { rings } = geometry else {
+                    continue;
+                };
+                for ring in rings {
+                    signatures.extend(canonical_cubic_signatures(&ring.path));
+                }
+            }
+            signatures.sort();
+            signatures
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(cubic_sets.len(), 2);
+    assert!(!cubic_sets[0].is_empty());
+    assert_eq!(cubic_sets[0], cubic_sets[1]);
+    assert!(output.metrics.max_error_px <= 2.0 + 1e-9);
+}
+
+fn canonical_cubic_signatures(path: &ScenePath) -> Vec<[i64; 8]> {
+    let quantize = |value: f64| (value * 1_000_000_000.0).round() as i64;
+    let mut current = path.start;
+    let mut signatures = Vec::new();
+    for segment in &path.segments {
+        match segment {
+            SceneSegment::Line { to } => current = *to,
+            SceneSegment::Cubic {
+                control_1,
+                control_2,
+                to,
+            } => {
+                let forward = [
+                    quantize(current.x),
+                    quantize(current.y),
+                    quantize(control_1.x),
+                    quantize(control_1.y),
+                    quantize(control_2.x),
+                    quantize(control_2.y),
+                    quantize(to.x),
+                    quantize(to.y),
+                ];
+                let reverse = [
+                    quantize(to.x),
+                    quantize(to.y),
+                    quantize(control_2.x),
+                    quantize(control_2.y),
+                    quantize(control_1.x),
+                    quantize(control_1.y),
+                    quantize(current.x),
+                    quantize(current.y),
+                ];
+                signatures.push(forward.min(reverse));
+                current = *to;
+            }
+        }
+    }
+    signatures
+}
+
+fn canonical_anchor_set(path: &ScenePath) -> Vec<(i64, i64)> {
+    let mut anchors = vec![path.start];
+    anchors.extend(path.segments.iter().map(SceneSegment::end_point));
+    anchors.sort_by_key(|point| {
+        (
+            (point.x * 1_000_000.0).round() as i64,
+            (point.y * 1_000_000.0).round() as i64,
+        )
+    });
+    anchors.dedup_by(|first, second| {
+        (first.x - second.x).abs() <= 1e-9 && (first.y - second.y).abs() <= 1e-9
+    });
+    anchors
+        .into_iter()
+        .map(|point| {
+            (
+                (point.x * 1_000_000.0).round() as i64,
+                (point.y * 1_000_000.0).round() as i64,
+            )
+        })
+        .collect()
+}
+
+#[test]
 fn flat_color_despeckle_removes_isolated_color_component() {
     const RED: [u8; 3] = [255, 0, 0];
     const BLUE: [u8; 3] = [0, 0, 255];
@@ -231,6 +429,53 @@ fn flat_color_curve_fit_reduces_jagged_palette_boundary() {
         output.metrics.output_nodes
     );
     assert!(output.metrics.max_error_px <= 2.0 + 1e-9);
+    assert!(output.scene.validate_contract().is_ok());
+}
+
+#[test]
+fn raster_circle_and_ellipse_are_scale_invariant_compact_curves() {
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-06): fixture production đi qua
+    // contour raster, không dùng circle lượng giác trực tiếp.
+    for (width, height, radius_x, radius_y) in [
+        (64, 64, 22.0, 22.0),
+        (128, 128, 44.0, 44.0),
+        (256, 256, 88.0, 88.0),
+        (192, 128, 72.0, 40.0),
+    ] {
+        let request = silhouette_ellipse_request(width, height, radius_x, radius_y, 1.0);
+        let output = trace_core_profile(&request, CoreProfileOptions::default()).unwrap();
+        let SceneGeometry::FillRegion { rings } = &output.scene.layers[0].geometry[0] else {
+            panic!("circle/ellipse phải sinh FillRegion");
+        };
+        assert_eq!(rings.len(), 1);
+        let path = &rings[0].path;
+        let line_count = path
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment, SceneSegment::Line { .. }))
+            .count();
+        assert_eq!(line_count, 0, "Vòng mượt không được lẫn đoạn thẳng");
+        assert!(
+            (4..=8).contains(&path.node_count()),
+            "{}x{} elip còn {} node",
+            width,
+            height,
+            path.node_count()
+        );
+        assert!(output.metrics.max_error_px <= 1.0 + 1e-9);
+    }
+}
+#[test]
+fn antialiased_subpixel_circles_complete_full_trace_with_valid_winding() {
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-01): contour coverage analytic phải
+    // giữ đúng winding qua toàn chuỗi, kể cả khi tâm không nằm trên lưới pixel.
+    let size = 32;
+    let request = antialiased_circle_request(size, size as f64 * 0.18, (-0.49, -0.49));
+    let output = trace_core_profile(&request, CoreProfileOptions::default()).unwrap();
+
+    assert_eq!(output.metrics.outer_count, 1);
+    assert_eq!(output.metrics.hole_count, 0);
+    assert_eq!(output.metrics.circle_count, 1);
     assert!(output.scene.validate_contract().is_ok());
 }
 

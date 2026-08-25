@@ -1,4 +1,6 @@
-use super::contour::{extract_contours, GridPoint, GridRing, CONTOUR_COORDINATE_SCALE};
+use super::contour::{
+    extract_contours, extract_silhouette_contours, GridPoint, GridRing, CONTOUR_COORDINATE_SCALE,
+};
 use super::preprocess::preprocess_rgba;
 use super::request::LogoEngineProfile;
 use super::scene::{EngineProvenance, RingRole, SceneGeometry, VectorScene, Winding};
@@ -198,13 +200,70 @@ fn contour_signed_area_matches_raster_pixel_count() {
         .map(|ring| i128::from(ring.saddle_cuts))
         .sum::<i128>();
 
+    let saddle_area_twice = saddle_cuts * i128::from(CONTOUR_COORDINATE_SCALE).pow(2) / 4;
     assert_eq!(
-        signed_area_twice + saddle_cuts,
+        signed_area_twice + saddle_area_twice,
         i128::from(artifact.visible_pixel_count())
             * 2
             * i128::from(CONTOUR_COORDINATE_SCALE).pow(2)
     );
     assert!(build_vector_layers(&artifact).is_ok());
+}
+
+#[test]
+fn antialiased_silhouette_uses_interpolated_subpixel_isoline() {
+    // LOGO-TRAJECTORY (audit 2026-08-25 F-01): alpha coverage phải dịch
+    // quỹ đạo theo iso-line, không bị lượng tử lại thành cạnh ô pixel.
+    let alphas = [0_u8, 64, 0, 64, 255, 64, 0, 64, 0];
+    let rgba = alphas
+        .into_iter()
+        .flat_map(|alpha| [0, 0, 0, alpha])
+        .collect::<Vec<_>>();
+    let artifact = preprocess_rgba(3, 3, &rgba, LogoEngineProfile::Silhouette, &[]).unwrap();
+
+    let first = extract_silhouette_contours(&artifact).unwrap();
+    let second = extract_silhouette_contours(&artifact).unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(first.len(), 1);
+    let half = CONTOUR_COORDINATE_SCALE / 2;
+    assert!(first[0].vertices.iter().any(|point| {
+        let x = point.x2.rem_euclid(CONTOUR_COORDINATE_SCALE);
+        let y = point.y2.rem_euclid(CONTOUR_COORDINATE_SCALE);
+        (x != 0 && x != half) || (y != 0 && y != half)
+    }));
+}
+#[test]
+fn antialiased_nested_isolines_normalize_outer_and_hole_winding() {
+    // [LOGO-TRAJECTORY FIX 2026-08-25] Hướng stitch cục bộ có thể đảo tại
+    // điểm lượng tử hóa; parity containment mới là nguồn sự thật của winding.
+    const SIZE: usize = 24;
+    const OUTER_RADIUS: f64 = 8.0;
+    const INNER_RADIUS: f64 = 3.0;
+    let mut rgba = Vec::with_capacity(SIZE * SIZE * 4);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let distance =
+                (x as f64 + 0.5 - SIZE as f64 * 0.5).hypot(y as f64 + 0.5 - SIZE as f64 * 0.5);
+            let outer_coverage = (OUTER_RADIUS + 0.5 - distance).clamp(0.0, 1.0);
+            let hole_coverage = (distance - (INNER_RADIUS - 0.5)).clamp(0.0, 1.0);
+            let alpha = (outer_coverage.min(hole_coverage) * 255.0).round() as u8;
+            rgba.extend_from_slice(&[0, 0, 0, alpha]);
+        }
+    }
+    let artifact = preprocess_rgba(SIZE, SIZE, &rgba, LogoEngineProfile::Silhouette, &[]).unwrap();
+    let classified = classify_contours(&extract_silhouette_contours(&artifact).unwrap()).unwrap();
+
+    assert_eq!(classified.len(), 2);
+    assert!(classified
+        .iter()
+        .any(|ring| { ring.role == RingRole::Outer && ring.winding == Winding::Clockwise }));
+    assert!(classified
+        .iter()
+        .any(|ring| { ring.role == RingRole::Hole && ring.winding == Winding::CounterClockwise }));
+    assert!(classified
+        .iter()
+        .all(|ring| { (ring.role == RingRole::Outer) == (ring.signed_area_twice > 0) }));
 }
 
 #[test]
@@ -217,9 +276,18 @@ fn single_pixel_uses_pixel_extent_and_four_corners() {
         contours[0].vertices,
         [
             GridPoint { x2: 0, y2: 0 },
-            GridPoint { x2: 2, y2: 0 },
-            GridPoint { x2: 2, y2: 2 },
-            GridPoint { x2: 0, y2: 2 },
+            GridPoint {
+                x2: CONTOUR_COORDINATE_SCALE,
+                y2: 0,
+            },
+            GridPoint {
+                x2: CONTOUR_COORDINATE_SCALE,
+                y2: CONTOUR_COORDINATE_SCALE,
+            },
+            GridPoint {
+                x2: 0,
+                y2: CONTOUR_COORDINATE_SCALE,
+            },
         ]
     );
 }

@@ -339,6 +339,23 @@ impl LoadedFont {
                 return Some(gid.0);
             }
         }
+        // [FONT FIX 2026-08-24] Tra cmap non-Unicode của TrueType symbolic subset.
+        if enc.is_some_and(|e| e.base == BaseEncoding::Builtin) {
+            // Ưu tiên Windows Symbol (F000+byte), sau đó mới MacRoman (byte
+            // trực tiếp); đây cũng là thứ tự mà đường outline Python dùng.
+            for code_point in [0xF000 + code as u32, code as u32] {
+                if let Some(cmap) = face.tables().cmap {
+                    for subtable in cmap.subtables {
+                        if subtable.is_unicode() {
+                            continue;
+                        }
+                        if let Some(gid) = subtable.glyph_index(code_point) {
+                            return Some(gid.0);
+                        }
+                    }
+                }
+            }
+        }
         // 3) Font symbol: bảng (3,0) đánh mã ở vùng 0xF000.
         if let Some(gid) = face
             .glyph_index(char::from_u32(0xF000 + code as u32)?)
@@ -976,6 +993,45 @@ mod tests {
         let doc = Document::new();
         let cmap = parse_cmap_stream(&doc, &Object::Null);
         assert!(cmap.identity);
+    }
+
+    #[test]
+    fn symbolic_truetype_uses_builtin_macintosh_cmap() {
+        // ReportLab subset font có `/Flags 4` và không có `/Encoding`. Với mã
+        // 0x80, cmap Macintosh của DejaVu có glyph riêng còn cmap Unicode không
+        // có U+0080; nếu rơi về `code as GID` thì sẽ chọn nhầm outline.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("backend/app/assets/fonts/DejaVuSans.ttf");
+        let data = std::fs::read(path).expect("test cần DejaVuSans.ttf");
+        let face = ttf_parser::Face::parse(&data, 0).expect("font phải parse được");
+        let expected = face
+            .tables()
+            .cmap
+            .expect("font phải có cmap")
+            .subtables
+            .into_iter()
+            .filter(|subtable| {
+                subtable.platform_id == ttf_parser::PlatformId::Macintosh
+            })
+            .find_map(|subtable| subtable.glyph_index(0x80).map(|gid| gid.0))
+            .expect("cmap Macintosh phải có mã 0x80");
+        assert_ne!(expected, 0x80, "ca test phải phân biệt GID với mã byte");
+
+        let font = LoadedFont {
+            program: FontProgram::TrueType(Arc::new(data.clone())),
+            encoding: Some(SimpleEncoding::new(BaseEncoding::Builtin)),
+            cmap: None,
+            cid_to_gid: CidToGid::Identity,
+            widths: Widths::FromProgram,
+            type3: None,
+            is_type0: false,
+            base_font: "AAAAAA+DejaVuSans".into(),
+            substituted: false,
+            cache: RefCell::new(HashMap::new()),
+        };
+        assert_eq!(font.truetype_gid(&face, 0x80), Some(expected));
     }
 
     #[test]

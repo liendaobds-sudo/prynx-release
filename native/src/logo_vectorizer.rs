@@ -372,6 +372,19 @@ fn structured_result_to_pydict(
     metrics.set_item("source_nodes", result.metrics.source_nodes)?;
     metrics.set_item("output_nodes", result.metrics.output_nodes)?;
     metrics.set_item("max_error_px", result.metrics.max_error_px)?;
+    metrics.set_item("max_symmetric_distance_px", result.metrics.max_error_px)?;
+    metrics.set_item("line_segments", result.metrics.line_segments)?;
+    metrics.set_item("cubic_segments", result.metrics.cubic_segments)?;
+    metrics.set_item("circle_count", result.metrics.circle_count)?;
+    metrics.set_item("ellipse_count", result.metrics.ellipse_count)?;
+    metrics.set_item(
+        "max_smooth_tangent_jump_degrees",
+        result.metrics.max_smooth_tangent_jump_degrees,
+    )?;
+    metrics.set_item(
+        "artifact_max_tangent_jump_degrees",
+        result.metrics.artifact_max_tangent_jump_degrees,
+    )?;
     metrics.set_item("raster_scale", result.metrics.raster_scale)?;
     metrics.set_item("iou", result.metrics.iou)?;
     metrics.set_item("mae", result.metrics.mae)?;
@@ -407,6 +420,7 @@ fn structured_result_to_pydict(
     max_raster_pixels=None,
     min_iou=None,
     max_mae=None,
+    curve_preset=None,
     cancel=None
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -427,6 +441,7 @@ pub fn logo_vectorize_structured_rgba(
     max_raster_pixels: Option<usize>,
     min_iou: Option<f64>,
     max_mae: Option<f64>,
+    curve_preset: Option<&str>,
     cancel: Option<PyRef<'_, LogoVectorizerCancel>>,
 ) -> PyResult<Py<PyDict>> {
     let request = LogoEngineRequest::from_legacy_api(
@@ -439,6 +454,9 @@ pub fn logo_vectorize_structured_rgba(
         despeckle_size_px,
     )
     .map_err(PyValueError::new_err)?;
+    let request = request
+        .with_curve_preset(curve_preset)
+        .map_err(PyValueError::new_err)?;
     validate_structured_options(&request, background_label, raster_scale, min_iou, max_mae)
         .map_err(PyValueError::new_err)?;
     let physical_size_mm = physical_size_from_api(physical_width_mm, physical_height_mm)
@@ -476,6 +494,11 @@ pub fn logo_vectorizer_info(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     result.set_item("core_engine_version", CORE_ENGINE_VERSION)?;
     result.set_item("core_profiles", ["silhouette", "flat_color"])?;
     result.set_item("structured_modes", ["monochrome", "fixed_palette"])?;
+    result.set_item(
+        "curve_presets",
+        ["automatic", "faithful", "balanced", "trajectory_completion"],
+    )?;
+    result.set_item("geometry_metrics_version", 1)?;
     Ok(result)
 }
 
@@ -672,6 +695,7 @@ mod tests {
         assert_eq!(first.metrics.outer_count, 2);
         assert_eq!(first.metrics.iou, 1.0);
         assert_eq!(first.metrics.mae, 0.0);
+        assert!((first.metrics.artifact_max_tangent_jump_degrees - 90.0).abs() < 1.0e-6);
         assert_eq!(first.artifact_sha256.len(), 64);
         assert!(first.svg.contains("data-prynx-engine=\"prynx-logo-core\""));
         assert!(first.warnings.is_empty());

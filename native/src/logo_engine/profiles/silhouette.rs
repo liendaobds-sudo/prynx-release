@@ -1,8 +1,8 @@
 //! Profile silhouette: alpha mask → contour → topology → curve-fit.
 
-use super::{summarize_scene, CoreProfileOutput};
-use crate::logo_engine::contour::{extract_contours, GridRing};
-use crate::logo_engine::curve_fit::{fit_closed_ring, CurveFitOptions};
+use super::{summarize_scene, CoreProfileOutput, PrimitiveCounts};
+use crate::logo_engine::contour::{extract_silhouette_contours, GridRing};
+use crate::logo_engine::curve_fit::{fit_closed_ring, CurveFitOptions, ReconstructedPrimitive};
 use crate::logo_engine::preprocess::preprocess_rgba;
 use crate::logo_engine::request::LogoEngineRequest;
 use crate::logo_engine::scene::{
@@ -15,7 +15,8 @@ pub(super) fn trace(
     request: &LogoEngineRequest,
     provenance: EngineProvenance,
 ) -> Result<CoreProfileOutput, String> {
-    let curve_options = curve_options(request.smoothing)?;
+    let curve_options =
+        curve_options(request.effective_smoothing(), request.prefers_fair_curves())?;
     let artifact = preprocess_rgba(
         request.width,
         request.height,
@@ -25,13 +26,14 @@ pub(super) fn trace(
     )?;
     let preprocess_hash = artifact.artifact_hash.clone();
     let component_count = artifact.components.len();
-    let contours = extract_contours(&artifact)?;
+    let contours = extract_silhouette_contours(&artifact)?;
     let classified = classify_contours(&contours)?;
     let source_nodes = classified
         .iter()
         .map(|ring| ring.vertices.len())
         .sum::<usize>();
     let mut max_error_px = 0.0_f64;
+    let mut primitives = PrimitiveCounts::default();
     let mut rings = Vec::with_capacity(classified.len());
 
     for ring in classified {
@@ -44,6 +46,11 @@ pub(super) fn trace(
             curve_options,
         )?;
         max_error_px = max_error_px.max(fitted.max_error_px);
+        match fitted.primitive {
+            Some(ReconstructedPrimitive::Circle) => primitives.circle += 1,
+            Some(ReconstructedPrimitive::Ellipse) => primitives.ellipse += 1,
+            None => {}
+        }
         rings.push(FillRing {
             role: ring.role,
             winding: ring.winding,
@@ -63,7 +70,13 @@ pub(super) fn trace(
         provenance,
     };
     scene.validate_contract()?;
-    let metrics = summarize_scene(&scene, component_count, source_nodes, max_error_px);
+    let metrics = summarize_scene(
+        &scene,
+        component_count,
+        source_nodes,
+        max_error_px,
+        primitives,
+    );
     Ok(CoreProfileOutput {
         scene,
         preprocess_hash,
@@ -71,7 +84,7 @@ pub(super) fn trace(
     })
 }
 
-fn curve_options(smoothing: f64) -> Result<CurveFitOptions, String> {
+fn curve_options(smoothing: f64, prefer_fair_curves: bool) -> Result<CurveFitOptions, String> {
     if !smoothing.is_finite() || !(0.0..=1.0).contains(&smoothing) {
         return Err("Độ mượt silhouette phải nằm trong khoảng 0–1".to_string());
     }
@@ -80,5 +93,6 @@ fn curve_options(smoothing: f64) -> Result<CurveFitOptions, String> {
     Ok(CurveFitOptions {
         tolerance_px: 0.25 + smoothing * 0.75,
         corner_angle_degrees: 45.0 + smoothing * 20.0,
+        prefer_fair_curves,
     })
 }
