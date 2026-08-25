@@ -2306,6 +2306,7 @@
     "khu_vien_thanh_cong": "Đã xử lý viền dư cho {{count}} trang.",
     "khu_vien_that_bai": "Lỗi khử viền dư: {{msg}}",
     "khu_vien_du_hint": "Tự dò màu phẳng ở mép; nền chuyển sắc hoặc mép không đồng nhất sẽ được giữ nguyên. Nếu đó là nền thiết kế, hãy Hoàn tác.",
+    "khu_vien_canh_bat_buoc_hint": "Cạnh đã chọn là bắt buộc. Nếu không dò được phần dư ở một cạnh, PrynX sẽ dừng và không đổi file.",
     "le_bo_sung_mm": "Lề bổ sung (mm)",
     "ap_dung": "Áp dụng",
     "tat_ca_trang": "Tất cả trang",

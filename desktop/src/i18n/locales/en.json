@@ -2306,6 +2306,7 @@
     "khu_vien_thanh_cong": "Processed excess borders on {{count}} pages.",
     "khu_vien_that_bai": "Excess-border trim error: {{msg}}",
     "khu_vien_du_hint": "Detects a flat color at the edge; gradients or inconsistent edges are left unchanged. Undo if the edge color is part of the design.",
+    "khu_vien_canh_bat_buoc_hint": "Selected edges are required. If excess border cannot be detected on any selected edge, PrynX stops without changing the file.",
     "le_bo_sung_mm": "Extra margin (mm)",
     "ap_dung": "Apply",
     "tat_ca_trang": "All pages",
