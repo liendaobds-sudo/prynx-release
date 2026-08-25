@@ -107,6 +107,41 @@ def test_geometry_only_no_downsample(tmp_path):
     assert all(w == 148 and h == 210 for (w, h) in sizes), sizes
 
 
+def test_fixed_stretch_ignores_stale_resize_by_content_state(tmp_path, monkeypatch):
+    """State cũ không được kéo Stretch vào engine nền động."""
+    src = str(tmp_path / "stale_resize_state.pdf")
+    out = str(tmp_path / "stale_resize_state_out.pdf")
+    _a1_text_pdf(src, pages=1)
+
+    monkeypatch.setattr(
+        pdf_actions_native,
+        "detect_transparent_pages",
+        lambda *_args, **_kwargs: [1],
+    )
+    monkeypatch.setattr(
+        resize_background_engine,
+        "resize_pages_with_background",
+        lambda *_args, **_kwargs: pytest.fail(
+            "stretch không được đi qua engine nền động"
+        ),
+    )
+
+    resize_pages_smart(
+        src,
+        out,
+        A5[0],
+        A5[1],
+        scale_mode="stretch",
+        apply_to="all",
+        target_dpi=0,
+        mode="auto",
+        bg_fill_mode="mirror",
+        resize_by_content=True,
+    )
+
+    assert _page_sizes_mm(out) == [(148, 210)]
+
+
 @pytest.mark.parametrize(
     ("mode", "target_dpi", "bg_fill_mode"),
     [

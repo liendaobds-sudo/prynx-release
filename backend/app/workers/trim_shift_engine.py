@@ -12,6 +12,8 @@ Dùng pikepdf (C++/QPDF). Trim = chỉnh box (nhanh, giữ nguyên nội dung); 
 prepend `q 1 0 0 1 dx dy cm` … `Q` bao toàn bộ content stream của trang.
 """
 
+import math
+
 import pikepdf
 
 MM_TO_PTS = 72 / 25.4
@@ -194,6 +196,188 @@ def _apply_mirror_fill(pdf, page, frame, a_l, a_b, a_r, a_t):
     page[pikepdf.Name("/Contents")] = pikepdf.Stream(pdf, "\n".join(ops).encode("ascii"))
 
 
+
+def _split_user_unit(page) -> float:
+    """Đọc UserUnit hợp lệ để lề nhập theo mm giữ đúng kích thước vật lý."""
+    try:
+        value = float(page.get("/UserUnit", 1) or 1)
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    return value if math.isfinite(value) and 0 < value <= 75000 else 1.0
+
+
+def _normalize_split_config(config: dict) -> tuple[str, int, list[dict[str, float]]]:
+    """Chuẩn hóa cấu hình tách mảnh và đổi lề mm sang đơn vị tọa độ PDF."""
+    if not isinstance(config, dict) or not bool(config.get("enabled", False)):
+        raise ValueError("Chế độ tách mảnh chưa được bật.")
+
+    axis = str(config.get("axis", "vertical")).strip().lower()
+    if axis not in {"vertical", "horizontal"}:
+        raise ValueError("Chiều tách chỉ được là dọc hoặc ngang.")
+
+    try:
+        count = int(config.get("count", 2))
+    except (TypeError, ValueError):
+        raise ValueError("Số mảnh phải là 2 hoặc 3.")
+    if count not in (2, 3):
+        raise ValueError("Số mảnh phải là 2 hoặc 3.")
+
+    raw_pieces = config.get("pieces", [])
+    if raw_pieces is None:
+        raw_pieces = []
+    if not isinstance(raw_pieces, list):
+        raise ValueError("Cấu hình lề từng mảnh không hợp lệ.")
+
+    pieces: list[dict[str, float]] = []
+    for index in range(count):
+        raw = raw_pieces[index] if index < len(raw_pieces) else {}
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"Lề của mảnh {index + 1} không hợp lệ.")
+
+        piece: dict[str, float] = {}
+        for edge in ("top", "bottom", "left", "right"):
+            try:
+                value_mm = float(raw.get(edge, 0) or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f"Lề {edge} của mảnh {index + 1} phải là số.")
+            if not math.isfinite(value_mm) or value_mm < 0:
+                raise ValueError(f"Lề {edge} của mảnh {index + 1} không được âm.")
+            piece[edge] = value_mm
+        pieces.append(piece)
+    return axis, count, pieces
+
+
+def _page_to_full_form(pdf: pikepdf.Pdf, page, box: list[float]):
+    """Tạo Form XObject bao toàn bộ MediaBox, không làm mất bleed/đối tượng ngoài Crop."""
+    box_keys = ("/MediaBox", "/CropBox", "/TrimBox", "/BleedBox", "/ArtBox")
+    saved_direct = {
+        key: page.obj.get(pikepdf.Name(key))
+        for key in box_keys
+    }
+    try:
+        # as_form_xobject() chọn box nhỏ nhất; đồng bộ tạm mọi box về MediaBox
+        # để trang đã bình có dấu/bleed ngoài TrimBox vẫn nằm trong mảnh.
+        full = pikepdf.Array(box)
+        for key in box_keys:
+            page[pikepdf.Name(key)] = full
+        return page.as_form_xobject()
+    finally:
+        for key, value in saved_direct.items():
+            name = pikepdf.Name(key)
+            if value is None:
+                try:
+                    del page[name]
+                except (KeyError, TypeError):
+                    pass
+            else:
+                page[name] = value
+
+
+def _split_pages(
+    pdf: pikepdf.Pdf,
+    output_path: str,
+    apply_to: str,
+    config: dict,
+) -> str:
+    """Tách các trang chọn thành mảnh mới, có nền trắng đục và lề riêng."""
+    from app.core.page_boxes import _canonicalize_rotated_page_for_mirror
+
+    axis, count, pieces = _normalize_split_config(config)
+    total = len(pdf.pages)
+    target = _resolve_pages(str(apply_to or "all"), total)
+    if not target and str(apply_to or "all") not in {"all", "even", "odd"}:
+        raise ValueError("Không có trang hợp lệ trong phạm vi tách mảnh.")
+
+    out = pikepdf.Pdf.new()
+    try:
+        # Giữ profile màu/layer cấp tài liệu khi dựng PDF mới.
+        for key in ("/OCProperties", "/OutputIntents"):
+            value = pdf.Root.get(key)
+            if value is not None:
+                try:
+                    out.Root[pikepdf.Name(key)] = out.copy_foreign(value)
+                except Exception:
+                    pass
+
+        for index in range(total):
+            source_page = pdf.pages[index]
+            if index not in target:
+                out.pages.append(source_page)
+                continue
+
+            # Chuẩn hóa hướng nhìn trước khi tính đường cắt; output luôn /Rotate=0.
+            _canonicalize_rotated_page_for_mirror(pdf, source_page)
+            source_box = _get_box(source_page, "/MediaBox")
+            sx0, sy0, sx1, sy1 = source_box
+            source_w = sx1 - sx0
+            source_h = sy1 - sy0
+            if source_w < MIN_BOX_PTS or source_h < MIN_BOX_PTS:
+                raise ValueError(f"Trang {index + 1} có khổ không hợp lệ để tách.")
+
+            user_unit = _split_user_unit(source_page)
+            form = _page_to_full_form(pdf, source_page, source_box)
+
+            if axis == "vertical":
+                piece_w = source_w / count
+                piece_rects = [
+                    [sx0 + piece_w * part, sy0,
+                     sx0 + piece_w * (part + 1), sy1]
+                    for part in range(count)
+                ]
+            else:
+                piece_h = source_h / count
+                # Thứ tự tự nhiên là trên → dưới, đúng thứ tự đọc/bình lại.
+                piece_rects = [
+                    [sx0, sy1 - piece_h * (part + 1),
+                     sx1, sy1 - piece_h * part]
+                    for part in range(count)
+                ]
+
+            for part, rect in enumerate(piece_rects):
+                margin_mm = pieces[part]
+                margin = {
+                    edge: margin_mm[edge] * MM_TO_PTS / user_unit
+                    for edge in ("top", "bottom", "left", "right")
+                }
+                rect_w = rect[2] - rect[0]
+                rect_h = rect[3] - rect[1]
+                page_w = rect_w + margin["left"] + margin["right"]
+                page_h = rect_h + margin["bottom"] + margin["top"]
+                if page_w < MIN_BOX_PTS or page_h < MIN_BOX_PTS:
+                    raise ValueError(f"Mảnh {part + 1} của trang {index + 1} có khổ không hợp lệ.")
+
+                dest = out.add_blank_page(page_size=(page_w, page_h))
+                full_dest_box = pikepdf.Array([0.0, 0.0, page_w, page_h])
+                for key in ("/MediaBox", "/CropBox", "/TrimBox", "/BleedBox", "/ArtBox"):
+                    dest[pikepdf.Name(key)] = full_dest_box
+                dest[pikepdf.Name("/Rotate")] = 0
+                if user_unit != 1.0:
+                    dest[pikepdf.Name("/UserUnit")] = user_unit
+
+                # Lề của mảnh phải là giấy trắng đục, không phải vùng alpha trong suốt.
+                background = (
+                    f"q 1 1 1 rg 0 0 {page_w:.6f} {page_h:.6f} re f Q\n"
+                )
+                dest.contents_add(pikepdf.Stream(out, background.encode("ascii")))
+                name = dest.add_resource(form, pikepdf.Name.XObject)
+                tx = margin["left"] - rect[0]
+                ty = margin["bottom"] - rect[1]
+                draw = (
+                    f"q {margin['left']:.6f} {margin['bottom']:.6f} "
+                    f"{rect_w:.6f} {rect_h:.6f} re W n "
+                    f"1 0 0 1 {tx:.6f} {ty:.6f} cm {str(name)} Do Q"
+                )
+                dest.contents_add(pikepdf.Stream(out, draw.encode("ascii")))
+
+        from app.workers.pdf_tools_engine import save_pdf_compat
+        save_pdf_compat(pdf=out, path=output_path)
+    finally:
+        out.close()
+    return output_path
+
+
 def trim_shift(
     source_path: str,
     output_path: str,
@@ -213,6 +397,7 @@ def trim_shift(
     mirror_fill: bool = False,
     content_mode: str = 'original',
     keep_bleed: bool = False,
+    split_config: dict | None = None,
 ) -> str:
     """Áp trim + shift lên các trang trong tập apply_to.
 
@@ -229,7 +414,16 @@ def trim_shift(
         gốc), phần khổ mới để trắng. Bỏ qua clip khi mirror_fill bật (mâu thuẫn).
     keep_bleed: khi trim, dịch TrimBox/BleedBox theo cùng delta để lượng bleed
         không đổi (chỉ khi trang đã có sẵn box đó — không tạo mới).
+    split_config: khi enabled, thay mỗi trang được chọn bằng 2 hoặc 3 mảnh đều
+        theo trục dọc/ngang, cộng lề trắng riêng từng mảnh; các tham số trim/shift
+        scalar được bỏ qua trong chế độ này.
     """
+    if isinstance(split_config, dict) and bool(split_config.get("enabled", False)):
+        # UIUX (audit 2026-08-24 §TRIM.F1): tách hình học và lề trắng là một
+        # thao tác nguyên tử; không đi vòng qua Split PDF/Crop.
+        with pikepdf.Pdf.open(source_path) as pdf:
+            return _split_pages(pdf, output_path, apply_to, split_config)
+
     trim_top = trim_top_mm * MM_TO_PTS
     trim_bottom = trim_bottom_mm * MM_TO_PTS
     trim_left = trim_left_mm * MM_TO_PTS
@@ -242,6 +436,8 @@ def trim_shift(
     with pikepdf.Pdf.open(source_path) as pdf:
         total = len(pdf.pages)
         target = _resolve_pages(apply_to, total)
+        if not target and str(apply_to or "all") not in {"all", "even", "odd"}:
+            raise ValueError("Không có trang hợp lệ trong phạm vi Trim & Shift.")
         ordered = sorted(target)
         max_pos = max(len(ordered) - 1, 1)
 

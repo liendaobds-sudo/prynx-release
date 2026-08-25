@@ -57,6 +57,14 @@ _force_cpu = os.environ.get('PRYNX_BG_FORCE_CPU', '').lower() in ('1', 'true', '
 _DML_MIN_AVAILABLE_RAM_RATIO = 0.25
 _DML_MIN_AVAILABLE_RAM_MB = 2048.0
 
+# PERF/STABILITY (audit 2026-08-24 §STICKER-AI.OOM1): admission theo RAM khả dụng
+# thật; không hạ kích thước input trên máy đủ bộ nhớ. Lite cần khoảng 2 lần buffer
+# 822 MB đã quan sát; full dùng biên an toàn lớn hơn theo kích thước model.
+_CPU_FALLBACK_MIN_AVAILABLE_RAM_MB = {
+    "lite": 2048.0,
+    "full": 4096.0,
+}
+
 
 def _build_providers():
     if _force_cpu:
@@ -91,12 +99,44 @@ def _download_model_if_needed(variant: str):
     )
 
 
+def _ensure_cpu_fallback_memory(variant: str, *, fallback: bool = True) -> None:
+    """Chặn sớm lượt CPU chắc chắn không vừa ngân sách RAM hiện tại."""
+    _total_mb, available_mb = read_memory_status_mb()
+    if available_mb is None:
+        # Windows API lỗi/không có số liệu: giữ fail-open như các admission
+        # khác của backend, để không biến lỗi đo RAM thành lỗi tính năng.
+        return
+    try:
+        available_value = float(available_mb)
+    except (TypeError, ValueError):
+        return
+    if available_value < 0:
+        return
+    required_mb = _CPU_FALLBACK_MIN_AVAILABLE_RAM_MB.get(variant, 2048.0)
+    if available_value >= required_mb:
+        return
+    phase_label = "CPU fallback" if fallback else "CPU"
+    logger.warning(
+        "BiRefNet[%s] bỏ qua %s: RAM khả dụng %.0f MB < %.0f MB.",
+        variant,
+        phase_label,
+        available_value,
+        required_mb,
+    )
+    raise MemoryError(
+        f"BiRefNet[{variant}] {phase_label} cần ít nhất {required_mb:.0f} MB "
+        f"RAM khả dụng, hiện chỉ còn {available_value:.0f} MB."
+    )
+
+
 def _get_session(variant: str = "full"):
     s = _sessions.get(variant)
     if s is not None:
         return s
     with _session_lock:
         if _sessions.get(variant) is None:
+            if _force_cpu:
+                _ensure_cpu_fallback_memory(variant, fallback=False)
             path = _download_model_if_needed(variant)
             logger.info("Loading BiRefNet[%s] session (force_cpu=%s)...", variant, _force_cpu)
             providers = _build_providers()
@@ -186,6 +226,8 @@ def _switch_to_cpu(variant: str):
         # khỏi cache và giải phóng tài nguyên trước khi nạp thêm model CPU. Nếu giữ
         # đồng thời hai session, DirectML OOM thường nối tiếp bằng bad allocation.
         _discard_cached_session_locked(variant)
+        # Kiểm tra sau khi nhả native DML để không dựng CPU session vô ích.
+        _ensure_cpu_fallback_memory(variant)
         path = _download_model_if_needed(variant)
         logger.warning("Rebuilding BiRefNet[%s] on CPU only (GPU không ổn định).", variant)
         _sessions[variant] = _create_session(path, ['CPUExecutionProvider'])

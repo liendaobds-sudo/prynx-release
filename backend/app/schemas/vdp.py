@@ -88,14 +88,16 @@ class VdpJobStatusResponse(BaseModel):
     """Kết quả `GET /api/vdp/status/{job_id}`.
 
     Desktop đọc (`lib/api.ts` → vòng poll VDP): `status`, `processed`, `total`, `result`
-    (đường dẫn file kết quả khi xong), `error`. `cancel_requested` chưa ai đọc nhưng vẫn
-    trả — bỏ đi là đổi hợp đồng mà không được gì.
+    (đường dẫn file kết quả khi xong), `artifact_lease`, `error`.
+    `cancel_requested` chưa ai đọc nhưng vẫn trả — bỏ đi là đổi hợp đồng mà không
+    được gì.
     """
 
     status: Optional[str] = None
     processed: int = 0
     total: int = 0
     result: Optional[str] = None
+    artifact_lease: Optional[str] = None
     error: Optional[str] = None
     cancel_requested: bool = False
 

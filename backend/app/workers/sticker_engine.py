@@ -33,6 +33,13 @@ from app.core.bleed_sides import (
 )
 from app.workers.shape_analyzer import ShapeType
 from app.workers.pdf_ops import copy_output_intents
+from app.workers.page_space_canonicalization import canonicalize_page_space_file
+from app.core.color_provenance import (
+    COLOR_DEVICE_CMYK_FALLBACK_WARNING,
+    COLOR_DEVICEN_FALLBACK_WARNING,
+    describe_pdf_color_provenance,
+    embed_srgb_output_intent,
+)
 from app.workers.sticker_bleed_masks import (
     _SEAM_FEATHER_MM,
     _axis_aligned_rectangle_bbox,
@@ -7703,6 +7710,83 @@ def _rectangle_trajectory_color_fill(
     )
 
 
+def _enforce_rectangle_edge_continuity(
+    filled: np.ndarray,
+    img: np.ndarray,
+    pad_px: int,
+    edge_bite_px: int,
+    pads: tuple[int, int, int, int] | None = None,
+) -> np.ndarray:
+    """Giữ màu liên tục ở ranh trim/bleed cho nguồn thiếu ICC.
+
+    Một số PDF DeviceN không có ICC có mép hoa văn rất nhạy: trường quỹ đạo
+    đúng hướng nhưng vẫn có thể đổi màu ngay pixel đầu của dải ngoài. Khi
+    flatten về RGB, giữ nguyên texture đã suy ra và neo pixel đầu tiên của dải
+    ngoài vào đúng mép artwork tạo điểm nối liên tục, đồng thời vẫn giữ nguyên
+    phần lõi artwork. Không làm phẳng cả dải về một màu trung bình vì sẽ lộ
+    thành sọc trên nền xanh/hoa văn.
+    """
+    if (
+        filled is None
+        or img is None
+        or filled.ndim != 3
+        or img.ndim != 3
+        or filled.shape[2] < 3
+        or img.shape[2] < 3
+    ):
+        return filled
+
+    height, width = img.shape[:2]
+    pad = max(0, int(pad_px))
+    if pads is None:
+        pad_left = pad_right = pad_bottom = pad_top = pad
+    else:
+        pad_left, pad_right, pad_bottom, pad_top = (
+            max(0, int(value)) for value in pads
+        )
+    # edge_bite_px chỉ thay đổi vùng chồng mí/đường cắt; lưới flatten
+    # vẫn đặt artwork tại pad_* như padded_img. Không dịch lõi theo
+    # edge bite, nếu không dải RGB sẽ lệch đúng một vài pixel ở ranh trim.
+    del edge_bite_px
+    top = pad_top
+    bottom = pad_bottom
+    left = pad_left
+    right = pad_right
+    expected_shape = (
+        top + height + bottom,
+        left + width + right,
+    )
+    if filled.shape[:2] != expected_shape:
+        return filled
+
+    result = np.array(filled, dtype=filled.dtype, copy=True, order="C")
+    # Ghi lại lõi đúng theo render PDFium; phần overlap nếu có cũng cùng màu.
+    result[top:top + height, left:left + width] = img
+    # Neo đúng pixel kề mép theo bốn hướng. Các pixel còn lại giữ nguyên
+    # texture/quỹ đạo do bộ fill sinh ra; vì vậy không xuất hiện sọc phẳng ở
+    # vùng bleed nhưng pixel đầu tiên vẫn byte-level khớp màu nguồn.
+    if left:
+        result[top:top + height, left - 1] = img[:, 0]
+    if right:
+        result[top:top + height, left + width] = img[:, -1]
+    if top:
+        result[top - 1, left:left + width] = img[0]
+    if bottom:
+        result[top + height, left:left + width] = img[-1]
+
+    # Bốn góc có thể được viết bởi hai dải độc lập; lấy đúng pixel góc nguồn
+    # để tránh một điểm đổi màu ở giao điểm các cạnh.
+    if top and left:
+        result[top - 1, left - 1] = img[0, 0]
+    if top and right:
+        result[top - 1, left + width] = img[0, -1]
+    if bottom and left:
+        result[top + height, left - 1] = img[-1, 0]
+    if bottom and right:
+        result[top + height, left + width] = img[-1, -1]
+    return result
+
+
 def _sparsify_rectangle_bleed(
     colors: np.ndarray,
     mask: np.ndarray,
@@ -7739,6 +7823,54 @@ def _sparsify_rectangle_bleed(
     sparse = colors.copy()
     sparse[edge:height - edge, edge:width - edge] = 0
     return sparse
+
+
+def _compose_rgb_flattened_page(
+    artwork_rgb: np.ndarray,
+    bleed_rgb: np.ndarray,
+    bleed_alpha: np.ndarray,
+) -> np.ndarray | None:
+    """Ghép artwork và bleed trên cùng lưới RGB để không có seam profile.
+
+    Nguồn CMYK/DeviceN không ICC không thể chuyển ngược chính xác về plate.
+    Khi đó, giữ Form CMYK bên dưới ảnh bleed RGB làm viewer/RIP áp hai phép
+    diễn giải khác nhau tại đúng ranh giới trim. Nhánh này dùng riêng cho
+    fallback đã được kiểm soát: hai lớp đã được PDFium render trên cùng lưới,
+    nên ghép một lần ở RGB rồi xuất ảnh ICCBased sRGB duy nhất.
+    """
+    if (
+        artwork_rgb is None
+        or bleed_rgb is None
+        or bleed_alpha is None
+        or artwork_rgb.ndim != 3
+        or bleed_rgb.ndim != 3
+        or bleed_alpha.ndim != 2
+        or artwork_rgb.shape[:2] != bleed_rgb.shape[:2]
+        or artwork_rgb.shape[:2] != bleed_alpha.shape
+        or artwork_rgb.shape[2] < 3
+        or bleed_rgb.shape[2] < 3
+    ):
+        return None
+    # Chỉ tạo một bản sao đích; không dựng thêm mảng alpha float cùng kích thước
+    # toàn trang (khổ A0 300 DPI có thể chiếm hàng trăm MB).
+    result = np.array(artwork_rgb[..., :3], dtype=np.uint8, copy=True, order="C")
+    overlay = np.asarray(bleed_rgb[..., :3], dtype=np.uint8)
+    alpha_u8 = np.asarray(bleed_alpha, dtype=np.uint8)
+    active = alpha_u8 > 0
+    if not np.any(active):
+        return result
+    # Ring hiện là mask nhị phân; gán trực tiếp là vừa đúng SMask vừa tránh
+    # tạo buffer float khổng lồ. Giữ fallback alpha mềm cho fixture/tương lai.
+    if np.all(alpha_u8[active] >= 255):
+        result[active] = overlay[active]
+        return result
+    alpha = (alpha_u8[active].astype(np.float32) / 255.0)[:, None]
+    blended = np.rint(
+        overlay[active].astype(np.float32) * alpha
+        + result[active].astype(np.float32) * (1.0 - alpha)
+    )
+    result[active] = np.clip(blended, 0.0, 255.0).astype(np.uint8)
+    return result
 
 
 def _band_tiles(band, band_radius: int, tile: int = 1024):
@@ -8066,6 +8198,7 @@ def _rectangle_vector_bleed_commands(
     sample_depth_pts: float,
     sample_inset_pts: float = 0.0,
     sides=None,
+    join_overlap_pts: float = 0.0,
 ) -> tuple[list[str], float, float, float, float]:
     """Stretch vector edge/corner strips around a rectangular page.
 
@@ -8073,7 +8206,10 @@ def _rectangle_vector_bleed_commands(
     converts process/ICC/spot colors to RGB. ``edge_bite_pts`` both moves the
     sampled strip and replaces the requested inner artwork strip. By contrast,
     ``sample_inset_pts`` only moves the source strip inward; it never widens the
-    destination bleed or clips artwork. Returned bite values therefore describe
+    destination bleed or clips artwork. ``join_overlap_pts`` is a tiny, optional
+    overlap used only when the strip is painted after the original artwork; it
+    closes viewer/RIP anti-alias hairlines without changing the requested bleed
+    size or the destructive edge bite. Returned bite values therefore describe
     only the explicit, destructive edge bite.
 
     ``sides`` chọn cạnh nào được bù xén (mặc định cả 4, xem
@@ -8118,6 +8254,15 @@ def _rectangle_vector_bleed_commands(
     ext_right = bleed_right + bite_right
     ext_bottom = bleed_bottom + bite_bottom
     ext_top = bleed_top + bite_top
+    try:
+        join_overlap = float(join_overlap_pts)
+    except (TypeError, ValueError):
+        join_overlap = 0.0
+    join_overlap = max(0.0, min(join_overlap, min(depth_x, depth_y)))
+    draw_left = ext_left + (join_overlap if side_l else 0.0)
+    draw_right = ext_right + (join_overlap if side_r else 0.0)
+    draw_bottom = ext_bottom + (join_overlap if side_b else 0.0)
+    draw_top = ext_top + (join_overlap if side_t else 0.0)
     sx_left = ext_left / depth_x
     sx_right = ext_right / depth_x
     sy_bottom = ext_bottom / depth_y
@@ -8151,24 +8296,24 @@ def _rectangle_vector_bleed_commands(
     dst_top = out_h - ext_top
 
     # Four sides, excluding corner squares.
-    place(0.0, ext_bottom, ext_left, out_h - ext_bottom - ext_top,
+    place(0.0, ext_bottom, draw_left, out_h - ext_bottom - ext_top,
           sx_left, 1.0, -sx_left * src_left, y_identity_shift)
-    place(dst_right, ext_bottom, ext_right, out_h - ext_bottom - ext_top,
+    place(out_w - draw_right, ext_bottom, draw_right, out_h - ext_bottom - ext_top,
           sx_right, 1.0, dst_right - sx_right * src_right, y_identity_shift)
-    place(ext_left, 0.0, out_w - ext_left - ext_right, ext_bottom,
+    place(ext_left, 0.0, out_w - ext_left - ext_right, draw_bottom,
           1.0, sy_bottom, x_identity_shift, -sy_bottom * src_bottom)
-    place(ext_left, dst_top, out_w - ext_left - ext_right, ext_top,
+    place(ext_left, out_h - draw_top, out_w - ext_left - ext_right, draw_top,
           1.0, sy_top, x_identity_shift, dst_top - sy_top * src_top)
 
     # Four corners. Keeping them as vector form draws preserves ICC/spot color.
     # ``place`` tự bỏ qua khi w/h <= 0 → cạnh tắt (ext = 0) không sinh góc.
-    place(0.0, 0.0, ext_left, ext_bottom,
+    place(0.0, 0.0, draw_left, draw_bottom,
           sx_left, sy_bottom, -sx_left * src_left, -sy_bottom * src_bottom)
-    place(dst_right, 0.0, ext_right, ext_bottom,
+    place(out_w - draw_right, 0.0, draw_right, draw_bottom,
           sx_right, sy_bottom, dst_right - sx_right * src_right, -sy_bottom * src_bottom)
-    place(0.0, dst_top, ext_left, ext_top,
+    place(0.0, out_h - draw_top, draw_left, draw_top,
           sx_left, sy_top, -sx_left * src_left, dst_top - sy_top * src_top)
-    place(dst_right, dst_top, ext_right, ext_top,
+    place(out_w - draw_right, out_h - draw_top, draw_right, draw_top,
           sx_right, sy_top, dst_right - sx_right * src_right, dst_top - sy_top * src_top)
 
     return commands, bite_left, bite_right, bite_bottom, bite_top
@@ -8715,12 +8860,69 @@ class StickerEngine:
         page_in = None
         doc_in_pike = None
         doc_out = None
+        canonical_input_path = None
+        canonical_input_is_temp = False
         try:
             debug_step = "Open Original PDF"
+            if _page_subset is None:
+                # ROTATE (feedback 2026-08-25 §STICKER.ROT1): pdf-lib materialize
+                # thao tác xoay bằng `/Rotate`. PDFium nhìn khổ đã xoay, nhưng
+                # CropBox/as_form_xobject vẫn ở hệ thô; nếu không bake trước thì
+                # canvas và Form lệch 90°, làm mất nội dung và sinh mảng trắng.
+                debug_step = "Canonicalize Page Rotation"
+                canonical_input_path, canonical_input_is_temp = (
+                    canonicalize_page_space_file(
+                        input_path,
+                        f"sticker-{os.getpid()}",
+                    )
+                )
+                input_path = canonical_input_path
+
             with pdfium_guard():
                 doc_in_pdfium = pdfium.PdfDocument(input_path)
                 pdfium_page_count = len(doc_in_pdfium)
             doc_in_pike = pikepdf.Pdf.open(input_path)
+            # COLOR (audit 2026-08-24 §BCOLOR.02): nguồn CMYK/DeviceN không ICC
+            # không có đủ provenance để dựng lại plate màu. Với bù xén raster,
+            # dùng render PDFium RGB chung cho artwork và bleed để tránh mixed-space seam.
+            source_color_provenance = describe_pdf_color_provenance(doc_in_pike)
+            unprofiled_process_color_fallback = (
+                source_color_provenance.get("profile_state")
+                in {"untagged-device-cmyk", "malformed"}
+                and bool(
+                    source_color_provenance.get("has_device_cmyk")
+                    or source_color_provenance.get("has_devicen")
+                )
+                and not bool(source_color_provenance.get("has_embedded_cmyk_profile"))
+            )
+            if unprofiled_process_color_fallback:
+                logger.warning(
+                    "[STICKER] %s: nguồn CMYK/DeviceN thiếu ICC; giữ bleed RGB "
+                    "theo render PDFium để tránh seam màu",
+                    (
+                        COLOR_DEVICEN_FALLBACK_WARNING
+                        if source_color_provenance.get("has_devicen")
+                        else COLOR_DEVICE_CMYK_FALLBACK_WARNING
+                    ),
+                )
+            color_warning_codes = [
+                str(item)
+                for item in source_color_provenance.get("warnings", [])
+                if item
+            ]
+            if (
+                unprofiled_process_color_fallback
+                and source_color_provenance.get("has_device_cmyk")
+                and not source_color_provenance.get("has_devicen")
+                and COLOR_DEVICE_CMYK_FALLBACK_WARNING not in color_warning_codes
+            ):
+                color_warning_codes.append(COLOR_DEVICE_CMYK_FALLBACK_WARNING)
+            if (
+                source_color_provenance.get("has_devicen")
+                and unprofiled_process_color_fallback
+                and COLOR_DEVICEN_FALLBACK_WARNING not in color_warning_codes
+            ):
+                color_warning_codes.append(COLOR_DEVICEN_FALLBACK_WARNING)
             invalid_pages = sorted(page for page in selection_targets if page >= pdfium_page_count)
             if invalid_pages:
                 raise ValueError(
@@ -8832,6 +9034,9 @@ class StickerEngine:
                     alpha_path_overrides=alpha_path_overrides,
                     approved_contour_overrides=approved_contour_overrides,
                 )
+                if isinstance(parallel_meta, dict):
+                    parallel_meta["color_provenance"] = dict(source_color_provenance)
+                    parallel_meta["color_warnings"] = list(color_warning_codes)
                 return parallel_success, parallel_meta
 
             debug_step = "Create Output PDF"
@@ -8858,10 +9063,31 @@ class StickerEngine:
             effective_offset_mm = offset_mm - (ALPHA_CONTOUR_INSET_MM if alpha_contour_mode else 0.0)
             offset_pts = effective_offset_mm * mm_to_pts
             bleed_pts = bleed_mm * mm_to_pts
+            # COLOR (audit 2026-08-24 §BCOLOR.08): hỗn hợp DeviceN + CMYK
+            # không có ICC không thể flatten mà vẫn giữ màu nội dung gốc. Với
+            # đúng ca này, kéo dải bằng Form/vector cùng colorspace; edge bite
+            # vẫn giữ để mối nối ngoài mép không hở.
+            safe_vector_process_color_fallback = bool(
+                unprofiled_process_color_fallback
+                and source_color_provenance.get("has_devicen")
+                and source_color_provenance.get("has_device_cmyk")
+            )
             use_vector_rectangle_bleed = (
-                rectangle_mode and bleed_color_type == "image" and bleed_pts > 0
+                rectangle_mode
+                and bleed_pts > 0
+                and (bleed_color_type == "image" or safe_vector_process_color_fallback)
+            )
+            # Nguồn thiếu ICC nhưng không thuộc fallback vector an toàn vẫn flatten
+            # trajectory/inpaint trên cùng lưới RGB; mixed DeviceN+CMYK đã được
+            # loại ở trên để không đổi màu phần nội dung chính.
+            flatten_unprofiled_process_color = bool(
+                unprofiled_process_color_fallback
+                and rectangle_mode
+                and bleed_color_type in {"trajectory", "inpaint"}
+                and not use_vector_rectangle_bleed
             )
             srgb_colorspace = None
+            srgb_output_intent_embedded = False
             
             all_pages_meta = []
             any_dieline_found = False
@@ -9395,6 +9621,13 @@ class StickerEngine:
                 bleed_ring = None
                 sticker_footprint = None
                 is_bleed_cmyk = False
+                flattened_page_rgb = None
+                flattened_img_name = None
+                flattened_img_w_pt = 0.0
+                flattened_img_h_pt = 0.0
+                flattened_shift_x = 0.0
+                flattened_shift_y = 0.0
+                color_render_strategy = "vector-original"
                 bleed_quality_warning = None
                 
                 # ============================================================
@@ -10485,10 +10718,30 @@ class StickerEngine:
                                 if bleed_color_type == "trajectory"
                                 else _rectangle_smooth_color_fill
                             )
+                            # COLOR (audit 2026-08-24 §BCOLOR.06): edge bite chỉ
+                            # điều khiển vùng chồng mí/clip. Với nguồn CMYK/DeviceN
+                            # thiếu ICC, fill phải chạy trên toàn mép PDFium để
+                            # không dịch texture khỏi lưới flatten; pixel neo ở
+                            # helper bên dưới vẫn khớp đúng ranh trim.
+                            fill_edge_bite_px = (
+                                0 if unprofiled_process_color_fallback
+                                else edge_color_inset_px
+                            )
                             bleed_colors = fill_rectangle(
-                                img_native, pad_b, edge_color_inset_px, px_per_mm,
+                                img_native, pad_b, fill_edge_bite_px, px_per_mm,
                                 pads=(pad_left, pad_right, pad_bottom, pad_top),
                             )
+                            if unprofiled_process_color_fallback:
+                                # COLOR (audit 2026-08-24 §BCOLOR.05): nguồn DeviceN
+                                # thiếu ICC ưu tiên điểm nối liên tục trên PDFium/RIP;
+                                # giữ texture quỹ đạo, không làm phẳng màu ở mép.
+                                bleed_colors = _enforce_rectangle_edge_continuity(
+                                    bleed_colors,
+                                    img_native,
+                                    pad_b,
+                                    edge_color_inset_px,
+                                    pads=(pad_left, pad_right, pad_bottom, pad_top),
+                                )
                             smooth_seconds = time.perf_counter() - smooth_started
                         elif bleed_color_type == "inpaint":
                             # 'Làm mượt thông minh' — inpaint giới hạn theo band (tile + bỏ ô ruột).
@@ -10522,11 +10775,10 @@ class StickerEngine:
                         # (nearest/inpaint/solid fill) → dùng trực tiếp, cạnh chỉ còn màu↔màu.
                         bleed_rgb = bleed_colors
 
-                        # image/inpaint được lấy từ bản render RGB của chính artwork, vì
-                        # vậy phải giữ DeviceRGB để bảo toàn đúng các mẫu màu đã lấy ở mép.
-                        # Không thể khôi phục CMYK gốc bằng C=255-R, M=255-G, Y=255-B,
-                        # K=0: phép đó làm mất K/ICC/spot alternate và gây lệch màu khi RIP.
-                        # Chỉ nhánh solid có 4 kênh do người dùng nhập mới là DeviceCMYK.
+                        # Sampled bleed giữ ICCBased sRGB vì đó là bytes PDFium đã
+                        # render từ chính artwork. Không tự đổi ngược RGB→CMYK khi
+                        # nguồn thiếu ICC: phép nghịch không biết black generation/
+                        # TAC/profile nên tạo seam màu rõ hơn bản gốc.
 
                         # LOSSLESS (zlib/FlateDecode) cho CẢ RGB lẫn CMYK. TRƯỚC đây RGB
                         # lưu JPEG q90 → ringing (Gibbs) ở mọi ranh giới tương phản cao:
@@ -10542,7 +10794,7 @@ class StickerEngine:
                             # skip it without changing any visible colour.
                             perimeter_px = pad_max + edge_color_inset_px + _tuck_px + 2
                             bleed_rgb_for_storage = _sparsify_rectangle_bleed(
-                                bleed_rgb, bleed_ring, perimeter_px
+                                bleed_rgb_for_storage, bleed_ring, perimeter_px
                             )
                             compression_level = 1
 
@@ -10571,15 +10823,94 @@ class StickerEngine:
                             except Exception as e:
                                 logger.warning(">>> BLEED DEBUG FAILED: %s", e)
 
+                # COLOR (audit 2026-08-24 §BCOLOR.04): với nguồn CMYK/DeviceN
+                # không ICC, ghép Form gốc cạnh bleed RGB vẫn tạo seam ở viewer.
+                # Flatten trên đúng lưới render hiện tại để cả artwork và bleed
+                # đi qua một ICCBased RGB image duy nhất.
+                if (
+                    flatten_unprofiled_process_color
+                    and bleed_stream_data
+                    and bleed_rgb is not None
+                    and bleed_ring is not None
+                    and not is_bleed_cmyk
+                    and not selection_page_mode
+                ):
+                    flattened_page_rgb = _compose_rgb_flattened_page(
+                        padded_img,
+                        bleed_rgb,
+                        bleed_ring,
+                    )
+                    if flattened_page_rgb is not None:
+                        if srgb_colorspace is None:
+                            srgb_colorspace = _make_srgb_colorspace(doc_out)
+                        if not srgb_output_intent_embedded:
+                            # COLOR (audit 2026-08-24 §BCOLOR.07): ảnh flatten
+                            # là sRGB hoàn chỉnh; khai báo OutputIntent để viewer/RIP
+                            # không tự diễn giải lại bytes RGB theo profile mặc định.
+                            srgb_output_intent_embedded = embed_srgb_output_intent(
+                                doc_out, replace_existing=True
+                            )
+                        flattened_stream = pikepdf.Stream(
+                            doc_out,
+                            zlib.compress(flattened_page_rgb.tobytes(), 1),
+                        )
+                        flattened_stream.Type = pikepdf.Name.XObject
+                        flattened_stream.Subtype = pikepdf.Name.Image
+                        flattened_stream.Width = flattened_page_rgb.shape[1]
+                        flattened_stream.Height = flattened_page_rgb.shape[0]
+                        flattened_stream.ColorSpace = srgb_colorspace
+                        flattened_stream.BitsPerComponent = 8
+                        flattened_stream.Filter = pikepdf.Name.FlateDecode
+                        flattened_stream.Interpolate = True
+                        flattened_img_name = page_out.add_resource(
+                            flattened_stream,
+                            pikepdf.Name.XObject,
+                        )
+                        flattened_img_w_pt = (
+                            flattened_page_rgb.shape[1] / self.scale
+                        )
+                        flattened_img_h_pt = (
+                            flattened_page_rgb.shape[0] / self.scale
+                        )
+                        flattened_content_origin_x = (
+                            crop_x0 if selection_page_mode else exp_left
+                        )
+                        flattened_content_origin_y = (
+                            crop_y0 if selection_page_mode else exp_bottom
+                        )
+                        flattened_shift_x = (
+                            flattened_content_origin_x
+                            - (pad_left / self.scale)
+                        )
+                        flattened_shift_y = (
+                            flattened_content_origin_y
+                            - (pad_bottom / self.scale)
+                        )
+                        color_render_strategy = "flattened-rgb"
+                        logger.info(
+                            "[STICKER] màu flatten RGB trang %d: %dx%d "
+                            "(nguồn DeviceCMYK thiếu ICC)",
+                            page_idx + 1,
+                            flattened_page_rgb.shape[1],
+                            flattened_page_rgb.shape[0],
+                        )
+
                 # One source Form XObject is reused by the vector bleed strips and
                 # by the original artwork layer. Its resources retain CMYK/ICC/spot.
                 src_xobj_name = None
-                if not selection_page_mode:
+                if not selection_page_mode and flattened_img_name is None:
                     src_xobj = page_in_pike.as_form_xobject()
                     src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
 
                 page_content_stream = []
                 sampled_bleed_overlay_stream = []
+                # COLOR (audit 2026-08-25 §BCOLOR.09): mixed DeviceN+CMYK
+                # thiếu ICC phải vẽ dải Form sau artwork để không lộ hairline
+                # do hai CTM/anti-alias khác nhau ở ranh trim.
+                vector_bleed_after_artwork = bool(
+                    use_vector_rectangle_bleed and safe_vector_process_color_fallback
+                )
+                vector_ops = []
                 vector_bite_left = 0.0
                 vector_bite_right = 0.0
                 vector_bite_bottom = 0.0
@@ -10602,11 +10933,17 @@ class StickerEngine:
                         sample_depth_pts=72.0 / max(1, self.dpi),
                         sample_inset_pts=max(0.0, edge_sample_inset_mm * mm_to_pts),
                         sides=bleed_sides_resolved,
+                        join_overlap_pts=(
+                            max(0.25, min(0.5, 72.0 / max(1, self.dpi)))
+                            if vector_bleed_after_artwork
+                            else 0.0
+                        ),
                     )
-                    page_content_stream.extend(vector_ops)
+                    if not vector_bleed_after_artwork:
+                        page_content_stream.extend(vector_ops)
 
                 # LAYER 1 (BOTTOM): Bleed color with SMask
-                if bleed_stream_data:
+                if bleed_stream_data and flattened_img_name is None:
                     img_w_pt = float(img_w) / self.scale
                     img_h_pt = float(img_h) / self.scale
                     
@@ -10767,6 +11104,25 @@ class StickerEngine:
                     # QUALITY (audit 2026-07-28 §BX.5): phủ choke màu lấy mẫu lên
                     # dải mép rất hẹp sau artwork để che halo/AA trắng của nguồn.
                     page_content_stream.extend(sampled_bleed_overlay_stream)
+                if vector_bleed_after_artwork and vector_ops:
+                    # Vẽ sau Form gốc; overlap nhỏ đã khóa kín hairline nhưng không
+                    # đổi footprint, bleed_mm hay edge_bite của người dùng.
+                    page_content_stream.extend(vector_ops)
+
+                if flattened_img_name is not None:
+                    # Bỏ toàn bộ Form CMYK/bleed SMask vừa dựng ở trên: ảnh flatten
+                    # đã chứa đúng cả hai lớp trên cùng lưới RGB. Giữ stream CUT
+                    # phía dưới chạy bình thường.
+                    page_content_stream = [
+                        "q",
+                        (
+                            f"{flattened_img_w_pt:.4f} 0 0 "
+                            f"{flattened_img_h_pt:.4f} "
+                            f"{flattened_shift_x:.4f} {flattened_shift_y:.4f} cm"
+                        ),
+                        f"{str(flattened_img_name)} Do",
+                        "Q",
+                    ]
 
 
 
@@ -10857,7 +11213,10 @@ class StickerEngine:
                     page_out.Resources.ColorSpace = pikepdf.Dictionary()
                 page_out.Resources.ColorSpace.CutContour = cs_arr
                 
-                page_meta = {"recon": recon_meta}
+                page_meta = {
+                    "recon": recon_meta,
+                    "color_render_strategy": color_render_strategy,
+                }
                 if dieline_poly is not None and not getattr(dieline_poly, 'is_empty', True):
                     any_dieline_found = True
                     minx, miny, maxx, maxy = dieline_poly.bounds
@@ -10970,6 +11329,10 @@ class StickerEngine:
                     else:
                         _conf = None
                     page_meta = {
+                        # COLOR (audit 2026-08-24 §BCOLOR.04): giữ chiến lược
+                        # render đã chọn ở đầu trang; trước đây khối metadata
+                        # hình học ghi đè mất cờ này nên khó kiểm chứng artifact.
+                        "color_render_strategy": color_render_strategy,
                         "contour_source": (
                             approved_contour_source
                             if approved_contour_page
@@ -11108,6 +11471,17 @@ class StickerEngine:
             if not final_meta and len(all_pages_meta) > 0 and all_pages_meta[0]:
                 final_meta = all_pages_meta[0].copy()
             final_meta["pages"] = all_pages_meta
+            final_meta["color_provenance"] = dict(source_color_provenance)
+            final_meta["color_warnings"] = list(color_warning_codes)
+            final_meta["color_render_strategy"] = (
+                "flattened-rgb"
+                if any(
+                    isinstance(page, dict)
+                    and page.get("color_render_strategy") == "flattened-rgb"
+                    for page in all_pages_meta
+                )
+                else "vector-original"
+            )
             if rectangle_mode:
                 # QUALITY (feedback 2026-08-19 §BLEED-COLOR.2): Xén vuông góc
                 # phải báo đúng mode đã chạy; không được âm thầm đổi lựa chọn của
@@ -11170,8 +11544,21 @@ class StickerEngine:
                 try: doc_out.close()
                 except Exception: pass
 
+            if canonical_input_is_temp and canonical_input_path:
+                try:
+                    os.remove(canonical_input_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    logger.warning(
+                        "[STICKER] không xoá được file chuẩn hoá trang %s: %s",
+                        canonical_input_path,
+                        error,
+                    )
+
     def _run_sticker_chunks(
         self, args_list, n_workers: int, use_pool: bool, spill_dir: str | None = None
+
     ):
         """Chạy các chunk sticker: in-process tuần tự hoặc ProcessPool.
 
@@ -11532,6 +11919,17 @@ class StickerEngine:
         if len(all_pages_meta) > 0 and all_pages_meta[0]:
             final_meta = all_pages_meta[0].copy()
         final_meta["pages"] = all_pages_meta
+        # COLOR (audit 2026-08-24 §BCOLOR.04): worker con chạy flatten độc lập
+        # theo từng trang; tổng hợp cờ để API phản ánh đúng artifact cuối.
+        final_meta["color_render_strategy"] = (
+            "flattened-rgb"
+            if any(
+                isinstance(page, dict)
+                and page.get("color_render_strategy") == "flattened-rgb"
+                for page in all_pages_meta
+            )
+            else "vector-original"
+        )
         if kw.get("rectangle_mode"):
             final_meta["bleed_color_mode_requested"] = kw.get("bleed_color_type")
             final_meta["bleed_color_mode_applied"] = kw.get("bleed_color_type")

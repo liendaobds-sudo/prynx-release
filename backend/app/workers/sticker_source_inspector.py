@@ -6,7 +6,7 @@ không tạo mask và không thay đổi hình học nguồn.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 import math
 from pathlib import Path
@@ -19,6 +19,7 @@ from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
 
 from app.core.pdfium_lock import pdfium_guard
 from app.core.sticker_background import has_meaningful_alpha
+from app.core.color_provenance import describe_color_provenance
 
 
 StickerSourceKind = Literal["pdf", "raster"]
@@ -102,6 +103,9 @@ class StickerSourceInspection:
     pages: tuple[StickerSourcePageInspection, ...]
     warnings: tuple[str, ...]
     preview: Image.Image
+    # COLOR (audit 2026-08-24 §BCOLOR.03): giữ provenance từ file gốc qua
+    # session; không tự gán profile cho DeviceCMYK không có OutputIntent.
+    color_provenance: dict[str, object] = field(default_factory=dict)
 
     def to_manifest(self) -> dict[str, object]:
         return {
@@ -133,6 +137,7 @@ class StickerSourceInspection:
             "cut_contour_count": self.cut_contour_count,
             "pages": [page.to_manifest() for page in self.pages],
             "warnings": list(self.warnings),
+            "color_provenance": dict(self.color_provenance),
         }
 
 
@@ -296,6 +301,7 @@ def _simple_background_confidence(preview: Image.Image) -> float:
 
 
 def _inspect_raster(source_path: str) -> StickerSourceInspection:
+    color_provenance = describe_color_provenance(source_path)
     try:
         with py_warnings.catch_warnings():
             py_warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -343,6 +349,7 @@ def _inspect_raster(source_path: str) -> StickerSourceInspection:
         warnings.append("non-square-dpi")
     if dpi is None:
         warnings.append("missing-dpi")
+    warnings.extend(str(item) for item in color_provenance.get("warnings", []) if item)
     page = StickerSourcePageInspection(
         page_number=1,
         width_mm=physical_width_mm,
@@ -373,10 +380,12 @@ def _inspect_raster(source_path: str) -> StickerSourceInspection:
         pages=(page,),
         warnings=tuple(warnings),
         preview=preview,
+        color_provenance=color_provenance,
     )
 
 
 def _inspect_pdf(source_path: str) -> StickerSourceInspection:
+    color_provenance = describe_color_provenance(source_path)
     try:
         with pikepdf.Pdf.open(source_path, attempt_recovery=False) as document:
             if len(document.pages) < 1:
@@ -393,6 +402,7 @@ def _inspect_pdf(source_path: str) -> StickerSourceInspection:
         raise StickerSourceInspectionError("Không đọc được cấu trúc PDF nguồn.") from exc
 
     warnings: list[str] = []
+    warnings.extend(str(item) for item in color_provenance.get("warnings", []) if item)
     pages_list: list[StickerSourcePageInspection] = []
     from app.workers.cut_export.cut_layer_extractor import extract_cut_contours
 
@@ -461,6 +471,7 @@ def _inspect_pdf(source_path: str) -> StickerSourceInspection:
         pages=pages,
         warnings=tuple(warnings),
         preview=preview,
+        color_provenance=color_provenance,
     )
 
 

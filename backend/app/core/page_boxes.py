@@ -229,6 +229,251 @@ def _find_nonwhite_content_bbox(
     return bbox, content_pixels
 
 
+def _find_edge_background_content_bbox(
+    arr: np.ndarray,
+    min_area: int,
+) -> tuple[tuple[int, int, int, int], int] | None:
+    """Tìm nội dung sau khi bỏ độc lập các viền màu phẳng nối với từng cạnh.
+
+    UIUX (feedback 2026-08-25 §TRIM.COLOR): màu và độ tin cậy được đo riêng
+    cho từng cạnh. Cạnh không đủ bằng chứng giữ nguyên tuyệt đối; gradient,
+    hoạ tiết hoặc nội dung có ý nghĩa chạm cạnh không bị xén.
+    """
+    import cv2
+
+    if arr.ndim == 2:
+        rgb = np.repeat(arr[:, :, None], 3, axis=2)
+    elif arr.ndim == 3 and arr.shape[2] == 1:
+        rgb = np.repeat(arr[:, :, :1], 3, axis=2)
+    elif arr.ndim == 3 and arr.shape[2] >= 3:
+        rgb = arr[:, :, :3]
+    else:
+        return None
+
+    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+    height, width = rgb.shape[:2]
+    if height < 4 or width < 4:
+        return None
+
+    edge_samples = np.concatenate((
+        rgb[0, :, :3],
+        rgb[-1, :, :3],
+        rgb[1:-1, 0, :3],
+        rgb[1:-1, -1, :3],
+    )).astype(np.int16)
+    overall_background = np.median(edge_samples, axis=0)
+    near_white = bool(np.min(overall_background) >= 240)
+
+    side_edges = {
+        "top": rgb[0, :, :3],
+        "bottom": rgb[-1, :, :3],
+        "left": rgb[:, 0, :3],
+        "right": rgb[:, -1, :3],
+    }
+    side_backgrounds: dict[str, np.ndarray] = {}
+    saw_flat_side = False
+
+    # PERF (audit 2026-08-25 §TRIM.COLOR): viền bốn cạnh cùng màu là ca
+    # phổ biến. Tái dùng label-map đầu tiên để không chạy connectedComponents
+    # bốn lần trên bitmap A4; cạnh khác màu vẫn được phân tích độc lập.
+    cached_color: np.ndarray | None = None
+    cached_tolerance = 0
+    cached_labels: np.ndarray | None = None
+    cached_num_labels = 0
+    cached_backgrounds: dict[tuple[int, ...], np.ndarray] = {}
+    profile_cache: dict[tuple[str, int, int], np.ndarray] = {}
+
+    for side, edge in side_edges.items():
+        edge_length = edge.shape[0]
+        guard = max(1, int(round(edge_length * 0.10)))
+        if edge_length - (2 * guard) < 4:
+            sample_start, sample_stop = 0, edge_length
+        else:
+            sample_start, sample_stop = guard, edge_length - guard
+        samples = edge[sample_start:sample_stop].astype(np.int16)
+        background_rgb = np.median(samples, axis=0)
+        edge_p95 = float(
+            np.percentile(
+                np.max(np.abs(samples - background_rgb), axis=1),
+                95,
+            )
+        )
+        if edge_p95 > 28.0:
+            continue
+        saw_flat_side = True
+
+        tolerance = int(np.clip(round(edge_p95) + 8, 12, 36))
+
+        # Gradient vuông góc có outer-line phẳng nhưng chuyển màu từ từ vào
+        # trong trang. Viền dư thật phải có một bước chuyển đủ dứt khoát.
+        orientation = "horizontal" if side in {"top", "bottom"} else "vertical"
+        profile_key = (orientation, sample_start, sample_stop)
+        base_profile = profile_cache.get(profile_key)
+        if base_profile is None:
+            # PERF (audit 2026-08-25 §TRIM.COLOR): median theo chiều sâu chỉ
+            # cần mẫu phân bố đều; outer-line vẫn được đo đủ pixel ở trên.
+            sample_count = min(33, sample_stop - sample_start)
+            positions = np.linspace(
+                sample_start,
+                sample_stop - 1,
+                num=sample_count,
+                dtype=np.intp,
+            )
+            if orientation == "horizontal":
+                base_profile = np.median(rgb[:, positions, :3], axis=1)
+            else:
+                base_profile = np.median(rgb[positions, :, :3], axis=0)
+            profile_cache[profile_key] = base_profile
+        profile = (
+            base_profile[::-1]
+            if side in {"bottom", "right"}
+            else base_profile
+        )
+        profile_distance = np.max(
+            np.abs(profile.astype(np.float64) - background_rgb),
+            axis=1,
+        )
+        outside = np.flatnonzero(profile_distance > tolerance)
+        if outside.size:
+            transition = int(outside[0])
+            if transition >= 2:
+                recent = profile_distance[max(0, transition - 3):transition + 1]
+                steps = np.abs(np.diff(recent))
+                if steps.size and float(np.max(steps)) < 8.0:
+                    continue
+
+        can_reuse_labels = (
+            cached_labels is not None
+            and cached_color is not None
+            and float(np.max(np.abs(background_rgb - cached_color))) <= 4.0
+            and abs(tolerance - cached_tolerance) <= 4
+        )
+        if can_reuse_labels:
+            labels = cached_labels
+            num_labels = cached_num_labels
+            background_cache = cached_backgrounds
+        else:
+            lower = np.clip(
+                np.ceil(background_rgb - tolerance),
+                0,
+                255,
+            ).astype(np.uint8)
+            upper = np.clip(
+                np.floor(background_rgb + tolerance),
+                0,
+                255,
+            ).astype(np.uint8)
+            candidate = cv2.inRange(
+                rgb,
+                tuple(int(value) for value in lower),
+                tuple(int(value) for value in upper),
+            )
+            num_labels, labels = cv2.connectedComponents(candidate, connectivity=8)
+            if num_labels <= 1:
+                continue
+            background_cache: dict[tuple[int, ...], np.ndarray] = {}
+            if cached_labels is None:
+                cached_color = background_rgb.copy()
+                cached_tolerance = tolerance
+                cached_labels = labels
+                cached_num_labels = num_labels
+                cached_backgrounds = background_cache
+
+        if side == "top":
+            seed_labels = labels[0, sample_start:sample_stop]
+        elif side == "bottom":
+            seed_labels = labels[-1, sample_start:sample_stop]
+        elif side == "left":
+            seed_labels = labels[sample_start:sample_stop, 0]
+        else:
+            seed_labels = labels[sample_start:sample_stop, -1]
+        selected = np.unique(seed_labels)
+        selected = selected[selected != 0]
+        if selected.size == 0:
+            continue
+
+        selected_key = tuple(int(label) for label in selected)
+        side_background = background_cache.get(selected_key)
+        if side_background is None:
+            lookup = np.zeros(num_labels, dtype=bool)
+            lookup[selected] = True
+            side_background = lookup[labels]
+            background_cache[selected_key] = side_background
+        side_backgrounds[side] = side_background
+
+    if not side_backgrounds:
+        # Giữ tương thích với tài liệu trắng cũ chỉ khi không cạnh màu phẳng
+        # nào được nhận. Cạnh đã bị loại vì gradient thì tuyệt đối không fallback.
+        if near_white and not saw_flat_side:
+            return _find_nonwhite_content_bbox(arr, min_area)
+        return None
+
+    active_sides = set(side_backgrounds)
+    foreground: np.ndarray | None = None
+    while active_sides:
+        background = np.zeros((height, width), dtype=bool)
+        for side in active_sides:
+            background |= side_backgrounds[side]
+        foreground = (~background).astype(np.uint8) * 255
+
+        # Dấu in/nét mảnh có component đủ lớn chạm cạnh phải giữ cạnh đó.
+        count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            foreground,
+            connectivity=8,
+        )
+        blocked: set[str] = set()
+        min_contact_depth = max(2, int(np.ceil(np.sqrt(max(1, min_area)))))
+        for side in active_sides:
+            if side == "top":
+                touching = np.unique(labels[0, :])
+                depth_stat = cv2.CC_STAT_HEIGHT
+            elif side == "bottom":
+                touching = np.unique(labels[-1, :])
+                depth_stat = cv2.CC_STAT_HEIGHT
+            elif side == "left":
+                touching = np.unique(labels[:, 0])
+                depth_stat = cv2.CC_STAT_WIDTH
+            else:
+                touching = np.unique(labels[:, -1])
+                depth_stat = cv2.CC_STAT_WIDTH
+            touching = touching[touching != 0]
+            if any(
+                stats[label, cv2.CC_STAT_AREA] >= min_area
+                and stats[label, depth_stat] >= min_contact_depth
+                for label in touching
+                if label < count
+            ):
+                blocked.add(side)
+
+        if not blocked:
+            break
+        active_sides -= blocked
+
+    if not active_sides or foreground is None:
+        return None
+
+    # Tái dùng bộ lọc morphology/component hiện hữu để bỏ noise nhỏ.
+    foreground_on_white = cv2.bitwise_not(foreground)
+    detection = _find_nonwhite_content_bbox(foreground_on_white, min_area)
+    if detection is None:
+        return None
+    (x0, y0, x1, y1), content_pixels = detection
+
+    # Cạnh không được chính detector xác nhận phải giữ nguyên trong hệ pixel
+    # hiển thị; _pixel_bbox_to_cropbox sẽ tự ánh xạ đúng mọi góc /Rotate.
+    if "left" not in active_sides:
+        x0 = 0
+    if "top" not in active_sides:
+        y0 = 0
+    if "right" not in active_sides:
+        x1 = width - 1
+    if "bottom" not in active_sides:
+        y1 = height - 1
+    bbox = (x0, y0, x1, y1)
+    if bbox == (0, 0, width - 1, height - 1):
+        return None
+    return bbox, content_pixels
+
 def _normalise_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list[list[float]]]:
     """Validate and clamp crop rectangles to the page's visible CropBox."""
     if not rects_mm:
@@ -1151,7 +1396,8 @@ class PageBoxesEngine:
 
     def auto_trim(self, file_path: str, pages: list[int] | None = None, margin_mm: float = 0) -> str:
         """
-        Phát hiện lề trắng và set CropBox tự động.
+        Phát hiện viền dư màu phẳng và set CropBox tự động.
+        Màu nền được đo độc lập ở chu vi từng trang; trường hợp mơ hồ giữ nguyên.
         margin_mm: lề bổ sung xung quanh nội dung (mm).
 
         Bền với file thực tế (audit 2026-07-08):
@@ -1210,9 +1456,9 @@ class PageBoxesEngine:
                 # Ngưỡng ~ (0.3mm)^2 ở DPI hiện tại — nhỏ hơn coi là nhiễu.
                 min_side_px = max(2, int(0.3 * PT_PER_MM * DETECT_SCALE))
                 min_area = min_side_px * min_side_px
-                detection = _find_nonwhite_content_bbox(arr, min_area)
+                detection = _find_edge_background_content_bbox(arr, min_area)
                 if detection is None:
-                    continue  # Trang trắng (hoặc chỉ có noise) → bỏ qua, giữ nguyên box
+                    continue  # Trang trống hoặc không có cạnh đủ rõ → giữ nguyên box
                 (x0, y0, x1, y1), content_pixels = detection
 
                 if logger.isEnabledFor(logging.DEBUG):

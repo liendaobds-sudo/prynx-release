@@ -34,8 +34,8 @@ class NupJobStatusResponse(BaseModel):
     """Kết quả `/nup-status/{job_id}`.
 
     Desktop đọc (`lib/processHandlers.ts`): `status`, `progress`, `report`, `error`,
-    `output_path`. Ba mốc thời gian hiện chưa ai đọc nhưng vẫn trả — bỏ đi là thay đổi
-    hợp đồng mà không có lợi ích gì.
+    `output_path`, `artifact_lease`. Ba mốc thời gian hiện chưa ai đọc nhưng vẫn
+    trả — bỏ đi là thay đổi hợp đồng mà không có lợi ích gì.
     """
 
     status: str = Field(description="queued | running | completed | failed | cancelled")
@@ -55,6 +55,10 @@ class NupJobStatusResponse(BaseModel):
         default=None,
         description="CHỈ có khi chạy bản desktop và job đã completed — desktop mở file "
         "trực tiếp trên đĩa thay vì tải lại qua HTTP",
+    )
+    artifact_lease: Optional[str] = Field(
+        default=None,
+        description="Token bí mật để tab claim Working artifact; client không gửi path",
     )
 
 

@@ -13,6 +13,7 @@ Test này khoá hợp đồng: raster hoá thì `last_flatten_warning` phải c�
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pikepdf
@@ -87,7 +88,12 @@ def test_edit_session_route_giu_canh_bao_raster(monkeypatch):
     from app.api.routes import edit as edit_route
 
     warning = "Đã raster hoá 300 DPI RGB; mất vector, Pantone và kênh bế."
-    session = SimpleNamespace(source_fid="fid-nguon")
+    session = SimpleNamespace(
+        source_fid="fid-nguon",
+        lock=threading.RLock(),
+        dirty=True,
+        last_commit_path=None,
+    )
     result = {
         "success": True,
         "output_filename": "flattened.pdf",
@@ -98,6 +104,11 @@ def test_edit_session_route_giu_canh_bao_raster(monkeypatch):
     }
     monkeypatch.setattr(edit_route.edit_session, "get_session", lambda _sid: session)
     monkeypatch.setattr(edit_route.edit_session, "flatten", lambda _session: result)
+    monkeypatch.setattr(
+        edit_route,
+        "_lease_registered_working_file",
+        lambda _path, _fid: "lease-flatten-test",
+    )
     monkeypatch.setattr(edit_route, "_invalidate_object_cache", lambda _fid: None)
 
     response = asyncio.run(
@@ -108,4 +119,5 @@ def test_edit_session_route_giu_canh_bao_raster(monkeypatch):
     )
 
     assert response.warning == warning
+    assert response.artifact_lease == "lease-flatten-test"
     assert response.model_dump()["warning"] == warning

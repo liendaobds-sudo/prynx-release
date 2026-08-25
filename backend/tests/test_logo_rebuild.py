@@ -16,7 +16,7 @@ from PIL import Image, ImageCms
 from app.api.routes import logo_rebuild as logo_route
 from app.core import heavy_job_scheduler as scheduler
 from app.main import app
-from app.schemas.logo_rebuild import LogoRebuildSettings
+from app.schemas.logo_rebuild import LogoNativeMetrics, LogoRebuildSettings
 from app.workers import logo_rebuild as logo_worker
 
 
@@ -125,6 +125,7 @@ def _fake_structured_result(
             "source_nodes": 4,
             "output_nodes": 4,
             "max_error_px": 0.0,
+            "artifact_max_tangent_jump_degrees": 90.0,
             "raster_scale": 4,
             "iou": 1.0,
             "mae": 0.0,
@@ -159,6 +160,28 @@ def test_capabilities_only_expose_approved_mvp_modes(monkeypatch):
     assert payload["auto_color_enabled"] is False
     assert payload["preview_engine_enabled"] is False
     assert payload["supported_formats"] == ["png", "jpeg", "webp"]
+
+
+def test_preflight_palette_uses_heavy_admission_and_memory_reservation(monkeypatch):
+    calls = {}
+
+    async def fake_scheduled(kind, function, *args, **kwargs):
+        calls["kind"] = kind
+        calls["memory_required_mb"] = kwargs.get("memory_required_mb")
+        calls["memory_budget_provider"] = kwargs.get("memory_budget_provider")
+        return function(*args)
+
+    monkeypatch.setattr(logo_route, "run_scheduled_in_threadpool", fake_scheduled)
+    with TestClient(app) as client:
+        response = _preflight(
+            client,
+            settings_json='{"mode":"fixed_palette","palette":["#ff0000"]}',
+        )
+
+    assert response.status_code == 200, response.text
+    assert calls["kind"] == "logo-rebuild"
+    assert calls["memory_required_mb"] >= 64.0
+    assert calls["memory_budget_provider"] is logo_worker.logo_memory_budget_mb
 
 
 def test_fixed_palette_preflight_normalizes_palette_and_reports_source():
@@ -206,6 +229,96 @@ def test_explicit_smoothing_from_existing_project_is_preserved():
         {"mode": "fixed_palette", "palette": ["#123456"], "smoothing": 1.0}
     )
     assert settings.smoothing == 1.0
+
+
+
+def test_curve_presets_are_explicit_and_legacy_smoothing_remains_compatible():
+    for preset in ("automatic", "faithful", "balanced", "trajectory_completion"):
+        settings = LogoRebuildSettings.model_validate(
+            {"mode": "monochrome", "curve_preset": preset}
+        )
+        assert settings.curve_preset == preset
+    legacy = LogoRebuildSettings.model_validate(
+        {"mode": "fixed_palette", "palette": ["#123456"], "smoothing": 0.37}
+    )
+    assert legacy.curve_preset is None
+    assert legacy.smoothing == 0.37
+    with pytest.raises(ValueError):
+        LogoRebuildSettings.model_validate(
+            {
+                "mode": "monochrome",
+                "engine": "vtracer",
+                "curve_preset": "automatic",
+            }
+        )
+
+
+def test_geometry_metrics_accept_new_telemetry_and_reject_invalid_ranges():
+    metrics = LogoNativeMetrics(
+        layer_count=1,
+        component_count=1,
+        outer_count=1,
+        hole_count=0,
+        source_nodes=100,
+        output_nodes=4,
+        max_error_px=0.2,
+        max_symmetric_distance_px=0.2,
+        line_segments=0,
+        cubic_segments=4,
+        circle_count=1,
+        ellipse_count=0,
+        max_smooth_tangent_jump_degrees=0.0,
+        artifact_max_tangent_jump_degrees=0.0,
+        raster_scale=4,
+        iou=0.999,
+        mae=0.001,
+    )
+    assert metrics.circle_count == 1
+    assert metrics.output_nodes == 4
+    with pytest.raises(ValueError):
+        LogoNativeMetrics(
+            layer_count=1,
+            component_count=1,
+            outer_count=1,
+            hole_count=0,
+            source_nodes=100,
+            output_nodes=4,
+            max_error_px=0.2,
+            max_smooth_tangent_jump_degrees=181.0,
+            raster_scale=4,
+            iou=0.999,
+            mae=0.001,
+        )
+
+
+def test_capabilities_advertise_curve_presets_only_when_native_supports_them(monkeypatch):
+    class FakeNative:
+        logo_vectorize_structured_rgba = staticmethod(lambda *_args, **_kwargs: None)
+
+        @staticmethod
+        def logo_vectorizer_info():
+            return {
+                **_fake_native_info(),
+                "curve_presets": [
+                    "automatic",
+                    "faithful",
+                    "balanced",
+                    "trajectory_completion",
+                ],
+                "geometry_metrics_version": 1,
+            }
+
+    monkeypatch.setattr(logo_worker, "_load_native_module", lambda: FakeNative)
+    capabilities = logo_worker.logo_vectorizer_capabilities()
+
+    assert capabilities is not None
+    assert capabilities["curve_presets"] == [
+        "automatic",
+        "faithful",
+        "balanced",
+        "trajectory_completion",
+    ]
+    assert capabilities["geometry_metrics_version"] == 1
 
 
 def test_vtracer_legacy_requires_explicit_dev_flag(monkeypatch):
@@ -702,6 +815,30 @@ def test_small_logo_upscale_only_reduces_target_on_low_memory(
     assert min(target) == expected_shortest_side
 
 
+def test_curve_preset_keeps_core_source_resolution_and_preserves_legacy_upscale(
+    monkeypatch,
+):
+    """Preset mới đo sai số theo px nguồn; pipeline cũ vẫn giữ upscale lịch sử."""
+
+    monkeypatch.setattr(
+        logo_worker, "read_memory_status_mb", lambda: (32 * 1024.0, 24 * 1024.0)
+    )
+    source = _monochrome_logo_bytes((128, 128))
+
+    assert logo_worker._requested_logo_work_size(
+        source,
+        LogoRebuildSettings(mode="monochrome", curve_preset="automatic"),
+    ) == (128, 128)
+    assert logo_worker._requested_logo_work_size(
+        source,
+        LogoRebuildSettings(mode="monochrome"),
+    ) == (1200, 1200)
+    assert logo_worker._requested_logo_work_size(
+        source,
+        LogoRebuildSettings(mode="monochrome", engine="vtracer"),
+    ) == (1200, 1200)
+
+
 def test_small_logo_uses_nearest_upscale_before_trace(monkeypatch):
     monkeypatch.setattr(
         logo_worker, "read_memory_status_mb", lambda: (32 * 1024.0, 24 * 1024.0)
@@ -791,6 +928,7 @@ def test_worker_scales_despeckle_area_with_upscale(
     assert result.preprocess_hash == "b" * 64
     assert result.native_metrics is not None
     assert result.native_metrics["iou"] == 1.0
+    assert result.native_metrics["artifact_max_tangent_jump_degrees"] == 90.0
     assert result.status == expected_status
     assert any("4 px" in warning and "8 px" in warning for warning in result.warnings)
     has_pending_despeckle = any(
@@ -849,6 +987,41 @@ def test_small_source_mark_survival_depends_on_despeckle_real_engine(
         f"lr401-mark-{despeckle_size_px}",
     )
     assert ("#d71920" in result.svg) is expect_mark_kept
+
+
+def test_curve_preset_reconstructs_small_raster_circle_through_real_worker():
+    """Regression 2026-08-25: upscale NEAREST không được biến circle thành bậc thang."""
+
+    pytest.importorskip("pdfcompare_native")
+    width = height = 128
+    radius = 44.0
+    source = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    pixels = source.load()
+    for y in range(height):
+        for x in range(width):
+            dx = (x + 0.5 - width * 0.5) / radius
+            dy = (y + 0.5 - height * 0.5) / radius
+            if dx * dx + dy * dy <= 1.0:
+                pixels[x, y] = (0, 0, 0, 255)
+
+    result = logo_worker.process_logo_preview(
+        _image_bytes(source),
+        LogoRebuildSettings(
+            mode="monochrome",
+            curve_preset="automatic",
+            despeckle_size_px=0,
+            physical_width_mm=32.0,
+            physical_height_mm=32.0,
+        ),
+        "curve-preset-circle-real-worker",
+    )
+
+    assert (result.width_px, result.height_px) == (128, 128)
+    assert result.native_metrics is not None
+    assert result.native_metrics["output_nodes"] == 4
+    assert result.native_metrics["line_segments"] == 0
+    assert result.native_metrics["cubic_segments"] == 4
+    assert result.native_metrics["circle_count"] == 1
 
 
 def test_structured_contract_error_never_falls_back_to_vtracer(monkeypatch):
@@ -1003,6 +1176,44 @@ def test_cmyk_icc_transform_runs_before_rgb_conversion(monkeypatch):
     assert warnings == []
 
 
+def test_crop_dimensions_and_mm_use_quantized_pixel_box():
+    """Regression §LR5.05: UI/worker dùng cùng box 106×60 cho crop 33% trên 320×180."""
+
+    settings = LogoRebuildSettings.model_validate({
+        "mode": "fixed_palette",
+        "palette": ["#ff0000"],
+        "crop": {"x": 0.0, "y": 0.0, "width": 0.33, "height": 0.33},
+        "physical_width_mm": 10.0,
+        "physical_height_mm": round(10.0 * 60.0 / 106.0, 6),
+    })
+    assert logo_worker._target_dimensions(320, 180, settings) == (106, 60)
+    prepared = logo_worker.prepare_logo_image(
+        _encoded_image("PNG", size=(320, 180)),
+        settings,
+        planned_size=(106, 60),
+        memory_warnings=[],
+    )
+    assert (prepared.width_px, prepared.height_px) == (106, 60)
+
+
+def test_tiny_mm_rounding_stays_within_ratio_contract():
+    """Regression §LR5.05: cặp mm rất nhỏ vẫn qua writer tolerance sau UI rounding."""
+
+    settings = LogoRebuildSettings(
+        mode="fixed_palette",
+        palette=["#ff0000"],
+        physical_width_mm=0.1,
+        physical_height_mm=round(0.1 * 100.0 / 314.0, 6),
+    )
+    prepared = logo_worker.prepare_logo_image(
+        _encoded_image("PNG", size=(314, 100)),
+        settings,
+        planned_size=(314, 100),
+        memory_warnings=[],
+    )
+    assert (prepared.width_px, prepared.height_px) == (314, 100)
+
+
 def test_worker_crops_rgba_and_passes_confirmed_palette(monkeypatch):
     calls = {}
 
@@ -1074,6 +1285,22 @@ def test_worker_crops_rgba_and_passes_confirmed_palette(monkeypatch):
         "smoothing": 0.0,
     }
     assert "worker-crop-test" not in logo_worker._ACTIVE_JOBS
+
+
+def test_partial_alpha_is_explicitly_flagged_for_review():
+    """Regression §LR5.03: alpha 1–254 không được coi là artifact opaque đã đạt."""
+
+    source = Image.new("RGBA", (16, 16), (255, 0, 0, 0))
+    source.putpixel((8, 8), (255, 0, 0, 1))
+    source.putpixel((9, 8), (255, 0, 0, 255))
+    prepared = logo_worker.prepare_logo_image(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="fixed_palette", palette=["#ff0000"]),
+        planned_size=(16, 16),
+        memory_warnings=[],
+    )
+    assert prepared.partial_alpha is True
+    assert any("alpha bán trong suốt" in warning for warning in prepared.warnings)
 
 
 def test_transparent_monochrome_preserves_solid_fill_and_ignores_illumination(monkeypatch):
@@ -1159,6 +1386,32 @@ def test_monochrome_detects_background_polarity_and_light_ink(
     assert bitmap.getpixel((0, 0)) == (0, 0, 0, 0)
     assert bitmap.getpixel((32, 32)) == (0, 0, 0, 255)
     assert any("nền sáng/tối" in warning for warning in prepared.warnings)
+
+
+def test_monochrome_edge_touch_is_flagged_for_manual_review(monkeypatch):
+    """Regression §LR5.04: khung mực chạm biên không bị đảo âm thầm."""
+
+    monkeypatch.setattr(logo_worker, "read_memory_status_mb", lambda: (None, None))
+    monkeypatch.setattr(
+        logo_worker, "_upscale_target_dimensions", lambda width, height: (width, height)
+    )
+    source = Image.new("RGB", (100, 100), (255, 255, 255))
+    for x in range(100):
+        source.putpixel((x, 0), (0, 0, 0))
+        source.putpixel((x, 99), (0, 0, 0))
+    for y in range(100):
+        source.putpixel((0, y), (0, 0, 0))
+        source.putpixel((99, y), (0, 0, 0))
+
+    prepared = logo_worker.prepare_logo_image(
+        _image_bytes(source),
+        LogoRebuildSettings(mode="monochrome"),
+    )
+    bitmap = Image.frombytes("RGBA", (prepared.width_px, prepared.height_px), prepared.rgba)
+    assert prepared.polarity_ambiguous is True
+    assert bitmap.getpixel((0, 0))[3] == 255
+    assert bitmap.getpixel((50, 50))[3] == 0
+    assert any("chạm biên ảnh" in warning for warning in prepared.warnings)
 
 
 def test_monochrome_empty_svg_is_returned_as_rejected(monkeypatch):

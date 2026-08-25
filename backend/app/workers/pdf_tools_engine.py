@@ -617,6 +617,12 @@ def resize_pages_smart(source_path: str, output_path: str,
         is_dynamic_background_mode(bg_fill_mode)
         and scale_mode in {"fit", "center_no_scale"}
     )
+    # RESIZE (audit 2026-08-24 §RZ-STATE): state cũ có thể còn bật
+    # resize_by_content dù UI đã ẩn vùng nền/checkbox không còn hiển thị khi
+    # đổi sang Ép bóp méo hoặc mở PDF opaque khác. Chỉ engine nền có vùng dư mới
+    # xử lý được cờ này; stretch/fill phải quay về đường hình học thuần,
+    # không dựng nền ẩn.
+    content_aware_scale = scale_mode in {"fit", "center_no_scale"}
     # PERF (audit 2026-08-22 §RESIZE.1): đổi hình học thuần không dùng kết quả
     # transparency, trong khi detector phải parse toàn bộ content stream/Form.
     # Chỉ quét khi khổ/nền động cần biết trang alpha, hoặc auto/raster phải
@@ -624,7 +630,7 @@ def resize_pages_smart(source_path: str, output_path: str,
     needs_transparency_scan = (
         dynamic_background
         or variable_page_size
-        or bool(resize_by_content)
+        or (bool(resize_by_content) and content_aware_scale)
         or (target_dpi > 0 and mode in {"auto", "raster"})
     )
     transparent_page_indexes: set[int] = set()
@@ -640,7 +646,7 @@ def resize_pages_smart(source_path: str, output_path: str,
     content_aware_resize = (
         dynamic_background
         or variable_page_size
-        or (bool(resize_by_content) and has_transparency)
+        or (bool(resize_by_content) and has_transparency and content_aware_scale)
     )
     background_dpi = target_dpi if target_dpi > 0 else 300
 

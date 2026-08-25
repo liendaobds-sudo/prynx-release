@@ -14,6 +14,10 @@ from pathlib import Path
 from app.database import SessionLocal
 from app.models.job import UploadedFile, ComparisonJob
 from app.config import settings
+from app.core.artifact_lease import (
+    artifact_delete_guard,
+    collect_artifact_lease_protected_path_keys,
+)
 from app.core.disk_space_guard import minimum_free_disk_bytes
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,22 @@ APP_TEMP_PREFIXES = (
 # Ngưỡng tuổi riêng cho OS temp: đủ dài hơn job VDP/NUP dài nhất, đủ ngắn để không
 # tích lũy nhiều ngày. KHÔNG dùng chung 26h (temp là file đời ngắn).
 OS_TEMP_MAX_AGE_HOURS = 12
+
+# LIFECYCLE (audit 2026-08-25 §REV.11): WebView heartbeat lease là 60 giây.
+# Nếu vòng cleanup bị trễ xa quá lịch 30 phút (điển hình Windows sleep), cho app
+# 120 giây renew owner cũ trước khi quét. Renderer crash khi sidecar vẫn chạy
+# không tạo gap này, nên artifact vẫn hết hạn/dọn theo chính sách bình thường.
+CLEANUP_LOOP_INTERVAL_SECONDS = 30 * 60
+CLEANUP_WAKE_SLACK_SECONDS = 30
+CLEANUP_RESUME_GRACE_SECONDS = 120
+
+
+def cleanup_resume_grace_seconds(elapsed_since_cleanup: float) -> int:
+    if elapsed_since_cleanup > (
+        CLEANUP_LOOP_INTERVAL_SECONDS + CLEANUP_WAKE_SLACK_SECONDS
+    ):
+        return CLEANUP_RESUME_GRACE_SECONDS
+    return 0
 
 # PERF (audit 2026-08-05 §PERF.7): high-watermark chỉ xét artifact có vòng đời
 # rõ ràng. N-Up/VDP đã tự công bố TTL 1 giờ; dùng 2 giờ làm biên chống race.
@@ -240,12 +260,30 @@ def _cleanup_upscale_artifact_leases(now: float) -> tuple[set[str], int, int]:
 
 async def cleanup_expired_files_loop():
     """Background task to periodically clean up expired files and jobs."""
+    # Startup/restart sidecar cũng cần cùng grace: các tab đang mounted có tối đa
+    # vài lượt retry claim trước khi marker owner cũ bị quét.
+    last_cleanup_wall = (
+        time.time()
+        - CLEANUP_LOOP_INTERVAL_SECONDS
+        - CLEANUP_WAKE_SLACK_SECONDS
+        - 1
+    )
     while True:
         try:
+            now_wall = time.time()
+            if last_cleanup_wall is not None:
+                grace = cleanup_resume_grace_seconds(now_wall - last_cleanup_wall)
+                if grace:
+                    logger.info(
+                        "Phát hiện app vừa resume; hoãn cleanup %ss để tab renew artifact lease.",
+                        grace,
+                    )
+                    await asyncio.sleep(grace)
             # 1. DB-aware cleanup (files with expires_at in the database)
             await asyncio.to_thread(cleanup_expired)
             # 2. Filesystem-level cleanup (catches orphan files from ALL routes)
             await asyncio.to_thread(cleanup_orphan_files)
+            last_cleanup_wall = time.time()
         except asyncio.CancelledError:
             logger.info("Cleanup task cancelled.")
             break
@@ -253,7 +291,7 @@ async def cleanup_expired_files_loop():
             logger.error(f"Error in cleanup task: {e}")
             
         # Run every 30 minutes
-        await asyncio.sleep(1800)
+        await asyncio.sleep(CLEANUP_LOOP_INTERVAL_SECONDS)
 
 
 def cleanup_expired():
@@ -278,7 +316,13 @@ def cleanup_expired():
             try:
                 # 1. Delete physical PDF file
                 if f.file_path and os.path.exists(f.file_path):
-                    os.remove(f.file_path)
+                    # LIFECYCLE (audit 2026-08-25 §REV.11): expires_at của bản
+                    # ghi Edit không được thắng owner tab còn heartbeat. Recheck
+                    # sát delete, dưới cùng lock với claim/renew/release.
+                    with artifact_delete_guard(f.file_path) as may_delete:
+                        if not may_delete:
+                            continue
+                        os.remove(f.file_path)
                 
                 # 2. Find jobs using this file
                 jobs = db.query(ComparisonJob).filter(
@@ -335,6 +379,8 @@ def cleanup_orphan_files():
     registered_path_keys = _registered_file_path_keys()
     lease_paths, lease_deleted, lease_freed = _cleanup_upscale_artifact_leases(now)
     registered_path_keys.update(lease_paths)
+    # Marker generic nằm trên đĩa nên restart backend không làm mất owner sống.
+    registered_path_keys.update(collect_artifact_lease_protected_path_keys(now))
     
     dirs_to_clean = [
         Path(settings.UPLOAD_DIR),
@@ -396,10 +442,16 @@ def _cleanup_directory(
                 continue
             file_age = now - item.stat().st_mtime
             if file_age > max_age_seconds:
-                file_size = item.stat().st_size
-                item.unlink()
-                deleted += 1
-                freed += file_size
+                # Recheck sát unlink dưới cùng lock với claim/renew/release.
+                with artifact_delete_guard(item) as may_delete:
+                    if not may_delete:
+                        continue
+                    current = item.stat()
+                    if (now - current.st_mtime) <= max_age_seconds:
+                        continue
+                    item.unlink()
+                    deleted += 1
+                    freed += current.st_size
         except OSError as e:
             # File may be locked by another process (e.g. active job)
             logger.debug(f"Cannot delete {item.name}: {e}")
@@ -599,17 +651,20 @@ def _cleanup_storage_pressure(now: float) -> tuple[int, int]:
             try:
                 if item.is_symlink():
                     continue
-                current = item.stat()
-                # File vừa được job khác sửa/ghi lại sau lúc quét không còn là ứng viên.
-                if (
-                    current.st_mtime_ns != expected_mtime_ns
-                    or current.st_size != expected_size
-                ):
-                    continue
-                item.unlink()
-                deleted += 1
-                freed += expected_size
-                projected_free += expected_size
+                with artifact_delete_guard(item) as may_delete:
+                    if not may_delete:
+                        continue
+                    current = item.stat()
+                    # File vừa được job khác sửa/ghi lại sau lúc quét không còn là ứng viên.
+                    if (
+                        current.st_mtime_ns != expected_mtime_ns
+                        or current.st_size != expected_size
+                    ):
+                        continue
+                    item.unlink()
+                    deleted += 1
+                    freed += expected_size
+                    projected_free += expected_size
             except OSError as error:
                 logger.debug("Không xóa được artifact managed %s: %s", item, error)
 

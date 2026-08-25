@@ -44,6 +44,8 @@ class PreparedLogo:
     physical_width_mm: float | None = None
     physical_height_mm: float | None = None
     work_area_scale: float = 1.0
+    polarity_ambiguous: bool = False
+    partial_alpha: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,16 @@ def logo_vectorizer_capabilities() -> dict[str, Any] | None:
         "result_schema_version": structured_version,
         "legacy_engine": str(info.get("engine", "vtracer")),
         "legacy_version": str(info.get("version", "unknown")),
+        **(
+            {"curve_presets": list(info["curve_presets"])}
+            if "curve_presets" in info
+            else {}
+        ),
+        **(
+            {"geometry_metrics_version": int(info["geometry_metrics_version"])}
+            if info.get("geometry_metrics_version") is not None
+            else {}
+        ),
     }
 
 
@@ -181,16 +193,33 @@ def release_logo_job(job_id: str, token: Any) -> None:
     _discard_job(job_id, token)
 
 
+def _crop_pixel_bounds(
+    width: int,
+    height: int,
+    crop: Any,
+) -> tuple[int, int, int, int]:
+    """Tính đúng box pixel mà Pillow sẽ dùng cho crop.
+
+    LOGO-REBUILD (audit 2026-08-24 §LR5.05): UI và worker phải dùng cùng lượng
+    tử hóa. Crop chuẩn hóa được đổi bằng floor/ceil giống Image.crop;
+    không dùng tỷ lệ liên tục để lập hợp đồng mm rồi lại đổi kích thước ở đây.
+    """
+
+    left = max(0, min(width - 1, math.floor(crop.x * width)))
+    top = max(0, min(height - 1, math.floor(crop.y * height)))
+    right = max(left + 1, min(width, math.ceil((crop.x + crop.width) * width)))
+    bottom = max(top + 1, min(height, math.ceil((crop.y + crop.height) * height)))
+    return left, top, right, bottom
+
+
 def _target_dimensions(
     width: int,
     height: int,
     settings: LogoRebuildSettings,
 ) -> tuple[int, int]:
     if settings.crop is not None:
-        return (
-            max(1, round(width * settings.crop.width)),
-            max(1, round(height * settings.crop.height)),
-        )
+        left, top, right, bottom = _crop_pixel_bounds(width, height, settings.crop)
+        return right - left, bottom - top
     if settings.perspective_points is not None:
         points = [
             (point.x * (width - 1), point.y * (height - 1))
@@ -322,6 +351,27 @@ def _reserve_logo_work_size(width: int, height: int):
             )
 
 
+def logo_preflight_memory_required_mb(width: int, height: int, settings: LogoRebuildSettings) -> float:
+    """Ước lượng peak mảng tiền kiểm để scheduler đặt chỗ trước khi decode đầy đủ."""
+
+    selected_width, selected_height = _target_dimensions(width, height, settings)
+    # Palette preflight giữ RGBA nguồn, một bản numpy và lưới accent; hệ số này
+    # là ngân sách admission, không phải cap chất lượng. Máy >=16 GB vẫn giữ full
+    # resolution, chỉ bị từ chối nếu RAM thực tế không đủ.
+    return max(64.0, selected_width * selected_height * 64.0 / (1024 * 1024))
+
+
+def logo_memory_budget_mb() -> float | None:
+    """Ngân sách RAM an toàn dùng chung cho preflight và preview logo."""
+
+    total_mb, available_mb = read_memory_status_mb()
+    if total_mb is None or available_mb is None:
+        return None
+    reserve_mb = 512.0 if total_mb < 8 * 1024 else 1024.0
+    fraction = 0.55 if total_mb < 8 * 1024 else 0.65
+    return max(0.0, available_mb - reserve_mb) * fraction
+
+
 def _upscale_target_dimensions(width: int, height: int) -> tuple[int, int]:
     """Nâng ảnh nhỏ trước khi trace; chỉ máy yếu mới hạ mục tiêu chất lượng."""
 
@@ -342,6 +392,20 @@ def _upscale_target_dimensions(width: int, height: int) -> tuple[int, int]:
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
+def _trace_target_dimensions(
+    width: int,
+    height: int,
+    settings: LogoRebuildSettings,
+) -> tuple[int, int]:
+    """Giữ lưới px nguồn cho preset hình học; pipeline cũ vẫn được upscale."""
+
+    # LOGO-TRAJECTORY (audit 2026-08-25): NEAREST chỉ phóng to bậc pixel,
+    # khiến sai số primitive bị đo theo lưới ảo và circle/ellipse bị từ chối.
+    if settings.engine == "prynx_core" and settings.curve_preset is not None:
+        return width, height
+    return _upscale_target_dimensions(width, height)
+
+
 def _requested_logo_work_size(
     source_bytes: bytes,
     settings: LogoRebuildSettings,
@@ -356,7 +420,7 @@ def _requested_logo_work_size(
     except (OSError, SyntaxError, ValueError) as exc:
         raise LogoInputError("File ảnh không thể giải mã.") from exc
     selected_width, selected_height = _target_dimensions(width, height, settings)
-    return _upscale_target_dimensions(selected_width, selected_height)
+    return _trace_target_dimensions(selected_width, selected_height, settings)
 
 
 def _read_image_dpi(raw: object) -> tuple[float, float] | None:
@@ -422,10 +486,7 @@ def _apply_crop(image: Image.Image, settings: LogoRebuildSettings) -> Image.Imag
     if crop is None:
         return image
     width, height = image.size
-    left = max(0, min(width - 1, math.floor(crop.x * width)))
-    top = max(0, min(height - 1, math.floor(crop.y * height)))
-    right = max(left + 1, min(width, math.ceil((crop.x + crop.width) * width)))
-    bottom = max(top + 1, min(height, math.ceil((crop.y + crop.height) * height)))
+    left, top, right, bottom = _crop_pixel_bounds(width, height, crop)
     return image.crop((left, top, right, bottom))
 
 
@@ -521,13 +582,13 @@ def _otsu_threshold(grayscale: Image.Image) -> int | None:
     return best_threshold
 
 
-def _normalize_monochrome_polarity(image: Image.Image) -> tuple[Image.Image, bool]:
+def _normalize_monochrome_polarity(image: Image.Image) -> tuple[Image.Image, bool, bool]:
     """Đưa nền về trắng và mực về đen theo Otsu + lớp chiếm đa số ở khung ảnh."""
 
     grayscale = image.convert("L")
     threshold = _otsu_threshold(grayscale)
     if threshold is None:
-        return Image.new("RGBA", image.size, (255, 255, 255, 255)), False
+        return Image.new("RGBA", image.size, (255, 255, 255, 255)), False, True
     pixels = grayscale.load()
     width, height = grayscale.size
     border_values = [pixels[x, 0] for x in range(width)]
@@ -536,14 +597,31 @@ def _normalize_monochrome_polarity(image: Image.Image) -> tuple[Image.Image, boo
     if width > 1:
         border_values.extend(pixels[0, y] for y in range(1, height - 1))
         border_values.extend(pixels[width - 1, y] for y in range(1, height - 1))
-    low_is_background = (
-        sum(value <= threshold for value in border_values) * 2 >= len(border_values)
+    interior_values = [
+        pixels[x, y]
+        for y in range(1, max(1, height - 1))
+        for x in range(1, max(1, width - 1))
+    ]
+    border_low_ratio = sum(value <= threshold for value in border_values) / max(1, len(border_values))
+    interior_low_ratio = sum(value <= threshold for value in interior_values) / max(1, len(interior_values))
+    edge_foreground = (
+        (border_low_ratio >= 0.9 and interior_low_ratio <= 0.1)
+        or (border_low_ratio <= 0.1 and interior_low_ratio >= 0.9)
     )
+    # Khi mực chạm toàn bộ biên, border majority không còn là proxy đáng tin
+    # cho nền. Chọn polarity theo cặp border/interior để giữ khung, đồng thời
+    # đánh dấu review để user xác nhận ca tight-crop này.
+    if border_low_ratio >= 0.9 and interior_low_ratio <= 0.1:
+        low_is_background = False
+    elif border_low_ratio <= 0.1 and interior_low_ratio >= 0.9:
+        low_is_background = True
+    else:
+        low_is_background = border_low_ratio >= 0.5
     lookup = [
         255 if ((value <= threshold) == low_is_background) else 0
         for value in range(256)
     ]
-    return grayscale.point(lookup).convert("RGBA"), True
+    return grayscale.point(lookup).convert("RGBA"), True, edge_foreground
 
 
 def _accent_grid_pixel_budget() -> int:
@@ -833,7 +911,7 @@ def prepare_logo_image(
         )
 
     source_work_area = image.width * image.height
-    requested_size = _upscale_target_dimensions(*image.size)
+    requested_size = _trace_target_dimensions(*image.size, settings)
     if planned_size is None:
         planned_size, local_memory_warnings = _plan_work_size(*requested_size)
         warnings.extend(local_memory_warnings)
@@ -878,12 +956,16 @@ def prepare_logo_image(
             # pixel trong suốt không bị hiểu nhầm là mực đen.
             white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
             rgba = Image.alpha_composite(white, rgba)
-        rgba, normalized = _normalize_monochrome_polarity(rgba)
+        rgba, normalized, polarity_ambiguous = _normalize_monochrome_polarity(rgba)
         if normalized:
             # LOGO-REBUILD (audit 2026-08-03 §LR2.04): fixed threshold 128 làm
             # mất logo sáng hoặc nuốt nền tối. Chuẩn hóa hai lớp trước khi vào native.
             warnings.append(
                 "Đã tự xác định nền sáng/tối và chuẩn hóa mực đen cho chế độ đơn sắc."
+            )
+        if polarity_ambiguous:
+            warnings.append(
+                "Mực đơn sắc chạm biên ảnh; polarity nền/mực không chắc chắn, cần kiểm tra thủ công."
             )
         if settings.engine == "prynx_core":
             # LOGO-ENGINE-V2 (audit 2026-08-11 Lô G2): Silhouette core trace
@@ -898,6 +980,15 @@ def prepare_logo_image(
             core_rgba.putalpha(alpha_mask)
             rgba = core_rgba
 
+    alpha_histogram = rgba.getchannel("A").histogram()
+    partial_alpha = settings.mode == "fixed_palette" and any(alpha_histogram[1:255])
+    if partial_alpha:
+        # LOGO-REBUILD (audit 2026-08-24 §LR5.03): core hiện dựng contour theo
+        # nhãn nhị phân; không được âm thầm biến coverage alpha thành mảng đục.
+        warnings.append(
+            "Ảnh có alpha bán trong suốt; SVG core hiện cần kiểm tra thủ công vì coverage có thể được ngưỡng hóa thành mảng đặc."
+        )
+
     return PreparedLogo(
         width_px=rgba.width,
         height_px=rgba.height,
@@ -906,6 +997,8 @@ def prepare_logo_image(
         physical_width_mm=physical_width_mm,
         physical_height_mm=physical_height_mm,
         work_area_scale=(rgba.width * rgba.height) / source_work_area,
+        polarity_ambiguous=polarity_ambiguous if settings.mode == "monochrome" else False,
+        partial_alpha=partial_alpha,
     )
 
 
@@ -1158,6 +1251,27 @@ def _parse_structured_native_result(
     metrics["mae"] = _structured_float(
         raw_metrics.get("mae"), "metrics.mae", maximum=1.0
     )
+    optional_integer_metrics = (
+        "line_segments",
+        "cubic_segments",
+        "circle_count",
+        "ellipse_count",
+    )
+    for field in optional_integer_metrics:
+        if field in raw_metrics:
+            metrics[field] = _structured_int(raw_metrics.get(field), f"metrics.{field}")
+    for field, maximum in (
+        ("max_symmetric_distance_px", None),
+        ("max_smooth_tangent_jump_degrees", 180.0),
+        ("artifact_max_tangent_jump_degrees", 180.0),
+    ):
+        if field in raw_metrics:
+            metrics[field] = _structured_float(
+                raw_metrics.get(field), f"metrics.{field}", maximum=maximum
+            )
+    if "line_segments" in metrics and "cubic_segments" in metrics:
+        if metrics["line_segments"] + metrics["cubic_segments"] != metrics["output_nodes"]:
+            raise RuntimeError("Structured result có tổng segment không khớp số node.")
     raw_warnings = result.get("warnings")
     if not isinstance(raw_warnings, list) or any(
         not isinstance(warning, str) for warning in raw_warnings
@@ -1210,18 +1324,13 @@ def _process_logo_preview_reserved(
             f"{settings.despeckle_size_px} px ảnh nguồn thành "
             f"{effective_despeckle_size} px ở kích thước dựng nét."
         )
-    if (
-        settings.mode == "fixed_palette"
-        and settings.despeckle_size_px > 0
-        and prepared.work_area_scale > 1.0
-    ):
-        # LOGO-REBUILD (audit 2026-08-13 §LR4.01): khử hạt tính theo px ảnh
-        # nguồn; với logo nhỏ đã upscale phải nói rõ chi tiết nào sẽ mất thay
-        # vì chỉ báo con số quy đổi.
+    if settings.mode == "fixed_palette" and settings.despeckle_size_px > 0:
+        # LOGO-REBUILD (audit 2026-08-24 §LR5.02): FlatColor thực thi khử hạt
+        # ở mọi kích thước; cảnh báo không được chỉ xuất hiện sau upscale.
         source_despeckle = settings.despeckle_size_px
+        upscale_prefix = "Ảnh đã được phóng to trước khi dựng nét: " if prepared.work_area_scale > 1.0 else ""
         warnings.append(
-            "Ảnh đã được phóng to trước khi dựng nét: khử hạt "
-            f"{source_despeckle} px sẽ gộp mọi chi tiết nhỏ hơn "
+            f"{upscale_prefix}Khử hạt {source_despeckle} px sẽ gộp mọi chi tiết nhỏ hơn "
             f"{source_despeckle}×{source_despeckle} px ảnh nguồn "
             "(dấu, chấm, ký hiệu nhỏ) vào màu lân cận; đặt 0 nếu cần giữ các chi tiết này."
         )
@@ -1258,6 +1367,11 @@ def _process_logo_preview_reserved(
                 settings.mode,
                 palette=engine_palette or None,
                 smoothing=settings.smoothing,
+                **(
+                    {"curve_preset": settings.curve_preset}
+                    if settings.curve_preset is not None
+                    else {}
+                ),
                 despeckle_size_px=effective_despeckle_size,
                 background_label=background_label,
                 physical_width_mm=prepared.physical_width_mm,
@@ -1352,6 +1466,24 @@ def _process_logo_preview_reserved(
     status = quality.status
     review_reasons = list(quality.reasons)
     review_actions = list(quality.actions)
+    if prepared.polarity_ambiguous:
+        reason = "Polarity đơn sắc không chắc chắn vì mực chạm biên ảnh."
+        action = "Thêm lề/crop lại ảnh hoặc xác nhận thủ công trước khi xuất SVG."
+        if reason not in review_reasons:
+            review_reasons.append(reason)
+        if action not in review_actions:
+            review_actions.append(action)
+        if status == "ready":
+            status = "review"
+    if prepared.partial_alpha:
+        reason = "Ảnh có alpha bán trong suốt; coverage SVG cần được kiểm tra."
+        action = "Mở preview trên nền in thực tế hoặc làm phẳng alpha trước khi xuất."
+        if reason not in review_reasons:
+            review_reasons.append(reason)
+        if action not in review_actions:
+            review_actions.append(action)
+        if status == "ready":
+            status = "review"
     if (
         structured is not None
         and settings.mode == "monochrome"

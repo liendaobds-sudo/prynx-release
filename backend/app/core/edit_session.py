@@ -94,7 +94,9 @@ class EditSession:
     baseline_bytes: bytes           # bytes file gốc (undo = replay từ baseline)
     op_log: list[EditOp] = field(default_factory=list)      # op đã áp (undo/redo + commit)
     redo_stack: list[EditOp] = field(default_factory=list)  # op đã undo, chờ redo
-    lock: threading.Lock = field(default_factory=threading.Lock)  # tuần tự hóa thao tác trong CÙNG phiên
+    # LIFECYCLE (audit 2026-08-25 §REV.11): route giữ khóa xuyên suốt
+    # commit/flatten + publication lease; core tái nhập cùng khóa khi vật chất hóa.
+    lock: threading.RLock = field(default_factory=threading.RLock)
     last_access: float = field(default_factory=time.monotonic)    # mốc TTL (monotonic)
     dirty: bool = False             # có thay đổi chưa commit?
     last_commit_path: str | None = None  # Working_File commit gần nhất (đồng bộ tile)
@@ -2011,6 +2013,39 @@ def _resolve_original_name(fid: str) -> str | None:
         db.close()
 
 
+def _remove_unpublished_working_file(
+    session: EditSession,
+    output_path: str | os.PathLike[str] | None,
+    *,
+    operation: str,
+) -> None:
+    """Dọn output chưa đăng ký, nhưng không bao giờ xóa nguồn/bản commit hợp lệ."""
+    if output_path is None:
+        return
+
+    protected_paths = [session.source_path]
+    if session.last_commit_path:
+        protected_paths.append(session.last_commit_path)
+    if any(edit_io._same_path(output_path, protected) for protected in protected_paths):
+        logger.error(
+            "%s không dọn output chưa publication vì path đang được bảo vệ: %s",
+            operation,
+            output_path,
+        )
+        return
+
+    try:
+        Path(output_path).unlink(missing_ok=True)
+    except OSError as exc:
+        # Không che lỗi gốc của save/DB registration; cleanup sẽ được log riêng.
+        logger.warning(
+            "%s không dọn được Working File chưa publication '%s': %s",
+            operation,
+            output_path,
+            exc,
+        )
+
+
 def commit(session: EditSession) -> dict:
     """
     Commit (vật chất hóa) trạng thái HIỆN TẠI của Live_Document ra một Working_File
@@ -2053,6 +2088,8 @@ def commit(session: EditSession) -> dict:
                 f"Phiên '{session.session_id}' không tồn tại hoặc đã hết hạn."
             )
 
+        output_path: str | os.PathLike[str] | None = None
+        saved_path: str | None = None
         try:
             # 1) Đường dẫn Working_File MỚI (random suffix → KHÔNG đè bản trước/gốc).
             original_name = _resolve_original_name(session.source_fid)
@@ -2072,6 +2109,13 @@ def commit(session: EditSession) -> dict:
             filename = Path(saved_path).name
             output_fid = _register_working_file(saved_path, filename)
         except Exception:
+            # LIFECYCLE (audit 2026-08-25 §REV.11): DB register lỗi xảy ra sau
+            # khi save thành công không được để lại artifact mồ côi trên đĩa.
+            _remove_unpublished_working_file(
+                session,
+                saved_path or output_path,
+                operation="Commit",
+            )
             # 4-lỗi) GIỮ NGUYÊN Live_Document trong RAM; KHÔNG đụng dirty/last_commit_path.
             logger.exception(
                 "Commit phiên %s thất bại — giữ nguyên Live_Document để thử lại.",
@@ -2161,11 +2205,11 @@ def flatten(session: EditSession) -> dict:
             filename = Path(final_path).name
             output_fid = _register_working_file(final_path, filename)
         except Exception:
-            if final_path:
-                try:
-                    Path(final_path).unlink(missing_ok=True)
-                except Exception:
-                    logger.warning("Không thể dọn Working File flatten lỗi: %s", final_path)
+            _remove_unpublished_working_file(
+                session,
+                final_path,
+                operation="Flatten",
+            )
             logger.exception("Flatten phiên %s thất bại.", session.session_id)
             raise
         finally:

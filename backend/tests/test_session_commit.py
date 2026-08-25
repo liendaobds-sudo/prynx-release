@@ -16,8 +16,8 @@ _Requirements: 5.2, 5.5, 6.2, 8.3, 10.5, 11.4_
 """
 import os
 import sys
-import threading
 from io import BytesIO
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -55,7 +55,6 @@ def _make_session(tmp_path, sid="commit-sid", fid="fid-commit") -> EditSession:
         source_path=source_path,
         pdf=pdf,
         baseline_bytes=pdf_bytes,
-        lock=threading.Lock(),
         live_bytes=pdf_bytes,
         dirty=True,
     )
@@ -83,6 +82,18 @@ def _cleanup_session(session: EditSession):
 # ═══════════════════════════════════════════════════════════════════════════
 #  commit — thành công
 # ═══════════════════════════════════════════════════════════════════════════
+def test_edit_session_default_lock_is_reentrant(tmp_path):
+    """Route và core phải có thể giữ/tái nhập cùng khóa phiên mà không deadlock."""
+    session = _make_session(tmp_path, sid="rlock-default")
+    try:
+        assert session.lock.acquire(blocking=False)
+        assert session.lock.acquire(blocking=False)
+        session.lock.release()
+        session.lock.release()
+    finally:
+        _cleanup_session(session)
+
+
 def test_commit_writes_new_working_file_and_updates_state(tmp_path, monkeypatch):
     """Commit ghi Working_File MỚI, trả output_*; dirty=False, last_commit_path set."""
     session = _make_session(tmp_path)
@@ -164,6 +175,85 @@ def test_commit_failure_keeps_pdf_and_raises(tmp_path, monkeypatch):
         assert session.dirty is True
         assert session.last_commit_path is None
         assert len(session.pdf.pages) == 1  # pdf còn sống
+    finally:
+        _cleanup_session(session)
+
+
+def test_commit_registration_failure_removes_only_new_unpublished_output(
+    tmp_path,
+    monkeypatch,
+):
+    """DB register lỗi phải dọn output mới, không xóa nguồn/bản commit hợp lệ."""
+    session = _make_session(tmp_path)
+    previous_commit = tmp_path / "previous-valid.pdf"
+    previous_commit.write_bytes(b"%PDF-1.4\n% previous-valid\n")
+    session.last_commit_path = str(previous_commit)
+    output_path = tmp_path / "unpublished-edit.pdf"
+
+    monkeypatch.setattr(edit_session, "_resolve_original_name", lambda _fid: "MyDoc.pdf")
+    monkeypatch.setattr(
+        edit_session.edit_io,
+        "build_working_file_path",
+        lambda *_args, **_kwargs: output_path,
+    )
+    import app.api.routes.edit as edit_route
+
+    def _register_failure(_path, _name):
+        raise OSError("sqlite tạm bận")
+
+    monkeypatch.setattr(edit_route, "_register_working_file", _register_failure)
+    try:
+        with pytest.raises(OSError, match="sqlite tạm bận"):
+            commit(session)
+
+        assert not output_path.exists(), "Output đã save nhưng chưa đăng ký phải được dọn"
+        assert os.path.exists(session.source_path)
+        assert previous_commit.exists()
+        assert session.dirty is True
+        assert session.last_commit_path == str(previous_commit)
+        assert len(session.pdf.pages) == 1
+    finally:
+        _cleanup_session(session)
+
+
+@pytest.mark.parametrize("protected_kind", ["source", "last_commit"])
+def test_commit_cleanup_never_unlinks_protected_paths(
+    tmp_path,
+    monkeypatch,
+    protected_kind,
+):
+    """Cleanup fail-closed kể cả helper save bất thường trả path đang được bảo vệ."""
+    session = _make_session(tmp_path, sid=f"protected-{protected_kind}")
+    previous_commit = tmp_path / "previous-valid.pdf"
+    previous_commit.write_bytes(b"%PDF-1.4\n% previous-valid\n")
+    session.last_commit_path = str(previous_commit)
+    protected_path = (
+        session.source_path if protected_kind == "source" else str(previous_commit)
+    )
+    before = Path(protected_path).read_bytes()
+
+    monkeypatch.setattr(edit_session, "_resolve_original_name", lambda _fid: "MyDoc.pdf")
+    monkeypatch.setattr(
+        edit_session.edit_io,
+        "build_working_file_path",
+        lambda *_args, **_kwargs: protected_path,
+    )
+    monkeypatch.setattr(
+        edit_session.edit_io,
+        "save_working_file",
+        lambda *_args, **_kwargs: protected_path,
+    )
+    import app.api.routes.edit as edit_route
+
+    monkeypatch.setattr(
+        edit_route,
+        "_register_working_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("register lỗi")),
+    )
+    try:
+        with pytest.raises(OSError, match="register lỗi"):
+            commit(session)
+        assert Path(protected_path).read_bytes() == before
     finally:
         _cleanup_session(session)
 

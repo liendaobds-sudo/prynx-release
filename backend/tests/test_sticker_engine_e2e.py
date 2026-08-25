@@ -3873,6 +3873,85 @@ def test_rectangle_source_mask_can_preserve_legitimate_white():
     assert strip_white[5, 20] == 0
 
 
+@pytest.mark.parametrize("rotation", [90, 270])
+@pytest.mark.parametrize("bleed_color_type", ["image", "inpaint"])
+def test_rectangle_bleed_uses_visible_size_after_page_rotation(
+    tmp_path, rotation, bleed_color_type
+):
+    """Trang vừa xoay phải bù xén theo khổ nhìn thấy, không sinh mảng trắng."""
+    import pypdfium2 as pdfium
+
+    src = str(tmp_path / f"rotated_{rotation}.pdf")
+    out = str(tmp_path / f"rotated_{rotation}_{bleed_color_type}_out.pdf")
+    pdf = pikepdf.Pdf.new()
+    rotated_page = pdf.add_blank_page(page_size=(120, 60))
+    rotated_page.Contents = pdf.make_stream(
+        b"0 0.7 1 rg 0 0 60 60 re f 1 0.2 0 rg 60 0 60 60 re f\n"
+    )
+    rotated_page.obj[pikepdf.Name("/Rotate")] = rotation
+    plain_page = pdf.add_blank_page(page_size=(120, 60))
+    plain_page.Contents = pdf.make_stream(
+        b"0.2 0.8 0.2 rg 0 0 120 60 re f\n"
+    )
+    pdf.save(src)
+    pdf.close()
+
+    success, meta = StickerEngine(dpi=96).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="none",
+        bleed_mm=2.0,
+        bleed_color_type=bleed_color_type,
+        draw_cut_contour=False,
+        rectangle_mode=True,
+        edge_bite_mm=0.0,
+    )
+
+    assert success is True
+    bleed_pts = 2.0 * 2.83465
+    with pikepdf.Pdf.open(out) as result:
+        assert [float(value) for value in result.pages[0].MediaBox] == pytest.approx(
+            [0.0, 0.0, 60.0 + 2 * bleed_pts, 120.0 + 2 * bleed_pts],
+            abs=0.001,
+        )
+        assert [float(value) for value in result.pages[1].MediaBox] == pytest.approx(
+            [0.0, 0.0, 120.0 + 2 * bleed_pts, 60.0 + 2 * bleed_pts],
+            abs=0.001,
+        )
+        assert all(
+            int(page.obj.get("/Rotate", 0) or 0) == 0
+            for page in result.pages
+        )
+
+    assert meta["pages"][0]["width_mm"] == pytest.approx(
+        60.0 * 25.4 / 72.0, abs=0.02
+    )
+    assert meta["pages"][0]["height_mm"] == pytest.approx(
+        120.0 * 25.4 / 72.0, abs=0.02
+    )
+    assert meta["pages"][1]["width_mm"] == pytest.approx(
+        120.0 * 25.4 / 72.0, abs=0.02
+    )
+    assert meta["pages"][1]["height_mm"] == pytest.approx(
+        60.0 * 25.4 / 72.0, abs=0.02
+    )
+
+    rendered = pdfium.PdfDocument(out)
+    try:
+        for page_index in range(len(rendered)):
+            page = rendered[page_index]
+            bitmap = page.render(scale=2, rev_byteorder=True)
+            try:
+                pixels = np.array(bitmap.to_numpy(), copy=True)[:, :, :3]
+            finally:
+                bitmap.close()
+                page.close()
+            white_ratio = float(np.mean(np.all(pixels > 245, axis=2)))
+            assert white_ratio < 0.001
+    finally:
+        rendered.close()
+
+
 def test_rectangle_vector_bleed_preserves_output_intent(tmp_path):
     """Rebuilding the PDF must retain the source printing/output ICC profile."""
     src = str(tmp_path / "rect_output_intent.pdf")
@@ -4544,6 +4623,77 @@ def test_sticker_endpoint_enables_adaptive_only_for_preserved_contour(
 
     assert os.path.exists(response.path)
     assert captured["alpha_corner_policy"] == expected_policy
+
+
+def test_sticker_endpoint_shares_canonical_rotation_with_engine_and_canvas(
+    tmp_path, monkeypatch
+):
+    """Route không được đưa raw `/Rotate` trở lại ở bước khôi phục canvas."""
+    import asyncio
+    import shutil
+
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine, sticker_page_canvas
+
+    source = tmp_path / "route_rotated.pdf"
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(120, 60))
+    page.Contents = pdf.make_stream(b"0 0.7 1 rg 0 0 120 60 re f\n")
+    page.obj[pikepdf.Name("/Rotate")] = 90
+    pdf.save(source)
+    pdf.close()
+    captured = {}
+
+    def capture_page_space(path):
+        with pikepdf.Pdf.open(path) as document:
+            current = document.pages[0]
+            return (
+                tuple(float(value) for value in current.MediaBox),
+                tuple(float(value) for value in current.cropbox),
+                int(current.obj.get("/Rotate", 0) or 0),
+            )
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **_kwargs):
+            captured["engine"] = capture_page_space(input_path)
+            captured["job_path"] = input_path
+            shutil.copyfile(input_path, output_path)
+            return True, {"pages": [{"page": 1}]}
+
+    def fake_restore(source_path, _output_path, *, expansion_pts):
+        captured["restore"] = capture_page_space(source_path)
+        captured["expansion_pts"] = expansion_pts
+
+    class FakeRequest:
+        async def form(self):
+            return {
+                "file_path": str(source),
+                "cut_mode": "none",
+                "bleed_mm": "2",
+                "rectangle_mode": "false",
+            }
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(
+        sticker_page_canvas,
+        "restore_sticker_page_canvas",
+        fake_restore,
+    )
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    response = asyncio.run(
+        pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={})
+    )
+
+    expected = ((0.0, 0.0, 60.0, 120.0), (0.0, 0.0, 60.0, 120.0), 0)
+    assert captured["engine"] == expected
+    assert captured["restore"] == expected
+    assert not os.path.exists(captured["job_path"])
+    assert os.path.exists(response.path)
 
 
 @pytest.mark.parametrize("crop_to_sticker", [None, False, True])

@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.core.heavy_job_scheduler import (
+    HeavyJobMemoryUnavailable,
     HeavyJobQueueCancelled,
     run_scheduled_in_threadpool,
 )
@@ -35,6 +36,8 @@ from app.workers.logo_rebuild import (
     LogoJobCancelled,
     LogoJobConflict,
     cancel_logo_job,
+    logo_memory_budget_mb,
+    logo_preflight_memory_required_mb,
     logo_vectorizer_capabilities,
     process_logo_preview,
     release_logo_job,
@@ -271,11 +274,26 @@ async def logo_rebuild_preflight(
     logo_settings = _parse_settings(settings_json)
     payload, source = await _read_and_inspect_upload(file)
     try:
-        palette_suggestions, palette_warnings = await run_in_threadpool(
+        # PERF (audit 2026-08-24 §LR5.06): palette preflight cũng giải mã và
+        # tạo nhiều mảng RGBA/OpenCV; phải dùng cùng heavy slot + reservation với
+        # preview, không để bước “gợi ý màu” đứng ngoài admission.
+        estimated_peak_mb = logo_preflight_memory_required_mb(
+            source.width_px,
+            source.height_px,
+            logo_settings,
+        )
+        palette_suggestions, palette_warnings = await run_scheduled_in_threadpool(
+            "logo-rebuild",
             suggest_logo_palette,
             payload,
             logo_settings,
+            memory_required_mb=estimated_peak_mb,
+            memory_budget_provider=logo_memory_budget_mb,
         )
+    except HeavyJobMemoryUnavailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HeavyJobQueueCancelled as exc:
+        raise HTTPException(status_code=409, detail="Đã hủy tiền kiểm logo.") from exc
     except LogoInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     engine_enabled = logo_vectorizer_capabilities() is not None

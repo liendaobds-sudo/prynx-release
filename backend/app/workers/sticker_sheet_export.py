@@ -22,6 +22,7 @@ import pikepdf
 
 from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
 from app.core.sticker_background import detect_background
+from app.core.color_provenance import embed_srgb_output_intent
 from app.core.sticker_sheet_session import StickerSheetPageState, StickerSheetSession
 from app.workers.sticker_engine import (
     ALPHA_CONTOUR_INSET_MM,
@@ -735,6 +736,20 @@ def _png_pages_to_pdf(
         )
         writer.showPage()
     writer.save()
+    # COLOR (audit 2026-08-24 §BCOLOR.03): PNG bridge đã là RGB sRGB. Gắn
+    # OutputIntent cho PDF trung gian để PDFium/StickerEngine/RIP dùng cùng
+    # diễn giải màu; không gán profile này lên artwork CMYK gốc.
+    tagged_path = output_path.with_name(output_path.name + ".srgb.tmp")
+    try:
+        with pikepdf.Pdf.open(output_path) as intermediate:
+            if not embed_srgb_output_intent(intermediate, replace_existing=True):
+                raise StickerSheetExportError(
+                    "Không gắn được profile sRGB cho PDF trung gian của preview."
+                )
+            intermediate.save(tagged_path)
+        tagged_path.replace(output_path)
+    finally:
+        tagged_path.unlink(missing_ok=True)
 
 
 def _zip_pngs(png_paths: list[Path], output_path: Path) -> None:
@@ -1099,6 +1114,15 @@ def _merge_pdf_fragments(fragments: list[Path], output_path: Path) -> None:
         for fragment in fragments:
             with pikepdf.Pdf.open(fragment) as source:
                 document.pages.extend(source.pages)
+        # Các fragment của cầu PNG đều RGB sRGB; giữ một OutputIntent chung
+        # sau khi ghép để preview/export không đổi cách diễn giải màu ở seam.
+        if not document.Root.get("/OutputIntents") and not embed_srgb_output_intent(
+            document,
+            replace_existing=False,
+        ):
+            raise StickerSheetExportError(
+                "Không gắn được profile sRGB cho PDF ghép nhiều trang."
+            )
         document.save(output_path)
     finally:
         document.close()

@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core import edit_session, geometry_reader, object_mapper
+from app.core.artifact_lease import artifact_delete_guard, create_artifact_lease
 from app.core.edit_io import apply_and_save
 from app.core.edit_session import SessionNotFoundError, get_active_session, list_objects_from_session
 from app.core.license_guard import require_license, result_access_url
@@ -285,17 +286,17 @@ def _register_working_file(output_path: str, original_name: str) -> str:
     Returns:
         fid (str): id bản ghi UploadedFile mới.
     """
-    try:
-        file_size = os.path.getsize(output_path)
-    except OSError:
-        file_size = None
+    abs_output_path = os.path.abspath(output_path)
+    if not os.path.isfile(abs_output_path):
+        raise FileNotFoundError("Working File Edit chưa tồn tại trên đĩa.")
+    file_size = os.path.getsize(abs_output_path)
 
     db = SessionLocal()
     try:
         row = UploadedFile(
-            filename=Path(output_path).name,
+            filename=Path(abs_output_path).name,
             original_name=original_name,
-            file_path=output_path,
+            file_path=abs_output_path,
             file_size=file_size,
             page_count=None,
             pdf_metadata=None,
@@ -303,11 +304,102 @@ def _register_working_file(output_path: str, original_name: str) -> str:
             + timedelta(hours=WORKING_FILE_EXPIRY_HOURS),
         )
         db.add(row)
+        db.flush()
+        output_fid = str(row.id)
         db.commit()
-        db.refresh(row)
-        return row.id
+        return output_fid
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
+
+
+def _is_edit_working_file_path(file_path: str) -> bool:
+    """Chỉ chấp nhận path thật nằm dưới RESULTS_DIR/edit_output."""
+    try:
+        root = os.path.realpath(
+            os.path.abspath(os.path.join(settings.RESULTS_DIR, EDIT_OUTPUT_SUBDIR))
+        )
+        candidate = os.path.realpath(os.path.abspath(file_path))
+        root_key = os.path.normcase(root)
+        candidate_key = os.path.normcase(candidate)
+        return (
+            os.path.normcase(os.path.commonpath((root, candidate))) == root_key
+            and candidate_key != root_key
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _cleanup_failed_working_file_publication(
+    output_path: str,
+    output_fid: str | None,
+) -> None:
+    """Rollback DB + artifact khi chưa tạo được lease; ưu tiên không xóa nhầm."""
+    db_cleanup_ok = True
+    if output_fid:
+        db = SessionLocal()
+        try:
+            row = db.query(UploadedFile).filter(UploadedFile.id == output_fid).first()
+            if row is not None:
+                if os.path.normcase(os.path.abspath(row.file_path)) != os.path.normcase(
+                    os.path.abspath(output_path)
+                ):
+                    db_cleanup_ok = False
+                    logger.error(
+                        "Không rollback fid=%s vì path DB không khớp artifact Edit.",
+                        output_fid,
+                    )
+                else:
+                    db.delete(row)
+                    db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            db_cleanup_ok = False
+            logger.exception("Không rollback được bản ghi Working File fid=%s", output_fid)
+        finally:
+            db.close()
+
+    # Nếu DB rollback lỗi, giữ file để không tạo bản ghi mồ côi trỏ vào file mất.
+    if not db_cleanup_ok:
+        return
+    try:
+        with artifact_delete_guard(output_path) as may_delete:
+            if may_delete:
+                Path(output_path).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Không dọn được Working File chưa publication '%s': %s", output_path, exc)
+
+
+def _register_and_lease_working_file(
+    output_path: str,
+    original_name: str,
+) -> tuple[str, str]:
+    """Đăng ký DB rồi tạo lease; chỉ caller nhận kết quả khi cả hai đã thành công."""
+    abs_output_path = os.path.abspath(output_path)
+    output_fid: str | None = None
+    try:
+        output_fid = _register_working_file(abs_output_path, original_name)
+        lease_token = create_artifact_lease(
+            "edit",
+            abs_output_path,
+            fid=output_fid,
+        )
+        return output_fid, lease_token
+    except Exception:
+        _cleanup_failed_working_file_publication(abs_output_path, output_fid)
+        raise
+
+
+def _lease_registered_working_file(output_path: str, output_fid: str) -> str:
+    """Tạo lease cho output phiên đã đăng ký; lỗi thì rollback cả DB lẫn file."""
+    abs_output_path = os.path.abspath(output_path)
+    try:
+        return create_artifact_lease("edit", abs_output_path, fid=output_fid)
+    except Exception:
+        _cleanup_failed_working_file_publication(abs_output_path, output_fid)
+        raise
 
 
 def _safe_watermark(pdf_path: str, license_info: dict | None) -> None:
@@ -348,7 +440,7 @@ def _build_output_response(output_path: str, op_result, license_info: dict | Non
     # Đóng dấu bản quyền TRƯỚC khi đăng ký (để file_size lưu trong DB khớp file đã watermark).
     _safe_watermark(output_path, license_info)
     filename = Path(output_path).name
-    output_fid = _register_working_file(output_path, filename)
+    output_fid, artifact_lease = _register_and_lease_working_file(output_path, filename)
     # output_path PHẢI tuyệt đối: client desktop (Tauri) có cwd KHÁC backend, nên
     # path tương đối (vd. RESULTS_DIR=./results) sẽ không phân giải được khi
     # native tile renderer / convertFileSrc mở file → trang kẹt "RENDERING" vô hạn.
@@ -359,6 +451,7 @@ def _build_output_response(output_path: str, op_result, license_info: dict | Non
         output_url=result_access_url(f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}"),
         output_path=abs_output_path,
         output_fid=output_fid,
+        artifact_lease=artifact_lease,
         result=_serialize_result(op_result),
     )
 
@@ -962,19 +1055,25 @@ async def discard_working_file(fid: str):
         row = db.query(UploadedFile).filter(UploadedFile.id == fid).first()
         if row is None or not row.file_path:
             return {"deleted": False, "reason": "not_found"}
-        norm = os.path.normpath(row.file_path).replace("\\", "/")
-        # Chỉ xóa khi path thuộc thư mục edit_output (Working_File của edit).
-        if f"/{EDIT_OUTPUT_SUBDIR}/" not in norm and not norm.endswith(f"/{EDIT_OUTPUT_SUBDIR}"):
+        # Chỉ xóa khi path thật thuộc edit_output; không dựa substring dễ nhầm.
+        if not _is_edit_working_file_path(row.file_path):
             return {"deleted": False, "reason": "not_working_file"}
-        try:
-            if os.path.exists(row.file_path):
-                os.remove(row.file_path)
-        except OSError as exc:
-            logger.warning("Không xóa được Working_File '%s': %s", row.file_path, exc)
-        db.delete(row)
-        db.commit()
-        return {"deleted": True}
+        # LIFECYCLE (audit 2026-08-25 §REV.11): recheck lease sát unlink và giữ
+        # cùng lock qua cả thao tác xóa, nên claim không thể chen vào giữa.
+        with artifact_delete_guard(row.file_path) as may_delete:
+            if not may_delete:
+                return {"deleted": False, "reason": "leased"}
+            try:
+                if os.path.exists(row.file_path):
+                    os.remove(row.file_path)
+            except OSError as exc:
+                logger.warning("Không xóa được Working_File '%s': %s", row.file_path, exc)
+                return {"deleted": False, "reason": "error"}
+            db.delete(row)
+            db.commit()
+            return {"deleted": True}
     except Exception as exc:  # noqa: BLE001
+        db.rollback()
         logger.warning("discard_working_file lỗi: %s", exc)
         return {"deleted": False, "reason": "error"}
     finally:
@@ -1275,7 +1374,22 @@ async def session_commit(req: SessionCommitReq, license_info: dict = Depends(req
     """
     def _do() -> EditResponse:
         session = edit_session.get_session(req.session_id)
-        result = edit_session.commit(session)
+        # LIFECYCLE (audit 2026-08-25 §REV.11): state snapshot, materialize,
+        # publication lease và rollback là MỘT giao dịch của cùng EditSession.
+        # `EditSession.lock` là RLock vì core.commit() tái nhập đúng khóa này.
+        with session.lock:
+            previous_dirty = session.dirty
+            previous_last_commit_path = session.last_commit_path
+            try:
+                result = edit_session.commit(session)
+                artifact_lease = _lease_registered_working_file(
+                    result["output_path"],
+                    result["output_fid"],
+                )
+            except Exception:
+                session.dirty = previous_dirty
+                session.last_commit_path = previous_last_commit_path
+                raise
         # Invalidate source fid caches (new fid will be used by client)
         _invalidate_object_cache(session.source_fid)
         return EditResponse(
@@ -1284,6 +1398,7 @@ async def session_commit(req: SessionCommitReq, license_info: dict = Depends(req
             output_url=result["output_url"],
             output_path=result["output_path"],
             output_fid=result["output_fid"],
+            artifact_lease=artifact_lease,
         )
 
     return await _execute_session(_do)
@@ -1294,7 +1409,19 @@ async def session_flatten(req: SessionCommitReq, license_info: dict = Depends(re
     """Flatten layer hiện tại ra Working File mới; file nguồn và phiên gốc không bị ghi đè."""
     def _do() -> EditResponse:
         session = edit_session.get_session(req.session_id)
-        result = edit_session.flatten(session)
+        with session.lock:
+            previous_dirty = session.dirty
+            previous_last_commit_path = session.last_commit_path
+            try:
+                result = edit_session.flatten(session)
+                artifact_lease = _lease_registered_working_file(
+                    result["output_path"],
+                    result["output_fid"],
+                )
+            except Exception:
+                session.dirty = previous_dirty
+                session.last_commit_path = previous_last_commit_path
+                raise
         _invalidate_object_cache(session.source_fid)
         # GS-SUNSET (audit 2026-07-28 §FL.2): giữ cảnh báo raster hóa xuyên qua API;
         # không để response_model âm thầm loại bỏ thông tin mà thợ in cần biết.
@@ -1304,6 +1431,7 @@ async def session_flatten(req: SessionCommitReq, license_info: dict = Depends(re
             output_url=result["output_url"],
             output_path=result["output_path"],
             output_fid=result["output_fid"],
+            artifact_lease=artifact_lease,
             warning=result.get("warning"),
         )
 

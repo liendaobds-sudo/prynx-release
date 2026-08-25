@@ -473,6 +473,12 @@ class EditResponse(BaseModel):
             "tải-về-rồi-upload-lại trên desktop)."
         )
     )
+    artifact_lease: str = Field(
+        description=(
+            "Token lease do backend phát để tab claim/heartbeat Working_File; "
+            "client không được gửi đường dẫn artifact."
+        )
+    )
     warning: str | None = Field(
         default=None,
         description="Cảnh báo suy giảm chất lượng cần hiển thị rõ cho người vận hành",

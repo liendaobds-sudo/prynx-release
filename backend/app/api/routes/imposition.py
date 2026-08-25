@@ -9,8 +9,16 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
+from app.core.artifact_lease import artifact_delete_guard, create_artifact_lease
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.core.heavy_job_scheduler import scheduled_job
+from app.core.source_revision import (
+    SOURCE_REVISION_CHANGED_MESSAGE,
+    SourceFingerprint,
+    SourceRevisionChangedError,
+    assert_source_fingerprint,
+    capture_source_fingerprint,
+)
 from app.core.detect_shape_service import (
     canonical_detection_path,
     classify_raster_separations,
@@ -534,22 +542,121 @@ NUP_JOB_TTL_SECONDS = 3600
 
 
 def _purge_old_nup_jobs():
-    import time
+    """Dọn record theo tuổi terminal; Working artifact sống theo owner lease."""
     now = time.time()
-    for jid in list(nup_jobs.keys()):
-        job = nup_jobs.get(jid)
-        if not job:
-            continue
-        created = job.get("created_at", now)
-        if now - created > NUP_JOB_TTL_SECONDS and job.get("status") in {"completed", "failed", "cancelled"}:
-            out = job.get("output_path")
-            if out and os.path.exists(out):
+    expired: list[tuple[str, dict]] = []
+    with _NUP_JOBS_LOCK:
+        for jid in list(nup_jobs.keys()):
+            job = nup_jobs.get(jid)
+            if not job or job.get("status") not in {"completed", "failed", "cancelled"}:
+                continue
+            terminal_at = job.get("completed_at")
+            if not isinstance(terminal_at, (int, float)):
+                # LIFECYCLE (audit 2026-08-25 §REV.11): job legacy chạy lâu không
+                # được dùng created_at rồi vừa terminal đã bị purge ngay.
+                job["completed_at"] = now
+                continue
+            if now - float(terminal_at) <= NUP_JOB_TTL_SECONDS:
+                continue
+            removed = nup_jobs.pop(jid, None)
+            if removed is not None:
+                expired.append((jid, removed))
+
+    for jid, job in expired:
+        out = job.get("output_path")
+        if out and os.path.exists(out):
+            try:
+                # Record trong RAM được thu hồi độc lập; file chỉ xóa khi không còn
+                # tab owner/initial lease sống.
+                with artifact_delete_guard(out) as may_delete:
+                    if may_delete and os.path.exists(out):
+                        os.remove(out)
+            except OSError:
+                pass
+        _cleanup_job_temp(jid)
+
+
+def _delete_nup_output_if_unleased(output_path: str) -> None:
+    """Best-effort dọn output chưa từng được công bố an toàn."""
+    try:
+        with artifact_delete_guard(output_path) as may_delete:
+            if may_delete and os.path.exists(output_path):
+                os.remove(output_path)
+    except OSError as error:
+        logger.warning("Không dọn được output bình bản chưa công bố %s: %s", output_path, error)
+
+
+def _publish_nup_terminal_state(
+    job_id: str,
+    terminal_status: str,
+    terminal_message: str,
+) -> bool:
+    """Công bố status/path/token trong một chốt; completed không lease là failed."""
+    if terminal_status not in {"completed", "failed", "cancelled"}:
+        return False
+
+    output_to_delete: str | None = None
+    with _NUP_JOBS_LOCK:
+        job = nup_jobs.get(job_id)
+        if job is None or job.get("status") == "cancelled":
+            return False
+        if job.get("status") == "completed" and job.get("artifact_lease"):
+            return True
+        if job.get("status") == "failed":
+            return False
+
+        # REVISION (audit 2026-08-25 §REV.13): child có thể đã xử lý xong nhưng
+        # file direct-path bị thay giữa lúc chạy. Kiểm ngay trong chốt publish để
+        # output stale không bao giờ nhận lease/path completed.
+        if terminal_status == "completed":
+            expected_source = job.get("source_fingerprint")
+            if isinstance(expected_source, SourceFingerprint):
                 try:
-                    os.remove(out)
-                except OSError:
-                    pass
-            nup_jobs.pop(jid, None)
-            _cleanup_job_temp(jid)
+                    assert_source_fingerprint(expected_source)
+                except SourceRevisionChangedError as error:
+                    terminal_status = "failed"
+                    terminal_message = str(error)
+
+        job["completed_at"] = job.get("completed_at") or time.time()
+        if terminal_status == "completed":
+            output_path = str(job.get("output_path") or "")
+            try:
+                # Child đã thoát và state completed chỉ được ghi sau khi engine
+                # đóng output. create_* tự xác minh file + allowlist trước marker.
+                lease_token = create_artifact_lease("imposition", output_path)
+            except Exception as error:
+                logger.exception(
+                    "Không tạo được artifact lease cho job bình bản %s: %s",
+                    job_id,
+                    error,
+                )
+                job["status"] = "failed"
+                job["report"] = ""
+                job["error"] = (
+                    "Không thể bảo vệ file kết quả bình bản. Vui lòng chạy lại."
+                )
+                job["artifact_lease"] = None
+                output_to_delete = output_path
+            else:
+                job["status"] = "completed"
+                job["report"] = terminal_message
+                job["error"] = None
+                job["artifact_lease"] = lease_token
+        else:
+            job["status"] = terminal_status
+            job["artifact_lease"] = None
+            job["error"] = terminal_message if terminal_status == "failed" else None
+            output_to_delete = str(job.get("output_path") or "")
+
+    if output_to_delete:
+        _delete_nup_output_if_unleased(output_to_delete)
+    with _NUP_JOBS_LOCK:
+        published = nup_jobs.get(job_id)
+        return bool(
+            published
+            and published.get("status") == "completed"
+            and published.get("artifact_lease")
+        )
 
 
 def _cleanup_nup_chunk_files(job_id: str):
@@ -581,7 +688,13 @@ def _cleanup_job_temp(job_id: str):
 
 
 @scheduled_job("nup")
-def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_id: str):
+def _spawn_nup_process(
+    source_path: str,
+    output_path: str,
+    settings: dict,
+    job_id: str,
+    source_fingerprint: SourceFingerprint | None = None,
+):
     """Run one outer process only after the bounded executor grants a slot."""
     import multiprocessing
     import time
@@ -608,9 +721,27 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
             if job.get("cancel_requested") or job.get("status") == "cancelled":
                 job["status"] = "cancelled"
                 return
+            expected_source = source_fingerprint or job.get("source_fingerprint")
+
+        # REVISION (audit 2026-08-25 §REV.13): executor gọi hàm này chỉ sau
+        # admission. Chặn file đổi trong thời gian xếp hàng trước khi spawn child.
+        if isinstance(expected_source, SourceFingerprint):
+            try:
+                assert_source_fingerprint(expected_source)
+            except SourceRevisionChangedError as error:
+                _publish_nup_terminal_state(job_id, "failed", str(error))
+                return
+
+        with _NUP_JOBS_LOCK:
+            job = nup_jobs.get(job_id)
+            if job is None:
+                return
+            if job.get("cancel_requested") or job.get("status") == "cancelled":
+                job["status"] = "cancelled"
+                return
             proc = multiprocessing.Process(
                 target=_nup_process_worker,
-                args=(source_path, output_path, settings, job_id),
+                args=(source_path, output_path, settings, job_id, expected_source),
                 daemon=False,
             )
             # Publish only a genuinely started Process so cancellation never
@@ -657,16 +788,11 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
 
         if terminal_state is not None:
             terminal_status, terminal_message = terminal_state
-            with _NUP_JOBS_LOCK:
-                current_job = nup_jobs.get(job_id)
-                if current_job and current_job.get("status") != "cancelled":
-                    current_job["status"] = terminal_status
-                    current_job["completed_at"] = current_job.get("completed_at") or time.time()
-                    if terminal_status == "completed":
-                        current_job["report"] = terminal_message
-                        current_job["error"] = None
-                    else:
-                        current_job["error"] = terminal_message
+            _publish_nup_terminal_state(
+                job_id,
+                terminal_status,
+                terminal_message,
+            )
     finally:
         if sampler is not None:
             try:
@@ -713,7 +839,13 @@ def _terminate_nup_process(proc, timeout: float = 1.0) -> bool:
         return False
 
 
-def _nup_process_worker(source_path: str, output_path: str, settings: dict, job_id: str):
+def _nup_process_worker(
+    source_path: str,
+    output_path: str,
+    settings: dict,
+    job_id: str,
+    source_fingerprint: SourceFingerprint | None = None,
+):
     import tempfile
     import os
     from app.workers.nup_engine import run_nup_engine
@@ -721,6 +853,10 @@ def _nup_process_worker(source_path: str, output_path: str, settings: dict, job_
     _trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
     _safe_job_id = sanitize_diagnostic_id(job_id)
     try:
+        # Child là nơi first-open thật xảy ra; kiểm lại sát lời gọi engine để
+        # thu hẹp cửa sổ giữa admission và lúc PDF được mở.
+        if source_fingerprint is not None:
+            assert_source_fingerprint(source_fingerprint)
         report_msg = run_nup_engine(source_path, output_path, settings, job_id=job_id, progress_callback=None)
         if _trace_id:
             logger.warning(
@@ -757,6 +893,15 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     Hai chế độ chỉ khác tiền tố tên file; mode thực do settings['isDieCutMode'].
     """
     source_path = _validate_file_path(body.get("source_path"))
+    try:
+        # REVISION (audit 2026-08-25 §REV.13): chụp trước khi request đi vào
+        # hàng đợi; không hash/copy file nên chi phí chỉ là một lần stat.
+        source_fingerprint = capture_source_fingerprint(source_path)
+    except OSError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=SOURCE_REVISION_CHANGED_MESSAGE,
+        ) from error
     settings = dict(body.get("settings", {}) or {})
     from app.utils.preview_perf_log import log as _perf, sanitize_diagnostic_id
     _diagnostic_trace_id = sanitize_diagnostic_id(settings.get("diagnosticTraceId"))
@@ -855,6 +1000,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "report": "",
         "output_path": output_path,
         "error": None,
+        "artifact_lease": None,
         "created_at": time.time(),
         "started_at": None,
         "completed_at": None,
@@ -862,6 +1008,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "process": None,
         "pid": None,
         "diagnostic_trace_id": _diagnostic_trace_id,
+        "source_fingerprint": source_fingerprint,
     }
     if _diagnostic_trace_id:
         logger.warning(
@@ -899,7 +1046,14 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         nup_jobs.pop(job_id, None)
         raise HTTPException(status_code=429, detail="Hàng đợi N-Up đang đầy. Vui lòng chờ job hiện tại hoàn tất.")
     try:
-        _NUP_EXECUTOR.submit(_spawn_nup_process, source_path, output_path, settings, job_id)
+        _NUP_EXECUTOR.submit(
+            _spawn_nup_process,
+            source_path,
+            output_path,
+            settings,
+            job_id,
+            source_fingerprint,
+        )
     except Exception:
         _NUP_SUBMISSION_SLOTS.release()
         nup_jobs.pop(job_id, None)
@@ -952,16 +1106,22 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
                 parts = f.read().split('|||', 1)
-                job["status"] = parts[0]
-                if parts[0] in {"completed", "failed"}:
-                    job["completed_at"] = job.get("completed_at") or time.time()
-                if parts[0] == "completed":
-                    job["report"] = parts[1] if len(parts) > 1 else ""
-                else:
-                    job["error"] = parts[1] if len(parts) > 1 else ""
+            terminal_status = parts[0]
+            terminal_message = parts[1] if len(parts) > 1 else ""
+            # Marker fsync có I/O nhỏ nhưng vẫn không chặn event loop poll/status.
+            await asyncio.to_thread(
+                _publish_nup_terminal_state,
+                job_id,
+                terminal_status,
+                terminal_message,
+            )
+            job = nup_jobs.get(job_id, job)
         except Exception:
             pass
 
+    published = bool(
+        job.get("status") == "completed" and job.get("artifact_lease")
+    )
     return {
         "status": job["status"],
         "progress": job["progress"],
@@ -972,9 +1132,10 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
         "completed_at": job.get("completed_at"),
         "output_path": (
             job.get("output_path")
-            if settings.IS_DESKTOP_APP and job.get("status") == "completed"
+            if settings.IS_DESKTOP_APP and published
             else None
         ),
+        "artifact_lease": job.get("artifact_lease") if published else None,
     }
 
 
@@ -1011,11 +1172,14 @@ async def cancel_nup_job(job_id: str, _: dict = Depends(require_license)):
         job["status"] = "cancelled"
         job["error"] = None
         job["completed_at"] = job.get("completed_at") or time.time()
+        job["artifact_lease"] = None
         proc = job.get("process")
 
     stopped = True
     if proc is not None:
         stopped = _terminate_nup_process(proc)
+    if stopped:
+        _delete_nup_output_if_unleased(str(job.get("output_path") or ""))
 
     return {
         "job_id": job_id,

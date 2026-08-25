@@ -61,6 +61,9 @@ class StickerSourceInspectResponse(BaseModel):
     cut_contour_count: int = Field(ge=0)
     pages: list[StickerSourcePageResponse]
     warnings: list[str]
+    # COLOR (audit 2026-08-24 §BCOLOR.04): trả provenance để UI có thể báo
+    # thiếu ICC/OutputIntent thay vì để Pydantic âm thầm loại trường khỏi API.
+    color_provenance: dict[str, object] = Field(default_factory=dict)
     preview_url: str
 
 
@@ -129,6 +132,8 @@ class StickerSourceDetectResponse(BaseModel):
     shadow_cleanup: StickerShadowCleanup = "auto"
     instances: list[StickerSheetInstanceResponse]
     warnings: list[str]
+    # COLOR (audit 2026-08-24 §BCOLOR.04): giữ cùng descriptor sau bước nhận diện.
+    color_provenance: dict[str, object] = Field(default_factory=dict)
     vector_geometry_ref: dict[str, object] | None = None
     preview_url: str
     labels_url: str

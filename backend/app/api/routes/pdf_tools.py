@@ -41,6 +41,12 @@ from app.api.routes.combine_jobs import (
 )
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.core.imposition_file_access import validate_imposition_pdf_path
+from app.core.source_revision import (
+    SOURCE_REVISION_CHANGED_MESSAGE,
+    SourceRevisionChangedError,
+    assert_source_fingerprint,
+    capture_source_fingerprint,
+)
 from app.core.sticker_cutline_policy import resolve_sticker_corner_policy
 from app.core.upscale_policy import (
     icc_data_colorspace as _icc_data_colorspace,
@@ -967,13 +973,18 @@ async def trim_shift_endpoint(
         trimTop, trimBottom, trimLeft, trimRight,   # mm, ± (dương=nở, âm=cắt)
         shiftX, shiftY,                              # mm
         bindingEnabled, bindingMm, bindingInward,
-        creepEnabled, creepMm, creepAxis             # 'x' | 'y'
+        creepEnabled, creepMm, creepAxis,            # 'x' | 'y'
+        split: { enabled, axis: 'vertical'|'horizontal', count: 2|3,
+                 pieces: [{top, bottom, left, right}, ...] } # mm, lề trắng từng mảnh
     }
     """
     from app.workers.trim_shift_engine import trim_shift
 
     source_path = await save_upload(file)
     cfg = json.loads(config)
+    split_config = cfg.get("split") if isinstance(cfg, dict) else None
+    if not isinstance(split_config, dict) or not bool(split_config.get("enabled", False)):
+        split_config = None
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"trimshift_{job_id}.pdf")
 
@@ -996,6 +1007,7 @@ async def trim_shift_endpoint(
             mirror_fill=bool(cfg.get('mirrorFill', False)),
             content_mode=str(cfg.get('contentMode', 'original')),
             keep_bleed=bool(cfg.get('keepBleed', False)),
+            split_config=split_config,
         )
         await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
@@ -1447,6 +1459,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     source_path = None
     delete_source = False
     source_kind = "upload"
+    direct_source_fingerprint = None
 
     # Desktop files already have a real local path. Reading that path directly
     # avoids uploading hundreds of MB to the local sidecar before processing.
@@ -1493,6 +1506,17 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     # Verify file is not 0 bytes
     if os.path.getsize(source_path) == 0:
         raise HTTPException(status_code=400, detail=f"File rỗng (0 bytes). Vui lòng chọn một file PDF hợp lệ có chứa dữ liệu.")
+
+    if source_kind == "local_path":
+        try:
+            # REVISION (audit 2026-08-25 §REV.13): direct-path không được đọc
+            # revision khác sau khi chờ heavy slot. Chụp nhẹ trước admission.
+            direct_source_fingerprint = capture_source_fingerprint(source_path)
+        except OSError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=SOURCE_REVISION_CHANGED_MESSAGE,
+            ) from error
 
     cut_mode = form.get("cut_mode", "original")
     # AUDIT (2026-08-16 §BX.F06): hai tham số hình học quan trọng nhất trước đây là
@@ -1770,7 +1794,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             logger.warning("sticker-dieline: bleed_color_hex không hợp lệ (%r), dùng mặc định trắng.", bleed_color_hex)
             solid_bleed_color = (255, 255, 255)
                 
-        def _run_sticker_job():
+        def _run_sticker_job_canonical(job_source_path):
             """Chạy toàn bộ phần đồng bộ ngoài event loop.
 
             PERF (audit 2026-08-05 §PERF.1): đẩy toàn bộ job khỏi event loop.
@@ -1805,7 +1829,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
 
                 try:
                     approved = build_legacy_single_page_approved_contour(
-                        source_path,
+                        job_source_path,
                         cut_mode=cut_mode,
                         offset_mm=offset_mm,
                         bleed_mm=bleed_mm,
@@ -1842,7 +1866,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                         approved.boundary_source,
                     )
             success, meta = engine.process_pdf(
-                input_path=source_path,
+                input_path=job_source_path,
                 output_path=output_path,
                 cut_mode=cut_mode,
                 offset_mm=offset_mm,
@@ -1904,7 +1928,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                     )
                     page_expansion_pts = max(0.0, cut_edge_pts, outer_edge_pts)
                 restore_sticker_page_canvas(
-                    source_path,
+                    job_source_path,
                     output_path,
                     expansion_pts=page_expansion_pts,
                 )
@@ -1912,11 +1936,37 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             _safe_watermark(output_path, license_info)
             return meta, engine_seconds
 
+        def _run_sticker_job():
+            # ROTATE (feedback 2026-08-25 §STICKER.ROT1): detector, engine và
+            # bước khôi phục canvas phải đọc cùng page-space đã bake `/Rotate`.
+            # REVISION (audit 2026-08-25 §REV.13): closure chỉ chạy sau khi
+            # scheduler cấp slot; kiểm ngay trước canonicalize/first-open.
+            if direct_source_fingerprint is not None:
+                assert_source_fingerprint(direct_source_fingerprint)
+            from app.workers.page_space_canonicalization import (
+                canonicalize_page_space_file,
+            )
+
+            job_source_path, job_source_is_temp = canonicalize_page_space_file(
+                source_path,
+                f"sticker-{job_id}",
+            )
+            try:
+                return _run_sticker_job_canonical(job_source_path)
+            finally:
+                if job_source_is_temp:
+                    _cleanup_file(job_source_path)
+
         # PERF (audit 2026-08-16 §BX.P03): dùng `kind="sticker"` để job tem chờ ở gate
         # riêng TRƯỚC khi nhận suất heavy toàn cục, thay cho semaphore chặn trong thread.
         meta, engine_seconds = await run_scheduled_in_threadpool(
             "sticker", _run_sticker_job
         )
+
+        # Engine có thể chạy lâu; chốt lại trước khi FileResponse/path được công
+        # bố để không trả output tạo từ source đã đổi giữa chừng.
+        if direct_source_fingerprint is not None:
+            assert_source_fingerprint(direct_source_fingerprint)
 
         headers = {
             "X-Sticker-Output-Path": os.path.abspath(output_path),
@@ -1974,6 +2024,9 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 _finish_sticker_response, request_started, job_id, output_path
             ),
         )
+    except SourceRevisionChangedError as error:
+        _cleanup_file(output_path)
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except HTTPException:
         _cleanup_file(output_path)
         raise

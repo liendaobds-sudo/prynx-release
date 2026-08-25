@@ -12,6 +12,7 @@ import pytest
 from app.core.page_boxes import (
     PT_PER_MM,
     PageBoxesEngine,
+    _find_edge_background_content_bbox,
     _find_nonwhite_content_bbox,
     _pixel_bbox_to_cropbox,
 )
@@ -165,6 +166,124 @@ def test_fast_nonwhite_bbox_keeps_blank_page_unchanged(shape):
     assert _find_nonwhite_content_bbox(arr, 4) is None
 
 
+def test_edge_background_bbox_trims_flat_colored_border():
+    """Viền dư màu phẳng được nhận từ chu vi, không phụ thuộc màu trắng."""
+    arr = np.full((120, 160, 3), (32, 78, 145), dtype=np.uint8)
+    arr[20:100, 30:130, :3] = (238, 225, 40)
+
+    detection = _find_edge_background_content_bbox(arr, 9)
+    assert detection is not None
+    assert detection[0] == (30, 20, 129, 99)
+    # Morphology-open chỉ bỏ bốn pixel góc, không được làm đổi bbox.
+    assert 7_990 <= detection[1] <= 8_000
+
+
+def _make_partial_edge_border_image(sides: set[str]) -> np.ndarray:
+    """Tạo nội dung chạm các cạnh còn lại để xác nhận chỉ cạnh dư bị co."""
+    height, width = 120, 160
+    yy, xx = np.mgrid[:height, :width]
+    checker = (xx + yy) % 2 == 0
+    arr = np.empty((height, width, 3), dtype=np.uint8)
+    arr[checker] = (24, 24, 24)
+    arr[~checker] = (232, 232, 232)
+
+    if "left" in sides:
+        arr[:, :12, :3] = (32, 78, 145)
+    if "top" in sides:
+        arr[:8, :, :3] = (180, 40, 70)
+    if "right" in sides:
+        arr[:, -15:, :3] = (60, 160, 80)
+    if "bottom" in sides:
+        arr[-10:, :, :3] = (210, 130, 20)
+    return arr
+
+
+@pytest.mark.parametrize(
+    ("sides", "expected_bbox"),
+    [
+        ({"left"}, (12, 0, 159, 119)),
+        ({"top"}, (0, 8, 159, 119)),
+        ({"right"}, (0, 0, 144, 119)),
+        ({"bottom"}, (0, 0, 159, 109)),
+        ({"left", "top"}, (12, 8, 159, 119)),
+        ({"left", "right"}, (12, 0, 144, 119)),
+        ({"left", "top", "bottom"}, (12, 8, 159, 109)),
+        ({"left", "top", "right", "bottom"}, (12, 8, 144, 109)),
+    ],
+)
+def test_edge_background_bbox_trims_only_detected_sides(sides, expected_bbox):
+    """Viền dư ở 1–4 cạnh chỉ được co đúng các cạnh có dải màu phẳng."""
+    arr = _make_partial_edge_border_image(sides)
+
+    detection = _find_edge_background_content_bbox(arr, 9)
+    assert detection is not None
+    assert detection[0] == expected_bbox
+
+
+def test_edge_background_bbox_refuses_perpendicular_gradient():
+    """Outer-line phẳng không được làm gradient vuông góc bị xén từng dải."""
+    height, width = 120, 160
+    ramp = np.linspace(20, 220, height).round().astype(np.uint8)
+    arr = np.repeat(ramp[:, None, None], width, axis=1)
+    arr = np.repeat(arr, 3, axis=2)
+
+    assert _find_edge_background_content_bbox(arr, 9) is None
+
+
+def test_edge_background_bbox_keeps_side_with_print_mark():
+    """Nét in mảnh nhưng đủ dài chạm cạnh phải chặn xén cạnh đó."""
+    arr = _make_partial_edge_border_image({"left"})
+    arr[60, :20, :3] = (255, 0, 255)
+
+    assert _find_edge_background_content_bbox(arr, 9) is None
+
+
+def test_edge_background_bbox_ignores_isolated_edge_noise():
+    """Một pixel nhiễu không được chặn việc xén dải viền hợp lệ."""
+    arr = _make_partial_edge_border_image({"left"})
+    arr[60, 0, :3] = (255, 0, 255)
+
+    detection = _find_edge_background_content_bbox(arr, 9)
+    assert detection is not None
+    assert detection[0] == (12, 0, 159, 119)
+
+
+def test_edge_background_bbox_trims_one_pixel_colored_border():
+    """Mẫu chu vi phải nhận được viền màu rất mỏng, không dùng ratio guard 98%."""
+    arr = np.full((200, 200, 3), (18, 92, 160), dtype=np.uint8)
+    arr[1:-1, 1:-1, :3] = (240, 210, 35)
+
+    detection = _find_edge_background_content_bbox(arr, 9)
+    assert detection is not None
+    assert detection[0] == (1, 1, 198, 198)
+
+
+def test_edge_background_bbox_tolerates_compression_noise():
+    """Nhiễu màu nhẹ ở viền không được kéo bbox trở lại toàn trang."""
+    rng = np.random.default_rng(20260825)
+    base = np.full((120, 160, 3), (208, 222, 235), dtype=np.int16)
+    noise = rng.integers(-5, 6, size=base.shape, dtype=np.int16)
+    arr = np.clip(base + noise, 0, 255).astype(np.uint8)
+    arr[20:100, 30:130, :3] = (24, 38, 52)
+
+    detection = _find_edge_background_content_bbox(arr, 9)
+    assert detection is not None
+    assert detection[0] == (30, 20, 129, 99)
+
+
+def test_edge_background_bbox_refuses_ambiguous_gradient():
+    """Viền biến thiên không rõ ràng phải giữ nguyên thay vì đoán rồi xén sai."""
+    height, width = 120, 160
+    yy, xx = np.mgrid[:height, :width]
+    arr = np.zeros((height, width, 3), dtype=np.uint8)
+    arr[:, :, 0] = (xx * 180 // (width - 1)).astype(np.uint8)
+    arr[:, :, 1] = (yy * 180 // (height - 1)).astype(np.uint8)
+    arr[:, :, 2] = 70
+    arr[20:100, 30:130, :3] = (240, 30, 30)
+
+    assert _find_edge_background_content_bbox(arr, 9) is None
+
+
 def test_auto_trim_fast_path_preserves_geometry_for_all_rotations(tmp_path):
     """Đường bitmap→NumPy nhanh vẫn xén đúng cùng nội dung ở bốn góc xoay."""
     pytest.importorskip("pypdfium2")
@@ -189,6 +308,73 @@ def test_auto_trim_fast_path_preserves_geometry_for_all_rotations(tmp_path):
         for page, rotate in zip(result.pages, (0, 90, 180, 270)):
             media_box = [float(value) for value in page.obj["/MediaBox"]]
             assert media_box == pytest.approx([40.0, 10.0, 160.0, 90.0], abs=0.5)
+            assert int(page.get("/Rotate", 0) or 0) == rotate
+
+
+def test_auto_trim_colored_border_preserves_geometry_for_all_rotations(tmp_path):
+    """PDF thật có viền xanh phải xén đúng nội dung ở cả bốn góc /Rotate."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "auto_trim_colored_rotations.pdf"
+    pdf = pikepdf.Pdf.new()
+    for rotate in (0, 90, 180, 270):
+        pdf.add_blank_page(page_size=(200.0, 100.0))
+        page = pdf.pages[-1]
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+            pdf,
+            (
+                b"0.13 0.31 0.57 rg 0 0 200 100 re f\n"
+                b"0.93 0.88 0.16 rg 40 10 120 80 re f\n"
+            ),
+        )
+        page.obj[pikepdf.Name("/Rotate")] = rotate
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(str(source))
+
+    with pikepdf.Pdf.open(output) as result:
+        assert len(result.pages) == 4
+        for page, rotate in zip(result.pages, (0, 90, 180, 270)):
+            media_box = [float(value) for value in page.obj["/MediaBox"]]
+            assert media_box == pytest.approx([40.0, 10.0, 160.0, 90.0], abs=0.5)
+            assert int(page.get("/Rotate", 0) or 0) == rotate
+
+
+def test_auto_trim_partial_colored_border_preserves_other_sides_for_all_rotations(tmp_path):
+    """Một dải màu bên trái chỉ được co cạnh tương ứng qua mọi /Rotate."""
+    pytest.importorskip("pypdfium2")
+    source = tmp_path / "auto_trim_partial_colored_rotations.pdf"
+    pdf = pikepdf.Pdf.new()
+    checker_commands: list[bytes] = []
+    for row in range(10):
+        for col in range(20):
+            shade = b"0.08 0.08 0.08" if (row + col) % 2 == 0 else b"0.92 0.92 0.92"
+            checker_commands.append(
+                shade
+                + f" rg {col * 10} {row * 10} 10 10 re f".encode("ascii")
+            )
+    checker_commands.append(b"0.13 0.31 0.57 rg 0 0 17 100 re f")
+    stream = b"\n".join(checker_commands) + b"\n"
+
+    for rotate in (0, 90, 180, 270):
+        pdf.add_blank_page(page_size=(200.0, 100.0))
+        page = pdf.pages[-1]
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(pdf, stream)
+        page.obj[pikepdf.Name("/Rotate")] = rotate
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(str(source))
+
+    with pikepdf.Pdf.open(output) as result:
+        assert len(result.pages) == 4
+        for page, rotate in zip(result.pages, (0, 90, 180, 270)):
+            media_box = [float(value) for value in page.obj["/MediaBox"]]
+            assert media_box == pytest.approx([17.0, 0.0, 200.0, 100.0], abs=0.75)
             assert int(page.get("/Rotate", 0) or 0) == rotate
 
 

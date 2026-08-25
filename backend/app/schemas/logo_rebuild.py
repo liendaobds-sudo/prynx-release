@@ -13,6 +13,9 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 
 
 LogoRebuildMode = Literal["monochrome", "fixed_palette"]
+LogoCurvePreset = Literal[
+    "automatic", "faithful", "balanced", "trajectory_completion"
+]
 LogoRebuildEngine = Literal["prynx_core", "vtracer"]
 
 
@@ -50,6 +53,7 @@ class LogoRebuildSettings(BaseModel):
     crop: NormalizedCrop | None = None
     perspective_points: list[NormalizedPoint] | None = None
     smoothing: float = Field(default=0.5, ge=0.0, le=1.0)
+    curve_preset: LogoCurvePreset | None = None
     despeckle_size_px: int = Field(
         default=4,
         ge=0,
@@ -117,6 +121,8 @@ class LogoRebuildSettings(BaseModel):
             if self.background_color in self.palette:
                 raise ValueError("Màu nền cần loại bỏ phải khác bảng màu logo")
 
+        if self.engine == "vtracer" and self.curve_preset is not None:
+            raise ValueError("Preset hoàn thiện quỹ đạo chỉ hỗ trợ lõi PrynX")
         points = self.perspective_points
         if self.crop is not None and points is not None:
             raise ValueError("MVP không áp dụng đồng thời crop chữ nhật và hiệu chỉnh phối cảnh")
@@ -181,6 +187,8 @@ class LogoRebuildEngineInfo(BaseModel):
     result_schema_version: int | None = Field(default=None, ge=1)
     legacy_engine: str | None = None
     legacy_version: str | None = None
+    curve_presets: list[LogoCurvePreset] = Field(default_factory=list)
+    geometry_metrics_version: int | None = Field(default=None, ge=1)
 
 
 class LogoRebuildCapabilitiesResponse(BaseModel):
@@ -213,6 +221,17 @@ class LogoNativeMetrics(BaseModel):
     output_nodes: int = Field(ge=0)
     max_error_px: float = Field(ge=0.0)
     raster_scale: int = Field(gt=0)
+    max_symmetric_distance_px: float | None = Field(default=None, ge=0.0)
+    line_segments: int | None = Field(default=None, ge=0)
+    cubic_segments: int | None = Field(default=None, ge=0)
+    circle_count: int | None = Field(default=None, ge=0)
+    ellipse_count: int | None = Field(default=None, ge=0)
+    max_smooth_tangent_jump_degrees: float | None = Field(
+        default=None, ge=0.0, le=180.0
+    )
+    artifact_max_tangent_jump_degrees: float | None = Field(
+        default=None, ge=0.0, le=180.0
+    )
     iou: float = Field(ge=0.0, le=1.0)
     mae: float = Field(ge=0.0, le=1.0)
 

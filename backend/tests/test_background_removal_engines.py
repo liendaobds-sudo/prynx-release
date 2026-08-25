@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image
+import pytest
 
 
 class _Input:
@@ -107,6 +108,7 @@ def test_birefnet_releases_failed_gpu_session_before_loading_cpu(monkeypatch):
     monkeypatch.setattr(engine, "_sessions", {"lite": failed})
     monkeypatch.setattr(engine, "_force_cpu", False)
     monkeypatch.setattr(engine, "_download_model_if_needed", lambda _variant: "model.onnx")
+    monkeypatch.setattr(engine, "read_memory_status_mb", lambda: (16 * 1024.0, 8 * 1024.0))
     monkeypatch.setattr(engine.gc, "collect", lambda: events.append("gc"))
 
     def create_cpu(_path, providers):
@@ -121,6 +123,35 @@ def test_birefnet_releases_failed_gpu_session_before_loading_cpu(monkeypatch):
     assert engine._switch_to_cpu("lite") is engine._sessions["lite"]
     assert events == ["native_gpu_released", "gc", "cpu_created"]
     assert engine._force_cpu is True
+
+
+def test_birefnet_cpu_fallback_fails_fast_when_ram_is_too_low(monkeypatch):
+    """Không dựng session CPU mới khi admission đã biết chắc sẽ OOM."""
+    from app.workers import birefnet_engine as engine
+
+    class NativeSession:
+        pass
+
+    class FailedGpuSession:
+        def __init__(self):
+            self._sess = NativeSession()
+
+    created = []
+    monkeypatch.setattr(engine, "_sessions", {"lite": FailedGpuSession()})
+    monkeypatch.setattr(engine, "_force_cpu", False)
+    monkeypatch.setattr(engine, "_download_model_if_needed", lambda _variant: "model.onnx")
+    monkeypatch.setattr(engine, "read_memory_status_mb", lambda: (8 * 1024.0, 900.0))
+    monkeypatch.setattr(
+        engine,
+        "_create_session",
+        lambda *_args, **_kwargs: created.append(True),
+    )
+
+    with pytest.raises(MemoryError, match="CPU fallback cần ít nhất"):
+        engine._switch_to_cpu("lite")
+
+    assert created == []
+    assert "lite" not in engine._sessions
 
 
 def test_birefnet_discards_cached_directml_session_under_real_memory_pressure(monkeypatch):

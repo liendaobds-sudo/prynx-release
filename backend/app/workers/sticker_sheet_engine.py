@@ -96,6 +96,20 @@ def _is_background_model_memory_error(error: BaseException) -> bool:
     ))
 
 
+def _background_memory_error_message(error: BaseException) -> str:
+    """Chuyển OOM fallback thành hướng dẫn ngắn, không lộ tên lớp ONNX."""
+    if "cpu fallback" in str(error).lower():
+        return (
+            "GPU đã hết bộ nhớ và CPU cũng không còn đủ RAM để chạy mô hình tách tem. "
+            "Hãy đóng bớt ứng dụng hoặc khởi động "
+            "lại PrynX rồi thử lại."
+        )
+    return (
+        "Máy không còn đủ bộ nhớ để nhận diện vùng tem. File gốc vẫn được giữ; "
+        "hãy đóng bớt ứng dụng hoặc khởi động lại PrynX rồi thử lại."
+    )
+
+
 @dataclass(frozen=True)
 class StickerInstance:
     id: int
@@ -801,11 +815,7 @@ def analyze_sticker_sheet(
                 # UIUX (feedback 2026-08-16 §WHITE-SHEET.2): giữ stack trong log/exception
                 # chain nhưng không để tên lớp ONNX "RuntimeException" lọt ra giao diện.
                 logger.exception("Mô hình tách nền không còn đủ bộ nhớ để nhận diện tem")
-                raise StickerSheetError(
-                    "Máy không còn đủ bộ nhớ để nhận diện vùng tem. "
-                    "File gốc vẫn được giữ; hãy đóng bớt ứng dụng hoặc khởi động lại "
-                    "PrynX rồi thử lại."
-                ) from exc
+                raise StickerSheetError(_background_memory_error_message(exc)) from exc
             raise
         model_seconds = time.perf_counter() - model_started
         if model_result.size != source.size:
@@ -911,9 +921,5 @@ def analyze_sticker_sheet(
             # trong hậu xử lý cũng phải thành lỗi nghiệp vụ có kiểm soát; trước
             # đây chỉ OOM bên trong ONNX được chuyển đổi, còn NumPy làm route 500.
             logger.exception("Không còn đủ bộ nhớ khi hậu xử lý vùng tem")
-            raise StickerSheetError(
-                "Máy không còn đủ bộ nhớ để nhận diện vùng tem. "
-                "File gốc vẫn được giữ; hãy đóng bớt ứng dụng hoặc khởi động lại "
-                "PrynX rồi thử lại."
-            ) from exc
+            raise StickerSheetError(_background_memory_error_message(exc)) from exc
         raise

@@ -35,6 +35,7 @@ from app.workers.vdp_validate import (
 )
 from app.workers.vdp_preview import render_record_preview
 from app.core.license_guard import enforce_feature, require_license, require_feature
+from app.core.artifact_lease import artifact_delete_guard, create_artifact_lease
 from app.core.heavy_job_scheduler import scheduled_job
 from app.config import settings
 
@@ -91,22 +92,37 @@ def _purge_old_jobs():
     """Dọn các job quá hạn khỏi bộ nhớ và xoá file kết quả tương ứng.
 
     Khắc phục rò rỉ RAM (dict tăng vô hạn) và rác ổ đĩa (results/vdp_*.pdf
-    không được cleanup loop của DB quét tới).
+    không được cleanup loop của DB quét tới). TTL tính từ lúc terminal, không
+    phải lúc job bắt đầu; record được thu hồi độc lập với file còn owner lease.
     """
     now = time.time()
-    for jid in list(vdp_jobs.keys()):
-        job = vdp_jobs.get(jid)
-        if not job:
-            continue
-        created = job.get("created_at", now)
-        if now - created > VDP_JOB_TTL_SECONDS and job.get("status") in {"completed", "failed", "cancelled"}:
-            result_path = job.get("result")
-            if result_path and os.path.exists(result_path):
-                try:
-                    os.remove(result_path)
-                except OSError:
-                    pass
-            vdp_jobs.pop(jid, None)
+    expired: list[dict] = []
+    with _VDP_JOBS_LOCK:
+        for jid in list(vdp_jobs.keys()):
+            job = vdp_jobs.get(jid)
+            if not job or job.get("status") not in {"completed", "failed", "cancelled"}:
+                continue
+            terminal_at = job.get("completed_at")
+            if not isinstance(terminal_at, (int, float)):
+                # Job legacy/đang chạy lâu nhận mốc terminal từ lần sweep đầu,
+                # không bị purge theo created_at đã cũ.
+                job["completed_at"] = now
+                continue
+            if now - float(terminal_at) <= VDP_JOB_TTL_SECONDS:
+                continue
+            removed = vdp_jobs.pop(jid, None)
+            if removed is not None:
+                expired.append(removed)
+
+    for job in expired:
+        result_path = job.get("result") or job.get("output_path")
+        if result_path and os.path.exists(result_path):
+            try:
+                with artifact_delete_guard(result_path) as may_delete:
+                    if may_delete and os.path.exists(result_path):
+                        os.remove(result_path)
+            except OSError:
+                pass
 
 import glob
 import tempfile
@@ -140,17 +156,78 @@ def _cleanup_vdp_job_files(job_id: str, job: dict, *, include_output: bool) -> N
         job.get("template_path"),
         job.get("cancel_file"),
     ]
+    output_paths = {
+        path
+        for path in (job.get("output_path"), job.get("result"))
+        if path
+    }
     if include_output:
-        paths.extend((job.get("output_path"), job.get("result")))
+        paths.extend(output_paths)
     tmp_dir = tempfile.gettempdir()
     paths.extend(glob.glob(os.path.join(tmp_dir, f"vdp_prog_{job_id}_*.txt")))
     paths.extend(glob.glob(os.path.join(tmp_dir, f"vdp_chunk_{job_id}_*.pdf")))
     for path in dict.fromkeys(path for path in paths if path):
         try:
             if os.path.exists(path):
-                os.remove(path)
+                if path in output_paths:
+                    with artifact_delete_guard(path) as may_delete:
+                        if may_delete and os.path.exists(path):
+                            os.remove(path)
+                else:
+                    os.remove(path)
         except OSError:
             pass
+
+
+def _publish_vdp_output(job_id: str, output_path: str) -> bool:
+    """Công bố result/token cùng lúc; không lease thì fail-closed và dọn output."""
+    output_to_delete = ""
+    with _VDP_JOBS_LOCK:
+        job = vdp_jobs.get(job_id)
+        if job is None:
+            output_to_delete = output_path
+        elif _vdp_is_cancelled(job):
+            raise VdpCancelledError("VDP job cancelled")
+        elif job.get("status") == "completed" and job.get("artifact_lease"):
+            return True
+        else:
+            try:
+                # Engine đã return sau giai đoạn saving nên output đã đóng xong.
+                lease_token = create_artifact_lease("vdp", output_path)
+            except Exception as error:
+                logger.exception(
+                    "Không tạo được artifact lease cho job VDP %s: %s",
+                    job_id,
+                    error,
+                )
+                job["status"] = "failed"
+                job["result"] = None
+                job["artifact_lease"] = None
+                job["error"] = (
+                    "Không thể bảo vệ file kết quả VDP. Vui lòng chạy lại."
+                )
+                job["completed_at"] = job.get("completed_at") or time.time()
+                output_to_delete = output_path
+            else:
+                job["status"] = "completed"
+                job["result"] = output_path
+                job["artifact_lease"] = lease_token
+                job["error"] = None
+                job["completed_at"] = job.get("completed_at") or time.time()
+
+    if output_to_delete:
+        _cleanup_vdp_job_files(
+            job_id,
+            {"output_path": output_to_delete},
+            include_output=True,
+        )
+    with _VDP_JOBS_LOCK:
+        published = vdp_jobs.get(job_id)
+        return bool(
+            published
+            and published.get("status") == "completed"
+            and published.get("artifact_lease")
+        )
 
 
 def _release_vdp_submission_slot(job: dict) -> bool:
@@ -314,33 +391,34 @@ def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField],
         )
         if cancel_check():
             raise VdpCancelledError("VDP job cancelled")
-        with _VDP_JOBS_LOCK:
-            if _vdp_is_cancelled(job):
-                raise VdpCancelledError("VDP job cancelled")
-            job["status"] = "completed"
-            job["result"] = output_path
-            job["error"] = None
+        _publish_vdp_output(job_id, output_path)
     except VdpCancelledError:
         with _VDP_JOBS_LOCK:
             job["cancel_requested"] = True
             job["status"] = "cancelled"
             job["result"] = None
+            job["artifact_lease"] = None
             job["error"] = None
+            job["completed_at"] = job.get("completed_at") or time.time()
         _cleanup_vdp_job_files(job_id, job, include_output=True)
     except Exception as e:
         with _VDP_JOBS_LOCK:
             if _vdp_is_cancelled(job):
                 job["status"] = "cancelled"
                 job["result"] = None
+                job["artifact_lease"] = None
                 job["error"] = None
             else:
                 job["status"] = "failed"
+                job["result"] = None
+                job["artifact_lease"] = None
                 job["error"] = str(e)
+            job["completed_at"] = job.get("completed_at") or time.time()
     finally:
         _cleanup_vdp_job_files(
             job_id,
             job,
-            include_output=job.get("status") == "cancelled",
+            include_output=job.get("status") != "completed",
         )
 
 @scheduled_job("vdp")
@@ -382,7 +460,9 @@ def vdp_background_task_spooled(
                 job["cancel_requested"] = True
                 job["status"] = "cancelled"
                 job["result"] = None
+                job["artifact_lease"] = None
                 job["error"] = None
+                job["completed_at"] = job.get("completed_at") or time.time()
     except Exception as exc:
         if job is None:
             return
@@ -390,16 +470,20 @@ def vdp_background_task_spooled(
             if _vdp_is_cancelled(job):
                 job["status"] = "cancelled"
                 job["result"] = None
+                job["artifact_lease"] = None
                 job["error"] = None
             else:
                 job["status"] = "failed"
+                job["result"] = None
+                job["artifact_lease"] = None
                 job["error"] = str(exc)
+            job["completed_at"] = job.get("completed_at") or time.time()
     finally:
         if job is not None:
             _cleanup_vdp_job_files(
                 job_id,
                 job,
-                include_output=job.get("status") == "cancelled",
+                include_output=job.get("status") != "completed",
             )
             _release_vdp_submission_slot(job)
         else:
@@ -485,8 +569,10 @@ async def start_vdp_job(
             "processed": 0,
             "total": 0,
             "result": None,
+            "artifact_lease": None,
             "error": None,
             "created_at": time.time(),
+            "completed_at": None,
             "cancel_requested": False,
             "cancel_event": threading.Event(),
             "cancel_file": _vdp_cancel_marker(job_id),
@@ -558,7 +644,9 @@ def cancel_vdp_job(job_id: str, license_info: dict = Depends(require_license)):
         job["cancel_requested"] = True
         job["status"] = "cancelled"
         job["result"] = None
+        job["artifact_lease"] = None
         job["error"] = None
+        job["completed_at"] = job.get("completed_at") or time.time()
         event = job.get("cancel_event")
         if event is not None:
             event.set()
@@ -609,11 +697,15 @@ def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
                 pass
         job['processed'] = total_processed
                 
+    published = bool(
+        job.get("status") == "completed" and job.get("artifact_lease")
+    )
     return {
         "status": job.get("status"),
         "processed": job.get("processed", 0),
         "total": job.get("total", 0),
-        "result": job.get("result"),
+        "result": job.get("result") if published else None,
+        "artifact_lease": job.get("artifact_lease") if published else None,
         "error": job.get("error"),
         "cancel_requested": bool(job.get("cancel_requested")),
     }
