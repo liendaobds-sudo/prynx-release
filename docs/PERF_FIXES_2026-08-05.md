@@ -255,10 +255,10 @@ Sau sửa:
 ### §PERF.5 phần 1 — Native startup splash và chuỗi mốc đo xuyên tầng
 
 - Baseline release gần nhất trong `%APPDATA%/PrynX/logs/startup_debug.log`: `release setup: begin` lúc `14:19:28.584`, `sidecar startup proof: waiting` lúc `14:19:29.666`, sidecar sẵn sàng lúc `14:19:35.209`, `app ready` lúc `14:19:35.256`. Tổng setup là **6,672 giây**, riêng chờ startup proof **5,543 giây**; trong toàn khoảng này main window cấu hình `visible:false` nên người dùng không thấy phản hồi.
-- `desktop/src-tauri/tauri.conf.json`: giữ main window ẩn như trước nhưng thêm cửa sổ `startup` 520×300, không decoration/resize/taskbar, luôn nổi và hiện ngay từ lúc Tauri tạo window.
+- `desktop/src-tauri/tauri.conf.json`: giữ main window ẩn như trước nhưng thêm cửa sổ `startup` 520×300, không decoration/resize/taskbar, luôn nổi và tạo ẩn (`visible:false`) để không vẽ một frame trước `setup`.
 - `desktop/public/startup.html`: splash tự chứa, không JavaScript/network, dùng asset logo đã có; có tiếng Việt, progress CSS, dark mode và reduced-motion. Vite copy nguyên asset vào release bundle.
-- `desktop/src-tauri/src/lib.rs`: ghi thêm các mốc `process entry`, `native splash: created`, `sidecar: ready (startup proof OK)`, `setup complete — app ready`, `frontend: Home interactive`. Hash sidecar 413 MB, spawn và startup proof chạy trong worker riêng để event loop vẫn paint/phản hồi; cửa sổ chính chỉ được show/focus sau proof, rồi mới đóng startup splash.
-- Bản debug đóng startup splash ngay trong `setup` vì không chờ Nuitka sidecar; vòng dev không bị thêm màn chờ. Bản release vẫn giữ toàn bộ integrity/proof fail-closed và timeout 60 giây, chỉ thay đổi phản hồi nhìn thấy.
+- `desktop/src-tauri/src/lib.rs`: ghi thêm các mốc `process entry`, `native splash: created (hidden; show queued from worker)`, `native splash: shown`, `sidecar: ready (startup proof OK)`, `setup complete — app ready`, `frontend: Home interactive`. Hash sidecar 413 MB, spawn và startup proof chạy trong worker riêng để event loop vẫn paint/phản hồi; cửa sổ chính chỉ được show/focus sau proof, rồi mới đóng startup splash.
+- Bản debug đóng startup splash ngay trong `setup` vì không chờ Nuitka sidecar; vòng dev không bị thêm màn chờ. Bản release chỉ xếp lịch `show` từ worker qua event loop sau khi cửa sổ đã tạo ẩn, vẫn giữ toàn bộ integrity/proof fail-closed và timeout 60 giây.
 - `desktop/src/App.tsx`: sau khi `AppInner`/Home mount, gửi đúng một IPC `mark_frontend_interactive` qua API Tauri chính thức; không phụ thuộc global bridge, không chặn render, không gọi network và không tạo telemetry khi app đang chạy.
 - Lô này chưa thay đổi `SPLASH_MIN_MS=3000` hoặc warm ba chunk workspace. React splash tiếp tục chạy phía sau native splash; policy warm theo RAM được tách sang phần 2 để đo riêng và không vượt giới hạn 5 file.
 
@@ -266,7 +266,7 @@ Sau sửa:
 
 - Baseline: Rust startup `2 passed`; frontend `npm run typecheck` đạt.
 - Test mới trước triển khai: compile fail đúng lý do thiếu `desktop/public/startup.html`.
-- Sau sửa, Rust startup `3 passed` — config có window startup visible, asset đủ status/ARIA và không script; proof/timeout cũ tiếp tục xanh.
+- Sau sửa, Rust startup `3 passed` — config có window startup ẩn, asset đủ status/ARIA và không script; proof/timeout cũ tiếp tục xanh.
 - `cargo check --release`: đạt, bao gồm nhánh chỉ có ở bản đóng gói.
 - `npm run typecheck` và `npm run build`: đạt. `dist/startup.html` 3.321 byte và `dist/logo.svg` 8.939 byte tồn tại sau build.
 - Visual QA asset `dist/startup.html` ở đúng viewport 520×300: logo/text/progress nằm trọn khung, dark mode đọc rõ, accessibility tree có `role=status`/nhãn tiếng Việt và console không có warn/error.
