@@ -17,6 +17,7 @@ use tauri_plugin_fs::FsExt;
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 use std::os::windows::process::CommandExt;
 
+mod document_window_registry;
 mod external_app;
 mod pdf_color_risk;
 mod pdf_engine;
@@ -880,7 +881,7 @@ mod sidecar_startup_tests {
     }
 
     #[test]
-    fn cua_so_startup_hien_som_va_asset_tu_chua_du_thong_tin() {
+    fn cua_so_startup_an_truoc_setup_va_asset_day_du_thong_tin() {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let windows = config["app"]["windows"].as_array().unwrap();
@@ -889,7 +890,9 @@ mod sidecar_startup_tests {
             .find(|window| window["label"] == "startup")
             .expect("phải có cửa sổ startup riêng");
 
-        assert_eq!(startup["visible"], true);
+        // UIUX (startup flash): để Tauri không vẽ cửa sổ trước khi `setup` và
+        // event loop sẵn sàng; bản release sẽ xếp lịch show từ worker nền.
+        assert_eq!(startup["visible"], false);
         assert_eq!(startup["decorations"], false);
         assert_eq!(startup["resizable"], false);
         assert_eq!(startup["url"], "startup.html");
@@ -3962,7 +3965,7 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn copy_file_atomic(source: String, path: String) -> Result<(), String> {
+fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Result<(), String> {
     // COPY file đĩa→đĩa NGUYÊN TỬ, không đọc bytes vào JS. Vì sao: kết quả bình
     // sách/VDP là file lớn (hàng trăm MB) đã nằm trên đĩa; đường cũ đọc toàn bộ vào
     // JS rồi truyền Uint8Array qua IPC cho write_file_atomic → "RangeError: Invalid
@@ -4013,6 +4016,13 @@ fn copy_file_atomic(source: String, path: String) -> Result<(), String> {
     if let Err(e) = std::fs::rename(&tmp, target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("Lỗi thay thế file đích: {}", e));
+    }
+    if document_window_registry::is_document_window_staging_path(target) {
+        if let Err(error) = document_window_registry::register_document_window_staging(&app, target)
+        {
+            let _ = std::fs::remove_file(target);
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -5043,9 +5053,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(SystemFilesState(Mutex::new(Vec::new())))
+        // UIUX/SEC (audit 2026-08-25 §NW.3/§NW.8): bootstrap cửa sổ PDF chỉ sống
+        // trong RAM native và được lấy đúng một lần theo label của chính WebView.
+        .manage(Mutex::new(document_window_registry::DocumentWindowRegistry::default()))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -5076,6 +5089,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                document_window_registry::handle_window_destroyed(window.app_handle(), window.label());
+            }
             if window.label() != "main" || !APP_STARTUP_READY.load(Ordering::Acquire) {
                 return;
             }
@@ -5103,6 +5119,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // SEC/DATA (audit 2026-08-25 §NW.8): dọn snapshot cửa sổ tài liệu
+            // còn sót từ lần chạy bị crash; file đang sống được registry giữ riêng.
+            document_window_registry::schedule_startup_cleanup(app.handle().clone());
             if let Some(startup_window) = app.get_webview_window("startup") {
                 #[cfg(debug_assertions)]
                 {
@@ -5111,12 +5130,11 @@ pub fn run() {
                 }
                 #[cfg(not(debug_assertions))]
                 {
-                    // PERF (audit 2026-08-05 §PERF.5): không gọi is_visible() trong
-                    // setup vì event loop chưa chạy, WebView2 sẽ chờ rồi báo
-                    // "failed to receive message". Config/test đảm bảo visible=true;
-                    // setup phải trả quyền sớm để splash thật sự paint và phản hồi.
+                    // PERF (audit 2026-08-05 §PERF.5): cửa sổ startup được tạo ẩn
+                    // để không vẽ frame trước setup. Worker release sẽ xếp lịch show
+                    // từ thread nền, sau khi event loop có thể nhận task.
                     let _ = startup_window;
-                    startup_breadcrumb("native splash: created");
+                    startup_breadcrumb("native splash: created (hidden; show queued from worker)");
                 }
             }
 
@@ -5275,6 +5293,30 @@ pub fn run() {
                 std::thread::Builder::new()
                     .name("prynx-release-startup".to_string())
                     .spawn(move || {
+                        // UIUX (startup flash): gửi show từ thread nền để Tauri
+                        // xếp task vào event loop; gọi từ setup/main thread sẽ chạy ngay.
+                        let splash_handle = app.clone();
+                        if let Err(error) = app.run_on_main_thread(move || {
+                            if APP_STARTUP_READY.load(Ordering::Acquire) {
+                                return;
+                            }
+                            if let Some(startup_window) =
+                                splash_handle.get_webview_window("startup")
+                            {
+                                if let Err(error) = startup_window.show() {
+                                    log::warn!(
+                                        "[STARTUP] Không hiện được splash native: {}",
+                                        error
+                                    );
+                                } else {
+                                    startup_breadcrumb("native splash: shown");
+                                }
+                            } else {
+                                startup_breadcrumb("native splash: missing");
+                            }
+                        }) {
+                            startup_breadcrumb(&format!("native splash: queue FAIL {error}"));
+                        }
                 use tauri_plugin_shell::ShellExt;
 
                 // VECTOR #3 FIX: verify tính toàn vẹn binary sidecar TRƯỚC khi chạy.
