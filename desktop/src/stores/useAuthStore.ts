@@ -56,7 +56,48 @@ type LicenseVerifyResponse = {
   token?: string;
   plan?: string;
   features?: unknown;
+  /** Lý do cấp/giữ khoá bộ máy khuôn bế — server chỉ trả ở nhánh `status = 'VALID'`. */
+  rk_status?: unknown;
 };
+
+/**
+ * UIUX (audit 2026-08-26 dieline-engine-unlock): trạng thái cấp khoá bộ máy khuôn bế.
+ *
+ * Bảy giá trị đầu là enum `rk_status` do `license-verify` trả về; `'unknown'` là giá trị
+ * của CHÍNH client cho mọi trường hợp không có câu trả lời mới từ server (lỗi mạng,
+ * RATE_LIMITED, offline-grace theo `exp`, hoặc bundle Edge chưa có trường này). Không
+ * chứa giá trị khoá, license key hay bộ đếm nào — chỉ là lý do dạng enum.
+ */
+export type DielineKeyStatus =
+  | 'granted'
+  | 'not_requested'
+  | 'not_entitled'
+  | 'no_key_for_version'
+  | 'burst_denied'
+  | 'infra_unavailable'
+  | 'legacy_fallback'
+  | 'unknown';
+
+const DIELINE_KEY_STATUSES: readonly string[] = [
+  'granted',
+  'not_requested',
+  'not_entitled',
+  'no_key_for_version',
+  'burst_denied',
+  'infra_unavailable',
+  'legacy_fallback',
+];
+
+/**
+ * Chuẩn hoá `rk_status` từ phản hồi server. Fail-safe về `'unknown'`:
+ * - bundle Edge chưa lên bản có `rk_status` ⇒ trường thiếu ⇒ không banner sai, không crash;
+ * - server mới thêm lý do mà app chưa biết ⇒ cũng `'unknown'` thay vì hiển thị chuỗi lạ.
+ */
+function normalizeDielineKeyStatus(raw: unknown): DielineKeyStatus {
+  return typeof raw === 'string' && DIELINE_KEY_STATUSES.includes(raw)
+    ? raw as DielineKeyStatus
+    : 'unknown';
+}
 
 function isNativeRuntime(): boolean {
   const runtime = globalThis as PrynXRuntimeGlobal;
@@ -201,6 +242,12 @@ interface AuthState {
   licensePlan: LicensePlan;
   /** Quyền cấp riêng; null nghĩa là dùng quyền mặc định theo plan. */
   licenseFeatures: string[] | null;
+  /**
+   * UIUX (audit 2026-08-26 dieline-engine-unlock): lý do dạng enum cho việc token có/không
+   * mang khoá mở bộ máy khuôn bế. Chỉ dùng để công cụ khuôn bế báo đúng bản chất và để
+   * người dùng gửi kèm khi liên hệ hỗ trợ — KHÔNG phải cổng quyền, không chặn gì.
+   */
+  dielineKeyStatus: DielineKeyStatus;
   /** Số ngày còn lại tới hạn dùng (do verify_license trả về). null nếu không giới hạn/chưa biết. */
   remainingDays: number | null;
   /** Mốc hết hạn (ISO) do verify_license trả về. */
@@ -375,6 +422,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   licenseToken: null,
   licensePlan: 'free',
   licenseFeatures: null,
+  // Chưa gọi verify lần nào ⇒ chưa có câu trả lời nào từ server.
+  dielineKeyStatus: 'unknown',
   remainingDays: null,
   licenseExpiresAt: null,
   isChecking: true,
@@ -497,7 +546,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
    */
   validateLicense: async (): Promise<boolean> => {
     const { licenseKey } = get();
-    if (!licenseKey) return false;
+    if (!licenseKey) {
+      // Chưa có key ⇒ chưa hề gọi server ⇒ không biết gì về khoá engine.
+      set({ dielineKeyStatus: 'unknown' });
+      return false;
+    }
 
     try {
       // Get HWID from Rust backend
@@ -521,6 +574,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       if (error) {
         console.warn('[AUTH] License validation edge error:', error.message);
+        // UIUX (audit 2026-08-26 dieline-engine-unlock): không có câu trả lời mới từ
+        // server ⇒ không được suy diễn gì về khoá engine. Đặt một lần cho CẢ nhánh này
+        // (clock-manipulation, offline-grace theo token, forward-jump, offline > 24h,
+        // và grace trong 24h) để không nhánh con nào giữ lại giá trị cũ đã lạc hậu.
+        set({ dielineKeyStatus: 'unknown' });
         const lastOnline = await (async () => {
           try {
             const { invoke } = await import('@tauri-apps/api/core');
@@ -608,7 +666,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const response = data as LicenseVerifyResponse | null;
       const isValid = response?.status === 'VALID';
-      
+      // UIUX (audit 2026-08-26 dieline-engine-unlock): server CHỈ trả `rk_status` ở nhánh
+      // VALID (thiết kế §D). Mọi status khác không nói gì về khoá engine ⇒ `'unknown'`.
+      // Trường thiếu (bundle Edge chưa lên) cũng ra `'unknown'` qua normalize.
+      set({
+        dielineKeyStatus: isValid
+          ? normalizeDielineKeyStatus(response?.rk_status)
+          : 'unknown',
+      });
+
       // VECTOR #7: Device limit exceeded
       if (response && response.status === 'DEVICE_LIMIT') {
         const maxDevices = response.max_devices || 2;
@@ -622,6 +688,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       
       // VECTOR #8: Rate limited
+      // `dielineKeyStatus` đã là `'unknown'` (status khác VALID) — cố ý: bị rate-limit
+      // nghĩa là server CHƯA trả lời về khoá engine, không phải đã từ chối cấp.
       if (response && response.status === 'RATE_LIMITED') {
         // Vẫn nạp cache Rust để không bị 403 backend khi Supabase rate-limit (hay gặp khi
         // chạy dev + release cùng máy cùng license → đập RPC quá nhiều).
@@ -703,6 +771,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return isValid;
     } catch (err) {
       console.error('[AUTH] License validation failed:', err);
+      // UIUX (audit 2026-08-26 dieline-engine-unlock): ngoại lệ (mất mạng, phản hồi rác,
+      // VALID mà thiếu token) ⇒ không có câu trả lời mới ⇒ `'unknown'` cho cả nhánh.
+      set({ dielineKeyStatus: 'unknown' });
       const lastOnline = await (async () => {
         try {
           const { invoke: inv2 } = await import('@tauri-apps/api/core');

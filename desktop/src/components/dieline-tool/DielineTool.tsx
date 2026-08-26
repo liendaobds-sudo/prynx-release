@@ -11,6 +11,8 @@ import DielineCanvas2D from './DielineCanvas2D';
 import NestingPanel from './NestingPanel';
 import NestingCanvas from './NestingCanvas';
 import { useBoxStore } from '../../stores/useBoxStore';
+import { useAuthStore } from '../../stores/useAuthStore';
+import { APP_VERSION, copyUiDiagnosticReport } from '../../lib/uiErrorDiagnostics';
 import { downloadPDF, buildDielinePdfBlob } from '../../lib/dieline/exportPDF';
 import { downloadNestingPDF, buildNestingPdfBlob, buildTrayNestingPdfBlob, downloadTrayNestingPDF } from '../../lib/dieline/exportNestingPDF';
 import { downloadProductionDielinePDF, downloadProductionNestingPDF, downloadProductionTrayNestingPDF } from '../../lib/dieline/productionPDF';
@@ -30,6 +32,54 @@ const SIDEBAR_MIN_HEIGHT = 320;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'prynx.dieline.sidebarWidth';
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+// ─────────────────────────────────────────────────────────────────────────────────────
+// UIUX (audit 2026-08-26 dieline-engine-unlock): phát hiện sớm bộ máy khuôn bế bị khoá.
+//
+// Bối cảnh: bản phát hành nhúng engine khuôn bế đã mã hoá theo từng phiên bản; khoá mở
+// nằm ở claim `rk` của token license. Khi server giữ lại `rk`, công cụ vẫn mở bình thường
+// rồi chỉ báo lỗi lúc người dùng đã bấm tạo khuôn (rc.9: sáu lần liên tiếp, sửa số đo hay
+// bấm "Thử lại" đều không hết). `warm_dieline_engine` CỐ Ý no-op ở bản đã khoá nên không
+// có gì phát hiện sớm hộ.
+//
+// Vì sao hỏi lúc MỞ CÔNG CỤ, không phải lúc khởi động app: khởi động sẽ làm ồn với người
+// không bao giờ dùng khuôn bế, và dựng lại đúng vấn đề "log lỗi mỗi lần khởi động" mà
+// warmup no-op tồn tại để tránh.
+// ─────────────────────────────────────────────────────────────────────────────────────
+
+type DielineEngineStatus = { locked: boolean; licenseKeyPresent: boolean };
+
+/** Kết quả dùng chung cho cả phiên app — mở lại công cụ không gọi lại endpoint. */
+let engineStatusCache: DielineEngineStatus | null = null;
+/**
+ * "Thế hệ khoá" đã hỏi rồi. Khoá bộ nhớ đệm theo `dielineKeyStatus` để: bình thường chỉ
+ * một lượt hỏi mỗi phiên, nhưng khi nhịp heartbeat 5 phút nhận được câu trả lời khác từ
+ * server (vd server vừa được sửa và bắt đầu cấp `rk`) thì tự hỏi lại và banner tự mất.
+ */
+let engineStatusProbedFor: string | null = null;
+
+/**
+ * Truy vấn CHỈ-ĐỌC `GET /api/dieline/engine-status`. Luôn 200 ở bản đủ quyền; người dùng
+ * Free bị `require_feature` từ chối ở tầng entitlement (403) — trả `null` để KHÔNG hiện
+ * banner, vì họ không cần biết chuyện khoá engine.
+ *
+ * Mọi lỗi (sidecar chưa lên, mạng nội bộ đứt, wheel cũ) đều trả `null`: banner chỉ được
+ * hiện khi CHẮC CHẮN engine đã khoá và token thiếu khoá mở, để không báo động sai.
+ */
+async function fetchDielineEngineStatus(): Promise<DielineEngineStatus | null> {
+    try {
+        const { authenticatedFetch, getApiUrl } = await import('../../lib/api');
+        const response = await authenticatedFetch(`${getApiUrl()}/dieline/engine-status`);
+        if (!response.ok) return null;
+        const body = await response.json() as { locked?: unknown; license_key_present?: unknown };
+        return {
+            locked: body?.locked === true,
+            licenseKeyPresent: body?.license_key_present === true,
+        };
+    } catch {
+        return null;
+    }
+}
 
 function getInitialSidebarWidth() {
     if (typeof window === 'undefined') return 280;
@@ -78,6 +128,10 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
     const [sidebarDetached, setSidebarDetached] = useState(false);
     const [sidebarPosition, setSidebarPosition] = useState({ x: 20, y: 52 });
     const [sidebarHeight, setSidebarHeight] = useState(640);
+    // UIUX (audit 2026-08-26 dieline-engine-unlock): trạng thái bộ máy khuôn bế + nhãn lý do.
+    const [engineStatus, setEngineStatus] = useState<DielineEngineStatus | null>(engineStatusCache);
+    const [isRecheckingLicense, setIsRecheckingLicense] = useState(false);
+    const dielineKeyStatus = useAuthStore((state) => state.dielineKeyStatus);
     const toolRef = useRef<HTMLElement>(null);
     const interactionCleanupRef = useRef<(() => void) | null>(null);
     const sidebarWidthRef = useRef(sidebarWidth);
@@ -96,6 +150,59 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
         setVariant(variantId);
         setView('editor');
     };
+
+    // UIUX (audit 2026-08-26 dieline-engine-unlock): hỏi trạng thái engine khi MỞ công cụ
+    // (view = editor), một lượt cho mỗi "thế hệ khoá". Không chạy ở màn thư viện và không
+    // chạy lúc khởi động app.
+    useEffect(() => {
+        if (view !== 'editor') return;
+        if (engineStatusProbedFor === dielineKeyStatus) {
+            setEngineStatus(engineStatusCache);
+            return;
+        }
+        engineStatusProbedFor = dielineKeyStatus;
+        let cancelled = false;
+        void (async () => {
+            const status = await fetchDielineEngineStatus();
+            if (status) engineStatusCache = status;
+            if (!cancelled) setEngineStatus(engineStatusCache);
+        })();
+        return () => { cancelled = true; };
+    }, [view, dielineKeyStatus]);
+
+    // "Kiểm tra lại bản quyền": lấy token mới rồi hỏi lại ngay. Server đã sửa thì token
+    // mới có `rk` và banner tự mất, không cần khởi động lại app.
+    const handleRecheckLicense = useCallback(async () => {
+        setIsRecheckingLicense(true);
+        try {
+            await useAuthStore.getState().validateLicense();
+            // Chốt "thế hệ khoá" TRƯỚC khi hỏi để effect không gọi endpoint lần thứ hai
+            // khi `dielineKeyStatus` vừa đổi.
+            engineStatusProbedFor = useAuthStore.getState().dielineKeyStatus;
+            const status = await fetchDielineEngineStatus();
+            if (status) engineStatusCache = status;
+            setEngineStatus(engineStatusCache);
+        } finally {
+            setIsRecheckingLicense(false);
+        }
+    }, []);
+
+    // "Liên hệ hỗ trợ": copy phiên bản + lý do dạng enum. KHÔNG có token, license key hay
+    // giá trị khoá `rk` — chỉ những gì bộ phận hỗ trợ cần để tra đúng bản phát hành.
+    // Nội dung report cố ý KHÔNG đi qua `tv()`: bộ phận hỗ trợ luôn đọc một định dạng duy
+    // nhất, không phụ thuộc ngôn ngữ giao diện của khách (giống `buildUiDiagnosticReport`).
+    const handleCopySupportInfo = useCallback(async () => {
+        const report = [
+            `PrynX ${APP_VERSION}`,
+            'Bộ máy khuôn bế: chưa mở khoá',
+            `Trạng thái khoá bản quyền: ${dielineKeyStatus}`,
+        ].join('\n');
+        if (await copyUiDiagnosticReport(report)) {
+            toast.success(tv('Đã copy thông tin hỗ trợ vào bộ nhớ tạm.'));
+        } else {
+            toast.error(tv('Không copy được — hãy chụp màn hình gửi bộ phận hỗ trợ.'));
+        }
+    }, [dielineKeyStatus]);
 
     // Ctrl+P → in đúng thứ ĐANG XEM: tab Nesting in bản xếp khuôn, còn lại in bản
     // trải khuôn 1:1. Dieline vẽ vector tham số (không có file PDF thường trực) nên
@@ -263,6 +370,50 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                         {sidebarDetached ? '⇤' : '↗'}
                     </button>
                 </div>
+                {/* UIUX (audit 2026-08-26 dieline-engine-unlock): banner cố định, KHÔNG chặn
+                    panel tham số. Người dùng vẫn xem/sửa số đo được; toast 403 lúc tạo khuôn
+                    giữ nguyên làm đường cuối. Style inline vì lô này không sửa CSS. */}
+                {engineStatus?.locked && !engineStatus.licenseKeyPresent && (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        className="dt-engine-locked-banner"
+                        style={{
+                            margin: '8px 8px 0',
+                            padding: '10px 12px',
+                            borderRadius: 8,
+                            border: '1px solid #f59e0b',
+                            background: 'rgba(245, 158, 11, 0.12)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                            fontSize: 12,
+                            lineHeight: 1.5,
+                        }}
+                    >
+                        <strong>{tv('Chưa mở được bộ máy khuôn bế')}</strong>
+                        <span>
+                            {tv('Bản quyền của máy này còn hiệu lực nhưng chưa nhận được khoá mở bộ máy khuôn bế cho phiên bản đang chạy. Bạn vẫn sửa thông số được, nhưng bấm tạo khuôn sẽ báo lỗi bản quyền.')}
+                        </span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            <button
+                                type="button"
+                                className="dt-toolbar-btn"
+                                onClick={() => { void handleRecheckLicense(); }}
+                                disabled={isRecheckingLicense}
+                            >
+                                {isRecheckingLicense ? tv('Đang kiểm tra…') : tv('Kiểm tra lại bản quyền')}
+                            </button>
+                            <button
+                                type="button"
+                                className="dt-toolbar-btn"
+                                onClick={() => { void handleCopySupportInfo(); }}
+                            >
+                                {tv('Liên hệ hỗ trợ')}
+                            </button>
+                        </div>
+                    </div>
+                )}
                 <div className="dt-sidebar-scroll">
                     {activeTab === 'nesting' ? (
                         <NestingPanel />

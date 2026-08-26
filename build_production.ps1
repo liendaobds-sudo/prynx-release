@@ -12,6 +12,7 @@
 #    .\build_production.ps1 -NuitkaJobs 4    # Limit parallel MSVC jobs (default: 4)
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
+#    .\build_production.ps1 -SkipDielineActivationProbe # Offline dieline diagnostics only
 #    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
 #    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
 #    Ghostscript is never bundled; dev/test/release share one PPE-only contract.
@@ -24,6 +25,7 @@ param(
     [switch]$NuitkaOnly,
     [switch]$Release,
     [switch]$AllowPlaintextDieline,
+    [switch]$SkipDielineActivationProbe,
     [switch]$SkipPreflightQA,
     [switch]$NoOpenExplorer,
     [ValidateRange(1, 8)]
@@ -107,6 +109,11 @@ if ($Release -and $SkipPreflightQA) {
 }
 if ($Release -and ($SkipTauri -or $NuitkaOnly)) {
     throw "Release build must create and verify a fresh installer; -SkipTauri/-NuitkaOnly are not allowed."
+}
+# [DIELINE-PROBE 2026-08-26 §F] Cong phat hanh khong bao gio bo probe kich hoat.
+# Fail o day (truoc moi buoc ton thoi gian) thay vi de phat hien luc ghi manifest.
+if ($Release -and $SkipDielineActivationProbe) {
+    throw "Release build refuses -SkipDielineActivationProbe: the dieline activation probe is mandatory."
 }
 if ($Release -and -not [string]::IsNullOrWhiteSpace($Version)) {
     throw "Release build refuses inline -Version mutation. Commit the synchronized version before release."
@@ -804,6 +811,181 @@ if (-not $SkipNuitka) {
     if ($null -eq $previousStripSym) { Remove-Item Env:CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_STRIP = $previousStripSym }
     if ($null -eq $previousVirtualEnv) { Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue }
     else { $env:VIRTUAL_ENV = $previousVirtualEnv }
+
+    # ============================================================
+    #  [DIELINE-PROBE 2026-08-26 §F] PROBE KICH HOAT THAT
+    #
+    #  Vi sao dat DUNG O DAY: wheel native da staged vao $nativeSiteDir va
+    #  $env:PYTHONPATH da tro vao do, nen probe chay tren DUNG artifact se di vao
+    #  sidecar - khong phai .pyd trong venv dev (payload plaintext, luon xanh, khong
+    #  kiem gi ca). Fail o day ton ~2 phut; fail sau Nuitka + frontend + Tauri + NSIS
+    #  ton 30 phut tro len. Chay TRUOC $script:DIELINE_LOCKED va truoc khi xoa
+    #  PRYNX_DIELINE_KEY_B64, nhung KHONG dung khoa do: probe dung khoa cua SERVER,
+    #  va viec giai ma thanh cong tu chung minh hai khoa bang nhau.
+    #
+    #  Dieu kien ship truoc day chi la "engine da ma hoa" (DIELINE_LOCKED = yes).
+    #  Do chung minh binary da khoa, KHONG chung minh co ai mo duoc no - rc.9 ship
+    #  dung o trang thai do va cong cu khuon be chet hoan toan.
+    #
+    #  CHANG 1 (kiem bo tro, DUNG THU PHIEN BAN): goi license-verify, khang dinh
+    #  status = VALID va token co TEN claim `rk`. Truong `rk_status` chi duoc khang
+    #  dinh KHI phan hoi co truong do. Day la DUNG THU CO CHU DICH cho cua so lech
+    #  phien ban giua hai repo (Edge Function deploy doc lap voi installer), KHONG
+    #  phai noi long cong. Cong that la CHANG 2 va no khong dung thu gi. Sau khi lo 2
+    #  deploy, chang 1 TU SIET CHAT them ma khong phai sua probe.
+    #
+    #  CHANG 2 (cong that, tu du): dung token do chay generate_dieline_json tren
+    #  wheel da staged. Server khong cap `rk` thi authorize_dieline tra
+    #  resource_key = None, engine_source() nem, exit code khac 0, build dung.
+    #
+    #  Bi mat KHONG bao gio di qua argv (argv cua process khac doc duoc bang WMI tren
+    #  Windows) - token/license key vao process con qua bien moi truong PRYNX_PROBE_*.
+    #  Day la cung bai hoc §SEC.3 ngay 2026-07-30 (private key tung nam trong argv).
+    # ============================================================
+    $script:DIELINE_ACTIVATION_PROBE = if ($lockDieline) { "pending" } else { "plaintext" }
+    if ($nativeExit -eq 0 -and $lockDieline) {
+        if ($SkipDielineActivationProbe) {
+            Write-Host "  WARNING: dieline activation probe skipped (offline diagnostics only)." -ForegroundColor Yellow
+            $script:DIELINE_ACTIVATION_PROBE = "skipped"
+        } else {
+            $probeAnonKey = $null
+            $probeLicenseKey = $null
+            $probeToken = $null
+            $probeClaimsJson = $null
+            $secureProbeLicense = $null
+            $probeScriptTemp = $null
+            try {
+                # Gateway Edge Function co verify_jwt = true, nen phai gui anon key
+                # CONG KHAI (da nam trong bundle frontend). Probe khong nhan va khong
+                # duoc nhan secret sb_secret_: no khong can quyen service_role.
+                $desktopEnvPath = Join-Path $ROOT "desktop\.env"
+                if (-not (Test-Path -LiteralPath $desktopEnvPath -PathType Leaf)) {
+                    throw "Thieu desktop\.env de lay VITE_SUPABASE_ANON_KEY cho probe kich hoat."
+                }
+                foreach ($envLine in (Get-Content -LiteralPath $desktopEnvPath)) {
+                    if ($envLine -match '^\s*VITE_SUPABASE_ANON_KEY\s*=\s*(.+)$') {
+                        $probeAnonKey = $matches[1].Trim().Trim('"').Trim("'")
+                    }
+                }
+                if ([string]::IsNullOrWhiteSpace($probeAnonKey)) {
+                    throw "desktop\.env khong co VITE_SUPABASE_ANON_KEY cho probe kich hoat."
+                }
+                if ($probeAnonKey -like 'sb_secret_*') {
+                    throw "Probe kich hoat chi nhan anon key cong khai, khong nhan secret sb_secret_."
+                }
+
+                $secureProbeLicense = Get-PrynXReleaseProbeLicense
+                $probeLicenseKey = ConvertFrom-PrynXSecureString -SecureValue $secureProbeLicense
+                if (-not (Test-PrynXReleaseProbeLicenseShape -Value $probeLicenseKey)) {
+                    throw "Kho DPAPI khong chua license TEST hop le cho probe kich hoat."
+                }
+                $probeMachineId = [string]$script:PrynXReleaseProbeMachineId
+                # UA rieng cua probe: khong dung lai $releaseBuilderUserAgent de moi
+                # lan goi REST cua build van truy nguyen duoc ve dung buoc da phat ra.
+                $probeUserAgent = "PrynX-Release-Probe/1.0"
+                $probeVerifyUri = "$($releaseSupabaseUrl.TrimEnd('/'))/functions/v1/license-verify"
+                $probeVerifyBody = @{
+                    license_key = $probeLicenseKey
+                    machine_id  = $probeMachineId
+                    product_id  = "prynx"
+                    app_version = $APP_VERSION
+                } | ConvertTo-Json -Compress
+
+                Write-Host "  Probing real dieline activation for version $APP_VERSION..." -ForegroundColor DarkGray
+                try {
+                    $probeVerifyResponse = Invoke-RestMethod -Method Post -Uri $probeVerifyUri `
+                        -Headers @{
+                            apikey         = $probeAnonKey
+                            Authorization  = "Bearer $probeAnonKey"
+                            'Content-Type' = 'application/json'
+                        } -UserAgent $probeUserAgent -Body $probeVerifyBody -ErrorAction Stop
+                } catch {
+                    throw "Probe kich hoat dieline: khong goi duoc license-verify: $($_.Exception.Message)"
+                }
+                if ([string]$probeVerifyResponse.status -cne 'VALID') {
+                    throw "Probe kich hoat dieline: license-verify tra status = '$([string]$probeVerifyResponse.status)' (can VALID)."
+                }
+                $probeToken = [string]$probeVerifyResponse.token
+                if ([string]::IsNullOrWhiteSpace($probeToken)) {
+                    throw "Probe kich hoat dieline: license-verify tra VALID nhung khong co token da ky."
+                }
+                # Chi doc TEN claim. Gia tri claim (ke ca `rk`) khong bao gio duoc in.
+                $probeClaimNames = @()
+                try {
+                    $probePayloadSegment = $probeToken.Split('.')[0]
+                    $probePayloadB64 = $probePayloadSegment.Replace('-', '+').Replace('_', '/')
+                    switch ($probePayloadB64.Length % 4) {
+                        2 { $probePayloadB64 += '==' }
+                        3 { $probePayloadB64 += '=' }
+                    }
+                    $probeClaimsJson = [Text.Encoding]::UTF8.GetString(
+                        [Convert]::FromBase64String($probePayloadB64)
+                    )
+                    $probeClaimNames = @(($probeClaimsJson | ConvertFrom-Json).PSObject.Properties.Name |
+                        Sort-Object)
+                } catch {
+                    throw "Probe kich hoat dieline: khong doc duoc payload token da ky."
+                }
+                if ($probeClaimNames -notcontains 'rk') {
+                    throw "Probe kich hoat dieline: token thieu claim 'rk' (server dang giu lai khoa engine)."
+                }
+                # DUNG THU CO CHU DICH: chi khang dinh khi phan hoi CO truong rk_status.
+                # Bundle Edge chua len lo 2 thi truong nay chua ton tai - bo qua, khong
+                # fail. Do phu trong cua so do do CHANG 2 ganh toan bo.
+                $probeRkStatus = $probeVerifyResponse.PSObject.Properties['rk_status']
+                if ($null -ne $probeRkStatus -and [string]$probeRkStatus.Value -cne 'granted') {
+                    throw "Probe kich hoat dieline: rk_status = '$([string]$probeRkStatus.Value)' (can granted)."
+                }
+
+                $probeScriptSource = Join-Path $ROOT "scripts\dieline_activation_probe.py"
+                if (-not (Test-Path -LiteralPath $probeScriptSource -PathType Leaf)) {
+                    throw "Thieu script probe kich hoat: $probeScriptSource"
+                }
+                $probeRequestFixture = Join-Path $ROOT "native\tests\fixtures\dieline_default_request.json"
+                if (-not (Test-Path -LiteralPath $probeRequestFixture -PathType Leaf)) {
+                    throw "Thieu fixture request cho probe kich hoat: $probeRequestFixture"
+                }
+                $probeScriptTemp = Join-Path ([System.IO.Path]::GetTempPath()) `
+                    ("prynx-dieline-probe-" + [guid]::NewGuid().ToString("N") + ".py")
+                Copy-Item -LiteralPath $probeScriptSource -Destination $probeScriptTemp -Force
+
+                $env:PRYNX_PROBE_TOKEN = $probeToken
+                $env:PRYNX_PROBE_LICENSE_KEY = $probeLicenseKey
+                $env:PRYNX_PROBE_MACHINE_ID = $probeMachineId
+                $env:PRYNX_PROBE_REQUEST_FILE = $probeRequestFixture
+                $env:PRYNX_PROBE_NATIVE_SITE = $nativeSiteDir
+                $probeOutput = @(& $VENV_PYTHON $probeScriptTemp)
+                $probeExit = $LASTEXITCODE
+                $probeStatusLine = if ($probeOutput.Count -gt 0) {
+                    [string]$probeOutput[$probeOutput.Count - 1]
+                } else { "" }
+                if ($probeExit -ne 0) {
+                    throw "Probe kich hoat dieline that bai (exit $probeExit): $probeStatusLine"
+                }
+                if ($probeStatusLine -notlike 'dieline_activation_probe=ok *') {
+                    throw "Probe kich hoat dieline tra trang thai khong doc duoc: $probeStatusLine"
+                }
+                Write-Host "  $probeStatusLine" -ForegroundColor Green
+                $script:DIELINE_ACTIVATION_PROBE = "ok"
+            } catch {
+                # Fail-closed: khong de khoa dieline con trong env cua shell -NoExit
+                # sau khi build chet o day.
+                Remove-Item Env:PRYNX_DIELINE_KEY_B64 -ErrorAction SilentlyContinue
+                throw
+            } finally {
+                $probeAnonKey = $null
+                $probeLicenseKey = $null
+                $probeToken = $null
+                $probeClaimsJson = $null
+                if ($secureProbeLicense) { $secureProbeLicense.Dispose() }
+                $secureProbeLicense = $null
+                Remove-Item Env:PRYNX_PROBE_* -ErrorAction SilentlyContinue
+                if ($probeScriptTemp -and (Test-Path -LiteralPath $probeScriptTemp)) {
+                    Remove-Item -LiteralPath $probeScriptTemp -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
     # Xoa khoa khoi moi truong NGAY sau khi maturin dung xong: cac buoc sau (Nuitka,
     # Tauri, NSIS) khong duoc thay khoa, va khong de khoa roi vao log/child process.
     $script:DIELINE_LOCKED = if ($env:PRYNX_DIELINE_KEY_B64) { "yes" } else { "no" }
@@ -1438,6 +1620,11 @@ if (-not $SkipTauri) {
         if ($Release -and $script:DIELINE_LOCKED -ne "yes") {
             throw "Release artifact is not dieline-locked. Refusing to publish installer/manifest."
         }
+        # [DIELINE-PROBE 2026-08-26 §F] "Da khoa" khong con du de ship: phai co bang
+        # chung server MO DUOC dung payload cua ban nay. Moi gia tri khac "ok" bi tu choi.
+        if ($Release -and $script:DIELINE_ACTIVATION_PROBE -ne "ok") {
+            throw "Release artifact did not pass the dieline activation probe. Refusing to publish installer/manifest."
+        }
 
         # ---- Release manifest (audit 2026-07-25) ----
         # Tauri patch metadata theo bundle NSIS; binary CAI RA co the khac binary
@@ -1533,6 +1720,7 @@ if (-not $SkipTauri) {
             "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
             "CODE_SIGNED    = no (Windows Authenticode not configured; updater .sig is separate)",
             "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })",
+            "DIELINE_ACTIVATION_PROBE = $(if ($script:DIELINE_ACTIVATION_PROBE) { $script:DIELINE_ACTIVATION_PROBE } else { 'skipped' })",
             "RUNTIME_VERIFIED = no"
         )
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII

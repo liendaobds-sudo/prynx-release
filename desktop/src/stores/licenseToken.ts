@@ -7,6 +7,16 @@ export interface LicenseTokenClaims {
   k?: string;
   m?: string;
   p?: string;
+  /**
+   * UIUX (audit 2026-08-26 dieline-engine-unlock): token có claim `rk` (khoá mở bộ máy
+   * khuôn bế của đúng bản này) hay không — CHỈ trạng thái có/không.
+   *
+   * Module này cố ý KHÔNG expose giá trị `rk` và không được đổi ranh giới đó: khoá chỉ
+   * đi từ payload đã ký Ed25519 vào Rust, không bao giờ qua tầng UI. Ở đây chỉ đọc TÊN
+   * claim để công cụ khuôn bế biết trước rằng engine sẽ không mở được, thay vì để người
+   * dùng phát hiện bằng cách bấm tạo khuôn rồi nhận 403.
+   */
+  hasResourceKey: boolean;
 }
 
 function decodePayload(token: string): unknown {
@@ -35,6 +45,9 @@ export function readLicenseTokenClaims(token: string | null): LicenseTokenClaims
       k: typeof raw.k === 'string' ? raw.k : undefined,
       m: typeof raw.m === 'string' ? raw.m : undefined,
       p: typeof raw.p === 'string' ? raw.p : undefined,
+      // Chỉ suy ra boolean rồi bỏ `raw.rk` đi — giá trị khoá không bao giờ được sao vào
+      // object trả về, không log, không so sánh.
+      hasResourceKey: typeof raw.rk === 'string' && raw.rk.length > 0,
     };
   } catch {
     return null;

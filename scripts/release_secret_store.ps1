@@ -153,3 +153,106 @@ function Clear-PrynXReleaseEnvironment {
     Remove-Item Env:PRYNX_SUPABASE_SECRET_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:PRYNX_SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
 }
+
+# ============================================================
+#  [DIELINE-PROBE 2026-08-26 §F] Kho license TEST cho probe kich hoat
+#
+#  Vi sao KHO RIENG chu khong them field vao secrets.clixml:
+#  `Get-PrynXReleaseSupabaseSecret` tu choi nap khi SchemaVersion khac 1. Them
+#  mot field vao payload cu se lam VO HIEU kho da cau hinh tren may phat hanh
+#  (bump schema = phai chay lai setup_release_secrets.ps1 va nhap lai Supabase
+#  secret). Tach file probe.clixml giu hai vong doi doc lap: doi license TEST
+#  khong dong toi khoa Supabase va nguoc lai.
+#
+#  License nay la license TEST danh RIENG cho probe. KHONG BAO GIO dung license
+#  khach: probe goi license-verify that nen se tieu mot suat activation vinh vien
+#  cho `machine_id` co dinh ben duoi.
+# ============================================================
+
+$script:PrynXReleaseProbeSecretSchema = 1
+# Machine id co dinh cua probe. Hop le vi `authorize_dieline` NHAN hwid lam tham
+# so va chi so voi claim `m`; module native khong tu tinh hardware id. Gia tri co
+# dinh nghia la probe tieu dung MOT suat activation, khong sinh them moi lan build.
+$script:PrynXReleaseProbeMachineId = "PRYNX-RELEASE-PROBE-01"
+
+function Resolve-PrynXReleaseProbeStorePath {
+    param([string]$StorePath = "")
+
+    if ([string]::IsNullOrWhiteSpace($StorePath)) {
+        if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            throw "Khong tim thay LOCALAPPDATA de luu license TEST cua probe."
+        }
+        $StorePath = Join-Path $env:LOCALAPPDATA "PrynX\ReleaseSecrets\probe.clixml"
+    }
+    return [System.IO.Path]::GetFullPath($StorePath)
+}
+
+function Test-PrynXReleaseProbeLicenseShape {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    # Chi bat cac loi dan sai ro rang, khong doan dinh dang key cua admin.
+    if ($Value -match '\s') { return $false }
+    if ($Value.Length -lt 8 -or $Value.Length -gt 200) { return $false }
+    if ($Value -like 'sb_secret_*') { return $false }
+    if ($Value -like 'eyJ*') { return $false }
+    return $true
+}
+
+function Save-PrynXReleaseProbeLicense {
+    param(
+        [Parameter(Mandatory = $true)][Security.SecureString]$ProbeLicense,
+        [string]$StorePath = ""
+    )
+
+    $plain = $null
+    try {
+        $plain = ConvertFrom-PrynXSecureString -SecureValue $ProbeLicense
+        if (-not (Test-PrynXReleaseProbeLicenseShape -Value $plain)) {
+            throw "Gia tri nhap khong giong license TEST (khong khoang trang, 8-200 ky tu, khong phai sb_secret_ hay JWT)."
+        }
+    } finally {
+        $plain = $null
+    }
+
+    $resolvedPath = Resolve-PrynXReleaseProbeStorePath -StorePath $StorePath
+    $parent = Split-Path -Parent $resolvedPath
+    [void](New-Item -ItemType Directory -Path $parent -Force)
+    Set-PrynXPrivatePathAcl -Path $parent -IsDirectory $true
+
+    $payload = [pscustomobject]@{
+        SchemaVersion = $script:PrynXReleaseProbeSecretSchema
+        ProjectRef    = $script:PrynXReleaseProjectRef
+        MachineId     = $script:PrynXReleaseProbeMachineId
+        ProbeLicense  = $ProbeLicense
+    }
+    $tempPath = Join-Path $parent ("probe-" + [guid]::NewGuid().ToString("N") + ".tmp")
+    try {
+        $payload | Export-Clixml -LiteralPath $tempPath -Depth 3 -Force
+        Move-Item -LiteralPath $tempPath -Destination $resolvedPath -Force
+        Set-PrynXPrivatePathAcl -Path $resolvedPath -IsDirectory $false
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return $resolvedPath
+}
+
+function Get-PrynXReleaseProbeLicense {
+    param([string]$StorePath = "")
+
+    $resolvedPath = Resolve-PrynXReleaseProbeStorePath -StorePath $StorePath
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        throw "Chua co license TEST cho probe kich hoat. Hay chay scripts\setup_release_probe_license.ps1."
+    }
+
+    $payload = Import-Clixml -LiteralPath $resolvedPath
+    if ([int]$payload.SchemaVersion -ne $script:PrynXReleaseProbeSecretSchema -or
+        [string]$payload.ProjectRef -ne $script:PrynXReleaseProjectRef -or
+        [string]$payload.MachineId -ne $script:PrynXReleaseProbeMachineId -or
+        $payload.ProbeLicense -isnot [Security.SecureString]) {
+        throw "Kho license TEST cua probe sai schema/project; tu choi nap."
+    }
+
+    return $payload.ProbeLicense
+}
