@@ -30,6 +30,7 @@ import {
   toExactArrayBuffer,
   visiblePageSize,
 } from '../lib/combineAssembly';
+import { buildSourceTabOptions } from '../lib/tabNavigation';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -703,7 +704,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
         let srcDoc = loadedDocs.get(p.file!);
         if (!srcDoc) {
           const bytes = await getFileArrayBuffer(p.file!);
-          if (p.file!.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
+          if (isSupportedImageFileName(p.file!.name)) {
             srcDoc = await imageBytesToPdfDoc(bytes, p.file!.name);
           } else {
             srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -804,7 +805,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
     let srcDoc = loadedDocs.get(file);
     if (srcDoc) return srcDoc;
     const bytes = await getFileArrayBuffer(file);
-    if (file.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
+    if (isSupportedImageFileName(file.name)) {
       srcDoc = await imageBytesToPdfDoc(bytes, file.name);
     } else {
       srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -839,7 +840,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       }
 
       if (!p.file) continue;
-      if (p.file.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
+      if (isSupportedImageFileName(p.file.name)) {
         // PERF (audit 2026-08-02 §B.1): nhúng thẳng vào finalDoc; tạo PDF ảnh tạm rồi
         // copyPages làm đúng kết quả nhưng chiếm phần lớn thời gian của ca nhiều PNG.
         const bytes = await getFileArrayBuffer(p.file);
@@ -1458,7 +1459,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
 
           {node.file && (
             <button 
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (onSpawnTab) onSpawnTab(node.file!, { initialFeature: 'view' }); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (onSpawnTab) onSpawnTab(node.file!, buildSourceTabOptions({ initialFeature: 'view' })); }}
               className="w-8 h-8 flex items-center justify-center text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" 
               title="Zoom / Preview"
             >

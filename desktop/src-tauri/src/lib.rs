@@ -1897,7 +1897,90 @@ fn get_or_load_cached_document_with_color_risk(
     Ok((document, color_risk))
 }
 
-struct SystemFilesState(Mutex<Vec<String>>);
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemFileBatch {
+    batch_id: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug)]
+struct SystemFilesInbox {
+    startup: Option<SystemFileBatch>,
+    pending: VecDeque<SystemFileBatch>,
+    next_sequence: u64,
+}
+
+struct SystemFilesState(Mutex<SystemFilesInbox>);
+
+impl SystemFilesState {
+    fn new(startup_args: Vec<String>) -> Self {
+        Self(Mutex::new(SystemFilesInbox {
+            startup: Some(SystemFileBatch {
+                batch_id: "startup-1".to_string(),
+                args: startup_args,
+            }),
+            pending: VecDeque::new(),
+            next_sequence: 2,
+        }))
+    }
+
+    fn take_startup(&self) -> Option<SystemFileBatch> {
+        lock_mutex(&self.0).startup.take()
+    }
+
+    fn enqueue(&self, args: Vec<String>) {
+        let mut inbox = lock_mutex(&self.0);
+        let batch_id = format!("instance-{}", inbox.next_sequence);
+        inbox.next_sequence = inbox.next_sequence.saturating_add(1);
+        inbox.pending.push_back(SystemFileBatch { batch_id, args });
+    }
+
+    fn drain_pending(&self) -> Vec<SystemFileBatch> {
+        lock_mutex(&self.0).pending.drain(..).collect()
+    }
+}
+
+#[cfg(test)]
+mod system_files_inbox_tests {
+    use super::SystemFilesState;
+
+    #[test]
+    fn startup_chi_duoc_lay_mot_lan_ke_ca_sau_reload_frontend() {
+        let state = SystemFilesState::new(vec![
+            "PrynX.exe".to_string(),
+            "D:\\viec\\b.pdf".to_string(),
+        ]);
+
+        let first = state.take_startup().expect("phải có batch startup");
+        assert_eq!(first.batch_id, "startup-1");
+        assert_eq!(first.args[1], "D:\\viec\\b.pdf");
+        assert!(state.take_startup().is_none());
+    }
+
+    #[test]
+    fn moi_second_instance_giu_batch_va_thu_tu_rieng() {
+        let state = SystemFilesState::new(vec!["PrynX.exe".to_string()]);
+        state.enqueue(vec![
+            "PrynX.exe".to_string(),
+            "--prynx-action=combine".to_string(),
+            "D:\\viec\\01.pdf".to_string(),
+        ]);
+        state.enqueue(vec![
+            "PrynX.exe".to_string(),
+            "--prynx-action=convert".to_string(),
+            "D:\\viec\\02.png".to_string(),
+        ]);
+
+        let batches = state.drain_pending();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].batch_id, "instance-2");
+        assert_eq!(batches[0].args[1], "--prynx-action=combine");
+        assert_eq!(batches[1].batch_id, "instance-3");
+        assert_eq!(batches[1].args[1], "--prynx-action=convert");
+        assert!(state.drain_pending().is_empty());
+    }
+}
 
 fn perf_env_value_enabled(value: Option<&str>) -> bool {
     value
@@ -3401,8 +3484,18 @@ fn cancel_pdf_render(request_id: String) -> bool {
 }
 
 #[tauri::command]
-fn get_startup_args() -> Vec<String> {
-    std::env::args().collect()
+fn take_startup_system_file_batch(
+    state: tauri::State<SystemFilesState>,
+) -> Option<SystemFileBatch> {
+    // FILEIO (audit 2026-08-26 §FILE.A1): argv là sự kiện one-shot; reload
+    // WebView không được mở lại file mà Windows đã giao từ đầu process.
+    state.take_startup()
+}
+
+#[tauri::command]
+fn get_startup_args(state: tauri::State<SystemFilesState>) -> Vec<String> {
+    // Tương thích frontend cũ; command mới và cũ cùng consume một inbox.
+    state.take_startup().map(|batch| batch.args).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -3964,14 +4057,130 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Result<(), String> {
-    // COPY file đĩa→đĩa NGUYÊN TỬ, không đọc bytes vào JS. Vì sao: kết quả bình
-    // sách/VDP là file lớn (hàng trăm MB) đã nằm trên đĩa; đường cũ đọc toàn bộ vào
-    // JS rồi truyền Uint8Array qua IPC cho write_file_atomic → "RangeError: Invalid
-    // array length" khi serialize khối bytes khổng lồ. Copy thẳng path→path tránh
-    // hẳn round-trip đó. Ghi temp cùng thư mục đích rồi rename (nguyên tử, cùng volume).
-    let ext = std::path::Path::new(&path)
+/// FILEIO (audit 2026-08-26 §FILE.A4): dạng chuẩn hoá để so hai path trên đĩa.
+///
+/// Resolve phần đã tồn tại thật trước (đi qua junction/symlink/tên 8.3) rồi mới hạ
+/// hoa/thường, vì NTFS không phân biệt hoa/thường và nhận cả hai dấu phân cách — so
+/// chuỗi thô bỏ sót ca hai path khác mặt nhưng cùng một file.
+fn disk_compare_key(path: &std::path::Path) -> String {
+    let resolved = std::fs::canonicalize(path).ok().or_else(|| {
+        // Đích chưa tồn tại: resolve thư mục cha rồi ghép lại tên file.
+        let parent = std::fs::canonicalize(path.parent()?).ok()?;
+        Some(parent.join(path.file_name()?))
+    });
+    resolved
+        .unwrap_or_else(|| path.to_path_buf())
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+/// FILEIO (audit 2026-08-26 §FILE.A4): định danh file THẬT của Windows — bộ ba
+/// `dwVolumeSerialNumber` + `nFileIndexHigh` + `nFileIndexLow` đọc từ
+/// `BY_HANDLE_FILE_INFORMATION`.
+///
+/// Đây là oracle duy nhất Windows bảo đảm: hai path trùng cả ba trường thì mở ra CÙNG
+/// một file, kể cả khi chuỗi path khác hẳn nhau vì hardlink, tên ngắn 8.3, junction,
+/// symlink, hay ổ mạng đã map so với đường UNC của cùng share. So chuỗi canonical không
+/// thấy được hardlink vì hai hardlink là hai tên hợp lệ khác nhau của một file.
+///
+/// Trả `None` nghĩa là KHÔNG KẾT LUẬN ĐƯỢC (không mở được handle vì quyền, file bị khoá
+/// độc quyền, path không hợp lệ) — tuyệt đối KHÔNG phải "hai file khác nhau". Người gọi
+/// phải xử lý `None` theo hướng fail-closed.
+///
+/// Vì sao mở handle bằng `std::fs::OpenOptions` chứ không gọi `CreateFileW` trực tiếp:
+/// `CreateFileW` của crate `windows` bị gate sau feature `Win32_Security` (chưa bật trong
+/// cây build, và lô này không được thêm feature Cargo); ngoài ra `File` đóng handle qua
+/// `Drop`, nên handle chắc chắn được đóng trên MỌI đường ra — kể cả khi
+/// `GetFileInformationByHandle` thất bại — không phụ thuộc vào việc nhớ gọi `CloseHandle`.
+#[cfg(windows)]
+fn windows_file_identity(path: &std::path::Path) -> Option<(u32, u32, u32)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    // `FILE_READ_ATTRIBUTES`: quyền nhỏ nhất đủ để truy vấn metadata — handle chỉ-đọc,
+    // không xin quyền đọc bytes nên không đòi DACL rộng hơn mức cần.
+    // Share mode ĐẦY ĐỦ (read | write | delete): chốt chặn Save As không được phép khoá
+    // file mà người dùng đang mở ở Illustrator hay CorelDRAW.
+    // `FILE_FLAG_BACKUP_SEMANTICS`: cần để mở được cả handle THƯ MỤC, vì path đi vào đây
+    // có thể là junction hoặc thư mục chứ không chỉ file.
+    // Không đặt `FILE_FLAG_OPEN_REPARSE_POINT` là cố ý: phải đi THEO reparse point để lấy
+    // định danh của file thật ở cuối chuỗi link.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(path)
+        .ok()?;
+
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: tiền điều kiện của lời gọi Win32 này:
+    // - handle hợp lệ: `file` mở thành công ở trên và còn sống suốt phạm vi block (chưa
+    //   drop), nên raw handle chưa bị đóng;
+    // - `info` là struct `#[repr(C)]` do chính crate `windows` khai báo, đã zero-init qua
+    //   `Default` nên API ghi vào vùng nhớ có kích thước và layout đúng;
+    // - không giữ lại con trỏ nào sau lời gọi: `&mut info` chỉ sống trong đúng lời gọi,
+    //   và không có tham chiếu nào tới raw handle tồn tại sau khi `file` bị drop.
+    let queried =
+        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle() as _), &mut info).is_ok() };
+    // `file` drop ở cuối hàm → `CloseHandle` chạy trên cả đường thành công lẫn đường lỗi.
+    if !queried {
+        return None;
+    }
+    Some((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
+
+/// Nền tảng không phải Windows không có bộ ba volume serial + file index; trả `None` để
+/// `resolves_to_same_disk_file` rơi về `disk_compare_key`. PrynX chỉ phát hành cho
+/// Windows, nhánh này tồn tại để cây mã còn compile được ở môi trường khác.
+#[cfg(not(windows))]
+fn windows_file_identity(_path: &std::path::Path) -> Option<(u32, u32, u32)> {
+    None
+}
+
+/// Nguồn và đích cùng trỏ một file trên đĩa.
+///
+/// FILEIO (audit 2026-08-26 §FILE.A4): ưu tiên định danh file thật, rơi về so chuỗi
+/// canonical khi không kết luận được. Thứ tự ba bước là cố ý:
+///
+/// 1. Đích chưa tồn tại thì KHÔNG THỂ là file nguồn đang tồn tại (`validate_disk_copy_request`
+///    đã chốt nguồn `is_file()` trước khi gọi vào đây) → trả `false` NGAY, trước khi mở
+///    handle nào. Đây là đường đi của phần lớn lượt Save As (ghi ra file mới) nên chi phí
+///    lượt lưu thường không đổi.
+/// 2. Lấy định danh cả hai phía; trùng cả ba trường thì là cùng một file.
+/// 3. Bất kỳ phía nào trả `None` thì KHÔNG kết luận "khác nhau" mà rơi về `disk_compare_key`.
+///    Resolve thất bại không được biến thành giấy phép ghi đè lên artifact tạm — đây là
+///    bất biến fail-closed, không phải chi tiết cài đặt.
+fn resolves_to_same_disk_file(source: &std::path::Path, target: &std::path::Path) -> bool {
+    // Dùng `symlink_metadata` chứ không `exists()`: nó không đi theo link, nên một symlink
+    // treo vẫn được tính là "đích đã tồn tại" và đi tiếp vào so định danh, thay vì rơi ra
+    // `false` (hướng cho phép ghi) chỉ vì đích của link không resolve được.
+    if std::fs::symlink_metadata(target).is_err() {
+        return false;
+    }
+    if let (Some(source_id), Some(target_id)) =
+        (windows_file_identity(source), windows_file_identity(target))
+    {
+        return source_id == target_id;
+    }
+    let source_key = disk_compare_key(source);
+    !source_key.is_empty() && source_key == disk_compare_key(target)
+}
+
+/// Điều kiện tiên quyết của copy đĩa→đĩa. Tách khỏi command vì `copy_file_atomic` cần
+/// `AppHandle` nên không unit-test được, mà đây là biên tin cậy với WebView: bất biến
+/// phải nằm ở đây chứ không chỉ ở component gọi nó.
+fn validate_disk_copy_request(source: &str, path: &str) -> Result<(), String> {
+    let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -3982,7 +4191,7 @@ fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Resu
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
     }
-    let source_ext = std::path::Path::new(&source)
+    let source_ext = std::path::Path::new(source)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -3990,13 +4199,34 @@ fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Resu
     if source_ext != ext || !allowed.contains(&source_ext.as_str()) {
         return Err("Source and destination file types must match an allowed type".to_string());
     }
-    if is_sensitive_path(&source) || is_sensitive_write_path(&path) {
+    if is_sensitive_path(source) || is_sensitive_write_path(path) {
         return Err("Access to this location is not allowed".to_string());
     }
-    let source_path = std::path::Path::new(&source);
+    let source_path = std::path::Path::new(source);
     if !source_path.is_file() {
         return Err("Source file does not exist".to_string());
     }
+    // Chặn sớm ca nguồn trùng đích, TRƯỚC khi chạm đĩa. Copy qua `.tmp` rồi rename
+    // không làm mất bytes, nhưng nó trả Ok — và chính cái Ok đó cho luồng Save As gắn
+    // identity "nguồn sạch" lên đúng file artifact tạm, rửa trắng provenance kết quả
+    // rồi coi artifact là nguồn thật của khách. Lỗi nghiệp vụ này cố ý KHÔNG chứa
+    // "not allowed"/"forbidden path" để nhánh fallback chọn lại vị trí ở
+    // ImpositionTab không hiểu nhầm thành lỗi phạm vi ghi và mở lại hộp thoại.
+    if resolves_to_same_disk_file(source_path, std::path::Path::new(path)) {
+        return Err("Nguồn và đích là cùng một file; hãy chọn vị trí lưu khác.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Result<(), String> {
+    // COPY file đĩa→đĩa NGUYÊN TỬ, không đọc bytes vào JS. Vì sao: kết quả bình
+    // sách/VDP là file lớn (hàng trăm MB) đã nằm trên đĩa; đường cũ đọc toàn bộ vào
+    // JS rồi truyền Uint8Array qua IPC cho write_file_atomic → "RangeError: Invalid
+    // array length" khi serialize khối bytes khổng lồ. Copy thẳng path→path tránh
+    // hẳn round-trip đó. Ghi temp cùng thư mục đích rồi rename (nguyên tử, cùng volume).
+    validate_disk_copy_request(&source, &path)?;
+    let source_path = std::path::Path::new(&source);
     let target = std::path::Path::new(&path);
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
@@ -4025,6 +4255,464 @@ fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Resu
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod disk_copy_request_tests {
+    use super::*;
+
+    fn test_dir(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("prynx_{}_{}_{}", label, std::process::id(), stamp));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn same_disk_file_is_rejected_before_touching_disk() {
+        // Ca nguy hiểm của Save As: người dùng chọn đúng path artifact tạm làm đích lưu.
+        let dir = test_dir("copy_same");
+        let source = dir.join("artifact.pdf");
+        std::fs::write(&source, b"%PDF-artifact").unwrap();
+        let raw = source.to_string_lossy().to_string();
+
+        // Ba mặt khác nhau của CÙNG một file: nguyên bản, đổi hoa/thường, đổi dấu
+        // phân cách. Trên NTFS cả ba mở ra một file nên phải bị chặn như nhau.
+        for candidate in [raw.clone(), raw.to_uppercase(), raw.replace('\\', "/")] {
+            let error = validate_disk_copy_request(&raw, &candidate)
+                .expect_err(&format!("phải chặn đích trùng nguồn: {candidate}"));
+            assert!(
+                error.contains("cùng một file"),
+                "lỗi nghiệp vụ phải nói rõ nguồn trùng đích, nhận: {error}"
+            );
+            // Không được hiểu nhầm thành lỗi phạm vi ghi ở nhánh fallback frontend.
+            assert!(!error.contains("not allowed"), "nhận: {error}");
+            assert!(!error.contains("forbidden path"), "nhận: {error}");
+        }
+
+        // Chặn sớm nghĩa là chưa hề chạm đĩa: không có `.tmp` rơi lại, bytes còn nguyên.
+        let entries = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["artifact.pdf".to_string()]);
+        assert_eq!(std::fs::read(&source).unwrap(), b"%PDF-artifact");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn distinct_destination_still_passes() {
+        // Đối chứng âm: lưu ra file khác vẫn phải qua, kể cả khi đích chưa tồn tại.
+        let dir = test_dir("copy_ok");
+        let source = dir.join("artifact.pdf");
+        std::fs::write(&source, b"%PDF-artifact").unwrap();
+        let raw = source.to_string_lossy().to_string();
+
+        for candidate in [
+            dir.join("Hop_dong_khach.pdf"),
+            dir.join("con").join("Hop_dong_khach.pdf"),
+        ] {
+            assert!(
+                validate_disk_copy_request(&raw, &candidate.to_string_lossy()).is_ok(),
+                "đích khác file không được chặn oan: {}",
+                candidate.display()
+            );
+        }
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn existing_preconditions_still_hold() {
+        // Hợp đồng cũ không được nới ra khi tách hàm: đuôi lệch, đuôi ngoài allow-list,
+        // nguồn không tồn tại và path nhạy cảm vẫn phải chặn.
+        let dir = test_dir("copy_pre");
+        let source = dir.join("artifact.pdf");
+        std::fs::write(&source, b"%PDF-artifact").unwrap();
+        let raw = source.to_string_lossy().to_string();
+
+        assert!(validate_disk_copy_request(&raw, &dir.join("out.exe").to_string_lossy()).is_err());
+        assert!(validate_disk_copy_request(&raw, &dir.join("out.png").to_string_lossy()).is_err());
+        assert!(validate_disk_copy_request(
+            &dir.join("khong-co.pdf").to_string_lossy(),
+            &dir.join("out.pdf").to_string_lossy()
+        )
+        .is_err());
+        assert!(validate_disk_copy_request(&raw, "C:\\Windows\\System32\\out.pdf").is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// FILEIO (audit 2026-08-26 §FILE.A4): liệt kê ĐỆ QUY tên tương đối của mọi entry
+    /// trong `root`, đã sắp xếp.
+    ///
+    /// Vì sao snapshot cả cây chứ không chỉ `read_dir` một tầng: `copy_file_atomic` ghi
+    /// file tạm `.<tên>.<pid>.<nanos>.tmp` vào THƯ MỤC ĐÍCH, nên bằng chứng "chặn trước khi
+    /// chạm đĩa" phải soi được cả thư mục con. So hai snapshot trước/sau là cách chắc chắn
+    /// nhất để bắt rác rơi lại, không phụ thuộc vào việc đoán đúng tên file tạm.
+    #[cfg(windows)]
+    fn snapshot_tree(root: &std::path::Path) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                out.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+                // `file_type()` KHÔNG đi theo reparse point, nên junction hiện ra là link
+                // và vòng lặp không bao giờ đệ quy xuống thư mục thật đằng sau nó.
+                if let Ok(kind) = entry.file_type() {
+                    if kind.is_dir() && !kind.is_symlink() {
+                        stack.push(path);
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// FILEIO (audit 2026-08-26 §FILE.A4): tạo junction `link` → `target` bằng `mklink /J`.
+    ///
+    /// `mklink` là builtin của `cmd` nên phải gọi qua `cmd /C`; junction (mount point) khác
+    /// symlink ở chỗ KHÔNG cần `SeCreateSymbolicLinkPrivilege`, nên dựng được trên máy dev
+    /// thường. Trả `false` khi môi trường không cho tạo — người gọi phải SKIP kèm thông báo
+    /// rõ, tuyệt đối không hạ assert xuống mức yếu hơn rồi báo xanh.
+    #[cfg(windows)]
+    fn try_create_junction(link: &std::path::Path, target: &std::path::Path) -> bool {
+        match std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => std::fs::symlink_metadata(link).is_ok(),
+            Ok(status) => {
+                eprintln!("mklink /J trả exit code {:?}", status.code());
+                false
+            }
+            Err(error) => {
+                eprintln!("không chạy được mklink /J: {error}");
+                false
+            }
+        }
+    }
+
+    /// FILEIO (audit 2026-08-26 §FILE.A4): xoá junction mà KHÔNG xoá xuyên qua link.
+    ///
+    /// `remove_dir` tháo đúng reparse point; `remove_dir_all` trên đường đi qua junction là
+    /// đường mất dữ liệu thật trong thư mục đích, nên test phải tháo link trước rồi mới dọn
+    /// thư mục tạm.
+    #[cfg(windows)]
+    fn remove_junction(link: &std::path::Path) {
+        if std::fs::symlink_metadata(link).is_ok() {
+            std::fs::remove_dir(link).expect("phải tháo được junction bằng remove_dir");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hardlink_alias_is_recognised_as_same_file() {
+        // FILEIO (audit 2026-08-26 §FILE.A4) — Requirement 3.3.
+        // Ca mà so chuỗi canonical KHÔNG THỂ thấy: hai hardlink là hai tên hợp lệ khác nhau
+        // của CÙNG một file trên đĩa. Nếu Save As nhận một hardlink của artifact tạm làm
+        // đích, copy đĩa→đĩa vẫn ghi lên chính file nguồn rồi trả Ok — đúng ca rửa trắng
+        // provenance mà §FILE.A4 phát hiện.
+        let dir = test_dir("copy_hardlink");
+        let source = dir.join("artifact.pdf");
+        std::fs::write(&source, b"%PDF-artifact").unwrap();
+        let alias = dir.join("ban_luu_khach.pdf");
+        if let Err(error) = std::fs::hard_link(&source, &alias) {
+            eprintln!(
+                "SKIP hardlink_alias_is_recognised_as_same_file: không tạo được hardlink ({error}) \
+                 → ca hardlink của Requirement 3.3 còn là PROOF GAP trên môi trường này"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        // ASSERT THEN CHỐT của test này. Tầng so chuỗi canonical MÙ với hardlink: nếu ai hạ
+        // `resolves_to_same_disk_file` về chỉ dùng `disk_compare_key` thì hai khoá dưới đây
+        // vẫn khác nhau nên assert kế tiếp đỏ ngay. Không có assert_ne này, test vẫn xanh
+        // sau khi oracle bị hạ cấp — tức là vô nghĩa.
+        assert_ne!(
+            disk_compare_key(&source),
+            disk_compare_key(&alias),
+            "tiền đề của test: so chuỗi canonical không nhận ra hardlink"
+        );
+
+        let source_id = windows_file_identity(&source);
+        assert!(
+            source_id.is_some(),
+            "định danh file phải đọc được trên file thường, nếu None thì test xanh vô nghĩa"
+        );
+        assert_eq!(
+            source_id,
+            windows_file_identity(&alias),
+            "hardlink phải trùng cả volume serial lẫn file index"
+        );
+        assert!(
+            resolves_to_same_disk_file(&source, &alias),
+            "oracle định danh phải nhận ra hardlink là cùng một file"
+        );
+
+        // Ba mặt path của cùng cái hardlink đều phải bị chặn ở biên tin cậy.
+        let raw_source = source.to_string_lossy().to_string();
+        let raw_alias = alias.to_string_lossy().to_string();
+        for face in [
+            raw_alias.clone(),
+            raw_alias.to_uppercase(),
+            raw_alias.replace('\\', "/"),
+        ] {
+            let error = validate_disk_copy_request(&raw_source, &face)
+                .expect_err(&format!("phải chặn hardlink của nguồn: {face}"));
+            assert!(
+                error.contains("cùng một file"),
+                "lỗi nghiệp vụ phải nói rõ nguồn trùng đích, nhận: {error}"
+            );
+        }
+
+        // Đối chứng âm: file KHÁC thật trong cùng thư mục không được chặn oan.
+        let other = dir.join("khac.pdf");
+        std::fs::write(&other, b"%PDF-khac").unwrap();
+        assert!(
+            !resolves_to_same_disk_file(&source, &other),
+            "hai file thật khác nhau không được coi là cùng một file"
+        );
+        assert!(
+            validate_disk_copy_request(&raw_source, &other.to_string_lossy()).is_ok(),
+            "đích là file khác thật phải qua được validate"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_alias_is_recognised_as_same_file() {
+        // FILEIO (audit 2026-08-26 §FILE.A4) — Requirement 3.3.
+        // Junction tới thư mục CHỨA artifact tạm: chuỗi path khác hẳn nhưng mở ra cùng file.
+        // Khác hardlink, ca này ĐƯỢC CẢ HAI TẦNG nhận ra (canonicalize đi qua reparse point),
+        // nên nó là hợp đồng hồi quy cho tầng fallback; sức phân biệt cho oracle định danh
+        // nằm ở `hardlink_alias_is_recognised_as_same_file`.
+        let dir = test_dir("copy_junction");
+        let real = dir.join("that");
+        std::fs::create_dir_all(&real).unwrap();
+        let source = real.join("artifact.pdf");
+        std::fs::write(&source, b"%PDF-artifact").unwrap();
+
+        let link = dir.join("loi_tat");
+        if !try_create_junction(&link, &real) {
+            eprintln!(
+                "SKIP junction_alias_is_recognised_as_same_file: môi trường không tạo được junction \
+                 → ca junction của Requirement 3.3 còn là PROOF GAP trên môi trường này"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let alias = link.join("artifact.pdf");
+
+        let source_id = windows_file_identity(&source);
+        assert!(
+            source_id.is_some(),
+            "định danh file phải đọc được trên file thường, nếu None thì test xanh vô nghĩa"
+        );
+        assert_eq!(
+            source_id,
+            windows_file_identity(&alias),
+            "đường qua junction phải cho cùng volume serial và file index"
+        );
+        assert_eq!(
+            disk_compare_key(&source),
+            disk_compare_key(&alias),
+            "tầng fallback cũng phải resolve qua junction, đây là hợp đồng của disk_compare_key"
+        );
+        assert!(
+            resolves_to_same_disk_file(&source, &alias),
+            "đường qua junction phải bị nhận ra là cùng một file"
+        );
+
+        let raw_source = source.to_string_lossy().to_string();
+        let error = validate_disk_copy_request(&raw_source, &alias.to_string_lossy())
+            .expect_err("phải chặn đích trỏ qua junction về chính nguồn");
+        assert!(
+            error.contains("cùng một file"),
+            "lỗi nghiệp vụ phải nói rõ nguồn trùng đích, nhận: {error}"
+        );
+
+        // Đối chứng âm: file khác thật, cũng đi qua junction, vẫn phải qua được.
+        std::fs::write(real.join("khac.pdf"), b"%PDF-khac").unwrap();
+        assert!(
+            validate_disk_copy_request(&raw_source, &link.join("khac.pdf").to_string_lossy())
+                .is_ok(),
+            "đích khác file dù đi qua junction cũng không được chặn oan"
+        );
+
+        // Tháo junction TRƯỚC khi dọn, rồi khẳng định file thật còn nguyên — bằng chứng là
+        // đã xoá đúng reparse point chứ không xoá xuyên qua link.
+        remove_junction(&link);
+        assert!(
+            source.is_file(),
+            "tháo junction không được làm mất file thật đằng sau nó"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejected_alias_request_leaves_disk_untouched() {
+        // FILEIO (audit 2026-08-26 §FILE.A4) — Requirements 2.1, 2.2, 4.2, 4.4.
+        // `same_disk_file_is_rejected_before_touching_disk` đã phủ ca đích TRÙNG CHUỖI với
+        // nguồn. Test này phủ phần còn thiếu: ca đích là ALIAS mà chỉ oracle định danh mới
+        // thấy (hardlink), tức là đường đi mới thêm ở task 4.2 cũng phải chặn TRƯỚC khi chạm
+        // đĩa, cả hai chiều nguồn↔đích, và soi rác đệ quy chứ không chỉ một tầng.
+        let dir = test_dir("copy_alias_intact");
+        let source = dir.join("artifact.pdf");
+        std::fs::write(&source, b"%PDF-artifact").unwrap();
+        let alias = dir.join("ban_luu_khach.pdf");
+        if let Err(error) = std::fs::hard_link(&source, &alias) {
+            eprintln!(
+                "SKIP rejected_alias_request_leaves_disk_untouched: không tạo được hardlink ({error}) \
+                 → bằng chứng đĩa nguyên vẹn cho ca alias còn là PROOF GAP trên môi trường này"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        std::fs::create_dir_all(dir.join("con")).unwrap();
+
+        let raw_source = source.to_string_lossy().to_string();
+        let raw_alias = alias.to_string_lossy().to_string();
+        let before = snapshot_tree(&dir);
+        let bytes_before = std::fs::read(&source).unwrap();
+
+        // Cả hai chiều: quan hệ cùng-một-file đối xứng nên biên tin cậy phải chặn như nhau.
+        for (from, to) in [
+            (raw_source.clone(), raw_alias.clone()),
+            (raw_alias.clone(), raw_source.clone()),
+            (raw_source.clone(), raw_alias.to_uppercase()),
+            (raw_source.clone(), raw_alias.replace('\\', "/")),
+        ] {
+            let error = validate_disk_copy_request(&from, &to)
+                .expect_err(&format!("phải chặn cặp alias: {from} → {to}"));
+            // Thông báo cố ý KHÔNG mang hai chuỗi mà ImpositionTab dùng để nhận diện lỗi
+            // phạm vi ghi, nếu không nhánh fallback sẽ mở lại hộp thoại chọn vị trí.
+            assert!(!error.contains("not allowed"), "nhận: {error}");
+            assert!(!error.contains("forbidden path"), "nhận: {error}");
+        }
+
+        // Chặn sớm nghĩa là cây thư mục không đổi một entry nào và không có `.tmp` rơi lại.
+        let after = snapshot_tree(&dir);
+        assert_eq!(before, after, "từ chối không được thêm hay bớt entry nào");
+        assert!(
+            after.iter().all(|name| !name.ends_with(".tmp")),
+            "không được để lại file tạm: {after:?}"
+        );
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            bytes_before,
+            "bytes artifact nguồn phải nguyên vẹn sau khi từ chối"
+        );
+
+        // Đối chứng âm cho Requirement 4.4: đích CHƯA tồn tại trong thư mục con vẫn qua.
+        assert!(
+            validate_disk_copy_request(
+                &raw_source,
+                &dir.join("con").join("Hop_dong_khach.pdf").to_string_lossy()
+            )
+            .is_ok(),
+            "đích chưa tồn tại trong thư mục con không được chặn oan"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Feature: save-as-artifact-guard, Property 7: Fail-closed khi không kết luận được
+    // **Validates: Requirements 3.5**
+    #[cfg(windows)]
+    #[test]
+    fn identity_unavailable_falls_back_to_compare_key() {
+        // FILEIO (audit 2026-08-26 §FILE.A4).
+        // `windows_file_identity` trả `None` nghĩa là KHÔNG KẾT LUẬN ĐƯỢC, không phải "hai
+        // file khác nhau". Biến `None` thành `false` là biến một lần resolve thất bại thành
+        // giấy phép ghi đè lên artifact tạm — đúng lỗ hổng mà chốt chặn này tồn tại để bịt.
+        let dir = test_dir("copy_failclosed");
+        let real = dir.join("artifact.pdf");
+        std::fs::write(&real, b"%PDF-artifact").unwrap();
+
+        // Chốt trước: cơ chế định danh CÓ hoạt động trên file thường. Không có assert này,
+        // mọi assert dưới đây vẫn xanh khi `windows_file_identity` bị vô hiệu hoá thành
+        // `None` cho mọi path.
+        assert!(
+            windows_file_identity(&real).is_some(),
+            "định danh file phải đọc được trên file thường, nếu None thì test xanh vô nghĩa"
+        );
+
+        // Dựng ca "không kết luận được" một cách XÁC ĐỊNH và không cần quyền đặc biệt:
+        // junction TREO. Reparse point còn trên đĩa nên `symlink_metadata` thấy (không rơi ra
+        // ở bước đích-chưa-tồn-tại), nhưng mở handle phải đi theo link tới thư mục đã bị xoá
+        // nên chắc chắn thất bại → định danh trả `None`.
+        let gone = dir.join("thu_muc_se_xoa");
+        std::fs::create_dir_all(&gone).unwrap();
+        let ghost = dir.join("junction_treo");
+        if !try_create_junction(&ghost, &gone) {
+            eprintln!(
+                "SKIP identity_unavailable_falls_back_to_compare_key: môi trường không tạo được junction \
+                 → ca fail-closed khi không resolve được (Requirement 3.5) còn là PROOF GAP"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        std::fs::remove_dir(&gone).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&ghost).is_ok(),
+            "junction treo phải còn hiện trên đĩa, nếu không test đi sai nhánh"
+        );
+        assert!(
+            windows_file_identity(&ghost).is_none(),
+            "tiền đề của test: junction treo không mở được handle nên phải cho None"
+        );
+
+        // Bất biến của Property 7: `None` vẫn phải đi tiếp bằng `disk_compare_key`. Ba mặt
+        // path của cùng cái junction treo đều phải cho ra `true` — hạ `None` thành `false`
+        // là ba assert này đỏ.
+        let raw_ghost = ghost.to_string_lossy().to_string();
+        for face in [
+            raw_ghost.clone(),
+            raw_ghost.to_uppercase(),
+            raw_ghost.replace('\\', "/"),
+        ] {
+            assert!(
+                resolves_to_same_disk_file(&ghost, std::path::Path::new(&face)),
+                "không kết luận được thì phải rơi về so chuỗi chuẩn hoá, không được trả false: {face}"
+            );
+        }
+
+        // Mặt còn lại của cùng bất biến: fail-closed không được thành chặn oan. Một phía
+        // `None` mà khoá chuẩn hoá khác nhau thì vẫn là hai file khác nhau.
+        assert!(
+            !resolves_to_same_disk_file(&real, &ghost),
+            "một phía None không được biến thành 'cùng một file' khi khoá chuẩn hoá khác nhau"
+        );
+
+        remove_junction(&ghost);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tauri::command]
@@ -4080,11 +4768,22 @@ fn read_dir_json(app: tauri::AppHandle, dir: String) -> Result<Vec<String>, Stri
 }
 
 #[tauri::command]
+fn take_pending_system_file_batches(
+    state: tauri::State<SystemFilesState>,
+) -> Vec<SystemFileBatch> {
+    // FILEIO (audit 2026-08-26 §FILE.A2): giữ ranh giới argv từng process để
+    // action của một lần Explorer launch không áp nhầm sang batch kế bên.
+    state.drain_pending()
+}
+
+#[tauri::command]
 fn get_pending_system_files(state: tauri::State<SystemFilesState>) -> Vec<String> {
-    let mut pending = lock_mutex(&state.0);
-    let files = pending.clone();
-    pending.clear();
-    files
+    // Tương thích frontend cũ: chỉ đường legacy mới làm phẳng các batch.
+    state
+        .drain_pending()
+        .into_iter()
+        .flat_map(|batch| batch.args)
+        .collect()
 }
 
 #[tauri::command]
@@ -5052,18 +5751,16 @@ pub fn run() {
     startup_breadcrumb("process entry — creating windows");
 
     tauri::Builder::default()
-        .manage(SystemFilesState(Mutex::new(Vec::new())))
+        .manage(SystemFilesState::new(std::env::args().collect()))
         // UIUX/SEC (audit 2026-08-25 §NW.3/§NW.8): bootstrap cửa sổ PDF chỉ sống
         // trong RAM native và được lấy đúng một lần theo label của chính WebView.
         .manage(Mutex::new(document_window_registry::DocumentWindowRegistry::default()))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
-                if let Ok(mut pending) = state.0.lock() {
-                    pending.extend(args);
-                }
+                state.enqueue(args);
             }
 
             if APP_STARTUP_READY.load(Ordering::Acquire) {

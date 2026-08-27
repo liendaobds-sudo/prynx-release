@@ -7,6 +7,9 @@ mod imposition;
 mod layers;
 mod logo_engine;
 mod logo_vectorizer;
+/// Binding cho engine "Bình lồng ghép tự do". ĐỘC LẬP với `nfp_solver` và `imposition`
+/// bên dưới — không gọi lẫn nhau (kế hoạch mixed_nesting 2026-08-26 §1).
+mod mixed_nesting_py;
 mod nfp_solver;
 mod objects;
 mod pdfium_init;
@@ -42,6 +45,10 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Phục hồi & Vector hóa Logo — chỉ hai mode đã qua audit MVP.
     m.add_class::<logo_vectorizer::LogoVectorizerCancel>()?;
+
+    // Bình lồng ghép tự do (mixed nesting). Điểm đăng ký duy nhất; không có nhánh nào
+    // từ đây gọi sang solver bình bài cũ và ngược lại.
+    m.add_class::<mixed_nesting_py::MixedNestingRun>()?;
     m.add_function(wrap_pyfunction!(logo_vectorizer::logo_vectorize_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(
         logo_vectorizer::logo_vectorize_structured_rgba,
@@ -177,6 +184,9 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // the feature-gated sidecar route.
     m.add_function(wrap_pyfunction!(dieline_engine::warm_dieline_engine, m)?)?;
     m.add_function(wrap_pyfunction!(dieline_engine::generate_dieline_json, m)?)?;
+    // [DIELINE-ENGINE-STATUS 2026-08-26 §G] Truy vấn trạng thái chỉ-đọc: không nhận
+    // credentials, không giải mã, không ném. Dùng để phát hiện sớm engine bị khoá.
+    m.add_function(wrap_pyfunction!(dieline_engine::dieline_engine_status, m)?)?;
 
     Ok(())
 }

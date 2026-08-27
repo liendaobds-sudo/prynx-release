@@ -38,6 +38,7 @@ import {
     SYSTEM_FILE_STAT_DEADLINE_MS,
     statNativeSystemFile,
 } from '../lib/nativeFileAccess';
+import i18n from '../i18n';
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -65,6 +66,8 @@ describe('SystemIntegrations — mở file hệ thống', () => {
         mocks.webviewHandler = undefined;
         useRecentFiles.setState({ files: [], missingPaths: [] });
         mocks.invoke.mockImplementation(async (command: string) => {
+            if (command === 'take_startup_system_file_batch') return null;
+            if (command === 'take_pending_system_file_batches') return [];
             if (command === 'get_startup_args' || command === 'get_pending_system_files') return [];
             if (command === 'stat_system_file') return { status: 'available', size: 123 };
             return null;
@@ -153,6 +156,81 @@ describe('SystemIntegrations — mở file hệ thống', () => {
         view.unmount();
     });
 
+    it('đổi ngôn ngữ không đọc lại startup args hoặc mở lại file cũ', async () => {
+        const received = vi.fn();
+        window.addEventListener('system-files-received', received);
+        mocks.invoke.mockImplementation(async (command: string) => {
+            if (command === 'take_startup_system_file_batch') {
+                return {
+                    batchId: 'startup-1',
+                    args: ['PrynX.exe', 'D:\\startup\\b.pdf'],
+                };
+            }
+            if (command === 'take_pending_system_file_batches') return [];
+            if (command === 'stat_system_file') return { status: 'available', size: 123 };
+            return null;
+        });
+
+        const view = render(<SystemIntegrations />);
+        await waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+        expect(mocks.invoke.mock.calls.filter(
+            ([command]) => command === 'take_startup_system_file_batch',
+        )).toHaveLength(1);
+
+        const originalLanguage = i18n.language;
+        const nextLanguage = i18n.language === 'vi' ? 'en' : 'vi';
+        await act(async () => {
+            await i18n.changeLanguage(nextLanguage);
+        });
+
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(mocks.invoke.mock.calls.filter(
+            ([command]) => command === 'take_startup_system_file_batch',
+        )).toHaveLength(1);
+        expect(received).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            await i18n.changeLanguage(originalLanguage);
+        });
+
+        window.removeEventListener('system-files-received', received);
+        view.unmount();
+    });
+
+    it('remount sau reload không phát lại startup batch đã consume', async () => {
+        let startupCalls = 0;
+        const received = vi.fn();
+        window.addEventListener('system-files-received', received);
+        mocks.invoke.mockImplementation(async (command: string) => {
+            if (command === 'take_startup_system_file_batch') {
+                startupCalls += 1;
+                return startupCalls === 1
+                    ? { batchId: 'startup-1', args: ['PrynX.exe', 'D:\\startup\\b.pdf'] }
+                    : null;
+            }
+            if (command === 'take_pending_system_file_batches') return [];
+            if (command === 'stat_system_file') return { status: 'available', size: 123 };
+            return null;
+        });
+
+        const first = render(<SystemIntegrations />);
+        await waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+        first.unmount();
+
+        const second = render(<SystemIntegrations />);
+        await waitFor(() => expect(startupCalls).toBe(2));
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(received).toHaveBeenCalledTimes(1);
+
+        window.removeEventListener('system-files-received', received);
+        second.unmount();
+    });
+
     it('hết deadline metadata vẫn trả kết quả timeout size=0', async () => {
         vi.useFakeTimers();
         mocks.invoke.mockImplementation((command: string) => {
@@ -188,10 +266,12 @@ describe('SystemIntegrations — mở file hệ thống', () => {
         const probe = deferred<{ status: 'available'; size: number }>();
         let pendingCalls = 0;
         mocks.invoke.mockImplementation((command: string) => {
-            if (command === 'get_startup_args') return Promise.resolve([]);
-            if (command === 'get_pending_system_files') {
+            if (command === 'take_startup_system_file_batch') return Promise.resolve(null);
+            if (command === 'take_pending_system_file_batches') {
                 pendingCalls += 1;
-                return Promise.resolve(pendingCalls === 1 ? ['D:\\viec\\cham.pdf'] : []);
+                return Promise.resolve(pendingCalls === 1
+                    ? [{ batchId: 'instance-2', args: ['PrynX.exe', 'D:\\viec\\cham.pdf'] }]
+                    : []);
             }
             if (command === 'stat_system_file') return probe.promise;
             return Promise.resolve(null);

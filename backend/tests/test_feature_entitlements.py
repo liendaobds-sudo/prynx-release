@@ -33,7 +33,8 @@ def test_all_22_pro_features_follow_free_custom_and_pro_matrix(monkeypatch):
     """SEC (audit 2026-08-04 §TEST.02): khóa toàn bộ catalog Pro phía backend."""
     monkeypatch.setattr(entitlements, "FEATURE_GATING_ENABLED", True)
 
-    assert len(entitlements.PRO_FEATURES) == 22
+    # 22 quyền Pro gốc + "impo.mixed_nesting" (Bình lồng ghép tự do, kế hoạch 2026-08-26 §8).
+    assert len(entitlements.PRO_FEATURES) == 23
     assert entitlements.FREE_FEATURES.isdisjoint(entitlements.PRO_FEATURES)
     assert set(entitlements.FEATURE_MIN_PLAN) == (
         entitlements.FREE_FEATURES | entitlements.PRO_FEATURES
@@ -88,6 +89,9 @@ def test_frontend_and_backend_feature_catalogs_have_exact_parity():
     assert frontend_catalog == entitlements.FEATURE_MIN_PLAN
     assert entitlements.FEATURE_MIN_PLAN["pdf.crop"] == "free"
     assert entitlements.FEATURE_MIN_PLAN["util.document_cleanup"] == "free"
+    # Quyền của Bình lồng ghép tự do phải có mặt ở CẢ hai catalog trong cùng một commit.
+    assert entitlements.FEATURE_MIN_PLAN["impo.mixed_nesting"] == "pro"
+    assert frontend_catalog["impo.mixed_nesting"] == "pro"
     assert "pdf.optimize_advanced" not in entitlements.FEATURE_MIN_PLAN
     assert "prepress.font_tools" not in entitlements.FEATURE_MIN_PLAN
 

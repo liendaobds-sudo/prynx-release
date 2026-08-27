@@ -12,6 +12,8 @@
 //!   - `nfp`          : no-fit-polygon nesting (Task 5)
 //!   - `orchestrator` : sinh ứng viên layout (Task 5)
 //!   - `assembler`    : tính placement tuyệt đối + mark coords (Task 5)
+//!   - `mixed_nesting`: engine "Bình lồng ghép tự do" — ĐỘC LẬP, không import và không
+//!     được gọi từ các module trên (kế hoạch 2026-08-26)
 //!
 //! Các module toán được điền dần ở Task 5; structs hợp đồng ở Task 4.
 
@@ -20,6 +22,9 @@ pub const CORE_NAME: &str = "imposition_core";
 // Hợp đồng dữ liệu (Task 4). Các module toán điền ở Task 5.
 pub mod assembler;
 pub mod grid;
+/// Engine lồng ghép tự do. Cố ý KHÔNG `pub use mixed_nesting::*` để hợp đồng mới
+/// không lẫn vào không gian tên của hợp đồng bình bài cũ (`Placement`, `Rotation`…).
+pub mod mixed_nesting;
 pub mod model;
 pub mod nfp;
 pub mod orchestrator;

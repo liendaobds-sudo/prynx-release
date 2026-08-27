@@ -79,19 +79,19 @@ set "REG_BASE=HKCU\Software\Classes\SystemFileAssociations"
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
-reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" \"%%1\"" /f >nul
+reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" --prynx-action=combine \"%%1\"" /f >nul
 
 :: JPG
 reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul
 reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
 reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
-reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" \"%%1\"" /f >nul
+reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" --prynx-action=combine \"%%1\"" /f >nul
 
 :: PNG
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
-reg add "%REG_BASE%\.png\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" \"%%1\"" /f >nul
+reg add "%REG_BASE%\.png\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" --prynx-action=combine \"%%1\"" /f >nul
 
 :: ─── Convert to PDF (CHI anh: 1 anh -> 1 PDF). Co --prynx-action=convert de
 ::     App.tsx dinh tuyen 1 file vao tab Ghep (xuat PDF) thay vi Binh bai. ───

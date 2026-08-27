@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import {
+  isGeneratedWorkspaceFile,
   statNativeSystemFile,
   type NativeFileStatResult,
 } from './nativeFileAccess';
-import { isOutputFile } from './constants';
 
 export interface RecentFile {
   path: string;
@@ -151,11 +151,9 @@ export function addOpenPayloadToRecent(payload?: OpenPayloadWithSources | null):
     const path = (candidate as File & { path?: string }).path;
     if (!path || seenPaths.has(path)) continue;
     seenPaths.add(path);
-    if (
-      isOutputFile(candidate.name || '')
-      || (candidate as File & { isBlank?: boolean }).isBlank
-      || (candidate as File & { isGenerated?: boolean }).isGenerated
-    ) {
+    // FILEIO (audit 2026-08-26 §FILE.A4): chỉ metadata producer mới loại
+    // khỏi Recent; chuỗi trong tên file khách không phải provenance.
+    if ((candidate as File & { isBlank?: boolean }).isBlank || isGeneratedWorkspaceFile(candidate)) {
       continue;
     }
     useRecentFiles.getState().addFile({

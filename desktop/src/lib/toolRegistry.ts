@@ -11,6 +11,7 @@
 import { lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
 // [VARIANT 2026-07-29] Hàm chuẩn hoá tìm kiếm ở module thuần (không React)
 import { LOGO_REBUILD_ENABLED } from '../components/imposition-tools/sections/preprocessRouterTools';
+import { MIXED_NESTING_ENABLED } from './mixed-nesting/rollout';
 import type { FeatureId } from './license/features';
 import type { RecoverySnapshot } from './recovery';
 import type { DocumentWindowTabApi, DocumentWindowViewState } from './documentWindow';
@@ -20,7 +21,9 @@ import { normalizeSearch } from './textSearch';
 export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'image' | 'qc';
 
 // ─── Tool App IDs (used as tab type) ───
-export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'cnc' | 'booklet' | 'paper_library';
+// `mixed_nesting` là AppTool STANDALONE (kế hoạch 2026-08-26 §7): id riêng, component
+// riêng, capability riêng. Cố ý KHÔNG thêm vào IMPOSITION_FAMILY_TOOL_IDS.
+export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'cnc' | 'booklet' | 'paper_library' | 'mixed_nesting';
 
 export interface ToolBatchOutput {
   docs: Array<{ blob: Blob; filename: string; report?: string }>;
@@ -117,6 +120,7 @@ const ImpositionTab = lazy(() => import('../components/ImpositionTab'));
 const CombineTab = lazy(() => import('../components/CombineTab'));
 const DielineTool = lazy(() => import('../components/dieline-tool/DielineTool'));
 const PaperLibraryTool = lazy(() => import('../components/paper-library/PaperLibraryTool'));
+const MixedNestingTool = lazy(() => import('../components/mixed-nesting/MixedNestingTool'));
 const IMPOSITION_FAMILY_TOOL_IDS = new Set<AppToolId>(['imposition', 'nup', 'diecut', 'cnc', 'preflight']);
 
 /** Các tab dùng chung workspace và menu công cụ của ImpositionTab. */
@@ -582,6 +586,28 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     bgIcon: 'bg-violet-100 dark:bg-violet-500/10',
     textIcon: 'text-violet-600',
   },
+  // Bình lồng ghép tự do — AppTool STANDALONE, KHÔNG thuộc họ Imposition và KHÔNG dùng
+  // chung workspace/menu với ImpositionTab. Spread có điều kiện (không dùng
+  // `isEnabled: false`) để bản phát hành đang HOLD không hiện tool ở Home và không
+  // resolve được qua routing — giống cách Vector hóa Logo đang làm.
+  ...(MIXED_NESTING_ENABLED ? [{
+    id: 'mixed_nesting',
+    title: 'Bình lồng ghép tự do',
+    tabTitle: 'Lồng ghép tự do',
+    icon: '🧷',
+    description: 'Xếp nhiều loại khuôn lên cùng tờ, xoay tự do mọi góc',
+    longDescription: 'Xếp nhiều loại khuôn bế khác nhau lên cùng tờ vật liệu theo hình thật của contour. Góc xoay tự do liên tục 0°–360° và toạ độ mm liên tục, không lật khuôn. Có kiểm tra chồng lấn và khoảng hở trước khi xuất.',
+    category: 'packaging',
+    component: MixedNestingTool,
+    isEnabled: true,
+    featureId: 'impo.mixed_nesting',
+    maxInstances: 4,
+    hoverColor: 'hover:border-violet-500 hover:text-violet-600 text-slate-800 dark:text-white',
+    hoverBorder: 'hover:border-violet-500',
+    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(139,92,246,0.15)]',
+    bgIcon: 'bg-violet-100 dark:bg-violet-500/10',
+    textIcon: 'text-violet-600',
+  } satisfies ToolDefinition] : []),
 
   // ── UTILITIES ──
   {
@@ -974,6 +1000,7 @@ export const TOOL_KEYWORDS: Record<string, string> = {
   cnc_imposer: 'cnc drop cut die two sided duplex mirror binh be rot 2 mat cat roi lat guong khuon',
   // Packaging
   dieline: 'dieline die cut packaging box carton mockup 3d khuon be bao bi hop tui',
+  mixed_nesting: 'mixed nesting true shape nest free angle rotation continuous arbitrary irregular multi part gang combine sheet packing binh long ghep tu do xep khuon nhieu loai xoay tu do goc bat ky hinh that ghep khuon chung to tiet kiem vat lieu',
   paper_library: 'paper stock gsm weight thickness caliper spine lamination film thread sewing library lookup thu vien vat tu giay dinh luong do day gay sach mang can may chi tra cuu bang tra couche fort bristol ivory duplex kraft',
   // Utilities
   bgremover: 'background remover remove bg ai cutout tach nen bong tach phong',

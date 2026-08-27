@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildResultTabPayload,
+    buildSourceTabOptions,
     partitionIncomingFiles,
     planIncomingFiles,
     registerActiveTabFeature,
     resolveActiveDedicatedReceiver,
     resolveActiveImageBatchReceiver,
 } from './tabNavigation';
+import {
+    createSavedSourceFile,
+    isGeneratedWorkspaceFile,
+    markGeneratedWorkspaceFile,
+} from './nativeFileAccess';
 
 describe('điều hướng đa tab', () => {
     const tabs = [
@@ -139,12 +145,72 @@ describe('điều hướng đa tab', () => {
         }
     });
 
+    it('tab kết quả gắn provenance generated, không phụ thuộc tên file', () => {
+        const plainName = new File([], 'bao-gia-khach-hang.pdf');
+        const payload = buildResultTabPayload(plainName);
+
+        expect(payload).toEqual({ file: plainName });
+        expect(isGeneratedWorkspaceFile(payload.file)).toBe(true);
+    });
+
     it('tab kết quả không tự kế thừa chế độ khóa của tab cha', () => {
-        expect(buildResultTabPayload('result.pdf')).toEqual({ file: 'result.pdf' });
-        expect(buildResultTabPayload('result.pdf', { lockedMode: 'nup' })).toEqual({
-            file: 'result.pdf',
+        const result = new File([], 'result.pdf');
+        expect(buildResultTabPayload(result, { lockedMode: 'nup' })).toEqual({
+            file: result,
             lockedMode: 'nup',
         });
+    });
+
+    it('source escape giữ file khách sạch và không để lộ khóa routing vào payload', () => {
+        const customerFile = new File([], 'Hop_dong_converted_Edited_part_2026.pdf');
+        const payload = buildResultTabPayload(
+            customerFile,
+            buildSourceTabOptions({ initialFeature: 'view' }),
+        );
+
+        expect(payload).toEqual({ file: customerFile, initialFeature: 'view' });
+        expect(isGeneratedWorkspaceFile(customerFile)).toBe(false);
+        expect(payload).not.toHaveProperty('__prynxOpenExistingSource');
+    });
+
+    it('source escape không tẩy provenance generated đã có trên file', () => {
+        const generated = markGeneratedWorkspaceFile(new File([], 'ket-qua.pdf'));
+        buildResultTabPayload(generated, buildSourceTabOptions());
+        expect(isGeneratedWorkspaceFile(generated)).toBe(true);
+    });
+
+    it('tab kết quả chấp nhận marker generated non-configurable từ producer cũ', () => {
+        const legacyGenerated = new File([], 'VDP_legacy.pdf');
+        Object.defineProperty(legacyGenerated, 'isGenerated', { value: true });
+
+        expect(() => buildResultTabPayload(legacyGenerated)).not.toThrow();
+        expect(isGeneratedWorkspaceFile(legacyGenerated)).toBe(true);
+        expect(Object.getOwnPropertyDescriptor(legacyGenerated, 'isGenerated')).toMatchObject({
+            value: true,
+            configurable: false,
+        });
+    });
+
+    it('identity nguồn mới sau lưu không kế thừa marker runtime cũ', () => {
+        const generated = markGeneratedWorkspaceFile(new File(['pdf'], 'working.pdf', {
+            type: 'application/pdf',
+        }));
+        Object.defineProperty(generated, 'isTempUploadPath', { value: true, configurable: true });
+        Object.defineProperty(generated, '__nativePathPending', { value: true, configurable: true });
+
+        const saved = createSavedSourceFile([generated], 'hop-dong.pdf', {
+            type: 'application/pdf',
+            path: 'D:\\Tai-lieu\\hop-dong.pdf',
+        }) as File & {
+            path?: string;
+            isTempUploadPath?: boolean;
+            __nativePathPending?: boolean;
+        };
+
+        expect(saved.path).toBe('D:\\Tai-lieu\\hop-dong.pdf');
+        expect(isGeneratedWorkspaceFile(saved)).toBe(false);
+        expect(saved.isTempUploadPath).toBeUndefined();
+        expect(saved.__nativePathPending).toBeUndefined();
     });
     it('intent Combine giữ nguyên toàn bộ PDF và ảnh trong một batch', () => {
         const files = [

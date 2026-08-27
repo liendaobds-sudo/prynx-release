@@ -34,6 +34,8 @@ export const FEATURE_CATALOG = {
   'impo.nup': { minPlan: 'pro', label: 'Bình cắt xén N-Up' },
   'impo.diecut': { minPlan: 'pro', label: 'Bình tem bế' },
   'impo.cnc': { minPlan: 'pro', label: 'Bình bế rớt/CNC' },
+  // Bình lồng ghép tự do: quyền RIÊNG, không phải bí danh của 'impo.diecut'.
+  'impo.mixed_nesting': { minPlan: 'pro', label: 'Bình lồng ghép tự do' },
   'packaging.dieline': { minPlan: 'pro', label: 'Khuôn bế bao bì' },
   'util.bgremover': { minPlan: 'pro', label: 'Tách nền' },
   'util.upscale': { minPlan: 'pro', label: 'AI Upscale' },

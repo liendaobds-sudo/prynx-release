@@ -23,6 +23,8 @@ import {
     resolveStickerShapeMode,
 } from './stickerToolPolicy';
 import { findToolByUniqueKey } from '../../lib/toolRegistry';
+import { requestOpenTool } from '../../lib/tabNavigation';
+import { MIXED_NESTING_ENABLED } from '../../lib/mixed-nesting/rollout';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 import { useClassicCutlinePreview } from './useClassicCutlinePreview';
 
@@ -292,6 +294,29 @@ export default function StickerTool({
         requestToolActivation(definition, () => {
             setActiveDashboardTool(toolKey);
             setTaskMode(toolKey);
+        });
+    };
+
+    /**
+     * Chuyển sang "Bình lồng ghép tự do" — AppTool **standalone**, nên phải mở THẺ MỚI kèm
+     * file, không đổi `activeDashboardTool` như ba mục kia (nó không phải chế độ của
+     * `ImpositionTab`).
+     *
+     * File chuyển đi là working file hiện tại: sau khi bù xén, chính nó là PDF đã có đường
+     * cắt — đúng thứ công cụ lồng ghép cần đọc để lấy contour.
+     */
+    const openMixedNesting = () => {
+        const definition = findToolByUniqueKey('mixed_nesting');
+        if (!definition) {
+            setError(t('preprocess.sticker:cong_cu_chua_kha_dung'));
+            return;
+        }
+        if (!pdfFile) {
+            setError(t('preprocess.sticker:chua_co_file_de_chuyen_tiep'));
+            return;
+        }
+        requestToolActivation(definition, () => {
+            requestOpenTool('mixed_nesting', pdfFile);
         });
     };
 
@@ -1696,6 +1721,18 @@ export default function StickerTool({
                                 featureId="impo.diecut"
                                 onClick={() => openImpositionTool('sticker_imposer')}
                                 hoverColor="hover:border-pink-400 dark:hover:border-pink-500" 
+                            />
+                        )}
+                        {/* Bình lồng ghép tự do là AppTool STANDALONE, không phải một chế độ
+                            của workspace này — nên nó mở THẺ MỚI kèm file vừa bù xén, chứ
+                            không đổi `activeDashboardTool` như ba mục trên. Nút chỉ hiện khi
+                            tool có trong registry (cờ rollout bật) và đã có file để chuyển. */}
+                        {MIXED_NESTING_ENABLED && pdfFile && (
+                            <ToolItem
+                                icon="🧷" label={t('preprocess.sticker:binh_long_ghep_tu_do')} desc={t('preprocess.sticker:xep_nhieu_loai_khuon_xoay_tu_do')}
+                                featureId="impo.mixed_nesting"
+                                onClick={openMixedNesting}
+                                hoverColor="hover:border-violet-400 dark:hover:border-violet-500"
                             />
                         )}
                     </div>

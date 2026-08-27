@@ -3,50 +3,9 @@
  */
 
 /**
- * File name prefixes that indicate a file was produced by
- * internal processing (imposition, split, merge, etc.)
- * and should be treated as "unsaved output".
- */
-export const OUTPUT_PREFIXES = [
-  'Imposed_',
-  'Bi_Broc_Tach_',
-  'Resized_',
-  'Shuffled_',
-  'Processed_',
-  'Merged_',
-  'Kem_Gop_',
-  'Converted_',
-  'FixedHairlines_',
-  'FixedBoxes_',
-  'Trapped_',
-  'part_',
-  'VDP_',
-  'Numbered_',
-  'Searchable_',
-  'optimized_',
-  'watermarked_',
-  'encrypted_',
-  'decrypted_',
-  'metadata_',
-  'converted_',
-  'google_',
-  'Edited_',
-  'Cropped_',
-  'Split_',
-  'Interleaved_',
-] as const;
-
-/**
- * Check if a filename indicates it's an output/processed file.
- */
-export function isOutputFile(name: string): boolean {
-  return OUTPUT_PREFIXES.some(prefix => name.includes(prefix));
-}
-
-/**
  * Prefixes của riêng kết quả BÌNH BÀI (có đường cắt/bế) — dùng để gate nút
- * "Gửi Máy Bế". KHÔNG dùng isOutputFile chung vì nó còn match VDP_, Numbered_,
- * watermarked_... (những file không có dữ liệu cắt).
+ * "Gửi Máy Bế". Đây là nhận diện capability của artifact bình bài,
+ * không được dùng làm provenance/dirty/Recent.
  */
 export const IMPOSED_PREFIXES = ['Imposed_'] as const;
 

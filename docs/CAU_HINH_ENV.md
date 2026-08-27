@@ -31,6 +31,7 @@ tiến trình**; việc nặng chạy process con riêng nên trần job không 
 | `PRYNX_SECURITY_DIAG` | tắt | Bật log chẩn đoán posture bảo mật. Log có thể lộ thông tin môi trường → không bật lâu trên máy khách |
 | `PRYNX_FEATURE_GATING_ENABLED` | dev: tắt; binary đóng gói: bật cưỡng bức | Với source dev, đặt `true` để test Free/Pro. Binary Nuitka luôn bật và bỏ qua yêu cầu tắt. Dùng `run_dev.bat --gated` để đặt đồng thời biến này và `VITE_FEATURE_GATING_ENABLED=true` cho frontend |
 | `PRYNX_LOGO_REBUILD_ENABLED` | `false` | Cờ release backend cho Phục hồi & Vector hóa Logo. Dev thông dịch vẫn mở bằng `DEV_MODE=true`; bản đóng gói lấy giá trị đã nung trong Tauri host và ghi đè env kế thừa khi spawn sidecar. Pipeline phải đặt đồng thời với `VITE_LOGO_REBUILD_ENABLED`; hiện cả hai giữ `false` (HOLD) cho tới khi nghiệm thu production |
+| `PRYNX_MIXED_NESTING_ENABLED` | `false` | Cờ release backend cho **Bình lồng ghép tự do**. Dev thông dịch vẫn mở bằng `DEV_MODE=true`; bản đóng gói lấy giá trị đã nung. Pipeline phải đặt đồng thời với `VITE_MIXED_NESTING_ENABLED` — một bên bật lệch là trạng thái sai (UI hiện tool nhưng API trả 404, hoặc ngược lại). Cờ tắt chỉ chặn **tạo** source/job mới; Status/Cancel/Delete của job đã tồn tại vẫn hoạt động để không rò thread, suất scheduler hay file tạm |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | *(không)* | Chỉ dùng cho đường kích hoạt/kiểm tra license phía server |
 | `PRYNX_SUPABASE_URL`, `PRYNX_SUPABASE_SECRET_KEY` | *(không)* | Tương thích CI/CLI để lấy khóa resource khuôn bế; build lấy và xóa hai biến ngay đầu process, trước mọi tool con. Launcher chuẩn không dùng env: `build_production.ps1` tự giải mã kho DPAPI `%LOCALAPPDATA%\PrynX\ReleaseSecrets\secrets.clixml` đúng tại bước REST. Public release chỉ nhận khóa mới `sb_secret_` |
 
@@ -44,6 +45,8 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 | `PRYNX_MAX_HEAVY_JOBS` | auto theo RAM: `<8GB`→1, `<16GB`→2, `≥16GB`→3, `≥64GB`→4 | Trần việc nặng **dùng chung**. Cũng là số chia **ngân sách RAM** mỗi slot — tăng thì mỗi slot được ít RAM hơn. Đặt `2` để quay về hành vi trước 2026-07-29 nếu máy khách có biểu hiện lạ. **Không** phải trần của bình bản/VDP/tem: ba loại đó có trần phụ riêng (xem dưới) |
 | *(trần phụ, không có env)* | `nup`+`vdp`+`compare` = **1 suất chung**; `office` = **1 suất** | Ba loại đầu mỗi job đã tự mở tới `cpu-1` process nên chỉ một job chạy tại một thời điểm. `office` (COM/LibreOffice) cách ly vì nhiều instance là nguồn treo đã có lịch sử. Định nghĩa ở `core/heavy_job_scheduler.py` (`_WHOLE_MACHINE_KINDS`, `_SERIAL_KINDS`) |
 | `PRYNX_MAX_NUP_JOBS` | `1` | **Đừng tăng** trừ khi đã đo. Một job bình bản đã mở tới `cpu−1` process |
+| `PRYNX_MIXED_NEST_WORKERS` | auto theo `plan_worker_count`: `<8GB`→1, `<16GB`→2, `≥16GB`→`cpu−1` | Ép số worker của **Bình lồng ghép tự do**. Ép được cả hai chiều — người vận hành biết máy mình. Kind `mixed-nesting` dùng chung một suất whole-machine với `nup`/`vdp`/`compare` nên không bao giờ chạy song song với ba loại đó |
+| `PRYNX_MAX_MIXED_NESTING_QUEUE` | `4` | Số job lồng ghép được xếp hàng (ngoài job đang chạy). Chỉ **một** job chạy tại một thời điểm vì kind này thuộc nhóm whole-machine; queue chỉ để client không bị 429 ngay khi bấm hai lần |
 | `PRYNX_MAX_NUP_QUEUE` | `8` | Số job bình bản được xếp chờ; vượt → từ chối sớm thay vì phình RAM |
 | `PRYNX_NUP_WORKERS` | auto theo RAM+CPU | **Đây** là núm cho máy mạnh/máy yếu của bình bản. Ép số process trong MỘT job (cả chiều tăng và giảm) |
 | `PRYNX_MAX_VDP_JOBS` / `PRYNX_MAX_VDP_QUEUE` | `1` / `8` | Như nup: job VDP đã tự chia chunk theo lõi |
@@ -84,6 +87,12 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 PPE-only là bất biến của sản phẩm, không phải một chế độ cấu hình. PrynX không hỗ
 trợ biến môi trường để dò/bật Ghostscript hoặc chuyển sang executable xử lý PDF
 bên ngoài; tác vụ sửa file vượt khả năng engine nội bộ sẽ dừng an toàn và báo không hỗ trợ.
+
+### Root lưu file xuất của Bình lồng ghép tự do
+
+| Biến | Mặc định | Đụng tới khi nào |
+|---|---|---|
+| `PRYNX_MIXED_NESTING_DATA_DIR` | `<thư mục cha của RESULTS_DIR>/mixed_nesting_data` | Đổi chỗ lưu PDF đã xuất của Bình lồng ghép. **Fail-closed**: root trùng, nằm **trong**, hoặc **chứa** một trong ba root dùng chung (`UPLOAD_DIR`, `RESULTS_DIR`, `backend/temp`) đều bị từ chối, và symlink/junction cũng bị từ chối. Root sai chỉ **tắt tính năng này**, không làm sập sidecar. TTL file xuất là 2 giờ, quét mỗi 10 phút, trần tổng 2 GB |
 
 ## 5. Parity & fallback engine
 

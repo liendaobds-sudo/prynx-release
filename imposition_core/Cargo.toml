@@ -13,6 +13,12 @@ crate-type = ["rlib"]
 serde = { version = "1", features = ["derive"] }
 geo = "0.28"
 ts-rs = { version = "10", optional = true }
+# Kernel polygon fixed-point (i64) cho mixed_nesting — chốt ở spike P2b0.
+# CHỈ dùng boolean (union/intersect/difference/xor) và offset (ClipperOffset /
+# inflate_paths). TUYỆT ĐỐI KHÔNG gọi minkowski_sum/minkowski_diff: đã đo là SAI
+# trên 5/6 ca lồi ở cả bản này lẫn bản C++ gốc, và chậm 12–84 ms mỗi phép.
+# Bằng chứng và phương án NFP thay thế: docs/BAO_CAO_SPIKE_MIXED_NESTING_KERNEL.md
+clipper2-rust = "1.1.0"
 
 [features]
 ts-export = ["dep:ts-rs"]

@@ -1,14 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { useTranslation } from 'react-i18next';
-
-type AuthUrlEventDetail = {
-  url?: string;
-};
+import { useAuthDeepLinkListener } from '../../hooks/useAuthDeepLinkListener';
 
 function getAuthErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message;
@@ -22,6 +18,7 @@ function getAuthErrorMessage(error: unknown, fallback: string): string {
 export default function LoginScreen() {
   const { t } = useTranslation();
   const { user, licenseKey, changeLicenseKey } = useAuthStore();
+  const mountedRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [inputKey, setInputKey] = useState('');
@@ -29,65 +26,44 @@ export default function LoginScreen() {
   // Note: We need a product ID for Prynx. Ask the user what it is!
   const PRODUCT_ID = 'prynx'; 
 
-  // Deep Link Listener for OAuth Callback
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    
-    async function processUrls(urls: string[]) {
-      for (const url of urls) {
-          if (url.includes('prynx://auth/callback')) {
-            try {
-              setLoading(true);
-              const urlObj = new URL(url.replace('#', '?')); // Handle implicit flow hash as search params
-              const code = urlObj.searchParams.get('code');
-              const access_token = urlObj.searchParams.get('access_token');
-              const refresh_token = urlObj.searchParams.get('refresh_token');
-              
-              if (code) {
-                  const { error } = await supabase.auth.exchangeCodeForSession(code);
-                  if (error) throw error;
-              } else if (access_token && refresh_token) {
-                  const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-                  if (error) throw error;
-              }
-            } catch (err: unknown) {
-              console.error('Deep link auth error:', err);
-              setErrorMsg(t('misc.login:loi_xu_ly_dang_nhap_tu_trinh_duyet', {
-                msg: getAuthErrorMessage(err, t('misc.login:loi_khong_xac_dinh')),
-              }));
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-    }
-
-    const handleCustomEvent = (e: Event) => {
-        const detail = (e as CustomEvent<AuthUrlEventDetail>).detail;
-        if (detail?.url) {
-            // console.log('Deep link received via custom event:', detail.url);
-            void processUrls([detail.url]);
-        }
-    };
-
-    async function setupDeepLink() {
-      // 1. Listen via plugin
-      unlisten = await onOpenUrl(async (urls) => {
-        // console.log('Deep link received via plugin:', urls);
-        await processUrls(urls);
-      });
-
-      // 2. Listen to custom event from SystemIntegrations
-      window.addEventListener('auth-url-received', handleCustomEvent);
-    }
-    
-    setupDeepLink();
-    
+    mountedRef.current = true;
     return () => {
-      if (unlisten) unlisten();
-      window.removeEventListener('auth-url-received', handleCustomEvent);
+      mountedRef.current = false;
     };
+  }, []);
+
+  const processUrls = useCallback(async (urls: string[]) => {
+    for (const url of urls) {
+      if (!url.includes('prynx://auth/callback')) continue;
+      try {
+        if (mountedRef.current) setLoading(true);
+        const urlObj = new URL(url.replace('#', '?')); // Hỗ trợ implicit flow dùng hash.
+        const code = urlObj.searchParams.get('code');
+        const access_token = urlObj.searchParams.get('access_token');
+        const refresh_token = urlObj.searchParams.get('refresh_token');
+
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+        } else if (access_token && refresh_token) {
+          const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+          if (error) throw error;
+        }
+      } catch (err: unknown) {
+        console.error('Deep link auth error:', err);
+        if (mountedRef.current) {
+          setErrorMsg(t('misc.login:loi_xu_ly_dang_nhap_tu_trinh_duyet', {
+            msg: getAuthErrorMessage(err, t('misc.login:loi_khong_xac_dinh')),
+          }));
+        }
+      } finally {
+        if (mountedRef.current) setLoading(false);
+      }
+    }
   }, [t]);
+
+  useAuthDeepLinkListener(processUrls);
 
   const autoDiscoverLicense = useCallback(async () => {
     if (!user?.email) return;

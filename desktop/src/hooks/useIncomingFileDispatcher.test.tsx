@@ -7,9 +7,13 @@ const systemMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
 }));
+const viewerFirstFrameMocks = vi.hoisted(() => ({
+  primeViewerFirstFrame: vi.fn(),
+}));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: systemMocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: systemMocks.listen }));
+vi.mock('../lib/viewerFirstFrame', () => viewerFirstFrameMocks);
 vi.mock('../components/ui/Toast', () => ({
   toast: { error: vi.fn() },
 }));
@@ -40,9 +44,9 @@ const OFFICE_EXTENSION_ORACLE = [
 const IMAGE_EXTENSION_ORACLE = [
   'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff',
 ] as const;
-function emitFiles(files: File[], action = ''): void {
+function emitFiles(files: File[], action = '', batchId?: string): void {
   window.dispatchEvent(new CustomEvent(SYSTEM_FILES_RECEIVED_EVENT, {
-    detail: { files, action },
+    detail: { files, action, batchId },
   }));
 }
 
@@ -54,6 +58,8 @@ describe('useIncomingFileDispatcher', () => {
     systemMocks.invoke.mockReset();
     systemMocks.listen.mockReset();
     systemMocks.listen.mockResolvedValue(() => undefined);
+    viewerFirstFrameMocks.primeViewerFirstFrame.mockReset();
+    viewerFirstFrameMocks.primeViewerFirstFrame.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -171,6 +177,29 @@ describe('useIncomingFileDispatcher', () => {
     ]);
   });
 
+  it('mở tab ngay cả khi prime frame đầu còn pending', () => {
+    viewerFirstFrameMocks.primeViewerFirstFrame.mockReturnValue(new Promise(() => undefined));
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    const source = new File(['pdf'], 'mau.pdf', { type: 'application/pdf' });
+    Object.defineProperty(source, 'path', {
+      configurable: true,
+      value: 'D:\\viec\\mau.pdf',
+    });
+    const { onOpenApp } = renderDispatcher();
+
+    act(() => emitFiles([source]));
+    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
+
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: source });
+    expect(viewerFirstFrameMocks.primeViewerFirstFrame).toHaveBeenCalledWith(source);
+    expect(onOpenApp.mock.invocationCallOrder[0]).toBeLessThan(
+      viewerFirstFrameMocks.primeViewerFirstFrame.mock.invocationCallOrder[0],
+    );
+  });
+
   it('giữ Combine cold-start qua poll đầu và chỉ mở một tab với đủ file', () => {
     const { onOpenApp } = renderDispatcher();
     const first = file('01-bia.pdf');
@@ -187,6 +216,49 @@ describe('useIncomingFileDispatcher', () => {
     expect(onOpenApp).toHaveBeenCalledTimes(1);
     expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [first, second] });
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('không gộp hai batch mặc định có identity khác nhau', () => {
+    const { onOpenApp } = renderDispatcher();
+    const first = file('01.png');
+    const second = file('02.jpg');
+
+    act(() => {
+      emitFiles([first], '', 'native-drop-1');
+      emitFiles([second], '', 'native-drop-2');
+      vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS);
+    });
+
+    expect(onOpenApp).toHaveBeenCalledTimes(2);
+    expect(onOpenApp).toHaveBeenNthCalledWith(1, 'imposition', { file: first });
+    expect(onOpenApp).toHaveBeenNthCalledWith(2, 'imposition', { file: second });
+  });
+
+  it('tách picker mặc định khỏi Combine và Convert đang chờ poll', () => {
+    const { onOpenApp } = renderDispatcher();
+    const combineFile = file('01-combine.png');
+    const pickerFile = file('02-picker.jpg');
+    const convertFile = file('03-convert.png');
+
+    act(() => {
+      emitFiles([combineFile], 'combine', 'instance-2');
+      emitFiles([pickerFile]);
+      emitFiles([convertFile], 'convert', 'instance-3');
+      vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS);
+    });
+
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: pickerFile });
+
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+
+    expect(onOpenApp).toHaveBeenCalledTimes(3);
+    expect(onOpenApp).toHaveBeenNthCalledWith(2, 'combine_pdf', {
+      files: [combineFile],
+    });
+    expect(onOpenApp).toHaveBeenNthCalledWith(3, 'combine_pdf', {
+      files: [convertFile],
+    });
   });
 
   it('giữ Convert cold-start qua poll và không lẫn PDF vào nhánh ảnh', () => {
@@ -217,13 +289,19 @@ describe('useIncomingFileDispatcher', () => {
   it('gom startup và pending process thật qua poll trước khi mở tab Combine', async () => {
     let pendingCalls = 0;
     systemMocks.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_startup_args') {
-        return ['pdf-inspector.exe', '--prynx-action=combine', 'D:\\viec\\01-bia.pdf'];
+      if (command === 'take_startup_system_file_batch') {
+        return {
+          batchId: 'startup-1',
+          args: ['pdf-inspector.exe', '--prynx-action=combine', 'D:\\viec\\01-bia.pdf'],
+        };
       }
-      if (command === 'get_pending_system_files') {
+      if (command === 'take_pending_system_file_batches') {
         pendingCalls += 1;
         return pendingCalls === 1
-          ? ['pdf-inspector.exe', '--prynx-action=combine', 'D:\\viec\\02-ruot.pdf']
+          ? [{
+            batchId: 'instance-2',
+            args: ['pdf-inspector.exe', '--prynx-action=combine', 'D:\\viec\\02-ruot.pdf'],
+          }]
           : [];
       }
       if (command === 'stat_system_file') return { status: 'available', size: 123 };

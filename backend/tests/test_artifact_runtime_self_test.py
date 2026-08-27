@@ -580,6 +580,40 @@ def test_dev_gated_mode_sets_both_layers_before_process_launch():
     assert 'std::env::var("PRYNX_SIDECAR_TOKEN")' in rust_host
 
 
+def test_dev_context_menu_preserves_installer_action_intents():
+    repo = Path(__file__).parents[2]
+    source = (repo / "run_dev.bat").read_text(encoding="utf-8")
+    installer = (
+        repo / "desktop" / "src-tauri" / "installer-hooks.nsh"
+    ).read_text(encoding="utf-8")
+
+    combine_commands = [
+        line.strip()
+        for line in source.splitlines()
+        if r"\shell\pdf-inspector-combine\command" in line
+    ]
+    assert len(combine_commands) == 3
+    assert all(
+        r'/d "\"%EXE_PATH%\" --prynx-action=combine \"%%1\""' in line
+        for line in combine_commands
+    )
+
+    convert_commands = [
+        line.strip()
+        for line in source.splitlines()
+        if r"\shell\%CONVERB%\command" in line
+    ]
+    assert len(convert_commands) == 1
+    assert (
+        r'/d "\"%EXE_PATH%\" --prynx-action=convert \"%%1\""'
+        in convert_commands[0]
+    )
+
+    # Hai đường đăng ký dev/release phải giữ cùng intent dù quoting khác nhau.
+    assert '--prynx-action=combine "%1"' in installer
+    assert '--prynx-action=convert "%1"' in installer
+
+
 def test_tauri_handler_does_not_expose_ungated_dead_business_commands():
     repo = Path(__file__).parents[2]
     source = (repo / "desktop" / "src-tauri" / "src" / "lib.rs").read_text(

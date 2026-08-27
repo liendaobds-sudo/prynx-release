@@ -39,6 +39,13 @@ def _make_jpeg(path: Path, size: tuple[int, int] = (300, 600), dpi: tuple[int, i
     Image.new("RGB", size, (240, 230, 220)).save(path, format="JPEG", dpi=dpi, quality=90)
 
 
+def _insert_jpeg_app2_after_soi(path: Path) -> None:
+    original = path.read_bytes()
+    # Marker APP2 hợp lệ, payload ngắn để chứng minh parser không giả định APP0 ở byte 2.
+    app2 = b"\xff\xe2\x00\x04IC"
+    path.write_bytes(original[:2] + app2 + original[2:])
+
+
 def _make_png_16bit(path: Path) -> None:
     Image.new("I;16", (2, 1), 32768).save(path, format="PNG")
 
@@ -330,6 +337,26 @@ def test_merge_manifest_accepts_jpeg_preserves_jfif_dpi_and_dct(tmp_path: Path):
         page = pdf.pages[0]
         assert float(page.mediabox[2]) == pytest.approx(144, abs=0.1)
         assert float(page.mediabox[3]) == pytest.approx(144, abs=0.1)
+        filters = _first_image_xobject(page).get("/Filter")
+        assert "/DCTDecode" in (
+            [str(filters)]
+            if not isinstance(filters, pikepdf.Array)
+            else [str(value) for value in filters]
+        )
+
+
+def test_merge_manifest_reads_jfif_dpi_after_app2_and_preserves_dct(tmp_path: Path):
+    source = tmp_path / "source-app2.jpg"
+    output = tmp_path / "output-app2.pdf"
+    _make_jpeg(source, size=(2, 3), dpi=(300, 300))
+    _insert_jpeg_app2_after_soi(source)
+
+    merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    with pikepdf.Pdf.open(output) as pdf:
+        page = pdf.pages[0]
+        assert float(page.mediabox[2]) == pytest.approx(0.48, abs=0.01)
+        assert float(page.mediabox[3]) == pytest.approx(0.72, abs=0.01)
         filters = _first_image_xobject(page).get("/Filter")
         assert "/DCTDecode" in (
             [str(filters)]

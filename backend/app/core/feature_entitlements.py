@@ -26,6 +26,9 @@ PRO_FEATURES = {
     "prepress.cutline", "prepress.pdfx", "prepress.paper_library",
     "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
     "impo.booklet", "impo.nup", "impo.diecut", "impo.cnc", "packaging.dieline",
+    # Bình lồng ghép tự do (AppTool standalone). Quyền RIÊNG: không dùng lại
+    # "impo.diecut"/"packaging.dieline" và cũng không mở hai tool đó.
+    "impo.mixed_nesting",
     "util.bgremover", "util.upscale", "util.logo_rebuild", "qc.compare_pdf",
 }
 FEATURE_MIN_PLAN: dict[str, str] = {

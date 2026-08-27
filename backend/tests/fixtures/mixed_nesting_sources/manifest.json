@@ -1,0 +1,111 @@
+{
+  "manifestVersion": 1,
+  "note": "Mô tả các PDF khuôn bế dùng cho test P12. Test TỰ SINH file theo mô tả này bằng pikepdf thay vì lưu PDF nhị phân trong repo — nhờ vậy fixture đọc được, sửa được, và diff có nghĩa. Toạ độ trong 'paths' là point (1/72 inch) trong hệ PDF gốc (Y hướng lên).",
+  "flattenRuleVersion": 1,
+  "cases": [
+    {
+      "id": "MOT_DUONG_BE",
+      "title": "Đúng một đường bế kín — phải ra ready",
+      "expect": { "status": "ready", "usableCandidates": 1, "holes": 0 },
+      "pageSizePt": [595.276, 841.89],
+      "paths": [
+        {
+          "kind": "closed_polyline",
+          "note": "Hình chữ nhật 90 × 60 mm, vẽ bằng m/l/h",
+          "pointsPt": [[100, 100], [355.118, 100], [355.118, 270.079], [100, 270.079]]
+        }
+      ]
+    },
+    {
+      "id": "CO_LO",
+      "title": "Một đường bế ngoài kèm một lỗ khoét",
+      "expect": { "status": "ready", "usableCandidates": 1, "holes": 1 },
+      "pageSizePt": [595.276, 841.89],
+      "paths": [
+        {
+          "kind": "closed_polyline",
+          "note": "Contour ngoài 110 × 45 mm",
+          "pointsPt": [[80, 300], [391.811, 300], [391.811, 427.559], [80, 427.559]]
+        },
+        {
+          "kind": "closed_polyline",
+          "note": "Lỗ 30 × 20 mm nằm hẳn trong contour ngoài",
+          "pointsPt": [[120, 330], [205.039, 330], [205.039, 386.929], [120, 386.929]]
+        }
+      ]
+    },
+    {
+      "id": "NHIEU_DUONG_BE",
+      "title": "Hai đường bế kín rời nhau — phải ra ambiguous, KHÔNG tự đoán",
+      "expect": { "status": "ambiguous", "usableCandidates": 2 },
+      "pageSizePt": [595.276, 841.89],
+      "paths": [
+        {
+          "kind": "closed_polyline",
+          "pointsPt": [[50, 50], [200, 50], [200, 150], [50, 150]]
+        },
+        {
+          "kind": "closed_polyline",
+          "pointsPt": [[300, 400], [500, 400], [500, 600], [300, 600]]
+        }
+      ]
+    },
+    {
+      "id": "KHONG_CO_DUONG_BE",
+      "title": "Trang không có đường kín — phải ra no_contour, cho phép chọn khổ trang",
+      "expect": { "status": "no_contour", "usableCandidates": 0 },
+      "pageSizePt": [283.465, 425.197],
+      "paths": [
+        {
+          "kind": "open_polyline",
+          "note": "Đường hở: hai đầu cách nhau xa, không phải đường bế",
+          "pointsPt": [[20, 20], [200, 20], [200, 300]]
+        }
+      ]
+    },
+    {
+      "id": "DUONG_CONG",
+      "title": "Đường bế có cung Bézier — phải làm phẳng theo tolerance có version",
+      "expect": { "status": "ready", "usableCandidates": 1, "minVertexCount": 8 },
+      "pageSizePt": [595.276, 841.89],
+      "paths": [
+        {
+          "kind": "closed_bezier_capsule",
+          "note": "Hình viên thuốc: hai cạnh thẳng nối bằng hai cung tròn xấp xỉ Bézier",
+          "rectPt": [100, 500, 400, 620]
+        }
+      ]
+    },
+    {
+      "id": "TU_CAT",
+      "title": "Vòng tự cắt (hình số 8) — phải bị loại kèm lý do",
+      "expect": { "status": "no_contour", "usableCandidates": 0, "rejectedReason": "RING_SELF_INTERSECTING" },
+      "pageSizePt": [595.276, 841.89],
+      "paths": [
+        {
+          "kind": "closed_polyline",
+          "note": "Bốn đỉnh đảo chéo tạo hình nơ",
+          "pointsPt": [[100, 100], [300, 300], [300, 100], [100, 300]]
+        }
+      ]
+    },
+    {
+      "id": "VONG_CUC_NHO",
+      "title": "Vòng nhiễu nhỏ hơn ngưỡng diện tích — bỏ im lặng, không báo lỗi",
+      "expect": { "status": "ready", "usableCandidates": 1 },
+      "pageSizePt": [595.276, 841.89],
+      "paths": [
+        {
+          "kind": "closed_polyline",
+          "note": "Đường bế thật 90 × 60 mm",
+          "pointsPt": [[100, 100], [355.118, 100], [355.118, 270.079], [100, 270.079]]
+        },
+        {
+          "kind": "closed_polyline",
+          "note": "Vết nhiễu ~0,35 × 0,35 mm, dưới ngưỡng 1 mm²",
+          "pointsPt": [[500, 700], [501, 700], [501, 701], [500, 701]]
+        }
+      ]
+    }
+  ]
+}

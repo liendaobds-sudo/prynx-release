@@ -15,6 +15,7 @@ export const EXPLICIT_INTENT_FALLBACK_MS = 3_000;
 interface IncomingFilesDetail {
   files?: File[];
   action?: string;
+  batchId?: string;
 }
 
 interface UseIncomingFileDispatcherOptions {
@@ -40,20 +41,19 @@ function isPathBackedPdf(file: File): boolean {
 }
 
 /**
- * PERF (audit 2026-08-14 §VIEW.FIRST.2): pre-render trước khi App tạo tab. Nhờ vậy
- * tab hiện tại vẫn giữ nguyên trong lúc PPE dựng trang 1; khi chuyển tab, pixel thật
- * đã nằm trong cache/first-frame và không cần hiển thị màn "Đang mở file".
+ * PERF (audit 2026-08-26 §FILE.E1): tạo tab trước rồi mới prime frame nền.
+ * Render PPE chậm không được giữ người dùng ở tab cũ; request vẫn tiếp tục
+ * để Viewer có thể nhận cache nếu frame hoàn tất muộn.
  */
-function dispatchIncomingFileBatchWhenReady(
+function dispatchIncomingFileBatchAndPrime(
   files: readonly File[],
   intent: string,
   dispatch: () => void,
 ): void {
-  if (!intent && files.length === 1 && isPathBackedPdf(files[0])) {
-    void primeViewerFirstFrame(files[0]).then(dispatch, dispatch);
-    return;
-  }
   dispatch();
+  if (!intent && files.length === 1 && isPathBackedPdf(files[0])) {
+    void primeViewerFirstFrame(files[0]).catch(() => undefined);
+  }
 }
 
 /** Định tuyến một batch đã đóng; mọi cửa vào đều hội tụ tại đây. */
@@ -132,10 +132,10 @@ export function useIncomingFileDispatcher({
   activeTabIdRef,
 }: UseIncomingFileDispatcherOptions): void {
   const onOpenAppRef = useRef(onOpenApp);
-  const filesRef = useRef<File[]>([]);
-  const actionRef = useRef('');
-  const waitingForPollRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const defaultBatchesRef = useRef<Map<string, File[]>>(new Map());
+  const explicitBatchesRef = useRef<Map<string, File[]>>(new Map());
+  const defaultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const explicitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disposedRef = useRef(false);
 
   useEffect(() => {
@@ -144,19 +144,13 @@ export function useIncomingFileDispatcher({
 
   useEffect(() => {
     disposedRef.current = false;
-    const clearTimer = () => {
+    const clearTimer = (timerRef: { current: ReturnType<typeof setTimeout> | null }) => {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = null;
     };
 
-    const flush = () => {
-      clearTimer();
-      const files = filesRef.current;
-      const action = actionRef.current;
-      filesRef.current = [];
-      actionRef.current = '';
-      waitingForPollRef.current = false;
-      dispatchIncomingFileBatchWhenReady(files, action, () => {
+    const dispatchClosedBatch = (files: File[], action: string) => {
+      dispatchIncomingFileBatchAndPrime(files, action, () => {
         if (disposedRef.current) return;
         dispatchIncomingFileBatch(
           files,
@@ -168,9 +162,32 @@ export function useIncomingFileDispatcher({
       });
     };
 
-    const scheduleFallback = (delayMs: number) => {
-      clearTimer();
-      timerRef.current = setTimeout(flush, delayMs);
+    const flushDefault = () => {
+      clearTimer(defaultTimerRef);
+      const batches = Array.from(defaultBatchesRef.current.values());
+      defaultBatchesRef.current.clear();
+      for (const files of batches) dispatchClosedBatch(files, '');
+    };
+
+    const flushExplicit = () => {
+      clearTimer(explicitTimerRef);
+      const batches = Array.from(explicitBatchesRef.current.entries());
+      explicitBatchesRef.current.clear();
+      for (const [action, files] of batches) dispatchClosedBatch(files, action);
+    };
+
+    const appendBatchFiles = (batches: Map<string, File[]>, key: string, files: File[]) => {
+      batches.set(key, [...(batches.get(key) ?? []), ...files]);
+    };
+
+    const scheduleDefault = () => {
+      clearTimer(defaultTimerRef);
+      defaultTimerRef.current = setTimeout(flushDefault, INCOMING_FILES_DEBOUNCE_MS);
+    };
+
+    const scheduleExplicitFallback = () => {
+      clearTimer(explicitTimerRef);
+      explicitTimerRef.current = setTimeout(flushExplicit, EXPLICIT_INTENT_FALLBACK_MS);
     };
 
     const handleSystemFiles = (event: Event) => {
@@ -178,35 +195,35 @@ export function useIncomingFileDispatcher({
       if (!detail?.files?.length) return;
 
       const incomingAction = detail.action || '';
-      if (incomingAction && actionRef.current && actionRef.current !== incomingAction) {
-        flush();
-      }
-
-      filesRef.current = [...filesRef.current, ...detail.files];
-      if (incomingAction) actionRef.current = incomingAction;
-
-      if (actionRef.current) {
+      if (incomingAction) {
+        // FILEIO (audit 2026-08-26 §FILE.A2): mỗi intent có lane riêng. Nhiều
+        // process do Explorer tạo cho cùng một thao tác vẫn được gom tới poll-settled.
+        appendBatchFiles(explicitBatchesRef.current, incomingAction, detail.files);
         // Context-menu Explorer luôn đi qua SystemIntegrations. Fallback chỉ bảo vệ
         // event test/legacy nếu nguồn đó không phát được mốc poll-settled.
-        waitingForPollRef.current = true;
-        scheduleFallback(EXPLICIT_INTENT_FALLBACK_MS);
-      } else {
-        scheduleFallback(INCOMING_FILES_DEBOUNCE_MS);
+        scheduleExplicitFallback();
+        return;
       }
+
+      // Batch có identity không được nhập với drop/picker khác. Event legacy không
+      // có ID vẫn giữ debounce cũ để hai lần dispatch picker/Recent sát nhau ổn định.
+      const batchKey = detail.batchId || 'legacy-default';
+      appendBatchFiles(defaultBatchesRef.current, batchKey, detail.files);
+      scheduleDefault();
     };
 
     const handlePollSettled = () => {
-      if (waitingForPollRef.current && filesRef.current.length > 0) flush();
+      if (explicitBatchesRef.current.size > 0) flushExplicit();
     };
 
     window.addEventListener(SYSTEM_FILES_RECEIVED_EVENT, handleSystemFiles);
     window.addEventListener(SYSTEM_FILES_POLL_SETTLED_EVENT, handlePollSettled);
     return () => {
       disposedRef.current = true;
-      clearTimer();
-      filesRef.current = [];
-      actionRef.current = '';
-      waitingForPollRef.current = false;
+      clearTimer(defaultTimerRef);
+      clearTimer(explicitTimerRef);
+      defaultBatchesRef.current.clear();
+      explicitBatchesRef.current.clear();
       window.removeEventListener(SYSTEM_FILES_RECEIVED_EVENT, handleSystemFiles);
       window.removeEventListener(SYSTEM_FILES_POLL_SETTLED_EVENT, handlePollSettled);
     };

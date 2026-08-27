@@ -2,17 +2,94 @@ import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import { isOfficePathOrName, isPdfOrImagePath } from '../lib/officeFileTypes';
-import { createPathBackedFile, dispatchSupportedSystemFiles } from '../lib/nativeFileAccess';
-import { SYSTEM_FILES_POLL_SETTLED_EVENT } from '../hooks/useIncomingFileDispatcher';
+import { createPathBackedFile } from '../lib/nativeFileAccess';
+import {
+    SYSTEM_FILES_POLL_SETTLED_EVENT,
+    SYSTEM_FILES_RECEIVED_EVENT,
+} from '../hooks/useIncomingFileDispatcher';
 import { FileText } from 'lucide-react';
+
+interface NativeSystemFileBatch {
+    batchId: string;
+    args: string[];
+}
+
+interface PreparedSystemFileBatch {
+    batchId: string;
+    action: string;
+    files: File[];
+}
+
+let webviewBatchSequence = 0;
+
+function nextWebviewBatchId(source: string): string {
+    webviewBatchSequence += 1;
+    return `${source}-${webviewBatchSequence}`;
+}
+
+function normalizeNativeBatches(payload: unknown, fallbackId: string): NativeSystemFileBatch[] {
+    if (Array.isArray(payload)) {
+        if (payload.length === 0) return [];
+        if (payload.every(item => typeof item === 'string')) {
+            return [{ batchId: fallbackId, args: payload }];
+        }
+        return payload.flatMap((item, index) => normalizeNativeBatches(item, `${fallbackId}-${index + 1}`));
+    }
+    if (!payload || typeof payload !== 'object' || !('args' in payload)) return [];
+    const candidate = payload as { batchId?: unknown; args?: unknown };
+    if (!Array.isArray(candidate.args) || !candidate.args.every(item => typeof item === 'string')) return [];
+    return [{
+        batchId: typeof candidate.batchId === 'string' && candidate.batchId
+            ? candidate.batchId
+            : fallbackId,
+        args: candidate.args,
+    }];
+}
+
+async function takeStartupBatches(): Promise<NativeSystemFileBatch[]> {
+    try {
+        const batch = await invoke<unknown>('take_startup_system_file_batch');
+        return normalizeNativeBatches(batch, 'startup');
+    } catch {
+        // Tương thích native cũ trong vòng dev trước khi maturin/Tauri rebuild.
+        const args = await invoke<unknown>('get_startup_args');
+        return normalizeNativeBatches(args, 'startup-legacy');
+    }
+}
+
+async function takePendingBatches(pollSequence: number): Promise<NativeSystemFileBatch[]> {
+    try {
+        const batches = await invoke<unknown>('take_pending_system_file_batches');
+        return normalizeNativeBatches(batches, `pending-${pollSequence}`);
+    } catch {
+        const args = await invoke<unknown>('get_pending_system_files');
+        return normalizeNativeBatches(args, `pending-legacy-${pollSequence}`);
+    }
+}
+
+function dispatchPreparedBatch(batch: PreparedSystemFileBatch): void {
+    if (batch.files.length === 0) return;
+    window.dispatchEvent(new CustomEvent(SYSTEM_FILES_RECEIVED_EVENT, {
+        detail: {
+            files: batch.files,
+            action: batch.action,
+            batchId: batch.batchId,
+        },
+    }));
+}
 
 export default function SystemIntegrations() {
   const { t } = useTranslation();
   const [isGlobalDragActive, setIsGlobalDragActive] = useState(false);
 
 
-    const processPaths = useCallback(async (paths: string[]) => {
+    // FILEIO (feedback 2026-08-26 LANG.1): listener phải giữ nguyên vòng đời khi
+    // đổi ngôn ngữ; nếu callback đổi identity, effect sẽ đọc lại startup args cũ.
+    // Đọc i18n global ngay lúc cần log để vẫn dùng ngôn ngữ hiện hành.
+    const prepareBatch = useCallback(async (batch: NativeSystemFileBatch): Promise<PreparedSystemFileBatch> => {
+        const paths = batch.args;
         // Cờ ý định từ menu chuột phải (vd "--prynx-action=convert"). Menu gọi 1
         // tiến trình/file nên cờ lặp lại theo mỗi file; chỉ cần thấy 1 lần là đủ.
         // BẮT cờ TRƯỚC bộ lọc bên dưới — nếu không nó bị loại (không phải path file).
@@ -31,7 +108,7 @@ export default function SystemIntegrations() {
             return isPdfOrImagePath(p) || isOfficePathOrName(p);
         });
 
-        if (validPaths.length === 0) return;
+        if (validPaths.length === 0) return { batchId: batch.batchId, action, files: [] };
 
         // FILEIO (audit 2026-08-02 §OPEN.1): khởi động mọi probe cùng lúc; NAS/UNC
         // chậm chỉ làm size=0 sau deadline, không giữ toàn bộ dispatcher theo từng file.
@@ -40,7 +117,7 @@ export default function SystemIntegrations() {
                 const { file, stat } = await createPathBackedFile(path);
                 if (stat.status !== 'available') {
                     console.warn(
-                        t('misc.systemIntegrations:get_file_size_loi_van_mo_size_0'),
+                        i18n.t('misc.systemIntegrations:get_file_size_loi_van_mo_size_0'),
                         file.name,
                         stat.status,
                     );
@@ -54,8 +131,8 @@ export default function SystemIntegrations() {
             }
         }))).filter((file): file is File => file !== null);
 
-        dispatchSupportedSystemFiles(files, action);
-    }, [t]);
+        return { batchId: batch.batchId, action, files };
+    }, []);
 
     useEffect(() => {
         // 1–2. Startup chạy xong mới bắt đầu poll để hai lượt không tự chồng nhau.
@@ -64,6 +141,13 @@ export default function SystemIntegrations() {
         // Dùng setTimeout đệ quy: chỉ lên lịch lần kế SAU khi lần này xong.
         let pollTimer: ReturnType<typeof setTimeout> | null = null;
         let pollStopped = false;
+        let pollSequence = 0;
+        const processBatches = async (batches: NativeSystemFileBatch[]) => {
+            // Probe song song để một NAS chậm không đẩy batch explicit vượt fallback 3 giây.
+            const prepared = await Promise.all(batches.map(batch => prepareBatch(batch)));
+            if (pollStopped) return;
+            prepared.forEach(dispatchPreparedBatch);
+        };
         const scheduleNextPoll = () => {
             if (pollStopped) return;
             pollTimer = setTimeout(() => {
@@ -71,10 +155,9 @@ export default function SystemIntegrations() {
                 // toàn bộ path của lượt hiện tại đã thành file và được dispatch.
                 void (async () => {
                     try {
-                        const args = await invoke<string[]>('get_pending_system_files');
-                        if (args && args.length > 0) {
-                            await processPaths(args);
-                        }
+                        pollSequence += 1;
+                        const batches = await takePendingBatches(pollSequence);
+                        if (batches.length > 0) await processBatches(batches);
                     } catch (error) {
                         console.error('Không thể đọc hàng đợi file hệ thống:', error);
                     } finally {
@@ -89,8 +172,8 @@ export default function SystemIntegrations() {
 
         void (async () => {
             try {
-                const args = await invoke<string[]>('get_startup_args');
-                if (args && args.length > 1) await processPaths(args.slice(1));
+                const batches = await takeStartupBatches();
+                if (batches.length > 0) await processBatches(batches);
             } catch (error) {
                 console.error('Không thể đọc tham số khởi động:', error);
             } finally {
@@ -128,7 +211,12 @@ export default function SystemIntegrations() {
             void register('tauri://drag-drop', payload => {
                 setIsGlobalDragActive(false);
                 const paths = payloadPaths(payload);
-                if (paths.length > 0) void processPaths(paths);
+                if (paths.length > 0) {
+                    void processBatches([{
+                        batchId: nextWebviewBatchId('native-drop'),
+                        args: paths,
+                    }]);
+                }
             });
         }).catch(err => console.error('Failed to register native drag-drop:', err));
 
@@ -156,7 +244,14 @@ export default function SystemIntegrations() {
             setIsGlobalDragActive(false);
             if (event.defaultPrevented || !isDomFileDrag(event)) return;
             event.preventDefault();
-            dispatchSupportedSystemFiles(Array.from(event.dataTransfer?.files || []));
+            const files = Array.from(event.dataTransfer?.files || []).filter(file => (
+                isPdfOrImagePath(file.name) || isOfficePathOrName(file.name)
+            ));
+            dispatchPreparedBatch({
+                batchId: nextWebviewBatchId('dom-drop'),
+                action: '',
+                files,
+            });
         };
 
         const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -179,7 +274,7 @@ export default function SystemIntegrations() {
                 window.removeEventListener('drop', onDomDrop);
                 }
         };
-    }, [processPaths]);
+    }, [prepareBatch]);
 
     if (!isGlobalDragActive) return null;
 

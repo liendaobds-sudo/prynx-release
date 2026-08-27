@@ -19,11 +19,15 @@ import { useAppSettingsStore } from './stores/appSettingsStore';
 import { useActiveViewerStore } from './stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
 import { useTheme } from './hooks/useTheme';
 import { addOpenPayloadToRecent, useRecentFiles, statRecentFile } from './lib/useRecentFiles';
-import { createPathBackedFile, dispatchSupportedSystemFiles, systemFileMime } from './lib/nativeFileAccess';
+import {
+  createPathBackedFile,
+  dispatchSupportedSystemFiles,
+  isGeneratedWorkspaceFile,
+  systemFileMime,
+} from './lib/nativeFileAccess';
 import { SUPPORTED_IMAGE_EXTENSIONS } from './lib/imageFileTypes';
 import { FileProvider } from './lib/fileContext';
 import { useFileContext } from './lib/fileContextCore';
-import { isOutputFile } from './lib/constants';
 import { useAuthStore } from './stores/useAuthStore';
 import LoginScreen from './components/auth/LoginScreen';
 import LicenseLockOverlay from './components/auth/LicenseLockOverlay';
@@ -49,10 +53,15 @@ import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
 import { canUse, isProFeature } from './lib/license/features';
 import { getShortcutLabel, matchesShortcut } from './lib/keyboardShortcuts';
-import { buildResultTabPayload } from './lib/tabNavigation';
+import {
+  buildResultTabPayload,
+  OPEN_TOOL_REQUEST_EVENT,
+  type OpenToolRequestDetail,
+} from './lib/tabNavigation';
 import { hasDirtySessions, isDirtySession } from './lib/dirtySession';
 import { useIncomingFileDispatcher } from './hooks/useIncomingFileDispatcher';
 import { useToolActivationGuard } from './hooks/useToolActivationGuard';
+import { useTauriCloseRequested } from './hooks/useTauriCloseRequested';
 import FeatureAccessOverlay from './components/license/FeatureAccessOverlay';
 import {
   createDocumentWindow,
@@ -613,8 +622,9 @@ function AppInner({ documentWindowBootstrap }: AppProps) {
     // Add random suffix to allow extremely fast consecutive spawns
     const newId = appId + '-' + Date.now() + '-' + Math.random().toString(36).substring(2, 5);
 
-    // Automatically mark spawned imposition files as dirty
-    const isSpawnedDirty = payload && payload.file && payload.file.name && isOutputFile(payload.file.name);
+    // FILEIO (audit 2026-08-26 §FILE.A4): provenance do producer gắn tường minh;
+    // tên file khách không được làm tab bẩn oan.
+    const isSpawnedDirty = isGeneratedWorkspaceFile(payload?.file);
 
     // FILEIO (audit 2026-08-02 §TEST.1): ghi cả nguồn Office/batch Office vào Recent.
     // Helper vẫn bỏ file kết quả tạm, blank và generated như chính sách cũ.
@@ -718,13 +728,10 @@ function AppInner({ documentWindowBootstrap }: AppProps) {
     const tabToClose = tabsRef.current.find(t => t.id === id);
     if (!tabToClose) return;
 
-    const isSpawnedOrOutput = isOutputFile(tabToClose.title);
-
     // Chỉ dựa vào trạng thái dirty THẬT của tab (ImpositionTab đã tôn trọng việc đã lưu).
-    // Không ép dirty theo tên file output nữa — nếu không, file đã lưu mà tên còn "VDP_"
-    // vẫn bị báo "chưa lưu".
+    // Không ép dirty theo tên: file khách hoặc file đã lưu có thể hợp lệ
+    // chứa các chuỗi "VDP_", "Edited_", "converted_".
     const effectivelyDirty = isDirtySession(tabToClose);
-    void isSpawnedOrOutput;
 
     if (effectivelyDirty) {
       setTabToConfirmClose(id);
@@ -886,25 +893,14 @@ function AppInner({ documentWindowBootstrap }: AppProps) {
   // unload) → trước đây bấm X = mất sạch dữ liệu chưa lưu, KHÔNG cảnh báo. Đăng ký
   // onCloseRequested: nếu có tab dirty → preventDefault + hỏi TỪNG file. Bao
   // trùm cả nút X (gọi close()), Alt+F4, và đóng từ taskbar (đều phát close-requested).
-  useEffect(() => {
-    if (!isNativeRuntime()) return;  // chỉ áp cho desktop Tauri
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    getCurrentWindow()
-      .onCloseRequested((event) => {
-        if (forceCloseRef.current) return;            // đã xác nhận thoát → cho đóng
-        if (hasDirtySessions(tabsRef.current)) {
-          event.preventDefault();          // giữ cửa sổ lại
-          beginQuitWithDirtyPrompt();      // hỏi từng file dirty
-        }
-        // không dirty → để Tauri đóng bình thường
-      })
-      .then((fn) => {
-        if (disposed) fn(); else unlisten = fn;
-      })
-      .catch(() => {});
-    return () => { disposed = true; if (unlisten) unlisten(); };
-  }, [beginQuitWithDirtyPrompt]);
+  useTauriCloseRequested(isNativeRuntime(), (event) => {
+    if (forceCloseRef.current) return;            // đã xác nhận thoát → cho đóng
+    if (hasDirtySessions(tabsRef.current)) {
+      event.preventDefault();          // giữ cửa sổ lại
+      beginQuitWithDirtyPrompt();      // hỏi từng file dirty
+    }
+    // không dirty → để Tauri đóng bình thường
+  });
 
   // Nút X (title bar) phát 'prynx-request-quit' → kiểm tra tab chưa lưu ở đây rồi
   // đóng bằng destroy() (đáng tin như min/max; close() không tự đóng WebView2 khi có
@@ -1059,6 +1055,28 @@ function AppInner({ documentWindowBootstrap }: AppProps) {
     tabsRef,
     activeTabIdRef,
   });
+
+  // Một tool xin shell mở tool STANDALONE khác kèm file (xem `lib/tabNavigation.ts`).
+  // `onSpawnTab` chỉ mở được biến thể ImpositionTab, nên chuỗi công cụ trước đây đứt ở
+  // Khuôn bế Bao bì và Bình lồng ghép tự do.
+  //
+  // SEC: event KHÔNG phải giấy thông hành. Bên gửi đã qua `useToolActivationGuard`, nhưng
+  // ở đây vẫn kiểm lại registry + license và **fail-closed**: id lạ, tool đang tắt, hoặc
+  // gói không đủ quyền thì bỏ qua, không mở tab.
+  useEffect(() => {
+    const handleOpenToolRequest = (event: Event) => {
+      const detail = (event as CustomEvent<OpenToolRequestDetail>).detail;
+      const toolId = detail?.toolId;
+      if (!toolId) return;
+      const tool = findToolForLaunch(toolId as AppToolId, null);
+      if (!tool) return;
+      const { licensePlan: plan, licenseFeatures: features } = useAuthStore.getState();
+      if (!canUse(tool.featureId, plan, features)) return;
+      handleOpenApp(tool.id, detail.file ? { file: detail.file } : undefined);
+    };
+    window.addEventListener(OPEN_TOOL_REQUEST_EVENT, handleOpenToolRequest);
+    return () => window.removeEventListener(OPEN_TOOL_REQUEST_EVENT, handleOpenToolRequest);
+  }, [handleOpenApp]);
 
   // ── MENU BAR (kiểu Acrobat) — lệnh viewer đi qua sự kiện 'prynx-menu-command'
   //    (chỉ tab active xử lý); lệnh app-level gọi handler trực tiếp. ─────────────
@@ -1672,6 +1690,10 @@ function AppInner({ documentWindowBootstrap }: AppProps) {
                   </Suspense>
                 );
               }
+              // Nhánh mặc định (tool standalone: Khuôn bế Bao bì, Bình lồng ghép tự do).
+              // Trước đây chỉ có 4 prop, nên các tool này không nhận được file lúc mở tab
+              // và không có đường mở kết quả sang thẻ khác — tức bị cô lập khỏi chuỗi công
+              // cụ. `initialFile` mở chiều VÀO, `onSpawnTab` mở chiều RA.
               return (
                 <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-3 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}>
                   <ToolComponent
@@ -1679,6 +1701,8 @@ function AppInner({ documentWindowBootstrap }: AppProps) {
                     isActive={tab.id === activeTabId}
                     onTitleChange={(title: string) => updateTabTitle(tab.id, title)}
                     onDirtyChange={(isDirty: boolean) => updateTabDirty(tab.id, isDirty)}
+                    initialFile={tab.payload?.file}
+                    onSpawnTab={(file: File, extraPayload?: ToolLaunchPayload) => handleOpenApp('imposition', buildResultTabPayload(file, extraPayload))}
                   />
                 </Suspense>
               );

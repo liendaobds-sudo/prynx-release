@@ -342,6 +342,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     });
     const isMiniMode = effectiveHomeLayout.mode === 'icons';
     const tight = isMiniMode;
+    const showFavoritesInOriginalCategory = !isMiniMode && Boolean(_q);
     const displayedPanelWidth = isResizing
         ? draftPanelWidth
         : effectiveHomeLayout.totalWidth;
@@ -349,14 +350,19 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     // ── Render danh sách tool của 1 category (chỉ chế độ list) ──
     const renderToolSection = (categoryId: ToolCategoryId) => {
         const allTools = getToolsByCategory(categoryId);
-        const tools = allTools.filter(t => !hiddenTools.includes(toolKey(t)) && matchesQuery(t) && !favoriteTools.includes(toolKey(t)));
+        const tools = allTools.filter(t => {
+            const key = toolKey(t);
+            if (hiddenTools.includes(key)) return false;
+            if (!matchesQuery(t)) return false;
+            return showFavoritesInOriginalCategory || !favoriteTools.includes(key);
+        });
         if (tools.length === 0) return null;
         const enabledTools = tools.filter(t => t.isEnabled);
         const disabledTools = tools.filter(t => !t.isEnabled);
         return (
             <div style={listWrapStyle(tight)} className="transition-opacity duration-300">
                 {enabledTools.map((tool, i) => (
-                    <ToolItem key={`${toolKey(tool)}-${i}`} tool={tool} isMiniMode={isMiniMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
+                    <ToolItem key={`${toolKey(tool)}-${i}`} tool={tool} isFavorite={favoriteTools.includes(toolKey(tool))} isMiniMode={isMiniMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
                 ))}
                 {disabledTools.map((tool, i) => (
                     <DisabledItem key={`${toolKey(tool)}-dis-${i}`} tool={tool} isMiniMode={isMiniMode} />
@@ -517,7 +523,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                     {(() => {
                         const allTools = TOOL_CATEGORIES.flatMap(c => getToolsByCategory(c.id));
                         const favTools = allTools.filter(t => favoriteTools.includes(toolKey(t)) && !hiddenTools.includes(toolKey(t)) && matchesQuery(t));
-                        if (favTools.length === 0) return null;
+                        if ((!isMiniMode && _q) || favTools.length === 0) return null;
                         const enabledTools = favTools.filter(t => t.isEnabled);
                         const disabledTools = favTools.filter(t => !t.isEnabled);
                         const isCollapsed = !isMiniMode && !_q && !!collapsedSections['favorites'];
@@ -546,7 +552,12 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
 
                     {/* Render all categories dynamically from registry */}
                     {TOOL_CATEGORIES.map((cat) => {
-                        const catTools = getToolsByCategory(cat.id).filter(t => !hiddenTools.includes(toolKey(t)) && !favoriteTools.includes(toolKey(t)) && matchesQuery(t));
+                        const catTools = getToolsByCategory(cat.id).filter(t => {
+                            const key = toolKey(t);
+                            if (hiddenTools.includes(key)) return false;
+                            if (!matchesQuery(t)) return false;
+                            return showFavoritesInOriginalCategory || !favoriteTools.includes(key);
+                        });
                         if (catTools.length === 0) return null;
                         const isCollapsed = !isMiniMode && !_q && !!collapsedSections[cat.id];
                         return (

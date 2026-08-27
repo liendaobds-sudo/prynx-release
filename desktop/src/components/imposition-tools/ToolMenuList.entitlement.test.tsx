@@ -5,12 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ToolMenuList from './ToolMenuList';
 import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
+import { TOOL_CATEGORIES, getToolUniqueKey, getToolsByCategory } from '../../lib/toolRegistry';
 
 const mocks = vi.hoisted(() => ({
     requestActivation: vi.fn(),
     setActiveTool: vi.fn(),
     setTaskMode: vi.fn(),
     onActiveToolChange: vi.fn(),
+    hiddenTools: [] as string[],
+    favoriteTools: [] as string[],
 }));
 
 vi.mock('../../hooks/useToolActivationGuard', () => ({
@@ -19,8 +22,8 @@ vi.mock('../../hooks/useToolActivationGuard', () => ({
 
 vi.mock('../../stores/appSettingsStore', () => ({
     useAppSettingsStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-        hiddenTools: [],
-        favoriteTools: [],
+        hiddenTools: mocks.hiddenTools,
+        favoriteTools: mocks.favoriteTools,
         toggleFavoriteTool: vi.fn(),
         collapsedSections: {},
         toggleSection: vi.fn(),
@@ -36,8 +39,9 @@ vi.mock('react-i18next', () => ({
 }));
 vi.mock('../../i18n', () => ({ tv: (value: string) => value }));
 
-function renderToolMenu(activeTool = 'none', onActiveToolChange?: (tool: string) => void) {
+function renderToolMenu(activeTool = 'none', onActiveToolChange?: (tool: string) => void, query = '') {
     const workspaceStore = createWorkspaceStore();
+    workspaceStore.getState().setToolMenuQuery(query);
     return render(
         <WorkspaceContext.Provider value={workspaceStore}>
             <ToolMenuList
@@ -63,6 +67,8 @@ describe('ToolMenuList entitlement', () => {
         mocks.setActiveTool.mockReset();
         mocks.setTaskMode.mockReset();
         mocks.onActiveToolChange.mockReset();
+        mocks.hiddenTools = [];
+        mocks.favoriteTools = [];
         mocks.requestActivation.mockImplementation(() => false);
     });
     afterEach(cleanup);
@@ -108,5 +114,86 @@ describe('ToolMenuList entitlement', () => {
         expect(mocks.requestActivation).not.toHaveBeenCalled();
         expect(mocks.onActiveToolChange).toHaveBeenCalledWith('none');
         expect(mocks.setActiveTool).not.toHaveBeenCalled();
+    });
+
+    it('ẩn mọi header nhóm gốc khi toàn bộ công cụ workspace đã được yêu thích', () => {
+        mocks.favoriteTools = TOOL_CATEGORIES
+            .flatMap(category => getToolsByCategory(category.id))
+            .map(getToolUniqueKey);
+
+        renderToolMenu();
+
+        for (const category of TOOL_CATEGORIES.filter(item => item.id !== 'qc')) {
+            expect(screen.queryByText(category.title)).toBeNull();
+        }
+    });
+
+    it('không lặp công cụ yêu thích khi đang tìm kiếm', () => {
+        const fontTool = getToolsByCategory('print').find(tool => getToolUniqueKey(tool) === 'font_tools');
+        expect(fontTool).toBeDefined();
+        mocks.favoriteTools = ['font_tools'];
+
+        renderToolMenu('none', undefined, fontTool!.title);
+
+        expect(screen.getAllByText(fontTool!.title)).toHaveLength(1);
+    });
+
+    it('chỉ hiển thị mỗi công cụ yêu thích một lần', () => {
+        const fontTool = getToolsByCategory('print').find(tool => getToolUniqueKey(tool) === 'font_tools');
+        expect(fontTool).toBeDefined();
+        mocks.favoriteTools = ['font_tools'];
+
+        renderToolMenu();
+
+        expect(screen.getAllByText(fontTool!.title)).toHaveLength(1);
+    });
+
+    it('giữ header nhóm trong block flow, không để flex co sập', () => {
+        mocks.favoriteTools = ['font_tools'];
+
+        renderToolMenu();
+
+        const fileCategory = TOOL_CATEGORIES.find(category => category.id === 'file');
+        expect(fileCategory).toBeDefined();
+        for (const label of ['imposition.toolMenuList:cong_cu_yeu_thich', fileCategory!.title]) {
+            const header = screen.getByText(label).closest('button');
+            const catalog = header?.parentElement?.parentElement;
+            expect(catalog?.className).not.toContain('flex-col');
+            expect(catalog?.getAttribute('style')).toBeNull();
+        }
+    });
+
+    it('dùng cùng metric hiển thị cân đối như danh mục công cụ ở Home', () => {
+        renderToolMenu();
+
+        const search = screen.getByLabelText('imposition.toolMenuList:tim_cong_cu');
+        const searchWrapper = search.parentElement;
+        const catalog = searchWrapper?.parentElement;
+        expect(catalog?.className).toContain('px-3');
+        expect(catalog?.className).toContain('py-4');
+        expect(catalog?.className).toContain('overflow-x-hidden');
+        expect(searchWrapper?.className).toContain('mb-3');
+        expect(search.className).toContain('h-9');
+
+        const fileCategory = TOOL_CATEGORIES.find(category => category.id === 'file');
+        expect(fileCategory).toBeDefined();
+        const sectionButton = screen.getByText(fileCategory!.title).closest('button');
+        const sectionHeader = sectionButton?.parentElement;
+        expect(sectionHeader?.className).toContain('mt-5');
+        expect(sectionHeader?.className).toContain('mb-3');
+        expect(sectionHeader?.className).toContain('px-1');
+        expect(sectionButton?.className).toContain('gap-2');
+        expect(sectionButton?.className).not.toContain('justify-between');
+        expect(sectionButton?.getAttribute('aria-expanded')).toBe('true');
+
+        const firstTool = getToolsByCategory(fileCategory!.id).find(tool => getToolUniqueKey(tool) !== 'none');
+        expect(firstTool).toBeDefined();
+        const toolLabel = screen.getByText(firstTool!.title);
+        const toolButton = toolLabel.closest('[role="button"]');
+        const toolList = toolButton?.parentElement?.parentElement;
+        expect(toolList?.className).toContain('gap-[6px]');
+        expect(toolList?.className).toContain('mt-1');
+        expect(toolList?.className).toContain('mb-2');
+        expect(toolLabel.className).toContain('text-[13.5px]');
     });
 });

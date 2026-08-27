@@ -67,7 +67,12 @@ def _default_heavy_slots() -> tuple[int, str]:
 #
 # Nên: nhóm "dùng hết máy" chia nhau ĐÚNG MỘT suất — chặt hơn hiện trạng, tức đây vừa là
 # điều kiện để nới, vừa là một sửa lỗi.
-_WHOLE_MACHINE_KINDS = frozenset({"nup", "vdp", "compare"})
+#
+# `mixed-nesting` (Bình lồng ghép tự do, kế hoạch 2026-08-26 §14) vào nhóm này vì mỗi job
+# tạo local pool tới `cpu-1` worker và giữ NFP/IFP cache + refinement state trong RAM.
+# Chạy song song với một job nup/VDP/compare là nhân đôi cả CPU lẫn ngân sách RAM mà
+# planner vừa tính cho từng bên.
+_WHOLE_MACHINE_KINDS = frozenset({"nup", "vdp", "compare", "mixed-nesting"})
 _WHOLE_MACHINE_SLOTS = threading.BoundedSemaphore(1)
 
 # Chuyển đổi Office đi qua COM/LibreOffice — nhiều instance cùng lúc là nguồn treo đã có

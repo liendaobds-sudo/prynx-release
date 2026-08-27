@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use boa_engine::{Context, Source};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 /// Payload engine do `build.rs` sinh: `PRYNXRAW1 <ver>\n<js>` (dev/CI) hoặc
 /// `PRYNXENC1 <ver>\n<nonce_b64>.<ciphertext_b64>` (bản phát hành đã khoá).
@@ -29,6 +30,27 @@ fn split_payload() -> Result<(&'static str, &'static str, &'static str), String>
 /// True nếu binary này cần khoá mới nạp được engine (bản phát hành đã khoá).
 fn engine_is_locked() -> bool {
     matches!(split_payload(), Ok(("PRYNXENC1", _, _)))
+}
+
+/// [DIELINE-ENGINE-STATUS 2026-08-26 §G] Trạng thái payload engine — CHỈ ĐỌC.
+///
+/// Vì sao cần một đường riêng: `warm_engine()` CỐ Ý no-op ở bản đã khoá (chưa có token
+/// thì chưa có khoá, và warmup không được phép thất bại hay log lỗi mỗi lần khởi động),
+/// nên trạng thái "engine bị khoá" chỉ lộ ra khi người dùng đã bấm tạo khuôn. Hàm này
+/// trả lời câu hỏi đó TRƯỚC đó mà KHÔNG nhận khoá, KHÔNG giải mã, KHÔNG thể ném.
+///
+/// Không rò gì: header payload (`PRYNXRAW1`/`PRYNXENC1`) và chuỗi version nằm sẵn ở dạng
+/// plaintext trong binary — ai mở file cũng đọc được. Mã engine và khoá `rk` không bao
+/// giờ đi qua đây.
+fn engine_status() -> (bool, &'static str) {
+    match split_payload() {
+        Ok((kind, version, _)) => (kind == "PRYNXENC1", version),
+        // Payload sai định dạng KHÔNG phải "đã khoá": đó là lỗi đóng gói, và nó lộ ra ở
+        // `engine_source()` bằng thông điệp riêng (backend trả 500). Truy vấn trạng thái
+        // không được ném, nên báo về mặc định không-khoá thay vì fail — khớp đúng
+        // `engine_is_locked()`, vốn cũng chỉ true cho `PRYNXENC1`.
+        Err(_) => (false, ""),
+    }
 }
 
 /// Giải mã (nếu cần) để lấy mã nguồn engine.
@@ -160,6 +182,21 @@ fn run_engine(request_json: &str, resource_key: Option<[u8; 32]>) -> Result<Stri
 #[pyfunction]
 pub fn warm_dieline_engine(py: Python<'_>) -> PyResult<()> {
     py.detach(warm_engine).map_err(PyRuntimeError::new_err)
+}
+
+/// [DIELINE-ENGINE-STATUS 2026-08-26 §G] Truy vấn trạng thái engine cho tầng UI.
+///
+/// Trả `{ locked, payload_version }`. Không nhận credentials, không giải mã, không có
+/// nhánh nào ném — kể cả trên bản đã khoá, nơi `generate_dieline_json` sẽ từ chối vì
+/// thiếu claim `rk`. Nhờ vậy công cụ khuôn bế biết mình bị khoá TRƯỚC khi người dùng
+/// bấm tạo khuôn, mà `warm_dieline_engine` vẫn giữ nguyên chủ đích no-op.
+#[pyfunction]
+pub fn dieline_engine_status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    let (locked, payload_version) = engine_status();
+    let status = PyDict::new(py);
+    status.set_item("locked", locked)?;
+    status.set_item("payload_version", payload_version)?;
+    Ok(status)
 }
 
 #[pyfunction]
@@ -417,5 +454,336 @@ mod tests {
             false_tuck_creases, 0,
             "tuck panel must not add a duplicate crease"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // [DIELINE-RK-GATE 2026-08-26] Baseline preservation cho lõi mật mã engine.
+    //
+    // Task 4 của spec `.kiro/specs/dieline-engine-unlock-fix` (Property 2 — Preservation,
+    // Validates: Requirements 3.1, 3.2). Nhóm dưới đây MỞ RỘNG khuôn mẫu
+    // `locked_payload_needs_the_right_key` ở trên — vốn chỉ kiểm MỘT bộ tham số cứng
+    // (khoá `[7u8; 32]`, nonce `[1u8; 12]`, AAD `"1.2.3"`) — thành vòng lặp CÓ SEED CỐ
+    // ĐỊNH, 128 vòng, phủ cả bốn mệnh đề của bất biến mật mã. Test cũ được GIỮ NGUYÊN làm
+    // mốc tối thiểu dễ đọc; test mới là phát biểu tổng quát.
+    //
+    // Vì sao cần: bản vá của spec này nằm ở phía server (`license-verify` cấp claim `rk`).
+    // Lõi mật mã engine — AES-256-GCM, nonce 12 byte, **AAD = app version**, khoá 32 byte
+    // bất biến theo từng bản — PHẢI không đổi (3.1), và build không khoá phải vẫn nạp
+    // engine plaintext mà không cần `rk` (3.2). Bộ test này là baseline để so sau khi vá.
+    //
+    // KHÔNG thêm dependency vào `native/Cargo.toml`: RNG là xorshift64* viết tay, seed cố
+    // định nên mọi counterexample tái lập được bằng cách chạy lại đúng lệnh.
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// Chuỗi lỗi production ở nhánh THIẾU khoá — trích y nguyên từ `engine_source`.
+    /// `backend/app/api/routes/dieline.py::_classify_native_failure()` ghim vào chuỗi này
+    /// để trả 403 (lỗi bản quyền) thay vì 422 (lỗi thông số), nên nó là hợp đồng chéo giữa
+    /// hai tầng, không phải chuỗi nội bộ.
+    const LOCKED_MSG: &str = "Dieline engine is locked: a valid license token is required";
+
+    /// Chuỗi lỗi production khi AES-GCM KHÔNG xác thực được: khoá sai, hoặc AAD sai (tráo
+    /// payload của bản phát hành khác vào binary này).
+    const UNLOCK_FAILED_MSG: &str = "Dieline engine could not be unlocked for this license";
+
+    /// xorshift64* — RNG viết tay, chỉ để sinh dữ liệu test tái lập được.
+    /// KHÔNG dùng cho bất kỳ mục đích mật mã nào.
+    struct SeededRng(u64);
+
+    impl SeededRng {
+        fn new(seed: u64) -> Self {
+            assert_ne!(seed, 0, "xorshift đứng im với seed 0");
+            Self(seed)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn fill(&mut self, out: &mut [u8]) {
+            for chunk in out.chunks_mut(8) {
+                let word = self.next_u64().to_le_bytes();
+                chunk.copy_from_slice(&word[..chunk.len()]);
+            }
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next_u64() % bound
+        }
+
+        /// Chuỗi version kiểu SemVer-ish dùng làm AAD, nằm trong tập ký tự mà
+        /// `license-verify` chấp nhận (`/^[0-9A-Za-z][0-9A-Za-z.\-+]{0,63}$/`).
+        fn semver_ish(&mut self) -> String {
+            format!(
+                "{}.{}.{}-rc.{}",
+                self.below(3),
+                self.below(10),
+                self.below(20),
+                self.below(50)
+            )
+        }
+    }
+
+    /// Mở payload đã khoá theo ĐÚNG hợp đồng nhánh `"PRYNXENC1"` của `engine_source`:
+    /// thiếu khoá ⇒ từ chối TRƯỚC khi giải mã; có khoá ⇒ AES-256-GCM tự xác thực cả khoá
+    /// lẫn AAD.
+    ///
+    /// Phải mô phỏng chứ không gọi thẳng `engine_source`, vì hàm đó đọc payload NHÚNG lúc
+    /// build (`ENGINE_PAYLOAD`, không nhận payload làm tham số) nên không đưa payload tổng
+    /// hợp vào được, mà task này không được đụng code sản phẩm. Mirror được GHIM vào
+    /// production bởi `engine_source_none_matches_build_kind` bên dưới: chuỗi lỗi và thứ
+    /// tự kiểm (thiếu khoá trước, giải mã sau) đều phải khớp.
+    fn open_locked_payload(
+        resource_key: Option<[u8; 32]>,
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        use aes_gcm::aead::{Aead, KeyInit, Payload};
+        use aes_gcm::{Aes256Gcm, Nonce};
+
+        let key = resource_key.ok_or_else(|| LOCKED_MSG.to_string())?;
+        Aes256Gcm::new_from_slice(&key)
+            .map_err(|_| "Dieline engine key is invalid".to_string())?
+            .decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad,
+                },
+            )
+            .map_err(|_| UNLOCK_FAILED_MSG.to_string())
+    }
+
+    /// Ghim mirror ở trên vào code sản phẩm, và phát biểu 3.2 cho ĐÚNG kiểu build đang chạy.
+    ///
+    /// Build ĐÃ KHOÁ: `engine_source(None)` phải từ chối bằng CHÍNH chuỗi mirror dùng.
+    /// Build plaintext (dev/CI): `None` là đường THÀNH CÔNG — engine nạp được mà không cần
+    /// `rk`. Nhờ tách theo `engine_is_locked()`, cùng một test có nghĩa ở cả hai lượt
+    /// `cargo test` (không đặt và có đặt `PRYNX_DIELINE_KEY_B64`).
+    #[test]
+    fn engine_source_none_matches_build_kind() {
+        match super::engine_source(None) {
+            Ok(src) => {
+                assert!(
+                    !super::engine_is_locked(),
+                    "build ĐÃ KHOÁ không bao giờ được mở bằng `None`"
+                );
+                assert!(
+                    src.contains("__prynxGenerateDieline"),
+                    "build plaintext PHẢI nạp được engine mà không cần `rk` (3.2)"
+                );
+            }
+            Err(msg) => {
+                assert!(
+                    super::engine_is_locked(),
+                    "build plaintext không được từ chối `None` (3.2)"
+                );
+                assert_eq!(
+                    msg, LOCKED_MSG,
+                    "chuỗi lỗi thiếu khoá đã đổi — mirror trong test và \
+                     `_classify_native_failure()` phía backend đều ghim vào chuỗi này (3.8)"
+                );
+            }
+        }
+    }
+
+    /// Property 2 (Preservation) — lõi mật mã engine, 128 vòng có seed cố định.
+    /// **Validates: Requirements 3.1, 3.2**
+    ///
+    /// Bốn mệnh đề, đúng theo task 4:
+    ///  1. khoá đúng + AAD đúng ⇒ LUÔN mở được, và ra ĐÚNG nội dung đã mã hoá;
+    ///  2. đảo bất kỳ MỘT bit của khoá ⇒ LUÔN bị từ chối (vét cạn cả 256 vị trí bit);
+    ///  3. AAD khác (version khác) ⇒ LUÔN bị từ chối — tráo payload giữa hai bản là vô ích;
+    ///  4. `None` (token hợp lệ nhưng KHÔNG có claim `rk`) ⇒ LUÔN bị từ chối, và bị từ chối
+    ///     TRƯỚC khi giải mã, bằng đúng chuỗi lỗi bản quyền. Đây chính là mắt `keyMissing`
+    ///     của bug condition; ở đây nó là baseline phải giữ nguyên sau khi vá server.
+    ///
+    /// Mệnh đề 2 quét theo CỬA SỔ TRƯỢT 32 bit/vòng thay vì cả 256 bit/vòng: AES-GCM ở
+    /// profile debug của `cargo test` đắt, 128×256 lần giải mã sẽ kéo dài suite vô ích.
+    /// Cửa sổ dịch 32 bit mỗi vòng nên cả 256 vị trí được phủ sau mỗi 8 vòng, tức 16 lần
+    /// trên toàn bộ 128 vòng với 16 khoá khác nhau. Độ phủ vị trí bit được khẳng định
+    /// tường minh ở cuối test, nên "bất kỳ MỘT bit" là mệnh đề đã kiểm hết, không phải
+    /// mệnh đề lấy mẫu.
+    #[test]
+    fn locked_payload_key_property_holds_across_seeded_rounds() {
+        use aes_gcm::aead::{Aead, KeyInit, Payload};
+        use aes_gcm::{Aes256Gcm, Nonce};
+
+        const ROUNDS: usize = 128; // ≥ 100 theo yêu cầu của task
+        const KEY_BITS: usize = 256;
+        const BITS_PER_ROUND: usize = 32;
+        /// Seed cố định ⇒ counterexample tái lập được bằng cách chạy lại đúng lệnh.
+        const SEED: u64 = 0x5052_594E_5844_4C31; // "PRYNXDL1"
+
+        let mut rng = SeededRng::new(SEED);
+        let mut bit_covered = [0usize; KEY_BITS];
+
+        for round in 0..ROUNDS {
+            let mut key = [0u8; 32];
+            rng.fill(&mut key);
+            let mut nonce = [0u8; 12];
+            rng.fill(&mut nonce);
+
+            let version = rng.semver_ish();
+            let mut other_version = rng.semver_ish();
+            if other_version == version {
+                // Rút trùng: thêm hậu tố để chắc chắn khác, vẫn trong tập ký tự cho phép.
+                other_version.push_str(".1");
+            }
+            assert_ne!(version, other_version, "vòng {round}: hai AAD phải khác nhau");
+
+            let mut plaintext = vec![0u8; 24 + rng.below(96) as usize];
+            rng.fill(&mut plaintext);
+
+            let ciphertext = Aes256Gcm::new_from_slice(&key)
+                .expect("khoá 32 byte")
+                .encrypt(
+                    Nonce::from_slice(&nonce),
+                    Payload {
+                        msg: &plaintext,
+                        aad: version.as_bytes(),
+                    },
+                )
+                .expect("mã hoá phải thành công");
+
+            // (1) khoá đúng + AAD đúng ⇒ mở được ĐÚNG nội dung.
+            let opened = open_locked_payload(Some(key), &nonce, &ciphertext, version.as_bytes());
+            assert_eq!(
+                opened.as_deref(),
+                Ok(plaintext.as_slice()),
+                "vòng {round}: khoá đúng phải mở ra đúng nội dung (seed {SEED:#018x})"
+            );
+
+            // (2) đảo bất kỳ MỘT bit của khoá ⇒ bị từ chối. Cửa sổ trượt theo vòng.
+            let window_start = (round * BITS_PER_ROUND) % KEY_BITS;
+            for offset in 0..BITS_PER_ROUND {
+                let bit = (window_start + offset) % KEY_BITS;
+                let mut wrong = key;
+                wrong[bit / 8] ^= 1u8 << (bit % 8);
+                let rejected =
+                    open_locked_payload(Some(wrong), &nonce, &ciphertext, version.as_bytes());
+                assert_eq!(
+                    rejected.err().as_deref(),
+                    Some(UNLOCK_FAILED_MSG),
+                    "vòng {round}: đảo bit {bit} của khoá PHẢI bị từ chối, không bao giờ \
+                     ra JS rác (seed {SEED:#018x})"
+                );
+                bit_covered[bit] += 1;
+            }
+
+            // (3) AAD khác ⇒ bị từ chối. AAD = app version, nên khoá của bản này không
+            //     mở được payload của bản khác dù thuật toán và nonce y hệt.
+            let wrong_aad =
+                open_locked_payload(Some(key), &nonce, &ciphertext, other_version.as_bytes());
+            assert_eq!(
+                wrong_aad.err().as_deref(),
+                Some(UNLOCK_FAILED_MSG),
+                "vòng {round}: AAD \"{other_version}\" khác \"{version}\" PHẢI bị từ chối"
+            );
+
+            // (4) thiếu khoá ⇒ bị từ chối bằng đúng chuỗi bản quyền, TRƯỚC khi giải mã.
+            let no_key = open_locked_payload(None, &nonce, &ciphertext, version.as_bytes());
+            assert_eq!(
+                no_key.err().as_deref(),
+                Some(LOCKED_MSG),
+                "vòng {round}: `None` PHẢI bị từ chối bằng chuỗi lỗi bản quyền"
+            );
+        }
+
+        // Mệnh đề 2 chỉ có nghĩa "bất kỳ bit nào" nếu cả 256 vị trí đều đã được đảo.
+        let uncovered: Vec<usize> = (0..KEY_BITS).filter(|bit| bit_covered[*bit] == 0).collect();
+        assert!(
+            uncovered.is_empty(),
+            "còn vị trí bit chưa kiểm: {uncovered:?} — cửa sổ trượt phải phủ hết 256 bit"
+        );
+        let total_flips: usize = bit_covered.iter().sum();
+        assert_eq!(
+            total_flips,
+            ROUNDS * BITS_PER_ROUND,
+            "số lần đảo bit không khớp số vòng × cửa sổ"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // [DIELINE-ENGINE-STATUS 2026-08-26 §G] Truy vấn trạng thái engine.
+    //
+    // Task 7.2 của spec `.kiro/specs/dieline-engine-unlock-fix` (Property 2 —
+    // Preservation, Validates: Requirements 3.1, 3.2). Hai mệnh đề:
+    //  1. `engine_status()` báo ĐÚNG kiểu payload và KHÔNG ném ở cả hai kiểu build;
+    //  2. `warm_engine()` vẫn NO-OP trên payload đã khoá — bất biến sống còn của lô này.
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// Trạng thái phải khớp kiểu build và không có nhánh nào thất bại.
+    ///
+    /// Không có `Result` trong chữ ký `engine_status()` là chủ đích: truy vấn trạng thái
+    /// KHÔNG được ném, kể cả trên bản đã khoá nơi `engine_source(None)` từ chối. Nhờ tách
+    /// theo `engine_is_locked()`, cùng một test có nghĩa ở cả hai lượt `cargo test`
+    /// (không đặt và có đặt `PRYNX_DIELINE_KEY_B64`).
+    #[test]
+    fn engine_status_reports_payload_kind_without_failing() {
+        let built_with_key = !std::env::var("PRYNX_DIELINE_KEY_B64")
+            .unwrap_or_default()
+            .trim()
+            .is_empty();
+        let (locked, payload_version) = super::engine_status();
+
+        assert_eq!(
+            locked, built_with_key,
+            "trạng thái phải khớp PRYNX_DIELINE_KEY_B64 lúc build: đã khoá ⇒ locked = true, \
+             plaintext ⇒ locked = false"
+        );
+        assert_eq!(
+            locked,
+            super::engine_is_locked(),
+            "`locked` PHẢI khớp `engine_is_locked()` — banner phát hiện sớm phía client \
+             đọc đúng cờ mà `warm_engine()` dùng để no-op"
+        );
+
+        if locked {
+            assert!(
+                !payload_version.is_empty(),
+                "bản đã khoá PHẢI mang chuỗi version trong header (nó là AAD của AES-GCM)"
+            );
+        } else {
+            assert!(
+                payload_version.is_empty(),
+                "bản plaintext (dev/CI) không nhúng version — `build.rs` ghi header rỗng"
+            );
+        }
+        // Trường trạng thái chỉ được mang header, không bao giờ mang mã engine hay khoá.
+        assert!(
+            !payload_version.contains("__prynxGenerateDieline"),
+            "payload_version không bao giờ được chứa mã engine"
+        );
+    }
+
+    /// Bất biến sống còn: warmup KHÔNG đổi hành vi vì có thêm truy vấn trạng thái.
+    ///
+    /// Trên bản đã khoá, `warm_engine()` phải trả Ok NGAY và KHÔNG nạp context — chưa có
+    /// token thì chưa có khoá, và warmup không được log lỗi mỗi lần khởi động (1.8).
+    /// Chạy trên thread riêng vì `ENGINE_CONTEXT` là thread-local: chỉ thread mới bảo đảm
+    /// quan sát được trạng thái "chưa nạp" bất kể thứ tự chạy test.
+    #[test]
+    fn warm_engine_remains_a_noop_on_locked_payload() {
+        if !super::engine_is_locked() {
+            // Bản plaintext CỐ Ý parse trước để preview đầu tiên không giật; đường đó đã
+            // có `bundled_engine_warms_then_generates_default_dieline` phủ.
+            return;
+        }
+        std::thread::spawn(|| {
+            super::warm_engine()
+                .expect("warmup ở bản đã khoá PHẢI trả Ok — không được thất bại lúc khởi động");
+            assert!(
+                super::ENGINE_CONTEXT.with(|slot| slot.borrow().is_none()),
+                "bản đã khoá: warmup PHẢI no-op, không được nạp engine khi chưa có khoá"
+            );
+        })
+        .join()
+        .expect("thread kiểm warmup không được panic");
     }
 }

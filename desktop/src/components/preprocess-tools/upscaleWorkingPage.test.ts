@@ -26,6 +26,20 @@ vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({
 import { rasterizeUpscaleWorkingPage } from './upscaleWorkingPage';
 import { sourceImagePixelsPerPdfPoint } from '../../lib/imageNormalizer';
 
+const JPG_2X3_NO_DPI = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAADAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3E//Z';
+
+function jfifAfterApp2At300Dpi(): Uint8Array {
+    const source = Uint8Array.from(atob(JPG_2X3_NO_DPI), char => char.charCodeAt(0));
+    source[13] = 1;
+    source.set([0x01, 0x2c, 0x01, 0x2c], 14);
+    const app2 = Uint8Array.from([0xff, 0xe2, 0x00, 0x04, 0x49, 0x43]);
+    const output = new Uint8Array(source.byteLength + app2.byteLength);
+    output.set(source.subarray(0, 2));
+    output.set(app2, 2);
+    output.set(source.subarray(2), 2 + app2.byteLength);
+    return output;
+}
+
 const originalGetContext = Object.getOwnPropertyDescriptor(
     HTMLCanvasElement.prototype,
     'getContext',
@@ -93,7 +107,7 @@ describe('rasterizeUpscaleWorkingPage', () => {
     });
 
     it('đọc JFIF 300 DPI thành đúng mật độ pixel/point, ảnh không metadata giữ scale 1', () => {
-        const jpeg = new Uint8Array(18);
+        const jpeg = new Uint8Array(20);
         jpeg.set([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00], 0);
         jpeg[13] = 1;
         jpeg[14] = 0x01;
@@ -103,6 +117,11 @@ describe('rasterizeUpscaleWorkingPage', () => {
 
         expect(sourceImagePixelsPerPdfPoint(jpeg, 'scan.jpg')).toBeCloseTo(300 / 72, 8);
         expect(sourceImagePixelsPerPdfPoint(new Uint8Array([1, 2, 3]), 'anh.png')).toBe(1);
+    });
+
+    it('đọc JFIF nằm sau APP2 để upscale không mất mật độ ảnh nguồn', () => {
+        expect(sourceImagePixelsPerPdfPoint(jfifAfterApp2At300Dpi(), 'scan.jpg'))
+            .toBeCloseTo(300 / 72, 8);
     });
 
     it('không đọc Working PDF nếu lượt chạy đã bị hủy', async () => {

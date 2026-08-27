@@ -206,28 +206,56 @@ def _read_png_phys_dpi(source_path: str) -> tuple[float, float] | None:
 
 
 def _read_jpeg_jfif_dpi(source_path: str) -> tuple[float, float] | None:
-    """Chỉ nhận APP0/JFIF ngay sau SOI để MediaBox không đổi theo nhánh xử lý."""
+    """Quét marker đến APP0/JFIF; ICC/EXIF có thể đứng trước metadata mật độ."""
     try:
         with open(source_path, "rb") as source:
-            header = source.read(18)
+            if source.read(2) != b"\xff\xd8":
+                return None
+            while True:
+                prefix = source.read(1)
+                if prefix != b"\xff":
+                    return None
+                marker_bytes = source.read(1)
+                while marker_bytes == b"\xff":
+                    marker_bytes = source.read(1)
+                if not marker_bytes:
+                    return None
+                marker = marker_bytes[0]
+                if marker in {0xD9, 0xDA}:
+                    return None
+                if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+                    continue
+                if marker == 0x00:
+                    return None
+                length_bytes = source.read(2)
+                if len(length_bytes) != 2:
+                    return None
+                length = int.from_bytes(length_bytes, "big", signed=False)
+                if length < 2:
+                    return None
+                payload_length = length - 2
+                if marker != 0xE0:
+                    source.seek(payload_length, os.SEEK_CUR)
+                    continue
+                payload = source.read(payload_length)
+                if (
+                    len(payload) != payload_length
+                    or len(payload) < 14
+                    or payload[:5] != b"JFIF\x00"
+                ):
+                    continue
+                units = payload[7]
+                density_x = int.from_bytes(payload[8:10], "big", signed=False)
+                density_y = int.from_bytes(payload[10:12], "big", signed=False)
+                if density_x <= 0 or density_y <= 0:
+                    return None
+                if units == 1:
+                    return float(density_x), float(density_y)
+                if units == 2:
+                    return density_x * 2.54, density_y * 2.54
+                return None
     except OSError:
         return None
-    if (
-        len(header) < 18
-        or header[:4] != b"\xff\xd8\xff\xe0"
-        or header[6:11] != b"JFIF\x00"
-    ):
-        return None
-    units = header[13]
-    density_x = int.from_bytes(header[14:16], "big", signed=False)
-    density_y = int.from_bytes(header[16:18], "big", signed=False)
-    if density_x <= 0 or density_y <= 0:
-        return None
-    if units == 1:
-        return float(density_x), float(density_y)
-    if units == 2:
-        return density_x * 2.54, density_y * 2.54
-    return None
 
 
 def _read_image_dpi(source_path: str, extension: str) -> tuple[float, float]:

@@ -63,6 +63,33 @@ describe('license feature catalog', () => {
     }
   });
 
+  it('Bình lồng ghép tự do là quyền Pro RIÊNG', () => {
+    // Quyền mới phải tồn tại và là Pro.
+    expect(FEATURE_CATALOG['impo.mixed_nesting'].minPlan).toBe('pro');
+    expect(FEATURE_MIN_PLAN['impo.mixed_nesting']).toBe('pro');
+    expect(hasFeatureAccess('impo.mixed_nesting', 'free')).toBe(false);
+    expect(hasFeatureAccess('impo.mixed_nesting', 'pro')).toBe(true);
+    expect(hasFeatureAccess('impo.mixed_nesting', 'dev')).toBe(true);
+
+    // Cấp quyền riêng đúng ID thì mở; cấp quyền của tool khác thì KHÔNG mở.
+    expect(hasFeatureAccess('impo.mixed_nesting', 'free', ['impo.mixed_nesting'])).toBe(true);
+    expect(hasFeatureAccess('impo.mixed_nesting', 'free', ['impo.diecut'])).toBe(false);
+    expect(hasFeatureAccess('impo.mixed_nesting', 'free', ['packaging.dieline'])).toBe(false);
+    // …và ngược lại: quyền mới không mở tool cũ (kế hoạch 2026-08-26 §8 quy tắc 6).
+    expect(hasFeatureAccess('impo.diecut', 'free', ['impo.mixed_nesting'])).toBe(false);
+    expect(hasFeatureAccess('packaging.dieline', 'free', ['impo.mixed_nesting'])).toBe(false);
+    expect(hasFeatureAccess('impo.nup', 'free', ['impo.mixed_nesting'])).toBe(false);
+
+    // P9 đã đăng ký tool. Quyền này phải thuộc về ĐÚNG MỘT entry — nếu có hai entry cùng
+    // capability thì `findToolByUniqueKey` không resolve được và routing sẽ fail-closed.
+    const wired = TOOL_REGISTRY.filter((tool) => tool.featureId === 'impo.mixed_nesting');
+    expect(wired.length, 'quyền mới phải gắn đúng một tool').toBeLessThanOrEqual(1);
+    if (wired.length === 1) {
+      expect(wired[0].id).toBe('mixed_nesting');
+      expect(wired[0].isEnabled).toBe(true);
+    }
+  });
+
   it('chốt Crop là Free, Chữ & Font là Pro và bỏ capability Optimize mồ côi', () => {
     expect(findToolByUniqueKey('crop')?.featureId).toBe('pdf.crop');
     expect(FEATURE_CATALOG['pdf.crop'].minPlan).toBe('free');

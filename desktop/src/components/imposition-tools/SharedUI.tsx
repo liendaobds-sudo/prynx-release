@@ -157,12 +157,13 @@ export const DisabledItem = ({ label }: { label: string }) => (
 );
 
 // ==================== ToolItem ====================
-export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: React.ReactNode, label: string, desc?: string, info?: string, helpKey?: string, featureId?: FeatureId, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
+export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick, hoverColor, active, isFavorite, onToggleFavorite, variant = 'default' }: { icon: React.ReactNode, label: string, desc?: string, info?: string, helpKey?: string, featureId?: FeatureId, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void, variant?: 'default' | 'tool-catalog' }) => {
   const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const help = getToolHelp(helpKey);
     const modalHelp = help ?? ((info || desc) ? createFallbackToolHelp(label, info || desc) : undefined);
     const showHelpBtn = !!modalHelp;
+    const isToolCatalog = variant === 'tool-catalog';
     return (
         <div className="relative">
             <div
@@ -175,11 +176,11 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, featureId, onClick,
                 }}
                 title={info || label}
                 style={{ padding: '4px 6px' }}
-                className={`flex items-center gap-2.5 w-full text-left rounded-lg transition-all group cursor-pointer border ${active ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-400 dark:border-indigo-500/60 ring-1 ring-indigo-300/50' : isFavorite ? `bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border-amber-200 dark:border-amber-800/50 shadow-sm ${hoverColor}` : `bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10 ${hoverColor}`}`}
+                className={`flex items-center gap-2.5 w-full text-left rounded-lg transition-all group cursor-pointer border ${isToolCatalog ? 'hover:shadow-sm' : ''} ${active ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-400 dark:border-indigo-500/60 ring-1 ring-indigo-300/50' : isFavorite ? `bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border-amber-200 dark:border-amber-800/50 shadow-sm ${hoverColor}` : `bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10 ${hoverColor}`}`}
             >
-                <div className="text-[22px] w-8 text-center group-hover:scale-110 transition-transform origin-center">{icon}</div>
+                <div className={`text-[22px] w-8 text-center group-hover:scale-110 transition-transform origin-center ${isToolCatalog ? 'drop-shadow-sm' : ''}`}>{icon}</div>
                 <div className="flex-1 min-w-0">
-                    <div className={`font-bold text-[14px] leading-tight truncate ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-800 dark:text-white'}`}>{label}</div>
+                    <div className={`font-bold ${isToolCatalog ? 'text-[13.5px]' : 'text-[14px]'} leading-tight truncate ${active ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-800 dark:text-white'}`}>{label}</div>
                     {!info && desc && <div className="text-[12px] text-slate-500 line-clamp-1 mt-1 font-medium truncate">{desc}</div>}
                 </div>
                 {featureId && <ProFeatureBadge featureId={featureId} />}

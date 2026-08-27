@@ -341,6 +341,7 @@ là có trong bản phát hành.
 | [chrono](https://github.com/chronotope/chrono) | 0.4.45 | MIT OR Apache-2.0 |
 | [cipher](https://github.com/RustCrypto/traits) | 0.4.4 | MIT OR Apache-2.0 |
 | [cipher](https://github.com/RustCrypto/traits) | 0.5.2 | MIT OR Apache-2.0 |
+| [clipper2-rust](https://github.com/larsbrubaker/clipper2-rust) | 1.1.0 | BSL-1.0 |
 | [color_quant](https://github.com/image-rs/color_quant) | 1.1.0 | MIT |
 | [combine](https://github.com/Marwes/combine) | 4.6.7 | MIT |
 | [concurrent-queue](https://github.com/smol-rs/concurrent-queue) | 2.5.0 | Apache-2.0 OR MIT |

@@ -170,9 +170,79 @@ async def lifespan(app: FastAPI):
         _ppe_viewer_session_sweep_loop()
     )
 
+    # ── Bình lồng ghép tự do: root artifact riêng + sweep định kỳ (kế hoạch 2026-08-26 §12.4) ──
+    #
+    # Root không an toàn thì **chỉ tính năng này** tắt, KHÔNG làm sập sidecar: mọi tính năng
+    # khác không liên quan gì tới root này, và đánh sập cả app vì một biến môi trường sai là
+    # phản ứng quá mức.
+    from app.core.mixed_nesting_artifacts import ArtifactRootUnsafe, artifact_store
+
+    app.state.mixed_nesting_artifacts_ready = False
+    try:
+        _mn_store = artifact_store()
+        await asyncio.to_thread(_mn_store.ensure_root)
+        _mn_orphans = await asyncio.to_thread(_mn_store.sweep_orphan_files)
+        app.state.mixed_nesting_artifacts_ready = True
+        if _mn_orphans:
+            logger.info(
+                "🧹 Bình lồng ghép: dọn %d file xuất mồ côi từ lần chạy trước.", _mn_orphans
+            )
+    except ArtifactRootUnsafe as exc:
+        logger.error(
+            "⛔ [MIXED-NESTING] Root lưu file xuất không an toàn nên tính năng bị tắt: %s", exc
+        )
+    except Exception as exc:  # noqa: BLE001 - lỗi I/O không được giết startup
+        logger.error("⛔ [MIXED-NESTING] Không dựng được root lưu file xuất: %s", exc)
+
+    async def _mixed_nesting_sweep_loop():
+        # 10 phút: TTL artifact là 2 giờ nên quét dày hơn không có ích, còn quét thưa hơn thì
+        # file đã hết hạn nằm lại quá lâu trên máy thợ in.
+        SWEEP_INTERVAL_SECONDS = 600
+        while True:
+            try:
+                await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+                from app.core.mixed_nesting_artifacts import artifact_store as _store
+
+                swept = await asyncio.to_thread(_store().sweep_now)
+                if swept:
+                    logger.info("🧹 Bình lồng ghép: dọn %d file xuất hết TTL.", swept)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001 - không để một vòng giết sweeper
+                logger.warning("Không quét được file xuất Bình lồng ghép: %s", exc)
+
+    app.state.mixed_nesting_sweep_task = asyncio.create_task(_mixed_nesting_sweep_loop())
+
     try:
         yield
     finally:
+        # Registry Bình lồng ghép tự do có sweeper thread + executor riêng (kế hoạch
+        # 2026-08-26 §12.4). Không đóng tường minh thì thread nền sống qua shutdown và
+        # job đang chạy giữ luôn suất whole-machine của scheduler.
+        mn_sweep_task = getattr(app.state, "mixed_nesting_sweep_task", None)
+        if mn_sweep_task:
+            mn_sweep_task.cancel()
+            await asyncio.gather(mn_sweep_task, return_exceptions=True)
+        try:
+            from app.core.mixed_nesting_jobs import mixed_nesting_jobs
+
+            await asyncio.to_thread(mixed_nesting_jobs.close)
+        except Exception as exc:  # noqa: BLE001 - shutdown không được vì một lỗi mà treo
+            logger.warning("Không đóng được registry Bình lồng ghép: %s", exc)
+        try:
+            # Khuôn đã nhập chỉ nằm trong RAM (không ghi file, xem P12), nên dọn là xoá dict.
+            from app.workers.mixed_nesting_pdf_source import mixed_nesting_sources
+
+            mixed_nesting_sources.clear()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Không dọn được khuôn đã nhập Bình lồng ghép: %s", exc)
+        if getattr(app.state, "mixed_nesting_artifacts_ready", False):
+            try:
+                from app.core.mixed_nesting_artifacts import artifact_store as _store
+
+                await asyncio.to_thread(_store().close)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Không dọn được file xuất Bình lồng ghép: %s", exc)
         # Shutdown phải chạy cả khi lifespan bị exception/cancel; nếu
         # để sau `yield` trần, native session/cache có thể bị bỏ lại.
         if getattr(app.state, "cleanup_task", None):
@@ -271,7 +341,7 @@ app.include_router(compare.router, prefix="/api", tags=["Compare"])
 app.include_router(results.router, prefix="/api", tags=["Results"])
 app.include_router(qc.router, prefix="/api", tags=["QC"])
 app.include_router(logo_rebuild.router, prefix="/api", tags=["Logo Rebuild"])
-from app.api.routes import system, imposition, document_tools, preflight, vdp, pdf_tools, sticker_sheet, office_convert, edit, export, dieline, document_cleanup
+from app.api.routes import system, imposition, document_tools, preflight, vdp, pdf_tools, sticker_sheet, office_convert, edit, export, dieline, document_cleanup, mixed_nesting
 app.include_router(system.router, prefix="/api", tags=["System"])
 app.include_router(imposition.router, prefix="/api", tags=["Imposition"])
 app.include_router(document_tools.router, prefix="/api", tags=["Document Tools"])
@@ -284,6 +354,9 @@ app.include_router(edit.router, prefix="/api", tags=["Edit"])
 app.include_router(export.router, prefix="/api", tags=["Export"])
 app.include_router(dieline.router, prefix="/api", tags=["Dieline"])
 app.include_router(document_cleanup.router, prefix="/api", tags=["Document Cleanup"])
+# AppTool standalone: CỐ Ý không thuộc họ Imposition, có capability và registry job riêng
+# (kế hoạch 2026-08-26 §7). Route chỉ reachable khi cờ PRYNX_MIXED_NESTING_ENABLED bật.
+app.include_router(mixed_nesting.router, prefix="/api", tags=["Mixed Nesting"])
 app.include_router(ws.router, tags=["WebSocket"])
 
 # Cut Export (spec: gui-may-be) — module độc lập backend/app/workers/cut_export

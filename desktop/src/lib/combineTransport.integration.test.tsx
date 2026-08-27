@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   backendMergeManifestJob: vi.fn(),
   mergePdf: vi.fn(),
   pdfShouldThrow: false,
+  appendImagePageToPdfDoc: vi.fn(),
+  imageBytesToPdfDoc: vi.fn(),
   createObjectURL: vi.fn(),
   revokeObjectURL: vi.fn(),
   toastError: vi.fn(),
@@ -50,6 +52,14 @@ vi.mock('../components/ui/Toast', () => ({
     success: mocks.toastSuccess,
   },
 }));
+vi.mock('./imageNormalizer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./imageNormalizer')>();
+  return {
+    ...actual,
+    appendImagePageToPdfDoc: mocks.appendImagePageToPdfDoc,
+    imageBytesToPdfDoc: mocks.imageBytesToPdfDoc,
+  };
+});
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) => {
@@ -85,6 +95,18 @@ async function validPdfFile(name = 'small.pdf'): Promise<File> {
   const file = new File([bytes as unknown as BlobPart], name, { type: 'application/pdf' });
   Object.defineProperty(file, 'arrayBuffer', {
     value: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  });
+  return file;
+}
+
+function readableImageFile(name: string): File {
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const file = new File([bytes as unknown as BlobPart], name, {
+    type: 'image/' + name.split('.').pop(),
+  });
+  Object.defineProperty(file, 'arrayBuffer', {
+    value: async () =>
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
   });
   return file;
 }
@@ -169,6 +191,14 @@ describe('Combine/Interleave transport', () => {
       filename: 'Combined.pdf',
     });
     mocks.mergePdf.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
+    mocks.appendImagePageToPdfDoc.mockImplementation(async (document: PDFDocument) =>
+      document.addPage([100, 100])
+    );
+    mocks.imageBytesToPdfDoc.mockImplementation(async () => {
+      const document = await PDFDocument.create();
+      document.addPage([100, 100]);
+      return document;
+    });
     mocks.createObjectURL.mockReturnValue('blob:combine-preview');
     Object.defineProperty(URL, 'createObjectURL', {
       value: mocks.createObjectURL,
@@ -371,6 +401,91 @@ describe('Combine/Interleave transport', () => {
       expect.any(Blob),
       'Interleaved_Document.pdf',
     );
+  });
+
+  it('Combine phẳng đưa WebP qua normalizer ảnh thay vì parser PDF', async () => {
+    const image = readableImageFile('flat.webp');
+    const onSpawnTab = vi.fn();
+    render(<CombineTab initialFiles={[image]} onSpawnTab={onSpawnTab} isActive />);
+
+    const combineButton = screen.getByRole('button', { name: 'tabs.combine:ghep_file' });
+    await waitFor(() => expect((combineButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(combineButton);
+
+    await waitFor(() => expect(onSpawnTab).toHaveBeenCalledTimes(1));
+    expect(mocks.appendImagePageToPdfDoc).toHaveBeenCalledTimes(1);
+    expect(mocks.appendImagePageToPdfDoc).toHaveBeenCalledWith(
+      expect.any(PDFDocument),
+      expect.any(ArrayBuffer),
+      'flat.webp',
+    );
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('Interleave đưa BMP qua normalizer ảnh thay vì parser PDF', async () => {
+    const oddImage = readableImageFile('odd.bmp');
+    const evenPdf = await validPdfFile('even.pdf');
+    const onSpawnTab = vi.fn();
+    render(
+      <CombineTab
+        initialFiles={[oddImage, evenPdf]}
+        onSpawnTab={onSpawnTab}
+        isActive
+      />,
+    );
+
+    const interleaveButton = screen.getByRole('button', { name: 'tabs.combine:tron_dan_xen' });
+    await waitFor(() => expect((interleaveButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(interleaveButton);
+
+    await waitFor(() => expect(onSpawnTab).toHaveBeenCalledTimes(1));
+    expect(mocks.imageBytesToPdfDoc).toHaveBeenCalledTimes(1);
+    expect(mocks.imageBytesToPdfDoc).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      'odd.bmp',
+    );
+    expect(mocks.backendMergePdfsJob).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('chia nhóm theo kích thước đo và ghép TIFF qua cùng oracle định dạng ảnh', async () => {
+    const image = readableImageFile('grouped.tiff');
+    const onSpawnTab = vi.fn();
+    const onResultsOpened = vi.fn();
+    render(
+      <CombineTab
+        initialFiles={[image]}
+        onSpawnTab={onSpawnTab}
+        onResultsOpened={onResultsOpened}
+        isActive
+      />,
+    );
+
+    const groupBySize = screen.getByRole('checkbox');
+    fireEvent.click(groupBySize);
+
+    const groupedCombineButton = await screen.findByRole('button', {
+      name: 'tabs.combine:combine_theo_nhom',
+    });
+    await waitFor(() => {
+      expect((groupBySize as HTMLInputElement).disabled).toBe(false);
+      expect((groupedCombineButton as HTMLButtonElement).disabled).toBe(false);
+    });
+    expect(mocks.imageBytesToPdfDoc).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      'grouped.tiff',
+    );
+
+    fireEvent.click(groupedCombineButton);
+
+    await waitFor(() => expect(onSpawnTab).toHaveBeenCalledTimes(1));
+    expect(mocks.appendImagePageToPdfDoc).toHaveBeenCalledWith(
+      expect.any(PDFDocument),
+      expect.any(ArrayBuffer),
+      'grouped.tiff',
+    );
+    expect(onResultsOpened).toHaveBeenCalledTimes(1);
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it('thu hồi đúng một object URL do thumbnail ảnh sở hữu khi đóng tab', async () => {

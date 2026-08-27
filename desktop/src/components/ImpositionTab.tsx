@@ -13,7 +13,11 @@ import { Button } from './Button';
 import { Printer, Scissors } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { imageFileToPdfIfNeeded, isSupportedImageFileName } from '../lib/imageNormalizer';
-import { initialFileOpeningPhase, type FileOpeningPhase } from '../lib/impositionOpeningState';
+import {
+    formatFileOpeningError,
+    initialFileOpeningPhase,
+    type FileOpeningPhase,
+} from '../lib/impositionOpeningState';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import ToolMenuList from './imposition-tools/ToolMenuList';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
@@ -28,7 +32,7 @@ import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
 import { createRevisionScopedPdfUploadCache } from '../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../lib/recipe/RecipeRecorder';
 import { shouldBlockUnrecordedCommit } from '../lib/recipe/unrecordedCommit';
-import { isOutputFile, isImposedOutputFile } from '../lib/constants';
+import { isImposedOutputFile } from '../lib/constants';
 import { isRestoredDocumentDirty } from '../lib/dirtySession';
 import {
     createRecoveryHistoryEntry,
@@ -104,8 +108,22 @@ import {
     type ToolMenuMode,
     type EffectiveToolMenuLayout,
 } from '../lib/rightToolMenuLayout';
-import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
-import { statNativeSystemFile } from '../lib/nativeFileAccess';
+import {
+    primeViewerFirstFrame,
+    waitForViewerFirstFrameGrace,
+} from '../lib/viewerFirstFrame';
+import {
+    isGeneratedWorkspaceFile,
+    markGeneratedWorkspaceFile,
+    statNativeSystemFile,
+} from '../lib/nativeFileAccess';
+import {
+    createSavedWorkspaceRevision,
+    executeWorkspaceSaveWrite,
+    planWorkspacePdfSave,
+    planWorkspaceSaveWrite,
+    type WorkspaceSaveWriteOutcome,
+} from '../lib/workspaceFileSave';
 import type { VdpToolField } from '../hooks/useVdpTool';
 import type { PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import type { ShuffleSettings } from './preprocess-tools/ShuffleTool';
@@ -154,7 +172,7 @@ import LogoRebuildWorkspace from './preprocess-tools/LogoRebuildWorkspace';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
 import { canToolRunWithoutPdf, LOGO_REBUILD_ENABLED, resolveDedicatedInitialTool } from './imposition-tools/sections/preprocessRouterTools';
-import { registerActiveTabFeature } from '../lib/tabNavigation';
+import { buildSourceTabOptions, registerActiveTabFeature } from '../lib/tabNavigation';
 import { useToolActivationGuard } from '../hooks/useToolActivationGuard';
 import { canUse } from '../lib/license/features';
 import { isEphemeralBackendPath } from '../lib/impositionPathPolicy';
@@ -953,15 +971,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 } catch (openError) {
                     console.error('[initialFile] convert ảnh → PDF lỗi:', openError);
                     if (!cancelled && fileOpeningAttemptRef.current === attempt) {
-                        setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+                        setError(formatFileOpeningError(
+                            openError,
+                            t('tabs.imposition:khong_doc_duoc_file_anh'),
+                        ));
                         settleFileOpeningAttempt(attempt, 'error');
                     }
                     return;
                 }
                 if (cancelled || fileOpeningAttemptRef.current !== attempt) return;
-                // PERF (audit 2026-08-14 §VIEW.FIRST.1): giữ màn hiện tại cho tới khi
-                // trang 1 PPE đã decode; Viewer không còn mount trước rồi lộ khung trắng.
-                await primeViewerFirstFrame(openedFile);
+                // PERF (audit 2026-08-26 §FILE.E2): chỉ chờ grace ngắn; PPE chậm
+                // vẫn chạy nền và ghi cache thay vì khóa màn mở file vô hạn.
+                await waitForViewerFirstFrameGrace(primeViewerFirstFrame(openedFile));
                 if (cancelled || fileOpeningAttemptRef.current !== attempt) return;
                 // Ảnh đã convert thành File PDF không còn path đĩa nên dùng blob URL.
                 if (pdfUrl) URL.revokeObjectURL(pdfUrl);
@@ -1144,8 +1165,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         });
                         Object.defineProperty(newFile, 'path', { value: tempPath });
                         try { Object.defineProperty(newFile, 'isTempUploadPath', { value: true, configurable: true }); } catch { /* ignore */ }
-                        if ((file as WorkspaceFileLike).isGenerated) {
-                            try { Object.defineProperty(newFile, 'isGenerated', { value: true, configurable: true }); } catch { /* ignore */ }
+                        if (isGeneratedWorkspaceFile(file)) {
+                            markGeneratedWorkspaceFile(newFile);
                         }
                         setFile(newFile);
                         
@@ -1167,8 +1188,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             lastModified: file.lastModified,
                         });
                         try { Object.defineProperty(fallbackFile, '__pathMaterializationFailed', { value: true, configurable: true }); } catch { /* ignore */ }
-                        if ((file as WorkspaceFileLike).isGenerated) {
-                            try { Object.defineProperty(fallbackFile, 'isGenerated', { value: true, configurable: true }); } catch { /* ignore */ }
+                        if (isGeneratedWorkspaceFile(file)) {
+                            markGeneratedWorkspaceFile(fallbackFile);
                         }
                         setFile(fallbackFile);
                     }
@@ -1219,7 +1240,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (history.length > 0) return true;
         if (viewerDirty) return true;
 
-        if (file && isOutputFile(file.name)) return true;
+        if (isGeneratedWorkspaceFile(file)) return true;
 
         // viewerPageRotations là number[] THEO VỊ TRÍ, luôn đầy đủ độ dài (kể cả toàn 0).
         // Phải kiểm CÓ GÓC KHÁC 0 — KHÔNG dùng .length (bật oan cờ "đang sửa" → auto-save +
@@ -1453,6 +1474,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const displayName = committedName;
         const newFile = new File([committedBlob], displayName, { type: 'application/pdf' });
         copyArtifactLeaseToken(newBlob, newFile);
+        markGeneratedWorkspaceFile(newFile);
         
         try {
             if ((window as RuntimeWindow).__TAURI_INTERNALS__) {
@@ -1672,8 +1694,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         if (openInNewTab && onSpawnTab) {
             const resultFile = new File([blob], filename, { type: 'application/pdf' });
-            Object.defineProperty(resultFile, 'isGenerated', { value: true });
-            onSpawnTab(resultFile, { focusFeature: 'crop' });
+            onSpawnTab(markGeneratedWorkspaceFile(resultFile), { focusFeature: 'crop' });
         } else {
             await commitToolWorkingFile(blob, filename);
             setViewerPageInstanceIds(undefined);
@@ -1968,6 +1989,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // nhờ đó giao diện KHÔNG "reload" sau mỗi thao tác — chỉ tile + overlay đổi.
             try { Object.defineProperty(newFile, '__editCommit', { value: true, configurable: true }); } catch { /* noop */ }
             tagArtifactLeaseToken(newFile, artifactLease);
+            markGeneratedWorkspaceFile(newFile);
 
             // RECIPE (audit 2026-08-17 §REC.11A): kiểm lại vé NGAY TRƯỚC khi publish.
             // stat/fetch ở trên có await; nếu người dùng Dừng/Hủy phiên ghi trong lúc
@@ -2380,15 +2402,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } catch (openError) {
             console.error('[handleFileSelected] convert ảnh → PDF lỗi:', openError);
             if (fileOpeningAttemptRef.current === attempt) {
-                setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+                setError(formatFileOpeningError(
+                    openError,
+                    t('tabs.imposition:khong_doc_duoc_file_anh'),
+                ));
                 settleFileOpeningAttempt(attempt, 'error');
             }
             return;
         }
         if (fileOpeningAttemptRef.current !== attempt) return;
-        // Đổi file trong Workspace dùng stale-while-revalidate: giữ trang đang xem
-        // trong lúc PPE dựng trang mới, sau đó swap thẳng sang frame đã decode.
-        await primeViewerFirstFrame(selectedFile);
+        // Đổi file dùng stale-while-revalidate nhưng chỉ nhường grace ngắn;
+        // frame đến muộn vẫn được cache cho Viewer sau khi Workspace đã mở.
+        await waitForViewerFirstFrameGrace(primeViewerFirstFrame(selectedFile));
         if (fileOpeningAttemptRef.current !== attempt) return;
         setFile(selectedFile);
         setOriginalFileName(selectedFile.name);
@@ -2434,7 +2459,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         if (allFiles && allFiles.length > 1 && onSpawnTab) {
             for (let i = 1; i < allFiles.length; i++) {
-                onSpawnTab(allFiles[i]);
+                onSpawnTab(allFiles[i], buildSourceTabOptions());
             }
         }
     }, [
@@ -3366,15 +3391,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // Đọc file MỚI NHẤT từ store để mọi quyết định lưu (path/tên/bytes) trỏ đúng
         // Working_File đã bake op. Non-edit: getState().file === file (không đổi).
         const curFile: File | null = (store?.getState().file as File | null) || file;
-        let targetBlob: Blob | null = curFile;
-        const targetName = curFile ? curFile.name : 'Document.pdf';
+        if (!curFile) return false;
+        let targetBlob: Blob = curFile;
+        const targetName = curFile.name;
         let didBake = false;  // có bake edits/VDP vào blob mới hay không
 
-        if (!targetBlob) return false;
-
-        // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
-        // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
-        const isGeneratedResult = !!(curFile as WorkspaceFileLike)?.isGenerated;
         // path chỉ là file tạm backend (<uuid>.pdf) do polyfill gán để render → KHÔNG
         // được coi là đích lưu thật. Bắt buộc hỏi vị trí lưu (tránh ghi đè temp + đổi
         // tên tab thành chuỗi uuid). Phòng thủ 2 lớp: cờ isTempUploadPath HOẶC path nằm
@@ -3391,8 +3412,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             : false;
 
         // Nếu có visual edits (xoay/sắp trang) → bake vào blob để lưu.
+        const savePlan = planWorkspacePdfSave(curFile, {
+            forceSaveAs: effectiveSaveAs,
+            isTransientPath: isTempUploadPath,
+            hasRotationEdits: _hasRot,
+            hasOrderEdits: _hasReorder,
+        });
+
         // KHÔNG commitWorkingFile (tránh đổi tên "Edited_" + race set isSaved=false).
-        if (!isGeneratedResult && (_hasRot || _hasReorder)) {
+        if (savePlan.shouldBake) {
             setIsProcessing(true);
             setProcessStatus(t('tabs.imposition:dang_ap_dung_thay_doi_va_luu'));
             try {
@@ -3400,6 +3428,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (editedBlob) {
                     targetBlob = editedBlob;
                     didBake = true;
+                } else {
+                    throw new Error('Không nhận được dữ liệu PDF sau khi áp dụng thay đổi trang.');
                 }
             } catch (err: unknown) {
                 setError(t('tabs.imposition:loi_khi_ap_dung_sua_doi') + errorMessage(err));
@@ -3418,16 +3448,24 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         // Cập nhật in-memory sau khi lưu thành công: bake blob mới (giữ TÊN GỐC),
         // xoá visual edits/VDP đã bake, đánh dấu ĐÃ LƯU (không còn dirty).
-        const _bakeInMemory = (blob: Blob, name: string, path: string | null) => {
-            const bf = new File([blob], name, { type: 'application/pdf' });
-            if (path) {
-                try { Object.defineProperty(bf, 'path', { value: path }); } catch { /* ignore */ }
-            }
-            setFile(bf);
-            if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
-            setPdfUrl(URL.createObjectURL(blob));
-            setFileSizeStr((blob.size / (1024 * 1024)).toFixed(2) + ' MB');
+        const _publishSavedRevision = (
+            blob: Blob,
+            name: string,
+            path: string | null,
+            pathRebaseOnly = false,
+        ) => {
+            const savedRevision = createSavedWorkspaceRevision(blob, name, {
+                path: path ?? undefined,
+                size: blob.size || curFile.size,
+                pathRebaseOnly,
+            });
+            setFile(savedRevision);
+            setOriginalFileName(name);
+            if (pdfUrl?.startsWith('blob:')) URL.revokeObjectURL(pdfUrl);
+            setPdfUrl(path ? localFileUrl(path) : URL.createObjectURL(blob));
+            setFileSizeStr(((blob.size || curFile.size) / (1024 * 1024)).toFixed(2) + ' MB');
             setViewerPageOrder(undefined);
+            setViewerPageInstanceIds(undefined);
             setViewerPageRotations(undefined);
             setViewerDirty(false);
             // KHÔNG xoá vdpFields/selection ở đây: giữ lớp phủ field VDP để người dùng
@@ -3447,12 +3485,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const atomicWrite = (p: string, data: Uint8Array) =>
                     invoke('write_file_atomic', { path: p, contents: data });
                 
-                let path: string | null = null;
-                // File kết quả sinh sẵn (VDP/batch) nằm ở thư mục tạm + blob in-memory chỉ
-                // là placeholder → KHÔNG ghi đè vào temp, luôn hỏi vị trí lưu.
-                if (!effectiveSaveAs && (curFile as WorkspaceFileLike)?.path && !isGeneratedResult && !isTempUploadPath) {
-                    path = (curFile as WorkspaceFileLike).path ?? null; // Overwrite original
-                } else {
+                let path: string | null = savePlan.overwritePath;
+                if (!path) {
                     path = await save({
                         filters: [{ name: 'PDF', extensions: ['pdf'] }],
                         defaultPath: targetName,
@@ -3461,53 +3495,78 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 }
 
                 if (path) {
-                    // Lưu đè đúng file nguồn mà không có gì để bake → đã là chính nó,
-                    // bỏ qua (đặt TRƯỚC khi đọc bytes để không đọc thừa file lớn qua IPC).
-                    if (path === (curFile as WorkspaceFileLike)?.path && !didBake) {
-                        const fileName = path.split(/[\\/]/).pop() || targetName;
+                    // FILEIO (audit 2026-08-26 §FILE.A4): mọi quyết định của bước ghi nằm
+                    // trong MỘT hàm thuần `planWorkspaceSaveWrite`, thứ tự cố định: reuse
+                    // source sạch → từ chối đích artifact tạm → copy đĩa→đĩa → ghi bytes.
+                    // Trước đây reuse kiểm tại call site còn chặn artifact kiểm trong
+                    // `performWrite`, tức thứ tự rải hai chỗ; chỉ cần một lần chèn nhánh sai
+                    // vị trí là lệnh copy tự thay chính artifact tạm rồi báo thành công, và
+                    // luồng lưu gắn identity "nguồn sạch" lên nó — provenance bị rửa trắng,
+                    // vé thuê artifact bị tước, vòng dọn được phép xoá đúng file người dùng
+                    // vừa tưởng là đã lưu.
+                    const runSaveWrite = (destPath: string) => executeWorkspaceSaveWrite(
+                        planWorkspaceSaveWrite({
+                            file: curFile,
+                            destPath,
+                            isTransientPath: isTempUploadPath,
+                            didBake,
+                        }),
+                        {
+                            // KHÔNG bake và bytes đã nằm trên đĩa (kết quả bình sách/VDP có
+                            // thể hàng trăm MB) → COPY thẳng đĩa→đĩa qua Rust, không nạp bytes
+                            // vào JS. Đường cũ đọc cả file vào Uint8Array rồi đẩy qua IPC cho
+                            // write_file_atomic → "RangeError: Invalid array length" khi
+                            // serialize khối khổng lồ (vd booklet 338MB).
+                            copyOnDisk: async (source, dest) => {
+                                await invoke('copy_file_atomic', { source, path: dest });
+                            },
+                            writeBytes: async (dest, bytes) => {
+                                await atomicWrite(dest, bytes);
+                            },
+                            // Cổng lười: chỉ nhánh ghi bytes mới gọi, nên nhánh từ chối không
+                            // bao giờ nạp file lớn vào WebView chỉ để rồi bỏ đi.
+                            readBytes: async () => new Uint8Array(await targetBlob.arrayBuffer()),
+                        },
+                    );
+                    // Công bố revision đã lưu tại đích. Chỉ chạy cho `written` và `reused`.
+                    const publishSavedAt = (blob: Blob, destPath: string, pathRebaseOnly: boolean) => {
+                        const fileName = destPath.split(/[\\/]/).pop() || targetName;
+                        _publishSavedRevision(blob, fileName, destPath, pathRebaseOnly);
                         setIsSaved(true);
                         onTitleChange?.(fileName);
-                        return true;
-                    }
-                    // Ghi ra path đích. Nếu KHÔNG bake và file đã nằm trên đĩa (kết quả
-                    // bình sách/VDP là file lớn hàng trăm MB) → COPY thẳng đĩa→đĩa qua Rust,
-                    // KHÔNG đọc bytes vào JS. Đường cũ đọc toàn bộ file vào Uint8Array rồi
-                    // truyền qua IPC cho write_file_atomic → "RangeError: Invalid array length"
-                    // khi serialize khối bytes khổng lồ (vd booklet 338MB). Ngược lại (đã bake
-                    // edits/VDP, hoặc file chỉ có blob in-memory) → ghi bytes như cũ.
-                    const sourceDiskPath: string | null =
-                        (!didBake && (curFile as WorkspaceFileLike)?.path) ? ((curFile as WorkspaceFileLike).path ?? null) : null;
-                    const performWrite = async (destPath: string) => {
-                        if (sourceDiskPath) {
-                            const { invoke } = await import('@tauri-apps/api/core');
-                            await invoke('copy_file_atomic', { source: sourceDiskPath, path: destPath });
-                        } else {
-                            const ab = await targetBlob.arrayBuffer();
-                            await atomicWrite(destPath, new Uint8Array(ab));
+                    };
+                    // Từ chối đích artifact tạm là GIÁ TRỊ TRẢ VỀ, không phải throw. Nếu nó
+                    // nổi thành exception thì lọt vào `catch` lỗi phạm vi ghi bên dưới, và
+                    // chốt chặn chỉ còn dựa vào việc câu thông báo tình cờ không chứa
+                    // `not allowed` — sửa câu chữ là mất chốt, người dùng lại được mở hộp
+                    // thoại chọn vị trí như thể đây là lỗi quyền (Requirement 1.3).
+                    const applySaveOutcome = (
+                        outcome: WorkspaceSaveWriteOutcome,
+                        destPath: string,
+                    ): boolean => {
+                        if (outcome.kind === 'rejected') {
+                            // KHÔNG publish revision, KHÔNG đổi isSaved, KHÔNG đổi tiêu đề
+                            // tab: working file giữ nguyên provenance và vé thuê artifact để
+                            // vòng dọn không xoá file đang dùng (Requirement 1.4, 2.3, 2.4).
+                            setError(t(outcome.messageKey));
+                            return false;
                         }
+                        if (outcome.kind === 'reused') {
+                            // Đích chính là source sạch đang mở và không có gì để bake → đã là
+                            // chính nó, chỉ rebase path. `reused` chỉ sinh ra khi `didBake` sai
+                            // nên publish thẳng `curFile`, không đọc lại bytes qua IPC.
+                            publishSavedAt(curFile, destPath, true);
+                            return true;
+                        }
+                        publishSavedAt(targetBlob, destPath, !didBake);
+                        return true;
                     };
                     try {
-                        await performWrite(path);
-                        const fileName = path.split(/[\\/]/).pop() || targetName;
-                        if (didBake) {
-                            _bakeInMemory(targetBlob, fileName, path);
-                        } else if (isTempUploadPath) {
-                            // File tách/sinh trong bộ nhớ vừa được lưu ra vị trí THẬT:
-                            // trỏ `file` sang path mới + bỏ cờ tạm để Ctrl+S sau ghi đè
-                            // đúng file người dùng (không hỏi lại, không dùng path uuid).
-                            const rebased = new File([targetBlob], fileName, { type: 'application/pdf' });
-                            try { Object.defineProperty(rebased, 'path', { value: path }); } catch { /* ignore */ }
-                            // Chỉ ĐỔI PATH (copy đĩa→đĩa), nội dung + pdfUrl KHÔNG đổi → cờ này
-                            // cho usePdfLoader RETURN SỚM (như __editCommit): không setNumPages(0),
-                            // không nạp lại 14 trang + thumbnail vô ích sau khi lưu.
-                            try { Object.defineProperty(rebased, '__pathRebaseOnly', { value: true }); } catch { /* ignore */ }
-                            setFile(rebased);
-                            setOriginalFileName(fileName);
-                        }
-                        setIsSaved(true);
-                        onTitleChange?.(fileName);
-                        return true;
+                        return applySaveOutcome(await runSaveWrite(path), path);
                     } catch (writeErr: unknown) {
+                        // Lỗi phạm vi ghi vẫn từ Rust dưới dạng chuỗi: giữ NGUYÊN nhánh mở
+                        // lại hộp thoại chọn vị trí (Requirement 1.5). Nhánh từ chối artifact
+                        // không đi qua đây nên không thể kích hoạt hộp thoại này.
                         const writeErrorText = errorMessage(writeErr);
                         if (writeErrorText.includes('forbidden path') || writeErrorText.includes('not allowed')) {
                             const fallbackPath = await save({
@@ -3516,12 +3575,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 title: 'Select save location (Original path restricted)'
                             });
                             if (fallbackPath) {
-                                await performWrite(fallbackPath);
-                                const fileName = fallbackPath.split(/[\\/]/).pop() || targetName;
-                                if (didBake) _bakeInMemory(targetBlob, fileName, fallbackPath);
-                                setIsSaved(true);
-                                onTitleChange?.(fileName);
-                                return true;
+                                // Lượt fallback cũng đi qua plan: đích chọn lại vẫn có thể
+                                // trùng artifact tạm và vẫn phải bị chặn.
+                                return applySaveOutcome(await runSaveWrite(fallbackPath), fallbackPath);
                             }
                             return false; // user huỷ fallback
                         } else {
@@ -3544,7 +3600,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     URL.revokeObjectURL(url);
                 }, 100);
 
-                if (didBake) _bakeInMemory(targetBlob, targetName, null);
+                _publishSavedRevision(targetBlob, targetName, null);
                 setIsSaved(true);
                 onTitleChange?.(targetName);
                 return true;
@@ -3553,7 +3609,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setError(t('tabs.imposition:khong_the_luu_file') + errorMessage(e));
             return false;
         }
-    }, [editSession, store, file, viewerPageRotations, viewerPageOrder, isViewerOrderIdentityForSource, setError, t, setIsProcessing, setProcessStatus, applyAcrobatEdits, setFile, pdfUrl, setPdfUrl, setFileSizeStr, setViewerPageOrder, setViewerPageRotations, setViewerDirty, setSelectionFileId, setHiddenObjectIds, setLockedObjectIds, setIsSaved, onTitleChange, setOriginalFileName, documentWindow?.saveAsOnly]);
+    }, [editSession, store, file, viewerPageRotations, viewerPageOrder, isViewerOrderIdentityForSource, setError, t, setIsProcessing, setProcessStatus, applyAcrobatEdits, setFile, pdfUrl, setPdfUrl, setFileSizeStr, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty, setSelectionFileId, setHiddenObjectIds, setLockedObjectIds, setIsSaved, onTitleChange, setOriginalFileName, documentWindow?.saveAsOnly]);
 
     useEffect(() => {
         const handleTriggerSave = async (e: Event) => {
@@ -4340,7 +4396,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 if (path) {
                                                                     Object.defineProperty(newFile, 'path', { value: path });
                                                                 }
-                                                                Object.defineProperty(newFile, 'isGenerated', { value: true });
+                                                                markGeneratedWorkspaceFile(newFile);
                                                                 if (onSpawnTab) {
                                                                     onSpawnTab(newFile);
                                                                 }
@@ -4385,7 +4441,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 if (path) {
                                                                     Object.defineProperty(newFile, 'path', { value: path });
                                                                 }
-                                                                Object.defineProperty(newFile, 'isGenerated', { value: true });
+                                                                markGeneratedWorkspaceFile(newFile);
                                                                 if (onSpawnTab) {
                                                                     onSpawnTab(newFile);
                                                                 }
@@ -4431,7 +4487,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 if (path) {
                                                                     Object.defineProperty(newFile, 'path', { value: path });
                                                                 }
-                                                                Object.defineProperty(newFile, 'isGenerated', { value: true });
+                                                                markGeneratedWorkspaceFile(newFile);
                                                                 if (onSpawnTab) onSpawnTab(newFile);
                                                             }}
                                                         />
@@ -4477,17 +4533,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             <div
                                                 className="relative h-full min-w-0 flex-1 overflow-hidden"
                                             >
+                                                {/* UIUX (feedback 2026-08-27 §MENU.PARITY): đường biên của catalog do shell hoặc divider đảm nhiệm; không vẽ lặp border. */}
                                                 <div
                                                     inert={!displayedIsSidebarOpen}
                                                     aria-hidden={!displayedIsSidebarOpen}
-                                                    className={`absolute inset-y-0 right-0 z-10 flex flex-col overflow-hidden border-l border-slate-200 bg-[#f8fafc] transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none dark:border-zinc-800 dark:bg-zinc-900 ${displayedIsSidebarOpen ? 'pointer-events-auto translate-x-0 opacity-100' : 'pointer-events-none translate-x-1 opacity-0'}`}
+                                                    className={`absolute inset-y-0 right-0 z-10 flex flex-col overflow-hidden bg-slate-50 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none dark:bg-[#121212] ${displayedIsSidebarOpen ? 'pointer-events-auto translate-x-0 opacity-100' : 'pointer-events-none translate-x-1 opacity-0'}`}
                                                     style={{
                                                         width: `${displayedIsSidebarOpen
                                                             ? displayedToolMenuLayout.catalogWidth
                                                             : sidebarWidth}px`,
                                                     }}
                                                 >
-                                                        <div className="flex h-11 w-full shrink-0 items-center gap-2 border-b border-black/5 px-2 dark:border-white/10">
+                                                        <div className="flex h-11 w-full shrink-0 items-center justify-end border-b border-slate-200 px-2 dark:border-zinc-800">
                                                             <button
                                                                 type="button"
                                                                 onClick={collapseWorkspaceSidebar}
@@ -4499,9 +4556,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
                                                                 </svg>
                                                             </button>
-                                                            <span className="min-w-0 truncate text-[11px] font-black uppercase tracking-widest text-slate-500 dark:text-zinc-400">
-                                                                {t('tabs.imposition:cong_cu')}
-                                                            </span>
                                                         </div>
                                                         <ToolMenuList
                                                             setActiveTool={setActiveDashboardTool}

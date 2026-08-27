@@ -7,6 +7,7 @@ const MIN_VIEWER_DPI = 24;
 const MAX_VIEWER_DPI = 9600;
 const DEFAULT_PROOF_IDENTITY = 'show:all|paper:0|black:0|background:profile';
 const UNUSED_FRAME_TTL_MS = 60_000;
+export const VIEWER_FIRST_FRAME_GRACE_MS = 250;
 
 interface ViewerBootstrapPayload {
   numPages?: unknown;
@@ -350,6 +351,26 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
   })();
   requestsByFile.set(file, request);
   return request;
+}
+
+/**
+ * PERF (audit 2026-08-26 §FILE.E2): chỉ nhường một khoảng ngắn cho frame đầu.
+ * Hết grace thì Viewer mở ngay; không hủy request để kết quả muộn vẫn vào cache.
+ */
+export async function waitForViewerFirstFrameGrace(
+  request: Promise<unknown>,
+  graceMs = VIEWER_FIRST_FRAME_GRACE_MS,
+): Promise<boolean> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const completed = request.then(() => true, () => false);
+  const timedOut = new Promise<false>((resolve) => {
+    timeoutId = setTimeout(() => resolve(false), Math.max(0, graceMs));
+  });
+  try {
+    return await Promise.race([completed, timedOut]);
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  }
 }
 
 export function peekViewerFirstFrame(

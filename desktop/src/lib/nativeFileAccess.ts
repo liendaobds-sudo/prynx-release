@@ -20,6 +20,51 @@ interface NativeSystemFileStatPayload {
 
 const STAT_TIMEOUT = Symbol('system-file-stat-timeout');
 
+type WorkspaceFileMetadata = File & {
+  path?: string;
+  isGenerated?: boolean;
+  isTempUploadPath?: boolean;
+  __nativePathPending?: boolean;
+};
+
+export interface SavedSourceFileOptions extends FilePropertyBag {
+  path?: string;
+  size?: number;
+}
+
+/** FILEIO (audit 2026-08-26 §FILE.A4): provenance kết quả không được suy từ tên file. */
+export function isGeneratedWorkspaceFile(value: unknown): value is File & { isGenerated: true } {
+  return value instanceof File && (value as WorkspaceFileMetadata).isGenerated === true;
+}
+
+/** Gắn provenance cho file do công cụ sinh; configurable để vòng đời save rebase được rõ ràng. */
+export function markGeneratedWorkspaceFile<T extends File>(file: T): T & { isGenerated: true } {
+  if ((file as WorkspaceFileMetadata).isGenerated === true) return file as T & { isGenerated: true };
+  Object.defineProperty(file, 'isGenerated', {
+    value: true,
+    configurable: true,
+  });
+  return file as T & { isGenerated: true };
+}
+
+/**
+ * Tạo identity nguồn mới sau Save/đọc theo path. File mới chỉ nhận metadata vật lý,
+ * không sao chép cờ generated/temp/pending từ identity làm việc trước đó.
+ */
+export function createSavedSourceFile(
+  parts: BlobPart[],
+  name: string,
+  options: SavedSourceFileOptions = {},
+): File {
+  const { path, size, ...fileOptions } = options;
+  const file = new File(parts, name, fileOptions);
+  if (path) Object.defineProperty(file, 'path', { value: path, configurable: true });
+  if (Number.isFinite(size) && Number(size) >= 0) {
+    Object.defineProperty(file, 'size', { value: Number(size), configurable: true });
+  }
+  return file;
+}
+
 export async function statNativeSystemFile(
   path: string,
   deadlineMs = SYSTEM_FILE_STAT_DEADLINE_MS,
@@ -62,9 +107,11 @@ export async function createPathBackedFile(
 ): Promise<{ file: File; stat: NativeFileStatResult }> {
   const name = path.split('\\').pop() || path.split('/').pop() || 'unknown';
   const stat = await statNativeSystemFile(path, deadlineMs);
-  const file = new File([], name, { type: systemFileMime(name) });
-  Object.defineProperty(file, 'path', { value: path });
-  Object.defineProperty(file, 'size', { value: stat.size });
+  const file = createSavedSourceFile([], name, {
+    type: systemFileMime(name),
+    path,
+    size: stat.size,
+  });
   return { file, stat };
 }
 

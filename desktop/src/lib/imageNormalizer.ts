@@ -9,6 +9,35 @@ export {
     type SupportedImageExtension,
 } from './imageFileTypes';
 
+type RasterFormat = 'jpeg' | 'png' | 'webp' | 'bmp' | 'tiff' | 'unknown';
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
+
+function hasPngSignature(bytes: Uint8Array): boolean {
+    return PNG_SIGNATURE.every((value, index) => bytes[index] === value);
+}
+
+function detectRasterFormat(bytes: Uint8Array): RasterFormat {
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+        return 'jpeg';
+    }
+    if (bytes.length >= PNG_SIGNATURE.length && hasPngSignature(bytes)) return 'png';
+    if (bytes.length >= 12
+        && ascii(bytes, 0, 4) === 'RIFF'
+        && ascii(bytes, 8, 4) === 'WEBP') return 'webp';
+    if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return 'bmp';
+    if (bytes.length >= 4 && (
+        (bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00)
+        || (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0x00 && bytes[3] === 0x2a)
+    )) return 'tiff';
+    return 'unknown';
+}
+
+function shortErrorText(error: unknown): string {
+    const text = error instanceof Error ? error.message : String(error);
+    return text.trim().slice(0, 240) || 'lỗi không xác định';
+}
+
 /**
  * Normalizes an arbitrary image file (e.g. CMYK JPEG, TIFF) into standard RGB PNG bytes.
  * This ensures that pdf-lib and Chrome's createImageBitmap can decode it safely.
@@ -16,24 +45,27 @@ export {
  * @returns A promise resolving to the standard PNG bytes
  */
 export async function normalizeImageToPngBytes(bytes: ArrayBuffer | Uint8Array): Promise<Uint8Array> {
-    if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
-        // Fallback for non-Tauri environment (browser fallback)
-        return new Uint8Array(bytes);
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (typeof window === 'undefined'
+        || !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+        throw new Error(
+            'Định dạng ảnh này cần bộ giải mã của ứng dụng desktop; không thể âm thầm dùng bytes gốc.',
+        );
     }
     try {
-        const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-        // Invoke Rust backend to decode the image safely
-        const pngBytes: Uint8Array = await invoke('normalize_image_bytes', { bytes: u8 });
+        const response = await invoke<Uint8Array | ArrayBuffer>('normalize_image_bytes', { bytes: u8 });
+        const pngBytes = response instanceof Uint8Array ? response : new Uint8Array(response);
+        if (!hasPngSignature(pngBytes)) {
+            throw new Error('Bộ giải mã ảnh trả kết quả không phải PNG hợp lệ.');
+        }
         return pngBytes;
-    } catch (e) {
-        console.error("Failed to normalize image via Rust backend, falling back to original", e);
-        return new Uint8Array(bytes);
+    } catch (error) {
+        // FILEIO (audit 2026-08-26 §IMG.B4): không trả bytes nguồn sai contract rồi
+        // để embedPng che lỗi thật bằng “not a PNG”. Giữ stage + cause để UI chẩn đoán.
+        throw new Error(`Bộ giải mã ảnh không xử lý được dữ liệu: ${shortErrorText(error)}`, {
+            cause: error,
+        });
     }
-}
-
-function isJpgName(name: string): boolean {
-    const n = (name || '').toLowerCase();
-    return n.endsWith('.jpg') || n.endsWith('.jpeg');
 }
 
 const MAX_EMBEDDED_ICC_BYTES = 16 * 1024 * 1024;
@@ -49,7 +81,17 @@ function ascii(bytes: Uint8Array, offset: number, length: number): string {
     return String.fromCharCode(...bytes.subarray(offset, offset + length));
 }
 
-function validateRgbIccProfile(profile: Uint8Array): Uint8Array {
+type IccProfileDescriptor = {
+    bytes: Uint8Array;
+    components: 1 | 3 | 4;
+    deviceColorSpace: 'DeviceGray' | 'DeviceRGB' | 'DeviceCMYK';
+};
+
+/**
+ * Kiểm tra header ICC và giữ lại hệ màu để PDF không gắn nhầm số kênh.
+ * JPEG CMYK là dữ liệu hợp lệ; profile CMYK phải đi cùng ICCBased /N 4.
+ */
+function validateIccProfile(profile: Uint8Array): IccProfileDescriptor {
     if (profile.byteLength < 128) {
         throw new Error('ICC trong ảnh bị thiếu header; không thể tạo PDF quản lý màu an toàn.');
     }
@@ -60,12 +102,19 @@ function validateRgbIccProfile(profile: Uint8Array): Uint8Array {
     if (ascii(profile, 36, 4) !== 'acsp') {
         throw new Error('ICC trong ảnh không có chữ ký hợp lệ; đã dừng để tránh làm sai màu in.');
     }
-    if (ascii(profile, 16, 4).trim().toUpperCase() !== 'RGB') {
-        // pdf-lib giải PNG thành ba kênh RGB. Gắn Gray/LAB/CMYK lên ba kênh đó sẽ
-        // tạo PDF sai contract; backend phải color-convert trước khi fallback này chạy.
-        throw new Error('ICC của ảnh không phải RGB; cần backend chuyển màu trước khi tạo PDF.');
+    const colorSpace = ascii(profile, 16, 4).trim().toUpperCase();
+    if (colorSpace === 'GRAY') {
+        return { bytes: profile.slice(0, declaredSize), components: 1, deviceColorSpace: 'DeviceGray' };
     }
-    return profile.slice(0, declaredSize);
+    if (colorSpace === 'RGB') {
+        return { bytes: profile.slice(0, declaredSize), components: 3, deviceColorSpace: 'DeviceRGB' };
+    }
+    if (colorSpace === 'CMYK') {
+        return { bytes: profile.slice(0, declaredSize), components: 4, deviceColorSpace: 'DeviceCMYK' };
+    }
+    // ICC LAB/XYZ và các profile khác không thể gắn lên XObject raster hiện tại
+    // mà vẫn bảo toàn hợp đồng số kênh; dừng rõ ràng thay vì âm thầm đổi màu.
+    throw new Error(`ICC của ảnh dùng hệ màu ${colorSpace || 'không rõ'} chưa được hỗ trợ.`);
 }
 
 async function inflateZlibBounded(compressed: Uint8Array): Promise<Uint8Array> {
@@ -100,12 +149,12 @@ async function inflateZlibBounded(compressed: Uint8Array): Promise<Uint8Array> {
     return output;
 }
 
-async function readPngRgbIccProfile(bytes: Uint8Array): Promise<Uint8Array | null> {
+async function readPngRgbIccProfile(bytes: Uint8Array): Promise<IccProfileDescriptor | null> {
     const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     if (bytes.byteLength < 8 || signature.some((value, index) => bytes[index] !== value)) return null;
 
     let offset = 8;
-    let foundProfile: Uint8Array | null = null;
+    let foundProfile: IccProfileDescriptor | null = null;
     while (offset + 12 <= bytes.byteLength) {
         const length = readUint32BE(bytes, offset);
         const type = ascii(bytes, offset + 4, 4);
@@ -128,7 +177,12 @@ async function readPngRgbIccProfile(bytes: Uint8Array): Promise<Uint8Array | nul
             if (compressed.byteLength === 0 || compressed.byteLength > MAX_EMBEDDED_ICC_BYTES) {
                 throw new Error('Dữ liệu ICC nén trong PNG không hợp lệ.');
             }
-            foundProfile = validateRgbIccProfile(await inflateZlibBounded(compressed));
+            foundProfile = validateIccProfile(await inflateZlibBounded(compressed));
+            // pdf-lib luôn giải PNG thành XObject RGB; profile Gray/CMYK không thể
+            // gắn lên ba kênh đó mà vẫn đúng màu.
+            if (foundProfile.components !== 3) {
+                throw new Error('ICC của PNG không phải RGB; đã dừng để tránh làm sai màu.');
+            }
         }
         offset = dataEnd + 4;
         if (type === 'IEND') break;
@@ -136,7 +190,7 @@ async function readPngRgbIccProfile(bytes: Uint8Array): Promise<Uint8Array | nul
     return foundProfile;
 }
 
-function readJpegRgbIccProfile(bytes: Uint8Array): Uint8Array | null {
+function readJpegIccProfile(bytes: Uint8Array): IccProfileDescriptor | null {
     if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
     const chunks = new Map<number, Uint8Array>();
     let expectedChunks = 0;
@@ -179,25 +233,20 @@ function readJpegRgbIccProfile(bytes: Uint8Array): Uint8Array | null {
         profile.set(chunk, profileOffset);
         profileOffset += chunk.byteLength;
     }
-    return validateRgbIccProfile(profile);
+    return validateIccProfile(profile);
 }
 
-async function readEmbeddedRgbIccProfile(bytes: Uint8Array): Promise<Uint8Array | null> {
-    return await readPngRgbIccProfile(bytes) ?? readJpegRgbIccProfile(bytes);
+async function readEmbeddedIccProfile(bytes: Uint8Array): Promise<IccProfileDescriptor | null> {
+    return await readPngRgbIccProfile(bytes) ?? readJpegIccProfile(bytes);
 }
 
-async function attachRgbIccProfile(
+async function attachIccProfile(
     doc: PDFDocument,
     image: PDFImage,
-    profile: Uint8Array | null,
+    profile: IccProfileDescriptor | null,
 ): Promise<void> {
     if (!profile) return;
     const { PDFName, PDFRawStream } = await import('pdf-lib');
-    const iccStream = doc.context.flateStream(profile, {
-        N: 3,
-        Alternate: 'DeviceRGB',
-    });
-    const iccRef = doc.context.register(iccStream);
     // Embed trước rồi thay ColorSpace trên XObject thật; không đụng private embedder
     // của pdf-lib và vẫn giữ nguyên SMask alpha do PngEmbedder tạo.
     await image.embed();
@@ -205,6 +254,15 @@ async function attachRgbIccProfile(
     if (!(imageStream instanceof PDFRawStream)) {
         throw new Error('Không tìm thấy XObject ảnh để gắn ICC profile.');
     }
+    const imageColorSpace = imageStream.dict.lookupMaybe(PDFName.of('ColorSpace'), PDFName);
+    if (!imageColorSpace || imageColorSpace.toString() !== `/${profile.deviceColorSpace}`) {
+        throw new Error('ICC trong ảnh không khớp số kênh dữ liệu; đã dừng để tránh làm sai màu.');
+    }
+    const iccStream = doc.context.flateStream(profile.bytes, {
+        N: profile.components,
+        Alternate: profile.deviceColorSpace,
+    });
+    const iccRef = doc.context.register(iccStream);
     imageStream.dict.set(
         PDFName.of('ColorSpace'),
         doc.context.obj(['ICCBased', iccRef]),
@@ -215,7 +273,7 @@ async function attachRgbIccProfile(
  * Nhúng bytes ảnh (JPG/PNG) vào `doc` mà GIỮ NGUYÊN nén gốc: JPEG qua embedJpg (giữ
  * luồng DCT), PNG qua embedPng (giữ Flate). Đây là điểm mấu chốt tránh phình file —
  * đường cũ decode-lại-thành-PNG rồi embedPng biến JPEG (DCT lossy, gọn) thành bitmap
- * thô → phình 10-20 lần. Chỉ khi pdf-lib ném lỗi (CMYK JPEG / biến thể không đọc được)
+ * thô → phình 10-20 lần. Chỉ khi pdf-lib ném lỗi (biến thể không đọc được)
  * mới rơi về fallback normalize→RGB PNG qua Rust.
  */
 export async function embedImagePreserveCompression(
@@ -224,27 +282,34 @@ export async function embedImagePreserveCompression(
     fileName: string,
 ): Promise<PDFImage> {
     const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    // COLOR (audit 2026-08-11 §UP.X.06): pdf-lib mặc định bỏ iCCP/APP2 ICC và
-    // ghi /DeviceRGB. Tách profile trước khi nhúng để fallback có /ICCBased /N 3.
-    const sourceIcc = await readEmbeddedRgbIccProfile(buf);
-    try {
-        const image = isJpgName(fileName) ? await doc.embedJpg(buf) : await doc.embedPng(buf);
-        await attachRgbIccProfile(doc, image, sourceIcc);
-        return image;
-    } catch (e) {
-        if (sourceIcc) {
-            throw new Error(
-                'Không thể bảo toàn ICC khi tạo PDF; kết quả ảnh vẫn được giữ để lưu riêng.',
-                { cause: e },
-            );
+    const sourceFormat = detectRasterFormat(buf);
+    // COLOR (feedback 2026-08-26 §IMG.1): pdf-lib mặc định bỏ iCCP/APP2 ICC.
+    // Giữ RGB ở /N 3 và JPEG CMYK ở /N 4 thay vì từ chối ảnh in hợp lệ.
+    const sourceIcc = await readEmbeddedIccProfile(buf);
+    if (sourceFormat === 'jpeg' || sourceFormat === 'png') {
+        try {
+            // FILEIO (audit 2026-08-26 §IMG.B6): codec theo magic bytes; tên file
+            // chỉ là nhãn UX và không được làm JPEG CMYK hợp lệ rơi vào embedPng.
+            const image = sourceFormat === 'jpeg'
+                ? await doc.embedJpg(buf)
+                : await doc.embedPng(buf);
+            await attachIccProfile(doc, image, sourceIcc);
+            return image;
+        } catch (error) {
+            if (sourceIcc) {
+                throw new Error(
+                    'Không thể bảo toàn ICC khi tạo PDF; kết quả ảnh vẫn được giữ để lưu riêng.',
+                    { cause: error },
+                );
+            }
+            console.warn('Nhúng ảnh gốc thất bại, dùng fallback normalize→PNG', fileName, error);
         }
-        console.warn('Nhúng ảnh gốc thất bại, dùng fallback normalize→PNG', e);
-        const norm = await normalizeImageToPngBytes(buf);
-        const normalizedIcc = await readEmbeddedRgbIccProfile(norm);
-        const image = await doc.embedPng(norm);
-        await attachRgbIccProfile(doc, image, normalizedIcc);
-        return image;
     }
+    const norm = await normalizeImageToPngBytes(buf);
+    const normalizedIcc = await readEmbeddedIccProfile(norm);
+    const image = await doc.embedPng(norm);
+    await attachIccProfile(doc, image, normalizedIcc);
+    return image;
 }
 
 /**
@@ -252,9 +317,13 @@ export async function embedImagePreserveCompression(
  * (px == pt, đúng bằng hành vi cũ) nên KHÔNG gây regression cho ảnh không mang DPI.
  * JPEG: đọc APP0/JFIF; PNG: đọc chunk pHYs. Bỏ qua EXIF (hiếm, dễ đọc sai → cứ trả null).
  */
-function readImageDpi(bytes: Uint8Array, isJpg: boolean): { x: number; y: number } | null {
+function readImageDpi(bytes: Uint8Array): { x: number; y: number } | null {
     try {
-        return isJpg ? readJpegJfifDpi(bytes) : readPngPhysDpi(bytes);
+        const format = detectRasterFormat(bytes);
+        if (format === 'jpeg') return readJpegJfifDpi(bytes);
+        if (format === 'png') return readPngPhysDpi(bytes);
+        if (format === 'tiff') return readTiffDpi(bytes);
+        return null;
     } catch {
         return null;
     }
@@ -265,29 +334,104 @@ function readImageDpi(bytes: Uint8Array, isJpg: boolean): { x: number; y: number
  * theo scale này giữ nguyên số pixel đầu vào trước khi Upscale; ảnh không có DPI
  * vẫn đúng quy ước cũ 1 px = 1 pt.
  */
+// `fileName` được giữ trong signature công khai để không phá caller/recipe cũ; DPI
+// nay đọc theo magic bytes nên tên không còn là nguồn quyết định.
 export function sourceImagePixelsPerPdfPoint(
     bytes: ArrayBuffer | Uint8Array,
     fileName: string,
 ): number {
+    void fileName;
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const dpi = readImageDpi(data, isJpgName(fileName));
+    const dpi = readImageDpi(data);
     if (!dpi) return 1;
     const density = Math.max(dpi.x, dpi.y) / 72;
     return Number.isFinite(density) && density > 0 ? density : 1;
 }
 
 function readJpegJfifDpi(b: Uint8Array): { x: number; y: number } | null {
-    // SOI = FFD8, APP0 = FFE0 ngay sau, rồi "JFIF\0"
-    if (b.length < 18 || b[0] !== 0xff || b[1] !== 0xd8) return null;
-    if (b[2] !== 0xff || b[3] !== 0xe0) return null;
-    if (b[6] !== 0x4a || b[7] !== 0x46 || b[8] !== 0x49 || b[9] !== 0x46 || b[10] !== 0x00) return null;
-    const units = b[13]; // 0 = không đơn vị (chỉ tỉ lệ), 1 = dpi, 2 = dpcm
-    const xd = (b[14] << 8) | b[15];
-    const yd = (b[16] << 8) | b[17];
-    if (xd <= 0 || yd <= 0) return null;
-    if (units === 1) return { x: xd, y: yd };
-    if (units === 2) return { x: xd * 2.54, y: yd * 2.54 };
-    return null; // units === 0: chỉ aspect ratio, không phải DPI thật
+    // FILEIO (audit 2026-08-26 §IMG.B2): APP2 ICC/EXIF được phép đứng trước APP0.
+    if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
+    let offset = 2;
+    while (offset < b.length) {
+        if (b[offset] !== 0xff) return null;
+        while (offset < b.length && b[offset] === 0xff) offset += 1;
+        if (offset >= b.length) return null;
+        const marker = b[offset];
+        offset += 1;
+        if (marker === 0xda || marker === 0xd9) return null;
+        if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+        if (marker === 0x00 || offset + 2 > b.length) return null;
+        const length = (b[offset] << 8) | b[offset + 1];
+        if (length < 2 || offset + length > b.length) return null;
+        const dataStart = offset + 2;
+        const dataLength = length - 2;
+        if (marker === 0xe0 && dataLength >= 14 && ascii(b, dataStart, 5) === 'JFIF\0') {
+            const units = b[dataStart + 7];
+            const densityX = (b[dataStart + 8] << 8) | b[dataStart + 9];
+            const densityY = (b[dataStart + 10] << 8) | b[dataStart + 11];
+            if (densityX <= 0 || densityY <= 0) return null;
+            if (units === 1) return { x: densityX, y: densityY };
+            if (units === 2) return { x: densityX * 2.54, y: densityY * 2.54 };
+            return null;
+        }
+        offset += length;
+    }
+    return null;
+}
+
+function readTiffDpi(b: Uint8Array): { x: number; y: number } | null {
+    if (b.length < 8) return null;
+    const littleEndian = b[0] === 0x49 && b[1] === 0x49;
+    const bigEndian = b[0] === 0x4d && b[1] === 0x4d;
+    if (!littleEndian && !bigEndian) return null;
+
+    const read16 = (offset: number): number | null => {
+        if (offset < 0 || offset + 2 > b.length) return null;
+        return littleEndian
+            ? b[offset] | (b[offset + 1] << 8)
+            : (b[offset] << 8) | b[offset + 1];
+    };
+    const read32 = (offset: number): number | null => {
+        if (offset < 0 || offset + 4 > b.length) return null;
+        return littleEndian
+            ? (b[offset] + b[offset + 1] * 0x100 + b[offset + 2] * 0x10000 + b[offset + 3] * 0x1000000) >>> 0
+            : (b[offset] * 0x1000000 + b[offset + 1] * 0x10000 + b[offset + 2] * 0x100 + b[offset + 3]) >>> 0;
+    };
+    if (read16(2) !== 42) return null;
+    const ifdOffset = read32(4);
+    if (ifdOffset === null) return null;
+    const entryCount = read16(ifdOffset);
+    if (entryCount === null || entryCount > 4096) return null;
+
+    let xResolution: number | null = null;
+    let yResolution: number | null = null;
+    let resolutionUnit = 2; // TIFF 6.0: thiếu tag ResolutionUnit mặc định là inch.
+    for (let index = 0; index < entryCount; index++) {
+        const entryOffset = ifdOffset + 2 + index * 12;
+        const tag = read16(entryOffset);
+        const type = read16(entryOffset + 2);
+        const count = read32(entryOffset + 4);
+        if (tag === null || type === null || count === null || entryOffset + 12 > b.length) return null;
+        if ((tag === 282 || tag === 283) && type === 5 && count === 1) {
+            const valueOffset = read32(entryOffset + 8);
+            if (valueOffset === null) return null;
+            const numerator = read32(valueOffset);
+            const denominator = read32(valueOffset + 4);
+            if (numerator === null || denominator === null || denominator === 0) return null;
+            const value = numerator / denominator;
+            if (!Number.isFinite(value) || value <= 0) return null;
+            if (tag === 282) xResolution = value;
+            else yResolution = value;
+        } else if (tag === 296 && type === 3 && count === 1) {
+            const unit = read16(entryOffset + 8);
+            if (unit === null) return null;
+            resolutionUnit = unit;
+        }
+    }
+    if (xResolution === null || yResolution === null || resolutionUnit === 1) return null;
+    if (resolutionUnit === 2) return { x: xResolution, y: yResolution };
+    if (resolutionUnit === 3) return { x: xResolution * 2.54, y: yResolution * 2.54 };
+    return null;
 }
 
 function readPngPhysDpi(b: Uint8Array): { x: number; y: number } | null {
@@ -324,8 +468,8 @@ function readPngPhysDpi(b: Uint8Array): { x: number; y: number } | null {
  * → mặc định 72 (px == pt) giữ nguyên hành vi cũ. Nhờ vậy ảnh scan 300 DPI (2480px) ra
  * đúng khổ A4 (~595pt) thay vì trang khổng lồ 2480pt.
  */
-function imagePagePoints(img: PDFImage, bytes: Uint8Array, isJpg: boolean): [number, number] {
-    const dpi = readImageDpi(bytes, isJpg);
+function imagePagePoints(img: PDFImage, bytes: Uint8Array): [number, number] {
+    const dpi = readImageDpi(bytes);
     const dpiX = dpi && dpi.x > 0 ? dpi.x : 72;
     const dpiY = dpi && dpi.y > 0 ? dpi.y : 72;
     return [(img.width / dpiX) * 72, (img.height / dpiY) * 72];
@@ -343,7 +487,7 @@ export async function appendImagePageToPdfDoc(
 ): Promise<PDFPage> {
     const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const img = await embedImagePreserveCompression(doc, buf, fileName);
-    const [pw, ph] = imagePagePoints(img, buf, isJpgName(fileName));
+    const [pw, ph] = imagePagePoints(img, buf);
     const page = doc.addPage([pw, ph]);
     page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
     return page;
@@ -425,7 +569,7 @@ export async function addImagePageToDoc(
 ): Promise<void> {
     const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const img = await embedImagePreserveCompression(doc, buf, fileName);
-    const [pw, ph] = imagePagePoints(img, buf, isJpgName(fileName));
+    const [pw, ph] = imagePagePoints(img, buf);
     const page = doc.addPage([pw, ph]);
     page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
 }
