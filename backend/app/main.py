@@ -118,6 +118,22 @@ async def lifespan(app: FastAPI):
         else:
             logger.debug("🔒 [SECURITY] DEV_MODE=OFF, sidecar token loaded — guard active.")
 
+    # [PROC-LIFECYCLE FIX 2026-08-28 §UP.11] Dọn tiến trình Office mồ côi từ phiên trước.
+    # Word/Excel do COM tạo không phải con của sidecar nên không cây process nào — kể cả Job
+    # Object của app — dọn được chúng; nếu sidecar bị taskkill /F giữa job Office thì chúng
+    # sống mãi. File *.owned-pids sót lại là dấu vết duy nhất, và sweep chỉ diệt PID có image
+    # name trong whitelist Office để không giết oan tiến trình người dùng đang mở.
+    try:
+        from app.core.office_job_runner import sweep_orphan_office_pids
+
+        orphans_killed = sweep_orphan_office_pids(settings.RESULTS_DIR, settings.UPLOAD_DIR)
+        if orphans_killed:
+            logger.warning(
+                "🧹 Đã dọn %s tiến trình Office mồ côi từ phiên trước.", orphans_killed
+            )
+    except Exception as exc:  # noqa: BLE001 — dọn rác không được chặn khởi động backend
+        logger.warning("Không quét được tiến trình Office mồ côi: %s", exc)
+
     # Notice: Job recovery is now handled via the POST /api/system/recover-jobs endpoint.
     logger.info("ℹ️ System ready. Use /api/system/recover-jobs to handle stuck jobs.")
 

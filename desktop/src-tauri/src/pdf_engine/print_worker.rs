@@ -485,6 +485,9 @@ fn run_isolated_inner(
         }
     };
     let child_pid = child.id();
+    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Print worker cũng là pdf-inspector.exe nên nó
+    // khóa đúng file mà trình cài cần ghi đè; và hộp thoại driver có thể giữ nó rất lâu.
+    crate::process_guard::adopt_child_process(child_pid);
     #[cfg(windows)]
     {
         // PRINTWIN (audit 2026-08-13 §PRINTWIN.03): cấp quyền foreground cho worker —

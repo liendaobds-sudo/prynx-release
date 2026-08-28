@@ -2651,6 +2651,10 @@ fn spawn_render_worker_client(lane: WorkerLane) -> Result<RenderWorkerClient, St
             });
     }
     let child_pid = child.id();
+    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Display worker giữ $INSTDIR\pdf-inspector.exe và
+    // bin\pdfium.dll. Nếu app chết bẩn mà worker còn sống, NSIS không ghi đè được hai file
+    // này khi cập nhật. Job Object bảo đảm OS dọn hộ, không phụ thuộc EOF stdin.
+    crate::process_guard::adopt_child_process(child_pid);
     let nonce = format!(
         "{}-{}-{:016x}",
         std::process::id(),
@@ -3559,6 +3563,53 @@ pub(crate) fn render_accurate_with_reserved_policy(
     )
 }
 
+/// [PROC-LIFECYCLE FIX 2026-08-28 §UP.4] Trần thời gian cho một lượt dọn display worker.
+/// Đủ để worker rảnh trả lời `Shutdown` và tự thoát; hết trần thì diệt cứng.
+const RENDER_WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
+
+/// Diệt worker theo PID — KHÔNG đi qua `Mutex<Child>`.
+///
+/// Vì sao cần: luồng dọn có thể đang giữ lock `Child` (trong `try_wait`/`terminate`) đúng
+/// lúc ta hết trần chờ. Nếu đường diệt cứng cũng phải lock `Child` thì nó chặn ở đó và ta
+/// mất luôn tác dụng của deadline — đúng kiểu treo mà §UP.4 nói tới.
+fn kill_render_worker_pid(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Chờ tiến trình con thoát nhưng KHÔNG giữ lock `Child` suốt thời gian chờ.
+/// `Child::wait()` giữ lock đến khi tiến trình chết — worker kẹt trong PDFium thì lock đó
+/// không bao giờ nhả. Poll `try_wait` và nhả lock giữa các nhịp để đường diệt cứng chen được.
+fn wait_child_bounded(child: &Arc<Mutex<Child>>, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let mut guard = child
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match guard.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => return,
+            }
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 pub fn shutdown_render_worker() {
     RENDER_WORKER_SHUTTING_DOWN.store(true, Ordering::Release);
     for control in pending_render_requests()
@@ -3591,28 +3642,69 @@ pub fn shutdown_render_worker() {
     };
     manager.shared_lane_gate.notify_cancelled();
 
-    let shutdown_slot = |slot: &Mutex<Option<RenderWorkerClient>>| {
-        let client = slot
+    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.4] Trước đây mỗi slot được dọn tuần tự bằng
+    // `request(Shutdown)` rồi `child.wait()`, cả hai KHÔNG có trần: `request` chặn ở
+    // `read_frame` trên stdout của worker, `wait` chặn đến khi worker chết. Worker kẹt
+    // (PDFium đang render trang nặng, pipe đầy, driver treo) ⇒ hàm này không bao giờ trả về
+    // ⇒ `RunEvent::Exit` không đi tới `kill_sidecar()` ⇒ app + sidecar còn nguyên trong Task
+    // Manager sau khi user đã đóng cửa sổ. Nay: xin thoát êm ở luồng phụ, chờ SONG SONG với
+    // một deadline chung, hết hạn thì diệt theo PID.
+    let mut clients = Vec::new();
+    if let Some(client) = manager
+        .interactive
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+    {
+        clients.push(client);
+    }
+    for slot in &manager.backgrounds {
+        if let Some(client) = slot
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        let Some(mut client) = client else {
-            return;
-        };
-        match client.request(&RenderWorkerRequest::Shutdown, None) {
-            Ok(_) => {
-                let _ = client
-                    .child
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .wait();
-            }
-            Err(_) => client.terminate(),
+            .take()
+        {
+            clients.push(client);
         }
-    };
-    shutdown_slot(&manager.interactive);
-    for slot in &manager.backgrounds {
-        shutdown_slot(slot);
+    }
+
+    let mut pending_shutdowns = Vec::new();
+    for mut client in clients {
+        let pid = client.child_pid;
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new()
+            .name("prynx-render-worker-shutdown".to_string())
+            .spawn(move || {
+                match client.request(&RenderWorkerRequest::Shutdown, None) {
+                    Ok(_) => {
+                        wait_child_bounded(&client.child, RENDER_WORKER_SHUTDOWN_GRACE);
+                    }
+                    Err(_) => client.terminate(),
+                }
+                let _ = done_tx.send(());
+            });
+        match spawned {
+            Ok(_) => pending_shutdowns.push((pid, done_rx)),
+            Err(error) => {
+                // Không tạo được luồng thì không chờ gì cả — diệt ngay.
+                log::warn!(
+                    "[RENDER_WORKER] Không tạo được luồng dọn worker PID={pid}: {error}; diệt cứng."
+                );
+                kill_render_worker_pid(pid);
+            }
+        }
+    }
+
+    let deadline = Instant::now() + RENDER_WORKER_SHUTDOWN_GRACE;
+    for (pid, done_rx) in pending_shutdowns {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if done_rx.recv_timeout(remaining).is_err() {
+            log::warn!(
+                "[RENDER_WORKER] Display worker PID={pid} không thoát trong {} ms; diệt cứng theo PID.",
+                RENDER_WORKER_SHUTDOWN_GRACE.as_millis()
+            );
+            kill_render_worker_pid(pid);
+        }
     }
     preempted_background_pids()
         .lock()

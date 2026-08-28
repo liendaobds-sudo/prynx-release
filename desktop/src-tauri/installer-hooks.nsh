@@ -9,16 +9,55 @@
 ;
 ; Tauri v2 gọi macro NSIS_HOOK_PREINSTALL ngay trước khi giải nén file vào đích.
 
-!macro NSIS_HOOK_PREINSTALL
+; [PROC-LIFECYCLE FIX 2026-08-28 §UP.1/§UP.2] Biến đếm cho vòng chờ tiến trình chết.
+Var PrynxKillTries
+
+; Diệt một tiến trình theo tên rồi CHỜ ĐẾN KHI nó thật sự biến mất.
+;
+; Vì sao không dùng `Sleep` cố định như trước (Sleep 800 rồi ghi file luôn): trong khoảng
+; chờ đó, supervisor sidecar bên trong app CÒN SỐNG kịp respawn sidecar vừa bị diệt (giãn
+; cách restart lần đầu chỉ 250 ms — xem sidecar_restart_delay trong src/lib.rs). NSIS ghi
+; vào file vừa bị chiếm lại → "Error opening file for writing" → user thấy cập nhật kẹt →
+; bấm Ignore ⇒ bản cài LAI (exe mới + sidecar cũ) ⇒ verify_sidecar_integrity lệch hash ⇒
+; app từ chối khởi động, phải gỡ cài rồi cài lại. Audit 2026-08-28 §UP.2.
+;
+; Trần 12 × 250 ms = 3 s. Hết trần vẫn đi tiếp, KHÔNG tự Abort: template Tauri còn một
+; lớp CheckIfAppIsRunning ngay sau hook này, tự ý Abort ở đây chỉ làm trình cài tệ hơn.
+!macro PRYNX_KILL_UNTIL_GONE EXENAME LABEL
+  StrCpy $PrynxKillTries 0
+prynx_kill_${LABEL}:
   ; /T diệt cả cây tiến trình con (Nuitka --onefile spawn python thật làm child).
-  ; /F buộc kết thúc. Nuốt output (>NUL) và bỏ qua nếu tiến trình không chạy.
-  nsExec::Exec 'taskkill /IM "pdf-inspector-backend.exe" /T /F'
+  ; /F buộc kết thúc. Bỏ qua nếu tiến trình không chạy (exit 128 là bình thường).
+  nsExec::Exec 'taskkill /IM "${EXENAME}" /T /F'
   Pop $0
-  ; Diệt luôn app chính nếu đang mở (nếu không, file exe app cũng bị khóa ghi đè).
-  nsExec::Exec 'taskkill /IM "PrynX.exe" /T /F'
+  Sleep 250
+  ; Kiểm lại bằng exit code của `find`: 0 = CÒN dòng khớp, khác 0 = đã sạch.
+  ; Dùng exit code thay vì parse chuỗi để không phụ thuộc StrFunc/WordFunc.
+  nsExec::Exec 'cmd /c tasklist /FI "IMAGENAME eq ${EXENAME}" /NH | find /I "${EXENAME}" > NUL'
   Pop $0
-  ; Chờ ngắn cho OS nhả handle file trước khi NSIS bắt đầu ghi.
-  Sleep 800
+  StrCmp $0 "0" 0 prynx_kill_done_${LABEL}
+  IntOp $PrynxKillTries $PrynxKillTries + 1
+  IntCmp $PrynxKillTries 12 prynx_kill_done_${LABEL} prynx_kill_${LABEL} prynx_kill_done_${LABEL}
+prynx_kill_done_${LABEL}:
+!macroend
+
+!macro NSIS_HOOK_PREINSTALL
+  ; THỨ TỰ BẮT BUỘC: app chính TRƯỚC, sidecar SAU.
+  ; Diệt sidecar trước là vô nghĩa khi app còn sống — supervisor sẽ respawn nó ngay.
+  ;
+  ; Tên tiến trình phải là pdf-inspector.exe: đó là MAINBINARYNAME Tauri sinh từ
+  ; [package].name trong Cargo.toml. "PrynX" chỉ là productName (tên hiển thị + tên thư
+  ; mục cài), KHÔNG có file PrynX.exe nào — lệnh taskkill cũ luôn trả "not found" nên app
+  ; chính và display/print worker (cùng tên exe) sống sót qua hook. Audit 2026-08-28 §UP.1.
+  !insertmacro PRYNX_KILL_UNTIL_GONE "pdf-inspector.exe" "app_pre"
+  !insertmacro PRYNX_KILL_UNTIL_GONE "pdf-inspector-backend.exe" "sidecar_pre"
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  ; Template Tauri chỉ kiểm pdf-inspector.exe khi gỡ cài; sidecar sót lại sẽ khóa
+  ; $INSTDIR làm gỡ cài không sạch, rồi lần cài lại vẫn gặp file cũ. Dọn cả hai.
+  !insertmacro PRYNX_KILL_UNTIL_GONE "pdf-inspector.exe" "app_unin"
+  !insertmacro PRYNX_KILL_UNTIL_GONE "pdf-inspector-backend.exe" "sidecar_unin"
 !macroend
 
 ; ─── Context menu "Ghép trong PrynX" (chuột phải PDF/JPG/PNG) ───

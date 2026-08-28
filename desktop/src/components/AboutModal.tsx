@@ -107,15 +107,25 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
     try {
       let total = 0, got = 0;
       setUpd({ kind: 'downloading', percent: 0 });
-      await update.downloadAndInstall((ev: DownloadEvent) => {
+      // [PROC-LIFECYCLE FIX 2026-08-28 §UP.3] Tách download và install để dọn sidecar +
+      // display worker ở giữa; nếu chúng còn sống, NSIS không ghi đè được file đã cài.
+      await update.download((ev: DownloadEvent) => {
         if (ev.event === 'Started') total = ev.data?.contentLength || 0;
         else if (ev.event === 'Progress') {
           got += ev.data?.chunkLength || 0;
           if (total > 0) setUpd({ kind: 'downloading', percent: Math.min(100, Math.round((got / total) * 100)) });
         } else if (ev.event === 'Finished') setUpd({ kind: 'downloading', percent: 100 });
       });
-      const { relaunch } = await import('@tauri-apps/plugin-process');
-      await relaunch();
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('prepare_for_update');
+      } catch (cleanupError) {
+        // Dọn thất bại vẫn cài tiếp: hook NSIS còn một lớp diệt tiến trình nữa.
+        console.warn('[Updater] prepare_for_update failed:', cleanupError);
+      }
+      // install() kết thúc bằng process::exit(0); trình cài tự mở lại app (cờ /R) nên
+      // không cần relaunch() — code sau lời gọi này không bao giờ chạy.
+      await update.install();
     } catch (error: unknown) {
       setUpd({ kind: 'error', message: getErrorMessage(error) });
     }

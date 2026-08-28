@@ -37,7 +37,11 @@ export default function UpdateChecker() {
             setStatus('downloading');
             let total = 0;
             let got = 0;
-            await update.downloadAndInstall((ev: DownloadEvent) => {
+            // [PROC-LIFECYCLE FIX 2026-08-28 §UP.3] Tách download và install để chèn bước
+            // dọn tiến trình con ở giữa. Nếu sidecar/display worker còn sống, NSIS không ghi
+            // đè được file trong thư mục cài → trình cài kẹt ở Abort/Retry/Ignore → bản cài
+            // lai (exe mới + sidecar cũ) → lần mở sau app từ chối khởi động vì lệch hash.
+            await update.download((ev: DownloadEvent) => {
                 if (ev.event === 'Started') {
                     total = ev.data?.contentLength || 0;
                 } else if (ev.event === 'Progress') {
@@ -48,8 +52,16 @@ export default function UpdateChecker() {
                 }
             });
             setStatus('done');
-            const { relaunch } = await import('@tauri-apps/plugin-process');
-            await relaunch();
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                await invoke('prepare_for_update');
+            } catch (cleanupError) {
+                // Dọn thất bại vẫn cài tiếp: hook NSIS còn một lớp diệt tiến trình nữa.
+                console.warn('[Updater] prepare_for_update failed:', cleanupError);
+            }
+            // install() ShellExecute trình cài rồi gọi process::exit(0) — không có code nào
+            // sau đây chạy được, kể cả relaunch(). Trình cài tự mở lại app bằng cờ /R.
+            await update.install();
         } catch (e) {
             console.error('[Updater] install failed:', e);
             setStatus('error');

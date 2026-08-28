@@ -145,6 +145,103 @@ def _read_owned_pids(path: str) -> list[int]:
     return result
 
 
+# ── [PROC-LIFECYCLE FIX 2026-08-28 §UP.11] Quét PID Office mồ côi lúc khởi động ──
+#
+# Vì sao cần: Word/Excel do COM `DispatchEx` khởi tạo KHÔNG phải con của sidecar (DCOM sinh
+# chúng dưới svchost), nên chúng không nằm trong cây process của sidecar và cũng không vào
+# Job Object của app. Đường dọn duy nhất là `_terminate_process_tree` — viết bằng Python, tức
+# là chỉ chạy khi sidecar còn sống. Sidecar bị `taskkill /F` (app thoát, cập nhật, crash) thì
+# đoạn đó không bao giờ chạy ⇒ WINWORD.EXE/EXCEL.EXE/soffice.exe còn lại trong Task Manager,
+# đúng như chủ máy thấy.
+#
+# File `*.owned-pids` là bằng chứng còn lại: nó chỉ tồn tại trong lúc job chạy (khối `finally`
+# của `_run_isolated` luôn xóa). File còn sót ⇒ job trước bị cắt giữa ⇒ PID trong đó có thể
+# đang mồ côi.
+#
+# Chống giết oan do PID bị Windows tái sử dụng: CHỈ diệt khi image name của PID nằm trong
+# whitelist Office. Tuyệt đối không diệt theo tên ứng dụng (sẽ giết Word người dùng đang mở).
+_ORPHAN_IMAGE_WHITELIST = frozenset(
+    {
+        "winword.exe",
+        "excel.exe",
+        "powerpnt.exe",
+        "soffice.exe",
+        "soffice.bin",
+    }
+)
+
+
+def _image_name_of_pid(pid: int) -> Optional[str]:
+    """Đọc image name của PID qua tasklist. None nếu không còn tiến trình."""
+    if os.name != "nt" or pid <= 0:
+        return None
+    try:
+        completed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Không đọc được tên tiến trình PID %s: %s", pid, exc)
+        return None
+    first_line = (completed.stdout or "").strip().splitlines()
+    if not first_line:
+        return None
+    # Dạng CSV: "IMAGE.EXE","1234","Console","1","12.345 K"
+    # Không có tiến trình: tasklist in "INFO: No tasks are running..." (không có dấu ").
+    raw = first_line[0].strip()
+    if not raw.startswith('"'):
+        return None
+    name = raw.split('","', 1)[0].lstrip('"').strip()
+    return name.lower() or None
+
+
+def sweep_orphan_office_pids(*directories: str) -> int:
+    """Diệt tiến trình Office mồ côi còn ghi trong các file `*.owned-pids` sót lại.
+
+    Trả về số tiến trình đã diệt. An toàn khi gọi nhiều lần và trên máy không có Office.
+    """
+    if os.name != "nt":
+        return 0
+    killed = 0
+    for directory in directories:
+        if not directory:
+            continue
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.endswith(".owned-pids"):
+                continue
+            pid_path = os.path.join(directory, entry)
+            for pid in _read_owned_pids(pid_path):
+                image = _image_name_of_pid(pid)
+                if image is None:
+                    continue
+                if image not in _ORPHAN_IMAGE_WHITELIST:
+                    # PID đã được hệ điều hành cấp lại cho tiến trình khác — bỏ qua.
+                    logger.info(
+                        "Bỏ qua PID %s (%s) — không thuộc whitelist Office mồ côi.",
+                        pid,
+                        image,
+                    )
+                    continue
+                logger.warning(
+                    "Diệt tiến trình Office mồ côi PID %s (%s) từ job trước.", pid, image
+                )
+                _kill_pid_tree(pid)
+                killed += 1
+            try:
+                os.remove(pid_path)
+            except OSError:
+                pass
+    return killed
+
+
 def _kill_pid_tree(pid: int) -> None:
     if os.name != "nt" or pid <= 0:
         return

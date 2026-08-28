@@ -70,6 +70,12 @@ windows = { version = "0.61", features = [
     "Win32_System_SystemInformation",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
+    # [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Job Object cho sidecar + worker
+    # (src/process_guard.rs). Win32_Security chỉ để có SECURITY_ATTRIBUTES trong
+    # chữ ký CreateJobObjectW; ta truyền None nên không dựng ACL nào.
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",

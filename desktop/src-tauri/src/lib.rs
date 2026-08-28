@@ -21,6 +21,8 @@ mod document_window_registry;
 mod external_app;
 mod pdf_color_risk;
 mod pdf_engine;
+// [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Job Object để OS tự dọn tiến trình con.
+pub(crate) mod process_guard;
 mod security;
 mod tile_disk_cache;
 
@@ -731,6 +733,10 @@ fn start_sidecar_supervisor<R: tauri::Runtime>(
                 let generation_exited =
                     replace_sidecar_generation_exit_flag(&mut current_sidecar_exited);
                 SIDECAR_PID.store(pid, Ordering::Release);
+                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Thế hệ sidecar do supervisor dựng
+                // lại cũng phải vào job; nếu quên, mỗi lần recovery lại sinh một tiến trình
+                // không được OS bảo kê.
+                process_guard::adopt_child_process(pid);
                 if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
                     kill_sidecar();
                     return;
@@ -1421,6 +1427,136 @@ fn mark_frontend_interactive() {
         // PERF (audit 2026-08-05 §PERF.5): mốc cuối do React gửi sau khi Home mount.
         startup_breadcrumb("frontend: Home interactive");
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [PROC-LIFECYCLE FIX 2026-08-28 §UP.6] Canh "chỉ một instance app thật sự chạy".
+//
+// tauri-plugin-single-instance 2.4.2 có một lỗ: khi mutex của nó ĐÃ tồn tại nhưng
+// `FindWindowW` không thấy cửa sổ ẩn của instance kia (instance đó đang treo, hoặc cửa sổ
+// đã bị hủy), plugin **đi tiếp** — và đi tiếp mà KHÔNG giữ mutex, KHÔNG tạo cửa sổ đích.
+// Từ đó nhiều instance đầy đủ cùng chạy. Hậu quả cụ thể trong PrynX: mỗi cold-start đều
+// `taskkill /IM pdf-inspector-backend.exe /F` để dọn zombie, nên instance mới GIẾT SIDECAR
+// của instance đang dùng; supervisor bên kia thấy listener lạ rồi `Stop` — backend chết hẳn
+// trong phiên đó.
+//
+// Ta không vá được crate vendor, nhưng chặn được phần phá hoại: giữ một mutex RIÊNG (tên
+// khác hẳn của plugin — trùng tên là làm sập luôn cơ chế của plugin ở instance đầu tiên) chỉ
+// để biết "đã có tiến trình app PrynX khác đang sống". Nếu cờ này bật mà ta VẪN chạy tới
+// setup, nghĩa là plugin đã không forward được và không exit ta ⇒ instance kia đang treo ⇒
+// từ chối khởi động thay vì phá sidecar của nó.
+static SECONDARY_INSTANCE: AtomicBool = AtomicBool::new(false);
+
+fn claim_primary_instance_mutex() {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    let name = "com.prynx.app-primary-instance-guard\0"
+        .encode_utf16()
+        .collect::<Vec<u16>>();
+    unsafe {
+        match CreateMutexW(None, true, PCWSTR(name.as_ptr())) {
+            Ok(_handle) => {
+                // windows-rs chỉ gọi GetLastError khi handle không hợp lệ, nên mã lỗi của
+                // CreateMutexW vẫn còn nguyên ở đây — đúng cách plugin vendor cũng dùng.
+                let already_running = GetLastError() == ERROR_ALREADY_EXISTS;
+                SECONDARY_INSTANCE.store(already_running, Ordering::Release);
+                if already_running {
+                    log::warn!("[INSTANCE] Đã có tiến trình PrynX khác đang chạy.");
+                }
+                // KHÔNG CloseHandle: mutex phải sống bằng tuổi tiến trình vì nó chính là dấu
+                // hiệu "app còn sống". HANDLE không có Drop nên chỉ cần không đóng tay.
+            }
+            Err(error) => {
+                // Không dựng được mutex thì giữ nguyên hành vi cũ, không chặn khởi động.
+                log::warn!("[INSTANCE] Không tạo được mutex canh instance: {error}");
+            }
+        }
+    }
+}
+
+/// [PROC-LIFECYCLE FIX 2026-08-28 §UP.5/§UP.8] Dựng lệnh PowerShell hiện hộp thoại lỗi
+/// khởi động, mỗi phần tử `paragraphs` là một đoạn.
+///
+/// Hai ràng buộc đã trả giá, đừng "đơn giản hóa" lại:
+/// 1. **ASCII không dấu.** Tham số truyền qua dòng lệnh PowerShell làm hỏng ký tự có dấu —
+///    mọi thông điệp khởi động trong file này vì thế viết không dấu.
+/// 2. **Chỉ dùng nháy đơn, ngắt dòng bằng `[char]10`.** Chuỗi nháy đơn của PowerShell KHÔNG
+///    nội suy nên `$([char]10)` sẽ hiện nguyên văn; còn dùng nháy kép thì phải đấu với cách
+///    Windows quote tham số (`std::process::Command` escape `"` thành `\"`, PowerShell.exe
+///    xử lý chuỗi đó không đáng tin). Ghép bằng toán tử `+` là đường an toàn duy nhất.
+// Chỉ tồn tại ở bản release (nơi có hộp thoại) và trong test — cùng khuôn cfg với các helper
+// release-only khác trong file này, để bản debug không sinh warning dead_code.
+#[cfg(any(test, not(debug_assertions)))]
+fn build_startup_error_command(paragraphs: &[&str]) -> String {
+    let joined = paragraphs
+        .iter()
+        .map(|part| format!("'{}'", part.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(" + [char]10 + [char]10 + ");
+    format!("[System.Windows.MessageBox]::Show({joined}, 'PrynX', 'OK', 'Error')")
+}
+
+#[cfg(not(debug_assertions))]
+fn show_startup_error_dialog(paragraphs: &[&str]) {
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &build_startup_error_command(paragraphs),
+        ])
+        .creation_flags(0x08000000)
+        .output();
+}
+
+#[cfg(test)]
+mod startup_dialog_tests {
+    use super::build_startup_error_command;
+
+    #[test]
+    fn ghep_doan_bang_char_10_va_escape_nhay_don() {
+        let command = build_startup_error_command(&["Doan mot", "Doan 'hai'"]);
+        assert_eq!(
+            command,
+            "[System.Windows.MessageBox]::Show('Doan mot' + [char]10 + [char]10 + \
+             'Doan ''hai''', 'PrynX', 'OK', 'Error')"
+        );
+        // Không được lọt nháy kép: đó là dấu hiệu quay lại đường escape không đáng tin.
+        assert!(!command.contains('"'));
+    }
+
+    #[test]
+    fn mot_doan_thi_khong_them_ngat_dong() {
+        assert_eq!(
+            build_startup_error_command(&["Chi mot doan"]),
+            "[System.Windows.MessageBox]::Show('Chi mot doan', 'PrynX', 'OK', 'Error')"
+        );
+    }
+}
+
+/// [PROC-LIFECYCLE FIX 2026-08-28 §UP.3] Dọn tiến trình con NGAY TRƯỚC khi chạy trình cài
+/// bản mới. Frontend phải gọi command này giữa `update.download()` và `update.install()`.
+///
+/// Vì sao không làm trong `RunEvent::Exit`: `install()` của tauri-plugin-updater kết thúc
+/// bằng `std::process::exit(0)` sau khi ShellExecute trình cài. Hook duy nhất plugin gọi
+/// trước đó là `cleanup_before_exit()`, và hàm đó CHỈ clear resource table + ẩn cửa sổ —
+/// nó KHÔNG phát `RunEvent::Exit`. Nghĩa là chốt dọn duy nhất của app (xem cuối `run()`)
+/// không bao giờ chạy trên đường cập nhật, và sidecar + display worker vẫn giữ handle
+/// trong thư mục cài đặt đúng lúc NSIS ghi đè file. Audit 2026-08-28 §UP.3.
+///
+/// Thứ tự trong hàm là có chủ ý: bật cờ shutdown trước để supervisor không respawn, diệt
+/// sidecar (việc quan trọng nhất cho trình cài) rồi mới dọn display worker.
+#[tauri::command]
+fn prepare_for_update() {
+    #[cfg(all(not(debug_assertions), target_os = "windows"))]
+    {
+        SIDECAR_SHUTDOWN.store(true, Ordering::Release);
+        kill_sidecar();
+    }
+    pdf_engine::render_worker::shutdown_render_worker();
+    log::warn!("[UPDATE] Đã dọn sidecar và display worker trước khi cài bản mới");
+    startup_breadcrumb("update: cleaned child processes before installer");
 }
 
 // Cache LRU tile trong RAM. Dung lượng JPEG thay đổi rất rộng theo kích thước/nội dung,
@@ -5750,6 +5886,11 @@ pub fn run() {
 
     startup_breadcrumb("process entry — creating windows");
 
+    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.6] Phải chạy TRƯỚC Builder: plugin single-instance
+    // quyết định exit(0) ngay trong setup của nó, nên đây là chỗ duy nhất còn kịp đánh dấu
+    // "ta là instance thứ hai".
+    claim_primary_instance_mutex();
+
     tauri::Builder::default()
         .manage(SystemFilesState::new(std::env::args().collect()))
         // UIUX/SEC (audit 2026-08-25 §NW.3/§NW.8): bootstrap cửa sổ PDF chỉ sống
@@ -5757,7 +5898,7 @@ pub fn run() {
         .manage(Mutex::new(document_window_registry::DocumentWindowRegistry::default()))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 state.enqueue(args);
@@ -5897,6 +6038,27 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             {
                 startup_breadcrumb("release setup: begin");
+
+                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.6] Tới được đây với cờ instance thứ hai
+                // nghĩa là plugin single-instance KHÔNG forward được sang instance kia (không
+                // tìm thấy cửa sổ ẩn của nó) và cũng không exit ta. Chạy tiếp thì cold-start
+                // bên dưới sẽ taskkill sidecar của instance kia và giành cổng 8321 — biến một
+                // app đang treo thành hai app đều hỏng. Dừng tại đây và nói rõ cách sửa.
+                if SECONDARY_INSTANCE.load(Ordering::Acquire) {
+                    startup_breadcrumb(
+                        "instance guard: another PrynX process is alive but not responding — refusing to start",
+                    );
+                    log::error!(
+                        "[INSTANCE] Từ chối khởi động instance thứ hai: instance đang chạy không phản hồi."
+                    );
+                    show_startup_error_dialog(&[
+                        "PrynX dang chay nhung khong phan hoi nen khong the mo cua so moi.",
+                        "CACH SUA: mo Task Manager, ket thuc tien trinh pdf-inspector.exe (va pdf-inspector-backend.exe neu con) roi mo lai PrynX.",
+                        "Chi tiet ky thuat: %APPDATA%\\PrynX\\logs\\startup_debug.log",
+                    ]);
+                    std::process::exit(1);
+                }
+
                 let warm_result = match pdf_engine::render_worker::warm_worker_with_policy() {
                     Ok(pdf_engine::render_worker::WorkerAttempt::Completed(())) => {
                         Ok("worker")
@@ -6045,13 +6207,21 @@ pub fn run() {
                 if let Err(e) = verify_sidecar_integrity(&sidecar_path) {
                     log::error!("[SECURITY] {}", e);
                     startup_breadcrumb(&format!("sidecar integrity: FAIL {e}"));
-                    let _ = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-Command", &format!(
-                            "[System.Windows.MessageBox]::Show('{}', 'PrynX Security', 'OK', 'Error')",
-                            e.replace('\'', "''")
-                        )])
-                        .creation_flags(0x08000000)
-                        .output();
+                    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.5] Chốt fail-closed GIỮ NGUYÊN, chỉ
+                    // đổi thông điệp. Nguyên nhân thực tế phổ biến nhất của nhánh này KHÔNG
+                    // phải bị crack mà là bản cập nhật đứt giữa: NSIS ghi được exe mới rồi
+                    // trượt pdf-inspector-backend.exe (file đang bị chiếm) → cặp exe/sidecar
+                    // lệch hash → app từ chối khởi động mãi mãi. Thông điệp cũ chỉ nói
+                    // "integrity check failed" nên chủ máy hiểu là phải gỡ cài + cài lại;
+                    // thực ra chỉ cần chạy lại trình cài. Chi tiết kỹ thuật đã vào log +
+                    // breadcrumb, không dán vào hộp thoại.
+                    show_startup_error_dialog(&[
+                        "Tien trinh nen cua PrynX khong khop voi ban dang cai.",
+                        "Nguyen nhan thuong gap: lan cap nhat truoc bi dut giua duong - trinh cai khong ghi duoc file vi con tien trinh dang chay.",
+                        "CACH SUA: chay lai trinh cai dat ban moi nhat (PrynX_...-setup.exe). KHONG can go cai dat, du lieu va license van giu nguyen.",
+                        "Neu van loi: mo Task Manager, ket thuc pdf-inspector.exe va pdf-inspector-backend.exe roi chay lai trinh cai.",
+                        "Chi tiet ky thuat: %APPDATA%\\PrynX\\logs\\startup_debug.log",
+                    ]);
                     std::process::exit(1);
                 }
                 startup_breadcrumb("sidecar integrity: OK");
@@ -6111,11 +6281,14 @@ pub fn run() {
                     .creation_flags(0x08000000)
                     .output();
                 // Chờ port free: bind test là cách kiểm tin cậy nhất ("có ai đang
-                // LISTEN?"). Bind OK → drop ngay (nhả port) → spawn. Trần cứng 1s
-                // (20×50ms): vượt trần vẫn spawn (fail-open sang lưới an toàn ở
-                // main.py — Python sẽ log rõ + exit 48 nếu port thực sự kẹt).
+                // LISTEN?"). Bind OK → drop ngay (nhả port) → spawn.
+                //
+                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.8] Trần cũ là 1 s (20×50 ms). Sau một
+                // taskkill /F, Windows còn giữ socket ở TIME_WAIT/đang tear-down một nhịp;
+                // 1 s là sát quá và đường ra của nhánh này là exit(1) — tức là brick oan.
+                // Nâng lên 3 s (60×50 ms): vẫn nhanh với mắt người, mà bớt hẳn ca hụt.
                 let mut port_is_free = false;
-                for _ in 0..20 {
+                for _ in 0..60 {
                     match std::net::TcpListener::bind(("127.0.0.1", 8321u16)) {
                         Ok(listener) => {
                             drop(listener);
@@ -6127,11 +6300,18 @@ pub fn run() {
                 }
                 if !port_is_free {
                     log::error!("[SIDECAR] Port 8321 remains occupied; refusing to contact an unknown listener.");
-                    let _ = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-Command",
-                            "[System.Windows.MessageBox]::Show('Cong noi bo 8321 dang bi chiem. PrynX tu choi khoi dong de bao ve du lieu. Hay dong tien trinh lien quan va thu lai.', 'PrynX Security', 'OK', 'Error')"])
-                        .creation_flags(0x08000000)
-                        .output();
+                    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.8] Nhánh này trước đây KHÔNG ghi
+                    // breadcrumb nào — mà nó lại là một trong hai đường "app không mở lên
+                    // được" hay gặp nhất. Hệ quả: startup_debug.log của máy khách chỉ có
+                    // "process entry" rồi im lặng, không cách nào phân biệt với các nguyên
+                    // nhân khác. Ghi breadcrumb TRƯỚC khi exit.
+                    startup_breadcrumb("sidecar port 8321: OCCUPIED after 3s — refusing to start");
+                    show_startup_error_dialog(&[
+                        "Cong noi bo 8321 dang bi chiem nen PrynX tu choi khoi dong de bao ve du lieu.",
+                        "CACH SUA: mo Task Manager, ket thuc tien trinh pdf-inspector-backend.exe (va pdf-inspector.exe neu con) roi mo lai PrynX.",
+                        "Neu van loi, khoi dong lai may.",
+                        "Chi tiet ky thuat: %APPDATA%\\PrynX\\logs\\startup_debug.log",
+                    ]);
                     std::process::exit(1);
                 }
 
@@ -6194,6 +6374,10 @@ pub fn run() {
                 let sidecar_exited = Arc::new(AtomicBool::new(false));
                 let sidecar_pid = child.pid();
                 SIDECAR_PID.store(sidecar_pid, Ordering::Release);
+                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Gán NGAY sau spawn, trước cả khi
+                // ghi token: bootstrap Nuitka bung 400 MB rồi mới spawn python thật, nên
+                // gán ở đây thì cả cây worker Python đều nằm trong job.
+                process_guard::adopt_child_process(sidecar_pid);
                 start_sidecar_event_reader(rx, Arc::clone(&sidecar_exited), sidecar_pid);
 
                 // Lưu PID để KILL cả cây tiến trình khi thoát app (chống treo ngầm →
@@ -6594,11 +6778,18 @@ pub fn run() {
             // Kill sidecar khi app thoát (mọi lý do) → chống pdf-inspector-backend.exe
             // treo ngầm làm NSIS update báo "Error opening file for writing".
             if let tauri::RunEvent::Exit = _event {
+                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.4] Sidecar bị diệt TRƯỚC display worker.
+                // Trước đây thứ tự ngược lại và `shutdown_render_worker()` không có trần thời
+                // gian, nên một worker kẹt là đủ để `kill_sidecar()` không bao giờ được gọi —
+                // đúng ca "đóng app rồi mà pdf-inspector-backend.exe vẫn còn trong Task
+                // Manager". Sidecar mới là tiến trình khóa file lúc NSIS ghi bản mới và là
+                // tiến trình ngốn RAM, nên nó phải chết trước; worker giờ có deadline riêng.
                 #[cfg(all(not(debug_assertions), target_os = "windows"))]
-                SIDECAR_SHUTDOWN.store(true, Ordering::Release);
+                {
+                    SIDECAR_SHUTDOWN.store(true, Ordering::Release);
+                    kill_sidecar();
+                }
                 pdf_engine::render_worker::shutdown_render_worker();
-                #[cfg(all(not(debug_assertions), target_os = "windows"))]
-                kill_sidecar();
             }
         });
 }
