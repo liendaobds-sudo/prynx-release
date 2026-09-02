@@ -37,17 +37,36 @@ def _optional_stat_identity(stat_result: os.stat_result, name: str) -> int | Non
     return int(value) if value is not None else None
 
 
-def capture_source_fingerprint(path: str | os.PathLike[str]) -> SourceFingerprint:
-    """Chụp identity/metadata nguồn bằng một lần ``stat`` nhẹ."""
-    normalized_path = _normalized_source_path(path)
-    stat_result = os.stat(normalized_path)
+def _fingerprint_from_stat(
+    path: str | os.PathLike[str],
+    stat_result: os.stat_result,
+) -> SourceFingerprint:
     return SourceFingerprint(
-        normalized_path=normalized_path,
+        normalized_path=_normalized_source_path(path),
         size=int(stat_result.st_size),
         mtime_ns=int(stat_result.st_mtime_ns),
         device=_optional_stat_identity(stat_result, "st_dev"),
         inode=_optional_stat_identity(stat_result, "st_ino"),
     )
+
+
+def capture_source_fingerprint(path: str | os.PathLike[str]) -> SourceFingerprint:
+    """Chụp identity/metadata nguồn bằng một lần ``stat`` nhẹ."""
+    normalized_path = _normalized_source_path(path)
+    return _fingerprint_from_stat(normalized_path, os.stat(normalized_path))
+
+
+def assert_source_fingerprint_stat(
+    expected: SourceFingerprint,
+    path: str | os.PathLike[str],
+    stat_result: os.stat_result,
+) -> None:
+    """So revision với đúng file descriptor caller vừa mở."""
+
+    if not isinstance(expected, SourceFingerprint):
+        raise TypeError("expected phải là SourceFingerprint.")
+    if _fingerprint_from_stat(path, stat_result) != expected:
+        raise SourceRevisionChangedError(SOURCE_REVISION_CHANGED_MESSAGE)
 
 
 def assert_source_fingerprint(expected: SourceFingerprint) -> None:

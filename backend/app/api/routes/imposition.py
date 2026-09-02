@@ -406,6 +406,10 @@ async def preview_perf_beacon(body: dict, license_info: dict = Depends(require_l
         k: v for k, v in (body or {}).items()
         if k != "msg" and isinstance(v, (str, int, float, bool))
     }
+    # DIAG (feedback 2026-09-01 §DIM-DIE): trace kích thước DEV phải đọc được
+    # trong app.log kể cả khi PRYNX_PERF tắt; payload chỉ chứa số đo/mode, không có path.
+    if msg.startswith("[DIM-DIE-TRACE]"):
+        logger.warning("%s fields=%s", msg, fields)
     _perf("FE", msg, **fields)
     return {"ok": True}
 
@@ -535,6 +539,52 @@ _NUP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_NUP_QUEUE', '8') or 
 _NUP_EXECUTOR = ThreadPoolExecutor(max_workers=_NUP_MAX_CONCURRENT_JOBS, thread_name_prefix='prynx-nup')
 _NUP_SUBMISSION_SLOTS = threading.BoundedSemaphore(_NUP_MAX_CONCURRENT_JOBS + _NUP_MAX_QUEUED_JOBS)
 
+
+def nup_preparation_workers_for_ram(
+    total_ram_mb: float | None,
+    *,
+    cpu_count: int,
+    admitted_jobs: int,
+) -> int:
+    """Số handoff chạy đồng thời; chỉ máy ít RAM mới bị giảm."""
+
+    full_workers = max(1, min(max(1, int(cpu_count)), max(1, int(admitted_jobs))))
+    if total_ram_mb is not None and 0 < total_ram_mb < 8 * 1024:
+        return min(full_workers, 2)
+    if total_ram_mb is not None and 0 < total_ram_mb < 16 * 1024:
+        return min(full_workers, 4)
+    return full_workers
+
+
+def _nup_preparation_worker_count() -> int:
+    admitted_jobs = _NUP_MAX_CONCURRENT_JOBS + _NUP_MAX_QUEUED_JOBS
+    forced_raw = os.environ.get("PRYNX_NUP_PREP_WORKERS", "").strip()
+    if forced_raw:
+        try:
+            forced = int(forced_raw)
+        except ValueError:
+            forced = 0
+        if forced > 0:
+            return max(1, min(admitted_jobs, forced))
+
+    from app.core.system_memory import read_memory_status_mb
+
+    total_ram_mb, _available_ram_mb = read_memory_status_mb()
+    return nup_preparation_workers_for_ram(
+        total_ram_mb,
+        cpu_count=os.cpu_count() or 1,
+        admitted_jobs=admitted_jobs,
+    )
+
+
+# PERF (audit 2026-09-02 §PERF-NEST-03): handoff có thể chờ publication nhưng
+# không được giữ event loop hay chiếm executor render max=1. Pool này chỉ chuẩn bị
+# các job đã qua admission; máy >=16 GB dùng đủ CPU/số slot, máy yếu mới giảm.
+_NUP_PREP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_nup_preparation_worker_count(),
+    thread_name_prefix="prynx-nup-prepare",
+)
+
 # TTL dọn job quá hạn khỏi RAM + xoá file kết quả (giống vdp `_purge_old_jobs`).
 # Trước đây nup_jobs KHÔNG có cơ chế purge → dict tăng đơn điệu theo số lần bình
 # bài trong phiên (entry nhỏ nhưng vô hạn) + results/nup_*.pdf đọng ổ đĩa.
@@ -587,6 +637,49 @@ def _delete_nup_output_if_unleased(output_path: str) -> None:
 
 
 def _publish_nup_terminal_state(
+    job_id: str,
+    terminal_status: str,
+    terminal_message: str,
+) -> bool:
+    """Đo phase công bố artifact ở parent process khi telemetry được bật."""
+
+    perf_started: float | None = None
+    try:
+        from app.core.perf_sampler import perf_enabled
+
+        if perf_enabled():
+            perf_started = time.monotonic()
+    except Exception:
+        perf_started = None
+    try:
+        return _publish_nup_terminal_state_impl(
+            job_id, terminal_status, terminal_message
+        )
+    finally:
+        if perf_started is not None:
+            try:
+                elapsed = max(0.0, time.monotonic() - perf_started)
+                with _NUP_JOBS_LOCK:
+                    job = nup_jobs.get(job_id)
+                    if job is not None:
+                        job["artifact_publish_s"] = round(
+                            float(job.get("artifact_publish_s") or 0.0) + elapsed,
+                            6,
+                        )
+                        job["artifact_publish_attempts"] = int(
+                            job.get("artifact_publish_attempts") or 0
+                        ) + 1
+                        if job.get("status") == "completed" and job.get("artifact_lease"):
+                            job["artifact_publish_successes"] = int(
+                                job.get("artifact_publish_successes") or 0
+                            ) + 1
+            except Exception:
+                # PERF (audit 2026-09-02 §PERF-NEST-06): telemetry không được che
+                # lỗi/cleanup của job chính.
+                pass
+
+
+def _publish_nup_terminal_state_impl(
     job_id: str,
     terminal_status: str,
     terminal_message: str,
@@ -751,6 +844,11 @@ def _spawn_nup_process(
             proc.start()
             job["process"] = proc
             job["pid"] = proc.pid
+            logger.warning(
+                "[IMPOSITION-DIAG] event=job.child.started job=%s pid=%s",
+                job_id,
+                proc.pid,
+            )
         if perf_on:
             try:
                 from app.core.perf_sampler import ProcessRssSampler
@@ -769,6 +867,12 @@ def _spawn_nup_process(
             except Exception:
                 sampler = None
         proc.join()
+        logger.warning(
+            "[IMPOSITION-DIAG] event=job.child.exited job=%s pid=%s exitcode=%s",
+            job_id,
+            proc.pid,
+            proc.exitcode,
+        )
         with _NUP_JOBS_LOCK:
             current_job = nup_jobs.get(job_id)
             cancelled = bool(
@@ -814,6 +918,19 @@ def _spawn_nup_process(
                     "samples": sampler.sample_count if sampler else None,
                     "output_mb": out_mb,
                 }
+                # PERF (audit 2026-09-02 §PERF-NEST-06): phase công bố chạy ở
+                # parent process, nên lấy số đã ghi trong job registry thay vì
+                # đo lại/đọc clock quanh call site. Không đổi payload khi tắt.
+                with _NUP_JOBS_LOCK:
+                    published_job = nup_jobs.get(job_id) or {}
+                    for key in (
+                        "artifact_publish_s",
+                        "artifact_publish_attempts",
+                        "artifact_publish_successes",
+                    ):
+                        value = published_job.get(key)
+                        if value is not None:
+                            perf_record[key] = value
                 stage_path = os.path.join(tempfile.gettempdir(), f"nup_perf_{job_id}.json")
                 perf_record.update(read_perf_stages(stage_path))
                 write_job_perf(perf_record)
@@ -852,6 +969,12 @@ def _nup_process_worker(
     from app.utils.preview_perf_log import log as _perf, sanitize_diagnostic_id
     _trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
     _safe_job_id = sanitize_diagnostic_id(job_id)
+    logger.warning(
+        "[IMPOSITION-DIAG] event=job.child.enter trace=%s job=%s pid=%s",
+        _trace_id,
+        _safe_job_id,
+        os.getpid(),
+    )
     try:
         # Child là nơi first-open thật xảy ra; kiểm lại sát lời gọi engine để
         # thu hẹp cửa sổ giữa admission và lúc PDF được mở.
@@ -870,7 +993,14 @@ def _nup_process_worker(
         with open(state_file, 'w', encoding='utf-8') as f:
             f.write(f"completed|||{report_msg}")
             
-    except Exception as e:
+    except BaseException as e:  # Process boundary: SystemExit cũng phải để lại state chẩn đoán.
+        error_message = str(e).strip() or type(e).__name__
+        logger.exception(
+            "[IMPOSITION-DIAG] event=job.child.failed trace=%s job=%s error_type=%s",
+            _trace_id,
+            _safe_job_id,
+            type(e).__name__,
+        )
         if _trace_id:
             logger.warning(
                 "[IMPOSITION-DIAG] event=job.failed trace=%s job=%s error_type=%s",
@@ -884,7 +1014,113 @@ def _nup_process_worker(
         )
         state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
         with open(state_file, 'w', encoding='utf-8') as f:
-            f.write(f"failed|||{str(e)}")
+            f.write(f"failed|||{error_message}")
+        if not isinstance(e, Exception):
+            raise
+
+
+def _nup_job_cancelled(job_id: str) -> bool:
+    """Đọc chốt hủy của job mà không giữ lock trong lúc handoff chặn."""
+
+    with _NUP_JOBS_LOCK:
+        job = nup_jobs.get(job_id)
+        return bool(
+            job is None
+            or job.get("cancel_requested")
+            or job.get("status") == "cancelled"
+        )
+
+
+def _prepare_and_queue_nup_process(
+    source_path: str,
+    output_path: str,
+    settings: dict,
+    job_id: str,
+    source_fingerprint: SourceFingerprint | None = None,
+) -> None:
+    """Chuẩn bị manifest ngoài event loop rồi mới đưa job vào executor render."""
+
+    from app.utils.preview_perf_log import log as _perf, sanitize_diagnostic_id
+
+    trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
+    prepare_started = time.monotonic()
+    with _NUP_JOBS_LOCK:
+        job = nup_jobs.get(job_id)
+        if job is None or job.get("cancel_requested") or job.get("status") == "cancelled":
+            _NUP_SUBMISSION_SLOTS.release()
+            return
+        # Giữ enum status tương thích (`queued`); progress nói rõ phase mới.
+        job["progress"] = "preparing_manifest"
+        job["preparing_started_at"] = time.time()
+    _perf("EXPORT", "job.preparing_manifest", trace_id=trace_id, job_id=job_id)
+
+    prepared_settings = settings
+    try:
+        from app.workers.nup_true_shape_nesting import (
+            attach_preview_session_reference,
+        )
+
+        prepared_settings = attach_preview_session_reference(
+            settings,
+            source_path,
+            job_id=job_id,
+            cancel_check=lambda: _nup_job_cancelled(job_id),
+        )
+    except Exception:
+        # Giữ fail-soft của route cũ: grid và job không có preview vẫn được render.
+        logger.info(
+            "Bỏ qua tham chiếu phiên nesting; job vẫn chạy bình thường.",
+            exc_info=True,
+        )
+
+    if _nup_job_cancelled(job_id):
+        _NUP_SUBMISSION_SLOTS.release()
+        _perf(
+            "EXPORT",
+            "job.preparation_cancelled",
+            trace_id=trace_id,
+            job_id=job_id,
+            prepare_ms=round((time.monotonic() - prepare_started) * 1000.0, 3),
+        )
+        return
+
+    with _NUP_JOBS_LOCK:
+        job = nup_jobs.get(job_id)
+        if job is None or job.get("cancel_requested") or job.get("status") == "cancelled":
+            _NUP_SUBMISSION_SLOTS.release()
+            return
+        # Handoff đã xong nhưng executor render có thể còn bận job trước.
+        job["status"] = "queued"
+        job["progress"] = "0/0"
+        job["manifest_prepared_at"] = time.time()
+
+    prepare_ms = round((time.monotonic() - prepare_started) * 1000.0, 3)
+    _perf(
+        "EXPORT",
+        "job.manifest_prepared",
+        trace_id=trace_id,
+        job_id=job_id,
+        prepare_ms=prepare_ms,
+    )
+    try:
+        _NUP_EXECUTOR.submit(
+            _spawn_nup_process,
+            source_path,
+            output_path,
+            prepared_settings,
+            job_id,
+            source_fingerprint,
+        )
+    except Exception as error:
+        _NUP_SUBMISSION_SLOTS.release()
+        if _nup_job_cancelled(job_id):
+            return
+        logger.exception("Không xếp được job bình bản %s vào executor render.", job_id)
+        _publish_nup_terminal_state(
+            job_id,
+            "failed",
+            "Không thể xếp job bình bản vào hàng đợi. Vui lòng thử lại.",
+        )
 
 
 def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> dict:
@@ -1041,13 +1277,14 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     )
 
     # Queue outer processes so concurrent jobs cannot multiply process trees
-    # without bound. Each granted process still uses the capped inner pool.
+    # without bound. Handoff/commit chạy ở prep executor và route trả job_id ngay;
+    # process render chỉ được submit sau khi publication đã chốt.
     if not _NUP_SUBMISSION_SLOTS.acquire(blocking=False):
         nup_jobs.pop(job_id, None)
         raise HTTPException(status_code=429, detail="Hàng đợi N-Up đang đầy. Vui lòng chờ job hiện tại hoàn tất.")
     try:
-        _NUP_EXECUTOR.submit(
-            _spawn_nup_process,
+        _NUP_PREP_EXECUTOR.submit(
+            _prepare_and_queue_nup_process,
             source_path,
             output_path,
             settings,
@@ -1224,6 +1461,9 @@ class PreviewLayoutRequest(BaseModel):
     gap_x: float = Field(ge=0, le=10000)
     gap_y: float = Field(ge=0, le=10000)
     strategy: str
+    # PARITY (audit 2026-08-31 §NEST-PREVIEW-INTENT): cùng token engine
+    # `true_shape_nesting`, nhưng chỉ auto-route `optimal_auto` được phép nhường lưới.
+    allow_legacy_fallback: StrictBool = False
     alternate_rotation: Literal["none", "row", "column"] = "none"
     shape_type: str = "CUSTOM"
     shape_props: Dict[str, Any] = Field(default_factory=dict)
@@ -1243,7 +1483,11 @@ class PreviewLayoutRequest(BaseModel):
     layout_type: Optional[str] = None
     is_die_cut: Optional[bool] = False
     page_sheet_mode: StrictBool = False
-    grouping_strategy: str = "none"
+    # PARITY (audit 2026-08-29 MAP-NEST-04): token grouping là contract đóng;
+    # default cũ giữ nghĩa "Chia đều diện tích", không âm thầm đổi thành free gang.
+    grouping_strategy: Literal[
+        "free_gang", "maximize_area", "strict_ratio", "cluster_tile", "none"
+    ] = "maximize_area"
     cluster_sizing_mode: str = "dims"
     cluster_combine_mode: str = "replicate_mixed"
     cluster_nesting: bool = True
@@ -1272,6 +1516,17 @@ class PreviewLayoutRequest(BaseModel):
     # Cần để preview phát hiện "1 khuôn master + nhiều nội dung" KHỚP output (nup_engine).
     detected_shapes_by_page: Optional[Dict[str, Any]] = None
     detected_shape_params_by_page: Optional[Dict[str, Any]] = None
+    # PARITY (audit 2026-08-29 §NEST-PARITY-1): preview nesting phải mang đúng
+    # cấu hình gia công của export. Các field này không tham gia route lưới cũ.
+    pont_type: Optional[Literal["none", "corner", "5mm", "custom"]] = None
+    separate_cut_page: StrictBool = True
+    ponts_on_cut_file: StrictBool = True
+    export_unique_sheets: StrictBool = True
+    report_display: Optional[Dict[str, Any]] = None
+    report_material: Optional[str] = None
+    report_lamination: Optional[int] = None
+    report_lamination_sides: Optional[Literal[1, 2]] = None
+    report_order_code: Optional[str] = None
     # ── Bình Bế Rớt (CNC) ghép nhiều mẫu — preview khớp output ──
     imposer_mode: Optional[str] = None
     cnc_two_sided: Optional[bool] = False
@@ -1394,6 +1649,224 @@ def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h:
 
 MAX_PREVIEW_CELLS = 100_000
 MAX_PREVIEW_PAGE_MAP = 200_000
+
+
+def _preview_guillotine_trim_by_page(
+    doc: Any,
+    *,
+    bleed_pt: float,
+    page_sheet_mode: bool,
+    page_indexes: Any = None,
+) -> dict[int, tuple[float, float]]:
+    """Khổ thành phẩm từng trang cho preview Bình cắt xén — CÙNG resolver với export.
+
+    PARITY (audit 2026-08-28 §PREVIEW.TRIM.1): trước lô này preview lấy khổ thành
+    phẩm từ ``req.item_w``/``req.item_h`` do giao diện gửi, còn export đọc thẳng
+    PDF bằng ``resolve_guillotine_trim`` (xem ``nup_engine`` chỗ dựng
+    ``_guillotine_trim_by_page``). Trên bản desktop, ``sourcePageDim`` của giao
+    diện đến từ PDFium qua ``get_pdf_metadata`` nên là CropBox, trong khi
+    ``effective_imposition_box`` của export vẫn giữ MediaBox khi CropBox chỉ nhỏ
+    hơn chút (ngưỡng 0,80). Với file in có bleed nằm trong MediaBox, hai bên lệch
+    đúng vành bleed và preview báo nhiều con trên tờ hơn file xuất thật.
+
+    Cố ý **không** nhân ``/UserUnit``: export cũng không nhân ở chỗ này, và mục
+    tiêu của hàm là bằng đúng export chứ không phải "đúng hơn export".
+
+    ``page_indexes`` cho phép chỉ đọc những trang cần dùng; nhánh một trang không
+    được quét cả tài liệu vì file vài trăm trang sẽ trả giá mỗi lần debounce.
+    """
+    from app.workers.mixed_guillotine_adapter import (
+        resolve_guillotine_geometry,
+        resolve_guillotine_trim,
+    )
+
+    page_count = int(getattr(doc, "page_count", 0) or 0)
+    indexes = range(page_count) if page_indexes is None else page_indexes
+    resolved_bleed = max(0.0, float(bleed_pt or 0.0))
+    trim_by_page: dict[int, tuple[float, float]] = {}
+    for raw_index in indexes:
+        index = int(raw_index)
+        if not 0 <= index < page_count:
+            continue
+        page = doc[index]
+        if page_sheet_mode:
+            from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+
+            source_w, source_h, _source_clip = resolve_guillotine_geometry(page, 0.0)
+            geometry = resolve_page_sheet_geometry(source_w, source_h, resolved_bleed)
+            trim_by_page[index] = (geometry.trim_width, geometry.trim_height)
+        else:
+            trim_by_page[index] = resolve_guillotine_trim(page, resolved_bleed)
+    return trim_by_page
+
+
+def _guillotine_mixed_page_sizes(
+    trim_by_page: dict[int, tuple[float, float]]
+) -> bool:
+    """True khi các trang khác khổ thành phẩm; dung sai 0,5pt đúng như export."""
+    sizes = [trim_by_page[index] for index in sorted(trim_by_page)]
+    if len(sizes) < 2:
+        return False
+    width0, height0 = sizes[0]
+    return any(
+        abs(width - width0) > 0.5 or abs(height - height0) > 0.5
+        for width, height in sizes[1:]
+    )
+
+
+def _resolve_preview_guillotine_trim(
+    trim_by_page: dict[int, tuple[float, float]],
+    page_index: int,
+    req: Any,
+    bleed_pt: float,
+) -> tuple[float, float]:
+    """Khổ thành phẩm của một trang; thiếu dữ liệu PDF mới lùi về số của giao diện."""
+    resolved = trim_by_page.get(int(page_index))
+    if resolved is None:
+        resolved = (
+            float(getattr(req, "item_w", 0.0) or 0.0) - 2 * float(bleed_pt or 0.0),
+            float(getattr(req, "item_h", 0.0) or 0.0) - 2 * float(bleed_pt or 0.0),
+        )
+    return max(float(resolved[0]), 1.0), max(float(resolved[1]), 1.0)
+
+
+def _resolve_nesting_preview_source(req: PreviewLayoutRequest) -> str:
+    """Nguồn PDF của preview nesting; dùng chung cho endpoint sync và job."""
+
+    source_path = req.path
+    if not source_path and req.file_id:
+        source_path = _resolve_detect_file_id(req.file_id)
+    if not source_path:
+        raise HTTPException(
+            status_code=422,
+            detail="Nesting tối ưu theo đường bế cần file nguồn để tính preview.",
+        )
+    return source_path
+
+
+def _nesting_preview_job_payload(snapshot: Any) -> dict[str, Any]:
+    return {
+        "job_id": snapshot.job_id,
+        "status": snapshot.status,
+        "terminal": snapshot.terminal,
+        "cancel_requested": snapshot.cancel_requested,
+        "created_at": snapshot.created_at,
+        "started_at": snapshot.started_at,
+        "completed_at": snapshot.completed_at,
+        "progress": snapshot.progress,
+        "error_code": snapshot.error_code,
+        "message": snapshot.message,
+        "has_result": snapshot.has_result,
+    }
+
+
+@router.post("/preview-layout/jobs", status_code=202)
+async def create_nesting_preview_job(
+    req: PreviewLayoutRequest,
+    license_info: dict = Depends(require_license),
+):
+    """Nhận preview nesting nặng và trả 202 ngay để client polling/cancel."""
+
+    if str(req.strategy or "").strip() != "true_shape_nesting":
+        raise HTTPException(
+            status_code=422,
+            detail="Job preview chỉ hỗ trợ chiến lược true_shape_nesting.",
+        )
+    page_map = req.target_quantities_by_page or {}
+    if len(page_map) > MAX_PREVIEW_PAGE_MAP or any(
+        value > 1_000_000 for value in page_map.values()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Preview layout vượt quá giới hạn page map hoặc quantity.",
+        )
+    enforce_feature(_imposition_feature(req), license_info)
+    source_path = _resolve_nesting_preview_source(req)
+
+    from app.core.nesting_preview_jobs import (
+        derive_preview_owner,
+        nesting_preview_jobs,
+    )
+
+    snapshot = nesting_preview_jobs.submit(
+        owner=derive_preview_owner(license_info),
+        request=req,
+        source_path=source_path,
+        # §B10-5: cổng chất lượng có thể phải dựng preview ĐƯỜNG CŨ trong worker; đường cũ
+        # tự kiểm entitlement nên phải mang theo license đã kiểm ở đây.
+        license_info=license_info,
+    )
+    return {"job_id": snapshot.job_id, "status": snapshot.status}
+
+
+@router.get("/preview-layout/jobs/{job_id}")
+def get_nesting_preview_job(
+    job_id: str,
+    license_info: dict = Depends(require_license),
+):
+    from app.core.nesting_preview_jobs import (
+        derive_preview_owner,
+        nesting_preview_jobs,
+    )
+
+    snapshot = nesting_preview_jobs.get(job_id, derive_preview_owner(license_info))
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy job preview nesting.")
+    return _nesting_preview_job_payload(snapshot)
+
+
+@router.get("/preview-layout/jobs/{job_id}/result")
+def get_nesting_preview_job_result(
+    job_id: str,
+    license_info: dict = Depends(require_license),
+):
+    from app.core.nesting_preview_jobs import (
+        derive_preview_owner,
+        nesting_preview_jobs,
+    )
+
+    owner = derive_preview_owner(license_info)
+    snapshot = nesting_preview_jobs.get(job_id, owner)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy job preview nesting.")
+    if not snapshot.terminal:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job preview nesting chưa hoàn tất (trạng thái: {snapshot.status}).",
+        )
+    result = nesting_preview_jobs.get_result(job_id, owner)
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": snapshot.error_code or "NESTING_PREVIEW_NO_RESULT",
+                "message": snapshot.message or "Job preview nesting không có kết quả.",
+                "status": snapshot.status,
+            },
+        )
+    return result
+
+
+@router.post("/preview-layout/jobs/{job_id}/cancel")
+def cancel_nesting_preview_job(
+    job_id: str,
+    license_info: dict = Depends(require_license),
+):
+    from app.core.nesting_preview_jobs import (
+        derive_preview_owner,
+        nesting_preview_jobs,
+    )
+
+    outcome = nesting_preview_jobs.cancel(job_id, derive_preview_owner(license_info))
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy job preview nesting.")
+    return {
+        "job_id": outcome.job_id,
+        "status": outcome.status,
+        "cancelled": outcome.cancelled,
+        "already_cancelled": outcome.already_cancelled,
+        "terminal": outcome.terminal,
+    }
 
 
 def _build_mixed_guillotine_preview(doc: Any, req: PreviewLayoutRequest) -> dict[str, Any]:
@@ -1675,7 +2148,68 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
         raise HTTPException(status_code=422, detail="Preview layout v\u01b0\u1ee3t qu\u00e1 gi\u1edbi h\u1ea1n page map ho\u1eb7c quantity.")
 
     enforce_feature(_imposition_feature(req), license_info)
-    
+
+    # FIX (audit 2026-08-28 §NEST-PREVIEW-1): nhánh nesting phải đứng TRƯỚC mọi đường lưới.
+    #
+    # `strategy` được đưa nguyên văn xuống `sticker_imposer_pkg/orchestrator.py`, mà dispatch
+    # ở đó chỉ biết optimal_auto/head_to_tail/staggered — `true_shape_nesting` rơi vào
+    # `else: # grid` (orchestrator.py:460) và được tính bằng lưới chữ nhật thuần. Không log,
+    # không lỗi, chỉ là một con số khác: preview 41 tem/tờ trong khi engine thật cho 46.
+    #
+    # Nhánh này cũng đóng lỗ thứ hai: `attach_preview_session_reference` (lúc launch job) chỉ
+    # `peek()` kho phiên, nên trước bản vá nó LUÔN no-op vì chưa ai tạo phiên ⇒ process con
+    # solve lại từ đầu. Preview tạo phiên ⇒ export nạp đúng manifest đó rồi render.
+    if str(req.strategy or "").strip() == "true_shape_nesting":
+        from app.core.nesting_preview_capacity import build_nesting_preview
+
+        # BẤT BIẾN: chiến lược ĐO của cổng và chiến lược TRẢ VỀ phải là MỘT. Lệch nhau thì
+        # con số cổng đo được không phải con số người dùng nhận.
+        from app.core.nesting_quality_gate import (
+            GRID_PROBE_STRATEGY,
+            GridBeatsNestingSignal,
+        )
+
+        _nesting_source = _resolve_nesting_preview_source(req)
+
+        def _legacy_preview_for_page(page_index: int):
+            updates = {
+                "strategy": GRID_PROBE_STRATEGY,
+                "page_idx": int(page_index),
+            }
+            shapes = req.detected_shapes_by_page or {}
+            shape = shapes.get(str(page_index), shapes.get(page_index))
+            if shape is not None:
+                updates["shape_type"] = shape
+            params = req.detected_shape_params_by_page or {}
+            shape_props = params.get(str(page_index), params.get(page_index))
+            if isinstance(shape_props, dict):
+                updates["shape_props"] = dict(shape_props)
+            return preview_layout(req.model_copy(update=updates), license_info)
+
+        try:
+            return build_nesting_preview(
+                req,
+                source_path=_nesting_source,
+                legacy_preview_for_page=_legacy_preview_for_page,
+            )
+        except GridBeatsNestingSignal as signal:
+            # §B10-5 CỔNG CHẤT LƯỢNG: nesting xếp được ÍT hơn (hoặc bằng) đường cũ ⇒ trả
+            # preview của đường cũ. "Xếp tối ưu" không bao giờ được tệ hơn "Lưới đơn giản".
+            # Đây KHÔNG phải fail-soft che lỗi: nesting vẫn dùng ở ca nó thắng.
+            logger.info(
+                "[NEST-GATE] preview: lưới %s ≥ nesting %s ⇒ trả layout đường cũ",
+                signal.grid_capacity,
+                signal.nesting_capacity,
+            )
+            return preview_layout(
+                req.model_copy(update={"strategy": GRID_PROBE_STRATEGY}),
+                license_info,
+            )
+        except ValueError as exc:
+            # Fail-closed: người dùng chọn một cách xếp cụ thể. Trả cho họ số của lưới
+            # chính là lỗi đang phải sửa, nên báo lỗi thay vì lặng lẽ rơi về lưới.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     if req.file_id or req.path:
         # ═══ SINGLE SOURCE OF TRUTH PATH ═══
         # Uses compute_sticker_layout_for_page() — identical to nup_engine
@@ -2996,23 +3530,34 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             # A straight guillotine grid cannot safely combine different trim
             # sizes. Export rejects this too; preview must not scale every page
             # to the first page's dimensions.
+            _guillotine_trim_by_page: dict[int, tuple[float, float]] = {}
             if (not getattr(req, 'is_die_cut', False)
                     and _lt in ('sequential', 'cut_stacks', 'ratio_stack')):
-                _page_trim_sizes = []
-                for _dpi in range(doc.page_count):
-                    _drect = doc[_dpi].rect
-                    _page_trim_sizes.append((
-                        max(0.0, float(_drect.width) - 2 * (req.bleed or 0)),
-                        max(0.0, float(_drect.height) - 2 * (req.bleed or 0)),
-                    ))
-                if len(_page_trim_sizes) > 1:
-                    _dw0, _dh0 = _page_trim_sizes[0]
-                    if any(abs(_dw - _dw0) > 0.5 or abs(_dh - _dh0) > 0.5 for _dw, _dh in _page_trim_sizes[1:]):
-                        doc.close()
-                        raise HTTPException(
-                            status_code=422,
-                            detail="D\u00e0n nhi\u1ec1u m\u1eabu c\u1eaft x\u00e9n ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang c\u00f9ng k\u00edch th\u01b0\u1edbc.",
-                        )
+                # PARITY (audit 2026-08-28 §PREVIEW.TRIM.1): trước đây chốt này đo
+                # bằng `page.rect` (MediaBox) còn export đo bằng
+                # `effective_imposition_box`, nên hai bên có thể kết luận khác nhau
+                # trên file mà CropBox chính là trang logic.
+                _guillotine_page_sheet = bool(getattr(req, 'page_sheet_mode', False))
+                _guillotine_trim_by_page = _preview_guillotine_trim_by_page(
+                    doc,
+                    bleed_pt=float(req.bleed or 0),
+                    page_sheet_mode=_guillotine_page_sheet,
+                )
+                # Miễn trừ giống export: chia cụm không xén theo lưới thẳng xuyên tờ
+                # nên nhiều khổ vẫn cắt được. Nếu preview chặn ở đây thì nó từ chối
+                # đúng thứ mà export nhận.
+                if (
+                    (
+                        _guillotine_page_sheet
+                        or getattr(req, 'grouping_strategy', None) != 'cluster_tile'
+                    )
+                    and _guillotine_mixed_page_sizes(_guillotine_trim_by_page)
+                ):
+                    doc.close()
+                    raise HTTPException(
+                        status_code=422,
+                        detail="D\u00e0n nhi\u1ec1u m\u1eabu c\u1eaft x\u00e9n ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang c\u00f9ng k\u00edch th\u01b0\u1edbc.",
+                    )
             if (not getattr(req, 'is_die_cut', False)
                     and _lt in ('sequential', 'cut_stacks', 'ratio_stack')
                     and _live_preview_page_count > 1
@@ -3026,8 +3571,12 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 )
                 import math as _math_mp
                 _bleed_mp = req.bleed or 0
-                _trim_w_mp = max(req.item_w - 2 * _bleed_mp, 1.0)
-                _trim_h_mp = max(req.item_h - 2 * _bleed_mp, 1.0)
+                # PARITY (audit 2026-08-28 §PREVIEW.TRIM.1): export solve theo khổ
+                # thành phẩm của TRANG ĐẦU đọc từ PDF; preview phải cùng nguồn đó,
+                # không dùng item_w/item_h do giao diện gửi.
+                _trim_w_mp, _trim_h_mp = _resolve_preview_guillotine_trim(
+                    _guillotine_trim_by_page, 0, req, _bleed_mp,
+                )
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     _mp_layout = solve_manual(
                         _trim_w_mp, _trim_h_mp, req.gap_x, req.gap_y,
@@ -3230,8 +3779,23 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
 
             if not getattr(req, 'is_die_cut', False) and _tm in ('nup', 'step_repeat', 'booklet'):
                 from app.workers.nup_layout_solver import solve_optimal_layout, solve_manual
-                trim_w = max(req.item_w - 2 * bleed_pt, 1.0)
-                trim_h = max(req.item_h - 2 * bleed_pt, 1.0)
+                # PARITY (audit 2026-08-28 §PREVIEW.TRIM.1): Bình trang (`repeat`)
+                # được export tính sức chứa theo khổ thành phẩm của CHÍNH trang đó
+                # (`_repeat_capacity_by_page`). Chỉ đọc trang đang xem: quét cả tài
+                # liệu vài trăm trang mỗi lần debounce là chi phí vô ích.
+                _trim_by_page_single = (
+                    _guillotine_trim_by_page
+                    if page_idx in _guillotine_trim_by_page
+                    else _preview_guillotine_trim_by_page(
+                        doc,
+                        bleed_pt=bleed_pt,
+                        page_sheet_mode=bool(getattr(req, 'page_sheet_mode', False)),
+                        page_indexes=(page_idx,),
+                    )
+                )
+                trim_w, trim_h = _resolve_preview_guillotine_trim(
+                    _trim_by_page_single, page_idx, req, bleed_pt,
+                )
                 _split_gap_val = getattr(req, 'split_gap', None)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     result = solve_manual(

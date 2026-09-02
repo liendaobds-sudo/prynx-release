@@ -31,13 +31,20 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from app.core.heavy_job_scheduler import HeavyJobMemoryUnavailable, heavy_job_slot
+from app.core.heavy_job_scheduler import (
+    HeavyJobMemoryUnavailable,
+    HeavyJobQueueCancelled,
+    heavy_job_slot,
+    memory_reservation,
+)
 from app.core.mixed_nesting_service import (
+    HardwarePlan,
     MIXED_NESTING_KIND,
     MixedNestingError,
     MixedNestingRunHandle,
     assert_fits_memory,
     create_run,
+    memory_budget_mb,
     plan_hardware,
 )
 
@@ -55,6 +62,29 @@ DEFAULT_MAX_JOBS_PER_OWNER: int = 32
 
 #: Trạng thái terminal — không đổi được nữa.
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+MIXED_NESTING_CANCELLED_CODE = "MIXED_NESTING_CANCELLED"
+MIXED_NESTING_CANCELLED_MESSAGE = "Đã hủy job lồng ghép."
+
+
+def _solve_with_hardware_plan(
+    handle: MixedNestingRunHandle,
+    request: dict[str, Any],
+    plan: HardwarePlan,
+) -> dict[str, Any]:
+    """Truyền grant cho handle mới, giữ fake/handle lab cũ chạy một đối số.
+
+    Không bắt ``TypeError`` để fallback: lỗi TypeError phát sinh BÊN TRONG engine phải
+    được lộ là lỗi thật. Feature-detect method riêng làm ranh giới tương thích rõ ràng.
+    """
+    solve_with_hardware = getattr(handle, "solve_with_hardware", None)
+    if callable(solve_with_hardware):
+        return solve_with_hardware(
+            request,
+            worker_grant=plan.worker_grant,
+            nfp_cache_max_bytes_per_trial=plan.nfp_cache_max_bytes_per_trial,
+        )
+    return handle.solve(request)
 
 
 class MixedNestingQueueFull(RuntimeError):
@@ -190,15 +220,23 @@ class MixedNestingJobRegistry:
 
     @staticmethod
     def _snapshot(record: _JobRecord) -> JobSnapshot:
+        cancel_requested = record.cancel_event.is_set()
+        progress = dict(record.progress) if record.progress else None
+        if cancel_requested:
+            # Read fence cuối: dù một producer progress cũ lọt qua, snapshot public
+            # vẫn không được mâu thuẫn với state registry sau khi cancel đã latch.
+            progress = progress or {}
+            progress["phase"] = record.status
+            progress["messageCode"] = "cancelled_by_user"
         return JobSnapshot(
             job_id=record.job_id,
             status=record.status,
             terminal=record.terminal,
-            cancel_requested=record.cancel_event.is_set(),
+            cancel_requested=cancel_requested,
             created_at=record.created_at,
             started_at=record.started_at,
             completed_at=record.completed_at,
-            progress=dict(record.progress) if record.progress else None,
+            progress=progress,
             error_code=record.error_code,
             message=record.message,
             has_result=record.result is not None,
@@ -300,12 +338,26 @@ class MixedNestingJobRegistry:
     ) -> None:
         if record.terminal:
             return
+        # [NESTING CANCEL FIX 2026-08-27] Đây là chốt công bố cuối của registry.
+        # Cancel và finalize giữ cùng khóa; nếu cờ đã lên thì mọi manifest vừa trả về
+        # đều bị bỏ, không có trạng thái cancelled nhưng vẫn đọc được result.
+        if record.cancel_event.is_set() or status == "cancelled":
+            status = "cancelled"
+            error_code = MIXED_NESTING_CANCELLED_CODE
+            message = message or MIXED_NESTING_CANCELLED_MESSAGE
+            result = None
+            if record.progress is not None:
+                record.progress = {
+                    **record.progress,
+                    "phase": "cancelled",
+                    "progress": 1.0,
+                    "messageCode": "cancelled_by_user",
+                }
         record.status = status
         record.terminal = True
         record.error_code = error_code
         record.message = message
-        if result is not None:
-            record.result = result
+        record.result = result if status == "completed" else None
         record.updated_at = time.monotonic()
         record.completed_at = time.time()
 
@@ -329,7 +381,15 @@ class MixedNestingJobRegistry:
             assert_fits_memory(plan)
             logger.info("[MIXED-NESTING] %s admission: %s", record.job_id, plan.reason)
 
-            with self._slot_factory():
+            with (
+                self._slot_factory(),
+                memory_reservation(
+                    MIXED_NESTING_KIND,
+                    plan.estimated_peak_mb,
+                    memory_budget_mb,
+                    record.cancel_event.is_set,
+                ),
+            ):
                 if record.cancel_event.is_set():
                     raise InterruptedError("Đã hủy job lồng ghép")
 
@@ -342,19 +402,19 @@ class MixedNestingJobRegistry:
                 if record.cancel_event.is_set():
                     handle.cancel()
 
-                manifest = handle.solve(record.request)
+                manifest = _solve_with_hardware_plan(handle, record.request, plan)
 
                 with self._lock:
                     # Cancel và complete dùng cùng khóa: không có cửa sổ job vừa báo
                     # completed vừa mang cancel_requested.
                     record.progress = self._doc_progress(handle)
                     status = str(manifest.get("status") or "completed")
-                    if record.cancel_event.is_set() and status != "completed":
+                    if record.cancel_event.is_set() or status == "cancelled":
                         self._finalize_locked(
                             record,
                             "cancelled",
-                            message="Đã hủy job lồng ghép.",
-                            result=manifest,
+                            error_code=MIXED_NESTING_CANCELLED_CODE,
+                            message=MIXED_NESTING_CANCELLED_MESSAGE,
                         )
                     else:
                         self._finalize_locked(record, "completed", result=manifest)
@@ -366,27 +426,33 @@ class MixedNestingJobRegistry:
                 self._release_slot_locked(record)
 
     def _finalize_failure(self, record: _JobRecord, exc: BaseException) -> None:
-        cancelled = record.cancel_event.is_set() or isinstance(exc, InterruptedError)
-        if isinstance(exc, MixedNestingError) and exc.code == "MIXED_NESTING_CANCELLED":
-            cancelled = True
-
-        if cancelled:
-            with self._lock:
-                self._finalize_locked(
-                    record, "cancelled", message="Đã hủy job lồng ghép."
-                )
-            return
-
-        if isinstance(exc, MixedNestingError):
-            error_code, message = exc.code, exc.message
-        elif isinstance(exc, HeavyJobMemoryUnavailable):
-            error_code, message = "MIXED_NESTING_MEMORY_UNAVAILABLE", str(exc)
-        else:
-            error_code = "MIXED_NESTING_ENGINE_ERROR"
-            message = "Không thể lồng ghép. Vui lòng thử lại."
-            logger.exception("[MIXED-NESTING] job %s thất bại", record.job_id)
-
+        # Kiểm cancel bên TRONG cùng khóa với finalize: nếu yêu cầu hủy đến sau khi
+        # engine ném lỗi nhưng trước publication fence, cancel vẫn phải thắng lỗi đó.
         with self._lock:
+            cancelled = record.cancel_event.is_set() or isinstance(
+                exc, (InterruptedError, HeavyJobQueueCancelled)
+            )
+            if isinstance(exc, MixedNestingError) and exc.code == MIXED_NESTING_CANCELLED_CODE:
+                cancelled = True
+
+            if cancelled:
+                self._finalize_locked(
+                    record,
+                    "cancelled",
+                    error_code=MIXED_NESTING_CANCELLED_CODE,
+                    message=MIXED_NESTING_CANCELLED_MESSAGE,
+                )
+                return
+
+            if isinstance(exc, MixedNestingError):
+                error_code, message = exc.code, exc.message
+            elif isinstance(exc, HeavyJobMemoryUnavailable):
+                error_code, message = "MIXED_NESTING_MEMORY_UNAVAILABLE", str(exc)
+            else:
+                error_code = "MIXED_NESTING_ENGINE_ERROR"
+                message = "Không thể lồng ghép. Vui lòng thử lại."
+                logger.exception("[MIXED-NESTING] job %s thất bại", record.job_id)
+
             self._finalize_locked(
                 record, "failed", error_code=error_code, message=message
             )
@@ -415,11 +481,20 @@ class MixedNestingJobRegistry:
             if record is None:
                 return None
             handle = record.handle
-            if handle is not None and not record.terminal:
+            if (
+                handle is not None
+                and not record.terminal
+                and not record.cancel_event.is_set()
+            ):
                 live = self._doc_progress(handle)
                 if live is not None:
                     record.progress = live
-                    record.status = str(live.get("phase") or record.status)
+                    # Không để progress native đến muộn ghi đè `cancel_requested`.
+                    # `_set_status_locked` giữ bất biến không có snapshot vừa completed
+                    # vừa mang cancelRequested=true trong lúc chờ publication fence.
+                    self._set_status_locked(
+                        record, str(live.get("phase") or record.status)
+                    )
             return self._snapshot(record)
 
     def get_result(self, job_id: str, owner: str) -> Optional[dict[str, Any]]:
@@ -429,7 +504,11 @@ class MixedNestingJobRegistry:
             record = self._get_locked(job_id, owner)
             if record is None:
                 return None
-            if record.result is None:
+            if (
+                record.status != "completed"
+                or record.cancel_event.is_set()
+                or record.result is None
+            ):
                 return None
             # Đọc result là dấu hiệu job còn được dùng: gia hạn TTL.
             record.updated_at = time.monotonic()
@@ -473,6 +552,14 @@ class MixedNestingJobRegistry:
                 )
 
             record.cancel_event.set()
+            # Progress native có thể đang ở khe `completed` trước khi registry finalize.
+            # Ghim phase theo state registry để route không phát hai tín hiệu trái nhau;
+            # khi terminal, `_finalize_locked` tiếp tục chuẩn hóa về `cancelled`.
+            record.progress = {
+                **(record.progress or {}),
+                "phase": "cancel_requested",
+                "messageCode": "cancelled_by_user",
+            }
             future = record.future
             if future is not None and future.cancel():
                 # Còn trong hàng đợi: chuyển terminal ngay và nhả suất đúng MỘT lần.

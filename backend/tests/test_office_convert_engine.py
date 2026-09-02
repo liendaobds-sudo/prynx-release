@@ -257,3 +257,73 @@ def test_google_html_stream_is_rejected_and_partial_is_removed(monkeypatch, tmp_
         )
 
     assert not output.exists()
+
+
+# ── SEC (pentest 2026-08-28 §ATK.02): cưỡng chế tắt macro khi convert Office ──────
+# Đường tấn công đã vá: .docm/.xlsm/.pptm có AutoOpen/Workbook_Open được convert qua COM
+# mà KHÔNG tắt macro (ReadOnly/DisplayAlerts không chặn macro) → RCE trong tiến trình
+# Office dưới quyền người dùng. Fix: đặt Application.AutomationSecurity = 3
+# (msoAutomationSecurityForceDisable) TRƯỚC khi Open().
+#
+# Không cần Office thật: test helper bằng fake COM app, và ratchet đọc source chứng minh
+# thứ tự gọi (tắt macro trước khi mở tài liệu).
+import inspect
+
+
+class _FakeComApp:
+    """Giả một Application COM: cho gán thuộc tính tùy ý như win32com dispatch."""
+
+    def __init__(self):
+        self.AutomationSecurity = None
+
+
+class _FakeComAppNoSecurity:
+    """Phiên bản Office giả không expose AutomationSecurity (raise khi gán)."""
+
+    def __setattr__(self, name, value):
+        if name == "AutomationSecurity":
+            raise AttributeError("AutomationSecurity not supported")
+        object.__setattr__(self, name, value)
+
+
+def test_harden_office_automation_ep_force_disable():
+    app = _FakeComApp()
+    engine._harden_office_automation(app, "Word")
+    # 3 = msoAutomationSecurityForceDisable — tắt MỌI macro không hỏi.
+    assert app.AutomationSecurity == 3
+    assert engine._MSO_AUTOMATION_SECURITY_FORCE_DISABLE == 3
+
+
+def test_harden_office_automation_khong_lam_gay_khi_thieu_thuoc_tinh(caplog):
+    """Office lạ không expose AutomationSecurity → cảnh báo bảo mật, KHÔNG raise."""
+    app = _FakeComAppNoSecurity()
+    with caplog.at_level("WARNING"):
+        engine._harden_office_automation(app, "Excel")  # không được ném
+    assert any("ATK.02" in rec.message for rec in caplog.records)
+
+
+def _com_body(func) -> str:
+    """Phần thân hàm TỪ DispatchEx tới lời gọi .Open() — vùng thứ tự quan trọng."""
+    return inspect.getsource(func)
+
+
+def test_ca_ba_ham_com_tat_macro_truoc_khi_mo_tai_lieu():
+    """Ratchet thứ tự: _harden_office_automation phải đứng TRƯỚC .Open()/.Documents.Open.
+
+    Đặt sau Open() thì macro AutoOpen đã chạy xong — vá thành vô nghĩa.
+    """
+    cases = [
+        (engine._convert_word_com, ".Documents.Open("),
+        (engine._convert_excel_com, ".Workbooks.Open("),
+        (engine._convert_powerpoint_com, ".Presentations.Open("),
+    ]
+    for func, open_marker in cases:
+        src = _com_body(func)
+        harden_at = src.find("_harden_office_automation(")
+        open_at = src.find(open_marker)
+        assert harden_at != -1, f"{func.__name__}: thiếu _harden_office_automation"
+        assert open_at != -1, f"{func.__name__}: không tìm thấy {open_marker}"
+        assert harden_at < open_at, (
+            f"{func.__name__}: _harden_office_automation phải gọi TRƯỚC {open_marker} "
+            f"(nếu không macro AutoOpen đã chạy trước khi bị tắt)"
+        )

@@ -28,7 +28,7 @@ from typing import Annotated, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ── Giới hạn, khớp `model.rs` ────────────────────────────────────────────────
-MIXED_NESTING_PROTOCOL_VERSION = 1
+MIXED_NESTING_PROTOCOL_VERSION = 2
 MAX_PARTS = 2_000
 MAX_QUANTITY_PER_PART = 100_000
 MAX_INSTANCES_TOTAL = 100_000
@@ -209,7 +209,9 @@ class PartSpec(_Strict):
     """
 
     part_id: str = Field(alias="partId", min_length=1, max_length=MAX_PART_ID_LEN)
-    quantity: int = Field(ge=1, le=MAX_QUANTITY_PER_PART)
+    #: Chỉ bắt buộc với `quantity_fulfillment`. Autofill phải bỏ hẳn field này;
+    #: validator cấp request phân biệt cả explicit `null` với field vắng mặt.
+    quantity: Optional[int] = Field(default=None, ge=1, le=MAX_QUANTITY_PER_PART)
     outer: Ring
     holes: list[Ring] = Field(default_factory=list, max_length=MAX_HOLES_PER_PART)
     rotation_constraint: PartRotationConstraint = Field(
@@ -250,6 +252,11 @@ class CreateJobRequest(_Strict):
     )
     sheet: SheetSpec
     gap_mm: float = Field(alias="gapMm", ge=0.0)
+    layout_intent: Literal[
+        "quantity_fulfillment",
+        "autofill_single_sheet",
+        "step_repeat_single_sheet",
+    ] = Field(alias="layoutIntent", default="quantity_fulfillment")
     orientation_policy: OrientationPolicy = Field(alias="orientationPolicy")
     parts: list[PartSpec] = Field(min_length=1, max_length=MAX_PARTS)
 
@@ -279,10 +286,38 @@ class CreateJobRequest(_Strict):
             if part.part_id in seen:
                 raise ValueError(f"parts[{index}].partId bị trùng: {part.part_id!r}.")
             seen.add(part.part_id)
-            total_instances += part.quantity
+            quantity_co_mat = "quantity" in part.model_fields_set
+            if self.layout_intent == "quantity_fulfillment":
+                if not quantity_co_mat or part.quantity is None:
+                    raise ValueError(
+                        f"parts[{index}].quantity là bắt buộc khi "
+                        "layoutIntent='quantity_fulfillment'."
+                    )
+                total_instances += part.quantity
+            elif quantity_co_mat:
+                # Explicit null cũng bị từ chối: wire Rust dùng sự VẮNG MẶT làm hợp
+                # đồng, không dùng null/0 làm quantity giả.
+                raise ValueError(
+                    f"parts[{index}].quantity phải vắng mặt khi "
+                    "layoutIntent là bài toán một tờ."
+                )
             total_vertices += len(part.outer) + sum(len(hole) for hole in part.holes)
 
-        if total_instances > MAX_INSTANCES_TOTAL:
+        if (
+            self.layout_intent
+            in {"autofill_single_sheet", "step_repeat_single_sheet"}
+            and self.sheet.max_sheets != 1
+        ):
+            raise ValueError(
+                "Bình tự lấp đầy một tờ yêu cầu sheet.maxSheets = 1."
+            )
+        if self.layout_intent == "step_repeat_single_sheet" and len(self.parts) != 1:
+            raise ValueError("Bình trang yêu cầu đúng một mẫu trong mỗi job.")
+
+        if (
+            self.layout_intent == "quantity_fulfillment"
+            and total_instances > MAX_INSTANCES_TOTAL
+        ):
             raise ValueError(
                 f"Tổng số con vượt giới hạn {MAX_INSTANCES_TOTAL} (đang là {total_instances})."
             )
@@ -378,6 +413,7 @@ class CapabilitiesResponse(BaseModel):
     default_rotation: Literal["free"] = Field(serialization_alias="defaultRotation")
     continuous_translation: bool = Field(serialization_alias="continuousTranslation")
     profiles: list[str]
+    layout_intents: list[str] = Field(serialization_alias="layoutIntents")
     max_request_bytes: int = Field(serialization_alias="maxRequestBytes")
 
     model_config = ConfigDict(populate_by_name=True)

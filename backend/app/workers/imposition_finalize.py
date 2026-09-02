@@ -17,9 +17,25 @@ Quy ước toạ độ trả về:
 """
 from typing import Any, Dict, List
 
+from app.workers.imposition_affine import AffineContractError
 from app.workers.rot_audit_log import get_logger as _rot_get_logger
 
 _rot_audit_log = _rot_get_logger()
+
+_MANIFEST_AFFINE_FIELDS = frozenset(
+    {
+        'instanceId',
+        'partId',
+        'sheetIndex',
+        'sourceRevision',
+        'pose',
+        'rotationDeg',
+        'translateXmm',
+        'translateYmm',
+        'referencePointMm',
+        'affineMm',
+    }
+)
 
 
 def finalize_placements(
@@ -41,6 +57,17 @@ def finalize_placements(
     """
     if not items:
         return []
+
+    # NESTING (audit 2026-08-28 §AFFINE.1): lane legacy dùng point/AABB và hai
+    # cờ cardinal. Chặn pose manifest để không âm thầm làm rơi góc tự do.
+    for index, item in enumerate(items):
+        affine_fields = _MANIFEST_AFFINE_FIELDS.intersection(item)
+        if affine_fields:
+            fields = ', '.join(sorted(affine_fields))
+            raise AffineContractError(
+                f"items[{index}] chứa {fields}; pose manifest-mm phải đi qua "
+                "renderer affine, không qua finalize_placements legacy."
+            )
 
     total_content_h = max((it.get('y', 0) + it.get('height', 0) for it in items), default=0.0)
     max_x_used = max((it.get('x', 0) + it.get('width', 0) for it in items), default=0.0)

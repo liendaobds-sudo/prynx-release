@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+import re
 
 import pikepdf
 import pytest
 
 from app.workers import nup_engine
+from app.workers import nup_artwork
 from app.workers import nup_process_chunk
 from app.workers import nup_report
 from app.workers import pdf_wrapper as pdf_lib
@@ -15,6 +17,12 @@ from app.workers.cluster_tile_engine import draw_segment_cut_marks
 
 
 MM_TO_PT = 2.83465
+
+
+_RECT_CLIP_RE = re.compile(
+    rb"([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)\s+"
+    rb"(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+re\s+W\s+n"
+)
 
 
 def _make_pdf(path: str, sizes: list[tuple[float, float]]) -> None:
@@ -25,6 +33,41 @@ def _make_pdf(path: str, sizes: list[tuple[float, float]]) -> None:
         page.insert_text(pdf_lib.Point(8 + index, min(height - 5, 35)), f"P{index + 1}")
     doc.save(path)
     doc.close()
+
+
+def _make_opaque_a5_bleed_pdf(path: str) -> None:
+    """Hai A5 thành phẩm có nền bleed trắng opaque trên MediaBox lớn hơn 3 mm."""
+    media_width = 154.0 * MM_TO_PT
+    media_height = 216.0 * MM_TO_PT
+    trim_offset = 3.0 * MM_TO_PT
+    trim_width = 148.0 * MM_TO_PT
+    trim_height = 210.0 * MM_TO_PT
+    pdf = pikepdf.Pdf.new()
+    for red, green, blue in ((1, 0, 0), (0, 0, 1)):
+        page = pdf.add_blank_page(page_size=(media_width, media_height))
+        page.obj[pikepdf.Name("/TrimBox")] = pikepdf.Array(
+            [
+                trim_offset,
+                trim_offset,
+                trim_offset + trim_width,
+                trim_offset + trim_height,
+            ]
+        )
+        # REGRESSION (audit 2026-09-01 §CLIPOWN.1): nền trắng phải được paint
+        # thật; nền trang trong suốt sẽ che mất lỗi bleed của Form vẽ sau.
+        page.contents_add(
+            pikepdf.Stream(
+                pdf,
+                (
+                    f"q 1 1 1 rg 0 0 {media_width:.6f} {media_height:.6f} re f Q\n"
+                    f"q {red} {green} {blue} rg "
+                    f"{trim_offset:.6f} {trim_offset:.6f} "
+                    f"{trim_width:.6f} {trim_height:.6f} re f Q\n"
+                ).encode("ascii"),
+            )
+        )
+    pdf.save(path)
+    pdf.close()
 
 
 def _settings(**overrides) -> dict:
@@ -57,6 +100,57 @@ def _do_count(page: pikepdf.Page) -> int:
         str(instruction.operator) == "Do"
         for instruction in pikepdf.parse_content_stream(page)
     )
+
+
+def _rect_output_clips(page: pikepdf.Page) -> list[tuple[float, float]]:
+    """Đọc các khoảng clip theo trục X từ content stream của trang kết quả."""
+    contents = page.obj.get("/Contents")
+    streams = contents if isinstance(contents, pikepdf.Array) else [contents]
+    raw = b"\n".join(
+        stream.read_bytes() for stream in streams if stream is not None
+    )
+    return sorted(
+        (
+            float(match.group(1)),
+            float(match.group(1)) + float(match.group(3)),
+        )
+        for match in _RECT_CLIP_RE.finditer(raw)
+    )
+
+
+def _render_first_page_rgb(path: str, scale: float = 4.0):
+    """Raster PDF thật để bắt lớp trắng opaque mà phép đo rectangle không thấy."""
+    import numpy as np
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(path)
+    try:
+        bitmap = document[0].render(scale=scale)
+        return np.asarray(bitmap.to_pil().convert("RGB")), scale
+    finally:
+        document.close()
+
+
+def _clip_placement(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    block_id: int,
+    cluster_idx: int,
+) -> dict:
+    """Placement tối thiểu cho helper phân quyền clip toàn tờ."""
+    return {
+        "cluster_idx": cluster_idx,
+        "cell": {
+            "width": width,
+            "height": height,
+            "blockId": block_id,
+        },
+        "abs_x": x,
+        "original_cell_y": y,
+    }
 
 
 def _rotation(placement: dict) -> int:
@@ -178,6 +272,116 @@ def test_mixed_export_places_two_different_sizes_on_one_output_page(tmp_path):
     with pikepdf.open(output) as pdf:
         assert len(pdf.pages) == 1
         assert _do_count(pdf.pages[0]) == 2
+
+
+def test_output_clips_split_positive_gap_and_keep_outer_bleed():
+    """Khe 4 pt được chia 2 pt mỗi bên; bốn mép lộ vẫn giữ bleed 10 pt."""
+    left = _clip_placement(
+        10.0, 20.0, 100.0, 80.0, block_id=7, cluster_idx=2
+    )
+    right = _clip_placement(
+        114.0, 20.0, 100.0, 80.0, block_id=11, cluster_idx=9
+    )
+
+    clips = nup_artwork.compute_output_clips([left, right], bleed_pt=10.0)
+    left_clip = clips[id(left)]
+    right_clip = clips[id(right)]
+
+    assert tuple(left_clip) == pytest.approx((0.0, 10.0, 112.0, 110.0))
+    assert tuple(right_clip) == pytest.approx((112.0, 10.0, 224.0, 110.0))
+
+
+def test_output_clips_corner_touch_do_not_enter_other_trim():
+    """Clip chữ nhật phải bảo thủ khi hai block chỉ chạm nhau tại một góc."""
+    upper_left = _clip_placement(
+        0.0, 0.0, 100.0, 100.0, block_id=1, cluster_idx=3
+    )
+    lower_right = _clip_placement(
+        100.0, 100.0, 100.0, 100.0, block_id=2, cluster_idx=8
+    )
+
+    clips = nup_artwork.compute_output_clips(
+        [upper_left, lower_right], bleed_pt=10.0
+    )
+    first_clip = clips[id(upper_left)]
+    second_clip = clips[id(lower_right)]
+
+    assert first_clip.x1 <= second_clip.x0
+    assert first_clip.y1 <= second_clip.y0
+    assert tuple(first_clip) == pytest.approx((-10.0, -10.0, 100.0, 100.0))
+    assert tuple(second_clip) == pytest.approx((100.0, 100.0, 210.0, 210.0))
+
+
+def test_output_clips_tolerate_sub_point_rounding_overlap_at_zero_gap():
+    """Sai số cộng x + width không được làm mất láng giềng tại seam gap 0."""
+    left = _clip_placement(
+        0.0, 0.0, 100.0, 100.0, block_id=1, cluster_idx=1
+    )
+    right = _clip_placement(
+        99.9999989, 0.0, 100.0, 100.0, block_id=2, cluster_idx=2
+    )
+
+    clips = nup_artwork.compute_output_clips([left, right], bleed_pt=10.0)
+    left_clip = clips[id(left)]
+    right_clip = clips[id(right)]
+
+    assert left_clip.x1 == pytest.approx(100.0, abs=0.01)
+    assert right_clip.x0 == pytest.approx(99.9999989, abs=0.01)
+    assert left_clip.x1 - right_clip.x0 <= 0.01
+
+
+def test_mixed_a5_on_a4_has_no_opaque_white_overlap_at_trim_seam(tmp_path):
+    """Hai block khác nhau không được nhận bleed chồng nhau tại seam gap 0."""
+    source = str(tmp_path / "two-a5-opaque-bleed.pdf")
+    output = str(tmp_path / "two-a5-on-a4.pdf")
+    _make_opaque_a5_bleed_pdf(source)
+
+    nup_engine.run_nup_engine(
+        source,
+        output,
+        _settings(
+            sheetWidth=297.0,
+            sheetHeight=210.0,
+            gridStrategy="optimal_auto",
+            bleed=3.0,
+            gapX=0.0,
+            gapY=0.0,
+            splitGap=0.0,
+            marginTop=0.0,
+            marginBottom=0.0,
+            marginLeft=0.0,
+            marginRight=0.0,
+        ),
+        job_id="mixed-guillotine-a5-a4-clip-ownership",
+    )
+
+    trim_left = 0.5 * MM_TO_PT
+    trim_seam = 148.5 * MM_TO_PT
+    trim_right = 296.5 * MM_TO_PT
+    bleed = 3.0 * MM_TO_PT
+    with pikepdf.open(output) as pdf:
+        assert len(pdf.pages) == 1
+        assert _do_count(pdf.pages[0]) == 2
+        clips = _rect_output_clips(pdf.pages[0])
+
+    assert len(clips) == 2
+    left_clip, right_clip = clips
+    assert left_clip[1] == pytest.approx(trim_seam, abs=0.03)
+    assert right_clip[0] == pytest.approx(trim_seam, abs=0.03)
+    assert left_clip[1] == pytest.approx(right_clip[0], abs=0.03)
+    # Mép ngoài vẫn giữ full bleed; chỉ cạnh giáp placement khác bị chặn ở seam.
+    assert left_clip[0] == pytest.approx(trim_left - bleed, abs=0.03)
+    assert right_clip[1] == pytest.approx(trim_right + bleed, abs=0.03)
+
+    rgb, scale = _render_first_page_rgb(output)
+    row = rgb[rgb.shape[0] // 2]
+    seam_px = int(round(trim_seam * scale))
+    probe_half_width = int(round(2.5 * MM_TO_PT * scale))
+    seam_band = row[seam_px - probe_half_width : seam_px + probe_half_width]
+    near_white = (seam_band >= 245).all(axis=1)
+    assert int(near_white.sum()) <= 4, (
+        "bleed trắng opaque của trang vẽ sau vẫn phủ vào thành phẩm tại seam"
+    )
 
 
 @pytest.mark.parametrize("flip_edge", ["long", "short"])

@@ -194,6 +194,30 @@ def test_free_token_cannot_call_pro_sidecar_endpoints(production_free_client):
         )
         _assert_forbidden(response, expected_feature)
 
+    # SEC (audit 2026-08-28 §SEC.01): router cut_export TỪNG chỉ có `require_license`
+    # nên chính token Free này xuất được luồng cắt và đẩy tới máy bế. Ba đường dưới đây
+    # là ba mặt của cùng một lỗ: dựng model từ payload, dựng từ file PDF đã bình, và đọc
+    # danh sách máy. Giữ cả ba để một lần vá lẻ ở decorator không làm test xanh giả.
+    path = "/api/imposition/cut-export"
+    response = client.post(
+        path,
+        headers=_headers(path, token),
+        json={"profile_id": "generic_hpgl", "sheet_w_mm": 100, "sheet_h_mm": 100},
+    )
+    _assert_forbidden(response, "impo.cnc")
+
+    path = "/api/imposition/cut-export-from-file"
+    response = client.post(
+        path,
+        headers=_headers(path, token),
+        json={"profile_id": "generic_hpgl", "path": str(pdf_path)},
+    )
+    _assert_forbidden(response, "impo.cnc")
+
+    path = "/api/imposition/cut-profiles"
+    response = client.get(path, headers=_headers(path, token, method="GET"))
+    _assert_forbidden(response, "impo.cnc")
+
 
 @pytest.mark.parametrize(
     ("feature_id", "expected_status"),

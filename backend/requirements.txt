@@ -18,12 +18,30 @@ psycopg2-binary==2.9.9
 celery[redis]==5.4.0
 redis==5.1.0
 websockets==13.0
-pypdfium2==4.30.0
+# SEC (pentest 2026-08-28 §ATK.04): nâng 4.30.0 → 5.13.0, kéo PDFium bundle từ build
+# 6462 (~T5/2024) lên 7999 — khoảng hai năm bản vá bộ nhớ của PDFium/Chromium. PDFium
+# parse PDF KHÔNG tin cậy và chạy IN-PROCESS trong sidecar nên đây là giảm rủi ro trực
+# tiếp cho §ATK.04 (crash/RCE hạ sidecar).
+#
+# Bump major 4→5 nhưng diện va đụng API bằng 0 sau khi kiểm từng breaking change của
+# v5.0.0: repo KHÔNG dùng `PdfDocument.render()` (đã xoá), `PdfBitmap.get_info()`,
+# `fill_rect`, `from_pil`, `get_pos`, `fb_render`, `get_toc`, `PdfMatrix.mirror`,
+# `get_text_range`, và các cờ version cũ (V_LIBPDFIUM…). Mọi `PdfImage` trong repo là
+# của **pikepdf**, không phải pypdfium2 (nên rename get_size→get_px_size không ảnh
+# hưởng); `PdfPage.get_size()` vẫn còn ở v5; `to_numpy()` chỉ dùng trên render màu nên
+# đổi shape ảnh grayscale không chạm tới.
+#
+# Verify: FULL backend pytest 4288 passed / 2 skipped / 0 failed, gồm golden render và
+# parity màu — PDFium mới không làm lệch artifact. License không đổi: Apache-2.0 OR
+# BSD-3-Clause (permissive, dùng được trong sản phẩm đóng).
+pypdfium2==5.13.0
 # SECURITY: bump 0.11.0 -> 0.11.9 để kéo pdfminer.six==20251230 (transitive, parse
 # PDF live). Vá CVE-2025-64512 (fix 20251107) + CVE-2025-70559 (fix 20251230).
-# Chọn 0.11.9 (KHÔNG 0.11.10) vì 0.11.10 ép pypdfium2>=5.9.0 (nhảy major 4->5);
-# 0.11.9 vẫn giữ pypdfium2>=4.18.0 nên pin pypdfium2==4.30.0 bên dưới không đổi.
-pdfplumber==0.11.9
+#
+# SEC (pentest 2026-08-28 §ATK.04): nay lên 0.11.10 CÙNG LÚC với pypdfium2 5.x — lý do
+# hoãn trước đây (0.11.10 ép pypdfium2>=5.9.0) đã được xử lý bằng cách nâng cả cặp.
+# Kéo theo pdfminer.six 20260107.
+pdfplumber==0.11.10
 # SECURITY (audit 2026-07-25, pip-audit): 6.13.3 -> 6.14.2 vá 4 CVE
 # (CVE-2026-59935/59936/59937/59938). pypdf parse PDF do người dùng nạp nên nằm
 # thẳng trên đường chạy — không phải dep ngủ.
@@ -57,7 +75,17 @@ Nuitka==4.1.2
 ordered-set==4.1.0
 zstandard==0.25.0
 pytesseract==0.3.13
-pikepdf==9.5.0
+# SEC (pentest 2026-08-28 §ATK.04): nâng 9.5.0 → 10.12.0 để bundle libqpdf 12.3.2
+# (từ 11.9.1). qpdf parse PDF KHÔNG tin cậy ngay ở /upload và chạy IN-PROCESS trong
+# sidecar, nên các bản vá bộ nhớ của qpdf 12.x (nhiều fix đến từ fuzz) giảm trực tiếp
+# rủi ro crash/RCE hạ sidecar.
+#
+# Bump này ban đầu làm ĐỎ test_action_engine_native::test_downscale_keeps_smask_aligned_
+# with_image. Nguyên nhân KHÔNG phải qpdf: pikepdf 10 đổi `PdfImage.as_pil_image()` sang
+# TỰ ÁP `/SMask` nên trả RGBA thay vì RGB, và guard số-kênh trong `_resample_image_stream`
+# (đúng đắn) từ chối ghi 4 kênh vào /DeviceRGB. Đã vá engine bằng cách bỏ kênh alpha
+# tường minh — xem `pdf_actions_native._resample_image_stream`.
+pikepdf==10.12.0
 
 segno==1.6.6
 python-barcode==0.16.1

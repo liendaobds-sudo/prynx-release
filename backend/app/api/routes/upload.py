@@ -7,7 +7,6 @@ import shutil
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import pikepdf
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -16,7 +15,12 @@ from app.database import get_db
 from app.models.job import UploadedFile as UploadedFileModel
 from app.schemas.job import FileUploadResponse, LocalFileUploadRequest
 from app.utils.file_handler import save_upload_file
-from app.core.pdf_processor import PDFProcessor
+from app.core import pdf_intake
+from app.core.parser_sandbox import (
+    IsolatedParseCrashed,
+    IsolatedParseTimeout,
+    run_isolated,
+)
 from app.core.license_guard import require_license
 from app.config import settings
 
@@ -25,7 +29,6 @@ FILE_EXPIRY_HOURS = 24
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-processor = PDFProcessor()
 
 
 def _remove_stored_file(file_path: str | Path) -> None:
@@ -69,61 +72,77 @@ def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
             detail="Nội dung file không phải PDF, dù tên file có đuôi .pdf.",
         )
 
-    # FILEIO (audit 2026-08-02 §BE.3): mở nghiêm ngặt để không nhận PDF hỏng rồi
-    # trả 200; tắt recovery vì file được sửa ngầm vẫn có thể hỏng ở bước render sau.
+    # SEC (pentest 2026-08-28 §ATK.04): phần CHẠM PARSER (qpdf/pypdf/PDFium) chạy trong
+    # PROCESS CON. Đây là bề mặt đầu tiên đọc file khách gửi, nên một lỗi bộ nhớ của
+    # parser tại đây trước kia sẽ giết cả sidecar (mất mọi phiên làm việc). Cách ly khiến
+    # ca đó chỉ chết worker và trả lỗi sạch. Chi phí đo được: ~+0,3 ms/lần nhờ pool giữ
+    # sẵn (process mới mỗi lần sẽ là ~+165 ms — xem `parser_sandbox`).
+    #
+    # Việc kiểm cấp-byte ở trên (rỗng / thiếu chữ ký %PDF-) CỐ Ý ở lại tiến trình cha:
+    # nó không gọi parser nào và loại phần lớn rác trước khi tốn một vòng IPC.
     try:
-        with pikepdf.Pdf.open(path, attempt_recovery=False) as pdf:
-            if pdf.is_encrypted:
-                raise HTTPException(
-                    status_code=422,
-                    detail="File PDF bị mã hóa. Vui lòng bỏ mã hóa rồi mở lại.",
-                )
-            page_count = len(pdf.pages)
-    except pikepdf.PasswordError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="File PDF có mật khẩu hoặc bị mã hóa. Vui lòng gỡ mật khẩu rồi mở lại.",
-        ) from exc
-    except pikepdf.PdfError as exc:
-        logger.info("Từ chối PDF bị hỏng %s: %s", path, exc)
+        result = run_isolated(pdf_intake.inspect_pdf_for_intake, str(path))
+    except IsolatedParseCrashed as exc:
+        # Parser sập giữa lúc đọc: coi là file không dùng được, KHÔNG phải lỗi server.
+        logger.error("Parser sập khi đọc PDF vừa lưu %s: %s", path, exc)
         raise HTTPException(
             status_code=400,
             detail="File PDF bị hỏng hoặc chưa tải xuống đầy đủ. Vui lòng xuất/tải lại file.",
         ) from exc
+    except IsolatedParseTimeout as exc:
+        logger.warning("Đọc PDF vượt trần thời gian %s: %s", path, exc)
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
 
-    if page_count == 0:
+    status = result.get("status")
+
+    if status == pdf_intake.STATUS_ENCRYPTED:
+        raise HTTPException(
+            status_code=422,
+            detail="File PDF bị mã hóa. Vui lòng bỏ mã hóa rồi mở lại.",
+        )
+    if status == pdf_intake.STATUS_PASSWORD:
+        raise HTTPException(
+            status_code=422,
+            detail="File PDF có mật khẩu hoặc bị mã hóa. Vui lòng gỡ mật khẩu rồi mở lại.",
+        )
+    if status == pdf_intake.STATUS_CORRUPT:
+        logger.info("Từ chối PDF bị hỏng %s: %s", path, result.get("detail"))
+        raise HTTPException(
+            status_code=400,
+            detail="File PDF bị hỏng hoặc chưa tải xuống đầy đủ. Vui lòng xuất/tải lại file.",
+        )
+    if status == pdf_intake.STATUS_NO_PAGES:
         raise HTTPException(
             status_code=400,
             detail="File PDF không có trang nào để mở.",
         )
-
-    try:
-        metadata = processor.get_metadata(str(path))
-    except Exception as exc:
-        logger.exception("Không thể đọc thông tin PDF: %s", path)
+    if status == pdf_intake.STATUS_METADATA_FAILED:
+        logger.error("Không thể đọc thông tin PDF: %s (%s)", path, result.get("detail"))
         raise HTTPException(
             status_code=500,
             detail="Không thể đọc thông tin PDF. Vui lòng thử xuất lại file hoặc mở file khác.",
-        ) from exc
-
-    metadata_page_count = metadata.get("page_count") if isinstance(metadata, dict) else None
-    if (
-        not isinstance(metadata_page_count, int)
-        or isinstance(metadata_page_count, bool)
-        or metadata_page_count != page_count
-    ):
+        )
+    if status == pdf_intake.STATUS_METADATA_MISMATCH:
         logger.error(
             "Thông tin PDF không hợp lệ: %s (pikepdf=%s, metadata=%r)",
             path,
-            page_count,
-            metadata_page_count,
+            result.get("page_count"),
+            result.get("metadata_page_count"),
         )
         raise HTTPException(
             status_code=500,
             detail="Không thể xác nhận thông tin PDF. Vui lòng thử xuất lại file.",
         )
+    if status != pdf_intake.STATUS_OK:
+        # Trạng thái lạ nghĩa là hợp đồng giữa hai module đã lệch — fail-closed, không
+        # đoán bừa rồi ghi nhận một upload chưa được xác nhận.
+        logger.error("Trạng thái khám PDF không nhận diện được: %r (%s)", status, path)
+        raise HTTPException(
+            status_code=500,
+            detail="Không thể xác nhận thông tin PDF. Vui lòng thử xuất lại file.",
+        )
 
-    return metadata, page_count
+    return result["metadata"], result["page_count"]
 
 
 def _persist_uploaded_pdf(

@@ -1,7 +1,7 @@
 {
-  "corpusVersion": 2,
-  "protocolVersion": 1,
-  "note": "Corpus benchmark cho Bình lồng ghép tự do. Kế hoạch 2026-08-26 §17. Mỗi ca là một CreateJobRequest công khai (KHÔNG có jobId/geometryHash/sourceRevision — ba trường đó server-owned). 'expect' là kỳ vọng ĐÃ VERSION HOÁ: sửa số ở đây phải tăng corpusVersion và ghi lý do, không được 'làm xanh' bằng cách nới ngưỡng.",
+  "corpusVersion": 3,
+  "protocolVersion": 2,
+  "note": "Corpus benchmark cho Bình lồng ghép tự do. Corpus v3 nâng hợp đồng request lên protocol v2 và khai tường minh layoutIntent=quantity_fulfillment; kỳ vọng hình học không đổi. Kế hoạch 2026-08-26 §17. Mỗi ca là một CreateJobRequest công khai (KHÔNG có jobId/geometryHash/sourceRevision — ba trường đó server-owned). 'expect' là kỳ vọng ĐÃ VERSION HOÁ: sửa số ở đây phải tăng corpusVersion và ghi lý do, không được 'làm xanh' bằng cách nới ngưỡng.",
   "cardinalBaselineNote": "Baseline bốn góc cardinal là SÀN AN TOÀN để so sánh, KHÔNG phải legal domain của sản phẩm. Legal domain mặc định là [0°,360°) liên tục.",
   "cases": [
     {
@@ -9,7 +9,7 @@
       "title": "Chỉ vừa tờ khi xoay góc không-cardinal",
       "rationale": "Chi tiết 120×12 mm trong vùng dùng được 100×100 mm. Bao lồi khi xoay θ có bề rộng 120|cosθ|+12|sinθ| và bề cao 120|sinθ|+12|cosθ|. Ở θ=0° bề rộng 120>100 (trượt); ở θ=90° bề cao 120>100 (trượt); ở θ=45° cả hai bằng 93,34 mm nên VỪA. Vì vậy bốn góc cardinal KHÔNG có phương án nào, còn miền liên tục thì có. Cửa sổ hợp lệ xấp xỉ [37°,53°] và ba cung đối xứng.",
       "request": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "seed": 20260826,
         "profile": "balanced",
         "sheet": {
@@ -19,6 +19,7 @@
           "maxSheets": 2
         },
         "gapMm": 0.0,
+        "layoutIntent": "quantity_fulfillment",
         "orientationPolicy": {
           "defaultRotation": { "mode": "free" },
           "reflection": "forbidden"
@@ -57,7 +58,7 @@
       "title": "Toạ độ X/Y có phần lẻ mm, không nằm trên lưới",
       "rationale": "Khổ tờ và lề đều là số lẻ mm (100,37 × 60,73 với lề 5,19) nên mọi pose sát biên vùng dùng được đều có toạ độ phần lẻ. Nếu solver hay validator snap về lưới mm/pixel thì ca này đỏ.",
       "request": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "seed": 20260826,
         "profile": "balanced",
         "sheet": {
@@ -67,6 +68,7 @@
           "maxSheets": 4
         },
         "gapMm": 1.37,
+        "layoutIntent": "quantity_fulfillment",
         "orientationPolicy": {
           "defaultRotation": { "mode": "free" },
           "reflection": "forbidden"
@@ -101,7 +103,7 @@
       "title": "Trộn free, fixed, discrete, ranges và inherit trong cùng job",
       "rationale": "Mỗi chi tiết khai một mode khác nhau; validator phải phân giải đúng từng miền. Đây là ca duy nhất chứng minh 'inherit' lấy đúng policy cấp job, và 'fixed' với góc không-cardinal 13.372849° không bị làm tròn.",
       "request": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "seed": 20260826,
         "profile": "balanced",
         "sheet": {
@@ -111,6 +113,7 @@
           "maxSheets": 6
         },
         "gapMm": 2.0,
+        "layoutIntent": "quantity_fulfillment",
         "orientationPolicy": {
           "defaultRotation": { "mode": "free" },
           "reflection": "forbidden"
@@ -179,7 +182,7 @@
       "title": "20 con, 5 loại, contour đơn giản",
       "rationale": "Ca vệ sinh: đủ nhỏ để chạy nhanh trong CI nhưng có nhiều loại để đụng tới NFP nhiều cặp và multi-sheet.",
       "request": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "seed": 20260826,
         "profile": "fast",
         "sheet": {
@@ -189,6 +192,7 @@
           "maxSheets": 8
         },
         "gapMm": 2.5,
+        "layoutIntent": "quantity_fulfillment",
         "orientationPolicy": {
           "defaultRotation": { "mode": "free" },
           "reflection": "forbidden"

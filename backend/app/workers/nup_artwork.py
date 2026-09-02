@@ -13,12 +13,37 @@ Hàm `place_one_artwork` xử lý cho MỘT placement:
 """
 
 import logging
+import math
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
 from app.core.imposition_page_box import effective_imposition_box
 from app.workers import pdf_wrapper as pdf_lib
-from app.workers.nup_clip_shape import build_die_clip_rings
+from app.workers.imposition_affine import (
+    Affine2D,
+    AffineContractError,
+    PoseMm,
+    compose_render_ctm_mm,
+    parse_point_mm,
+    parse_pose_mm,
+)
+from app.workers.imposition_pdf_form import (
+    ManifestPageBinding,
+    PaintedManifestForm,
+    paint_manifest_page_form,
+)
+from app.workers.nup_clip_shape import (
+    build_die_clip_rings,
+    build_manifest_clip_rings,
+    freeze_manifest_polygon,
+    FrozenManifestPolygon,
+)
 
 logger = logging.getLogger(__name__)
+
+class ManifestArtworkContractError(ValueError):
+    """Placement/bundle không đủ identity để render artwork production."""
+
 
 
 def resolve_die_output_clip(trim_rect, bleed_rect, cell_out_clip, cut_type, die_size_mode):
@@ -79,61 +104,109 @@ def _spot_key(spot_name):
     return parts or None
 
 
+# NEST (audit 2026-08-28 §A1.2): số toạ độ bắt buộc của từng lệnh path.
+# 'l' = 2 điểm, 'c' = 4 điểm Bezier, 're' = 2 góc đối. Sai arity nghĩa là dữ
+# liệu không đáng tin, phải bỏ qua chứ không đoán bù.
+_PATH_ITEM_ARITY = {'l': 4, 'c': 8, 're': 4}
+
+
+def _path_item_coords(item):
+    """Trải một path item về danh sách toạ độ phẳng; None nếu không trải được.
+
+    Chấp nhận CẢ HAI dạng đang tồn tại trong dự án:
+
+    - dạng object của ``pdf_content_parser``: ``('l', Point, Point)``,
+      ``('c', Point, Point, Point, Point)``, ``('re', Rect)``;
+    - dạng mảng số phẳng của ``strip_color_from_stream`` và của manifest
+      production: ``('l', x1, y1, x2, y2)``…
+
+    Trước đây hàm khoá chỉ đọc được dạng object nên khi nhận mảng số nó **ném
+    AttributeError**, và caller ở ``nup_artwork`` biến lỗi đó thành
+    "Không thể tách đường khuôn bế khỏi trang in N" — hỏng job với thông điệp
+    chỉ sai chỗ. Đường manifest bất biến truyền contour dạng số, nên phải trải
+    được cả hai dạng trước khi lô A2/A3 nối writer.
+    """
+
+    coords = []
+    for member in item[1:]:
+        # bool là con của int: nhận vào sẽ thành 0.0/1.0 âm thầm.
+        if isinstance(member, bool):
+            return None
+        if isinstance(member, (int, float)):
+            coords.append(float(member))
+            continue
+        if isinstance(member, (str, bytes)):
+            return None
+        # Point/Rect (và mọi object toạ độ có __iter__) tự trải qua iterable.
+        try:
+            parts = list(member)
+        except TypeError:
+            return None
+        for part in parts:
+            if isinstance(part, bool) or not isinstance(part, (int, float)):
+                return None
+            coords.append(float(part))
+    return coords
+
+
 def _path_item_key(item, tolerance=0.1):
-    """Return a tolerance-stable geometry key for one parsed path item."""
+    """Khoá hình học ổn định theo dung sai cho một path item đã parse.
+
+    Trả ``None`` khi item không mang hình học đáng tin — không bao giờ ném lỗi,
+    vì hàm này nằm trong vòng quét content stream của mọi job bình.
+    """
+
     if not item:
         return None
-
-    def _q(value):
-        return int(round(float(value) / tolerance))
-
     command = item[0]
-    if command == 'l':
-        return (
-            'l',
-            _q(item[1].x), _q(item[1].y),
-            _q(item[2].x), _q(item[2].y),
-        )
-    if command == 'c':
-        values = []
-        for point in item[1:5]:
-            values.extend((_q(point.x), _q(point.y)))
-        return ('c', *values)
-    if command == 're':
-        rect = item[1]
-        return (
-            're',
-            _q(rect.x0), _q(rect.y0),
-            _q(rect.x1), _q(rect.y1),
-        )
-    return None
+    coords = _path_item_coords(item)
+    if coords is None or any(not math.isfinite(value) for value in coords):
+        return None
+    arity = _PATH_ITEM_ARITY.get(command)
+    if arity is not None and len(coords) != arity:
+        return None
+    if command == 're' and len(coords) == 4:
+        # Chuẩn hoá về (min, max) để hai nguồn dựng rect theo thứ tự khác nhau
+        # vẫn cho cùng khoá.
+        x0, y0, x1, y1 = coords
+        coords = [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+    return (command, *(int(round(value / tolerance)) for value in coords))
 
 
 def _numeric_path_item_key(item, tolerance=0.1):
-    """Geometry key for an item represented only by numeric coordinates."""
-    if not item:
-        return None
+    """Giữ tên cũ nhưng dùng CHUNG một cách khoá.
 
-    def _q(value):
-        return int(round(float(value) / tolerance))
+    Hai hàm khoá song song từng là gốc của lỗi: bên target đọc dạng object, bên
+    candidate đọc dạng số, lệch một dạng là mất khớp toàn bộ.
+    """
 
-    return (item[0], *(_q(value) for value in item[1:]))
+    return _path_item_key(item, tolerance)
 
 
 def _path_matches_target_items(current_path, target_items):
-    """Whether every item in the current paint path belongs to the detected die group."""
+    """Mọi nét đang vẽ có thuộc đúng nhóm khuôn đã dò ra hay không.
+
+    NEST (audit 2026-08-28 §A1.2): nét nào KHÔNG khoá được thì trả False ngay.
+    Bỏ qua nét lạ sẽ làm candidate trông như tập con của target và xoá mất
+    artwork của khách; giữ lại nét bế là lỗi thấy được trên preview, còn xoá mất
+    artwork chỉ lộ ra khi đã in.
+    """
+
     from collections import Counter
 
     if not current_path or not target_items:
         return False
+    candidate_keys = []
+    for item in current_path:
+        key = _path_item_key(item)
+        if key is None:
+            return False
+        candidate_keys.append(key)
     target = Counter(
         key for key in (_path_item_key(item) for item in target_items)
         if key is not None
     )
-    candidate = Counter(
-        key for key in (_numeric_path_item_key(item) for item in current_path)
-        if key is not None
-    )
+    candidate = Counter(candidate_keys)
     return bool(candidate) and all(
         candidate[key] <= target.get(key, 0)
         for key in candidate
@@ -657,6 +730,187 @@ def compute_block_bbox(placements):
     return block_bbox
 
 
+_OUTPUT_CLIP_UNSET = object()
+# Planner ghi nhiều trường hình học độc lập đến 6 chữ số thập phân; khi cộng lại,
+# hai cạnh cùng seam có thể lệch hơn 1e-6 pt. Dung sai 0,01 pt vẫn nhỏ hơn nhiều
+# một pixel in nhưng đủ giữ ownership ổn định sau vòng serialize/deserialize.
+_CLIP_COORD_EPSILON_PT = 0.01
+
+
+class _RangeMaxIndex:
+    """Chỉ mục đoạn cho phép cập nhật/query max trên một khoảng nén toạ độ."""
+
+    __slots__ = ('_size', '_tree', '_lazy')
+
+    def __init__(self, segment_count):
+        size = 1
+        while size < segment_count:
+            size *= 2
+        self._size = size
+        self._tree = [-math.inf] * (2 * size)
+        self._lazy = [-math.inf] * (2 * size)
+
+    def _apply(self, node, value):
+        self._tree[node] = max(self._tree[node], value)
+        self._lazy[node] = max(self._lazy[node], value)
+
+    def _push(self, node):
+        value = self._lazy[node]
+        if value == -math.inf or node >= self._size:
+            return
+        self._apply(node * 2, value)
+        self._apply(node * 2 + 1, value)
+        self._lazy[node] = -math.inf
+
+    def update(self, start, stop, value):
+        """Ghi max cho khoảng nửa mở ``[start, stop)``."""
+
+        self._update(1, 0, self._size, start, stop, value)
+
+    def _update(self, node, left, right, start, stop, value):
+        if stop <= left or right <= start:
+            return
+        if start <= left and right <= stop:
+            self._apply(node, value)
+            return
+        self._push(node)
+        middle = (left + right) // 2
+        self._update(node * 2, left, middle, start, stop, value)
+        self._update(node * 2 + 1, middle, right, start, stop, value)
+        self._tree[node] = max(self._tree[node * 2], self._tree[node * 2 + 1])
+
+    def query(self, start, stop):
+        """Đọc max trên khoảng nửa mở ``[start, stop)``."""
+
+        return self._query(1, 0, self._size, start, stop)
+
+    def _query(self, node, left, right, start, stop):
+        if stop <= left or right <= start:
+            return -math.inf
+        if start <= left and right <= stop:
+            return self._tree[node]
+        self._push(node)
+        middle = (left + right) // 2
+        return max(
+            self._query(node * 2, left, middle, start, stop),
+            self._query(node * 2 + 1, middle, right, start, stop),
+        )
+
+
+def _nearest_negative_axis_gaps(bounds, *, axis, reflected, projection_pad):
+    """Khoảng tới láng giềng gần nhất ở phía âm của một trục đã chọn."""
+
+    records = []
+    for index, (x0, y0, x1, y1) in enumerate(bounds):
+        if axis == 'x':
+            low, high = x0, x1
+            projection_low = y0 - projection_pad
+            projection_high = y1 + projection_pad
+        else:
+            low, high = y0, y1
+            projection_low = x0 - projection_pad
+            projection_high = x1 + projection_pad
+        if reflected:
+            low, high = -high, -low
+        records.append((index, low, high, projection_low, projection_high))
+
+    coordinates = sorted({
+        coordinate
+        for record in records
+        for coordinate in (record[3], record[4])
+    })
+    coordinate_index = {
+        coordinate: index for index, coordinate in enumerate(coordinates)
+    }
+    interval_index = _RangeMaxIndex(max(1, len(coordinates) - 1))
+    candidates = sorted(records, key=lambda record: record[2])
+    queries = sorted(records, key=lambda record: record[1])
+    candidate_index = 0
+    gaps = [None] * len(records)
+
+    for index, low, _high, projection_low, projection_high in queries:
+        # Chỉ epsilon số học được phép nhận một cạnh hơi vượt seam. Khe dương
+        # dù rất nhỏ vẫn giữ nguyên giá trị thật để hai phía chia đúng g/2.
+        while (
+            candidate_index < len(candidates)
+            and candidates[candidate_index][2] <= low + _CLIP_COORD_EPSILON_PT
+        ):
+            candidate = candidates[candidate_index]
+            start = coordinate_index[candidate[3]]
+            stop = coordinate_index[candidate[4]]
+            interval_index.update(start, stop, candidate[2])
+            candidate_index += 1
+
+        start = coordinate_index[projection_low]
+        stop = coordinate_index[projection_high]
+        nearest = interval_index.query(start, stop)
+        if nearest != -math.inf:
+            gaps[index] = max(0.0, low - nearest)
+
+    return gaps
+
+
+def compute_output_clips(placements, bleed_pt):
+    """Tính clip chữ nhật theo láng giềng hình học trên toàn bộ một tờ.
+
+    Kết quả dùng identity của placement làm key để không phụ thuộc ``blockId`` hay
+    ``cluster_idx``. Mỗi seam nhận đúng nửa khe thật; cạnh không có láng giềng giữ
+    đủ bleed. Chỉ mục đoạn giữ chi phí O(N log N), không quét từng cặp placement.
+    """
+
+    placements = list(placements)
+    bleed = max(0.0, float(bleed_pt))
+    if bleed == 0.0:
+        return {id(placement): None for placement in placements}
+
+    bounds = []
+    for placement in placements:
+        cell = placement['cell']
+        x0 = float(placement['abs_x'])
+        y0 = float(placement['original_cell_y'])
+        x1 = x0 + float(cell['width'])
+        y1 = y0 + float(cell['height'])
+        if not all(math.isfinite(value) for value in (x0, y0, x1, y1)):
+            raise ValueError("Toạ độ placement bình cắt xén không hữu hạn.")
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError("Kích thước placement bình cắt xén phải lớn hơn 0.")
+        bounds.append((x0, y0, x1, y1))
+
+    if not bounds:
+        return {}
+
+    # IMPOSE (audit 2026-09-01 §CLIPOWN.1): nới nửa bleed trên mỗi projection
+    # để hai ô chỉ chạm gần góc vẫn được coi là láng giềng. Rect không biểu diễn
+    # được notch nên giới hạn bảo thủ cả hai cạnh, tránh bleed góc phủ vào trim kia.
+    projection_pad = bleed / 2.0 + _CLIP_COORD_EPSILON_PT
+    left_gaps = _nearest_negative_axis_gaps(
+        bounds, axis='x', reflected=False, projection_pad=projection_pad,
+    )
+    right_gaps = _nearest_negative_axis_gaps(
+        bounds, axis='x', reflected=True, projection_pad=projection_pad,
+    )
+    top_gaps = _nearest_negative_axis_gaps(
+        bounds, axis='y', reflected=False, projection_pad=projection_pad,
+    )
+    bottom_gaps = _nearest_negative_axis_gaps(
+        bounds, axis='y', reflected=True, projection_pad=projection_pad,
+    )
+
+    def _edge_offset(gap):
+        return bleed if gap is None else min(bleed, max(0.0, gap / 2.0))
+
+    output_clips = {}
+    for index, placement in enumerate(placements):
+        x0, y0, x1, y1 = bounds[index]
+        output_clips[id(placement)] = pdf_lib.Rect(
+            x0 - _edge_offset(left_gaps[index]),
+            y0 - _edge_offset(top_gaps[index]),
+            x1 + _edge_offset(right_gaps[index]),
+            y1 + _edge_offset(bottom_gaps[index]),
+        )
+    return output_clips
+
+
 def place_one_artwork(
     out_page,
     src_doc,
@@ -675,6 +929,7 @@ def place_one_artwork(
     clip_off_x,
     clip_off_y,
     find_largest_die_path,
+    output_clip=_OUTPUT_CLIP_UNSET,
     mirror_x=False,
     mirror_y=False,
     homogeneous_clip=None,
@@ -712,6 +967,9 @@ def place_one_artwork(
 
     guillotine_source_clip: vùng TrimBox/CropBox nguồn theo hệ top-down. Chỉ dùng
     cho bình cắt xén chữ nhật để khổ solver và nội dung render luôn trùng nhau.
+
+    output_clip: override đã giải theo placement cho Bình cắt xén thường. Sentinel
+    phân biệt caller cũ không truyền với override tường minh ``None`` khi bleed = 0.
     """
     cell = p['cell']
     cluster_idx = p['cluster_idx']
@@ -850,9 +1108,13 @@ def place_one_artwork(
         )
         return trim_rect, src_page_idx
 
-    # out_clip: bleed đầy ở mép ngoài block, nửa gap ở mép trong.
+    # out_clip legacy của tem bế: bleed đầy ở mép ngoài block, nửa gap ở mép trong.
     _bb = block_bbox.get((cluster_idx, cell.get('blockId', 0)))
-    if _bb is not None and bleed_pt > 0:
+    if output_clip is not _OUTPUT_CLIP_UNSET:
+        # IMPOSE (audit 2026-09-01 §CLIPOWN.1): Bình cắt xén thường nhận quyền
+        # clip đã giải theo láng giềng toàn tờ; identity block không được nới seam.
+        cell_out_clip = output_clip
+    elif _bb is not None and bleed_pt > 0:
         _is_left = abs(trim_rect.x0 - _bb[0]) <= 0.5
         _is_right = abs(trim_rect.x1 - _bb[2]) <= 0.5
         _is_top = abs(trim_rect.y0 - _bb[1]) <= 0.5
@@ -1174,6 +1436,215 @@ def place_one_artwork(
             out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, clip=guillotine_source_clip, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
 
     return trim_rect, src_page_idx
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestArtworkPlacement:
+    """Input scalar bất biến cho đúng một artwork side của manifest."""
+
+    instance_id: str
+    part_id: str
+    sheet_index: int
+    side: str
+    placement_revision: str
+    locator_id: str
+    source_revision: str
+    reference_point_mm: tuple[float, float]
+    pose: PoseMm
+    sheet_frame: Affine2D
+    page_binding: ManifestPageBinding
+    artwork_clip_path: FrozenManifestPolygon
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestPlacementIdentity:
+    """Phần occurrence của placement, parse một lần trước render hoặc dedup."""
+
+    instance_id: str
+    part_id: str
+    sheet_index: int
+    source_revision: str
+    pose: PoseMm
+
+
+def _identity(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
+        raise ManifestArtworkContractError(f"{field} không phải định danh hợp lệ.")
+    return value
+
+
+def _index(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ManifestArtworkContractError(f"{field} không phải số nguyên không âm.")
+    return value
+
+
+def parse_manifest_placement_identity(
+    placement: Mapping[str, Any], *, render_bundle_hash: str
+) -> ManifestPlacementIdentity:
+    """Parse exact schema của mọi occurrence trước cả dedup lẫn render.
+
+    FIX/PARITY (audit 2026-08-29 §MAP-NEST-09): placement bị gộp vẫn phải
+    qua cùng parser production; field thừa hoặc pose sai không được biến mất cùng
+    duplicate và tạo ra artifact tưởng như hợp lệ.
+    """
+
+    if not isinstance(placement, Mapping) or set(placement) != {
+        "instanceId", "partId", "sheetIndex", "pose", "sourceRevision"
+    }:
+        raise ManifestArtworkContractError("placement không đúng schema manifest.")
+    bundle_hash = _identity(render_bundle_hash, "renderBundleHash")
+    source_revision = _identity(
+        placement["sourceRevision"], "placement.sourceRevision"
+    )
+    if source_revision != bundle_hash:
+        raise ManifestArtworkContractError(
+            "placement.sourceRevision không khớp renderBundleHash."
+        )
+    try:
+        pose = parse_pose_mm(placement["pose"])
+    except AffineContractError as exc:
+        raise ManifestArtworkContractError(str(exc)) from exc
+    return ManifestPlacementIdentity(
+        instance_id=_identity(placement["instanceId"], "placement.instanceId"),
+        part_id=_identity(placement["partId"], "placement.partId"),
+        sheet_index=_index(placement["sheetIndex"], "placement.sheetIndex"),
+        source_revision=source_revision,
+        pose=pose,
+    )
+
+
+def resolve_manifest_artwork_placement(
+    *,
+    placement: Mapping[str, Any],
+    part: Mapping[str, Any],
+    sheet_frame: Sequence[Any],
+    side: str,
+    render_bundle_hash: str,
+) -> ManifestArtworkPlacement:
+    """Đóng băng seam manifest → writer và chặn mọi identity mâu thuẫn."""
+
+    if not isinstance(placement, Mapping) or set(placement) != {
+        "instanceId", "partId", "sheetIndex", "pose", "sourceRevision"
+    }:
+        raise ManifestArtworkContractError("placement không đúng schema manifest.")
+    if not isinstance(part, Mapping):
+        raise ManifestArtworkContractError("part không phải object RenderBundle.")
+    expected_part_fields = {
+        "partId",
+        "referencePointMm",
+        "geometryHash",
+        "packingFootprint",
+        "cutContour",
+        "artworkClipPath",
+        "source",
+        "pages",
+    }
+    # RenderBundle V2 mới có metadata report server-owned; V2 cũ chưa có vẫn đọc
+    # được. Field này không tham gia phép biến đổi artwork.
+    if "dieDimensionsMm" in part:
+        expected_part_fields.add("dieDimensionsMm")
+    if set(part) != expected_part_fields:
+        raise ManifestArtworkContractError("part không đúng schema RenderBundle V2.")
+    placement_identity = parse_manifest_placement_identity(
+        placement,
+        render_bundle_hash=render_bundle_hash,
+    )
+    if placement_identity.part_id != _identity(part["partId"], "part.partId"):
+        raise ManifestArtworkContractError("placement.partId không khớp RenderBundle.")
+    bundle_hash = placement_identity.source_revision
+    if side not in {"front", "back", "cut"}:
+        raise ManifestArtworkContractError("side chỉ nhận front/back/cut.")
+    pages = part["pages"]
+    if not isinstance(pages, Mapping) or set(pages) != {"front", "back", "cut"}:
+        raise ManifestArtworkContractError("part.pages không đúng schema V2.")
+    raw_binding = pages[side]
+    if raw_binding is None:
+        raise ManifestArtworkContractError(f"part.pages.{side} không tồn tại.")
+    source = part["source"]
+    if not isinstance(source, Mapping) or set(source) != {
+        "locatorId", "contentHash", "byteSize", "pageCount", "revision"
+    }:
+        raise ManifestArtworkContractError("part.source không đúng schema V2.")
+    if source["revision"] != source["contentHash"]:
+        raise ManifestArtworkContractError("source.revision không khớp contentHash.")
+    reference_point = parse_point_mm(
+        part["referencePointMm"], field="part.referencePointMm"
+    )
+    clip = part["artworkClipPath"]
+    try:
+        # Tách mapping mutable khỏi StoredNestingManifest ngay tại seam.
+        frozen_clip = freeze_manifest_polygon(clip, field="part.artworkClipPath")
+    except ValueError as exc:
+        raise ManifestArtworkContractError(str(exc)) from exc
+    return ManifestArtworkPlacement(
+        instance_id=placement_identity.instance_id,
+        part_id=placement_identity.part_id,
+        sheet_index=placement_identity.sheet_index,
+        side=side,
+        placement_revision=bundle_hash,
+        locator_id=_identity(source["locatorId"], "source.locatorId"),
+        source_revision=_identity(source["revision"], "source.revision"),
+        reference_point_mm=reference_point,
+        pose=placement_identity.pose,
+        sheet_frame=Affine2D.from_sequence(sheet_frame, field="sheetFrame"),
+        page_binding=ManifestPageBinding.from_mapping(
+            raw_binding, field=f"part.pages.{side}"
+        ),
+        artwork_clip_path=frozen_clip,
+    )
+
+
+def manifest_artwork_render_ctm_mm(
+    placement: ManifestArtworkPlacement,
+) -> Affine2D:
+    """Dựng đúng ``SheetFrame · G · SourcePageToCanonical`` cho artwork."""
+
+    if not isinstance(placement, ManifestArtworkPlacement):
+        raise ManifestArtworkContractError(
+            "placement phải là ManifestArtworkPlacement đã resolve."
+        )
+    return compose_render_ctm_mm(
+        sheet_frame=placement.sheet_frame,
+        pose=placement.pose,
+        reference_point_mm=placement.reference_point_mm,
+        source_page_to_canonical=placement.page_binding.source_page_to_canonical,
+    )
+
+
+def render_manifest_artwork(
+    destination_pdf,
+    destination_page,
+    source_path: str,
+    placement: ManifestArtworkPlacement,
+    *,
+    form_variant: str = "artwork-raw",
+    die_filter=None,
+) -> PaintedManifestForm:
+    """Render một placement manifest; không solve/finalize/fallback tại exporter."""
+
+    if placement.side == "cut":
+        raise ManifestArtworkContractError(
+            "CUT phải đi writer vector riêng, không được paint như artwork."
+        )
+    clip_rings = build_manifest_clip_rings(
+        placement.artwork_clip_path,
+        sheet_frame=placement.sheet_frame,
+        pose=placement.pose,
+        reference_point_mm=placement.reference_point_mm,
+    )
+    return paint_manifest_page_form(
+        destination_pdf,
+        destination_page,
+        source_path=source_path,
+        locator_id=placement.locator_id,
+        source_revision=placement.source_revision,
+        binding=placement.page_binding,
+        form_variant=form_variant,
+        render_ctm_mm=manifest_artwork_render_ctm_mm(placement),
+        clip_rings_output_mm=clip_rings,
+        die_filter=die_filter,
+    )
 
 
 def transform_die_point(px, py, die_rect, abs_x, abs_y, is_rotated=False, is_rotated_180=False):

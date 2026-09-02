@@ -201,6 +201,13 @@ class PerfStages:
         self._started = time.monotonic()
         self._previous = self._started
         self._values: dict[str, float] = {}
+        self._aggregate_durations: dict[str, float] = {}
+        self._aggregate_counts: dict[str, int] = {}
+        self._closed = False
+        self._previous_active = getattr(_PERF_LOCAL, "stages", None)
+        self._aggregate_active = perf_enabled()
+        if self._aggregate_active:
+            _PERF_LOCAL.stages = self
 
     def mark(self, name: str) -> float:
         now = time.monotonic()
@@ -209,9 +216,101 @@ class PerfStages:
         self._values[name] = round(elapsed, 6)
         return elapsed
 
-    def finish(self) -> dict[str, float]:
-        self._values["engine_total_s"] = round(time.monotonic() - self._started, 6)
-        return dict(self._values)
+    def add_duration(self, name: str, elapsed: float) -> None:
+        """Cộng thời gian của phase lặp; chỉ xuất một số tổng cho cả job."""
+
+        self._aggregate_durations[name] = (
+            self._aggregate_durations.get(name, 0.0) + max(0.0, float(elapsed))
+        )
+
+    def increment(self, name: str, amount: int = 1) -> None:
+        """Cộng bộ đếm aggregate mà không ghi log theo từng placement."""
+
+        self._aggregate_counts[name] = self._aggregate_counts.get(name, 0) + int(amount)
+
+    def close(self) -> None:
+        """Tháo scope aggregate, idempotent và an toàn khi đóng sai thứ tự.
+
+        PERF (audit 2026-09-02 §PERF-NEST-06): job lỗi trước ``finish()`` vẫn
+        phải bỏ ownership thread-local. Nếu scope cha đóng trước scope con, scope
+        con cũng không được hồi sinh lại cha đã đóng khi nó kết thúc sau đó.
+        """
+
+        if self._closed:
+            return
+        self._closed = True
+        if not self._aggregate_active or getattr(_PERF_LOCAL, "stages", None) is not self:
+            return
+        previous = self._previous_active
+        while isinstance(previous, PerfStages) and previous._closed:
+            previous = previous._previous_active
+        if previous is None:
+            try:
+                delattr(_PERF_LOCAL, "stages")
+            except AttributeError:
+                pass
+        else:
+            _PERF_LOCAL.stages = previous
+
+    def finish(self) -> dict[str, float | int]:
+        try:
+            result = dict(self._values)
+            for name, elapsed in self._aggregate_durations.items():
+                result[name] = round(elapsed, 6)
+            result.update(self._aggregate_counts)
+            result["engine_total_s"] = round(time.monotonic() - self._started, 6)
+            return result
+        finally:
+            self.close()
+
+
+# PERF (audit 2026-09-02 §PERF-NEST-06): writer chỉ đọc clock khi sampler
+# của job đang active; khi tắt PRYNX_PERF, ba helper này là no-op trước clock.
+_PERF_LOCAL = threading.local()
+_PerfStageSample = tuple[PerfStages, float]
+
+
+def start_perf_stage() -> _PerfStageSample | None:
+    """Bắt đầu một phase aggregate nếu job hiện tại đang bật telemetry."""
+
+    stages = getattr(_PERF_LOCAL, "stages", None)
+    if stages is None:
+        return None
+    try:
+        return stages, time.monotonic()
+    except Exception:
+        return None
+
+
+def finish_perf_stage(
+    sample: _PerfStageSample | None,
+    name: str,
+    *,
+    count_name: str | None = None,
+) -> None:
+    """Khép phase và cộng vào bản ghi job; lỗi đo không được làm hỏng tác vụ."""
+
+    if sample is None:
+        return
+    stages, started = sample
+    try:
+        stages.add_duration(name, time.monotonic() - started)
+        if count_name:
+            stages.increment(count_name)
+    except Exception:
+        pass
+
+
+def increment_perf_counter(name: str, amount: int = 1) -> None:
+    """Cộng counter vào sampler active, không log riêng từng sự kiện."""
+
+    stages = getattr(_PERF_LOCAL, "stages", None)
+    if stages is None:
+        return
+    try:
+        stages.increment(name, amount)
+    except Exception:
+        pass
 
 
 def write_perf_stages(path: str, stages: dict[str, float]) -> None:

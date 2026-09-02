@@ -33,6 +33,40 @@ _WORD_EXTENSIONS = frozenset({".doc", ".docx", ".odt", ".rtf"})
 _EXCEL_EXTENSIONS = frozenset({".xls", ".xlsx", ".ods", ".csv"})
 _POWERPOINT_EXTENSIONS = frozenset({".ppt", ".pptx", ".odp"})
 
+# SEC (pentest 2026-08-28 §ATK.02): giá trị msoAutomationSecurityForceDisable của enum
+# Office.MsoAutomationSecurity. Đặt `Application.AutomationSecurity` = giá trị này TRƯỚC
+# khi Open() để Office VÔ HIỆU HÓA MỌI MACRO mà không hỏi — không phụ thuộc cấu hình
+# Trust Center của máy khách.
+#
+# Vì sao cần: ba hàm _convert_*_com mở file người dùng qua COM chỉ với ReadOnly=True /
+# DisplayAlerts=0. Hai cờ đó KHÔNG chặn macro. Một .docm/.xlsm/.pptm độc với
+# AutoOpen/Workbook_Open/Auto_Open sẽ THỰC THI MÃ (RCE trong tiến trình Office) ngay khi
+# PrynX mở nó để convert. Convert chạy trong process con nên không hạ sidecar, nhưng vẫn
+# là code chạy dưới quyền người dùng — file Office đến từ nguồn không tin cậy (email/chat).
+# 1 = Low (chạy mọi macro), 2 = ByUI (theo Trust Center), 3 = ForceDisable (chặn hết).
+_MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+
+
+def _harden_office_automation(app: Any, app_label: str) -> None:
+    """Ép Office tắt toàn bộ macro cho phiên automation này (SEC §ATK.02).
+
+    Best-effort có ghi log: thuộc tính `AutomationSecurity` có mặt trên Word/Excel/
+    PowerPoint.Application từ Office 2007 nên gần như luôn set được. Nếu một phiên bản lạ
+    không expose nó, ta KHÔNG nuốt lỗi âm thầm — ghi cảnh báo bảo mật rõ ràng để lộ ra
+    rằng lớp chặn macro không áp được cho lần convert đó. KHÔNG raise: chặn không được
+    thì vẫn để convert tiếp (giữ tính năng), nhưng dấu vết cảnh báo còn lại trong log.
+    """
+    try:
+        app.AutomationSecurity = _MSO_AUTOMATION_SECURITY_FORCE_DISABLE
+    except Exception as exc:  # noqa: BLE001 — COM có thể ném lỗi lạ; không được làm gãy convert
+        logger.warning(
+            "[SEC][§ATK.02] Không đặt được AutomationSecurity=ForceDisable cho %s (%s). "
+            "Macro KHÔNG được cưỡng chế tắt cho lần chuyển đổi này — file Office độc có thể "
+            "chạy macro. Kiểm phiên bản Office trên máy này.",
+            app_label,
+            exc,
+        )
+
 # Google export patterns
 _RE_GDOC = re.compile(
     r"docs\.google\.com/document/d/([a-zA-Z0-9_-]+)",
@@ -264,6 +298,8 @@ def _convert_word_com(
     try:
         word = win32com.client.DispatchEx("Word.Application")
         _report_com_pid(word, owned_pid_path)
+        # SEC (pentest 2026-08-28 §ATK.02): tắt macro TRƯỚC khi mở tài liệu.
+        _harden_office_automation(word, "Word")
         word.Visible = False
         word.DisplayAlerts = 0
         doc = word.Documents.Open(
@@ -318,6 +354,8 @@ def _convert_excel_com(
     try:
         excel = win32com.client.DispatchEx("Excel.Application")
         _report_com_pid(excel, owned_pid_path)
+        # SEC (pentest 2026-08-28 §ATK.02): tắt macro TRƯỚC khi mở workbook.
+        _harden_office_automation(excel, "Excel")
         excel.Visible = False
         excel.DisplayAlerts = False
         wb = excel.Workbooks.Open(
@@ -379,6 +417,8 @@ def _convert_powerpoint_com(
     try:
         powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
         _report_com_pid(powerpoint, owned_pid_path)
+        # SEC (pentest 2026-08-28 §ATK.02): tắt macro TRƯỚC khi mở presentation.
+        _harden_office_automation(powerpoint, "PowerPoint")
         powerpoint.DisplayAlerts = 1
         presentation = powerpoint.Presentations.Open(
             source_path,

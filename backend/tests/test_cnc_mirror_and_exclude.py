@@ -7,7 +7,11 @@ import math
 import pytest
 
 from app.workers.cnc_render import mirror_placements_multi
-from app.workers.cnc_layout import build_cnc_front_layout, build_cnc_gang_layout
+from app.workers.cnc_layout import (
+    _resolve_safe_padding,
+    build_cnc_front_layout,
+    build_cnc_gang_layout,
+)
 from app.workers.die_detection import DetectedShape, Trim
 from app.workers.shape_types import coerce_shape_type
 
@@ -93,8 +97,8 @@ def test_exclude_zones_no_item_overlaps_zone():
             overlap = not (px1 <= zx or px0 >= zx + zw or py1 <= zy or py0 >= zy + zh)
             assert not overlap, f"item {p} đè vùng cấm {(zx, zy, zw, zh)}"
 
-    # build_cnc_front_layout: LUÔN căn giữa (overall = content ≤ usable), boong vẫn
-    # trống vì căn giữa dịch nội dung về tâm (xa góc).
+    # build_cnc_front_layout thử căn giữa (overall = content ≤ usable); nếu phép
+    # dịch chạm boong thì NEST-11 giữ lại trục/toạ độ packer an toàn.
     page_dims_qty = [(0, 80.0, 100.0, 0), (1, 120.0, 90.0, 0)]
     res = build_cnc_front_layout(
         page_dims_qty, usable_w, usable_h, gap=5.0,
@@ -137,6 +141,139 @@ def test_preview_equals_output_with_exclude_zones():
         assert cp['height'] == pytest.approx(co['height'])
 
 
+def _u_coords(placement, margin_left, margin_top):
+    """Đổi placement về toạ độ PACKER (gốc trên-trái vùng in, y xuống).
+
+    ``exclude_zones`` được khai trong đúng hệ này, nên muốn kiểm va chạm thì phải
+    quy placement về đây thay vì so trong hệ tờ.
+    """
+    u_x = placement['abs_x'] - margin_left
+    u_y = placement['original_cell_y'] - margin_top
+    return u_x, u_y, u_x + placement['width'], u_y + placement['height']
+
+
+def _overlaps_any(rect, zones, eps=1e-6):
+    x0, y0, x1, y1 = rect
+    for zx, zy, zw, zh in zones:
+        if not (x1 <= zx + eps or x0 >= zx + zw - eps
+                or y1 <= zy + eps or y0 >= zy + zh - eps):
+            return (zx, zy, zw, zh)
+    return None
+
+
+def test_can_giua_khong_duoc_day_tem_vao_vung_cam():
+    """NEST-11: sau khi ``_materialize_sheet`` dịch về tâm, tem vẫn phải ngoài vùng cấm.
+
+    Packer đã tránh vùng cấm lúc xếp, nhưng ``_materialize_sheet`` dịch cả cụm đi
+    ``x_pad - min_x``. Khi ``x_pad < min_x`` thì phép dịch kéo nội dung NGƯỢC về phía
+    góc — đúng nơi có boong. Test trước đây chỉ assert ``overall_w <= usable_w`` nên
+    không thấy. Ca này dựng vùng cấm lệch (góc trái to hơn góc phải) để buộc
+    ``min_x`` lớn hơn ``x_pad``.
+    """
+    usable_w, usable_h = 800.0, 1000.0
+    # Vùng cấm LỆCH: dải trái rộng 160, dải phải chỉ 40 → packer phải bắt đầu từ
+    # x≈160, trong khi khoảng dư còn lại chia đôi chỉ ra x_pad nhỏ hơn nhiều.
+    zones = [
+        (0.0, 0.0, 160.0, usable_h),
+        (usable_w - 40.0, 0.0, 40.0, usable_h),
+    ]
+    page_dims_qty = [(0, 80.0, 100.0, 0), (1, 120.0, 90.0, 0)]
+
+    res = build_cnc_front_layout(
+        page_dims_qty, usable_w, usable_h, gap=5.0,
+        margin_left=20.0, margin_bottom=30.0, margin_top=30.0,
+        exclude_zones=zones,
+    )
+    assert res['placements'], "phải xếp được tem"
+
+    for sheet in ([res] + list(res.get('sheets') or [])):
+        for placement in sheet.get('placements', []):
+            rect = _u_coords(placement, 20.0, 30.0)
+            hit = _overlaps_any(rect, zones)
+            assert hit is None, (
+                f"tem tại packer-rect {rect} đè vùng cấm {hit} sau khi căn giữa"
+            )
+
+
+def test_can_giua_truc_y_khong_duoc_day_tem_vao_vung_cam():
+    """NEST-11: vùng cấm lệch theo Y cũng phải được kiểm sau khi căn giữa."""
+    usable_w, usable_h = 800.0, 1000.0
+    # Dải trên cao hơn dải dưới buộc packer bắt đầu ở y≈180, trong khi phép căn
+    # giữa cũ kéo cụm ngược lên vùng cấm.
+    zones = [
+        (0.0, 0.0, usable_w, 180.0),
+        (0.0, usable_h - 40.0, usable_w, 40.0),
+    ]
+    page_dims_qty = [(0, 80.0, 100.0, 0), (1, 120.0, 90.0, 0)]
+
+    res = build_cnc_front_layout(
+        page_dims_qty, usable_w, usable_h, gap=5.0,
+        margin_left=20.0, margin_bottom=30.0, margin_top=30.0,
+        exclude_zones=zones,
+    )
+    assert res['placements'], "phải xếp được tem"
+
+    for sheet in (res.get('sheets') or [res]):
+        for placement in sheet.get('placements', []):
+            rect = _u_coords(placement, 20.0, 30.0)
+            hit = _overlaps_any(rect, zones)
+            assert hit is None, (
+                f"tem tại packer-rect {rect} đè vùng cấm {hit} sau khi căn giữa trục Y"
+            )
+
+
+def test_ratio_fill_nhieu_to_van_tranh_vung_cam_sau_khi_can_giua():
+    """NEST-11: nhánh có SL và nhiều tờ phải recheck vùng cấm trên từng tờ."""
+    usable_w, usable_h = 300.0, 300.0
+    zones = [(0.0, 0.0, usable_w, 70.0)]
+    page_dims_qty = [
+        (0, 180.0, 180.0, 7),
+        (1, 175.0, 185.0, 5),
+        (2, 190.0, 170.0, 3),
+    ]
+
+    res = build_cnc_front_layout(
+        page_dims_qty, usable_w, usable_h, gap=5.0,
+        margin_left=11.0, margin_bottom=17.0, margin_top=13.0,
+        exclude_zones=zones,
+    )
+    sheets = res.get('sheets') or [res]
+    assert res['sheet_count'] == len(sheets) >= 2
+    assert res['unplaced_pages'] == []
+    assert {p['src_page_idx'] for s in sheets for p in s['placements']} == {0, 1, 2}
+
+    for sheet in sheets:
+        assert sheet['placements'], "mỗi tờ mẫu phải có placement"
+        for placement in sheet['placements']:
+            rect = _u_coords(placement, 11.0, 13.0)
+            hit = _overlaps_any(rect, zones)
+            assert hit is None, (
+                f"tờ {sheet['physical_sheet_index']} có tem {rect} đè vùng cấm {hit}"
+            )
+
+
+def test_can_giua_van_giu_nguyen_khi_khong_co_va_cham():
+    """Ca đã an toàn thì phép căn giữa phải GIỮ NGUYÊN, không được đổi output.
+
+    Bản sửa NEST-11 chỉ được can thiệp ở ca thật sự va chạm. Vùng cấm đối xứng bốn
+    góc là ca an toàn, và toạ độ ở đây phải khớp bản chưa sửa.
+    """
+    usable_w, usable_h = 800.0, 1000.0
+    zones = _zones_corners(usable_w, usable_h, 60.0)
+    page_dims_qty = [(0, 80.0, 100.0, 0), (1, 120.0, 90.0, 0)]
+
+    res = build_cnc_front_layout(
+        page_dims_qty, usable_w, usable_h, gap=5.0,
+        margin_left=20.0, margin_bottom=30.0, margin_top=30.0,
+        exclude_zones=zones,
+    )
+    assert res['placements']
+    # Căn giữa còn hiệu lực: cụm không dính mép trái vùng in.
+    assert min(p['abs_x'] for p in res['placements']) > 20.0
+    for placement in res['placements']:
+        assert _overlaps_any(_u_coords(placement, 20.0, 30.0), zones) is None
+
+
 def test_no_exclude_keeps_centering_behavior():
     """Không vùng cấm → giữ hành vi căn giữa cũ (overall = content, có thể < usable)."""
     usable_w, usable_h = 800.0, 1000.0
@@ -148,6 +285,19 @@ def test_no_exclude_keeps_centering_behavior():
     assert res['placements']
     # content nhỏ hơn usable → overall phản ánh content, không phải usable
     assert res['overall_w'] <= usable_w
+
+
+def test_resolve_safe_padding_fails_closed_when_no_candidate_is_safe():
+    """Vùng cấm bao phủ mọi candidate phải dừng, không trả padding nguy hiểm."""
+    raw = [{'x': 0.0, 'y': 0.0, 'w': 100.0, 'h': 100.0}]
+    zones = [(-1000.0, -1000.0, 2000.0, 2000.0)]
+
+    with pytest.raises(RuntimeError, match='Không thể tìm phương án'):
+        _resolve_safe_padding(
+            raw, zones,
+            min_x=0.0, min_y=0.0,
+            x_pad=10.0, y_pad=10.0,
+        )
 
 
 # ───────────────── Render-level: mặt sau ĐỐI XỨNG mặt trước qua tâm tờ ─────────────────

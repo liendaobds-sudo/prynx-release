@@ -254,6 +254,7 @@ def get_capabilities(_gate: None = Depends(require_runtime_enabled)):
         default_rotation="free",
         continuous_translation=capabilities.continuous_translation,
         profiles=list(capabilities.profiles),
+        layout_intents=list(capabilities.layout_intents),
         max_request_bytes=MAX_REQUEST_BYTES,
     )
 

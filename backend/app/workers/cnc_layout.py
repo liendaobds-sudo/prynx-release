@@ -20,12 +20,15 @@ Toạ độ:
     GridPreview tự căn giữa bằng overall_w/overall_h (giống nhánh mixed của Bình Tem Bế).
 """
 
+import logging
 from typing import List, Tuple, Dict, Any
 
 from app.workers.sticker_imposer_pkg.bin_packing import (
     solve_auto_fill_mixed,
     _MaxRectsPacker,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation=True,
@@ -100,6 +103,76 @@ def _empty_result() -> Dict[str, Any]:
     }
 
 
+# Dung sai khi so tem với vùng cấm (points). Tiếp tuyến KHÔNG phải va chạm — cùng
+# tinh thần với PONT_COLLISION_EPS_PT2 ở pont_collision: coi tiếp tuyến là đè sẽ
+# dời hoặc xoá tem oan ở gap = 0.
+_ZONE_TOUCH_EPS_PT = 1e-6
+
+
+def _hits_zone(raw, exclude_zones, min_x, min_y, x_pad, y_pad) -> bool:
+    """Có tem nào đè vùng cấm với cặp padding này không?
+
+    Toạ độ so sánh là toạ độ PACKER (gốc trên-trái vùng in, y xuống) — đúng hệ mà
+    ``exclude_zones`` được khai ở ``pont_collision.compute_packer_exclude_zones``.
+    """
+    for it in raw:
+        x0 = it['x'] - min_x + x_pad
+        y0 = it['y'] - min_y + y_pad
+        x1 = x0 + it['w']
+        y1 = y0 + it['h']
+        for zx, zy, zw, zh in exclude_zones:
+            if not (x1 <= zx + _ZONE_TOUCH_EPS_PT
+                    or x0 >= zx + zw - _ZONE_TOUCH_EPS_PT
+                    or y1 <= zy + _ZONE_TOUCH_EPS_PT
+                    or y0 >= zy + zh - _ZONE_TOUCH_EPS_PT):
+                return True
+    return False
+
+
+def _resolve_safe_padding(raw, exclude_zones, min_x, min_y, x_pad, y_pad):
+    """Chọn cặp padding vừa căn giữa được vừa không đẩy tem vào vùng cấm.
+
+    [NEST-11 FIX 2026-08-27] Thử theo thứ tự CỐ ĐỊNH nên kết quả xác định:
+
+    1. căn giữa cả hai trục — ca phổ biến, giữ nguyên output của bản trước;
+    2. giữ trục X theo packer, còn căn giữa Y;
+    3. căn giữa X, giữ trục Y theo packer;
+    4. giữ nguyên toạ độ packer cả hai trục — luôn an toàn vì packer đã tránh vùng cấm.
+
+    ``x_pad = min_x`` tương đương dịch tịnh bằng 0 (``it['x'] - min_x + min_x``), nên
+    phương án 4 trả về đúng toạ độ packer mà không cần nhánh riêng ở caller.
+    """
+    if not exclude_zones:
+        return x_pad, y_pad
+
+    for cand_x, cand_y in (
+        (x_pad, y_pad),
+        (min_x, y_pad),
+        (x_pad, min_y),
+        (min_x, min_y),
+    ):
+        if not _hits_zone(raw, exclude_zones, min_x, min_y, cand_x, cand_y):
+            if (cand_x, cand_y) != (x_pad, y_pad):
+                logger.debug(
+                    "[CNC-ZONE] Căn giữa sẽ đẩy tem vào vùng cấm boong → lùi về toạ độ "
+                    "packer (x_pad %.3f→%.3f, y_pad %.3f→%.3f).",
+                    x_pad, cand_x, y_pad, cand_y,
+                )
+            return cand_x, cand_y
+
+    # Không thể xảy ra: packer đã xếp tránh vùng cấm nên phương án 4 phải sạch.
+    # Nếu tới đây thì vùng cấm và packer đang dùng hai hệ toạ độ khác nhau — báo rõ
+    # thay vì giao tờ có tem đè boong cho xưởng.
+    logger.error(
+        "[CNC-ZONE] Không có phương án căn tờ nào tránh được vùng cấm boong "
+        "(%d tem, %d vùng). Giữ toạ độ packer.",
+        len(raw), len(exclude_zones),
+    )
+    raise RuntimeError(
+        "Không thể tìm phương án căn tờ CNC an toàn tránh vùng cấm boong"
+    )
+
+
 def build_cnc_front_layout(
     page_dims_qty: List[Tuple[int, float, float, int]],
     usable_w: float,
@@ -119,8 +192,9 @@ def build_cnc_front_layout(
         gap: khoảng cách giữa các ô, points.
         margin_left/bottom/top: lề tờ (points) để quy đổi sang toạ độ PDF tuyệt đối.
         exclude_zones: List[(x,y,w,h)] vùng cấm boong (toạ độ packer). Nếu có → tem
-            được xếp TRÁNH vùng cấm ngay lúc packing (không xóa sau), và KHÔNG
-            re-center (giữ nguyên toạ độ packer để khớp đúng vị trí boong trên tờ).
+            được xếp TRÁNH vùng cấm ngay lúc packing (không xóa sau). Cụm vẫn được
+            thử căn giữa; nếu phép dịch gây va chạm thì từng trục lùi xác định về
+            toạ độ packer an toàn.
 
     Returns:
         Top-level giữ tờ đầu để tương thích caller cũ. Khi có nhiều tờ mẫu,
@@ -208,14 +282,31 @@ def build_cnc_front_layout(
         if not raw:
             return _empty_result()
 
-        # LUÔN căn giữa từng tờ trên usable (nhất quán + KHỚP preview). Vùng cấm boong
-        # đã được packer loại lúc xếp; dịch về tâm chỉ đưa nội dung ra xa các góc boong.
+        # Căn giữa cụm trên vùng in cho đẹp tờ. Nhưng phép căn giữa dịch CẢ CỤM đi
+        # `x_pad - min_x`, và khi `x_pad < min_x` thì nó kéo nội dung NGƯỢC về phía
+        # góc — đúng nơi có boong.
+        #
+        # [NEST-11 FIX 2026-08-27] Trước bản sửa, comment ở đây khẳng định "dịch về tâm
+        # chỉ đưa nội dung ra xa các góc boong". Đó là giả định, không phải kiểm chứng,
+        # và nó sai khi vùng cấm LỆCH giữa hai mép: đo được tem bị kéo từ x=160 (packer
+        # đã tránh) về x=102,5 — nằm giữa dải cấm 0..160. Docstring của hàm ngoài lại
+        # ghi ngược lại rằng có vùng cấm thì "KHÔNG re-center", tức file này từng có hai
+        # cách hiểu và code theo cách sai.
+        #
+        # Cách sửa giữ blast radius nhỏ nhất: THỬ rồi LÙI. Ca đã an toàn vẫn ra toạ độ
+        # y hệt bản cũ (không đổi output đang đúng); chỉ ca thật sự va chạm mới lùi về
+        # toạ độ packer thuần — vốn được bảo đảm ngoài vùng cấm vì packer đã tránh.
         min_x = min(it['x'] for it in raw)
         min_y = min(it['y'] for it in raw)
         content_w = max((it['x'] - min_x + it['w'] for it in raw), default=0.0)
         content_h = max((it['y'] - min_y + it['h'] for it in raw), default=0.0)
         x_pad = (usable_w - content_w) / 2.0 if content_w < usable_w else 0.0
         y_pad = (usable_h - content_h) / 2.0 if content_h < usable_h else 0.0
+
+        # `x_pad = min_x` nghĩa là dịch tịnh bằng 0 → giữ nguyên toạ độ packer.
+        x_pad, y_pad = _resolve_safe_padding(
+            raw, exclude_zones, min_x, min_y, x_pad, y_pad,
+        )
 
         placements: List[Dict[str, Any]] = []
         cells: List[Dict[str, Any]] = []

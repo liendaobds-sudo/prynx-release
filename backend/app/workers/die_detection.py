@@ -15,6 +15,7 @@ Requirements: 1.x, 4.6, 5.5, 7.5, 11.5, 14.1, 14.2, 14.3
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -112,6 +113,57 @@ class Trim:
 
 
 @dataclass(frozen=True)
+class DetectedPageContour:
+    """Contour tuyệt đối trong hệ parser trang, chưa đổi sang đơn vị vật lý.
+
+    Hệ này giữ nguyên hợp đồng ``extract_vector_paths``: x là user-space raw,
+    y top-down với pivot bằng chiều cao MediaBox. ``/Rotate``, ``/UserUnit`` và
+    gốc MediaBox chưa được áp; consumer production phải canonicalize đúng một lần.
+    """
+
+    page_index: int
+    outer_top_down_user_units: tuple[tuple[float, float], ...]
+    holes_top_down_user_units: tuple[tuple[tuple[float, float], ...], ...] = ()
+
+    def __post_init__(self):
+        if (
+            isinstance(self.page_index, bool)
+            or not isinstance(self.page_index, int)
+            or self.page_index < 0
+        ):
+            raise ValueError("DetectedPageContour.page_index không hợp lệ")
+        if not isinstance(self.outer_top_down_user_units, tuple):
+            raise ValueError("DetectedPageContour.outer phải là tuple")
+        if not isinstance(self.holes_top_down_user_units, tuple):
+            raise ValueError("DetectedPageContour.holes phải là tuple")
+
+        rings = (self.outer_top_down_user_units, *self.holes_top_down_user_units)
+        for ring in rings:
+            if not isinstance(ring, tuple) or len(ring) < 3:
+                raise ValueError(
+                    "DetectedPageContour yêu cầu mỗi ring tuple có ít nhất 3 đỉnh"
+                )
+            for point in ring:
+                if not isinstance(point, tuple) or len(point) != 2:
+                    raise ValueError(
+                        "DetectedPageContour yêu cầu mỗi điểm là tuple hai toạ độ"
+                    )
+                for value in point:
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                    ):
+                        raise ValueError(
+                            "DetectedPageContour chứa toạ độ không hợp lệ"
+                        )
+            if len(set(ring)) < 3:
+                raise ValueError(
+                    "DetectedPageContour yêu cầu mỗi ring có ít nhất 3 đỉnh phân biệt"
+                )
+
+
+@dataclass(frozen=True)
 class DetectedShape:
     """Hợp đồng dữ liệu chuẩn hoá — nguồn sự thật duy nhất cho 1 trang (R1.1)."""
     page: int                          # 0-based
@@ -121,6 +173,8 @@ class DetectedShape:
     poly: tuple[tuple[float, float], ...]
     source: str
     confidence: float                  # [0.0, 1.0] (R1.5)
+    # Server-only: không serialize qua schema/legacy/cache để dữ liệu cũ tương thích.
+    page_contour: DetectedPageContour | None = None
 
     def __post_init__(self):
         # Đủ 7 trường, không null (R1.1)
@@ -151,6 +205,13 @@ class DetectedShape:
                 f"DetectedShape.source không hợp lệ: {self.source!r} "
                 f"(phải thuộc {sorted(VALID_SOURCES)})"
             )
+        if self.page_contour is not None:
+            if not isinstance(self.page_contour, DetectedPageContour):
+                raise ValueError("DetectedShape.page_contour không đúng kiểu")
+            if self.page_contour.page_index != self.page:
+                raise ValueError(
+                    "DetectedShape.page_contour phải thuộc chính trang DetectedShape"
+                )
 
 
 def make_custom_shape(
@@ -972,7 +1033,7 @@ def select_die_path(page, die_channel_names=(), die_colors=None, die_color_tol=0
     return _merge_die_paths(members)
 
 
-def _same_color_group_poly(page, target_color, paths=None):
+def _same_color_group_poly(page, target_color, paths=None, *, keep_holes=False):
     """Hợp nhất (union) các subpath cùng màu thành 1 đa giác (R3.5).
 
     Đường bế có thể bị chia thành nhiều subpath (vd contour + chi tiết) dùng
@@ -994,7 +1055,7 @@ def _same_color_group_poly(page, target_color, paths=None):
     polys = []
     for p in paths:
         if p.get("color") == target_color or p.get("fill") == target_color:
-            poly_part = _path_items_to_polygon(p.get("items", []))
+            poly_part = _path_items_to_polygon(p.get("items", []), keep_holes=keep_holes)
             if poly_part is not None and poly_part.is_valid and not poly_part.is_empty:
                 polys.append(poly_part)
     if not polys:
@@ -1004,6 +1065,56 @@ def _same_color_group_poly(page, target_color, paths=None):
         if merged.is_empty:
             return None
         return merged
+    except Exception:
+        return None
+
+
+def _polygon_to_page_contour(
+    geom, page_index: int
+) -> DetectedPageContour | None:
+    """Giữ Polygon tuyệt đối từ chính lượt detect; hình mơ hồ phải fail-closed.
+
+    Không dùng bbox, không detect lại và không lấy polygon lớn nhất từ MultiPolygon.
+    Việc loại điểm đóng ring chỉ bỏ bản sao đỉnh đầu mà Shapely luôn thêm ở cuối.
+    """
+
+    try:
+        if (
+            geom is None
+            or getattr(geom, "geom_type", None) != "Polygon"
+            or geom.is_empty
+            or not geom.is_valid
+        ):
+            return None
+
+        def ring_coords(ring) -> tuple[tuple[float, float], ...] | None:
+            points = tuple((float(x), float(y)) for x, y in ring.coords)
+            if len(points) >= 2 and points[0] == points[-1]:
+                points = points[:-1]
+            if len(points) < 3 or len(set(points)) < 3:
+                return None
+            if any(
+                not math.isfinite(value)
+                for point in points
+                for value in point
+            ):
+                return None
+            return points
+
+        outer = ring_coords(geom.exterior)
+        if outer is None:
+            return None
+        holes: list[tuple[tuple[float, float], ...]] = []
+        for interior in geom.interiors:
+            hole = ring_coords(interior)
+            if hole is None:
+                return None
+            holes.append(hole)
+        return DetectedPageContour(
+            page_index=page_index,
+            outer_top_down_user_units=outer,
+            holes_top_down_user_units=tuple(holes),
+        )
     except Exception:
         return None
 
@@ -1092,6 +1203,21 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
     # poly: ưu tiên union các subpath cùng màu (R3.5); fallback dùng samples.
     target_color = largest.get("color") if largest.get("color") is not None else largest.get("fill")
     poly = _same_color_group_poly(page, target_color, paths=paths)
+    # NEST (audit 2026-08-28 §CONTOUR.1): giữ contour tuyệt đối TRƯỚC khi
+    # `_poly_to_trim_coords` xoá origin. Chỉ Polygon rõ ràng mới vào production.
+    #
+    # NEST (audit 2026-08-28 §A4b-3): contour production phải giữ LỖ KHUÔN, nhưng
+    # `DetectedShape.poly` của lane legacy thì KHÔNG được đổi. Đo thật cho thấy bật
+    # cờ trên cùng một lượt làm `poly` đổi biểu diễn đỉnh (5→8 điểm, cùng hình) và
+    # khuôn lồng nhiều tầng thành MultiPolygon ⇒ contour fail-closed. Vì vậy chạy
+    # lượt riêng cho contour, `paths` tái dùng nên không trích vector lại; nếu lượt
+    # giữ lỗ không cho Polygon rõ ràng thì lùi về đúng hành vi cũ, không hồi quy.
+    poly_holed = _same_color_group_poly(
+        page, target_color, paths=paths, keep_holes=True
+    )
+    page_contour = _polygon_to_page_contour(poly_holed, page_idx)
+    if page_contour is None:
+        page_contour = _polygon_to_page_contour(poly, page_idx)
     poly_coords = _poly_to_trim_coords(poly) if poly is not None else ()
     if not poly_coords:
         try:
@@ -1119,6 +1245,7 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
             (0.5 if shape_type is not ShapeType.CUSTOM else 0.3) if is_fallback
             else (1.0 if shape_type is not ShapeType.CUSTOM else 0.5)
         ),
+        page_contour=page_contour,
     )
 
 

@@ -5,12 +5,25 @@ Dựng 1 trang nguồn phủ KÍN mực (worst case: artwork tràn hết MediaBo
 nằm trong bbox tem A nhưng thuộc phần tem B → phải TRẮNG.
 """
 
+import hashlib
 import math
 import os
 import tempfile
+from pathlib import Path
 
 import pikepdf
 import pytest
+from app.core.nesting_source_pin import _inspect_pdf
+from app.workers.imposition_affine import Affine2D, PoseMm, compose_render_ctm_mm
+from app.workers.imposition_pdf_form import (
+    PT_PER_MM,
+    ManifestPageBinding,
+    paint_manifest_page_form,
+)
+from app.workers.nup_clip_shape import (
+    build_manifest_clip_rings,
+    transform_manifest_polygon_rings,
+)
 
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.nup_artwork import place_one_artwork
@@ -51,6 +64,12 @@ def _make_full_ink_page(path, size):
     ))
     pdf.save(path)
     pdf.close()
+
+
+def _source_revision(path: str | Path) -> str:
+    """Revision đúng contract: hash byte của snapshot source hiện tại."""
+
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def _placement(abs_x, abs_y, w, h):
@@ -206,3 +225,110 @@ def test_bleed_theo_hinh_duoc_giu_den_nua_gap(workdir):
     cx, cy = cells[0][0] + R, cells[0][1] + R
     # 1pt ngoài khuôn, còn trong nửa gap (GAP/2 = 3pt) → thuộc vùng bleed hợp lệ.
     assert _probe(arr, s, cx - R - 1.0, cy) < 128, "mất bleed sát ngoài đường bế"
+
+
+def test_manifest_clip_vung_lo_van_duoc_in_muc_tren_artifact(workdir):
+    """Outer in, và vùng LỖ cũng phải có mực; content stream dùng ``W n``.
+
+    NESTING (audit 2026-08-28 §A1c) — ĐỔI KỲ VỌNG CÓ CHỦ ĐÍCH.
+
+    Bản trước của test này khoá hành vi ngược lại: ``W* n`` (even-odd) và vùng lỗ
+    phải TRẮNG. Cổng Chặng 0 đã chốt phương án (a): giữ hành vi in hiện hữu của
+    xưởng — vùng lỗ (lỗ treo, cửa sổ) **vẫn in mực**, dao mới là thứ cắt, đúng
+    như lane legacy ``nup_clip_shape._polygon_from_rings`` +
+    ``pdf_ops._clip_path`` vẫn làm cho mọi job tem/CNC đang chạy.
+
+    Xem `docs/BAO_CAO_CHANG_0_NESTING_TU_DO_TEM_CNC_2026-08-28.md` §7.2 và
+    finding C0-9. Đây KHÔNG phải sửa test cho xanh: hai lane render trước đó in
+    vùng lỗ ngược nhau, và đây là lane được sửa để khớp lane sản xuất.
+
+    Lỗ vẫn thuộc lớp CUT — kiểm ở
+    ``test_manifest_cut_rings_van_giu_lo_de_dao_cat``.
+    """
+
+    source_path = os.path.join(workdir, "manifest_hole_source.pdf")
+    output_path = os.path.join(workdir, "manifest_hole_output.pdf")
+    _make_full_ink_page(source_path, 100.0)
+    metadata = _inspect_pdf(source_path)[0].to_binding_metadata()
+    metadata["sourceReferencePointMm"] = [0.0, 0.0]
+    binding = ManifestPageBinding.from_mapping(metadata)
+    output = pikepdf.Pdf.new()
+    sheet_mm = 100.0
+    sheet_pt = sheet_mm * PT_PER_MM
+    page = output.add_blank_page(page_size=(sheet_pt, sheet_pt))
+    pose = PoseMm(17.0, 30.0, 30.0)
+    reference = (0.0, 0.0)
+    polygon = {
+        "outer": [[0, 0], [30, 0], [30, 30], [0, 30]],
+        "holes": [[[10, 10], [10, 20], [20, 20], [20, 10]]],
+    }
+    rings = build_manifest_clip_rings(
+        polygon,
+        sheet_frame=Affine2D(1, 0, 0, 1, 0, 0),
+        pose=pose,
+        reference_point_mm=reference,
+    )
+    ctm = compose_render_ctm_mm(
+        sheet_frame=Affine2D(1, 0, 0, 1, 0, 0),
+        pose=pose,
+        reference_point_mm=reference,
+        source_page_to_canonical=binding.source_page_to_canonical,
+    )
+    paint_manifest_page_form(
+        output, page, source_path=source_path,
+        locator_id="11111111-1111-4111-8111-111111111111",
+        source_revision=_source_revision(source_path),
+        binding=binding,
+        form_variant="artwork-raw",
+        render_ctm_mm=ctm,
+        clip_rings_output_mm=rings,
+    )
+    output.save(output_path)
+    output.close()
+    raw = _raw(output_path)
+    assert "W n" in raw
+    # Không được còn dấu vết even-odd: `W*` là hành vi khoét trắng cửa sổ.
+    assert "W* n" not in raw
+
+    # Artwork clip chỉ mang MỘT vòng ngoài, lỗ đã bị loại ở builder.
+    assert len(rings) == 1
+
+    array, scale = _render_gray(output_path)
+    outer_mm = ctm.apply((5.0, 5.0))
+    hole_mm = ctm.apply((15.0, 15.0))
+    assert _probe(array, scale, outer_mm[0] * PT_PER_MM, sheet_pt - outer_mm[1] * PT_PER_MM) < 80
+    # Vùng lỗ PHẢI có mực: đây là điểm đảo so với bản trước.
+    assert _probe(array, scale, hole_mm[0] * PT_PER_MM, sheet_pt - hole_mm[1] * PT_PER_MM) < 80
+
+
+def test_manifest_cut_rings_van_giu_lo_de_dao_cat(workdir):
+    """Lớp CUT phải giữ đủ outer + holes — dao vẫn cắt cửa sổ.
+
+    Cặp với test trên: artwork bỏ lỗ, CUT giữ lỗ. Nếu một ngày ai đó gộp hai
+    đường lại thì đúng một trong hai test này sẽ đỏ.
+    """
+
+    polygon = {
+        "outer": [[0, 0], [30, 0], [30, 30], [0, 30]],
+        "holes": [[[10, 10], [10, 20], [20, 20], [20, 10]]],
+    }
+    pose = PoseMm(17.0, 30.0, 30.0)
+    reference = (0.0, 0.0)
+    frame = Affine2D(1, 0, 0, 1, 0, 0)
+
+    cut_rings = transform_manifest_polygon_rings(
+        polygon,
+        sheet_frame=frame,
+        pose=pose,
+        reference_point_mm=reference,
+    )
+    artwork_rings = build_manifest_clip_rings(
+        polygon,
+        sheet_frame=frame,
+        pose=pose,
+        reference_point_mm=reference,
+    )
+    assert len(cut_rings) == 2
+    assert len(artwork_rings) == 1
+    # Cùng một phép biến đổi, chỉ khác tập ring được dùng.
+    assert artwork_rings[0] == cut_rings[0]

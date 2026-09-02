@@ -18,7 +18,18 @@ Trả về: list ring, mỗi ring là list (x, y) theo hệ trang ĐÍCH TOP-DOW
 """
 
 import logging
+import math
 import os
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
+
+from app.workers.imposition_affine import (
+    Affine2D,
+    PoseMm,
+    compose_render_ctm_mm,
+    parse_point_mm,
+    parse_pose_mm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -319,3 +330,142 @@ def build_die_clip_rings(
     except Exception as exc:
         logger.debug("[SHAPE-CLIP] không dựng được clip theo hình, dùng bbox: %s", exc)
         return None
+
+
+class ManifestClipContractError(ValueError):
+    """Hình clip/cut canonical không còn đúng RenderBundle V2."""
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenManifestPolygon:
+    """Polygon manifest đã tách khỏi cây JSON mutable của render bundle."""
+
+    outer: tuple[tuple[float, float], ...]
+    holes: tuple[tuple[tuple[float, float], ...], ...]
+
+
+def _manifest_ring(
+    raw: Any, *, field: str
+) -> tuple[tuple[float, float], ...]:
+    if not isinstance(raw, (list, tuple)) or len(raw) < 3:
+        raise ManifestClipContractError(f"{field} phải có ít nhất ba điểm.")
+    points: list[tuple[float, float]] = []
+    for index, point in enumerate(raw):
+        try:
+            x, y = parse_point_mm(point, field=f"{field}[{index}]")
+        except ValueError as exc:
+            raise ManifestClipContractError(str(exc)) from exc
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ManifestClipContractError(f"{field}[{index}] không hữu hạn.")
+        points.append((x, y))
+    if len(set(points)) < 3:
+        raise ManifestClipContractError(
+            f"{field} phải còn ít nhất ba đỉnh phân biệt."
+        )
+    return tuple(points)
+
+
+def freeze_manifest_polygon(
+    polygon: Mapping[str, Any] | FrozenManifestPolygon,
+    *,
+    field: str = "renderPolygon",
+) -> FrozenManifestPolygon:
+    """Chuẩn hóa outer/holes thành tuple lồng sâu, không còn alias tới caller."""
+
+    if isinstance(polygon, FrozenManifestPolygon):
+        return polygon
+    if not isinstance(polygon, Mapping):
+        raise ManifestClipContractError(f"{field} phải là object.")
+    expected = {"outer", "holes"}
+    if set(polygon) != expected:
+        missing = expected.difference(polygon)
+        unknown = set(polygon).difference(expected)
+        details = []
+        if missing:
+            details.append("thiếu " + ", ".join(sorted(missing)))
+        if unknown:
+            details.append("có field lạ " + ", ".join(sorted(unknown)))
+        raise ManifestClipContractError(f"{field} {'; '.join(details)}.")
+    holes = polygon["holes"]
+    if not isinstance(holes, (list, tuple)):
+        raise ManifestClipContractError(f"{field}.holes phải là mảng.")
+    return FrozenManifestPolygon(
+        outer=_manifest_ring(polygon["outer"], field=f"{field}.outer"),
+        holes=tuple(
+            _manifest_ring(hole, field=f"{field}.holes[{index}]")
+            for index, hole in enumerate(holes)
+        ),
+    )
+
+
+def transform_manifest_polygon_rings(
+    polygon: Mapping[str, Any] | FrozenManifestPolygon,
+    *,
+    sheet_frame: Affine2D | Sequence[Any],
+    pose: PoseMm | Mapping[str, Any],
+    reference_point_mm: Sequence[Any],
+    field: str = "renderPolygon",
+) -> tuple[tuple[tuple[float, float], ...], ...]:
+    """Áp đúng ``H = SheetFrame · G`` cho outer và mọi hole.
+
+    Đây là primitive dùng chung cho artwork clip và CUT. Khác lane legacy, dữ liệu
+    manifest sai sẽ ném lỗi; tuyệt đối không quay về rectangle/cardinal fallback.
+    """
+
+    frozen = freeze_manifest_polygon(polygon, field=field)
+
+    frame = (
+        sheet_frame
+        if isinstance(sheet_frame, Affine2D)
+        else Affine2D.from_sequence(sheet_frame, field="sheetFrame")
+    )
+    parsed_pose = pose if isinstance(pose, PoseMm) else parse_pose_mm(pose)
+    # Dùng compose helper production với source identity để nhận cùng guard det/scale.
+    output_from_part = compose_render_ctm_mm(
+        sheet_frame=frame,
+        pose=parsed_pose,
+        reference_point_mm=reference_point_mm,
+        source_page_to_canonical=Affine2D(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+    )
+    source_rings = (frozen.outer, *frozen.holes)
+    return tuple(
+        tuple(output_from_part.apply(point) for point in ring)
+        for ring in source_rings
+    )
+
+
+def build_manifest_clip_rings(
+    artwork_clip_path: Mapping[str, Any] | FrozenManifestPolygon,
+    *,
+    sheet_frame: Affine2D | Sequence[Any],
+    pose: PoseMm | Mapping[str, Any],
+    reference_point_mm: Sequence[Any],
+) -> tuple[tuple[tuple[float, float], ...], ...]:
+    """Clip artwork canonical sau pose — CHỈ vòng ngoài, cố ý bỏ lỗ.
+
+    NESTING (audit 2026-08-28 §A1c): quyết định sản phẩm ở cổng Chặng 0 là giữ
+    hành vi in hiện hữu của xưởng — vùng lỗ (lỗ treo, cửa sổ) **vẫn được in
+    mực**, dao mới là thứ cắt. Giống hệt lane legacy ``_polygon_from_rings``.
+
+    Lỗ vẫn phải đi vào lớp CUT, nên chỗ đó dùng
+    :func:`transform_manifest_polygon_rings` (giữ outer + holes). Tách hai
+    đường ở đây để không ai phải nhớ truyền đúng tập ring cho từng lớp.
+
+    Trả đúng MỘT ring: ``RenderPolygonV1`` chỉ có một ``outer``, nên số ring của
+    artwork clip là bất biến cấp cấu trúc — không cần đoán hướng vòng, vốn là
+    thứ không dùng được vì SheetFrame của mặt sau CNC có det=-1 làm đảo hướng.
+    """
+
+    frozen = freeze_manifest_polygon(artwork_clip_path, field="artworkClipPath")
+    rings = transform_manifest_polygon_rings(
+        FrozenManifestPolygon(outer=frozen.outer, holes=()),
+        sheet_frame=sheet_frame,
+        pose=pose,
+        reference_point_mm=reference_point_mm,
+        field="artworkClipPath",
+    )
+    if len(rings) != 1:  # pragma: no cover - bất biến nội bộ
+        raise ManifestClipContractError(
+            "artworkClipPath phải cho đúng một vòng ngoài sau pose."
+        )
+    return rings

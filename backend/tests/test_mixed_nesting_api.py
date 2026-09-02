@@ -27,13 +27,18 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api.routes import mixed_nesting as route
 from app.core import mixed_nesting_jobs as jobs_module
+from app.core import mixed_nesting_service as nesting_service
 from app.core.license_guard import require_license
 from app.core.mixed_nesting_jobs import MixedNestingJobRegistry, derive_owner
 from app.main import app
-from app.schemas.mixed_nesting import MAX_REQUEST_BYTES
+from app.schemas.mixed_nesting import (
+    MAX_REQUEST_BYTES,
+    MIXED_NESTING_PROTOCOL_VERSION,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -91,8 +96,8 @@ class FakeRun:
         if self._raise is not None:
             raise self._raise
         return {
-            "protocolVersion": 1,
-            "engineVersion": "0.1.0",
+            "protocolVersion": MIXED_NESTING_PROTOCOL_VERSION,
+            "engineVersion": "0.2.0",
             "jobId": request.get("jobId"),
             "seed": request.get("seed"),
             "status": "completed",
@@ -130,13 +135,40 @@ class FakeRun:
         return self._cancelled.is_set()
 
 
+class FakeRunTraManifestSauCancel(FakeRun):
+    """Mô phỏng wheel cũ/race: cancel đã đến nhưng solve vẫn trả manifest completed."""
+
+    def solve(self, request: dict[str, Any]) -> dict[str, Any]:
+        self.solve_started.set()
+        if self._hold is not None:
+            self._hold.wait(5.0)
+        # Cố tình bỏ qua `_cancelled`: registry phải là publication fence độc lập.
+        return FakeRun().solve(request)
+
+    def progress(self) -> dict[str, Any]:
+        progress = super().progress()
+        progress.update(
+            phase="completed", progress=1.0, messageCode="finished"
+        )
+        return progress
+
+
+class FakeRunKetThucTheoNganSach(FakeRun):
+    """Deadline/work budget là completed best-barrier, không phải cancel."""
+
+    def solve(self, request: dict[str, Any]) -> dict[str, Any]:
+        manifest = super().solve(request)
+        manifest["stats"]["terminationReason"] = "work_budget_exhausted"
+        return manifest
+
+
 def _rect(w: float, h: float) -> list[list[float]]:
     return [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]
 
 
 def _body(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "protocolVersion": 1,
+        "protocolVersion": MIXED_NESTING_PROTOCOL_VERSION,
         "seed": 20260826,
         "profile": "fast",
         "sheet": {
@@ -273,6 +305,35 @@ def test_hold_tra_404_truoc_khi_cham_native(monkeypatch):
             )
     finally:
         app.dependency_overrides.pop(require_license, None)
+
+
+def test_capabilities_cong_bo_protocol_v2_va_layout_intents(api, monkeypatch):
+    client, _registry, _runs = api
+    capabilities = nesting_service.EngineCapabilities(
+        protocol_version=MIXED_NESTING_PROTOCOL_VERSION,
+        engine_version="0.2.0",
+        reflection="forbidden",
+        default_rotation="free",
+        continuous_translation=True,
+        profiles=("fast", "balanced", "tight"),
+        layout_intents=("quantity_fulfillment", "autofill_single_sheet"),
+    )
+    monkeypatch.setattr(route, "engine_capabilities", lambda: capabilities)
+
+    response = client.get("/api/mixed-nesting/capabilities")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["protocolVersion"] == MIXED_NESTING_PROTOCOL_VERSION
+    assert payload["engineVersion"] == "0.2.0"
+    assert payload["reflection"] == "forbidden"
+    assert payload["defaultRotation"] == "free"
+    assert payload["continuousTranslation"] is True
+    assert set(payload["profiles"]) == {"fast", "balanced", "tight"}
+    assert set(payload["layoutIntents"]) == {
+        "quantity_fulfillment",
+        "autofill_single_sheet",
+    }
+    assert payload["maxRequestBytes"] == MAX_REQUEST_BYTES
 
 
 def test_free_bi_chan_403_truoc_engine(monkeypatch):
@@ -421,6 +482,70 @@ def test_cancel_dang_chay_va_idempotent(monkeypatch):
             assert client.get(f"/api/mixed-nesting/jobs/{job_id}/result").status_code == 409
     finally:
         hold.set()
+        app.dependency_overrides.pop(require_license, None)
+        registry.close()
+
+
+def test_cancel_thang_manifest_completed_tra_ve_sau_publication_fence(monkeypatch):
+    """Cancel đến trong solve: registry phải bỏ manifest dù engine vẫn trả completed."""
+    hold = threading.Event()
+    run = FakeRunTraManifestSauCancel(hold=hold)
+    registry = MixedNestingJobRegistry(
+        ttl_seconds=60.0, slot_factory=lambda: nullcontext(), run_factory=lambda: run
+    )
+    monkeypatch.setattr(route, "mixed_nesting_jobs", registry)
+    monkeypatch.setenv("PRYNX_MIXED_NESTING_ENABLED", "true")
+    app.dependency_overrides[require_license] = lambda: PRO_A
+    try:
+        with TestClient(app) as client:
+            job_id = client.post("/api/mixed-nesting/jobs", json=_body()).json()["jobId"]
+            assert run.solve_started.wait(5.0)
+            cancelled = client.post(f"/api/mixed-nesting/jobs/{job_id}/cancel")
+            assert cancelled.status_code == 200, cancelled.text
+            waiting = client.get(f"/api/mixed-nesting/jobs/{job_id}").json()
+            assert waiting["status"] == "cancel_requested"
+            assert waiting["terminal"] is False
+            assert waiting["cancelRequested"] is True
+            assert waiting["progress"]["phase"] == waiting["status"]
+            hold.set()
+
+            final = _cho_terminal(client, job_id)
+            assert final["status"] == "cancelled"
+            assert final["errorCode"] == "MIXED_NESTING_CANCELLED"
+            assert final["cancelRequested"] is True
+            assert final["progress"]["phase"] == final["status"]
+            assert registry.get_result(job_id, derive_owner(PRO_A)) is None
+
+            result = client.get(f"/api/mixed-nesting/jobs/{job_id}/result")
+            assert result.status_code == 409, result.text
+            detail = result.json()["detail"]
+            assert detail["code"] == "MIXED_NESTING_CANCELLED"
+            assert detail["status"] == "cancelled"
+    finally:
+        hold.set()
+        app.dependency_overrides.pop(require_license, None)
+        registry.close()
+
+
+def test_het_ngan_sach_van_completed_va_result_200(monkeypatch):
+    run = FakeRunKetThucTheoNganSach()
+    registry = MixedNestingJobRegistry(
+        ttl_seconds=60.0, slot_factory=lambda: nullcontext(), run_factory=lambda: run
+    )
+    monkeypatch.setattr(route, "mixed_nesting_jobs", registry)
+    monkeypatch.setenv("PRYNX_MIXED_NESTING_ENABLED", "true")
+    app.dependency_overrides[require_license] = lambda: PRO_A
+    try:
+        with TestClient(app) as client:
+            job_id = client.post("/api/mixed-nesting/jobs", json=_body()).json()["jobId"]
+            final = _cho_terminal(client, job_id)
+            assert final["status"] == "completed"
+            assert final["cancelRequested"] is False
+
+            result = client.get(f"/api/mixed-nesting/jobs/{job_id}/result")
+            assert result.status_code == 200, result.text
+            assert result.json()["stats"]["terminationReason"] == "work_budget_exhausted"
+    finally:
         app.dependency_overrides.pop(require_license, None)
         registry.close()
 
@@ -681,8 +806,9 @@ def test_job_id_do_server_sinh_khong_theo_client(api):
 @pytest.mark.parametrize(
     "sua",
     [
-        {"protocolVersion": 2},
+        {"protocolVersion": MIXED_NESTING_PROTOCOL_VERSION - 1},
         {"protocolVersion": 0},
+        {"protocolVersion": MIXED_NESTING_PROTOCOL_VERSION + 1},
         {"seed": -1},
         {"gapMm": -1.0},
         {"profile": "turbo"},
@@ -695,6 +821,38 @@ def test_job_id_do_server_sinh_khong_theo_client(api):
 def test_request_sai_hop_dong_tra_422(api, sua):
     client, _registry, _runs = api
     assert client.post("/api/mixed-nesting/jobs", json=_body(**sua)).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "quantity_missing",
+        "quantity_null",
+        "autofill_quantity",
+        "autofill_quantity_null",
+        "autofill_many_sheets",
+    ],
+)
+def test_layout_intent_sai_tra_422_truoc_khi_tao_run(api, case):
+    client, _registry, runs = api
+    body = _body()
+    if case == "quantity_missing":
+        del body["parts"][0]["quantity"]
+    elif case == "quantity_null":
+        body["parts"][0]["quantity"] = None
+    else:
+        body["layoutIntent"] = "autofill_single_sheet"
+        body["sheet"]["maxSheets"] = 1
+        if case == "autofill_quantity_null":
+            body["parts"][0]["quantity"] = None
+        elif case == "autofill_many_sheets":
+            del body["parts"][0]["quantity"]
+            body["sheet"]["maxSheets"] = 2
+
+    response = client.post("/api/mixed-nesting/jobs", json=body)
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "MIXED_NESTING_INVALID_REQUEST"
+    assert runs == [], "request sai phải bị chặn trước khi tạo engine run"
 
 
 @pytest.mark.parametrize(
@@ -798,10 +956,12 @@ def test_request_noi_bo_dung_camel_case_va_bo_none():
         "profile",
         "sheet",
         "gapMm",
+        "layoutIntent",
         "orientationPolicy",
         "parts",
         "jobId",
     }
+    assert payload["layoutIntent"] == "quantity_fulfillment"
     assert set(payload["sheet"]) == {"widthMm", "heightMm", "marginMm", "maxSheets"}
     assert set(payload["parts"][0]) == {
         "partId",
@@ -813,6 +973,44 @@ def test_request_noi_bo_dung_camel_case_va_bo_none():
 
     voi_budget = CreateJobRequest.model_validate(_body(timeBudgetMs=5000))
     assert voi_budget.to_engine_request(job_id="x")["timeBudgetMs"] == 5000
+
+
+def test_layout_intent_kiem_soat_quantity_va_mot_to():
+    from app.schemas.mixed_nesting import CreateJobRequest
+
+    # Payload cũ có quantity, thiếu layoutIntent vẫn giữ nguyên hành vi.
+    legacy = CreateJobRequest.model_validate(_body())
+    assert legacy.layout_intent == "quantity_fulfillment"
+
+    thieu_quantity = _body()
+    del thieu_quantity["parts"][0]["quantity"]
+    with pytest.raises(ValidationError, match="quantity"):
+        CreateJobRequest.model_validate(thieu_quantity)
+
+    null_quantity = _body()
+    null_quantity["parts"][0]["quantity"] = None
+    with pytest.raises(ValidationError, match="quantity"):
+        CreateJobRequest.model_validate(null_quantity)
+
+    autofill = _body(layoutIntent="autofill_single_sheet")
+    autofill["sheet"]["maxSheets"] = 1
+    del autofill["parts"][0]["quantity"]
+    parsed = CreateJobRequest.model_validate(autofill)
+    payload = parsed.to_engine_request(job_id="autofill")
+    assert payload["layoutIntent"] == "autofill_single_sheet"
+    assert "quantity" not in payload["parts"][0]
+
+    for bad_quantity in (4, None):
+        invalid = _body(layoutIntent="autofill_single_sheet")
+        invalid["sheet"]["maxSheets"] = 1
+        invalid["parts"][0]["quantity"] = bad_quantity
+        with pytest.raises(ValidationError, match="quantity"):
+            CreateJobRequest.model_validate(invalid)
+
+    wrong_sheet = dict(autofill)
+    wrong_sheet["sheet"] = {**autofill["sheet"], "maxSheets": 2}
+    with pytest.raises(ValidationError, match="maxSheets"):
+        CreateJobRequest.model_validate(wrong_sheet)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

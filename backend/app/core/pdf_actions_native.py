@@ -519,6 +519,19 @@ def _resample_image_stream(
     if _is_indexed(obj):
         return False
 
+    # DEP (pikepdf ≥10 / audit 2026-08-28): `as_pil_image()` của pikepdf 10 TỰ ÁP
+    # `/SMask` vào ảnh nên trả về RGBA/LA, còn pikepdf 9 trả RGB/L. Kênh alpha đó
+    # KHÔNG phải thành phần màu: mặt nạ được hạ riêng bằng `_resample_smask` và
+    # `/ColorSpace` của object giữ nguyên. Nếu không bỏ alpha thì guard mode bên
+    # dưới thấy RGBA ≠ RGB và bỏ qua ảnh — hạ ảnh im lặng không chạy (đúng lỗi làm
+    # đỏ test_downscale_keeps_smask_aligned_with_image khi nâng pikepdf).
+    #
+    # Tách kênh TƯỜNG MINH thay vì `convert()` để không bao giờ nhân alpha vào màu
+    # (premultiply) hay ghép nền: chỉ giữ đúng các kênh màu như file đang lưu.
+    if pil.mode in ("RGBA", "LA"):
+        channels = pil.split()
+        pil = channels[0] if pil.mode == "LA" else Image.merge("RGB", channels[:3])
+
     expected_mode = {1: ("L",), 3: ("RGB",), 4: ("CMYK",)}.get(n_comps)
     if expected_mode is None or pil.mode not in expected_mode:
         # Mode Pillow không khớp số thành phần khai trong PDF: ghi lại sẽ lệch

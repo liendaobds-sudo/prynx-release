@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 
 # PDFium / thư viện C ghi raw bytes (non-UTF-8) ra stderr → pytest capture
@@ -38,6 +39,18 @@ os.environ["DEV_MODE"] = "false"
 # Result artifacts are signed in enforced-mode tests with this process-local fixture secret.
 os.environ["PRYNX_SIDECAR_TOKEN"] = "pytest-sidecar-token"
 
+# TEST-ISOLATION (audit 2026-09-01 §PERF-NEST-02): các test nesting có thể pin
+# source ngay trong lúc dựng/solve job. Kho mặc định ``backend/uploads/results``
+# là dữ liệu runtime thật, nên toàn bộ pytest phải dùng root riêng theo process.
+_TEST_ARTIFACT_ROOT = Path(
+    tempfile.mkdtemp(prefix=f"prynx_pytest_artifacts_{os.getpid()}_")
+)
+os.environ["UPLOAD_DIR"] = str(_TEST_ARTIFACT_ROOT / "uploads")
+os.environ["RESULTS_DIR"] = str(_TEST_ARTIFACT_ROOT / "results")
+os.environ["PRYNX_MIXED_NESTING_DATA_DIR"] = str(
+    _TEST_ARTIFACT_ROOT / "mixed_nesting"
+)
+
 # Tests that exercise the real license/token path must not get an auto Pro override.
 _SKIP_AUTO_PRO = (
     "test_free_token_e2e",
@@ -67,6 +80,7 @@ def _isolated_database_schema():
                     Path(f"{_TEST_DATABASE_PATH}{suffix}").unlink(missing_ok=True)
                 except OSError:
                     pass
+        shutil.rmtree(_TEST_ARTIFACT_ROOT, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

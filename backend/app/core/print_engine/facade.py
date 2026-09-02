@@ -93,12 +93,34 @@ class PpeResultUntrusted(RuntimeError):
         self.detail = detail or {}
 
 
+_OPTIONAL_CONTENT_USAGES = {"print", "view"}
+
+
+def _normalize_softproof_render_policy(
+    optional_content_usage: str,
+    render_annotations: bool,
+) -> tuple[str, bool]:
+    """Chuẩn hóa policy raster; không cho giá trị sai rơi về mặc định âm thầm."""
+    if not isinstance(optional_content_usage, str):
+        raise ValueError("optional_content_usage phải là 'print' hoặc 'view'")
+    normalized_usage = optional_content_usage.strip().lower()
+    if normalized_usage not in _OPTIONAL_CONTENT_USAGES:
+        raise ValueError(
+            f"optional_content_usage không hợp lệ: {normalized_usage} (print|view)"
+        )
+    if not isinstance(render_annotations, bool):
+        raise ValueError("render_annotations phải là boolean")
+    return normalized_usage, render_annotations
+
+
 def _native_softproof_preview_kwargs(
     *,
     output_preview_filter: str = "all",
     simulate_paper_color: bool = False,
     simulate_black_ink: bool = False,
     page_background_rgb: tuple[int, int, int] | list[int] | None = None,
+    optional_content_usage: str = "print",
+    render_annotations: bool = False,
 ) -> dict[str, Any]:
     """Validate contract mới và chỉ gửi keyword khi caller thật sự dùng nó.
 
@@ -110,6 +132,10 @@ def _native_softproof_preview_kwargs(
         raise ValueError(
             f"output_preview_filter không hợp lệ: {normalized_filter}"
         )
+    normalized_usage, normalized_annotations = _normalize_softproof_render_policy(
+        optional_content_usage,
+        render_annotations,
+    )
     normalized_background: tuple[int, int, int] | None = None
     if page_background_rgb is not None:
         if (
@@ -125,35 +151,69 @@ def _native_softproof_preview_kwargs(
             raise ValueError("page_background_rgb phải gồm ba số nguyên 0..255")
         normalized_background = tuple(page_background_rgb)
 
-    if (
-        normalized_filter == "all"
-        and not simulate_paper_color
-        and not simulate_black_ink
-        and normalized_background is None
-    ):
+    preview_options_requested = (
+        normalized_filter != "all"
+        or simulate_paper_color
+        or simulate_black_ink
+        or normalized_background is not None
+    )
+    viewer_policy_requested = (
+        normalized_usage != "print" or normalized_annotations
+    )
+    if not preview_options_requested and not viewer_policy_requested:
         return {}
 
     native_caps = capabilities()
-    supported_filters = set(native_caps.get("output_preview_filters") or [])
-    if normalized_filter not in supported_filters:
-        raise PpeUnavailable(
-            f"pdfcompare_native chưa hỗ trợ Show={normalized_filter}"
+    if preview_options_requested:
+        supported_filters = set(native_caps.get("output_preview_filters") or [])
+        if normalized_filter not in supported_filters:
+            raise PpeUnavailable(
+                f"pdfcompare_native chưa hỗ trợ Show={normalized_filter}"
+            )
+        required = (
+            (simulate_paper_color, "softproof_paper_color", "Paper Color"),
+            (simulate_black_ink, "softproof_black_ink", "Black Ink"),
+            (
+                normalized_background is not None,
+                "softproof_page_background",
+                "Background Color",
+            ),
         )
-    required = (
-        (simulate_paper_color, "softproof_paper_color", "Paper Color"),
-        (simulate_black_ink, "softproof_black_ink", "Black Ink"),
-        (normalized_background is not None, "softproof_page_background", "Background Color"),
-    )
-    for enabled, capability, label in required:
-        if enabled and not native_caps.get(capability):
-            raise PpeUnavailable(f"pdfcompare_native chưa hỗ trợ {label}")
+        for enabled, capability, label in required:
+            if enabled and not native_caps.get(capability):
+                raise PpeUnavailable(f"pdfcompare_native chưa hỗ trợ {label}")
 
-    return {
-        "output_preview_filter": normalized_filter,
-        "simulate_paper_color": bool(simulate_paper_color),
-        "simulate_black_ink": bool(simulate_black_ink),
-        "page_background_rgb": normalized_background,
-    }
+    if viewer_policy_requested:
+        # CORRECTNESS (audit 2026-08-31 §LÔ-B): capability semantic của core
+        # không chứng minh `.pyd` nhận được keyword mới; phải gate đúng binding.
+        required_binding_options = (
+            (
+                "softproof_optional_content_usage_option",
+                "cấu hình optional content cho soft-proof",
+            ),
+            (
+                "softproof_render_annotations_option",
+                "dựng annotation cho soft-proof",
+            ),
+        )
+        for capability, label in required_binding_options:
+            if not native_caps.get(capability):
+                raise PpeUnavailable(f"pdfcompare_native chưa hỗ trợ {label}")
+
+    kwargs: dict[str, Any] = {}
+    if preview_options_requested:
+        kwargs.update(
+            output_preview_filter=normalized_filter,
+            simulate_paper_color=bool(simulate_paper_color),
+            simulate_black_ink=bool(simulate_black_ink),
+            page_background_rgb=normalized_background,
+        )
+    if viewer_policy_requested:
+        kwargs.update(
+            optional_content_usage=normalized_usage,
+            render_annotations=normalized_annotations,
+        )
+    return kwargs
 
 
 def _native_separations_preview_kwargs(
@@ -413,6 +473,8 @@ class PpeSoftproofSession:
         native_session: Any | None,
         open_info: dict[str, Any],
         fallback_reason: str | None = None,
+        optional_content_usage: str = "print",
+        render_annotations: bool = False,
     ) -> None:
         self.pdf_path = str(pdf_path)
         self._document_path_key = os.path.normcase(
@@ -421,6 +483,13 @@ class PpeSoftproofSession:
         self.owner_id = owner_id
         self.cmyk_profile_id = cmyk_profile_id
         self.render_intent = int(render_intent)
+        (
+            self._optional_content_usage,
+            self._render_annotations,
+        ) = _normalize_softproof_render_policy(
+            optional_content_usage,
+            render_annotations,
+        )
         self._native_session = native_session
         self._open_info = dict(open_info)
         self._fallback_reason = fallback_reason
@@ -507,6 +576,8 @@ class PpeSoftproofSession:
                 simulate_paper_color=simulate_paper_color,
                 simulate_black_ink=simulate_black_ink,
                 page_background_rgb=page_background_rgb,
+                optional_content_usage=self._optional_content_usage,
+                render_annotations=self._render_annotations,
                 clip=clip,
             )
             raw["session_mode"] = "stateless_fallback"
@@ -544,6 +615,8 @@ class PpeSoftproofSession:
                     simulate_paper_color=simulate_paper_color,
                     simulate_black_ink=simulate_black_ink,
                     page_background_rgb=page_background_rgb,
+                    optional_content_usage=self._optional_content_usage,
+                    render_annotations=self._render_annotations,
                 )
             )
             if clip is not None:
@@ -678,11 +751,17 @@ def open_softproof_session(
     cmyk_profile_id: str = "fogra39",
     render_intent: int = 1,
     resource_cache_budget_mb: int | None = None,
+    optional_content_usage: str = "print",
+    render_annotations: bool = False,
 ) -> PpeSoftproofSession:
     """Mở document/profile một lần; build cũ tự đi compatibility lane stateless."""
     owner = str(owner_id).strip()
     if not owner:
         raise ValueError("owner_id PPE không được rỗng")
+    normalized_usage, normalized_annotations = _normalize_softproof_render_policy(
+        optional_content_usage,
+        render_annotations,
+    )
     profile_id = (cmyk_profile_id or "fogra39").strip().lower()
     from app.core.icc_profiles import resolve_cmyk_profile_path, resolve_srgb_profile_path
 
@@ -690,6 +769,12 @@ def open_softproof_session(
     if not cmyk_profile:
         raise RuntimeError(f"không tìm được profile CMYK '{profile_id}'")
     native = _native()
+    # Fail-loud trước khi mở native session: build cũ không được nhận policy
+    # Viewer rồi âm thầm render theo mặc định Print/annotation-off.
+    _native_softproof_preview_kwargs(
+        optional_content_usage=normalized_usage,
+        render_annotations=normalized_annotations,
+    )
     cache_budget = (
         _session_cache_budget_mb()
         if resource_cache_budget_mb is None
@@ -712,6 +797,8 @@ def open_softproof_session(
                 "open_timings_ms": {},
             },
             fallback_reason="native build chưa có PpeRenderSession",
+            optional_content_usage=normalized_usage,
+            render_annotations=normalized_annotations,
         )
 
     try:
@@ -744,6 +831,8 @@ def open_softproof_session(
                     "open_timings_ms": {},
                 },
                 fallback_reason="PDF cần qpdf recovery theo từng render",
+                optional_content_usage=normalized_usage,
+                render_annotations=normalized_annotations,
             )
         raise
 
@@ -756,6 +845,8 @@ def open_softproof_session(
         render_intent=render_intent,
         native_session=native_session,
         open_info=open_info,
+        optional_content_usage=normalized_usage,
+        render_annotations=normalized_annotations,
     )
 
 
@@ -1121,6 +1212,8 @@ def softproof(
     simulate_paper_color: bool = False,
     simulate_black_ink: bool = False,
     page_background_rgb: tuple[int, int, int] | list[int] | None = None,
+    optional_content_usage: str = "print",
+    render_annotations: bool = False,
     clip: tuple[int, int, int, int] | None = None,
 ) -> dict[str, Any]:
     """Soft-proof một trang: render trong không gian mực rồi quy sang sRGB qua ICC.
@@ -1187,6 +1280,8 @@ def softproof(
         simulate_paper_color=simulate_paper_color,
         simulate_black_ink=simulate_black_ink,
         page_background_rgb=page_background_rgb,
+        optional_content_usage=optional_content_usage,
+        render_annotations=render_annotations,
     )
 
     def _render(candidate_path: str):

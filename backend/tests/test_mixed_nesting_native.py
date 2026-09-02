@@ -68,7 +68,7 @@ def _request(
     job_id: str | None = "test-job",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "protocolVersion": 1,
+        "protocolVersion": svc.MIXED_NESTING_PROTOCOL_VERSION,
         "seed": 20260826,
         "profile": profile,
         "sheet": {
@@ -78,6 +78,7 @@ def _request(
             "maxSheets": max_sheets,
         },
         "gapMm": gap,
+        "layoutIntent": "quantity_fulfillment",
         "orientationPolicy": {
             "defaultRotation": {"mode": "free"},
             "reflection": "forbidden",
@@ -127,7 +128,7 @@ def test_ma_loi_khop_voi_rust():
         "MIXED_NESTING_CANCELLED": 409,
         "MIXED_NESTING_ENGINE_ERROR": 500,
     }
-    assert svc.MIXED_NESTING_PROTOCOL_VERSION == 1
+    assert svc.MIXED_NESTING_PROTOCOL_VERSION == 2
     assert svc.ENGINE_UNAVAILABLE_CODE == "ENGINE_UNAVAILABLE"
 
 
@@ -227,8 +228,8 @@ def test_wheel_stale_protocol_lech_thi_503(monkeypatch: pytest.MonkeyPatch):
         def capabilities() -> str:
             return json.dumps(
                 {
-                    "protocolVersion": 99,
-                    "engineVersion": "9.9.9",
+                    "protocolVersion": 1,
+                    "engineVersion": "0.1.0",
                     "reflection": "forbidden",
                     "defaultRotation": "free",
                     "continuousTranslation": True,
@@ -254,12 +255,16 @@ def test_native_cho_phep_lat_khuon_thi_503(monkeypatch: pytest.MonkeyPatch):
         def capabilities() -> str:
             return json.dumps(
                 {
-                    "protocolVersion": 1,
-                    "engineVersion": "0.1.0",
+                    "protocolVersion": 2,
+                    "engineVersion": "0.2.0",
                     "reflection": "allowed",
                     "defaultRotation": "free",
                     "continuousTranslation": True,
-                    "profiles": ["fast"],
+                    "profiles": ["fast", "balanced", "tight"],
+                    "layoutIntents": [
+                        "quantity_fulfillment",
+                        "autofill_single_sheet",
+                    ],
                 }
             )
 
@@ -271,6 +276,70 @@ def test_native_cho_phep_lat_khuon_thi_503(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(svc.EngineUnavailableError) as caught:
         svc.load_engine()
     assert "lật khuôn" in caught.value.message
+
+
+def test_native_v2_thieu_layout_intents_thi_503(monkeypatch: pytest.MonkeyPatch):
+    """Protocol đã khớp thì mọi field capability v2 bắt buộc phải đọc được."""
+
+    class MissingIntentRun:
+        @staticmethod
+        def capabilities() -> str:
+            return json.dumps(
+                {
+                    "protocolVersion": 2,
+                    "engineVersion": "0.2.0",
+                    "reflection": "forbidden",
+                    "defaultRotation": "free",
+                    "continuousTranslation": True,
+                    "profiles": ["fast", "balanced", "tight"],
+                }
+            )
+
+    class FakeNative:
+        MixedNestingRun = MissingIntentRun
+
+    monkeypatch.setattr(svc, "_probe_native", _probe_with(FakeNative()))
+    with pytest.raises(svc.EngineUnavailableError) as caught:
+        svc.load_engine()
+    assert caught.value.status == 503
+    assert "không đọc được" in caught.value.message
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("layoutIntents", ["quantity_fulfillment"], "ý định"),
+        ("profiles", ["fast"], "hồ sơ"),
+        ("continuousTranslation", "false", "dịch chuyển"),
+    ],
+)
+def test_native_v2_capability_khong_du_thi_503(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: Any, expected: str
+):
+    payload: dict[str, Any] = {
+        "protocolVersion": 2,
+        "engineVersion": "0.2.0",
+        "reflection": "forbidden",
+        "defaultRotation": "free",
+        "continuousTranslation": True,
+        "profiles": ["fast", "balanced", "tight"],
+        "layoutIntents": ["quantity_fulfillment", "autofill_single_sheet"],
+    }
+    payload[field] = value
+
+    class InvalidCapabilityRun:
+        @staticmethod
+        def capabilities() -> str:
+            return json.dumps(payload)
+
+    class FakeNative:
+        MixedNestingRun = InvalidCapabilityRun
+
+    monkeypatch.setattr(svc, "_probe_native", _probe_with(FakeNative()))
+    with pytest.raises(svc.EngineUnavailableError) as caught:
+        svc.load_engine()
+    assert caught.value.status == 503
+    assert expected in caught.value.message
 
 
 def _probe_with(fake_native: Any):
@@ -296,6 +365,96 @@ def _probe_with(fake_native: Any):
                 sys.modules["pdfcompare_native"] = saved
 
     return probe
+
+
+def _capability_payload_nf3(**overrides: Any) -> dict[str, Any]:
+    """Capability hợp lệ tối thiểu + ba cờ NF-3, cho phép override từng field."""
+    payload: dict[str, Any] = {
+        "protocolVersion": 2,
+        "engineVersion": "0.2.0",
+        "reflection": "forbidden",
+        "defaultRotation": "free",
+        "continuousTranslation": True,
+        "profiles": ["fast", "balanced", "tight"],
+        "layoutIntents": ["quantity_fulfillment", "autofill_single_sheet"],
+        "portfolioParallelEnabled": True,
+        "nfpColdMissParallelEnabled": True,
+        "nfpCacheByteBudgetEnforced": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _load_capabilities(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]):
+    class _Run:
+        @staticmethod
+        def capabilities() -> str:
+            return json.dumps(payload)
+
+    class _Native:
+        MixedNestingRun = _Run
+
+    monkeypatch.setattr(svc, "_probe_native", _probe_with(_Native()))
+    svc.reset_engine_cache()
+    return svc.load_engine()[1]
+
+
+def test_capability_nf3_duoc_parse_dung_khi_native_cong_bo(monkeypatch: pytest.MonkeyPatch):
+    """NF-3: sidecar phải GHI đúng cờ song song native công bố, không im lặng bỏ qua.
+
+    Đây là chốt cho "log nói đúng sự thật": engine chạy portfolio song song thật, nên
+    ``EngineCapabilities`` phải mang đúng ba cờ thay vì để trống (Python coi như false).
+    """
+    caps = _load_capabilities(monkeypatch, _capability_payload_nf3())
+    assert caps.portfolio_parallel_enabled is True
+    assert caps.nfp_cold_miss_parallel_enabled is True
+    assert caps.nfp_cache_byte_budget_enforced is True
+
+
+def test_capability_nf3_vang_mat_thi_none_khong_suy_false(monkeypatch: pytest.MonkeyPatch):
+    """Wheel cũ không công bố cờ ⇒ ``None`` (thiếu khai báo), KHÔNG phải False nghiệp vụ."""
+    payload = _capability_payload_nf3()
+    for key in (
+        "portfolioParallelEnabled",
+        "nfpColdMissParallelEnabled",
+        "nfpCacheByteBudgetEnforced",
+    ):
+        payload.pop(key)
+    caps = _load_capabilities(monkeypatch, payload)
+    assert caps.portfolio_parallel_enabled is None
+    assert caps.nfp_cold_miss_parallel_enabled is None
+    assert caps.nfp_cache_byte_budget_enforced is None
+
+
+def test_capability_nf3_sai_kieu_thi_503(monkeypatch: pytest.MonkeyPatch):
+    """Cờ có mặt nhưng sai kiểu (vd chuỗi ``"true"``) ⇒ wheel không đồng bộ, 503."""
+    monkeypatch.setattr(
+        svc,
+        "_probe_native",
+        _probe_with(
+            type(
+                "_N",
+                (),
+                {
+                    "MixedNestingRun": type(
+                        "_R",
+                        (),
+                        {
+                            "capabilities": staticmethod(
+                                lambda: json.dumps(
+                                    _capability_payload_nf3(portfolioParallelEnabled="true")
+                                )
+                            )
+                        },
+                    )
+                },
+            )()
+        ),
+    )
+    svc.reset_engine_cache()
+    with pytest.raises(svc.EngineUnavailableError) as caught:
+        svc.load_engine()
+    assert caught.value.status == 503
 
 
 def test_loi_nap_native_duoc_cache_khong_do_lai_moi_lan(monkeypatch: pytest.MonkeyPatch):
@@ -331,18 +490,24 @@ def test_create_run_that_bai_khi_engine_khong_dung_duoc(monkeypatch: pytest.Monk
 @requires_engine
 def test_capabilities_dung_hop_dong():
     caps = svc.engine_capabilities()
-    assert caps.protocol_version == 1
+    assert caps.protocol_version == 2
+    assert caps.engine_version == "0.2.0"
     assert caps.reflection == "forbidden"
     assert caps.default_rotation == "free"
     assert caps.continuous_translation is True
     assert set(caps.profiles) == {"fast", "balanced", "tight"}
+    assert set(caps.layout_intents) == {
+        "quantity_fulfillment",
+        "autofill_single_sheet",
+        "step_repeat_single_sheet",
+    }
 
 
 @requires_engine
 def test_solve_tra_manifest_hop_le():
     run = svc.create_run()
     manifest = run.solve(_request())
-    assert manifest["protocolVersion"] == 1
+    assert manifest["protocolVersion"] == 2
     assert manifest["jobId"] == "test-job"
     assert manifest["seed"] == 20260826
     assert manifest["status"] == "completed"
@@ -626,7 +791,15 @@ def test_gia_tri_khong_huu_han_bi_chan_ngay_o_bien_python(monkeypatch: pytest.Mo
     object.__setattr__(
         handle,
         "_capabilities",
-        svc.EngineCapabilities(1, "0.1.0", "forbidden", "free", True, ("fast",)),
+        svc.EngineCapabilities(
+            protocol_version=2,
+            engine_version="0.2.0",
+            reflection="forbidden",
+            default_rotation="free",
+            continuous_translation=True,
+            profiles=("fast", "balanced", "tight"),
+            layout_intents=("quantity_fulfillment", "autofill_single_sheet"),
+        ),
     )
     payload = _request()
     payload["gapMm"] = float("nan")
@@ -695,3 +868,96 @@ def test_khong_co_duong_bat_mirror_qua_bien_native():
         with pytest.raises(svc.MixedNestingError) as caught:
             run.solve(payload)
         assert caught.value.status == 422, mutation
+
+
+# ── §NFP-CONVEX: khuôn gần lồi không được bị KERNEL_NOT_CONVEX ────────────────
+
+def _almost_convex(sag_mm: float) -> list[list[float]]:
+    """Khuôn gần lồi: đỉnh giữa cạnh dưới lõm vào ``sag_mm``.
+
+    Đây là hình dạng của khuôn bế thật sau khi sample bezier và làm tròn toạ độ —
+    lồi về ý nghĩa cơ khí nhưng có một đỉnh lõm ở mức nhiễu số học.
+    """
+
+    return [
+        [0.0, 0.0],
+        [50.0, 0.0],
+        [100.0, sag_mm],
+        [150.0, 0.0],
+        [150.0, 80.0],
+        [0.0, 80.0],
+    ]
+
+
+@requires_engine
+@pytest.mark.parametrize("sag", [0.0, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-3])
+def test_khuon_gan_loi_khong_bi_kernel_not_convex(sag: float):
+    """Hồi quy §NFP-CONVEX, qua đúng biên native mà người dùng gặp lỗi.
+
+    Lỗi gốc: `geometry::convex_decompose` nhận lồi theo `Tolerance::linear_mm`
+    (`1e-6`) còn `kernel::minkowski_convex` đòi `1e-9` — lệch **1000×**. Khuôn có
+    đỉnh lõm trong dải đó được trả về **một mảnh**, rồi kernel chặn bằng
+    ``KERNEL_NOT_CONVEX`` với thông điệp "Phép Minkowski nhanh chỉ nhận đa giác lồi".
+
+    Nghịch lý xác nhận đúng cơ chế: khuôn lõm **rõ** (sag lớn) lại chạy tốt vì nó mới
+    được tam giác hoá đúng; chỉ khuôn **gần lồi** mới hỏng.
+    """
+
+    run = svc.create_run()
+    manifest = run.solve(
+        _request(
+            parts=[
+                {
+                    "partId": "gan-loi",
+                    "quantity": 2,
+                    "outer": _almost_convex(sag),
+                    "holes": [],
+                    "rotationConstraint": {"mode": "free"},
+                }
+            ],
+            profile="fast",
+            sheet_w=700.0,
+            sheet_h=500.0,
+            time_budget_ms=8000,
+        )
+    )
+
+    assert manifest["status"] == "completed", manifest.get("status")
+    assert manifest["validation"]["valid"] is True
+    assert manifest["stats"]["placedCount"] >= 1
+
+
+@requires_engine
+def test_khuon_co_dinh_trung_lien_ke_van_solve_duoc():
+    """Contour từ PDF mang đỉnh trùng; §A4b-2 giữ nguyên chúng nên engine gặp thật.
+
+    Đo được: bộ trích nét dựng hình chữ nhật 4 góc thành **8 đỉnh** (mỗi góc lặp hai
+    lần). Trước §NFP-CONVEX các cạnh dài 0 làm tích có hướng bằng 0 và không phân biệt
+    được "thẳng" với "trùng".
+    """
+
+    run = svc.create_run()
+    manifest = run.solve(
+        _request(
+            parts=[
+                {
+                    "partId": "dinh-trung",
+                    "quantity": 2,
+                    "outer": [
+                        [0.0, 0.0], [0.0, 0.0],
+                        [60.0, 0.0], [60.0, 0.0],
+                        [60.0, 40.0], [60.0, 40.0],
+                        [0.0, 40.0], [0.0, 40.0],
+                    ],
+                    "holes": [],
+                    "rotationConstraint": {"mode": "free"},
+                }
+            ],
+            profile="fast",
+            sheet_w=700.0,
+            sheet_h=500.0,
+            time_budget_ms=8000,
+        )
+    )
+
+    assert manifest["validation"]["valid"] is True

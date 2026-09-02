@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import upload as upload_route
+from app.core.pdf_processor import PDFProcessor
 from app.database import get_db
 from app.main import app
 
@@ -153,10 +154,16 @@ def test_local_zero_byte_fails_without_deleting_source(upload_api, tmp_path):
 def test_metadata_failure_is_500_and_removes_stored_copy(upload_api, monkeypatch):
     client, db, upload_dir = upload_api
 
-    def fail_metadata(_path):
+    def fail_metadata(_self, _path):
         raise RuntimeError("metadata parser failed")
 
-    monkeypatch.setattr(upload_route.processor, "get_metadata", fail_metadata)
+    # SEC (pentest 2026-08-28 §ATK.04): việc đọc metadata giờ chạy trong PROCESS CON, nên
+    # monkeypatch ở tiến trình cha không với tới worker được. Tắt sandbox cho đúng ca này
+    # để vẫn kiểm được hợp đồng thật "lỗi đọc metadata → 500 + dọn bản lưu" trên code
+    # thật (thay vì giả lập kết quả). Đường cách ly có test riêng ở
+    # `test_parser_sandbox.py` (gồm ca parser sập).
+    monkeypatch.setenv("PRYNX_PARSER_SANDBOX", "off")
+    monkeypatch.setattr(PDFProcessor, "get_metadata", fail_metadata)
 
     response = client.post(
         "/api/upload",

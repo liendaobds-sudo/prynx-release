@@ -382,6 +382,10 @@ class PlanExecutor:
                 except Exception:
                     pass
             cleanup_stack.close()
+            if perf_stages is not None:
+                # PERF (audit 2026-09-02 §PERF-NEST-06): đường lỗi trước bản ghi
+                # JOBPERF vẫn phải trả ownership thread-local cho job kế tiếp.
+                perf_stages.close()
 
 
 def _render_side(

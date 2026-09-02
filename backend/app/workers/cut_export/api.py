@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.core.license_guard import require_license
+from app.core.license_guard import require_feature, require_license
 from app.workers.cut_export.cut_model_builder import build_cut_model, NamingContractError
 from app.workers.cut_export.profile import (
     load_builtin_profiles, load_all_profiles, builtin_profile_ids,
@@ -26,10 +26,37 @@ from app.workers.cut_export.profile import (
 )
 from app.workers.cut_export import profile_store
 from app.workers.cut_export import service
-from app.workers.cut_export.pdf_source import build_cut_model_from_pdf, preview_svg_from_pdf, list_cut_layers, list_cut_pages
+from app.workers.cut_export.pdf_source import (
+    build_cut_model_from_pdf,
+    inspect_cut_pdf,
+    list_cut_layers,
+    list_cut_pages,
+    preview_svg_from_pdf,
+)
 from app.workers.cut_export.transport.tcp import probe_tcp
+from app.workers.cut_export.inspect_proof import (
+    CUT_INSPECT_PROOF_MAX_LENGTH,
+    CutInspectProofError,
+    issue_cut_inspect_proofs,
+    verify_cut_inspect_proof,
+)
 
-router = APIRouter(prefix="/imposition", tags=["cut-export"], dependencies=[Depends(require_license)])
+# SEC (audit 2026-08-28 §SEC.01): router này TỪNG chỉ có `require_license` nên một
+# license FREE hợp lệ gọi được toàn bộ 10 endpoint bình bế rớt/CNC — gồm xuất luồng cắt
+# và ĐẨY TRỰC TIẾP tới máy bế qua TCP/serial. `impo.cnc` khai là quyền PRO ở cả ba nơi
+# (`core/feature_entitlements.py` PRO_FEATURES, `desktop/src/lib/license/features.ts`,
+# `desktop/src/lib/toolRegistry.ts`) nhưng chỉ được cưỡng chế thật ở `routes/imposition.py`
+# (`_launch_impose_job`); module này bỏ trắng ⇒ leo quyền Free→Pro không cần crack.
+#
+# Gate ở CẤP ROUTER, không phải từng decorator: thêm endpoint mới vào đây thì tự động có
+# quyền, không phụ thuộc việc người viết có nhớ gắn dependency hay không.
+# `require_feature` đã `Depends(require_license)` bên trong nên license vẫn được kiểm; giữ
+# thêm `require_license` tường minh để lỗi thiếu credential vẫn là 401 (không thành 403).
+router = APIRouter(
+    prefix="/imposition",
+    tags=["cut-export"],
+    dependencies=[Depends(require_license), Depends(require_feature("impo.cnc"))],
+)
 
 
 class PointModel(BaseModel):
@@ -164,6 +191,10 @@ class CutExportFromFileRequest(BaseModel):
     pont_config: Optional[dict] = None
     ignore_limits: bool = False
     copies: int = 1
+    inspect_proof: Optional[str] = Field(
+        default=None,
+        max_length=CUT_INSPECT_PROOF_MAX_LENGTH,
+    )
 
 
 @router.post("/cut-export-from-file")
@@ -185,7 +216,31 @@ def cut_export_from_file(req: CutExportFromFileRequest):
         return {"ok": False, "error": f"Không tìm thấy profile '{req.profile_id}'"}
 
     try:
-        model = build_cut_model_from_pdf(req.path, req.page_idx, req.pont_config, force_layer=req.force_layer)
+        if req.inspect_proof is not None:
+            # PERF (audit 2026-09-02 §PERF-NEST-07): proof hợp lệ tái dùng
+            # CutModel server-built; chỉ băm source hiện tại, không parse/extract lại.
+            model = verify_cut_inspect_proof(
+                req.inspect_proof,
+                path=req.path,
+                page_idx=req.page_idx,
+                force_layer=req.force_layer,
+                pont_config=req.pont_config,
+            )
+        else:
+            # Tương thích caller/sidecar cũ: thiếu proof mới dùng đường parse legacy.
+            model = build_cut_model_from_pdf(
+                req.path,
+                req.page_idx,
+                req.pont_config,
+                force_layer=req.force_layer,
+            )
+    except CutInspectProofError as exc:
+        # Có proof mà sai/stale thì fail-closed, tuyệt đối không parse fallback.
+        return {
+            "ok": False,
+            "error": "Bằng chứng inspect không hợp lệ hoặc đã hết hạn. Hãy xem trước lại file.",
+            "proof_error": exc.code,
+        }
     except (NamingContractError, ValueError) as e:
         try:
             cands = list_cut_layers(req.path, req.page_idx)
@@ -232,6 +287,69 @@ class CutPreviewRequest(BaseModel):
     pont_config: Optional[dict] = None
     force_layer: Optional[str] = None
     auto_page: bool = False
+
+
+class CutInspectRequest(BaseModel):
+    path: str
+    page_idx: int = 0
+    force_layer: Optional[str] = None
+
+
+@router.post("/cut-inspect")
+def cut_inspect(req: CutInspectRequest):
+    """Quét trang CUT, candidate và preview trong một lần mở PDF."""
+    import os
+
+    if not req.path or not os.path.isfile(req.path):
+        return {"ok": False, "error": f"Không tìm thấy file: {req.path}"}
+    if not req.path.lower().endswith(".pdf"):
+        return {"ok": False, "error": "Chỉ hỗ trợ file PDF đã bình."}
+    try:
+        # PERF (audit 2026-09-02 §PERF-NEST-07): endpoint hợp nhất thay
+        # ba lượt cold-open cut-pages/cut-layers/cut-preview của modal.
+        data = inspect_cut_pdf(
+            req.path,
+            req.page_idx,
+            req.force_layer,
+            include_models=True,
+        )
+        models = data.pop("_models", {})
+        cut_pages = data.get("cut_pages", [])
+        if set(models) != set(cut_pages):
+            raise CutInspectProofError("model-set-mismatch")
+
+        # PERF (audit 2026-09-02 §PERF-NEST-07): cấp proof cho MỌI trang CUT
+        # từ đúng bộ model/fingerprint vừa dựng. Send All không phải quét lại toàn
+        # PDF theo từng trang; client vẫn nhận alias selected để tương thích.
+        proofs_by_page = issue_cut_inspect_proofs(
+            path=req.path,
+            fingerprint=data["fingerprint"],
+            force_layer=req.force_layer,
+            models=models,
+        )
+        selected_page_idx = data.get("selected_page_idx")
+        selected_proof = proofs_by_page.get(selected_page_idx)
+        inspect_proofs = {
+            str(page): proof
+            for page, proof in proofs_by_page.items()
+        }
+        return {
+            "ok": True,
+            **data,
+            "inspect_proof": selected_proof,
+            "inspect_proofs": inspect_proofs,
+        }
+    except CutInspectProofError as exc:
+        if exc.code == "capacity":
+            error = (
+                "Không đủ RAM khả dụng để giữ trọn bộ dữ liệu cắt cho tất cả tờ. "
+                "Hãy đóng bớt tác vụ nặng hoặc chia PDF thành lô nhỏ hơn rồi xem trước lại."
+            )
+        else:
+            error = "Không thể cấp bằng chứng inspect cho dữ liệu cắt hiện tại."
+        return {"ok": False, "error": error, "proof_error": exc.code}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @router.post("/cut-preview-from-file")

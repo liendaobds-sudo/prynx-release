@@ -92,6 +92,11 @@ def test_nup_lifecycle_reaches_terminal_and_releases_slot(monkeypatch, tmp_path,
             assert records[0]["peak_rss_mb"] == 42.0
             assert records[0]["peak_temp_mb"] == 3.0
             assert records[0]["samples"] == 4
+            assert records[0]["artifact_publish_s"] >= 0.0
+            assert records[0]["artifact_publish_attempts"] == 1
+            assert records[0]["artifact_publish_successes"] == 1
+        else:
+            assert "artifact_publish_s" not in records
     finally:
         token = imposition.nup_jobs.get(job_id, {}).get("artifact_lease")
         if token:

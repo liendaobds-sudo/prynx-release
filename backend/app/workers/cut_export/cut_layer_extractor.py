@@ -335,23 +335,26 @@ class _Walker:
             return
 
 
-def extract_cut_contours(pdf_path: str, page_index: int = 0,
-                         config: Optional[ExtractConfig] = None) -> ExtractResult:
-    """Trích đường cắt từ trang `page_index` của PDF. Trả ExtractResult."""
+def extract_cut_contours_from_pdf(
+    pdf: pikepdf.Pdf,
+    page_index: int = 0,
+    config: Optional[ExtractConfig] = None,
+) -> ExtractResult:
+    """Trích đường cắt từ một PDF đang mở.
+
+    PERF (audit 2026-09-02 §PERF-NEST-07): primitive này cho phép caller
+    quét nhiều trang mà không parse lại cả tài liệu ở mỗi trang.
+    """
     cfg = config or ExtractConfig()
     result = ExtractResult()
-    pdf = pikepdf.open(pdf_path)
-    try:
-        page = pdf.pages[page_index]
-        resources = page.get("/Resources", pikepdf.Dictionary())
-        # Kích thước trang (để loại contour khung full-trang).
-        mb = page.get("/MediaBox", [0, 0, 612, 792])
-        pw = abs(float(mb[2]) - float(mb[0]))
-        ph = abs(float(mb[3]) - float(mb[1]))
-        walker = _Walker(pdf, cfg, result)
-        walker.walk(page, resources, IDENTITY, 0, [])
-    finally:
-        pdf.close()
+    page = pdf.pages[page_index]
+    resources = page.get("/Resources", pikepdf.Dictionary())
+    # Kích thước trang (để loại contour khung full-trang).
+    mb = page.get("/MediaBox", [0, 0, 612, 792])
+    pw = abs(float(mb[2]) - float(mb[0]))
+    ph = abs(float(mb[3]) - float(mb[1]))
+    walker = _Walker(pdf, cfg, result)
+    walker.walk(page, resources, IDENTITY, 0, [])
 
     # Loại contour có bbox ≈ khổ trang (viền/limit-line) — Req 10.5.
     if pw > 0 and ph > 0:
@@ -368,23 +371,40 @@ def extract_cut_contours(pdf_path: str, page_index: int = 0,
     return result
 
 
+def extract_cut_contours(pdf_path: str, page_index: int = 0,
+                         config: Optional[ExtractConfig] = None) -> ExtractResult:
+    """Wrapper tương thích: mở đường dẫn rồi trích một trang."""
+    pdf = pikepdf.open(pdf_path)
+    try:
+        return extract_cut_contours_from_pdf(pdf, page_index, config)
+    finally:
+        pdf.close()
+
+
+def cut_candidates_from_result(result: ExtractResult) -> dict:
+    """Chuẩn hoá danh sách lớp/spot từ kết quả đã quét."""
+    return {
+        "layers": sorted(result.layers_seen),
+        "spots": sorted(result.spots_seen),
+        "auto_matched": sorted(result.matched_layers),
+    }
+
+
+def list_cut_candidates_from_pdf(pdf: pikepdf.Pdf, page_index: int = 0) -> dict:
+    """Liệt kê lớp/spot từ một PDF đang mở."""
+    return cut_candidates_from_result(
+        extract_cut_contours_from_pdf(pdf, page_index, ExtractConfig())
+    )
+
+
 def list_cut_candidates(pdf_path: str, page_index: int = 0) -> dict:
     """Liệt kê các lớp OCG + spot-color thấy trên trang (để người dùng chọn thủ công).
 
     Trả {"layers": [...], "spots": [...]} — đã lọc bớt lớp marks/full đã loại trừ vẫn liệt kê
     (người dùng tự quyết). Req 10.6.
     """
-    cfg = ExtractConfig()  # chỉ để đi qua walker, không cần khớp
-    result = ExtractResult()
     pdf = pikepdf.open(pdf_path)
     try:
-        page = pdf.pages[page_index]
-        resources = page.get("/Resources", pikepdf.Dictionary())
-        _Walker(pdf, cfg, result).walk(page, resources, IDENTITY, 0, [])
+        return list_cut_candidates_from_pdf(pdf, page_index)
     finally:
         pdf.close()
-    return {
-        "layers": sorted(result.layers_seen),
-        "spots": sorted(result.spots_seen),
-        "auto_matched": sorted(result.matched_layers),
-    }

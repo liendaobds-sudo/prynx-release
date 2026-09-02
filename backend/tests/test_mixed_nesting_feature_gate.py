@@ -52,7 +52,7 @@ def _rect(w: float, h: float) -> list[list[float]]:
 
 def _body() -> dict[str, Any]:
     return {
-        "protocolVersion": 1,
+        "protocolVersion": svc.MIXED_NESTING_PROTOCOL_VERSION,
         "seed": 20260826,
         "profile": "fast",
         "timeBudgetMs": 2000,

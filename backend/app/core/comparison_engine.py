@@ -741,6 +741,89 @@ def _raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
         raise ComparisonCancelled("Đã hủy so sánh theo yêu cầu của người dùng.")
 
 
+def _extract_page_texts_for_alignment(
+    pdf_path: str,
+    n_pages: int,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[str]:
+    """Text đã chuẩn hoá của từng trang, DÙNG RIÊNG cho bước căn trang.
+
+    PERF (audit 2026-08-29 §RS.T1a): đổi nguồn text của bước căn trang từ
+    pdfplumber/pdfminer.six (parser PDF THUẦN PYTHON) sang PDFium. Đo trên máy
+    32 GB/16 luồng, PDF A4 dày chữ: pdfplumber `extract_words` ~86 ms/trang,
+    PDFium text ~1,4 ms/trang → nhanh 46–62×. Ca so sánh 40 trang với 41 trang
+    trước đây trả ~7 s chỉ để trích text trước khi so sánh bắt đầu.
+
+    Vì sao KHÔNG mất thông tin: consumer duy nhất của hàm này là `_sim` trong
+    `run_comparison_pipeline`, và nó chỉ dùng CHUỖI text đã normalize để tính
+    `difflib` ratio. Nó KHÔNG đọc bbox, fontname hay cỡ chữ — ba trường mà
+    `extract_text_blocks` trả về nhưng bước căn trang vứt bỏ hoàn toàn.
+
+    Vì sao KHÔNG đổi kết quả căn: `_sim` so text của A với text của B, và CẢ HAI
+    phía đều lấy từ CÙNG một extractor. Khác biệt hệ thống giữa hai parser (thứ
+    tự đọc, cách gộp khoảng trắng) triệt tiêu trong tỉ số difflib. Điều quyết
+    định là tính nhất quán giữa hai phía, không phải khớp từng ký tự với pdfminer.
+
+    Trang không có text (trang ảnh) trả "" — y như đường cũ. `_sim` tự rơi về chỉ
+    dùng thumbnail khi một trong hai phía có dưới 20 ký tự, nên trang ảnh không
+    bị ảnh hưởng.
+
+    Args:
+        pdf_path: đường dẫn PDF cần trích.
+        n_pages: số trang cần trích (1..n_pages).
+        cancel_check: callback hủy hợp tác; kiểm trước mỗi trang.
+
+    Returns:
+        List `n_pages` chuỗi đã qua `normalize_text`. Trang lỗi → "".
+    """
+    import pypdfium2 as pdfium
+
+    from app.core.page_aligner import normalize_text
+    from app.core.pdfium_lock import pdfium_guard
+
+    if n_pages <= 0:
+        return []
+
+    # KIENTRUC (AGENTS.md rule #3): PDFium không thread-safe và hàm này chạy trong
+    # threadpool của job compare. Khóa THEO TỪNG TRANG như `pdf_processor`, KHÔNG
+    # giữ khóa cả vòng lặp — giữ cả lượt sẽ chặn mọi preview khác suốt 40 trang.
+    # `normalize_text` (regex thuần) làm NGOÀI khóa để vùng khóa chỉ còn lời gọi PDFium.
+    with pdfium_guard("compare_align_text_open"):
+        doc = pdfium.PdfDocument(pdf_path)
+
+    try:
+        raw: list[str] = []
+        for page_index in range(min(n_pages, len(doc))):
+            _raise_if_cancelled(cancel_check)
+            try:
+                with pdfium_guard("compare_align_text_page"):
+                    # Đóng textpage/page TƯỜNG MINH ngay trong khóa: nếu để GC dọn,
+                    # finalizer của pypdfium2 có thể chạy trên thread khác NGOÀI
+                    # `pdfium_guard` → access violation (tiền lệ `pdf_processor`).
+                    page = doc[page_index]
+                    try:
+                        textpage = page.get_textpage()
+                        try:
+                            raw.append(textpage.get_text_bounded())
+                        finally:
+                            textpage.close()
+                    finally:
+                        page.close()
+            except ComparisonCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - trang lỗi → coi như không có text
+                logger.debug("Căn trang: không trích được text trang %d: %s",
+                             page_index + 1, exc)
+                raw.append("")
+
+        # Trang vượt quá số trang thật của file → "" (giữ đúng độ dài list đầu ra).
+        raw.extend([""] * (n_pages - len(raw)))
+        return [normalize_text(t) for t in raw]
+    finally:
+        with pdfium_guard("compare_align_text_close"):
+            doc.close()
+
+
 def _remove_job_artifacts(job_id: str) -> None:
     """Xóa đúng thư mục artifact của một job, không cho phép thoát RESULTS_DIR."""
     results_root = Path(settings.RESULTS_DIR).resolve()
@@ -1489,7 +1572,7 @@ def _run_comparison_pipeline_impl(
                 import numpy as _np
                 import cv2 as _cv2
                 from app.core.page_aligner import (
-                    align_pages, thumbnail_similarity, text_similarity, normalize_text,
+                    align_pages, thumbnail_similarity, text_similarity,
                 )
 
                 def _fingerprints(path, n):
@@ -1504,23 +1587,13 @@ def _run_comparison_pipeline_impl(
                         sigs.append(_cv2.resize(g, (32, 32), interpolation=_cv2.INTER_AREA))
                     return sigs
 
-                def _page_texts(path, n):
-                    """Text chuẩn hoá mỗi trang (rỗng nếu trang ảnh/không có text)."""
-                    out = []
-                    for p in range(1, n + 1):
-                        _raise_if_cancelled(cancel_check)
-                        try:
-                            blocks = processor.extract_text_blocks(path, p)
-                            t = " ".join(b.get("text", "") for b in blocks)
-                        except Exception:
-                            t = ""
-                        out.append(normalize_text(t))
-                    return out
-
                 _sig_a = _fingerprints(file_a.file_path, pages_a)
                 _sig_b = _fingerprints(file_b.file_path, pages_b)
-                _txt_a = _page_texts(file_a.file_path, pages_a)
-                _txt_b = _page_texts(file_b.file_path, pages_b)
+                # PERF (audit 2026-08-29 §RS.T1a): text căn trang lấy từ PDFium thay vì
+                # pdfplumber/pdfminer.six (~86 ms/trang → ~1,4 ms/trang). Xem docstring
+                # `_extract_page_texts_for_alignment` cho lý do không mất thông tin.
+                _txt_a = _extract_page_texts_for_alignment(file_a.file_path, pages_a, cancel_check)
+                _txt_b = _extract_page_texts_for_alignment(file_b.file_path, pages_b, cancel_check)
 
                 def _sim(i, j):
                     # Hình thu nhỏ + (nếu CẢ HAI trang đủ chữ) text-hash. Tài liệu nhiều

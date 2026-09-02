@@ -30,11 +30,23 @@ async def _save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
     file_path = os.path.join(settings.UPLOAD_DIR, stored_name)
     setattr(upload_file, '_prynx_partial_path', file_path)
 
+    # SEC (pentest 2026-08-28 §ATK.03): cưỡng chế trần dung lượng ĐÃ KHAI trong config
+    # (MAX_FILE_SIZE_MB, mặc định 500MB). Trước đây vòng đọc chunk KHÔNG kiểm tổng nên một
+    # file khổng lồ (hoặc luồng upload vô tận) làm đầy đĩa rồi treo các bước xử lý sau
+    # (DoS). Đây KHÔNG phải hard-cap vô điều kiện: trần do người vận hành đặt qua env, máy
+    # mạnh cứ nâng lên. Vượt trần thì raise ValueError; save_upload_file() bọc ngoài đã
+    # dọn file dở trên MỌI nhánh lỗi, và các route (save_upload/pdf_tools) map sang 413.
+    max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+
     # Save file
     file_size = 0
     async with aiofiles.open(file_path, "wb") as f:
         while chunk := await upload_file.read(1024 * 1024):  # 1MB chunks
             file_size += len(chunk)
+            if max_bytes > 0 and file_size > max_bytes:
+                raise ValueError(
+                    f"File vượt quá giới hạn {settings.MAX_FILE_SIZE_MB}MB cho mỗi lần tải lên."
+                )
             await f.write(chunk)
 
     logger.info(f"Saved upload: {upload_file.filename} → {stored_name} ({file_size} bytes)")

@@ -98,7 +98,7 @@ def _request(
     sheet_h: float = 700.0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "protocolVersion": 1,
+        "protocolVersion": svc.MIXED_NESTING_PROTOCOL_VERSION,
         "seed": seed,
         "profile": profile,
         "sheet": {
@@ -271,7 +271,17 @@ def test_deadline_tra_best_so_far_da_validate(api, budget_ms):
     elapsed_s = time.monotonic() - started
 
     assert manifest["validation"]["valid"] is True, "best-so-far phải qua validator"
-    assert manifest["stats"]["terminationReason"] in {"deadline", "all_placed"}
+    # NF-3 (portfolio song song, audit 2026-08-30): engine nay nhanh hơn nên với workload này
+    # work-plan cố định có thể XONG trước deadline ⇒ `work_budget_exhausted`. Đó vẫn là terminal
+    # hợp lệ và best-so-far vẫn qua validator (assert trên). Điểm cốt lõi của test là "khi dừng
+    # thì trả layout ĐÃ VALIDATE trong thời gian có trần", không phải ép đúng nhánh deadline:
+    # `all_placed` = xếp hết, `work_budget_exhausted` = hết work-plan trước deadline, `deadline` =
+    # chạm đồng hồ — cả ba đều phải cho layout đã validate và bị trần thời gian.
+    assert manifest["stats"]["terminationReason"] in {
+        "deadline",
+        "all_placed",
+        "work_budget_exhausted",
+    }
     if manifest["stats"]["terminationReason"] == "deadline":
         # §17: không vượt budget quá max(1 giây, 10%).
         bien_s = max(1.0, budget_ms / 1000.0 * 0.10)

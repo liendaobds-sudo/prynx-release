@@ -6,6 +6,7 @@ import re
 
 import pikepdf
 import pytest
+from fastapi import HTTPException
 
 from tests.license_helpers import PRO_LICENSE
 from app.workers import nup_engine
@@ -765,3 +766,197 @@ def test_export_uses_logical_cropbox_and_border_does_not_change_layout(
     assert all(value < 64 for value in darkest_pixels), (
         "Artwork trong CropBox phải thật sự hiện trên tờ, không chỉ có toán tử Do."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PARITY (audit 2026-08-28 §PREVIEW.TRIM.1)
+#  Preview Bình cắt xén phải đo khổ thành phẩm bằng CHÍNH resolver của export
+#  (`resolve_guillotine_trim` → `effective_imposition_box`), không lấy
+#  `item_w`/`item_h` do giao diện gửi. Trên bản desktop, `sourcePageDim` đến từ
+#  PDFium nên là CropBox, còn export giữ MediaBox khi CropBox chỉ hụt vài phần
+#  trăm — hai bên lệch đúng vành bleed.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# MediaBox 206×206 chứa bleed 3pt mỗi cạnh; CropBox 200×200 là vùng nhìn thấy.
+# Tỷ lệ 200/206 = 0,971 nên `effective_imposition_box` giữ MediaBox → khổ thành
+# phẩm thật = 206 − 2×3 = 200.
+BLEED_MEDIA = [0.0, 0.0, 206.0, 206.0]
+BLEED_CROP = [3.0, 3.0, 203.0, 203.0]
+# 388 = 2 × 194: khổ sai (CropBox − 2×bleed) lấp đúng 2 cột, khổ đúng chỉ 1 cột.
+BLEED_USABLE = 388.0
+
+
+def _make_multipage_cropbox_pdf(path, boxes):
+    """PDF nhiều trang, mỗi trang một cặp (MediaBox, CropBox) riêng."""
+    pdf = pikepdf.Pdf.new()
+    for media_box, crop_box in boxes:
+        page = pdf.add_blank_page(
+            page_size=(media_box[2] - media_box[0], media_box[3] - media_box[1]),
+        )
+        page.obj[pikepdf.Name("/MediaBox")] = pikepdf.Array(media_box)
+        page.obj[pikepdf.Name("/CropBox")] = pikepdf.Array(crop_box)
+        if "/TrimBox" in page.obj:
+            del page.obj[pikepdf.Name("/TrimBox")]
+    pdf.save(str(path))
+    pdf.close()
+    return str(path)
+
+
+def test_effective_box_keeps_media_when_cropbox_only_hides_bleed(tmp_path):
+    """Chốt tiền đề của fixture: 206/200 là bleed thường nên giữ MediaBox."""
+    source = _make_cropbox_pdf(
+        tmp_path / "bleed-crop-premise.pdf", BLEED_MEDIA, BLEED_CROP,
+    )
+    doc = pdf_lib.open(source)
+    try:
+        assert resolve_guillotine_trim(doc[0], 0.0) == pytest.approx((206.0, 206.0))
+        assert resolve_guillotine_trim(doc[0], 3.0) == pytest.approx((200.0, 200.0))
+    finally:
+        doc.close()
+
+
+def test_step_repeat_preview_trim_comes_from_pdf_not_ui_item_size(tmp_path):
+    """Bình trang: giao diện gửi CropBox nhưng preview phải dùng khổ của export."""
+    source = _make_cropbox_pdf(
+        tmp_path / "bleed-crop-repeat.pdf", BLEED_MEDIA, BLEED_CROP,
+    )
+
+    result = preview_layout(
+        PreviewLayoutRequest(
+            usable_w=BLEED_USABLE,
+            usable_h=BLEED_USABLE,
+            sheet_w=BLEED_USABLE,
+            sheet_h=BLEED_USABLE,
+            # Giá trị PDFium báo cho giao diện desktop: CropBox, không phải MediaBox.
+            item_w=200.0,
+            item_h=200.0,
+            bleed=3.0,
+            gap_x=0.0,
+            gap_y=0.0,
+            strategy="simple_auto",
+            shape_type="CUSTOM",
+            path=source,
+            task_mode="step_repeat",
+            layout_type="repeat",
+            is_die_cut=False,
+        ),
+        PRO_LICENSE,
+    )
+
+    # Khổ đúng 200 → một ô. Nếu lấy item_w của giao diện (194) thì ra bốn ô.
+    assert result["cells"]
+    assert result["cells"][0]["width"] == pytest.approx(200.0)
+    assert result["cells"][0]["height"] == pytest.approx(200.0)
+    assert result["totalItems"] == 1
+
+
+def test_multi_design_preview_trim_comes_from_pdf_not_ui_item_size(tmp_path):
+    """Dàn nhiều mẫu: khổ solve phải là khổ thành phẩm trang đầu đọc từ PDF."""
+    source = _make_multipage_cropbox_pdf(
+        tmp_path / "bleed-crop-sequential.pdf",
+        [(BLEED_MEDIA, BLEED_CROP), (BLEED_MEDIA, BLEED_CROP)],
+    )
+
+    result = preview_layout(
+        PreviewLayoutRequest(
+            usable_w=BLEED_USABLE,
+            usable_h=BLEED_USABLE,
+            sheet_w=BLEED_USABLE,
+            sheet_h=BLEED_USABLE,
+            item_w=200.0,
+            item_h=200.0,
+            bleed=3.0,
+            gap_x=0.0,
+            gap_y=0.0,
+            strategy="simple_auto",
+            shape_type="CUSTOM",
+            path=source,
+            task_mode="nup",
+            layout_type="sequential",
+            is_die_cut=False,
+            total_pages=2,
+        ),
+        PRO_LICENSE,
+    )
+
+    assert result["cells"]
+    assert result["cells"][0]["width"] == pytest.approx(200.0)
+    assert result["totalItems"] == 1
+
+
+def test_mixed_size_guard_uses_same_page_box_rule_as_export(tmp_path):
+    """Chốt khác khổ phải đo bằng effective box: MediaBox giống nhau vẫn có thể lệch."""
+    source = _make_multipage_cropbox_pdf(
+        tmp_path / "guard-crop-differs.pdf",
+        [
+            # Cùng MediaBox 1000×1000; CropBox là trang logic và KHÁC khổ nhau.
+            ([0.0, 0.0, 1000.0, 1000.0], [0.0, 0.0, 300.0, 300.0]),
+            ([0.0, 0.0, 1000.0, 1000.0], [0.0, 0.0, 500.0, 500.0]),
+        ],
+    )
+    req = PreviewLayoutRequest(
+        usable_w=1200.0,
+        usable_h=1200.0,
+        sheet_w=1200.0,
+        sheet_h=1200.0,
+        item_w=300.0,
+        item_h=300.0,
+        gap_x=0.0,
+        gap_y=0.0,
+        strategy="simple_auto",
+        shape_type="CUSTOM",
+        path=source,
+        task_mode="nup",
+        layout_type="sequential",
+        is_die_cut=False,
+        total_pages=2,
+    )
+
+    # Export từ chối ca này; preview đo bằng MediaBox thì cho qua rồi để người
+    # dùng bấm Bình mới báo lỗi.
+    with pytest.raises(HTTPException) as exc:
+        preview_layout(req, PRO_LICENSE)
+    assert exc.value.status_code == 422
+    assert "c\u00f9ng k\u00edch th\u01b0\u1edbc" in str(exc.value.detail)
+
+
+def test_mixed_size_guard_accepts_what_export_accepts(tmp_path):
+    """Chiều ngược lại: MediaBox khác nhau nhưng trang logic cùng khổ → không chặn."""
+    source = _make_multipage_cropbox_pdf(
+        tmp_path / "guard-media-differs.pdf",
+        [
+            ([0.0, 0.0, 1000.0, 1000.0], [0.0, 0.0, 300.0, 300.0]),
+            ([0.0, 0.0, 1200.0, 1200.0], [0.0, 0.0, 300.0, 300.0]),
+        ],
+    )
+
+    doc = pdf_lib.open(source)
+    try:
+        assert resolve_guillotine_trim(doc[0], 0.0) == pytest.approx((300.0, 300.0))
+        assert resolve_guillotine_trim(doc[1], 0.0) == pytest.approx((300.0, 300.0))
+    finally:
+        doc.close()
+
+    result = preview_layout(
+        PreviewLayoutRequest(
+            usable_w=1200.0,
+            usable_h=1200.0,
+            sheet_w=1200.0,
+            sheet_h=1200.0,
+            item_w=300.0,
+            item_h=300.0,
+            gap_x=0.0,
+            gap_y=0.0,
+            strategy="simple_auto",
+            shape_type="CUSTOM",
+            path=source,
+            task_mode="nup",
+            layout_type="sequential",
+            is_die_cut=False,
+            total_pages=2,
+        ),
+        PRO_LICENSE,
+    )
+
+    assert result["success"] is True
+    assert result["cells"][0]["width"] == pytest.approx(300.0)

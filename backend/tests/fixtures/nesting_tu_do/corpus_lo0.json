@@ -1,0 +1,1157 @@
+{
+  "corpusVersion": 1,
+  "lo": 0,
+  "ngay": "2026-08-27",
+  "keHoach": "docs/KE_HOACH_TICH_HOP_NESTING_TU_DO_TEM_CNC_CHINH_THUC_2026-08-27.md",
+  "trangThai": "CHO_DUYET",
+  "units": "mm",
+  "note": "Corpus Lô 0 cho strategy `true_shape_nesting` (Nesting tối ưu theo đường bế) của Bình Tem bế và Bình CNC. KHÔNG phải corpus của công cụ Bình lồng ghép tự do standalone (cái đó ở backend/tests/fixtures/mixed_nesting/corpus.json, corpusVersion 2, và chỉ mô tả CreateJobRequest của kernel). Corpus này mô tả đầu vào của LUỒNG SẢN XUẤT: nguồn PDF + payload settings thật của /imposition/nup-start và /imposition/preview-layout.",
+  "quyUocDonVi": {
+    "moiTruongTrongFileNay": "mm — mọi khoá kết thúc bằng `Mm` hoặc nằm trong `settingsMm`.",
+    "payloadExecute": "camelCase, đơn vị mm (xem desktop/src/lib/processHandlers.ts:267-373).",
+    "payloadPreview": "snake_case, đơn vị POINT = mm × 2.83465 (xem desktop/src/components/imposition-tools/sections/GridPreview.tsx:1535-1618).",
+    "canhBao": "Hai callsite khác cả naming lẫn đơn vị. Script sinh payload phải chuyển đổi đúng một lần, không chép tay."
+  },
+  "quyUocHinhHoc": {
+    "trongFileNay": "mm, gốc TRÁI-DƯỚI, X sang phải, Y lên, góc dương CCW — đúng hợp đồng canonical của kế hoạch §3.",
+    "trongPdfSinhRa": "PDF space (pt, Y lên). Generator chuyển mm → pt và giữ nguyên gốc trái-dưới.",
+    "luuY": "Pipeline hiện hữu (nup_artwork.transform_die_point, finalize_placements.original_cell_y, nup_clip_shape) làm việc ở hệ TOP-DOWN của trang đích. Chuyển hệ chỉ được xảy ra tại boundary adapter/render đúng một lần."
+  },
+  "khongCommitPdfKhachHang": {
+    "lyDo": ".gitignore:153 đã loại /private_test_corpus/ — không bao giờ commit artwork khách hàng.",
+    "cachLam": "Corpus này mô tả PDF theo cách KHAI BÁO; test/script tự sinh bằng pikepdf (đúng khuôn mẫu backend/tests/fixtures/mixed_nesting_sources/manifest.json). Phần PDF sản xuất thật chỉ được tham chiếu bằng alias + sha256 trong `nguonSanXuatThat`, file nằm ngoài repo."
+  },
+
+  "sources": [
+    {
+      "id": "SRC_TRON_D50",
+      "moTa": "Một trang, một đường bế tròn Ø50 mm, có landmark F/R/B/L để soi hướng đọc.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 60, 60],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "circle", "centerMm": [30, 30], "radiusMm": 25 }
+          ],
+          "artwork": {
+            "kind": "landmark_frbl",
+            "boxMm": [5, 5, 55, 55],
+            "fillGray": 0.85
+          }
+        }
+      ]
+    },
+    {
+      "id": "SRC_CHUNHAT_90x60",
+      "moTa": "Chữ nhật 90×60 mm — ca đối chứng, nơi lưới đều đã tối ưu nên free-angle KHÔNG được kém hơn.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 94, 64],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "closed_polyline", "pointsMm": [[2, 2], [92, 2], [92, 62], [2, 62]] }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 92, 62], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_TAMGIAC_80x65",
+      "moTa": "Tam giác 80×65 mm. Hình bất đối xứng theo cả hai trục nên phát hiện được mọi phép lật sai.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 84, 69],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "closed_polyline", "pointsMm": [[2, 2], [82, 2], [42, 67]] }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 82, 67], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_CHU_L_70x70",
+      "moTa": "Chữ L lõm 70×70 mm — FIXTURE INTERLOCK. Đây là ca duy nhất kế hoạch §13 đòi 'strict improvement': hai chữ L xoay 180° lồng vào nhau xếp chặt hơn mọi lưới cardinal.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 74, 74],
+          "rotate": 0,
+          "diePaths": [
+            {
+              "kind": "closed_polyline",
+              "pointsMm": [[2, 2], [72, 2], [72, 27], [27, 27], [27, 72], [2, 72]]
+            }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 72, 72], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_KHAY_110x45_LO",
+      "moTa": "Khay 110×45 mm có một lỗ khoét 30×20 mm — kiểm fill rule và bất biến 'V1 không nesting vào hole'.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 114, 49],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "closed_polyline", "pointsMm": [[2, 2], [112, 2], [112, 47], [2, 47]] },
+            { "kind": "closed_polyline", "role": "hole", "pointsMm": [[12, 12], [42, 12], [42, 32], [12, 32]] }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 112, 47], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_VIENTHUOC_100x40",
+      "moTa": "Viên thuốc (hai cạnh thẳng + hai cung Bézier) 100×40 mm — kiểm làm phẳng Bézier ở góc bất kỳ.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 104, 44],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "closed_bezier_capsule", "rectMm": [2, 2, 102, 42] }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 102, 42], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_GANG_5_LOAI",
+      "moTa": "Năm trang, năm hình khác nhau — nguồn cho mọi ca gang (Dàn nhiều mẫu). Mỗi trang có nhãn riêng để đối chiếu instance mapping trong artifact.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 94, 64],
+          "rotate": 0,
+          "nhan": "A-chunhat",
+          "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [92, 2], [92, 62], [2, 62]] }],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 92, 62], "label": "A", "fillGray": 0.9 }
+        },
+        {
+          "mediaBoxMm": [0, 0, 74, 74],
+          "rotate": 0,
+          "nhan": "B-vuong",
+          "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [72, 2], [72, 72], [2, 72]] }],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 72, 72], "label": "B", "fillGray": 0.9 }
+        },
+        {
+          "mediaBoxMm": [0, 0, 84, 69],
+          "rotate": 0,
+          "nhan": "C-tamgiac",
+          "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [82, 2], [42, 67]] }],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 82, 67], "label": "C", "fillGray": 0.9 }
+        },
+        {
+          "mediaBoxMm": [0, 0, 74, 74],
+          "rotate": 0,
+          "nhan": "D-chuL",
+          "diePaths": [
+            {
+              "kind": "closed_polyline",
+              "pointsMm": [[2, 2], [72, 2], [72, 27], [27, 27], [27, 72], [2, 72]]
+            }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 72, 72], "label": "D", "fillGray": 0.9 }
+        },
+        {
+          "mediaBoxMm": [0, 0, 114, 49],
+          "rotate": 0,
+          "nhan": "E-khay-co-lo",
+          "diePaths": [
+            { "kind": "closed_polyline", "pointsMm": [[2, 2], [112, 2], [112, 47], [2, 47]] },
+            { "kind": "closed_polyline", "role": "hole", "pointsMm": [[12, 12], [42, 12], [42, 32], [12, 32]] }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 112, 47], "label": "E", "fillGray": 0.9 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_CNC_DUPLEX_1CAP",
+      "moTa": "Hai trang = MỘT cặp Mặt trước/Mặt sau cho CNC 2 mặt. Landmark F-R-B-L ở cả hai mặt để kiểm parity lật tờ; hình tam giác nên mọi phép lật sai đều lộ.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 84, 69],
+          "rotate": 0,
+          "nhan": "front",
+          "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [82, 2], [42, 67]] }],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 82, 67], "label": "FRONT", "fillGray": 0.9 }
+        },
+        {
+          "mediaBoxMm": [0, 0, 84, 69],
+          "rotate": 0,
+          "nhan": "back",
+          "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [82, 2], [42, 67]] }],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 82, 67], "label": "BACK", "fillGray": 0.75 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_CNC_DUPLEX_3CAP",
+      "moTa": "Sáu trang = BA cặp Mặt trước/Mặt sau, ba hình khác nhau — nguồn cho CNC gang 2 mặt. select_front_pages sẽ lấy trang 0/2/4 làm Mặt trước (cnc_layout.py:363-374).",
+      "pages": [
+        { "mediaBoxMm": [0, 0, 94, 64], "rotate": 0, "nhan": "f1-chunhat", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [92, 2], [92, 62], [2, 62]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 92, 62], "label": "F1", "fillGray": 0.9 } },
+        { "mediaBoxMm": [0, 0, 94, 64], "rotate": 0, "nhan": "b1-chunhat", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [92, 2], [92, 62], [2, 62]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 92, 62], "label": "B1", "fillGray": 0.75 } },
+        { "mediaBoxMm": [0, 0, 84, 69], "rotate": 0, "nhan": "f2-tamgiac", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [82, 2], [42, 67]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 82, 67], "label": "F2", "fillGray": 0.9 } },
+        { "mediaBoxMm": [0, 0, 84, 69], "rotate": 0, "nhan": "b2-tamgiac", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [82, 2], [42, 67]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 82, 67], "label": "B2", "fillGray": 0.75 } },
+        { "mediaBoxMm": [0, 0, 74, 74], "rotate": 0, "nhan": "f3-chuL", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [72, 2], [72, 27], [27, 27], [27, 72], [2, 72]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 72, 72], "label": "F3", "fillGray": 0.9 } },
+        { "mediaBoxMm": [0, 0, 74, 74], "rotate": 0, "nhan": "b3-chuL", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [72, 2], [72, 27], [27, 27], [27, 72], [2, 72]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 72, 72], "label": "B3", "fillGray": 0.75 } }
+      ]
+    },
+    {
+      "id": "SRC_GOC_LECH_ROTATE90",
+      "moTa": "MediaBox gốc KHÁC (0,0), CropBox và TrimBox khác MediaBox, kèm /Rotate 90. Đây là ca duy nhất buộc SourcePageToCanonical phải làm đúng việc của nó.",
+      "pages": [
+        {
+          "mediaBoxMm": [-12.5, 7.25, 81.5, 71.25],
+          "cropBoxMm": [-10.5, 9.25, 79.5, 69.25],
+          "trimBoxMm": [-8.5, 11.25, 77.5, 67.25],
+          "rotate": 90,
+          "diePaths": [
+            { "kind": "closed_polyline", "pointsMm": [[-8.5, 11.25], [77.5, 11.25], [77.5, 67.25], [-8.5, 67.25]] }
+          ],
+          "artwork": { "kind": "landmark_frbl", "boxMm": [-8.5, 11.25, 77.5, 67.25], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_KHONG_DUONG_BE",
+      "moTa": "Trang không có đường kín nào — preflight PHẢI chặn, tuyệt đối không dựng bbox giả (kế hoạch §3, §11).",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 90, 60],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "open_polyline", "pointsMm": [[5, 5], [85, 5], [85, 40]] }
+          ],
+          "artwork": { "kind": "fill_rect", "boxMm": [0, 0, 90, 60], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_QUA_KHO_400x600",
+      "moTa": "Mẫu 400×600 mm — lớn hơn vùng in của tờ 320×450 mm. Ca thất bại CÓ CHỦ ĐÍCH để kiểm fail-closed, không xuất tờ trắng.",
+      "pages": [
+        {
+          "mediaBoxMm": [0, 0, 404, 604],
+          "rotate": 0,
+          "diePaths": [
+            { "kind": "closed_polyline", "pointsMm": [[2, 2], [402, 2], [402, 602], [2, 602]] }
+          ],
+          "artwork": { "kind": "fill_rect", "boxMm": [2, 2, 402, 602], "fillGray": 0.85 }
+        }
+      ]
+    },
+    {
+      "id": "SRC_M100_10LOAI",
+      "moTa": "Mười trang, mười cỡ — nguồn cho ca stress M100 (100 con). Sinh theo công thức để corpus không phình: cạnh dài 40 + 6i mm, cạnh ngắn 25 + 4i mm, i = 0..9.",
+      "generator": {
+        "kind": "series_rect",
+        "count": 10,
+        "widthMm": "40 + 6*i",
+        "heightMm": "25 + 4*i",
+        "paddingMm": 2,
+        "labelPrefix": "M"
+      }
+    },
+    {
+      "id": "SRC_L300_3LOAI",
+      "moTa": "Ba trang nhỏ — nguồn cho ca stress L300 (300 con). Hình nhỏ để 300 con vẫn ra vài tờ chứ không nổ số tờ.",
+      "pages": [
+        { "mediaBoxMm": [0, 0, 34, 24], "rotate": 0, "nhan": "L-a", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [32, 2], [32, 22], [2, 22]] }], "artwork": { "kind": "fill_rect", "boxMm": [2, 2, 32, 22], "fillGray": 0.9 } },
+        { "mediaBoxMm": [0, 0, 29, 29], "rotate": 0, "nhan": "L-b", "diePaths": [{ "kind": "circle", "centerMm": [14.5, 14.5], "radiusMm": 12.5 }], "artwork": { "kind": "fill_rect", "boxMm": [2, 2, 27, 27], "fillGray": 0.9 } },
+        { "mediaBoxMm": [0, 0, 34, 29], "rotate": 0, "nhan": "L-c", "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [32, 2], [17, 27]] }], "artwork": { "kind": "fill_rect", "boxMm": [2, 2, 32, 27], "fillGray": 0.9 } }
+      ]
+    },
+    {
+      "id": "SRC_TRUNG_BASENAME_A",
+      "moTa": "Cặp với SRC_TRUNG_BASENAME_B: hai file CÙNG basename `mau.pdf` ở hai thư mục khác nhau, nội dung khác nhau. Kiểm NEST-10: partId/instanceId phải dựa source hash + page identity, không chỉ basename.",
+      "basename": "mau.pdf",
+      "thuMuc": "khach-a",
+      "pages": [
+        { "mediaBoxMm": [0, 0, 64, 44], "rotate": 0, "diePaths": [{ "kind": "closed_polyline", "pointsMm": [[2, 2], [62, 2], [62, 42], [2, 42]] }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 62, 42], "label": "A", "fillGray": 0.9 } }
+      ]
+    },
+    {
+      "id": "SRC_TRUNG_BASENAME_B",
+      "moTa": "Xem SRC_TRUNG_BASENAME_A. Cùng basename, hình khác (tròn thay vì chữ nhật).",
+      "basename": "mau.pdf",
+      "thuMuc": "khach-b",
+      "pages": [
+        { "mediaBoxMm": [0, 0, 64, 64], "rotate": 0, "diePaths": [{ "kind": "circle", "centerMm": [32, 32], "radiusMm": 30 }], "artwork": { "kind": "landmark_frbl", "boxMm": [2, 2, 62, 62], "label": "B", "fillGray": 0.9 } }
+      ]
+    }
+  ],
+
+  "sheetPresets": {
+    "TEM_320x450": {
+      "sheetWidthMm": 320,
+      "sheetHeightMm": 450,
+      "marginTopMm": 10,
+      "marginBottomMm": 10,
+      "marginLeftMm": 10,
+      "marginRightMm": 10,
+      "usableMm": [300, 430],
+      "note": "Khổ tem bế thông dụng. usable = sheet - lề, khớp cách nup_engine/cnc_render tính."
+    },
+    "TEM_330x480": {
+      "sheetWidthMm": 330,
+      "sheetHeightMm": 480,
+      "marginTopMm": 12,
+      "marginBottomMm": 12,
+      "marginLeftMm": 12,
+      "marginRightMm": 12,
+      "usableMm": [306, 456]
+    },
+    "CNC_600x900": {
+      "sheetWidthMm": 600,
+      "sheetHeightMm": 900,
+      "marginTopMm": 15,
+      "marginBottomMm": 15,
+      "marginLeftMm": 15,
+      "marginRightMm": 15,
+      "usableMm": [570, 870],
+      "note": "Khổ bế rớt lớn — dùng cho ca stress và ca 2 mặt."
+    },
+    "NHO_120x120": {
+      "sheetWidthMm": 120,
+      "sheetHeightMm": 120,
+      "marginTopMm": 10,
+      "marginBottomMm": 10,
+      "marginLeftMm": 10,
+      "marginRightMm": 10,
+      "usableMm": [100, 100],
+      "note": "Khổ nhỏ để dựng ca 'chỉ vừa khi xoay góc không-cardinal' mà chạy nhanh trong CI."
+    }
+  },
+
+  "cases": [
+    {
+      "id": "ST_SR_AUTOFILL_TRON",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "batBuoc": true,
+      "title": "Tem bế · Bình trang (S&R) · lấp đầy một tờ · tem tròn Ø50",
+      "rationale": "Tem tròn là nơi lồng ghép so le đã có giá trị ở baseline hiện hữu (orchestrator head-to-tail p5/p6). Free-angle phải KHÔNG kém baseline ở đây — nếu kém thì solver mới đang thua chính solver cũ.",
+      "source": "SRC_TRON_D50",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "CIRCLE_ELLIPSE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "sheetCountBang": 1,
+        "placedCountKhongKemBaseline": true,
+        "khongOverlap": true,
+        "duClearance": true,
+        "trongVungIn": true
+      }
+    },
+    {
+      "id": "ST_SR_QUANTITY_TRON",
+      "flow": "sticker_sr",
+      "intent": "quantity_fulfillment",
+      "batBuoc": true,
+      "title": "Tem bế · Bình trang (S&R) · đủ 5.000 con · tem tròn Ø50",
+      "rationale": "Nhánh repeat tính sheets_needed = ceil(qty / items_per_sheet) (nup_engine.py:1925-1927). Tăng items_per_sheet là giảm số tờ — đây là chỗ giá trị kinh tế lộ ra rõ nhất.",
+      "source": "SRC_TRON_D50",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 5000,
+        "targetQuantitiesByPage": { "0": 5000 },
+        "detectedShapesByPage": { "0": "CIRCLE_ELLIPSE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "unplacedCountBang": 0,
+        "sheetCountKhongLonHonBaseline": true,
+        "khongOverlap": true,
+        "duClearance": true
+      }
+    },
+    {
+      "id": "ST_GANG_AUTOFILL_5LOAI",
+      "flow": "sticker_gang",
+      "intent": "autofill_single_sheet",
+      "batBuoc": true,
+      "title": "Tem bế · Dàn nhiều mẫu (gang) · lấp đầy một tờ · 5 loại",
+      "rationale": "Baseline gang là MaxRects theo bbox (bin_packing.solve_auto_fill_mixed). Đây là seam có biên độ cải thiện lớn nhất vì hiện tại hình lõm/tròn bị coi là chữ nhật.",
+      "source": "SRC_GANG_5_LOAI",
+      "sheet": "TEM_330x480",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "maximize_area",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": {
+          "0": "RECTANGLE",
+          "1": "RECTANGLE",
+          "2": "TRIANGLE",
+          "3": "CUSTOM",
+          "4": "CUSTOM"
+        },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "sheetCountBang": 1,
+        "placedCountKhongKemBaseline": true,
+        "moiLoaiCoItNhatMotCon": true,
+        "khongOverlap": true
+      }
+    },
+    {
+      "id": "ST_GANG_QUANTITY_5LOAI",
+      "flow": "sticker_gang",
+      "intent": "quantity_fulfillment",
+      "batBuoc": true,
+      "title": "Tem bế · Dàn nhiều mẫu (gang) · đủ SL theo từng loại",
+      "rationale": "SL lệch nhau giữa các loại (2000/1500/1000/800/500) buộc solver phải cân tỉ lệ chứ không chỉ lấp chỗ. Baseline là bin_packing.solve_offset_mixed.",
+      "source": "SRC_GANG_5_LOAI",
+      "sheet": "TEM_330x480",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "maximize_area",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": { "0": 2000, "1": 1500, "2": 1000, "3": 800, "4": 500 },
+        "detectedShapesByPage": {
+          "0": "RECTANGLE",
+          "1": "RECTANGLE",
+          "2": "TRIANGLE",
+          "3": "CUSTOM",
+          "4": "CUSTOM"
+        },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "unplacedCountBang": 0,
+        "sheetCountKhongLonHonBaseline": true,
+        "khongOverlap": true
+      }
+    },
+    {
+      "id": "CNC_SR_AUTOFILL_TAMGIAC",
+      "flow": "cnc_sr",
+      "intent": "autofill_single_sheet",
+      "batBuoc": true,
+      "title": "CNC · Bình trang (S&R) · một mặt · lấp đầy một tờ · tam giác",
+      "rationale": "CNC S&R dùng CHUNG compute_sticker_layout_for_page với tem bế (cnc_render.py:395-406), nên strategy mới phải chảy qua cùng một cửa. Tam giác đối đầu là ca lồng ghép cổ điển.",
+      "source": "SRC_TAMGIAC_80x65",
+      "sheet": "CNC_600x900",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "imposerMode": "cnc",
+        "cncTwoSided": false,
+        "cncFlipEdge": "long",
+        "cncDuplexMarks": false,
+        "gapXMm": 3,
+        "gapYMm": 3,
+        "bleedMm": 0,
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "TRIANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "sheetCountBang": 1,
+        "placedCountKhongKemBaseline": true,
+        "soTrangArtifact": 2,
+        "thuTuTrang": ["Front", "Cut"],
+        "khongOverlap": true
+      }
+    },
+    {
+      "id": "CNC_SR_QUANTITY_DUPLEX",
+      "flow": "cnc_sr",
+      "intent": "quantity_fulfillment",
+      "batBuoc": true,
+      "title": "CNC · Bình trang (S&R) · HAI MẶT · đủ 3.000 con · tam giác",
+      "rationale": "Ca then chốt của parity lật tờ. Hiện mirror áp ở pdf_ops.show_pdf_page với pivot = tâm TRANG ĐÍCH và KHÔNG toggle cờ xoay (cnc_render.py:156-178). Với góc tự do, phép lật phải là một thành phần của SheetFrame_back, không phải M_sheet × G_i.",
+      "source": "SRC_CNC_DUPLEX_1CAP",
+      "sheet": "CNC_600x900",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "imposerMode": "cnc",
+        "cncTwoSided": true,
+        "cncFlipEdge": "long",
+        "cncDuplexMarks": true,
+        "gapXMm": 3,
+        "gapYMm": 3,
+        "bleedMm": 0,
+        "pontType": "none",
+        "targetQuantity": 3000,
+        "targetQuantitiesByPage": { "0": 3000 },
+        "detectedShapesByPage": { "0": "TRIANGLE", "1": "TRIANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "unplacedCountBang": 0,
+        "sheetCountKhongLonHonBaseline": true,
+        "soTrangArtifact": 3,
+        "thuTuTrang": ["Front", "Back", "Cut"],
+        "landmarkFRBL": "Mặt sau phải là ảnh phản chiếu của mặt trước quanh tâm tờ; hướng đọc landmark đảo đúng một lần.",
+        "determinantGi": "+1 — G_i không được chứa mirror.",
+        "khongOverlap": true
+      }
+    },
+    {
+      "id": "CNC_GANG_AUTOFILL_DUPLEX",
+      "flow": "cnc_gang",
+      "intent": "autofill_single_sheet",
+      "batBuoc": true,
+      "title": "CNC · Dàn nhiều mẫu (gang) · HAI MẶT · lấp đầy một tờ · 3 cặp",
+      "rationale": "Nhánh gang CNC hiện KHÔNG đọc gridStrategy và nén gap = max(gapX, gapY) (cnc_render.py:361, 433-476). Đây là ca chứng minh strategy mới phải mở đường riêng cho gang CNC chứ không chỉ thêm option UI.",
+      "source": "SRC_CNC_DUPLEX_3CAP",
+      "sheet": "CNC_600x900",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "imposerMode": "cnc",
+        "cncTwoSided": true,
+        "cncFlipEdge": "long",
+        "cncDuplexMarks": true,
+        "gapXMm": 3,
+        "gapYMm": 3,
+        "bleedMm": 0,
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "RECTANGLE", "2": "TRIANGLE", "4": "CUSTOM" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "sheetCountBang": 1,
+        "placedCountKhongKemBaseline": true,
+        "soTrangArtifact": 3,
+        "thuTuTrang": ["Front", "Back", "Cut"],
+        "instanceMapping": "Mỗi instance Mặt trước (trang 0/2/4) phải khớp đúng trang Mặt sau (1/3/5) theo select_front_pages.",
+        "khongOverlap": true
+      }
+    },
+    {
+      "id": "CNC_GANG_QUANTITY_1MAT",
+      "flow": "cnc_gang",
+      "intent": "quantity_fulfillment",
+      "batBuoc": true,
+      "title": "CNC · Dàn nhiều mẫu (gang) · một mặt · đủ SL theo loại",
+      "rationale": "Baseline gang CNC lấp đầy tờ theo TỈ LỆ SL (_ratio_fill_layout) và tính local_runs = max(ceil(qty/count)). Số tờ ở đây là 'số lượt in', không phải số trang PDF — hợp đồng này phải giữ nguyên.",
+      "source": "SRC_GANG_5_LOAI",
+      "sheet": "CNC_600x900",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "imposerMode": "cnc",
+        "cncTwoSided": false,
+        "cncFlipEdge": "long",
+        "cncDuplexMarks": false,
+        "gapXMm": 3,
+        "gapYMm": 3,
+        "bleedMm": 0,
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": { "0": 1200, "1": 900, "2": 600, "3": 400, "4": 300 },
+        "detectedShapesByPage": {
+          "0": "RECTANGLE",
+          "1": "RECTANGLE",
+          "2": "TRIANGLE",
+          "3": "CUSTOM",
+          "4": "CUSTOM"
+        },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "unplacedCountBang": 0,
+        "sheetCountKhongLonHonBaseline": true,
+        "soTrangArtifactDocLapVoiSL": true,
+        "khongOverlap": true
+      }
+    },
+
+    {
+      "id": "GEO_INTERLOCK_CHU_L",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "batBuoc": true,
+      "nhom": "hinh_hoc",
+      "title": "FIXTURE INTERLOCK · chữ L lõm · buộc CẢI THIỆN THỰC SỰ",
+      "rationale": "Đây là ca duy nhất kế hoạch §13 đòi 'strict improvement'. Hai chữ L xoay 180° khớp nhau thành hình chữ nhật; mọi lưới cardinal đều bỏ trống phần lõm. Nếu strategy mới KHÔNG hơn baseline ở đây thì nó chưa mang lại giá trị nào và không nên phát hành.",
+      "source": "SRC_CHU_L_70x70",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 1,
+        "gapYMm": 1,
+        "bleedMm": 0,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "CUSTOM" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "sheetCountBang": 1,
+        "placedCountLonHonBaseline": true,
+        "ghiChu": "STRICT: lớn hơn, không phải 'không kém'. Ngưỡng cụ thể do chủ sản phẩm chốt ở Lô 0 sau khi có số baseline đo được."
+      }
+    },
+    {
+      "id": "GEO_TAMGIAC_DOI_DAU",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "hinh_hoc",
+      "title": "Tam giác đối đầu · góc tự do phải thắng góc 0/180",
+      "rationale": "Tam giác lồng đối đầu là ca sách giáo khoa. Baseline đã có head-to-tail nên đây là phép thử 'solver mới có thật sự tinh hơn NFP p5/p6 hiện hữu'.",
+      "source": "SRC_TAMGIAC_80x65",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 1.5,
+        "gapYMm": 1.5,
+        "bleedMm": 0,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "TRIANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": { "sheetCountBang": 1, "placedCountKhongKemBaseline": true }
+    },
+    {
+      "id": "GEO_LO_MULTIPOLYGON",
+      "flow": "sticker_gang",
+      "intent": "autofill_single_sheet",
+      "nhom": "hinh_hoc",
+      "title": "Khay có lỗ khoét · fill rule và bất biến 'không nesting vào hole'",
+      "rationale": "Kernel hiện coi hole là VẬT LIỆU ĐẶC khi collision/score (model.rs:504-505), còn pipeline clip lại CỐ Ý bỏ lỗ để không clip mất artwork trong cửa sổ khuôn (nup_clip_shape._polygon_from_rings). Hai quy ước này khác nhau và phải được chốt tường minh, không để mỗi tầng tự hiểu.",
+      "source": "SRC_KHAY_110x45_LO",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "maximize_area",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "CUSTOM" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "khongNestingVaoHole": true,
+        "artworkTrongLoVanDuocIn": true,
+        "ghiChu": "Hai kỳ vọng này CÙNG phải đúng: lỗ là vật liệu đặc với solver, nhưng vẫn được in artwork. Nếu chủ sản phẩm muốn nesting vào hole thì phải quyết riêng và có test riêng."
+      }
+    },
+    {
+      "id": "GEO_GAP_DI_HUONG",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "hinh_hoc",
+      "title": "gapX ≠ gapY ở góc bất kỳ",
+      "rationale": "Kernel hiện chỉ có MỘT gapMm vô hướng và nở NFP bằng offset BO TRÒN (isotropic). Với góc tự do, nở dị hướng phải diễn ra trong sheet-space SAU pose, không pre-expand theo trục local rồi xoay. Ca này là bằng chứng cho quyết định đó.",
+      "source": "SRC_CHUNHAT_90x60",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 6,
+        "gapYMm": 1,
+        "bleedMm": 0,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "RECTANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "khoangHoTheoTrucToMm": { "x": 6, "y": 1 },
+        "doTrongSheetSpace": true,
+        "ghiChu": "Đo khoảng hở theo TRỤC TỜ, không theo trục local của mẫu."
+      }
+    },
+    {
+      "id": "GEO_NEAR_CONTACT",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "hinh_hoc",
+      "title": "Near-contact · khoảng hở bằng đúng gap, gap = 0",
+      "rationale": "gap = 0 là ca thợ in thật dùng (dao chung nét). Ca này phân biệt 'tiếp tuyến' với 'đè nhau' và khoá dung sai validator: tiếp tuyến ở gap=0 KHÔNG được coi là overlap (bài học đã có ở pont_collision.PONT_COLLISION_EPS_PT2).",
+      "source": "SRC_CHUNHAT_90x60",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 0,
+        "gapYMm": 0,
+        "bleedMm": 0,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "RECTANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "tiepTuyenKhongPhaiOverlap": true,
+        "khongCoDienTichGiaoDuongTinh": true
+      }
+    },
+    {
+      "id": "GEO_GOC_LECH_ROTATE90",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "hinh_hoc",
+      "title": "MediaBox gốc lệch + CropBox/TrimBox khác + /Rotate 90",
+      "rationale": "SourcePageToCanonical phải xử lý page boxes, /Rotate và origin đúng MỘT lần. page_space_canonicalization hiện bake UserUnit + /Rotate + gốc MediaBox, nhưng điều kiện trigger KHÔNG xét gốc CropBox/TrimBox — ca này là chỗ lộ ra nếu có lệch.",
+      "source": "SRC_GOC_LECH_ROTATE90",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "RECTANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "artworkTrungKhopDuongBe": true,
+        "khongLechDoOrigin": true,
+        "khongLechDoRotate": true
+      }
+    },
+    {
+      "id": "OBS_BOONG_TEM",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "vung_cam",
+      "title": "Boong định vị 4 góc là vùng cấm cứng",
+      "rationale": "Boong hiện là vùng cấm DUY NHẤT và được xử theo hai đường khác nhau: gang chặn lúc packing, S&R hậu kiểm dời/xoá. Strategy mới phải đưa boong vào obstacles TRƯỚC khi solve, không xếp rồi xoá (để lỗ lớn).",
+      "source": "SRC_TRON_D50",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "circle",
+        "pontConfig": {
+          "shape": "circle",
+          "size": 12,
+          "thickness": 0.3,
+          "itemName": "BOONG",
+          "disableCollision": false
+        },
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "CIRCLE_ELLIPSE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "khongTemNaoDeBoong": true,
+        "obstacleTruocSolve": true,
+        "sheetCountBang": 1
+      }
+    },
+    {
+      "id": "OBS_DAU_CANH_CNC",
+      "flow": "cnc_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "vung_cam",
+      "title": "Dấu canh 2 mặt CNC ở 4 điểm giữa cạnh — KHOẢNG TRỐNG PHỦ ĐÃ XÁC NHẬN",
+      "rationale": "cnc_marks.draw_duplex_marks vẽ 4 dấu (Ø3 mm + chữ thập 5 mm, màu registration) tại 4 ĐIỂM GIỮA CẠNH, cách mép 3 mm. Không có tham chiếu nào từ cnc_layout/pont_collision tới cnc_marks, nên dấu canh KHÔNG nằm trong exclude_zones. Tem lấp đầy sát cạnh có thể đè dấu canh mà không ai chặn, và không test nào phủ. Ca này là ca đầu tiên phủ nó.",
+      "source": "SRC_TAMGIAC_80x65",
+      "sheet": "CNC_600x900",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "imposerMode": "cnc",
+        "cncTwoSided": true,
+        "cncFlipEdge": "long",
+        "cncDuplexMarks": true,
+        "gapXMm": 3,
+        "gapYMm": 3,
+        "bleedMm": 0,
+        "marginTopMm": 3,
+        "marginBottomMm": 3,
+        "marginLeftMm": 3,
+        "marginRightMm": 3,
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "TRIANGLE", "1": "TRIANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "dauCanhLaObstacle": "CAN_QUYET_DINH",
+        "ghiChu": "Lề rút còn 3 mm để tem chắc chắn chạm vùng dấu canh. Chủ sản phẩm phải chốt: (a) dấu canh thành fixed obstacle, hay (b) giữ nguyên và ghi rõ là hạn chế đã biết. Không tự quyết trong Lô 0."
+      }
+    },
+    {
+      "id": "ID_TRUNG_BASENAME",
+      "flow": "sticker_gang",
+      "intent": "autofill_single_sheet",
+      "nhom": "dinh_danh",
+      "title": "Hai nguồn cùng basename `mau.pdf`, nội dung khác nhau",
+      "rationale": "NEST-10: partId dựa basename sẽ trùng. Hợp đồng mới yêu cầu identity = source hash + page/design/candidate. Ca này phải xếp được CẢ HAI loại, không được nuốt một loại hay báo duplicate.",
+      "sources": ["SRC_TRUNG_BASENAME_A", "SRC_TRUNG_BASENAME_B"],
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "maximize_area",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "RECTANGLE", "1": "CIRCLE_ELLIPSE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "caHaiLoaiCoMat": true,
+        "partIdKhongTrung": true,
+        "khongBaoLoiDuplicate": true
+      }
+    },
+    {
+      "id": "FAIL_MAU_LON_HON_TO",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "that_bai_co_chu_dich",
+      "title": "Mẫu 400×600 mm trên tờ 320×450 mm — phải fail-closed",
+      "rationale": "Không được xuất tờ trắng âm thầm. cnc_render đã fail-closed kèm số đo; tem bế phải hành xử tương đương. Strategy mới không được biến ca này thành 'xếp 0 con nhưng vẫn completed'.",
+      "source": "SRC_QUA_KHO_400x600",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 0,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": { "0": "RECTANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "phaiBaoLoiRo": true,
+        "khongXuatToTrang": true,
+        "thongDiepCoSoDo": "Phải nêu kích thước mẫu lớn nhất và vùng in để thợ biết cách xử."
+      }
+    },
+    {
+      "id": "FAIL_KHONG_CO_DUONG_BE",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "that_bai_co_chu_dich",
+      "title": "Không có đường bế kín — preflight phải chặn, không bbox giả",
+      "rationale": "Kế hoạch §3: 'thiếu contour semantic thì chặn preflight, không bbox giả'. Hiện layout_compute có fallback rectangle trim để không mất collision (layout_compute.py:462-473) — hành vi đó ĐÚNG cho strategy cũ nhưng SAI cho true_shape_nesting, vì nesting theo đường bế mà không có đường bế là vô nghĩa.",
+      "source": "SRC_KHONG_DUONG_BE",
+      "sheet": "TEM_320x450",
+      "settingsMm": {
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "none",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": {},
+        "detectedShapesByPage": {},
+        "exportUniqueSheets": true
+      },
+      "expect": {
+        "preflightChan": true,
+        "khongBboxGia": true,
+        "strategyCuVanChay": "optimal_auto phải giữ nguyên hành vi fallback hiện hữu — không được hồi quy."
+      }
+    },
+    {
+      "id": "STRESS_M100_10LOAI",
+      "flow": "sticker_gang",
+      "intent": "quantity_fulfillment",
+      "nhom": "hieu_nang",
+      "title": "M100 · 100 con · 10 loại · đo p50/p95/RAM",
+      "rationale": "Cỡ vừa, gần đơn hàng gang thật. Dùng để chốt search budget: profile nào cho ra thời gian thợ in chấp nhận được.",
+      "source": "SRC_M100_10LOAI",
+      "sheet": "TEM_330x480",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 2,
+        "gapYMm": 2,
+        "bleedMm": 1,
+        "groupingStrategy": "maximize_area",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPageGenerator": "10 mỗi loại",
+        "detectedShapesByPageGenerator": "RECTANGLE cho mọi trang",
+        "exportUniqueSheets": true
+      },
+      "expect": { "unplacedCountBang": 0, "sheetCountKhongLonHonBaseline": true }
+    },
+    {
+      "id": "STRESS_L300_3LOAI",
+      "flow": "sticker_gang",
+      "intent": "quantity_fulfillment",
+      "nhom": "hieu_nang",
+      "title": "L300 · 300 con · 3 loại nhỏ · đo p50/p95/RAM và trần công việc",
+      "rationale": "Cỡ lớn để xem trần evaluation_budget có bít trước khi phủ hết work-plan, và để đo peak RSS. Cũng là ca dùng cho SLA hủy.",
+      "source": "SRC_L300_3LOAI",
+      "sheet": "TEM_330x480",
+      "settingsMm": {
+        "taskMode": "nup",
+        "layoutType": "sequential",
+        "gridStrategy": "optimal_auto",
+        "isDieCutMode": true,
+        "cutType": "default",
+        "dieSizeMode": "die",
+        "gapXMm": 1.5,
+        "gapYMm": 1.5,
+        "bleedMm": 0,
+        "groupingStrategy": "maximize_area",
+        "alternateRotation": "none",
+        "pontType": "none",
+        "targetQuantity": 0,
+        "targetQuantitiesByPage": { "0": 100, "1": 100, "2": 100 },
+        "detectedShapesByPage": { "0": "RECTANGLE", "1": "CIRCLE_ELLIPSE", "2": "TRIANGLE" },
+        "exportUniqueSheets": true
+      },
+      "expect": { "unplacedCountBang": 0, "sheetCountKhongLonHonBaseline": true }
+    },
+    {
+      "id": "CANCEL_SLA",
+      "flow": "sticker_gang",
+      "intent": "quantity_fulfillment",
+      "nhom": "hieu_nang",
+      "title": "SLA hủy · dùng lại L300 nhưng hủy giữa đường",
+      "rationale": "Kế hoạch §6: 'Cancel không tạo final manifest'. Ca này đo độ trễ từ lúc bấm hủy tới lúc job về trạng thái cancelled, và kiểm không có manifest/artifact nào được persist.",
+      "source": "SRC_L300_3LOAI",
+      "sheet": "TEM_330x480",
+      "keThuaSettingsTu": "STRESS_L300_3LOAI",
+      "kichBan": {
+        "huySauMs": 1500,
+        "doDoTre": true
+      },
+      "expect": {
+        "khongCoFinalManifest": true,
+        "khongCoArtifact": true,
+        "doTreHuyToiDaMs": "CAN_QUYET_DINH"
+      }
+    },
+    {
+      "id": "PARITY_PREVIEW_EXPORT",
+      "flow": "sticker_sr",
+      "intent": "autofill_single_sheet",
+      "nhom": "parity",
+      "title": "Preview ≡ export · đếm số lần solve",
+      "rationale": "Hiện preview và export SOLVE HAI LẦN ĐỘC LẬP; parity chỉ dựa vào việc dùng chung hàm. Kế hoạch §6 đòi 'preview rồi export cùng revision = 1 lần solve' và cùng manifestId. Ca này là chỗ đo con số đó.",
+      "source": "SRC_TRON_D50",
+      "sheet": "TEM_320x450",
+      "keThuaSettingsTu": "ST_SR_AUTOFILL_TRON",
+      "kichBan": {
+        "goiPreviewTruoc": true,
+        "roiGoiExport": true,
+        "demSoLanSolve": true
+      },
+      "expect": {
+        "soLanSolve": 1,
+        "cungManifestId": true,
+        "cungLayoutFingerprint": true,
+        "exporterKhongSolve": true
+      }
+    }
+  ],
+
+  "maTranPhu": {
+    "note": "Ma trận phủ 4 flow × 2 intent. Mọi ô phải có ít nhất một ca `batBuoc: true`.",
+    "sticker_sr": {
+      "autofill_single_sheet": ["ST_SR_AUTOFILL_TRON", "GEO_INTERLOCK_CHU_L"],
+      "quantity_fulfillment": ["ST_SR_QUANTITY_TRON"]
+    },
+    "sticker_gang": {
+      "autofill_single_sheet": ["ST_GANG_AUTOFILL_5LOAI"],
+      "quantity_fulfillment": ["ST_GANG_QUANTITY_5LOAI"]
+    },
+    "cnc_sr": {
+      "autofill_single_sheet": ["CNC_SR_AUTOFILL_TAMGIAC"],
+      "quantity_fulfillment": ["CNC_SR_QUANTITY_DUPLEX"]
+    },
+    "cnc_gang": {
+      "autofill_single_sheet": ["CNC_GANG_AUTOFILL_DUPLEX"],
+      "quantity_fulfillment": ["CNC_GANG_QUANTITY_1MAT"]
+    }
+  },
+
+  "nguonSanXuatThat": {
+    "note": "PDF sản xuất thật KHÔNG nằm trong repo (.gitignore:153). Danh sách dưới đây là alias + đặc điểm cần có; người chạy benchmark tự trỏ tới file local qua biến môi trường PRYNX_LO0_CORPUS_DIR và script sẽ ghi sha256 vào báo cáo để truy vết. Tuyệt đối không ghi tên khách hàng vào repo.",
+    "yeuCau": [
+      {
+        "alias": "PROD_TEM_TRON_1LOAI",
+        "dacDiem": "1 trang, đường bế tròn/oval, có bleed thật, spot color CutContour."
+      },
+      {
+        "alias": "PROD_TEM_GANG_NHIEU_LOAI",
+        "dacDiem": "≥5 trang, nhiều cỡ khác nhau, ít nhất một trang có contour lõm."
+      },
+      {
+        "alias": "PROD_CNC_DUPLEX",
+        "dacDiem": "Số trang CHẴN, cặp Mặt trước/Mặt sau, có đường bế trên cả hai mặt."
+      },
+      {
+        "alias": "PROD_ROTATE_TRIMBOX",
+        "dacDiem": "Có /Rotate khác 0 VÀ TrimBox khác MediaBox — bắt buộc phải có ít nhất một file như vậy."
+      },
+      {
+        "alias": "PROD_NHIEU_TRANG_TRUNG_TEN",
+        "dacDiem": "Hai file cùng basename ở hai thư mục — kiểm định danh."
+      }
+    ]
+  },
+
+  "quyetDinhChoDuyet": {
+    "note": "Những gì Lô 0 KHÔNG được tự quyết. Xem docs/BAO_CAO_LO_0_NESTING_TU_DO_TEM_CNC_2026-08-27.md để có đề xuất kèm lý do.",
+    "danhMuc": [
+      "compactnessMetric",
+      "nguongStrictImprovementInterlock",
+      "hashPrecision",
+      "tolerancePoseAffine",
+      "searchWorkBudget",
+      "emergencyTimeout",
+      "cancelSlaMs",
+      "nguongP50P95Ram",
+      "dauCanhCncCoLaObstacleKhong",
+      "holeCoChoNestingKhong",
+      "fillRuleClipEvenOddHayNonzero"
+    ]
+  }
+}

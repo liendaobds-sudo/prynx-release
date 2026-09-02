@@ -16,21 +16,29 @@ Bốn thứ được khoá ở đây, mỗi thứ tương ứng một câu trong
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from app.core import mixed_nesting_service as svc
-from app.core.heavy_job_scheduler import HeavyJobMemoryUnavailable
+from app.core.heavy_job_scheduler import (
+    HeavyJobMemoryUnavailable,
+    HeavyJobQueueCancelled,
+    memory_reservation,
+)
 from app.core.system_memory import plan_worker_count
+from app.schemas import mixed_nesting as schema
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTROL_RS = (
     _REPO_ROOT / "imposition_core" / "src" / "mixed_nesting" / "control.rs"
 )
+_MODEL_RS = _REPO_ROOT / "imposition_core" / "src" / "mixed_nesting" / "model.rs"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,7 +60,7 @@ def _request(
 ) -> dict[str, Any]:
     constraint = rotation if rotation is not None else {"mode": "free"}
     return {
-        "protocolVersion": 1,
+        "protocolVersion": svc.MIXED_NESTING_PROTOCOL_VERSION,
         "seed": 20260826,
         "profile": profile,
         "sheet": {
@@ -150,6 +158,38 @@ def test_may_yeu_moi_bi_giam(monkeypatch):
 
     _gia_lap_ram(monkeypatch, 12 * 1024.0)
     assert svc.plan_hardware(_request(), cpu_count=8).workers == 2
+
+
+@pytest.mark.parametrize(
+    ("total_mb", "expected"),
+    [
+        (8 * 1024.0 - 1.0, 1),
+        (16 * 1024.0 - 1.0, 2),
+        (16 * 1024.0, 7),
+        (64 * 1024.0, 7),
+    ],
+)
+def test_bien_ram_duoi_8_duoi_16_va_tu_16_gb(monkeypatch, total_mb, expected):
+    """Khoá đúng dấu `<`: 16 GB tròn phải giữ full cpu-1."""
+    _gia_lap_ram(monkeypatch, total_mb, available_mb=1024.0)
+    plan = svc.plan_hardware(_request(), cpu_count=8)
+    assert plan.workers == expected, plan.reason
+
+
+def test_active_workers_theo_nfp_worker_grant_khong_theo_trial_count(monkeypatch):
+    """NFP cold-miss dùng đủ grant; portfolio chạy song song tối đa 4 trial ``fast``."""
+    _gia_lap_ram(monkeypatch, 128 * 1024.0)
+    plan = svc.plan_hardware(_request(profile="fast"), cpu_count=16)
+
+    assert plan.worker_grant == 15
+    assert plan.active_workers == 15
+    assert plan.portfolio_trial_capacity == 4
+    assert plan.estimated_peak_mb == pytest.approx(
+        plan.shared_mb + 15 * plan.per_worker_mb + 64.0
+    )
+    assert "worker_grant=15" in plan.reason
+    assert "active_workers=15" in plan.reason
+    assert "portfolio_trial_capacity=4" in plan.reason
 
 
 def test_khong_doc_duoc_ram_thi_dung_tran_cpu(monkeypatch):
@@ -252,7 +292,7 @@ def test_uoc_luong_tang_theo_hinh_hoc(monkeypatch):
 
 
 def test_nfp_cache_bi_chan_theo_byte(monkeypatch):
-    """§14 cấm cache vô hạn: tăng số part không được cho cache lớn quá trần LRU."""
+    """Cache là per-trial, có byte budget cố định và không còn nằm ở shared RAM."""
     _gia_lap_ram(monkeypatch, 32 * 1024.0)
     shape_lon = svc.WorkloadShape(
         part_count=4000,
@@ -262,12 +302,19 @@ def test_nfp_cache_bi_chan_theo_byte(monkeypatch):
     )
     effort = svc.SEARCH_EFFORT_BY_PROFILE["tight"]
     shared_mb = svc.estimate_shared_mb(shape_lon, effort)
+    per_worker_mb = svc.estimate_per_worker_mb(shape_lon, effort)
 
     hinh_hoc_mb = shape_lon.source_vertex_count * 3 * 48 / (1024.0 * 1024.0)
     thumbnail_mb = shape_lon.part_count * 0.75
-    phan_nfp = shared_mb - hinh_hoc_mb - thumbnail_mb
-    assert phan_nfp <= svc.NFP_CACHE_MAX_MB + 1e-9, (
-        f"NFP cache ước lượng {phan_nfp:.1f} MB vượt trần LRU {svc.NFP_CACHE_MAX_MB} MB"
+    assert shared_mb == pytest.approx(hinh_hoc_mb + thumbnail_mb)
+    assert per_worker_mb >= svc.NFP_CACHE_MAX_MB
+
+    plan = svc.plan_hardware(_request(profile="tight"), cpu_count=64)
+    assert plan.nfp_cache_max_bytes_per_trial == int(
+        svc.NFP_CACHE_MAX_MB * 1024 * 1024
+    )
+    assert plan.estimated_peak_mb == pytest.approx(
+        plan.shared_mb + plan.active_workers * plan.per_worker_mb + 64.0
     )
 
 
@@ -282,6 +329,82 @@ def test_describe_workload_doc_dung_hinh_dang():
     assert shape.source_vertex_count == 3 * 4 + 8
     assert shape.max_sheets == 12
     assert shape.avg_vertices_per_part == pytest.approx((3 * 4 + 8) / 3)
+
+
+def test_autofill_uoc_luong_instance_theo_cận_dien_tich():
+    request = _request(quantity=8, part_count=1, max_sheets=1)
+    request["layoutIntent"] = "autofill_single_sheet"
+    request["parts"][0].pop("quantity")
+    # Vùng dùng được 680×980, outer 90×60.
+    shape = svc.describe_workload(request)
+    assert shape.instance_count == 124
+
+
+def test_autofill_lay_outer_nho_nhat_va_khong_tru_hole_gap():
+    request = _request(quantity=8, part_count=2, max_sheets=1)
+    request["layoutIntent"] = "autofill_single_sheet"
+    request["gapMm"] = 999.0
+    request["parts"][0]["outer"] = _rect(100.0, 100.0)
+    request["parts"][1]["outer"] = _rect(50.0, 40.0)
+    request["parts"][1]["holes"] = [_rect(49.0, 39.0)]
+    for part in request["parts"]:
+        part.pop("quantity")
+    shape = svc.describe_workload(request)
+    assert shape.instance_count == 334
+
+
+def test_autofill_admission_co_floor_va_protocol_cap():
+    degenerate = _request(max_sheets=1)
+    degenerate["layoutIntent"] = "autofill_single_sheet"
+    degenerate["parts"][0].pop("quantity")
+    degenerate["parts"][0]["outer"] = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
+    assert svc.describe_workload(degenerate).instance_count == 1
+
+    tiny = _request(max_sheets=1)
+    tiny["layoutIntent"] = "autofill_single_sheet"
+    tiny["parts"][0].pop("quantity")
+    tiny["parts"][0]["outer"] = _rect(0.0001, 0.0001)
+    assert (
+        svc.describe_workload(tiny).instance_count
+        == svc.AUTOFILL_INSTANCE_ADMISSION_CAP
+    )
+
+
+@pytest.mark.parametrize(
+    "kich_thuoc",
+    [(1e308, 1e308), (float("inf"), 100.0), (float("nan"), 100.0)],
+)
+def test_autofill_dien_tich_khong_huu_han_dung_protocol_cap(kich_thuoc):
+    request = _request(max_sheets=1)
+    request["layoutIntent"] = "autofill_single_sheet"
+    request["parts"][0].pop("quantity")
+    request["parts"][0]["outer"] = _rect(1.0, 1.0)
+    request["sheet"]["widthMm"], request["sheet"]["heightMm"] = kich_thuoc
+    assert (
+        svc.describe_workload(request).instance_count
+        == svc.AUTOFILL_INSTANCE_ADMISSION_CAP
+    )
+
+
+@pytest.mark.parametrize("width", [20.0, 10.0, -1.0])
+def test_autofill_vung_dung_duoc_khong_duong_giu_floor_mot(width):
+    request = _request(max_sheets=1)
+    request["layoutIntent"] = "autofill_single_sheet"
+    request["parts"][0].pop("quantity")
+    request["sheet"]["widthMm"] = width
+    assert svc.describe_workload(request).instance_count == 1
+
+
+def test_autofill_admission_cap_parity_voi_schema_va_rust():
+    source = _MODEL_RS.read_text(encoding="utf-8")
+    match = re.search(r"pub const MAX_INSTANCES_TOTAL: u64 = ([0-9_]+);", source)
+    assert match is not None, "không đọc được MAX_INSTANCES_TOTAL từ model.rs"
+    rust_cap = int(match.group(1).replace("_", ""))
+    assert svc.AUTOFILL_INSTANCE_ADMISSION_CAP == schema.MAX_INSTANCES_TOTAL == rust_cap
+
+
+def test_quantity_admission_giu_nguyen_phep_dem_cu():
+    assert svc.describe_workload(_request(quantity=7, part_count=3)).instance_count == 21
 
 
 @pytest.mark.parametrize(
@@ -353,6 +476,132 @@ def test_ngan_sach_ram_chua_75_phan_tram_kha_dung(monkeypatch):
     assert svc.memory_budget_mb() == pytest.approx(7_500.0)
 
 
+def test_reservation_sync_khong_serialize_khi_con_du_ram_va_luon_nha():
+    """Hai job 40/100 MB cùng vào; exception vẫn phải nhả reservation trong finally."""
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    kind = "mixed-nesting-sync-reservation-test"
+
+    def run(marker: threading.Event) -> None:
+        try:
+            with memory_reservation(kind, 40.0, lambda: 100.0):
+                marker.set()
+                assert release.wait(timeout=2.0)
+        except BaseException as exc:  # pragma: no cover - chỉ để báo lỗi thread
+            errors.append(exc)
+
+    first = threading.Thread(target=run, args=(first_entered,))
+    second = threading.Thread(target=run, args=(second_entered,))
+    first.start()
+    assert first_entered.wait(timeout=1.0)
+    second.start()
+    assert second_entered.wait(timeout=1.0), "reservation đã serialize dù còn đủ RAM"
+    release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+    assert not errors
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with memory_reservation(kind, 90.0, lambda: 100.0):
+            raise RuntimeError("boom")
+    with memory_reservation(kind, 90.0, lambda: 100.0):
+        pass
+
+
+def test_reservation_sync_huy_waiter_khong_ro_ram():
+    kind = "mixed-nesting-sync-reservation-cancel-test"
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    cancel_waiter = threading.Event()
+    waiter_cancelled = threading.Event()
+
+    def hold() -> None:
+        with memory_reservation(kind, 70.0, lambda: 100.0):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2.0)
+
+    def wait_then_cancel() -> None:
+        try:
+            with memory_reservation(
+                kind,
+                40.0,
+                lambda: 100.0,
+                cancel_waiter.is_set,
+            ):
+                pytest.fail("waiter bị hủy không được đi vào solve")
+        except HeavyJobQueueCancelled:
+            waiter_cancelled.set()
+
+    holder = threading.Thread(target=hold)
+    waiter = threading.Thread(target=wait_then_cancel)
+    holder.start()
+    assert holder_entered.wait(timeout=1.0)
+    waiter.start()
+    cancel_waiter.set()
+    assert waiter_cancelled.wait(timeout=1.0)
+    release_holder.set()
+    holder.join(timeout=2.0)
+    waiter.join(timeout=2.0)
+
+    # 100 MB vào được ngay chứng minh cả holder và waiter đều không làm rò reservation.
+    with memory_reservation(kind, 100.0, lambda: 100.0):
+        pass
+
+
+def _capabilities_runtime(version: int | None) -> svc.EngineCapabilities:
+    return svc.EngineCapabilities(
+        protocol_version=2,
+        engine_version="test",
+        reflection="forbidden",
+        default_rotation="free",
+        continuous_translation=True,
+        profiles=("fast", "balanced", "tight"),
+        layout_intents=("quantity_fulfillment", "autofill_single_sheet"),
+        runtime_control_version=version,
+    )
+
+
+def test_bridge_truyen_worker_grant_vao_native_va_giu_request_canonical():
+    calls: list[tuple[Any, ...]] = []
+
+    class FakeNativeRun:
+        def solve(self, *args: Any) -> str:
+            calls.append(args)
+            return json.dumps({"status": "completed"})
+
+    handle = object.__new__(svc.MixedNestingRunHandle)
+    handle._run = FakeNativeRun()
+    handle._capabilities = _capabilities_runtime(1)
+    request = _request(profile="fast")
+    manifest = handle.solve_with_hardware(
+        request,
+        worker_grant=7,
+        nfp_cache_max_bytes_per_trial=123_456,
+    )
+
+    assert manifest["status"] == "completed"
+    assert len(calls) == 1
+    payload, grant, cache_bytes = calls[0]
+    assert grant == 7
+    assert cache_bytes == 123_456
+    assert json.loads(payload) == request
+    assert "workerGrant" not in json.loads(payload)
+
+
+def test_bridge_tu_choi_native_cu_thieu_runtime_control():
+    handle = object.__new__(svc.MixedNestingRunHandle)
+    handle._run = object()
+    handle._capabilities = _capabilities_runtime(None)
+    with pytest.raises(svc.EngineUnavailableError, match="worker grant"):
+        handle.solve_with_hardware(
+            _request(),
+            worker_grant=8,
+            nfp_cache_max_bytes_per_trial=999,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  4. Parity mô hình effort với Rust
 # ─────────────────────────────────────────────────────────────────────────────
@@ -414,6 +663,7 @@ def test_model_version_duoc_ghi_vao_reason(monkeypatch):
     _gia_lap_ram(monkeypatch, 32 * 1024.0)
     plan = svc.plan_hardware(_request(), cpu_count=16)
     assert f"model=v{svc.ADMISSION_MODEL_VERSION}" in plan.reason
+    assert svc.ADMISSION_MODEL_VERSION == 4
     assert svc.MIXED_NESTING_KIND in plan.reason
 
 

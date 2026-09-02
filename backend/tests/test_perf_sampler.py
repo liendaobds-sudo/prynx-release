@@ -1,6 +1,8 @@
 import os
 import time
 
+import pytest
+
 from app.core import perf_sampler
 
 
@@ -120,6 +122,117 @@ def test_perf_stages_records_deltas_and_total(monkeypatch):
     assert stages.mark("render_s") == 0.25
 
     assert stages.finish() == {"render_s": 0.25, "engine_total_s": 0.75}
+
+
+def test_perf_stages_gom_phase_lap_thanh_mot_ban_ghi(monkeypatch):
+    """PERF-NEST-06: nhiều placement chỉ cộng số tổng, không sinh log từng lần."""
+
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    readings = iter((10.0, 10.2, 10.5, 10.7, 11.1, 12.0))
+    monkeypatch.setattr(perf_sampler.time, "monotonic", lambda: next(readings))
+
+    stages = perf_sampler.PerfStages()
+    first = perf_sampler.start_perf_stage()
+    perf_sampler.finish_perf_stage(
+        first,
+        "writer_embed_s",
+        count_name="writer_embed_calls",
+    )
+    second = perf_sampler.start_perf_stage()
+    perf_sampler.finish_perf_stage(
+        second,
+        "writer_embed_s",
+        count_name="writer_embed_calls",
+    )
+    perf_sampler.increment_perf_counter("writer_page_count", 3)
+
+    result = stages.finish()
+    assert result["writer_embed_s"] == pytest.approx(0.7)
+    assert result["writer_embed_calls"] == 2
+    assert result["writer_page_count"] == 3
+    assert result["engine_total_s"] == 2.0
+
+
+def test_perf_phase_tat_khong_doc_clock(monkeypatch):
+    """PRYNX_PERF tắt phải dừng trước clock, kể cả counter aggregate."""
+
+    monkeypatch.delenv("PRYNX_PERF", raising=False)
+
+    def clock_khong_duoc_goi():
+        raise AssertionError("không được đọc clock khi PRYNX_PERF tắt")
+
+    monkeypatch.setattr(perf_sampler.time, "monotonic", clock_khong_duoc_goi)
+    sample = perf_sampler.start_perf_stage()
+    assert sample is None
+    perf_sampler.finish_perf_stage(sample, "writer_embed_s")
+    perf_sampler.increment_perf_counter("writer_page_count")
+
+
+def test_perf_stages_dong_sai_thu_tu_khong_hoi_sinh_scope_cha(monkeypatch):
+    """Scope con kết thúc sau không được phục hồi một scope cha đã đóng."""
+
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    readings = iter(float(value) for value in range(20))
+    monkeypatch.setattr(perf_sampler.time, "monotonic", lambda: next(readings))
+
+    parent = perf_sampler.PerfStages()
+    child = perf_sampler.PerfStages()
+    parent.close()
+    parent.close()  # idempotent
+    child.close()
+
+    assert perf_sampler.start_perf_stage() is None
+
+
+def test_run_nup_engine_loi_canonicalize_van_dong_scope_perf(monkeypatch):
+    """Lỗi trước try cũ là ca từng làm scope telemetry dính sang job sau."""
+
+    from app.schemas import pont
+    from app.workers import nup_engine
+
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    monkeypatch.setattr(pont, "normalize_pont_settings", lambda value: value)
+    monkeypatch.setattr(
+        nup_engine,
+        "_canonicalize_page_space",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("canonical lỗi")),
+    )
+
+    with pytest.raises(RuntimeError, match="canonical lỗi"):
+        nup_engine.run_nup_engine("source.pdf", "output.pdf", {}, job_id="perf-fail")
+
+    assert perf_sampler.start_perf_stage() is None
+
+
+def test_run_nup_engine_khong_job_id_van_dong_scope_perf(monkeypatch):
+    """Caller nội bộ không có job_id vẫn phải finish dù không ghi stage file."""
+
+    from app.schemas import pont
+    from app.workers import nup_engine
+
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    monkeypatch.setattr(pont, "normalize_pont_settings", lambda value: value)
+    monkeypatch.setattr(
+        nup_engine,
+        "_canonicalize_page_space",
+        lambda source, _job_id: (source, False),
+    )
+    monkeypatch.setattr(nup_engine, "_run_nup_engine_impl", lambda *_args, **_kwargs: "ok")
+
+    assert nup_engine.run_nup_engine("source.pdf", "output.pdf", {}, job_id=None) == "ok"
+    assert perf_sampler.start_perf_stage() is None
+
+
+def test_plan_executor_loi_som_van_dong_scope_perf(monkeypatch):
+    """Booklet lỗi contract sớm không được để sampler active trong thread pool."""
+
+    from app.core.plan_executor import PlanExecutionError, PlanExecutor
+
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    with pytest.raises(PlanExecutionError):
+        PlanExecutor._execute_sync({})
+
+    assert perf_sampler.start_perf_stage() is None
 
 
 def test_perf_stage_file_round_trip_is_gated(monkeypatch, tmp_path):

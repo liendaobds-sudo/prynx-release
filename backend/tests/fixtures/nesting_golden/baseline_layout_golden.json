@@ -1,0 +1,35 @@
+{
+  "_note": "Golden layout baseline nesting — mốc bất biến. Đang khoá layout sau B9 (miền hợp lệ tăng dần): ca nhỏ byte-identical, ca autofill_scale_* khoá layout B9 ở quy mô. Bless lại CHỈ khi đổi layout là chủ ý (PRYNX_BLESS_GOLDEN=1) và đã soi diff — không bao giờ để giấu hồi quy.",
+  "cases": {
+    "autofill_rect_cardinal": {
+      "placedCount": 25,
+      "sheetCount": 1,
+      "unplacedCount": 0,
+      "posesSha256": "275762db28315106fc013bb7f164a05a5464329a34da0a392608cb9f7e07df61"
+    },
+    "autofill_lshape_cardinal": {
+      "placedCount": 14,
+      "sheetCount": 1,
+      "unplacedCount": 0,
+      "posesSha256": "c593da07204788170833755b1967942feb9129aee623a4cc2178eec678dc6f0d"
+    },
+    "autofill_mixed_cardinal": {
+      "placedCount": 43,
+      "sheetCount": 1,
+      "unplacedCount": 0,
+      "posesSha256": "e71b633935e43ddcf25247904faba5273f42bc5bb459b879969e0115fdaa613b"
+    },
+    "quantity_rect_cardinal": {
+      "placedCount": 18,
+      "sheetCount": 1,
+      "unplacedCount": 0,
+      "posesSha256": "747909f160c5349f4ff162e6f38801294621e7b750d825583a02002fb57e8025"
+    },
+    "autofill_scale_mixed_cardinal": {
+      "placedCount": 111,
+      "sheetCount": 1,
+      "unplacedCount": 0,
+      "posesSha256": "9ecac9881686fba25fc1776c1e752f36217aa68148c5202d8e9d0c8477da527b"
+    }
+  }
+}

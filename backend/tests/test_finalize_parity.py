@@ -10,6 +10,7 @@ preview == output).
 """
 import pytest
 
+from app.workers.imposition_affine import AffineContractError
 from app.workers.imposition_finalize import finalize_placements
 from app.workers.cnc_render import _build_placements
 
@@ -77,3 +78,53 @@ def test_build_placements_delegates(uw, uh, ml, mb, mt, pidx):
 
 def test_empty():
     assert finalize_placements([], 1000, 600, 0, 0, 0, 0) == []
+
+
+@pytest.mark.parametrize("builder", [finalize_placements, _build_placements])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        (
+            "pose",
+            {
+                "rotationDeg": 13.372849,
+                "translateXmm": 20.0,
+                "translateYmm": 30.0,
+            },
+        ),
+        ("rotationDeg", 13.372849),
+        ("referencePointMm", [10.0, 12.0]),
+        ("affineMm", [1.0, 0.0, 0.0, 1.0, 2.0, 3.0]),
+    ],
+)
+def test_finalize_legacy_rejects_manifest_affine_fields(builder, field, value):
+    item = {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 100.0,
+        "height": 80.0,
+        field: value,
+    }
+    with pytest.raises(AffineContractError, match="renderer affine"):
+        builder([item], 1000.0, 600.0, 0.0, 0.0, 0.0, 0)
+
+
+@pytest.mark.parametrize("builder", [finalize_placements, _build_placements])
+def test_finalize_rejects_manifest_identity_when_pose_was_dropped(builder):
+    partial_manifest = {
+        "instanceId": "part-a#0001",
+        "partId": "part-a",
+        "sheetIndex": 0,
+        "sourceRevision": "a" * 64,
+    }
+
+    with pytest.raises(AffineContractError, match="renderer affine"):
+        builder(
+            [partial_manifest],
+            1000.0,
+            600.0,
+            0.0,
+            0.0,
+            0.0,
+            0,
+        )

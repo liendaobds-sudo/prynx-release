@@ -29,6 +29,8 @@ from typing import Any
 
 import pytest
 
+from app.schemas.mixed_nesting import MIXED_NESTING_PROTOCOL_VERSION
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "benchmark_mixed_nesting.py"
 _CORPUS = _REPO_ROOT / "backend" / "tests" / "fixtures" / "mixed_nesting" / "corpus.json"
@@ -169,7 +171,8 @@ def test_moi_request_trong_corpus_hop_le_voi_schema_cong_khai(corpus):
         body = CreateJobRequest.model_validate(case["request"])
         payload = body.to_engine_request(job_id="test")
         assert payload["jobId"] == "test"
-        assert payload["protocolVersion"] == 1
+        assert payload["protocolVersion"] == MIXED_NESTING_PROTOCOL_VERSION
+        assert payload["layoutIntent"] == "quantity_fulfillment"
 
 
 def test_corpus_khong_chua_truong_server_owned(corpus):
@@ -249,12 +252,13 @@ def test_corpus_co_version_va_ky_vong_da_ghi():
     """Sửa kỳ vọng phải tăng ``corpusVersion`` — test này chốt là hai thứ cùng tồn tại."""
     with open(_CORPUS, "r", encoding="utf-8") as handle:
         corpus = json.load(handle)
-    assert isinstance(corpus["corpusVersion"], int) and corpus["corpusVersion"] >= 1
-    assert corpus["protocolVersion"] == 1
+    assert isinstance(corpus["corpusVersion"], int) and corpus["corpusVersion"] >= 3
+    assert corpus["protocolVersion"] == MIXED_NESTING_PROTOCOL_VERSION
     assert "SÀN AN TOÀN" in corpus["cardinalBaselineNote"]
     for case in corpus["cases"]:
         assert case["expect"], f"{case['id']} thiếu kỳ vọng"
         assert case["rationale"], f"{case['id']} thiếu lý do tồn tại"
+        assert case["request"]["layoutIntent"] == "quantity_fulfillment"
         assert case["expect"]["minPlaced"] >= 1
         assert case["expect"]["maxSheets"] >= 1
 

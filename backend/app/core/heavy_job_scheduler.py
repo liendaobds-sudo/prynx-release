@@ -163,9 +163,42 @@ class HeavyJobMemoryUnavailable(RuntimeError):
 # ngân sách cho số worker. Một job lớn được dùng toàn RAM còn trống khi chạy một
 # mình; job đồng thời chỉ được admit nếu tổng reservation vẫn vừa ngân sách.
 _MEMORY_RESERVATION_LOCK = threading.Lock()
+_MEMORY_RESERVATION_CONDITION = threading.Condition(_MEMORY_RESERVATION_LOCK)
 _RESERVED_MEMORY_MB_BY_KIND: dict[str, float] = {}
 _MEMORY_CAPACITY_MB_BY_KIND: dict[str, float] = {}
 _MEMORY_EPSILON_MB = 1e-6
+
+
+def _try_acquire_memory_reservation_locked(
+    kind: str,
+    required: float,
+    budget: float,
+) -> bool:
+    """Thử reserve dưới lock chung; ``False`` nghĩa là phải chờ job khác nhả.
+
+    Không dùng semaphore một-suat: máy mạnh còn đủ RAM phải admit nhiều job cùng kind.
+    Capacity được ghim theo snapshot đầu chu kỳ để ``available`` giảm do chính job đang
+    chạy không bị trừ hai lần.
+    """
+    reserved = _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0)
+    if reserved <= _MEMORY_EPSILON_MB:
+        capacity = budget
+        _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
+    else:
+        cycle_capacity = _MEMORY_CAPACITY_MB_BY_KIND.get(kind, budget)
+        capacity = min(cycle_capacity, reserved + budget)
+        capacity = max(reserved, capacity)
+        _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
+
+    if required <= max(0.0, capacity - reserved) + _MEMORY_EPSILON_MB:
+        _RESERVED_MEMORY_MB_BY_KIND[kind] = reserved + required
+        return True
+
+    if reserved <= _MEMORY_EPSILON_MB:
+        _RESERVED_MEMORY_MB_BY_KIND.pop(kind, None)
+        _MEMORY_CAPACITY_MB_BY_KIND.pop(kind, None)
+        raise HeavyJobMemoryUnavailable(required, capacity)
+    return False
 
 
 async def _acquire_memory_reservation_async(
@@ -197,34 +230,45 @@ async def _acquire_memory_reservation_async(
         budget = max(0.0, budget)
 
         with _MEMORY_RESERVATION_LOCK:
-            reserved = _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0)
-            if reserved <= _MEMORY_EPSILON_MB:
-                capacity = budget
-                _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
-            else:
-                cycle_capacity = _MEMORY_CAPACITY_MB_BY_KIND.get(kind, budget)
-                # `budget` đọc từ RAM available hiện tại, có thể đã giảm vì job
-                # đang chạy đã materialize buffer. Cộng lại phần đã reservation
-                # rồi chỉ cho capacity giảm (khi app khác ăn RAM), không tăng quá
-                # snapshot đầu chu kỳ.
-                capacity = min(cycle_capacity, reserved + budget)
-                capacity = max(reserved, capacity)
-                _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
-
-            if required <= max(0.0, capacity - reserved) + _MEMORY_EPSILON_MB:
-                _RESERVED_MEMORY_MB_BY_KIND[kind] = reserved + required
+            if _try_acquire_memory_reservation_locked(kind, required, budget):
                 return True
-
-            if reserved <= _MEMORY_EPSILON_MB:
-                _RESERVED_MEMORY_MB_BY_KIND.pop(kind, None)
-                _MEMORY_CAPACITY_MB_BY_KIND.pop(kind, None)
-                raise HeavyJobMemoryUnavailable(required, capacity)
 
         await asyncio.sleep(0.05)
 
 
+def _acquire_memory_reservation_sync(
+    kind: str,
+    required_mb: float | None,
+    budget_provider: Callable[[], float | None] | None,
+    queue_cancelled: Callable[[], bool] | None,
+) -> bool:
+    """Bản sync cho registry/executor riêng, chờ bằng condition thay vì busy-loop."""
+    if required_mb is None or required_mb <= 0 or budget_provider is None:
+        return False
+    required = float(required_mb)
+    if not math.isfinite(required):
+        raise HeavyJobMemoryUnavailable(required, 0.0)
+
+    while True:
+        if queue_cancelled is not None and queue_cancelled():
+            raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ bộ nhớ.")
+        raw_budget = budget_provider()
+        if raw_budget is None:
+            return False
+        budget = float(raw_budget)
+        if not math.isfinite(budget):
+            budget = 0.0
+        budget = max(0.0, budget)
+
+        with _MEMORY_RESERVATION_CONDITION:
+            if _try_acquire_memory_reservation_locked(kind, required, budget):
+                return True
+            # Timeout ngắn để quan sát cancel ngay cả khi không có job nào notify.
+            _MEMORY_RESERVATION_CONDITION.wait(timeout=0.05)
+
+
 def _release_memory_reservation(kind: str, required_mb: float) -> None:
-    with _MEMORY_RESERVATION_LOCK:
+    with _MEMORY_RESERVATION_CONDITION:
         remaining = max(
             0.0,
             _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0) - float(required_mb),
@@ -234,6 +278,28 @@ def _release_memory_reservation(kind: str, required_mb: float) -> None:
             _MEMORY_CAPACITY_MB_BY_KIND.pop(kind, None)
         else:
             _RESERVED_MEMORY_MB_BY_KIND[kind] = remaining
+        _MEMORY_RESERVATION_CONDITION.notify_all()
+
+
+@contextmanager
+def memory_reservation(
+    kind: str,
+    required_mb: float | None,
+    budget_provider: Callable[[], float | None] | None,
+    queue_cancelled: Callable[[], bool] | None = None,
+) -> Iterator[None]:
+    """Giữ byte reservation suốt thân ``with`` và luôn nhả ở mọi đường thoát."""
+    acquired = _acquire_memory_reservation_sync(
+        kind,
+        required_mb,
+        budget_provider,
+        queue_cancelled,
+    )
+    try:
+        yield
+    finally:
+        if acquired and required_mb is not None:
+            _release_memory_reservation(kind, required_mb)
 
 
 @asynccontextmanager

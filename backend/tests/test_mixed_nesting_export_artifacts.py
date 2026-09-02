@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from app.schemas.mixed_nesting import MIXED_NESTING_PROTOCOL_VERSION
+
 from app.core.mixed_nesting_artifacts import (
     DATA_DIR_ENV,
     DEFAULT_DIR_NAME,
@@ -79,8 +81,8 @@ def manifest(
     ]
     sheet_count = max((int(item["sheetIndex"]) for item in items), default=-1) + 1
     payload: dict[str, Any] = {
-        "protocolVersion": 1,
-        "engineVersion": "0.1.0",
+        "protocolVersion": MIXED_NESTING_PROTOCOL_VERSION,
+        "engineVersion": "0.2.0",
         "jobId": "job-export-1",
         "seed": 20260826,
         "status": "completed",
@@ -638,7 +640,7 @@ def test_export_khong_dung_pdfium():
 def _request(parts: list[dict[str, Any]], **overrides: Any) -> dict[str, Any]:
     """Request đã validate, dạng camelCase đúng như registry job đang giữ."""
     payload: dict[str, Any] = {
-        "protocolVersion": 1,
+        "protocolVersion": MIXED_NESTING_PROTOCOL_VERSION,
         "sheet": SHEET,
         "parts": parts,
         "gapMm": 2.0,
@@ -806,7 +808,7 @@ def test_doc_duoc_request_do_CHINH_schema_sinh_ra_khong_phai_dict_tu_tay():
     from app.schemas.mixed_nesting import CreateJobRequest
 
     body = {
-        "protocolVersion": 1,
+        "protocolVersion": MIXED_NESTING_PROTOCOL_VERSION,
         "seed": 20260826,
         "profile": "fast",
         "sheet": SHEET,

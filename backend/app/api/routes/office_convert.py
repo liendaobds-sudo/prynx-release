@@ -315,12 +315,14 @@ async def office_convert_file_endpoint(
                     detail=f"Định dạng không hỗ trợ: {ext}. Hỗ trợ: {', '.join(sorted(OFFICE_EXTENSIONS))}",
                 )
             source_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+            # Đặt cờ dọn TRƯỚC khi ghi: nếu _copy_upload_stream raise (vượt trần §ATK.03)
+            # thì file dở vẫn được finally xóa, không rò rác trên đĩa theo đường tấn công.
+            delete_source = True
             size = await asyncio.to_thread(
                 _copy_upload_stream, file.file, source_path
             )
             if size <= 0:
                 raise HTTPException(status_code=400, detail="File upload rỗng. Hãy chọn lại file.")
-            delete_source = True
         else:
             raise HTTPException(
                 status_code=400,
@@ -403,10 +405,28 @@ _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 def _copy_upload_stream(source, path: str) -> int:
-    """Ghi upload theo chunk trong worker thread, không tạo một bản bytes toàn file."""
+    """Ghi upload theo chunk trong worker thread, không tạo một bản bytes toàn file.
+
+    SEC (pentest 2026-08-28 §ATK.03): cưỡng chế trần MAX_FILE_SIZE_MB TRONG lúc ghi.
+    shutil.copyfileobj cũ không có trần → file Office khổng lồ (hoặc bom giải nén ở
+    bước convert sau) làm đầy đĩa/treo tiến trình. Trần lấy từ config do người vận hành
+    đặt (không phải hard-cap vô điều kiện). Vượt trần thì raise ValueError → route map
+    sang HTTP 400 và finally dọn file nguồn dở.
+    """
+    max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
     source.seek(0)
+    total = 0
     with open(path, "wb") as output_file:
-        shutil.copyfileobj(source, output_file, length=_UPLOAD_CHUNK_BYTES)
+        while True:
+            chunk = source.read(_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if max_bytes > 0 and total > max_bytes:
+                raise ValueError(
+                    f"File vượt quá giới hạn {settings.MAX_FILE_SIZE_MB}MB cho mỗi lần tải lên."
+                )
+            output_file.write(chunk)
     return os.path.getsize(path)
 
 

@@ -30,6 +30,7 @@ import uuid
 
 import math
 
+from collections.abc import Mapping
 from typing import List, Dict, Any, Optional
 
 import logging
@@ -37,6 +38,69 @@ import logging
 MM_TO_PTS = 2.83465
 
 logger = logging.getLogger(__name__)
+
+_SERVER_DETECTED_TRIM_DIMENSIONS_SETTING = (
+    "_serverDetectedTrimDimensionsMmByPage"
+)
+
+
+def _report_dimensions_mm(
+    settings: Mapping[str, Any],
+    page_index: int,
+    fallback_width_pt: Any,
+    fallback_height_pt: Any,
+) -> tuple[float, float]:
+    """Chọn kích thước metadata report, tuyệt đối không đổi hình học xếp.
+
+    FIX (feedback 2026-09-01 §DIM-DIE-RUNTIME): khi quality gate chọn engine
+    legacy để giữ capacity, bbox contour vẫn phục vụ solver/CUT như trước; riêng
+    report ưu tiên ``DetectedShape.trim`` do process API đã dò và bàn giao.
+    Caller cũ hoặc trang không có detector vẫn dùng đúng fallback lịch sử.
+    """
+
+    raw_by_page = settings.get(_SERVER_DETECTED_TRIM_DIMENSIONS_SETTING)
+    raw_dimensions = None
+    if isinstance(raw_by_page, Mapping):
+        raw_dimensions = raw_by_page.get(
+            str(page_index), raw_by_page.get(page_index)
+        )
+    if isinstance(raw_dimensions, Mapping):
+        raw_width = raw_dimensions.get("width")
+        raw_height = raw_dimensions.get("height")
+        if not isinstance(raw_width, bool) and not isinstance(raw_height, bool):
+            try:
+                width_mm = float(raw_width)
+                height_mm = float(raw_height)
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                if all(
+                    math.isfinite(value) and value > 0.0
+                    for value in (width_mm, height_mm)
+                ):
+                    logger.warning(
+                        "[DIM-DIE-TRACE] stage=legacy_report_dimensions "
+                        "page_index=%s source=detector_trim selected_mm=(%.6f, %.6f) "
+                        "legacy_bbox_pt=(%r, %r)",
+                        page_index,
+                        width_mm,
+                        height_mm,
+                        fallback_width_pt,
+                        fallback_height_pt,
+                    )
+                    return width_mm, height_mm
+
+    width_mm = float(fallback_width_pt or 0.0) / MM_TO_PTS
+    height_mm = float(fallback_height_pt or 0.0) / MM_TO_PTS
+    if raw_by_page is not None:
+        logger.warning(
+            "[DIM-DIE-TRACE] stage=legacy_report_dimensions page_index=%s "
+            "source=legacy_bbox selected_mm=(%.6f, %.6f) reason=missing_or_invalid_handoff",
+            page_index,
+            width_mm,
+            height_mm,
+        )
+    return width_mm, height_mm
 
 # Layout solver functions extracted to nup_layout_solver.py for modularity & testability
 
@@ -194,10 +258,12 @@ def run_nup_engine(
     except Exception:
         perf_stages = None
 
-    canonical_path, is_temporary = _canonicalize_page_space(source_path, job_id)
-    if perf_stages is not None:
-        perf_stages.mark("canonical_s")
+    canonical_path = source_path
+    is_temporary = False
     try:
+        canonical_path, is_temporary = _canonicalize_page_space(source_path, job_id)
+        if perf_stages is not None:
+            perf_stages.mark("canonical_s")
         return _run_nup_engine_impl(
             canonical_path,
             output_path,
@@ -214,13 +280,18 @@ def run_nup_engine(
                 pass
             except OSError as error:
                 logger.warning("[ROTATE-CANON] cannot remove %s: %s", canonical_path, error)
-        if perf_stages is not None and perf_path:
+        if perf_stages is not None:
             try:
                 perf_stages.mark("canonical_cleanup_s")
-                from app.core.perf_sampler import write_perf_stages
-                write_perf_stages(perf_path, perf_stages.finish())
+                finished_stages = perf_stages.finish()
+                if perf_path:
+                    from app.core.perf_sampler import write_perf_stages
+
+                    write_perf_stages(perf_path, finished_stages)
             except Exception:
-                pass
+                # PERF (audit 2026-09-02 §PERF-NEST-06): lỗi telemetry không
+                # được giữ scope thread-local và làm bẩn attribution job sau.
+                perf_stages.close()
 
 
 def _run_nup_engine_impl(
@@ -236,6 +307,10 @@ def _run_nup_engine_impl(
     progress_callback=None,
 
     _perf_stages=None,
+
+    # PREVIEW (audit 2026-08-28 §SHEET.PLAN.1): dừng sau pha solve và trả kế hoạch
+    # render thay vì ghi file. Chỉ `nup_sheet_render` dùng cờ này.
+    _sheet_plan_only: bool = False,
 
 ) -> str:
     import math
@@ -267,6 +342,69 @@ def _run_nup_engine_impl(
     # hạ nguồn (die detection, trim, layout, placement) thấy trang KHÔNG xoay. File không
     # xoay giữ nguyên byte. Temp nup_canon_* được dọn bởi cơ chế dọn OS temp prefix nup_.
     # Rotation is canonicalized by the public wrapper before entering this implementation.
+
+    # ── NEST (audit 2026-08-28 §A4b-4): Nesting tối ưu theo đường bế ──
+    # Đặt TRƯỚC nhánh CNC vì cách xếp này phục vụ cả Bình tem bế lẫn Bình CNC; để
+    # sau thì job CNC không bao giờ tới được đây. Nhánh fail-closed trong module:
+    # không bao giờ âm thầm rơi về lưới grid khi người dùng đã chọn nesting.
+    from app.workers.nup_true_shape_nesting import (
+        TrueShapeAutoFallback,
+        is_true_shape_nesting_requested,
+        route_true_shape,
+        run_true_shape_nesting,
+    )
+    # §B10: định tuyến theo PHÂN LOẠI HÌNH. Tem CUSTOM (đặc biệt) + "Xếp tối ưu" trên
+    # die-cut/CNC đi true-shape (kể cả Bình trang S&R và gang lẫn named+đặc biệt). Hình
+    # có-tên / "Lưới đơn giản" / guillotine / 1 Dao giữ engine cũ. `route_true_shape` gói
+    # sau CÙNG cờ master true-shape (`true_shape_nesting_enabled` ↔ frontend
+    # `TRUE_SHAPE_NESTING_ENABLED`): dev mở, bản phát hành HOLD, test DEV_MODE=false ⇒ tắt.
+    _manual_true_shape = is_true_shape_nesting_requested(settings)
+    _auto_true_shape = route_true_shape(settings)
+    _selected_route = (
+        "true_shape"
+        if _manual_true_shape or _auto_true_shape
+        else (
+            "cnc_legacy"
+            if str(settings.get("imposerMode") or "").lower() == "cnc"
+            else "nup_legacy"
+        )
+    )
+    # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): đây là chốt đầu tiên để
+    # phân biệt runtime thật có vào writer true-shape hay vẫn chạy report lưới cũ.
+    logger.warning(
+        "[DIM-DIE-TRACE] stage=dispatch job_id=%s route=%s "
+        "manual_true_shape=%s auto_true_shape=%s imposer_mode=%r "
+        "is_die_cut=%s grid_strategy=%r layout_type=%r",
+        job_id,
+        _selected_route,
+        _manual_true_shape,
+        _auto_true_shape,
+        settings.get("imposerMode"),
+        bool(settings.get("isDieCutMode", False)),
+        settings.get("gridStrategy"),
+        settings.get("layoutType"),
+    )
+    if _manual_true_shape or _auto_true_shape:
+        try:
+            return run_true_shape_nesting(
+                source_path, output_path, settings, job_id, progress_callback
+            )
+        except TrueShapeAutoFallback as exc:
+            # FIX (audit 2026-08-29 §MAP-NEST-12): allowlist đúng hai signal
+            # compatibility/quality. Mọi lỗi contract, manifest, writer hoặc ValueError
+            # chưa phân loại mặc định thoát ra, không giao artifact legacy khác preview.
+            if _manual_true_shape:
+                raise
+            logger.warning(
+                "[NEST] auto-route true-shape không phù hợp (%s) → lùi về engine cũ",
+                exc,
+            )
+            logger.warning(
+                "[DIM-DIE-TRACE] stage=dispatch_fallback job_id=%s "
+                "route=nup_legacy reason=%s",
+                job_id,
+                exc,
+            )
 
     # ── Định tuyến công cụ Bình Bế Rớt (CNC): renderer riêng, không đụng luồng repeat ──
     if settings.get('imposerMode') == 'cnc':
@@ -1743,8 +1881,12 @@ def _run_nup_engine_impl(
                 _rcfg_h = settings.get('reportDisplay') or {}
                 _report_on_h = bool(_rcfg_h.get('enabled'))
                 _paper_h = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
-                _trim_mm_w = (homogeneous_plan.trim_w or 0) * (1.0 / MM_TO_PTS)
-                _trim_mm_h = (homogeneous_plan.trim_h or 0) * (1.0 / MM_TO_PTS)
+                _trim_mm_w, _trim_mm_h = _report_dimensions_mm(
+                    settings,
+                    _master_idx,
+                    homogeneous_plan.trim_w,
+                    homogeneous_plan.trim_h,
+                )
                 _sheet_i = 0
                 for _cp, _qty in zip(_content_pages, _content_qtys):
                     if _qty <= 0:
@@ -1820,8 +1962,12 @@ def _run_nup_engine_impl(
                         _paper_h = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
                         _label_h = _rcfg_h.get('labelNameText') or ""
                         _n_sheets_h = int(_hom_layout.num_sheets or 0)
-                        _trim_mm_w = (homogeneous_plan.trim_w or 0) * (1.0 / MM_TO_PTS)
-                        _trim_mm_h = (homogeneous_plan.trim_h or 0) * (1.0 / MM_TO_PTS)
+                        _trim_mm_w, _trim_mm_h = _report_dimensions_mm(
+                            settings,
+                            _master_idx,
+                            homogeneous_plan.trim_w,
+                            homogeneous_plan.trim_h,
+                        )
                         for _ts, _pls_h in precalculated_placements.items():
                             _ips = len(_pls_h)
                             _data_h = _nr_h.compute_report_data(
@@ -1863,7 +2009,6 @@ def _run_nup_engine_impl(
             _rep_lam_sides = settings.get('reportLaminationSides', 1)
             _rep_order = settings.get('reportOrderCode', '')
             _rep_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
-            _PT_MM = 1.0 / MM_TO_PTS
 
             from copy import deepcopy as _deepcopy
             from app.workers.imposition_finalize import resolve_pont_collisions_on_placements
@@ -1884,9 +2029,12 @@ def _run_nup_engine_impl(
             def _make_type_report(p_idx, tw, th, items_per_sheet, qty):
                 """Tính + build chuỗi report cho 1 loại tem (1 tờ duy nhất)."""
                 label = _report_cfg.get('labelNameText') or f"Trang {p_idx + 1}"
+                width_mm, height_mm = _report_dimensions_mm(
+                    settings, p_idx, tw, th
+                )
                 data = _nr.compute_report_data(
                     label_name=label,
-                    width_mm=tw * _PT_MM, height_mm=th * _PT_MM,
+                    width_mm=width_mm, height_mm=height_mm,
                     paper_size=_rep_paper,
                     items_per_sheet=items_per_sheet, requested_qty=qty,
                     material=_rep_material,
@@ -1963,9 +2111,12 @@ def _run_nup_engine_impl(
                 if _rcfg_af.get('enabled') and total_items_placed > 0:
                     _paper_af = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
                     _label_af = _rcfg_af.get('labelNameText') or f"Trang {p_idx + 1}"
+                    _width_mm_af, _height_mm_af = _report_dimensions_mm(
+                        settings, p_idx, _tw, _th
+                    )
                     _data_af = _nr_af.compute_report_data(
                         label_name=_label_af,
-                        width_mm=_tw * (1.0 / MM_TO_PTS), height_mm=_th * (1.0 / MM_TO_PTS),
+                        width_mm=_width_mm_af, height_mm=_height_mm_af,
                         paper_size=_paper_af,
                         items_per_sheet=total_items_placed, requested_qty=0,
                         material=settings.get('reportMaterial', '') or '',
@@ -2207,8 +2358,13 @@ def _run_nup_engine_impl(
                     # Kích thước: 1 loại → trim loại đó; nhiều loại → bỏ dimensions (0).
                     _wmm = _hmm = 0.0
                     if len(page_infos) == 1:
-                        _wmm = page_infos[0][2] * (1.0 / MM_TO_PTS)
-                        _hmm = page_infos[0][3] * (1.0 / MM_TO_PTS)
+                        _single_page_idx, _, _single_tw, _single_th = page_infos[0]
+                        _wmm, _hmm = _report_dimensions_mm(
+                            settings,
+                            _single_page_idx,
+                            _single_tw,
+                            _single_th,
+                        )
                     _data_ms = _nr_ms.compute_report_data(
                         label_name=_label_ms,
                         width_mm=_wmm, height_mm=_hmm,
@@ -3622,14 +3778,15 @@ def _run_nup_engine_impl(
         total_sheets, available_cores
     )
 
-    args_list = []
+    def build_chunk_args(start_sheet: int, end_sheet: int, chunk_idx: int) -> tuple:
+        """Dựng tuple args cho MỘT dải tờ. Nguồn sự thật duy nhất của hợp đồng args.
 
-    chunk_idx = 0
-
-    for start_sheet in range(0, total_sheets, CHUNK_SIZE):
-
-        end_sheet = min(start_sheet + CHUNK_SIZE, total_sheets)
-
+        PREVIEW (audit 2026-08-28 §SHEET.PLAN.1): tách ra để đường preview view
+        chính gọi được với ``(N, N+1)`` mà không nhân bản hợp đồng args. Mọi giá trị
+        bên dưới chỉ phụ thuộc ``start_sheet``/``end_sheet``/``chunk_idx``; phần còn
+        lại đọc từ closure của pha solve, nên render một tờ và render cả tài liệu
+        không thể lệch tham số.
+        """
         args = (
 
             source_path, job_id, chunk_idx, start_sheet, end_sheet, 
@@ -3703,9 +3860,65 @@ def _run_nup_engine_impl(
         if cut_border_config is not None:
             args = args + (cut_border_config,)
 
-        args_list.append(args)
+        return args
 
-        chunk_idx += 1
+    args_list = [
+        build_chunk_args(
+            start_sheet,
+            min(start_sheet + CHUNK_SIZE, total_sheets),
+            chunk_idx,
+        )
+        for chunk_idx, start_sheet in enumerate(
+            range(0, total_sheets, CHUNK_SIZE)
+        )
+    ]
+
+    if _sheet_plan_only:
+        # PREVIEW (audit 2026-08-28 §SHEET.PLAN.1): dừng trước khi ghi file. Caller
+        # giữ kế hoạch này để render từng tờ nhiều lần bằng CHÍNH writer sản xuất.
+        from app.workers.nup_sheet_render import (
+            NupSheetRenderPlan,
+            NupSheetReportSnapshot,
+        )
+
+        _plan_sheet_mapping = tuple(sheet_mapping or ())
+        if (
+            not _plan_sheet_mapping
+            and layout_type == 'repeat'
+            and precalculated_placements is not None
+        ):
+            # FIX (audit 2026-08-29 §S&R.PER-DESIGN): die-cut repeat đi nhánh
+            # precalculated nên `sheet_mapping` cũ rỗng dù mỗi tờ chỉ có đúng một
+            # trang nguồn. Khôi phục ánh xạ từ chính placements để export hybrid lấy
+            # đúng tờ legacy; gặp tờ trống/trộn thì bỏ toàn ánh xạ thay vì đoán.
+            _derived_mapping = []
+            for _sheet_index in range(total_sheets):
+                _source_pages = {
+                    int(_placement.get('src_page_idx'))
+                    for _placement in (
+                        precalculated_placements.get(_sheet_index, ()) or ()
+                    )
+                    if _placement.get('src_page_idx') is not None
+                }
+                if len(_source_pages) != 1:
+                    _derived_mapping = []
+                    break
+                _derived_mapping.append(next(iter(_source_pages)))
+            _plan_sheet_mapping = tuple(_derived_mapping)
+
+        return NupSheetRenderPlan(
+            build_chunk_args=build_chunk_args,
+            total_sheets=total_sheets,
+            chunk_size=CHUNK_SIZE,
+            layout_type=layout_type,
+            page_count=page_count,
+            capacity=capacity,
+            sheet_mapping=_plan_sheet_mapping,
+            report_snapshot=NupSheetReportSnapshot.from_engine_state(
+                _reports_by_sheet,
+                settings.get('reportDisplay'),
+            ),
+        )
 
     # BUILD (audit 2026-08-03 §REL.03): engine chỉ chuyển kế hoạch đã chốt sang
     # module kết xuất; các trường ratio-stack được truyền rõ, không dò qua locals().

@@ -25,7 +25,7 @@ from app.core.system_memory import read_memory_status_mb
 
 logger = logging.getLogger(__name__)
 
-PPE_VIEWER_SESSION_IDENTITY_VERSION = "ppe-viewer-session-v1"
+PPE_VIEWER_SESSION_IDENTITY_VERSION = "ppe-viewer-session-v2-view-annotations"
 _SESSION_OVERHEAD_MB = 64
 _INTENT_CODES = {
     "perceptual": 0,
@@ -595,6 +595,10 @@ class PpeViewerSessionManager:
                 cmyk_profile_id=entry.identity.profile_id,
                 render_intent=entry.identity.intent_code,
                 resource_cache_budget_mb=cache_budget,
+                # CORRECTNESS (audit 2026-08-31 §LÔ-B): Viewer theo /View và
+                # dựng appearance annotation; print/preflight giữ mặc định facade.
+                optional_content_usage="view",
+                render_annotations=True,
             )
             if not await asyncio.to_thread(self._identity_is_current, entry.identity):
                 raise ViewerSessionSuperseded(

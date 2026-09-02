@@ -30,6 +30,7 @@ from app.workers.cluster_tile_engine import (
 from app.workers.nup_artwork import (
     place_one_artwork,
     compute_block_bbox,
+    compute_output_clips,
     draw_die_lines_for_placement,
 )
 from app.workers.nup_cut_border import draw_cut_borders
@@ -923,19 +924,17 @@ def process_chunk(args):
                     chunk_idx, sheet_idx, len(placements),
                 )
 
-        # ── Bbox mỗi (cluster, block) theo toạ độ trim để xác định mép NGOÀI vs mép TRONG ──
-        # Mép ngoài block → bleed đầy đủ; mép trong (giáp ô khác) → clip nửa gap (tránh chồng bleed).
-        _block_bbox = {}
-        for _p in placements:
-            _k = (_p['cluster_idx'], _p['cell'].get('blockId', 0))
-            _x0 = _p['abs_x']; _y0 = _p['original_cell_y']
-            _x1 = _x0 + _p['width']; _y1 = _y0 + _p['height']
-            if _k not in _block_bbox:
-                _block_bbox[_k] = [_x0, _y0, _x1, _y1]
-            else:
-                bb = _block_bbox[_k]
-                bb[0] = min(bb[0], _x0); bb[1] = min(bb[1], _y0)
-                bb[2] = max(bb[2], _x1); bb[3] = max(bb[3], _y1)
+        # IMPOSE (audit 2026-09-01 §CLIPOWN.1): Bình cắt xén thường chia quyền
+        # clip theo láng giềng hình học toàn tờ. Tem bế/CNC/page-sheet vẫn giữ bbox
+        # block vì bbox đó còn là hợp đồng của clip theo hình khuôn.
+        _output_clips = None
+        if not is_die_cut and not page_sheet_mode:
+            _output_clips = compute_output_clips(placements, bleed_pt)
+        _block_bbox = (
+            compute_block_bbox(placements)
+            if is_die_cut or page_sheet_mode
+            else {}
+        )
         _clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
         _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
         # Fallback khung trang không có đường bế thật nên không phụ thuộc bleed
@@ -976,6 +975,10 @@ def process_chunk(args):
                         _die_items_cache[_ck] = dict(_hom_master_die)
 
             # Đặt artwork qua hàm DÙNG CHUNG (nguồn chân lý duy nhất — xem nup_artwork.py)
+            _output_clip_kw = {}
+            if _output_clips is not None:
+                _output_clip_kw['output_clip'] = _output_clips[id(p)]
+
             trim_rect, src_page_idx = place_one_artwork(
                 out_page, src_doc, p,
                 bleed_pt=bleed_pt, is_die_cut=is_die_cut, cut_type=cut_type,
@@ -993,6 +996,7 @@ def process_chunk(args):
                 ),
                 fallback_gap_half_x=_fallback_gap_half_x,
                 fallback_gap_half_y=_fallback_gap_half_y,
+                **_output_clip_kw,
             )
             cut_border_trim_rects.append(trim_rect)
 

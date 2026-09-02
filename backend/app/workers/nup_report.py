@@ -149,6 +149,16 @@ def compute_report_data(
     dims = ""
     if width_mm and height_mm:
         dims = f"{_format_report_mm(width_mm)} x {_format_report_mm(height_mm)} mm"
+        # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): lane lưới cũ không đi qua
+        # RenderBundle, nên phải ghi raw dimensions ngay tại builder dùng chung này.
+        _logger.warning(
+            "[DIM-DIE-TRACE] stage=legacy_report_dimensions mode=%r "
+            "raw_width_mm=%r raw_height_mm=%r formatted=%r",
+            mode_label,
+            width_mm,
+            height_mm,
+            dims,
+        )
 
     return {
         "raw": {
@@ -349,6 +359,26 @@ def stamp_reports_on_pdf(input_pdf: str, output_pdf: str, reports_by_page: Dict[
 
     Trả về True nếu thành công. Lỗi → log cảnh báo, copy nguyên file (không sập job).
     """
+    # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): đây là chốt chung của mọi
+    # writer. Chỉ trích token kích thước, không log nguyên report chứa dữ liệu khách.
+    dimension_pattern = re.compile(
+        r"(?<![\d.,])\d+(?:[.,]\d+)?\s*[x×]\s*"
+        r"\d+(?:[.,]\d+)?\s*mm\b",
+        re.IGNORECASE,
+    )
+    dimension_tokens = {
+        int(page_index): dimension_pattern.findall(str(report_text))
+        for page_index, report_text in sorted(reports_by_page.items())
+    }
+    _logger.warning(
+        "[DIM-DIE-TRACE] stage=stamp input=%s output=%s pages=%s "
+        "dimension_tokens=%s",
+        os.path.basename(input_pdf),
+        os.path.basename(output_pdf),
+        sorted(reports_by_page),
+        dimension_tokens,
+    )
+
     try:
         import pikepdf
     except Exception as e:

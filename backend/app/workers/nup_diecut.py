@@ -99,11 +99,114 @@ def resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm, MM=MM_TO_
     return (max(1.0, tw), max(1.0, th))
 
 
-def _path_items_to_polygon(path_items):
+def _rings_to_polygon_with_holes(rings):
+    """Phân loại vòng kín thành biên ngoài và LỖ KHUÔN theo độ lồng nhau.
+
+    NEST (audit 2026-08-28 §A4b-2): đây là chỗ lỗ khuôn từng bị mất. Bản cũ biến
+    mỗi subpath thành một ``Polygon`` **đặc** rồi ``unary_union`` tất cả; hợp của
+    hình ngoài với hình trong = hình ngoài, nên cửa sổ/lỗ treo bị nuốt. Khuôn thật
+    vẽ biên ngoài và lỗ trong CÙNG một path, nên mất lỗ là mất nét dao.
+
+    Quy tắc phân loại theo độ sâu lồng (even-odd): vòng nằm trong số **chẵn** vòng
+    khác là biên ngoài; số **lẻ** là lỗ. Lỗ được gán cho vòng ngoài trực tiếp bao
+    nó (vòng bao nhỏ nhất), nên khuôn nhiều tầng lồng nhau vẫn đúng.
+    """
+
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    solids = []
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        try:
+            candidate = Polygon(ring)
+            if not candidate.is_valid:
+                candidate = candidate.buffer(0)
+            if candidate.is_valid and not candidate.is_empty:
+                solids.append(candidate)
+        except Exception:
+            continue
+    if not solids:
+        return None
+
+    # Vòng lớn trước: một vòng chỉ có thể bị bao bởi vòng có diện tích lớn hơn.
+    order = sorted(range(len(solids)), key=lambda i: solids[i].area, reverse=True)
+    rank = {index: position for position, index in enumerate(order)}
+
+    # PERF (audit 2026-08-28 §A4b-3): quét cặp đôi thuần Python là O(n²) lời gọi
+    # GEOS `contains` — đo thật trên 400 vòng rời cho 565ms so với 52ms của nhánh
+    # hợp-đặc, tức chậm ~11×. Trang CNC phức tạp có hàng trăm subpath nên phải
+    # lọc bằng chỉ mục không gian trước; `contains` chỉ chạy trên ứng viên mà
+    # bbox đã chứa điểm thăm dò.
+    probes = [solid.representative_point() for solid in solids]
+    try:
+        from shapely import STRtree
+
+        tree = STRtree(solids)
+        candidates = [tree.query(probe) for probe in probes]
+    except Exception:
+        # Không có chỉ mục thì lùi về quét đầy đủ — chậm hơn nhưng vẫn đúng.
+        candidates = [range(len(solids))] * len(solids)
+
+    parent: dict[int, int | None] = {}
+    depth: dict[int, int] = {}
+    for index in order:
+        own_rank = rank[index]
+        probe = probes[index]
+        chosen: int | None = None
+        # Xét ứng viên từ NHỎ tới LỚN: vòng bao đầu tiên gặp chính là vòng bao
+        # trực tiếp, nên thoát ngay. Không có bước thoát sớm này thì khuôn lồng
+        # sâu vẫn tốn n lời gọi `contains` mỗi vòng (đo thật: 200 vòng lồng =
+        # 154ms, chậm ~19× so với nhánh hợp-đặc).
+        ordered_candidates = sorted(
+            (int(candidate) for candidate in candidates[index]),
+            key=lambda i: rank[i],
+            reverse=True,
+        )
+        for outer_index in ordered_candidates:
+            if rank[outer_index] >= own_rank:
+                continue
+            if solids[outer_index].contains(probe):
+                chosen = outer_index
+                break
+        parent[index] = chosen
+        depth[index] = 0 if chosen is None else depth[chosen] + 1
+
+    pieces = []
+    for index in order:
+        if depth[index] % 2 != 0:
+            continue  # vòng lẻ = lỗ, gắn vào vòng cha bên dưới
+        holes = [
+            solids[child].exterior.coords
+            for child in order
+            if parent.get(child) == index and depth[child] % 2 == 1
+        ]
+        try:
+            piece = Polygon(solids[index].exterior.coords, holes)
+            if not piece.is_valid:
+                piece = piece.buffer(0)
+            if piece.is_valid and not piece.is_empty:
+                pieces.append(piece)
+        except Exception:
+            pieces.append(solids[index])
+    if not pieces:
+        return None
+    merged = unary_union(pieces)
+    return None if merged.is_empty else merged
+
+
+def _path_items_to_polygon(path_items, *, keep_holes=False):
 
     """Convert PDF path items (lines + beziers) directly to a Shapely Polygon.
 
-    Samples bezier curves at high resolution — no bitmap rasterization needed."""
+    Samples bezier curves at high resolution — no bitmap rasterization needed.
+
+    ``keep_holes=False`` (mặc định) giữ **nguyên** hành vi cũ: mỗi subpath thành
+    một polygon đặc rồi hợp lại. Bốn callsite legacy (collision tem–tem, pont,
+    die detection CNC) dựa vào đúng hành vi đó — đường bế bảo thủ, không cho xếp
+    tem vào lòng lỗ. Chỉ đường manifest production truyền ``True``.
+    """
 
     from shapely.geometry import Polygon
 
@@ -181,6 +284,11 @@ def _path_items_to_polygon(path_items):
 
         subpaths.append(list(current_subpath))
 
+    if keep_holes:
+        # NEST (audit 2026-08-28 §A4b-2): đường manifest cần giữ lỗ khuôn để lớp
+        # CUT có nét dao cửa sổ/lỗ treo. Không đi qua nhánh hợp-polygon-đặc bên dưới.
+        return _rings_to_polygon_with_holes(subpaths)
+
     polys = []
 
     for sp in subpaths:
@@ -211,11 +319,16 @@ def _path_items_to_polygon(path_items):
 
     return final_poly
 
-def extract_page_die_cut_polygon(src_page):
+def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
 
     """Extract page's spot color cutline polygon.
 
-    Returns unscaled Shapely Polygon or None if not found/empty."""
+    Returns unscaled Shapely Polygon or None if not found/empty.
+
+    ``keep_holes=False`` (mặc định) giữ nguyên hợp đồng cũ — trả biên ngoài đặc,
+    lane legacy (collision tem–tem qua ``layout_compute``) dựa vào đó. Truyền
+    ``True`` để giữ LỖ KHUÔN (cửa sổ, lỗ treo) cho đường manifest production.
+    """
 
     from shapely.ops import unary_union
 
@@ -271,7 +384,7 @@ def extract_page_die_cut_polygon(src_page):
 
             if p.get('color') == target_color:
 
-                poly_part = _path_items_to_polygon(p.get('items', []))
+                poly_part = _path_items_to_polygon(p.get('items', []), keep_holes=keep_holes)
 
                 if poly_part and poly_part.is_valid and not poly_part.is_empty:
 
