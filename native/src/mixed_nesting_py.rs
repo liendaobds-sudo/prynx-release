@@ -953,6 +953,9 @@ mod tests {
                 "requestRevision": 1,
                 "inputHash": input_hash,
                 "layoutFingerprint": layout_fingerprint,
+                "alignment": "center",
+                "groupingIntent": "free_gang",
+                "placementZones": [],
                 "clearance": {
                     "partToPart": { "xMm": 0.0, "yMm": 0.0 },
                     "partToSheetEdge": { "xMm": 0.0, "yMm": 0.0 },
