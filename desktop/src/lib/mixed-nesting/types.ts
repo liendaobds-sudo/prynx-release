@@ -22,7 +22,7 @@
  */
 
 /** Phiên bản protocol JSON. Lệch là từ chối, không có nhánh đoán ý. */
-export const MIXED_NESTING_PROTOCOL_VERSION = 1;
+export const MIXED_NESTING_PROTOCOL_VERSION = 2;
 
 /** Capability Free/Pro RIÊNG của tool. Không dùng `impo.diecut`/`packaging.dieline`. */
 export const MIXED_NESTING_FEATURE_ID = 'impo.mixed_nesting' as const;
@@ -66,6 +66,9 @@ export interface SheetSpec {
   marginMm: SheetMarginMm;
   maxSheets: number;
 }
+
+/** Autofill là một bài toán đúng một tờ; literal này khóa nhầm `maxSheets > 1` ở compile-time. */
+export type SingleSheetSpec = Omit<SheetSpec, 'maxSheets'> & { maxSheets: 1 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Rotation constraint — discriminated union theo `mode`
@@ -146,11 +149,19 @@ export const ROTATION_PRESET_CARDINAL: RotationDiscrete = {
 
 export interface OrientationPolicy {
   defaultRotation: JobRotationConstraint;
-  /** Literal duy nhất. Protocol v1 không có đường bật phản chiếu. */
+  /** Literal duy nhất. Protocol v2 không có đường bật phản chiếu. */
   reflection: 'forbidden';
 }
 
 export type MixedNestingProfile = 'fast' | 'balanced' | 'tight';
+
+/** Ý định bố trí của protocol v2; không suy ngược từ quantity hay kết quả. */
+export type LayoutIntent = 'quantity_fulfillment' | 'autofill_single_sheet';
+
+export const LAYOUT_INTENTS: readonly LayoutIntent[] = [
+  'quantity_fulfillment',
+  'autofill_single_sheet',
+] as const;
 
 export const MIXED_NESTING_PROFILES: readonly MixedNestingProfile[] = [
   'fast',
@@ -168,26 +179,49 @@ export const MIXED_NESTING_PROFILES: readonly MixedNestingProfile[] = [
  * Cố ý **không có** `referencePointMm`/`geometryHash`/`sourceRevision` — ba trường đó
  * do backend canonicalize và ký (§9.2).
  */
-export interface PartSpec {
+export interface PartGeometrySpec {
   partId: string;
-  quantity: number;
   outer: RingMm;
   holes: RingMm[];
   rotationConstraint: PartRotationConstraint;
 }
 
-/** Body của `POST /api/mixed-nesting/jobs`. Không có `jobId`: server sinh bằng CSPRNG. */
-export interface CreateJobRequest {
+/** Chi tiết của workflow số lượng hiện hữu. */
+export interface PartSpec extends PartGeometrySpec {
+  quantity: number;
+}
+
+/** Chi tiết autofill: field quantity phải vắng hoàn toàn, kể cả `null`. */
+export interface AutofillPartSpec extends PartGeometrySpec {
+  quantity?: never;
+}
+
+interface CreateJobRequestBase {
   protocolVersion: typeof MIXED_NESTING_PROTOCOL_VERSION;
   seed: number;
   profile: MixedNestingProfile;
   /** Vắng mặt ⇒ work-plan cố định (deterministic). Có ⇒ thêm deadline wall-clock. */
   timeBudgetMs?: number;
-  sheet: SheetSpec;
   gapMm: number;
   orientationPolicy: OrientationPolicy;
+}
+
+export interface QuantityFulfillmentCreateJobRequest extends CreateJobRequestBase {
+  layoutIntent: 'quantity_fulfillment';
+  sheet: SheetSpec;
   parts: PartSpec[];
 }
+
+export interface AutofillSingleSheetCreateJobRequest extends CreateJobRequestBase {
+  layoutIntent: 'autofill_single_sheet';
+  sheet: SingleSheetSpec;
+  parts: AutofillPartSpec[];
+}
+
+/** Body của `POST /api/mixed-nesting/jobs`. Không có `jobId`: server sinh bằng CSPRNG. */
+export type CreateJobRequest =
+  | QuantityFulfillmentCreateJobRequest
+  | AutofillSingleSheetCreateJobRequest;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Kết quả
@@ -243,6 +277,7 @@ export type TerminationReason =
   | 'work_budget_exhausted'
   | 'deadline'
   | 'max_sheets_reached'
+  | 'sheet_full'
   | 'cancelled';
 
 export const TERMINATION_REASONS: readonly TerminationReason[] = [
@@ -250,6 +285,7 @@ export const TERMINATION_REASONS: readonly TerminationReason[] = [
   'work_budget_exhausted',
   'deadline',
   'max_sheets_reached',
+  'sheet_full',
   'cancelled',
 ] as const;
 
@@ -275,7 +311,7 @@ export type ManifestStatus = 'completed' | 'failed' | 'cancelled';
 
 /** Placement manifest. Preview và export dùng CHUNG object này, không dựng lại. */
 export interface PlacementManifest {
-  protocolVersion: number;
+  protocolVersion: typeof MIXED_NESTING_PROTOCOL_VERSION;
   engineVersion: string;
   jobId: string;
   seed: number;
@@ -377,6 +413,7 @@ export interface EngineCapabilities {
   defaultRotation: 'free';
   continuousTranslation: boolean;
   profiles: string[];
+  layoutIntents: LayoutIntent[];
   maxRequestBytes: number;
 }
 

@@ -4,4 +4,4 @@
  * Chiến lược xếp lưới. `Manual` BẮT BUỘC mang cols/rows (Req 4.3) —
  * không còn cách nào gửi "manual" mà thiếu số cột/dòng.
  */
-export type GridStrategy = { "kind": "simple_auto" } | { "kind": "optimal_auto" } | { "kind": "manual", cols: number, rows: number, } | { "kind": "staggered" } | { "kind": "row_alt" } | { "kind": "head_to_tail" };
+export type GridStrategy = { "kind": "simple_auto" } | { "kind": "optimal_auto" } | { "kind": "manual", cols: number, rows: number, } | { "kind": "staggered" } | { "kind": "row_alt" } | { "kind": "head_to_tail" } | { "kind": "true_shape_nesting" };

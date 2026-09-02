@@ -6,6 +6,7 @@ import { Divider, inputCls, Checkbox } from '../SharedUI';
 import { DEFAULT_MATERIALS, DEFAULT_REPORT_CONFIG, LAMINATION_OPTIONS, PREDEFINED_SIZES, type NupSettings, type PontConfig, type ReportDisplayConfig, type ReportFieldKey } from '../types';
 import type { SavePrintConfig } from '../store/slices/cncSlice';
 import { buildReportPreview } from '../../../lib/reportPreview';
+import { impositionDimensionTrace } from '../../../lib/previewPerfLog';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
 import BookReportSettings from './BookReportSettings';
@@ -213,11 +214,13 @@ export default function AdvancedSettingsSection({
     sourceTotalPages = 0,
     rectangleStickerInking = false,
     hasValidDie = null,
+    detectedDimensionPt = null,
 }: {
     activeTool: string;
     sourceTotalPages?: number;
     rectangleStickerInking?: boolean;
     hasValidDie?: boolean | null;
+    detectedDimensionPt?: { w: number; h: number } | null;
 }) {
   const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
@@ -324,6 +327,43 @@ export default function AdvancedSettingsSection({
         pontSettingsMode,
         stickerToolIdentity,
     } = resolveImpositionModes(activeTool, s.impositionUnit);
+    // DIAG (feedback 2026-09-01 §DIM-DIE): ghi đúng dữ liệu WebView đang dùng
+    // để phân biệt detector bị rỗng với report chọn nhầm hộp trang.
+    const detectedWidthPt = detectedDimensionPt?.w;
+    const detectedHeightPt = detectedDimensionPt?.h;
+    const sourceWidthPt = s.sourcePageDim?.w;
+    const sourceHeightPt = s.sourcePageDim?.h;
+    useEffect(() => {
+        const detectorIsValid = dieGeometryMode
+            && Number.isFinite(detectedWidthPt)
+            && Number(detectedWidthPt) > 0
+            && Number.isFinite(detectedHeightPt)
+            && Number(detectedHeightPt) > 0;
+        const selectedWidthPt = detectorIsValid ? Number(detectedWidthPt) : sourceWidthPt;
+        const selectedHeightPt = detectorIsValid ? Number(detectedHeightPt) : sourceHeightPt;
+        void impositionDimensionTrace('report_preview_dimensions', {
+            active_tool: activeTool,
+            imposition_unit: s.impositionUnit,
+            die_geometry_mode: dieGeometryMode,
+            detector_w_pt: detectedWidthPt,
+            detector_h_pt: detectedHeightPt,
+            source_w_pt: sourceWidthPt,
+            source_h_pt: sourceHeightPt,
+            selected_source: detectorIsValid ? 'detector_trim' : 'source_page',
+            selected_w_mm: selectedWidthPt == null ? undefined : selectedWidthPt * 0.352778,
+            selected_h_mm: selectedHeightPt == null ? undefined : selectedHeightPt * 0.352778,
+            show_dimensions: s.reportDisplay.showDimensions,
+        });
+    }, [
+        activeTool,
+        s.impositionUnit,
+        s.reportDisplay.showDimensions,
+        dieGeometryMode,
+        detectedWidthPt,
+        detectedHeightPt,
+        sourceWidthPt,
+        sourceHeightPt,
+    ]);
     // Giữ tên biến cũ cho các gate hình học; identity sản phẩm được tách riêng.
     const stickerLike = dieGeometryMode;
     const stickerProductMode = stickerToolIdentity || activeTool === 'cnc_imposer';
@@ -982,16 +1022,31 @@ export default function AdvancedSettingsSection({
                                                 : s.targetQuantity;
                                             // Không nhét gap tấm vào identifier — field 「Mẫu/Trang」
                                             // để trống trừ khi user tự nhập (tên mẫu / nhãn).
+                                            // DIM-DIE FIX (feedback 2026-09-01): report tem bế/CNC phải dùng
+                                            // cùng trim detector (đơn vị pt) với DIM và solver. `sourcePageDim`
+                                            // là hộp trang nên có thể rộng/cao hơn đường khuôn thật.
+                                            const detectedReportDimension = dieGeometryMode
+                                                && detectedDimensionPt
+                                                && Number.isFinite(detectedDimensionPt.w)
+                                                && detectedDimensionPt.w > 0
+                                                && Number.isFinite(detectedDimensionPt.h)
+                                                && detectedDimensionPt.h > 0
+                                                ? detectedDimensionPt
+                                                : null;
+                                            const reportDimensionPt = detectedReportDimension || s.sourcePageDim;
+                                            const reportTrimReductionMm = dieGeometryMode
+                                                ? 0
+                                                : 2 * (s.bleed || 0);
                                             const previewStr = buildReportPreview(s.reportDisplay, {
                                                 orderCode: s.reportOrderCode,
                                                 identifier: undefined,
                                                 gangCount: pageSheetMode ? _pageSheetPageCount : undefined,
                                                 labelName: s.reportDisplay.labelNameText,
-                                                widthMm: s.sourcePageDim
-                                                    ? s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0)
+                                                widthMm: reportDimensionPt
+                                                    ? reportDimensionPt.w * 0.352778 - reportTrimReductionMm
                                                     : undefined,
-                                                heightMm: s.sourcePageDim
-                                                    ? s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0)
+                                                heightMm: reportDimensionPt
+                                                    ? reportDimensionPt.h * 0.352778 - reportTrimReductionMm
                                                     : undefined,
                                                 // UIUX (audit 2026-08-04 §DIM.5): preview report khớp khổ tờ thập phân thật.
                                                 paperSize: `Khổ ${formatSizeMm(sw, sh)}`,
@@ -1149,6 +1204,10 @@ export default function AdvancedSettingsSection({
                                                     <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dan_tem_truc_tiep_lap_day_to_in_theo')}</p>
                                                 </div>
                                                 <div className="space-y-1">
+                                                    <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:xep_tu_do')}</h4>
+                                                    <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:xep_tu_do_mo_ta')}</p>
+                                                </div>
+                                                <div className="space-y-1">
                                                     <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chia_deu_dien_tich_so_luong')}</h4>
                                                     <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dung_cho_in_n_up_nhieu_mau_tu_dong_chia')}</p>
                                                 </div>
@@ -1165,12 +1224,14 @@ export default function AdvancedSettingsSection({
                             </div>
                             <select
                                 value={s.groupingStrategy}
-                                onChange={(e) => s.setGroupingStrategy(e.target.value as 'none' | 'maximize_area' | 'strict_ratio' | 'cluster_tile')}
+                                onChange={(e) => s.setGroupingStrategy(e.target.value as NonNullable<NupSettings['groupingStrategy']>)}
                                 className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
                                 <option value="none">{t('imposition.advancedSettings:khong_chia_cum')}</option>
                                 {s.taskMode !== 'step_repeat' && (
                                     <>
+                                        {/* PARITY (audit 2026-08-29 MAP-NEST-04): free gang và chia đều diện tích là hai intent khác nhau. */}
+                                        <option value="free_gang">{t('imposition.advancedSettings:xep_tu_do')}</option>
                                         <option value="maximize_area">{t('imposition.advancedSettings:chia_deu_dien_tich')}</option>
                                         <option value="strict_ratio">{t('imposition.advancedSettings:chia_deu_so_luong')}</option>
                                         <option value="cluster_tile">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</option>

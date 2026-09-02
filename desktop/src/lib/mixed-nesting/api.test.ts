@@ -13,6 +13,7 @@ import {
   getJobStatus,
   serializeCreateJobRequest,
   waitForJob,
+  type QuantityBuildJobOptions,
 } from './api';
 import {
   MAX_REQUEST_BYTES,
@@ -56,10 +57,13 @@ const PART: PartSpec = {
   rotationConstraint: { mode: 'inherit' },
 };
 
-function buildOptions(overrides: Partial<Parameters<typeof buildCreateJobRequest>[0]> = {}) {
+function buildOptions(
+  overrides: Partial<QuantityBuildJobOptions> = {},
+): QuantityBuildJobOptions {
   return {
     seed: 20260826,
     profile: 'balanced' as const,
+    layoutIntent: 'quantity_fulfillment' as const,
     sheet: {
       widthMm: 700,
       heightMm: 1000,
@@ -86,9 +90,19 @@ describe('buildCreateJobRequest', () => {
   it('dựng đúng hợp đồng và không mang trường lạ', () => {
     const request = buildCreateJobRequest(buildOptions());
     expect(Object.keys(request).sort()).toEqual(
-      ['gapMm', 'orientationPolicy', 'parts', 'profile', 'protocolVersion', 'seed', 'sheet'].sort(),
+      [
+        'gapMm',
+        'layoutIntent',
+        'orientationPolicy',
+        'parts',
+        'profile',
+        'protocolVersion',
+        'seed',
+        'sheet',
+      ].sort(),
     );
     expect(request.protocolVersion).toBe(MIXED_NESTING_PROTOCOL_VERSION);
+    expect(request.layoutIntent).toBe('quantity_fulfillment');
     expect(request.orientationPolicy.reflection).toBe('forbidden');
     expect(Object.keys(request.parts[0]).sort()).toEqual(
       ['holes', 'outer', 'partId', 'quantity', 'rotationConstraint'].sort(),
@@ -180,12 +194,51 @@ describe('buildCreateJobRequest', () => {
       expect(request.parts[0].rotationConstraint).toEqual(constraint);
     }
   });
+
+  it('autofill gửi đúng một tờ và bỏ hoàn toàn quantity', () => {
+    const request = buildCreateJobRequest({
+      seed: 20260826,
+      profile: 'balanced',
+      layoutIntent: 'autofill_single_sheet',
+      sheet: {
+        widthMm: 700,
+        heightMm: 1000,
+        marginMm: { left: 10, right: 10, top: 10, bottom: 10 },
+        maxSheets: 1,
+      },
+      gapMm: 3,
+      orientationPolicy: { defaultRotation: { mode: 'free' }, reflection: 'forbidden' },
+      parts: [{
+        partId: 'part-a',
+        outer: rect(90, 60),
+        holes: [],
+        rotationConstraint: { mode: 'inherit' },
+      }],
+    });
+    expect(request.layoutIntent).toBe('autofill_single_sheet');
+    expect(request.sheet.maxSheets).toBe(1);
+    expect('quantity' in request.parts[0]).toBe(false);
+  });
+
+  it('autofill từ chối maxSheets khác 1 kể cả khi caller lách type', () => {
+    expect(() => buildCreateJobRequest({
+      ...buildOptions(),
+      layoutIntent: 'autofill_single_sheet',
+      sheet: { ...buildOptions().sheet, maxSheets: 2 },
+      parts: [{
+        partId: 'part-a',
+        outer: rect(90, 60),
+        holes: [],
+        rotationConstraint: { mode: 'inherit' },
+      }],
+    } as never)).toThrowError(MixedNestingApiError);
+  });
 });
 
 describe('findForbiddenFields', () => {
   it('bắt trường legacy và server-owned ở mọi độ sâu', () => {
     const payload = {
-      protocolVersion: 1,
+      protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
       translationStepMm: 0.1,
       orientationPolicy: { defaultRotation: { mode: 'free', angleStepDeg: 15 } },
       parts: [{ partId: 'a', geometryHash: 'x' }, { partId: 'b', matrix: [1, 0, 0, 1, 0, 0] }],
@@ -304,7 +357,9 @@ describe('endpoint', () => {
       'http://127.0.0.1:8321/api/mixed-nesting/jobs/a%20b',
     );
 
-    apiMocks.authenticatedFetch.mockResolvedValue(responseJson({ protocolVersion: 1 }));
+    apiMocks.authenticatedFetch.mockResolvedValue(
+      responseJson({ protocolVersion: MIXED_NESTING_PROTOCOL_VERSION }),
+    );
     await getJobResult('x/y');
     expect(apiMocks.authenticatedFetch.mock.calls[1][0]).toBe(
       'http://127.0.0.1:8321/api/mixed-nesting/jobs/x%2Fy/result',
@@ -326,12 +381,13 @@ describe('endpoint', () => {
   it('getCapabilities trả đủ trường bất biến', async () => {
     apiMocks.authenticatedFetch.mockResolvedValue(
       responseJson({
-        protocolVersion: 1,
-        engineVersion: '0.1.0',
+        protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+        engineVersion: '0.2.0',
         reflection: 'forbidden',
         defaultRotation: 'free',
         continuousTranslation: true,
         profiles: ['fast', 'balanced', 'tight'],
+        layoutIntents: ['quantity_fulfillment', 'autofill_single_sheet'],
         maxRequestBytes: MAX_REQUEST_BYTES,
       }),
     );
@@ -339,6 +395,27 @@ describe('endpoint', () => {
     expect(capabilities.reflection).toBe('forbidden');
     expect(capabilities.defaultRotation).toBe('free');
     expect(capabilities.continuousTranslation).toBe(true);
+    expect(capabilities.layoutIntents).toContain('autofill_single_sheet');
+  });
+
+  it.each([
+    { protocolVersion: MIXED_NESTING_PROTOCOL_VERSION - 1 },
+    {
+      protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+      engineVersion: '0.2.0',
+      reflection: 'forbidden',
+      defaultRotation: 'free',
+      continuousTranslation: true,
+      profiles: ['fast', 'balanced', 'tight'],
+      layoutIntents: ['quantity_fulfillment'],
+      maxRequestBytes: MAX_REQUEST_BYTES,
+    },
+  ])('getCapabilities chặn engine lệch capability %#', async (payload) => {
+    apiMocks.authenticatedFetch.mockResolvedValue(responseJson(payload));
+    await expect(getCapabilities()).rejects.toMatchObject({
+      status: 503,
+      code: 'ENGINE_UNAVAILABLE',
+    });
   });
 
   it('giữ nguyên precision khi đọc manifest về', async () => {

@@ -5,6 +5,8 @@
  * Fallback sang localStorage nếu Tauri không khả dụng (dev mode).
  */
 
+import type { GridStrategyKind } from '../components/imposition-tools/types';
+
 // ─── Preset Interface ───
 export interface ImpositionPreset {
   id: string;
@@ -60,7 +62,8 @@ export interface ImpositionPreset {
     layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine';
     columns: number;
     rows: number;
-    gridStrategy: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    /** Suy từ enum Rust — xem `GridStrategyKind`. Nới rộng nên preset cũ vẫn đọc được. */
+    gridStrategy: GridStrategyKind;
     /** Optional để preset cũ mặc định về tắt. */
     alternateRotation?: 'none' | 'row' | 'column';
     duplexFlow: 'normal' | 'double';
@@ -69,7 +72,7 @@ export interface ImpositionPreset {
     clusterCount: number;
     clusterGap: number;
     clusterGapMode: 'item' | 'mark';
-    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     /** Tùy chọn để preset cũ vẫn nạp được và mặc định về tắt. */
     cutBorder?: {
       enabled: boolean;

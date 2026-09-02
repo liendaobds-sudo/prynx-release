@@ -23,8 +23,8 @@ export interface NupSlice {
     setAlternateRotation: (v: NupSettings['alternateRotation']) => void;
     cutBorder: CutBorderConfig;
     setCutBorder: (v: Partial<CutBorderConfig>) => void;
-    groupingStrategy: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
-    setGroupingStrategy: (v: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none') => void;
+    groupingStrategy: NonNullable<NupSettings['groupingStrategy']>;
+    setGroupingStrategy: (v: NonNullable<NupSettings['groupingStrategy']>) => void;
     clusterCombineMode: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
     setClusterCombineMode: (v: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio') => void;
     clusterTileW: number;

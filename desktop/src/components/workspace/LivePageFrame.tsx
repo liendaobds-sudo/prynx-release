@@ -1938,7 +1938,7 @@ export const LivePageFrame = (props: any) => {
     const isActiveFrame = isActivePage === true;
 
     const {
-        isObjectEditMode, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds,
+        isObjectEditMode, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds, ocgVisibilityIntent,
         showOutputPreview,
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
@@ -1965,6 +1965,7 @@ export const LivePageFrame = (props: any) => {
         setHiddenObjectIds: state.setHiddenObjectIds,
         lockedObjectIds: state.lockedObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        ocgVisibilityIntent: state.ocgVisibilityProvenance.intent,
         showOutputPreview: state.showOutputPreview,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields,
@@ -2754,7 +2755,11 @@ export const LivePageFrame = (props: any) => {
             return;
         }
 
-        if (hiddenObjectIds.length === 0 && hiddenOcgLayerIds.length === 0) {
+        if (
+            hiddenObjectIds.length === 0
+            && hiddenOcgLayerIds.length === 0
+            && ocgVisibilityIntent !== 'explicit'
+        ) {
             setPreviewImageUrl(null);
             setIsPreviewLoading(false);
             return;
@@ -2777,8 +2782,11 @@ export const LivePageFrame = (props: any) => {
 
         const fetchPreview = async () => {
             try {
-                // If there are hidden OCG layers, fetch the layer preview
-                if (hiddenOcgLayerIds.length > 0 && !isObjectEditMode) {
+                // Explicit `[]` vẫn phải render show-all vì tile nguồn giữ default-OFF.
+                if (
+                    (hiddenOcgLayerIds.length > 0 || ocgVisibilityIntent === 'explicit')
+                    && !isObjectEditMode
+                ) {
                     const res = await authenticatedFetch(`${getApiUrl()}/preflight/preview-layers`, {
                         method: 'POST',
                         signal: controller.signal,
@@ -2863,7 +2871,7 @@ export const LivePageFrame = (props: any) => {
             controller.abort();
             clearTimeout(timeoutId);
         };
-    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, isObjectEditMode, isActiveFrame, pdfUrl]);
+    }, [hiddenObjectIds, hiddenOcgLayerIds, ocgVisibilityIntent, selectionFileId, originalPageNum, isObjectEditMode, isActiveFrame, pdfUrl]);
     
     //#endregion
 

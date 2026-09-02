@@ -163,3 +163,26 @@ export async function previewPerfLog(msg: string, extra?: Record<string, unknown
     /* ignore — không chặn UI */
   }
 }
+
+/**
+ * Trace kích thước bình bản chỉ dành cho vòng dev. Gửi về sidecar local để marker
+ * xuất hiện trong app.log kể cả khi PRYNX_PERF tắt; không gửi dữ liệu ra ngoài.
+ */
+export async function impositionDimensionTrace(
+  stage: string,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  if (typeof window === 'undefined' || !import.meta.env.DEV) return;
+  try {
+    await authenticatedFetch(`${getApiUrl()}/imposition/perf-beacon`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        msg: `[DIM-DIE-TRACE] stage=${stage}`,
+        ...compactTracePayload(extra),
+      }),
+    });
+  } catch {
+    /* Trace chẩn đoán không được làm gián đoạn UI. */
+  }
+}

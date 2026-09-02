@@ -21,7 +21,7 @@ import { create } from 'zustand';
 import { buildCreateJobRequest } from '../lib/mixed-nesting/api';
 import { validateManifest, type ValidationIssue } from '../lib/mixed-nesting/resultValidator';
 import type {
-  CreateJobRequest,
+  QuantityFulfillmentCreateJobRequest,
   JobProgress,
   JobRotationConstraint,
   JobStatus,
@@ -342,6 +342,7 @@ export const useMixedNestingStore = create<MixedNestingStore>((set, get) => ({
     if (!tab?.job) return false;
 
     const result = validateManifest(raw, {
+      layoutIntent: 'quantity_fulfillment',
       expectedQuantities: Object.fromEntries(
         tab.parts.map((part) => [part.partId, part.quantity]),
       ),
@@ -458,10 +459,13 @@ export function sheetCount(tab: MixedNestingTabState): number {
  * Đi qua `buildCreateJobRequest` để dùng cùng một lớp lọc trường với mọi nơi khác —
  * `uiId` và `sourceLabel` không bao giờ lọt lên server.
  */
-export function buildRequestFromTab(tab: MixedNestingTabState): CreateJobRequest {
+export function buildRequestFromTab(
+  tab: MixedNestingTabState,
+): QuantityFulfillmentCreateJobRequest {
   return buildCreateJobRequest({
     seed: tab.seed,
     profile: tab.profile,
+    layoutIntent: 'quantity_fulfillment',
     sheet: tab.sheet,
     gapMm: tab.gapMm,
     orientationPolicy: { defaultRotation: tab.defaultRotation, reflection: 'forbidden' },

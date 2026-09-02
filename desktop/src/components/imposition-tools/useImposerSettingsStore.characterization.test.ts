@@ -45,7 +45,8 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const raw = localStorage.getItem(PERSIST_KEY);
         expect(raw).toBeTruthy();
         const parsed = JSON.parse(raw as string);
-        expect(parsed.version).toBe(11);
+        // v12: §GRIDSTRATEGY-LEAK migration (true_shape_nesting → optimal_auto).
+        expect(parsed.version).toBe(12);
         const keys = Object.keys(parsed.state).sort();
         expect(keys).toMatchSnapshot();
     });
@@ -179,6 +180,33 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         expect(store.getState().toolProfiles.nup).toMatchObject({
             gridStrategy: 'simple_auto',
             alternateRotation: 'column',
+        });
+    });
+
+    it('migration v11 → v12: dọn true_shape_nesting đã rò khỏi Cách xếp ở state và profile', async () => {
+        // §GRIDSTRATEGY-LEAK: canary die-cut/CNC rò sang guillotine/persist làm Bình cắt
+        // xén fail-closed và tự khoá. Migration đưa mọi giá trị đã lưu về mặc định hợp lệ.
+        localStorage.clear();
+        localStorage.setItem(PERSIST_KEY, JSON.stringify({
+            version: 11,
+            state: {
+                gridStrategy: 'true_shape_nesting',
+                toolProfiles: {
+                    nup: { gridStrategy: 'true_shape_nesting' },
+                    sticker_imposer: { gridStrategy: 'true_shape_nesting' },
+                },
+            },
+        }));
+
+        const store = createImposerSettingsStore();
+        await Promise.resolve();
+
+        expect(store.getState().gridStrategy).toBe('optimal_auto');
+        expect(store.getState().toolProfiles.nup).toMatchObject({
+            gridStrategy: 'optimal_auto',
+        });
+        expect(store.getState().toolProfiles.sticker_imposer).toMatchObject({
+            gridStrategy: 'optimal_auto',
         });
     });
 

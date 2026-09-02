@@ -218,6 +218,7 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
 type OcgLayerNode = {
     id: number;
     visible?: boolean;
+    locked?: boolean;
     children?: OcgLayerNode[];
 };
 
@@ -232,8 +233,12 @@ export default function LayerPanel() {
     // field của store (zoom/chuột/trang…) như destructure trần trước đây.
     const {
         file,
-        pdfOcgLayers, setPdfOcgLayers,
+        editGeneration,
+        selectionFileId,
+        pdfOcgLayers, seedOcgLayerState,
         hiddenOcgLayerIds, setHiddenOcgLayerIds,
+        ocgVisibilityIntent,
+        resetOcgVisibilityToSourceDefault,
         hiddenObjectKeys, setHiddenObjectKeys,
         isLayerPanelOpen, setIsLayerPanelOpen,
         setOcgPreviewUrl,
@@ -242,8 +247,12 @@ export default function LayerPanel() {
         viewerPageInstanceIds,
     } = useWorkspaceStore(useShallow(state => ({
         file: state.file,
-        pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
+        editGeneration: state.editGeneration,
+        selectionFileId: state.selectionFileId,
+        pdfOcgLayers: state.pdfOcgLayers, seedOcgLayerState: state.seedOcgLayerState,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
+        ocgVisibilityIntent: state.ocgVisibilityProvenance.intent,
+        resetOcgVisibilityToSourceDefault: state.resetOcgVisibilityToSourceDefault,
         hiddenObjectKeys: state.hiddenObjectKeys, setHiddenObjectKeys: state.setHiddenObjectKeys,
         isLayerPanelOpen: state.isLayerPanelOpen, setIsLayerPanelOpen: state.setIsLayerPanelOpen,
         setOcgPreviewUrl: state.setOcgPreviewUrl,
@@ -260,15 +269,24 @@ export default function LayerPanel() {
     const [isLoading, setIsLoading] = useState(false);
     const [isRendering, setIsRendering] = useState(false);
     const renderAbortRef = useRef<AbortController | null>(null);
-    // [OCG FIX 2026-07-28] Trạng thái ẩn GỐC CỦA FILE, để khi đóng panel trả về đúng
-    // nó thay vì đặt rỗng. Rỗng nghĩa là "không layer nào bị ẩn" — xem effect đóng panel.
-    const fileHiddenLayerIdsRef = useRef<number[] | null>(null);
 
     // ─── Fetch layers when panel opens ──────────────────────
     useEffect(() => {
-        if (!isLayerPanelOpen || !file) return;
+        // Backend owner có loader riêng trong ImpositionTab, đọc đúng Working PDF.
+        // Lane native-path chỉ hợp lệ trước khi owner đó tồn tại.
+        if (!isLayerPanelOpen || !file || selectionFileId) {
+            setIsLoading(false);
+            return;
+        }
         const filePath = getNativeFilePath(file);
-        if (!filePath) return;
+        if (!filePath) {
+            setIsLoading(false);
+            return;
+        }
+        const sourceFile = file;
+        const sourceEditGeneration = editGeneration;
+        const sourceFileId = selectionFileId;
+        let cancelled = false;
 
         const fetchLayers = async () => {
             setIsLoading(true);
@@ -281,33 +299,49 @@ export default function LayerPanel() {
                 });
                 if (layerRes.ok) {
                     const layerData = await layerRes.json();
-                    const layers = layerData.layers || [];
-                    setPdfOcgLayers(layers);
+                    if (cancelled) return;
+                    const layers: OcgLayer[] = Array.isArray(layerData.layers)
+                        ? layerData.layers
+                        : [];
 
-                    // [OCG FIX 2026-07-28] SEED trạng thái ẩn từ chính file, đệ quy cả
-                    // layer con. Trước đây chỉ nạp cây layer mà không seed, nên
-                    // hiddenOcgLayerIds vẫn rỗng dù file có layer đang tắt. Hệ quả: chỉ
-                    // cần ẩn một ĐỐI TƯỢNG là preview được render với hidden_layer_ids=[]
-                    // → backend dựng lại /OFF rỗng → lớp thợ đã ẩn trong Illustrator hiện
-                    // ra. Cùng cách làm với ImpositionTab để hai nơi không lệch nhau.
+                    // FIX/PARITY (audit 2026-08-29 §MAP-NEST-10): publish cây,
+                    // baseline `/D` và lock atomically theo đúng native owner rỗng.
+                    // Nếu Working PDF xuất hiện trong lúc chờ, store fence bỏ response.
                     const hidden: number[] = [];
+                    const locked: number[] = [];
                     const walk = (items: OcgLayerNode[]) => items.forEach((layer) => {
                         if (layer.visible === false) hidden.push(layer.id);
+                        if (layer.locked === true) locked.push(layer.id);
                         if (Array.isArray(layer.children)) walk(layer.children);
                     });
-                    walk(layers as OcgLayerNode[]);
-                    fileHiddenLayerIdsRef.current = hidden;
-                    setHiddenOcgLayerIds(hidden);
+                    walk(layers);
+                    seedOcgLayerState(
+                        layers,
+                        hidden,
+                        locked,
+                        sourceFile,
+                        sourceEditGeneration,
+                        sourceFileId,
+                    );
                 }
             } catch (err) {
-                console.error('Failed to fetch OCG layers:', err);
+                if (!cancelled) console.error('Failed to fetch OCG layers:', err);
             } finally {
-                setIsLoading(false);
+                if (!cancelled) setIsLoading(false);
             }
         };
 
-        fetchLayers();
-    }, [isLayerPanelOpen, file, setPdfOcgLayers, setHiddenOcgLayerIds]);
+        void fetchLayers();
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        editGeneration,
+        file,
+        isLayerPanelOpen,
+        seedOcgLayerState,
+        selectionFileId,
+    ]);
 
     // ─── Render preview when hidden layers change ────────────
     useEffect(() => {
@@ -319,8 +353,13 @@ export default function LayerPanel() {
             return;
         }
 
-        // If nothing is hidden, clear preview (show normal tiles)
-        if (hiddenOcgLayerIds.length === 0 && hiddenObjectKeys.length === 0) {
+        // Untouched + không ẩn gì dùng tile nguồn. Explicit `[]` là show-all,
+        // vẫn phải gọi renderer vì tile nguồn có thể chứa layer default-OFF.
+        if (
+            hiddenOcgLayerIds.length === 0
+            && hiddenObjectKeys.length === 0
+            && ocgVisibilityIntent !== 'explicit'
+        ) {
             setOcgPreviewUrl(null);
             return;
         }
@@ -373,6 +412,7 @@ export default function LayerPanel() {
     }, [
         hiddenOcgLayerIds,
         hiddenObjectKeys,
+        ocgVisibilityIntent,
         file,
         isLayerPanelOpen,
         activePageIdentity.sourcePage,
@@ -402,11 +442,16 @@ export default function LayerPanel() {
         wasLayerPanelOpenRef.current = false;
 
         setOcgPreviewUrl(null);
-        setHiddenOcgLayerIds(fileHiddenLayerIdsRef.current ?? []);
+        resetOcgVisibilityToSourceDefault();
         // hiddenObjectKeys là thao tác ẩn từng đối tượng trong phiên, không phải
         // trạng thái của file → dọn sạch là đúng.
         setHiddenObjectKeys([]);
-    }, [isLayerPanelOpen, setOcgPreviewUrl, setHiddenOcgLayerIds, setHiddenObjectKeys]);
+    }, [
+        isLayerPanelOpen,
+        resetOcgVisibilityToSourceDefault,
+        setHiddenObjectKeys,
+        setOcgPreviewUrl,
+    ]);
 
     const [panelWidth, setPanelWidth] = useState(280);
     const isDraggingRef = useRef(false);

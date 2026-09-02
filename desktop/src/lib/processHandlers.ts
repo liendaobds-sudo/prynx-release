@@ -14,7 +14,10 @@ import {
 } from './pdfOptionalContent';
 import { imposeCatalogBatchViaBackend, ImpositionMode, type DieCutSettings, type GuillotineSettings, type OffsetSettings, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
-import { getImposerCapability } from '../components/imposition-tools/types';
+import { getImposerCapability, type SavePrintConfig } from '../components/imposition-tools/types';
+// NEST (audit 2026-08-29 §GRIDSTRATEGY-LEAK): chuẩn hoá gridStrategy trước khi gửi backend
+// để giá trị `true_shape_nesting` (canary die-cut/CNC) đã lưu không rò sang Bình cắt xén.
+import { TRUE_SHAPE_NESTING_ENABLED, resolveGridStrategy } from '../components/imposition-tools/trueShapeNestingRollout';
 import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd, type PageMapping } from '../lib/preprocessEngine/ShuffleEngine';
 import { resizePages } from '../lib/preprocessEngine/PageResizer';
 import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
@@ -39,14 +42,9 @@ const LONG_TASK_HINT = () =>
 
 const NUP_SHEET_TOO_SMALL_ERROR = 'Sheet too small for source pages. Cannot fit any items.';
 const NUP_PAGE_CANNOT_FIT_ERROR = /^Trang\s+(\d+)\s+không thể xếp vào vùng giấy sử dụng\.$/u;
-type SavePrintConfig = {
-    folder: string;
-    nameMode: 'report' | 'number' | 'original';
-    folderMode: 'per_order' | 'flat';
-    includeOrderCode: boolean;
-    includeDate: boolean;
-    orderCode?: string;
-    labelName?: string;
+type LegacyCompatibleSavePrintConfig = Omit<SavePrintConfig, 'autoSave'> & {
+    /** Caller cũ thiếu field này sẽ fallback sang autoSavePrint đúng một chu kỳ. */
+    autoSave?: boolean;
 };
 
 /** Các field chỉ dùng ở biên serialize backend, không thuộc engine ProcessingSettings. */
@@ -57,16 +55,19 @@ type ProcessEngineSettings = ProcessingSettings & {
     diagnosticPendingRequestId?: string;
     diagnosticPreviewCapacity?: number;
     diagnosticPreviewState?: 'none' | 'pending' | 'applied' | 'failed';
+    forceLegacyGrid?: boolean;
     mixedExcessPercent?: number;
     reportDisplay?: unknown;
     reportMaterial?: string;
     reportLamination?: number;
     reportLaminationSides?: number;
     reportOrderCode?: string;
+    /** @deprecated MAP-NEST-11: no-op, chỉ giữ để caller cũ không vỡ kiểu. */
     saveByReport?: boolean;
     exportUniqueSheets?: boolean;
+    /** @deprecated Chỉ fallback khi savePrintConfig.autoSave chưa tồn tại. */
     autoSavePrint?: boolean;
-    savePrintConfig?: SavePrintConfig;
+    savePrintConfig?: LegacyCompatibleSavePrintConfig;
     clusterMode?: 'none' | 'row' | 'column';
     clusterCount?: number;
     clusterGap?: number;
@@ -94,9 +95,28 @@ type ProcessEngineSettings = ProcessingSettings & {
     pontConfig?: DieCutSettings['pontConfig'];
     targetQuantity?: number;
     targetQuantitiesByPage?: Record<number, number>;
-    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     cncTwoSided?: boolean;
 };
+
+/**
+ * CONTRACT (audit 2026-08-29 §MAP-NEST-11): chuẩn hóa quyền ghi cục bộ một lần.
+ * Canonical false luôn thắng alias true; folder rỗng không được tạo side effect.
+ */
+function resolveActiveSavePrintConfig(
+    settings: Pick<ProcessEngineSettings, 'autoSavePrint' | 'savePrintConfig'>,
+): SavePrintConfig | undefined {
+    const config = settings.savePrintConfig;
+    if (!config) return undefined;
+
+    const autoSave = config.autoSave === undefined
+        ? settings.autoSavePrint === true
+        : config.autoSave === true;
+    const folder = config.folder.trim();
+    if (!autoSave || !folder) return undefined;
+
+    return { ...config, autoSave: true, folder };
+}
 
 type LoosePontConfig = {
     shape: 'circle' | 'l_inverted' | 'l_corner';
@@ -244,6 +264,13 @@ export async function runProcessEngine(
         // Page-sheet dùng capability guillotine để giữ marks; raw UI state không đi qua boundary này.
         const caps = getImposerCapability(isPageSheet ? 'guillotine' : settings.imposerMode);
         const pontSettingsMode = caps.supportsPont || isPageSheet;
+        // FIX (audit 2026-08-29 §SR-MODE-1): `repeat` là tín hiệu S&R authoritative;
+        // taskMode tường minh giữ nguyên ý định qua recipe/preset và biên frontend→backend.
+        const normalizedTaskMode = (
+            (isGuillotine || isDieCut || isCnc) && settings.layoutType === 'repeat'
+        ) || settings.taskMode === 'step_repeat'
+            ? 'step_repeat'
+            : 'nup';
 
         // Task 11: MỌI job N-up (cắt xén + die-cut) đi backend → output dùng chung
         // solver với preview (nup_engine == /preview-layout, sau Task 10). Không còn
@@ -285,8 +312,18 @@ export async function runProcessEngine(
                     cutBorderColor: guillotineSettings.cutBorderColor || '#000000',
                     cutBorderThickness: Number(guillotineSettings.cutBorderThickness) || 0.3,
                 } : {}),
-                gridStrategy: isGuillotine || isDieCut || isCnc ? settings.gridStrategy || 'simple_auto' : 'simple_auto',
+                // §GRIDSTRATEGY-LEAK: guillotine (và taskMode ngoài 'nup') không được gửi
+                // 'true_shape_nesting' — backend fail-closed. Chuẩn hoá về 'optimal_auto'.
+                gridStrategy: isGuillotine || isDieCut || isCnc
+                    ? resolveGridStrategy({
+                        enabled: TRUE_SHAPE_NESTING_ENABLED,
+                        activeTool: isCnc ? 'cnc_imposer' : isDieCut ? 'sticker_imposer' : 'guillotine_imposer',
+                        taskMode: normalizedTaskMode,
+                        gridStrategy: settings.gridStrategy || 'simple_auto',
+                    })
+                    : 'simple_auto',
                 alternateRotation: effectiveAlternateRotation,
+                taskMode: normalizedTaskMode,
                 layoutType: isGuillotine || isDieCut || isCnc ? settings.layoutType || 'sequential' : 'sequential',
                 align: settings.align || 'center',
                 cols: settings.cols, rows: settings.rows,
@@ -296,6 +333,9 @@ export async function runProcessEngine(
                 diagnosticPendingRequestId: settings.diagnosticPendingRequestId,
                 diagnosticPreviewCapacity: settings.diagnosticPreviewCapacity,
                 diagnosticPreviewState: settings.diagnosticPreviewState,
+                // PARITY (audit 2026-08-30 §B10-6): chỉ publication `applied` từ
+                // GridPreview mới đặt true; backend dùng để giữ đúng layout lưới đã xem.
+                forceLegacyGrid: settings.forceLegacyGrid === true,
                 // CNC cũng là die-cut về bản chất → giữ cờ NHẤT QUÁN với UI (audit #C3).
                 // Routing backend vẫn theo imposerMode='cnc' (ưu tiên trước isDieCutMode).
                 isDieCutMode: isDieCut || isCnc,
@@ -311,9 +351,9 @@ export async function runProcessEngine(
                 detectedShapeParamsByPage: isDieCut || isCnc ? settings.detectedShapeParamsByPage : undefined,
                 targetQuantity: settings.targetQuantity || 0,
                 targetQuantitiesByPage: settings.targetQuantitiesByPage || {},
-                // Guillotine (KHÔNG die-cut) chỉ nhận 'cluster_tile' (chia cụm) hoặc
-                // 'maximize_area' (lưới đều mặc định) — cho phép cluster_tile đi qua.
-                groupingStrategy: isDieCut
+                // PARITY (audit 2026-08-29 MAP-NEST-04): Tem bế và CNC giữ nguyên
+                // hai intent `free_gang`/`maximize_area`; guillotine chỉ nhận contract cũ.
+                groupingStrategy: (isDieCut || isCnc)
                     ? settings.groupingStrategy || 'maximize_area'
                     : (settings.groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'maximize_area'),
                 // ═══ Cluster layout (chia cụm trên tờ giấy) ═══
@@ -353,14 +393,17 @@ export async function runProcessEngine(
                     ? Math.max(0, Number(settings.mixedExcessPercent ?? 0)) / 100
                     : undefined,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — gồm cả CNC
-                exportUniqueSheets: (isDieCut || isPageSheet || (isGuillotine && settings.layoutType === 'mixed_guillotine'))
+                // PARITY/FIX (audit 2026-08-29 §NEST-PARITY-1): comment ngay trên nói
+                // gồm CNC nhưng điều kiện cũ bỏ `isCnc`, khiến export gửi false trong khi
+                // bundle CNC bắt buộc true và preview gửi true. Kết quả vừa miss session,
+                // vừa có thể bị validator từ chối trước render.
+                exportUniqueSheets: (isDieCut || isCnc || isPageSheet || (isGuillotine && settings.layoutType === 'mixed_guillotine'))
                     ? settings.exportUniqueSheets !== false : false,
                 reportDisplay: (isDieCut || isCnc || isGuillotine) ? settings.reportDisplay : undefined,
                 reportMaterial: (isDieCut || isCnc || isGuillotine) ? settings.reportMaterial : undefined,
                 reportLamination: (isDieCut || isCnc || isGuillotine) ? settings.reportLamination : undefined,
                 reportLaminationSides: (isDieCut || isCnc || isGuillotine) ? settings.reportLaminationSides : undefined,
                 reportOrderCode: (isDieCut || isCnc || isGuillotine) ? settings.reportOrderCode : undefined,
-                saveByReport: (isDieCut || isPageSheet) ? settings.saveByReport : undefined,
                 // ═══ Bình Bế Rớt (CNC) — định tuyến renderer riêng ở backend ═══
                 imposerMode: isCnc ? 'cnc' : undefined,
                 cncTwoSided: isCnc ? settings.cncTwoSided : undefined,
@@ -410,10 +453,9 @@ export async function runProcessEngine(
                     const artifactLease = typeof status.artifact_lease === 'string'
                         ? status.artifact_lease
                         : undefined;
-                    const sp = settings.savePrintConfig;
-                    const autoSavePrint = !!(settings.autoSavePrint && sp?.folder);
+                    const savePrintConfig = resolveActiveSavePrintConfig(settings);
                     let blob: Blob;
-                    if (!nativeOutputPath || autoSavePrint) {
+                    if (!nativeOutputPath || savePrintConfig) {
                         setProcessStatus(i18n.t('lib.processHandlers:dang_tai_file_ket_qua_ve'));
                         blob = await downloadNupJob(jobId);
                     } else {
@@ -446,28 +488,28 @@ export async function runProcessEngine(
                     }
 
                     // ═══ Tự động lưu file in (đã cài trước khi bình) ═══
-                    if (autoSavePrint) {
+                    if (savePrintConfig) {
                         try {
                             setProcessStatus(i18n.t('lib.processHandlers:dang_tu_dong_luu_file_in'));
                             const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../lib/savePrintFiles');
                             const cncMode = settings.imposerMode === 'cnc';
                             const cncTwoSided = !!settings.cncTwoSided;
                             const separateCut = isPageSheet || !!settings.separateCutPage;
-                            const { ok } = await savePrintFilesToFolder(blob, sp.folder, {
-                                nameMode: sp.nameMode, folderMode: sp.folderMode,
-                                separateCut, includeOrderCode: sp.includeOrderCode, includeDate: sp.includeDate,
-                                orderCode: sp.orderCode, cncMode, cncTwoSided,
+                            const { ok } = await savePrintFilesToFolder(blob, savePrintConfig.folder, {
+                                nameMode: savePrintConfig.nameMode, folderMode: savePrintConfig.folderMode,
+                                separateCut, includeOrderCode: savePrintConfig.includeOrderCode, includeDate: savePrintConfig.includeDate,
+                                orderCode: savePrintConfig.orderCode, cncMode, cncTwoSided,
                             }, {
                                 pagesPerType: pagesPerTypeFor({ cncMode, cncTwoSided, separateCut }),
-                                labelName: sp.labelName,
+                                labelName: savePrintConfig.labelName,
                             });
-                            setReportMsg(i18n.t('lib.processHandlers:da_tu_dong_luu_ok_file_in_vao_sp_folder', { ok, folder: sp.folder }));
+                            setReportMsg(i18n.t('lib.processHandlers:da_tu_dong_luu_ok_file_in_vao_sp_folder', { ok, folder: savePrintConfig.folder }));
                             // UIUX (audit 2026-07-27 §D-11): toast thành công kèm nút mở thư mục đã lưu
                             toast.success(
                                 i18n.t('lib.processHandlers:da_luu_file_in', { defaultValue: 'Đã tự động lưu {{ok}} file in', ok }),
                                 {
                                     label: i18n.t('lib.processHandlers:mo_thu_muc', { defaultValue: 'Mở thư mục' }),
-                                    onClick: () => { import('@tauri-apps/plugin-shell').then(m => m.open(sp.folder)).catch(() => {}); },
+                                    onClick: () => { import('@tauri-apps/plugin-shell').then(m => m.open(savePrintConfig.folder)).catch(() => {}); },
                                 }
                             );
                         } catch (e: unknown) {

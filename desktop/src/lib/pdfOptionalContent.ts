@@ -121,12 +121,21 @@ interface CarriedOutputIntents {
     array: PDFArray;
 }
 
+export interface OptionalContentVisibilityOverride {
+    /** Đúng PDFDocument nguồn chứa object number do panel layer trả về. */
+    source: PDFDocument;
+    /** Danh sách object number OCG phải nằm trong `/D/OFF`; `[]` = hiện tất cả. */
+    hiddenOcgObjectIds: readonly number[];
+}
+
 export interface OptionalContentTransferOptions {
     /**
      * Giữ cả OCG không được content trang tham chiếu trực tiếp. Cần cho các artifact
      * dùng OCG rỗng làm metadata (Graphtec info) hoặc node cha của cây layer.
      */
     preserveUnreferencedOcgs?: boolean;
+    /** Override tường minh theo đúng source; ID lạ/ảo phải fail-closed. */
+    visibilityOverrides?: readonly OptionalContentVisibilityOverride[];
 }
 
 /** Ảnh chụp optional content của các file nguồn, chờ dựng lại ở file đích. */
@@ -135,6 +144,7 @@ export interface OptionalContentTransfer {
     order: OrderNode[];
     autoStates: AutoStateNode[];
     preserveUnreferencedOcgs: boolean;
+    visibilityOverrides: readonly OptionalContentVisibilityOverride[];
     /** Các dict đã bị đóng dấu, để xoá dấu khi xong. */
     stampedDicts: PDFDict[];
     outputIntents?: CarriedOutputIntents;
@@ -158,6 +168,7 @@ export function createOptionalContentTransfer(
     return {
         ocgs: [], order: [], autoStates: [], stampedDicts: [],
         preserveUnreferencedOcgs: options.preserveUnreferencedOcgs === true,
+        visibilityOverrides: [...(options.visibilityOverrides ?? [])],
         outputIntentConflicts: [],
     };
 }
@@ -312,6 +323,41 @@ function readOrder(
 }
 
 /**
+ * Chuẩn hóa override từ UI sang object number của catalog nguồn. Không bỏ qua ID
+ * lạ/âm vì fallback về source default sẽ làm preview và export khác nhau âm thầm.
+ */
+function explicitHiddenOcgObjectIds(
+    transfer: OptionalContentTransfer,
+    src: PDFDocument,
+    ocgsArr: PDFArray | undefined,
+): Set<number> | undefined {
+    const overrides = transfer.visibilityOverrides.filter(entry => entry.source === src);
+    if (overrides.length === 0) return undefined;
+    if (overrides.length > 1) {
+        throw new Error('Một nguồn PDF nhận nhiều override trạng thái layer không nhất quán.');
+    }
+
+    const requested = new Set<number>();
+    overrides[0].hiddenOcgObjectIds.forEach((id) => {
+        if (!Number.isInteger(id) || id <= 0) {
+            throw new Error(`Mã OCG không hợp lệ: ${String(id)}.`);
+        }
+        requested.add(id);
+    });
+
+    const known = new Set<number>();
+    for (let i = 0; ocgsArr && i < ocgsArr.size(); i += 1) {
+        const ref = ocgsArr.get(i);
+        if (ref instanceof PDFRef) known.add(ref.objectNumber);
+    }
+    const unknown = [...requested].filter(id => !known.has(id)).sort((a, b) => a - b);
+    if (unknown.length > 0) {
+        throw new Error(`Không tìm thấy OCG trong đúng nguồn PDF: ${unknown.join(', ')}.`);
+    }
+    return requested;
+}
+
+/**
  * Đóng dấu OCG của MỘT file nguồn và ghi lại trạng thái ẩn/hiện vào lượt chuyển.
  * Gọi TRƯỚC khi `copyPages`/`embedPages` từ nguồn đó.
  */
@@ -326,9 +372,16 @@ export function addOptionalContentSource(
     let ocProps: PDFDict | undefined;
     try {
         ocProps = src.catalog.lookupMaybe(K_OCPROPERTIES, PDFDict);
-    } catch {
-        return; // catalog lạ: bỏ qua file này, không làm hỏng cả lượt copy
+    } catch (error) {
+        if (transfer.visibilityOverrides.some(entry => entry.source === src)) {
+            const failure = new Error('Không thể đọc /OCProperties để áp dụng trạng thái layer.');
+            (failure as Error & { cause?: unknown }).cause = error;
+            throw failure;
+        }
+        return; // source-default vẫn giữ tương thích với catalog lạ
     }
+    const ocgsArr = ocProps?.lookupMaybe(K_OCGS, PDFArray);
+    const explicitHiddenIds = explicitHiddenOcgObjectIds(transfer, src, ocgsArr);
     if (!ocProps) return;
 
     const config = ocProps.lookupMaybe(K_D, PDFDict);
@@ -338,7 +391,6 @@ export function addOptionalContentSource(
     const lockedTags = refTagsOf(config, K_LOCKED);
     const usageOffTags = usageHiddenTags(src, config);
 
-    const ocgsArr = ocProps.lookupMaybe(K_OCGS, PDFArray);
     const stampByRefTag = new Map<string, string>();
     const prefix = `s${stampSequence += 1}`;
 
@@ -349,10 +401,13 @@ export function addOptionalContentSource(
         const dict = src.context.lookupMaybe(ref, PDFDict);
         if (!dict) continue;
 
-        // `/OFF` thắng khi file dựng sai (cùng OCG nằm ở cả /ON và /OFF) — an toàn hơn.
-        const hidden = offTags.has(ref.tag)
-            || usageOffTags.has(ref.tag)
-            || (baseStateOff && !onTags.has(ref.tag));
+        // Override explicit thắng cấu hình nguồn, kể cả Set rỗng (show-all).
+        // Không có override thì `/OFF` thắng khi file dựng sai — an toàn hơn.
+        const hidden = explicitHiddenIds !== undefined
+            ? explicitHiddenIds.has(ref.objectNumber)
+            : offTags.has(ref.tag)
+                || usageOffTags.has(ref.tag)
+                || (baseStateOff && !onTags.has(ref.tag));
 
         const stamp = `${prefix}_${i}`;
         dict.set(K_STAMP, PDFName.of(stamp));
@@ -409,8 +464,21 @@ export function beginOptionalContentTransfer(
     options: OptionalContentTransferOptions = {},
 ): OptionalContentTransfer {
     const transfer = createOptionalContentTransfer(options);
-    sources.forEach((src) => addOptionalContentSource(transfer, src));
-    return transfer;
+    const unmatchedOverride = transfer.visibilityOverrides.find(
+        override => !sources.includes(override.source),
+    );
+    if (unmatchedOverride) {
+        throw new Error('Override trạng thái layer không thuộc nguồn PDF đang materialize.');
+    }
+    try {
+        sources.forEach((src) => addOptionalContentSource(transfer, src));
+        return transfer;
+    } catch (error) {
+        // Nguồn trước có thể đã được đóng dấu trước khi nguồn sau fail validation.
+        transfer.stampedDicts.forEach((dict) => dict.delete(K_STAMP));
+        transfer.stampedDicts.length = 0;
+        throw error;
+    }
 }
 
 /**

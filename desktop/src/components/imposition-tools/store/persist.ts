@@ -124,7 +124,7 @@ export const PARTIALIZE_KEYS: readonly string[] = [
     ...PREPROC_PERSIST_KEYS,
 ];
 
-// Migrate v1→v11 — giữ tương thích thiết lập đã lưu qua các phiên bản.
+// Migrate v1→v12 — giữ tương thích thiết lập đã lưu qua các phiên bản.
 function migrate(persistedValue: unknown, version: number): Partial<ImposerSettingsState> {
     let persistedState: MigratableState = isRecord(persistedValue)
         ? persistedValue as MigratableState
@@ -239,13 +239,34 @@ function migrate(persistedValue: unknown, version: number): Partial<ImposerSetti
         }
         persistedState = { ...migrated, toolProfiles: profiles };
     }
+    if (version < 12) {
+        // NEST (audit 2026-08-29 §GRIDSTRATEGY-LEAK): 'true_shape_nesting' là canary
+        // die-cut/CNC. Nếu đã lưu (persist theo profile) rồi rò sang công cụ khác — nhất
+        // là Bình cắt xén — hoặc còn kẹt khi bản phát hành tắt cờ, thì dropdown "Cách xếp"
+        // nhận giá trị không có option và backend fail-closed mà người dùng không gỡ được
+        // từ UI. Dọn giá trị đã lưu về mặc định hợp lệ (cùng lý do migration inking v11).
+        // Đường chạy vẫn có `resolveGridStrategy` gác lúc hiển thị/gửi.
+        const migrateLeakedNesting = <T,>(value: T): T => {
+            if (!isRecord(value)) return value;
+            if (value.gridStrategy === 'true_shape_nesting') {
+                return { ...value, gridStrategy: 'optimal_auto' };
+            }
+            return value;
+        };
+        const migrated = migrateLeakedNesting(persistedState);
+        const profiles = { ...(migrated.toolProfiles || {}) };
+        for (const tool of Object.keys(profiles)) {
+            profiles[tool] = migrateLeakedNesting(profiles[tool]);
+        }
+        persistedState = { ...migrated, toolProfiles: profiles };
+    }
     return persistedState;
 }
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
     name: LEGACY_IMPOSER_PERSIST_KEY,
     storage: persistStorage,
-    version: 11,
+    version: 12,
     migrate,
     partialize: (state) => {
         const out: Record<string, unknown> = {};

@@ -100,10 +100,9 @@ export default function SystemIntegrations() {
         }
 
         const validPaths = paths.filter(p => {
-            if (p.includes('prynx://auth/callback')) {
-                window.dispatchEvent(new CustomEvent('auth-url-received', { detail: { url: p } }));
-                return false;
-            }
+            // ĐĂNG NHẬP GOOGLE ĐÃ GỠ (2026-08-28): không còn phát sự kiện auth-url-received.
+            // Deep link prynx://auth/callback (nếu OS còn chuyển tới) rơi vào bộ lọc đuôi
+            // bên dưới và bị bỏ qua như một path không phải PDF/ảnh/Office.
             // PDF / ảnh (viewer) + Office (→ PDF convert)
             return isPdfOrImagePath(p) || isOfficePathOrName(p);
         });

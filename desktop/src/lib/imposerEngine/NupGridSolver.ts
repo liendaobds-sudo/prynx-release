@@ -1,5 +1,7 @@
 // src/lib/imposerEngine/NupGridSolver.ts
 
+import type { GridStrategyKind } from '../../components/imposition-tools/types';
+
 export interface NupCell {
     c: number;
     r: number;
@@ -1013,13 +1015,24 @@ export function solveOptimalNupLayout(
     usableW: number, usableH: number,
     origW: number, origH: number,
     gapX: number, gapY: number,
-    strategy: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail',
+    strategy: GridStrategyKind,
     manualCols: number, manualRows: number,
     splitGap: number = 14.17, // Mặc định 5mm (14.17 points) khoảng cách giữa cụm chính và phụ
     shapeType: string | null = null,
     shapeParams: string | null = null
 ): NupLayoutResult {
     // console.log(`[DEBUG solveOptimalNupLayout] strategy=${strategy}, shapeType=${shapeType}, origW=${origW}, origH=${origH}, usableW=${usableW}, usableH=${usableH}`);
+
+    // NEST (audit 2026-08-28 §A4a): `true_shape_nesting` KHÔNG phải chiến lược
+    // lưới. Nó đi kernel mixed_nesting và nhận hình học từ Placement Manifest.
+    // Nếu để nó rơi vào solver này, người dùng chọn option mới nhưng nhận lưới
+    // cũ mà không có dấu hiệu nào — đúng loại lỗi mà báo cáo Lô 0 đã cảnh báo.
+    // Vì vậy chặn ồn ào ở đây thay vì fallback im lặng.
+    if (strategy === 'true_shape_nesting') {
+        throw new Error(
+            'true_shape_nesting không đi qua solver lưới; phải gọi đường nesting theo đường bế.',
+        );
+    }
 
     // AUTO OVERRIDE cho Búa/Tạ khi để chế độ optimal_auto
     if (strategy === 'optimal_auto') {

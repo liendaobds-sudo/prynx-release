@@ -1,5 +1,7 @@
 // src/lib/imposerEngine/SettingsTypes.ts
 
+import type { GridStrategyKind } from '../../components/imposition-tools/types';
+
 export enum ImpositionMode {
     Booklet = 'booklet',
     NUp = 'nup'
@@ -25,6 +27,8 @@ export interface BaseSettings {
     bleed: number;
     
     // Layout core
+    /** Tác vụ S&R/N-up; optional để recipe/preset cũ vẫn được suy luận từ layoutType. */
+    taskMode?: 'step_repeat' | 'nup';
     cols?: number;
     rows?: number;
     gapX?: number;
@@ -58,7 +62,7 @@ export interface BaseSettings {
 export interface GuillotineSettings extends BaseSettings {
     imposerMode: 'guillotine';
     layoutType?: 'repeat' | 'sequential' | 'cut_stacks' | 'mixed_guillotine';
-    gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    gridStrategy?: GridStrategyKind;
     /** Xoay thêm 180° theo hàng/cột; không thay đổi cách solver dựng lưới. */
     alternateRotation?: 'none' | 'row' | 'column';
     cutStack?: boolean;
@@ -98,7 +102,7 @@ export interface DieCutSettings extends BaseSettings {
     isDieCutMode: true; // Bắt buộc true
     
     layoutType?: 'repeat' | 'sequential';
-    gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    gridStrategy?: GridStrategyKind;
     /** Chỉ có hiệu lực khi mọi tem là RECTANGLE (bao gồm hình vuông); CNC luôn tắt. */
     alternateRotation?: 'none' | 'row' | 'column';
     
@@ -139,7 +143,7 @@ export interface DieCutSettings extends BaseSettings {
     
     targetQuantity?: number;
     targetQuantitiesByPage?: Record<number, number>;
-    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     
     clusterMode?: 'none' | 'row' | 'column';
     clusterCount?: number;

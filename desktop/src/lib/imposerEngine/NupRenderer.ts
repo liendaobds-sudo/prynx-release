@@ -6,6 +6,7 @@ import { solveOptimalNupLayout } from './NupGridSolver';
 import type { NupBlock, NupCell } from './NupGridSolver';
 import { drawMarksNup } from './MarksRenderer';
 import i18n, { tv } from '../../i18n';
+import type { GridStrategyKind } from '../../components/imposition-tools/types';
 
 interface SourcePageDetail {
     angle: number;
@@ -13,7 +14,7 @@ interface SourcePageDetail {
 
 type NupRenderSettings = ProcessingSettings & {
     layoutType?: 'repeat' | 'sequential' | 'cut_stacks';
-    gridStrategy?: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    gridStrategy?: GridStrategyKind;
     markType?: 'none' | 'corners' | 'guillotine';
     markLength?: number;
     markOffset?: number;

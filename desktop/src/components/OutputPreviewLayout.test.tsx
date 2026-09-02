@@ -325,7 +325,13 @@ describe('Output Preview — thứ tự workflow Acrobat', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Đặt hộp trang' }));
         expect(imposerStore.getState().activeDashboardTool).toBe('crop');
         expect(onClose).toHaveBeenCalledTimes(2);
-    });
+        // NEST (audit 2026-08-28 §F1): test này render cả Output Preview rồi thao
+        // tác ~40 bước. Chạy riêng mất ~2,7s, nhưng trong lượt `vitest run` toàn
+        // bộ (297 file song song) thì tranh CPU đẩy nó vượt trần 5s mặc định và
+        // đỏ TẤT ĐỊNH với `Test timed out in 5000ms` — không phải sai assertion,
+        // không phải ô nhiễm state. Nới trần cho ĐÚNG test này thay vì nâng
+        // `testTimeout` toàn cục, vì nâng toàn cục sẽ che các test treo thật.
+    }, 20000);
 
     it('Escape chỉ đóng Output Preview thuộc tab đang active', () => {
         const backgroundStore = createWorkspaceStore();

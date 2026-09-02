@@ -234,7 +234,7 @@ export default function OpenInDesignModal({
         if (!mods.shift) setAnchor(pageIndex);
     };
 
-    const pickExe = async (which: 'illustrator' | 'corel') => {
+    const pickExe = async (which: 'illustrator' | 'corel'): Promise<string | undefined> => {
         try {
             const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
             const picked = await openDialog({
@@ -246,10 +246,12 @@ export default function OpenInDesignModal({
                 const next = { ...custom, [which]: picked };
                 setCustom(next);
                 saveCustomApps(next);
+                return picked;
             }
         } catch (e) {
             setStatus(t('misc.openInDesign:khong_mo_duoc_hop_thoai', { msg: errorMessage(e) }));
         }
+        return undefined;
     };
 
     // Trích trang khuôn (theo lựa chọn) ra PDF tạm, trả đường dẫn temp.
@@ -300,7 +302,7 @@ export default function OpenInDesignModal({
         return full;
     };
 
-    const doOpen = async (appPath?: string) => {
+    const doOpen = async (appPath?: string, which?: 'illustrator' | 'corel') => {
         if (!appPath) { setStatus(t('misc.openInDesign:chua_co_duong_dan_app')); return; }
         setBusy(true);
         setStatus(t('misc.openInDesign:dang_mo'));
@@ -311,7 +313,21 @@ export default function OpenInDesignModal({
                 filePath = await buildCutOnlyFile();
             }
             if (!filePath) throw new Error(t('misc.openInDesign:khong_co_file_ket_qua'));
-            await invoke('launch_external_app', { appPath, filePath });
+            try {
+                await invoke('launch_external_app', { appPath, filePath });
+            } catch (launchError) {
+                // SEC (audit 2026-08-28 §SEC.05): native giờ chỉ chạy .exe đã được duyệt
+                // (dò từ registry / vừa chọn qua hộp thoại / đã duyệt phiên trước). Máy đã
+                // nhớ đường dẫn tuỳ chọn trong localStorage TỪ TRƯỚC bản vá sẽ bị từ chối
+                // đúng một lần — mở lại hộp thoại ngay để người dùng cấp quyền, thay vì
+                // bắt họ đọc lỗi rồi tự mò lại nút "Chọn .exe".
+                const needsReauthorization =
+                    which !== undefined && /chưa được cấp quyền/i.test(errorMessage(launchError));
+                if (!needsReauthorization) throw launchError;
+                const repicked = await pickExe(which);
+                if (!repicked) throw launchError;
+                await invoke('launch_external_app', { appPath: repicked, filePath });
+            }
             setStatus(t('misc.openInDesign:da_mo'));
             onClose();
         } catch (e) {
@@ -334,7 +350,7 @@ export default function OpenInDesignModal({
         return (
             <div className="flex items-center gap-2" data-app={which}>
                 <button
-                    onClick={() => doOpen(path)}
+                    onClick={() => doOpen(path, which)}
                     disabled={busy || !path}
                     className="flex-1 flex items-center justify-between px-3 h-11 rounded-lg border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-800 hover:border-indigo-500 disabled:opacity-40 disabled:hover:border-slate-300 text-left"
                 >

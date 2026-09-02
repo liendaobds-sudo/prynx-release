@@ -22,6 +22,8 @@ import {
   MIXED_NESTING_PROTOCOL_VERSION,
   SERVER_OWNED_FIELDS,
   type ContourCandidate,
+  type AutofillPartSpec,
+  type AutofillSingleSheetCreateJobRequest,
   type CreateJobRequest,
   type EngineCapabilities,
   type ExportResult,
@@ -32,6 +34,8 @@ import {
   type MixedNestingProfile,
   type OrientationPolicy,
   type PartSpec,
+  type QuantityFulfillmentCreateJobRequest,
+  type SingleSheetSpec,
   type PlacementManifest,
   type SheetSpec,
   type SourceRecord,
@@ -128,15 +132,27 @@ export function assertNoForbiddenFields(payload: unknown): void {
   }
 }
 
-export interface BuildJobOptions {
+interface BuildJobOptionsBase {
   seed: number;
   profile: MixedNestingProfile;
-  sheet: SheetSpec;
   gapMm: number;
   orientationPolicy: OrientationPolicy;
-  parts: PartSpec[];
   timeBudgetMs?: number;
 }
+
+export type QuantityBuildJobOptions = BuildJobOptionsBase & {
+  layoutIntent: 'quantity_fulfillment';
+  sheet: SheetSpec;
+  parts: PartSpec[];
+};
+
+export type AutofillBuildJobOptions = BuildJobOptionsBase & {
+  layoutIntent: 'autofill_single_sheet';
+  sheet: SingleSheetSpec;
+  parts: AutofillPartSpec[];
+};
+
+export type BuildJobOptions = QuantityBuildJobOptions | AutofillBuildJobOptions;
 
 /**
  * Dựng body `POST /jobs` từ state UI.
@@ -145,9 +161,15 @@ export interface BuildJobOptions {
  * vào payload. Đây là lớp phòng thứ nhất; `assertNoForbiddenFields` là lớp thứ hai cho
  * trường hợp chính các trường hợp đồng bị nhồi dữ liệu lạ ở tầng sâu hơn.
  */
+export function buildCreateJobRequest(
+  options: QuantityBuildJobOptions,
+): QuantityFulfillmentCreateJobRequest;
+export function buildCreateJobRequest(
+  options: AutofillBuildJobOptions,
+): AutofillSingleSheetCreateJobRequest;
 export function buildCreateJobRequest(options: BuildJobOptions): CreateJobRequest {
-  const request: CreateJobRequest = {
-    protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+  const common = {
+    protocolVersion: MIXED_NESTING_PROTOCOL_VERSION as typeof MIXED_NESTING_PROTOCOL_VERSION,
     seed: options.seed,
     profile: options.profile,
     sheet: {
@@ -164,18 +186,44 @@ export function buildCreateJobRequest(options: BuildJobOptions): CreateJobReques
     gapMm: options.gapMm,
     orientationPolicy: {
       defaultRotation: options.orientationPolicy.defaultRotation,
-      reflection: 'forbidden',
+      reflection: 'forbidden' as const,
     },
-    parts: options.parts.map((part) => ({
-      partId: part.partId,
-      quantity: part.quantity,
-      outer: part.outer.map((point) => [point[0], point[1]] as [number, number]),
-      holes: part.holes.map((ring) =>
-        ring.map((point) => [point[0], point[1]] as [number, number]),
-      ),
-      rotationConstraint: part.rotationConstraint,
-    })),
   };
+  const copyGeometry = (part: PartSpec | AutofillPartSpec) => ({
+    partId: part.partId,
+    outer: part.outer.map((point) => [point[0], point[1]] as [number, number]),
+    holes: part.holes.map((ring) =>
+      ring.map((point) => [point[0], point[1]] as [number, number]),
+    ),
+    rotationConstraint: part.rotationConstraint,
+  });
+
+  let request: CreateJobRequest;
+  if (options.layoutIntent === 'autofill_single_sheet') {
+    if (options.sheet.maxSheets !== 1) {
+      throw new MixedNestingApiError(
+        'Tự lấp đầy chỉ được chạy trên đúng một tờ.',
+        422,
+        'MIXED_NESTING_INVALID_REQUEST',
+      );
+    }
+    request = {
+      ...common,
+      layoutIntent: 'autofill_single_sheet',
+      sheet: { ...common.sheet, maxSheets: 1 },
+      parts: options.parts.map(copyGeometry),
+    };
+  } else {
+    const quantityRequest: QuantityFulfillmentCreateJobRequest = {
+      ...common,
+      layoutIntent: 'quantity_fulfillment',
+      parts: options.parts.map((part) => ({
+        ...copyGeometry(part),
+        quantity: part.quantity,
+      })),
+    };
+    request = quantityRequest;
+  }
   if (options.timeBudgetMs !== undefined) request.timeBudgetMs = options.timeBudgetMs;
   assertNoForbiddenFields(request);
   return request;
@@ -206,7 +254,40 @@ export async function getCapabilities(signal?: AbortSignal): Promise<EngineCapab
   if (!response.ok) {
     throw await toApiError(response, 'Không đọc được năng lực engine lồng ghép.');
   }
-  return response.json();
+  const raw: unknown = await response.json();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new MixedNestingApiError(
+      'Năng lực engine lồng ghép không đúng hợp đồng.',
+      503,
+      'ENGINE_UNAVAILABLE',
+    );
+  }
+  const caps = raw as Record<string, unknown>;
+  const profiles = caps.profiles;
+  const layoutIntents = caps.layoutIntents;
+  const valid = caps.protocolVersion === MIXED_NESTING_PROTOCOL_VERSION
+    && typeof caps.engineVersion === 'string'
+    && caps.engineVersion.length > 0
+    && caps.reflection === 'forbidden'
+    && caps.defaultRotation === 'free'
+    && caps.continuousTranslation === true
+    && Array.isArray(profiles)
+    && ['fast', 'balanced', 'tight'].every((item) => profiles.includes(item))
+    && Array.isArray(layoutIntents)
+    && ['quantity_fulfillment', 'autofill_single_sheet'].every(
+      (item) => layoutIntents.includes(item),
+    )
+    && typeof caps.maxRequestBytes === 'number'
+    && Number.isFinite(caps.maxRequestBytes)
+    && caps.maxRequestBytes > 0;
+  if (!valid) {
+    throw new MixedNestingApiError(
+      `Engine lồng ghép không tương thích protocol ${MIXED_NESTING_PROTOCOL_VERSION}.`,
+      503,
+      'ENGINE_UNAVAILABLE',
+    );
+  }
+  return raw as EngineCapabilities;
 }
 
 export async function createJob(
@@ -275,6 +356,154 @@ export async function deleteJob(jobId: string): Promise<JobDeleteResult> {
     throw await toApiError(response, 'Không xóa được job lồng ghép.');
   }
   return response.json();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Preview nesting của Bình tem/CNC — PV-A2
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NESTING_PREVIEW_BASE = () => `${getApiUrl()}/imposition/preview-layout/jobs`;
+
+/** Body giữ nguyên hợp đồng snake_case của ``PreviewLayoutRequest`` phía sidecar. */
+export type NestingPreviewJobRequest = Readonly<Record<string, unknown>>;
+
+export interface NestingPreviewJobAccepted {
+  job_id: string;
+  status: string;
+}
+
+export interface NestingPreviewJobProgress {
+  phase: string;
+  progress: number;
+  attempt?: number;
+  attempts?: number;
+  elapsedMs: number;
+  bestSheetCount?: number;
+  bestUtilization?: number;
+  messageCode?: string;
+}
+
+export interface NestingPreviewJobStatus {
+  job_id: string;
+  status: string;
+  terminal: boolean;
+  cancel_requested: boolean;
+  created_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+  progress: NestingPreviewJobProgress | null;
+  error_code: string | null;
+  message: string | null;
+  has_result: boolean;
+}
+
+export interface NestingPreviewJobCancelResult {
+  job_id: string;
+  status: string;
+  cancelled: boolean;
+  already_cancelled: boolean;
+  terminal: boolean;
+}
+
+export async function createNestingPreviewJob(
+  request: NestingPreviewJobRequest,
+): Promise<NestingPreviewJobAccepted> {
+  // Không nhận AbortSignal: nếu browser ngắt POST sau khi sidecar đã nhận, client sẽ
+  // mất job_id và không thể hủy solve. Caller dùng generation guard, rồi hủy job ngay
+  // khi 202 tới nếu request đã bị supersede.
+  const response = await authenticatedFetch(NESTING_PREVIEW_BASE(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    throw await toApiError(response, 'Không tạo được job preview nesting.');
+  }
+  return response.json();
+}
+
+export async function getNestingPreviewJobStatus(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<NestingPreviewJobStatus> {
+  const response = await authenticatedFetch(
+    `${NESTING_PREVIEW_BASE()}/${encodeURIComponent(jobId)}`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response, 'Không đọc được tiến độ preview nesting.');
+  }
+  return response.json();
+}
+
+export async function getNestingPreviewJobResult<Result>(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<Result> {
+  const response = await authenticatedFetch(
+    `${NESTING_PREVIEW_BASE()}/${encodeURIComponent(jobId)}/result`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response, 'Không đọc được kết quả preview nesting.');
+  }
+  return response.json();
+}
+
+export async function cancelNestingPreviewJob(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<NestingPreviewJobCancelResult> {
+  const response = await authenticatedFetch(
+    `${NESTING_PREVIEW_BASE()}/${encodeURIComponent(jobId)}/cancel`,
+    { method: 'POST', signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response, 'Không hủy được preview nesting.');
+  }
+  return response.json();
+}
+
+/** Polling 300–500 ms: đủ mượt cho phase/progress nhưng không dội request vào sidecar. */
+export const NESTING_PREVIEW_POLL_INTERVAL_MS = 400;
+
+export interface NestingPreviewPollOptions {
+  onStatus?: (status: NestingPreviewJobStatus) => void | boolean;
+  intervalMs?: number;
+  signal?: AbortSignal;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+const sleepNestingPreviewPoll = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Đã dừng theo dõi preview nesting.', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Đã dừng theo dõi preview nesting.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+export async function waitForNestingPreviewJob(
+  jobId: string,
+  options: NestingPreviewPollOptions = {},
+): Promise<NestingPreviewJobStatus> {
+  const intervalMs = options.intervalMs ?? NESTING_PREVIEW_POLL_INTERVAL_MS;
+  const sleep = options.sleep ?? sleepNestingPreviewPoll;
+  for (;;) {
+    options.signal?.throwIfAborted();
+    const status = await getNestingPreviewJobStatus(jobId, options.signal);
+    const keepPolling = options.onStatus?.(status);
+    if (status.terminal || keepPolling === false) return status;
+    await sleep(intervalMs, options.signal);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

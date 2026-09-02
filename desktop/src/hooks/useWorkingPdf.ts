@@ -62,6 +62,20 @@ export async function materializeWorkingPdfRevision(
         const activeFile = snapshot.file;
         const viewerPageOrder = snapshot.viewerPageOrder;
         const viewerPageRotations = snapshot.viewerPageRotations;
+        const ocgProvenance = snapshot.ocgVisibilityProvenance;
+        const hasExplicitOcgVisibility = ocgProvenance?.intent === 'explicit';
+
+        if (
+            hasExplicitOcgVisibility
+            && (
+                ocgProvenance.sourceFile !== activeFile
+                || ocgProvenance.sourceEditGeneration !== snapshot.editGeneration
+            )
+        ) {
+            // FIX/PARITY (audit 2026-08-29 §MAP-NEST-10): object number OCG
+            // không được replay sang File/generation khác, dù tên file giống nhau.
+            throw new Error('Trạng thái layer không còn thuộc revision PDF hiện tại.');
+        }
 
         // Góc xoay khác 0 đã đủ chứng minh cần Working PDF; không đọc cả file chỉ
         // để đếm trang trước khi làm một việc chắc chắn phải materialize.
@@ -90,7 +104,9 @@ export async function materializeWorkingPdfRevision(
         // viewerPageRotations là number[] THEO VỊ TRÍ (luôn đầy độ dài, kể cả toàn 0 khi
         // chưa xoay gì) → KHÔNG dùng .length/keys để đoán "có sửa" (sẽ bật oan → bake thừa).
         // Kiểm CÓ GÓC KHÁC 0. Dữ liệu cũ Record<pageNum,deg> thì Object.values cũng chạy.
-        if (!hasOrderEdits && !hasRotEdits) return activeFile;
+        // Untouched giữ nguyên source bytes và `/D` mặc định. Explicit luôn bake,
+        // kể cả `[]`, vì đó là ý định show-all chứ không phải "không thay đổi".
+        if (!hasOrderEdits && !hasRotEdits && !hasExplicitOcgVisibility) return activeFile;
 
         const rotations = viewerPageRotations || [];
         const arrayBuffer = await getFileArrayBuffer(activeFile);
@@ -100,7 +116,17 @@ export async function materializeWorkingPdfRevision(
         // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties ở catalog trong khi content vẫn
         // còn /OC … BDC → layer thợ đã ẩn trong Illustrator hiện lại hết ngay trên khung xem
         // và lọt vào bản in. srcDoc là bản load cục bộ nên không cần try/finally dọn dấu.
-        const ocTransfer = beginOptionalContentTransfer([srcDoc]);
+        const ocTransfer = beginOptionalContentTransfer(
+            [srcDoc],
+            hasExplicitOcgVisibility
+                ? {
+                    visibilityOverrides: [{
+                        source: srcDoc,
+                        hiddenOcgObjectIds: snapshot.hiddenOcgLayerIds ?? [],
+                    }],
+                }
+                : {},
+        );
 
         const order = (viewerPageOrder && viewerPageOrder.length > 0)
             ? viewerPageOrder

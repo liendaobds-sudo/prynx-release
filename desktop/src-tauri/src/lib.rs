@@ -1548,7 +1548,22 @@ mod startup_dialog_tests {
 /// Thứ tự trong hàm là có chủ ý: bật cờ shutdown trước để supervisor không respawn, diệt
 /// sidecar (việc quan trọng nhất cho trình cài) rồi mới dọn display worker.
 #[tauri::command]
-fn prepare_for_update() {
+fn prepare_for_update(window: tauri::WebviewWindow) {
+    // SEC (pentest 2026-08-28 §ATK.11): chỉ cửa sổ "main" — nơi UI updater
+    // (UpdateChecker/AboutModal) thật sự sống — được kích lệnh này. Cửa sổ tài liệu PDF
+    // nhân bản (label "document-*") và mọi webview phụ KHÔNG được diệt sidecar + chặn
+    // respawn (DoS cục bộ: backend chết tới khi mở lại app). Đây là thu hẹp bề mặt theo
+    // least-privilege; KHÔNG chặn được XSS ngay trong "main" vì renderer main có toàn
+    // quyền frontend (trần Ring-3, cùng lớp §ATK.10). KHÔNG tự phục hồi được bằng cách
+    // nới SIDECAR_SHUTDOWN vì tính TIN CẬY của bản cập nhật (§UP.3/§UP.7) phụ thuộc đúng
+    // vào việc chặn respawn vĩnh viễn để NSIS ghi đè được file — nới ra sẽ hồi quy lỗi đó.
+    if window.label() != "main" {
+        log::warn!(
+            "[UPDATE][§ATK.11] Bỏ qua prepare_for_update từ cửa sổ không phải main: {}",
+            window.label()
+        );
+        return;
+    }
     #[cfg(all(not(debug_assertions), target_os = "windows"))]
     {
         SIDECAR_SHUTDOWN.store(true, Ordering::Release);
@@ -3645,12 +3660,91 @@ fn get_startup_args(state: tauri::State<SystemFilesState>) -> Vec<String> {
 /// lớp chặn thực tế chỉ còn allowlist ĐUÔI FILE của `read_system_file` — thêm một đuôi
 /// mới là mở cửa. Nay đồng bộ đủ 3 nơi (tauri.conf.json, capabilities/default.json,
 /// hàm này) để không phụ thuộc một lớp duy nhất.
+///
+/// SEC (audit 2026-08-28 §SEC.04): hàm này TỪNG so khớp CHUỖI THÔ do renderer gửi, nên
+/// mọi biến thể cùng trỏ tới một file đều lọt qua deny-list:
+///   - `\\?\C:\Users\<u>\.aws\...` (verbatim) và `\??\C:\...` (NT) — `norm` không bắt đầu
+///     bằng `c:\users\<u>` nên không khớp prefix nào, mà Win32 `fs::read` vẫn mở được;
+///   - `C:\Users\BOB~1\.aws\...` (tên 8.3);
+///   - junction/symlink trỏ vào thư mục nhạy cảm;
+///   - `\\localhost\C$\Users\<u>\.aws\...` (admin share, đi vòng ổ cục bộ).
+/// Đường khai thác cụ thể: `read_system_file` cho phép đuôi `.json`, nên một renderer bị
+/// chèn mã đọc được `.aws\sso\cache\*.json` (bearer token) hoặc `.docker\config.json`.
+/// Cùng lỗ áp cho protocol `localfile://` (không cần `invoke`, chỉ cần một thẻ `<img>`).
+///
+/// Bản vá đặt ở GỐC (giữ nguyên signature) để MỌI call-site được bảo vệ, thay vì vá lẻ
+/// tại 4 call-site nóng như trước:
+///   1. bóc tiền tố verbatim/NT về cùng một mặt phẳng so khớp;
+///   2. chặn admin share (`\\host\C$`) — share NAS hợp lệ của xưởng in dùng TÊN share
+///      (`\\nas\khuon`) nên KHÔNG bị chặn, luồng mở PDF trên mạng vẫn chạy;
+///   3. canonicalize khi path tồn tại rồi so LẠI — bước này mới thật sự bịt 8.3,
+///      junction và symlink, vì `canonicalize` trả về dạng dài đã resolve.
 fn is_sensitive_path(path: &str) -> bool {
-    let norm = path.replace('/', "\\").to_lowercase();
+    if is_sensitive_path_text(&strip_path_prefix_aliases(path)) {
+        return true;
+    }
+    // Chỉ canonicalize khi cần: path không tồn tại thì không có junction/8.3 để resolve.
+    // Lỗi canonicalize (không quyền, ổ rút ra) KHÔNG được coi là "an toàn" — nhưng cũng
+    // không tự chặn, vì sink phía sau sẽ fail bằng lỗi I/O thật; giữ nguyên hành vi cũ
+    // cho ca này để không brick luồng mở file hợp lệ trên NAS chập chờn.
+    match std::fs::canonicalize(std::path::Path::new(path)) {
+        Ok(resolved) => {
+            let resolved_text = resolved.to_string_lossy();
+            is_sensitive_path_text(&strip_path_prefix_aliases(&resolved_text))
+        }
+        Err(_) => false,
+    }
+}
+
+/// Bóc tiền tố verbatim/NT để deny-list so khớp trên cùng một mặt phẳng.
+///
+/// `\\?\C:\x` → `C:\x`; `\\?\UNC\srv\share` → `\\srv\share`; `\??\C:\x` → `C:\x`.
+/// Lặp nhiều lượt vì Win32 chấp nhận tiền tố lồng nhau (`\\?\\??\C:\...`), bóc một lần
+/// là chưa đủ. Trả về chuỗi ĐÃ hạ hoa/thường + đổi `/` thành `\` (NTFS không phân biệt
+/// hoa/thường và nhận cả hai dấu phân cách).
+fn strip_path_prefix_aliases(path: &str) -> String {
+    let mut norm = path.replace('/', "\\").to_lowercase();
+    for _ in 0..4 {
+        if let Some(rest) = norm.strip_prefix(r"\\?\unc\") {
+            norm = format!(r"\\{rest}");
+        } else if let Some(rest) = norm.strip_prefix(r"\??\unc\") {
+            norm = format!(r"\\{rest}");
+        } else if let Some(rest) = norm.strip_prefix(r"\\?\") {
+            norm = rest.to_string();
+        } else if let Some(rest) = norm.strip_prefix(r"\??\") {
+            norm = rest.to_string();
+        } else {
+            break;
+        }
+    }
+    norm
+}
+
+/// Share ẩn/quản trị (`\\host\C$`, `\\host\ADMIN$`) và device namespace (`\\.\`) là đường
+/// vòng để chạm ổ cục bộ mà không khớp bất kỳ prefix `%USERPROFILE%` nào.
+/// Share dữ liệu hợp lệ (`\\nas\khuon`, `\\server\in-an`) không kết thúc bằng `$`.
+fn is_admin_or_device_share(norm: &str) -> bool {
+    if norm.starts_with(r"\\.\") {
+        return true;
+    }
+    let Some(rest) = norm.strip_prefix(r"\\") else {
+        return false;
+    };
+    let mut parts = rest.split('\\').filter(|part| !part.is_empty());
+    let _host = parts.next();
+    matches!(parts.next(), Some(share) if share.ends_with('$'))
+}
+
+/// Phần so khớp thuần chuỗi. Nhận chuỗi ĐÃ chuẩn hoá bởi `strip_path_prefix_aliases`.
+fn is_sensitive_path_text(norm: &str) -> bool {
     // Chống path traversal
     if norm.contains("\\..\\") || norm.ends_with("\\..") || norm.starts_with("..\\") {
         return true;
     }
+    if is_admin_or_device_share(norm) {
+        return true;
+    }
+    let norm = norm.to_string();
 
     // Khoá/bí mật theo TÊN FILE — chặn ở MỌI thư mục (đối xứng `**/.env`, `**/*.pem`,
     // `**/id_rsa*`… trong assetProtocol deny). Không đụng luồng thật: PDF/ảnh/ICC/font
@@ -3791,11 +3885,41 @@ fn grant_upscale_file_path(
 /// chặn thêm thư mục hệ thống Windows/Program Files để renderer (nếu bị chèn mã) KHÔNG
 /// ghi đè file hệ thống. KHÔNG gộp vào is_sensitive_path vì lệnh ĐỌC cần truy cập
 /// C:\Windows\Fonts (đọc font hệ thống hợp lệ).
+///
+/// SEC (audit 2026-08-28 §SEC.04): phần so thư mục hệ thống bên dưới cũng TỪNG dùng
+/// chuỗi thô nên `\\?\C:\Windows\...` lọt. Nay dùng chung `strip_path_prefix_aliases` và
+/// so LẠI trên dạng canonical, đối xứng với `is_sensitive_path`.
+/// Bổ sung Startup per-user: `fs:allow-write-file`/`fs:allow-mkdir` deny thư mục này
+/// nhưng lệnh Rust không vướng ACL plugin-fs ⇒ trước đây ghi được, lệch với capability.
 fn is_sensitive_write_path(path: &str) -> bool {
     if is_sensitive_path(path) {
         return true;
     }
-    let norm = path.replace('/', "\\").to_lowercase();
+    if is_sensitive_write_path_text(&strip_path_prefix_aliases(path)) {
+        return true;
+    }
+    match std::fs::canonicalize(std::path::Path::new(path)) {
+        Ok(resolved) => {
+            let resolved_text = resolved.to_string_lossy();
+            is_sensitive_write_path_text(&strip_path_prefix_aliases(&resolved_text))
+        }
+        // Đích GHI thường chưa tồn tại — đó là bình thường, không phải dấu hiệu tấn công.
+        // Thư mục cha thì phải tồn tại, nên resolve cha để junction không qua được.
+        Err(_) => match std::path::Path::new(path).parent() {
+            Some(parent) => match std::fs::canonicalize(parent) {
+                Ok(resolved_parent) => {
+                    let parent_text = resolved_parent.to_string_lossy();
+                    is_sensitive_write_path_text(&strip_path_prefix_aliases(&parent_text))
+                }
+                Err(_) => false,
+            },
+            None => false,
+        },
+    }
+}
+
+/// Phần so khớp thuần chuỗi cho guard GHI. Nhận chuỗi đã qua `strip_path_prefix_aliases`.
+fn is_sensitive_write_path_text(norm: &str) -> bool {
     let mut sys_dirs: Vec<String> = Vec::new();
     for var in [
         "WINDIR",
@@ -3806,13 +3930,32 @@ fn is_sensitive_write_path(path: &str) -> bool {
     ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {
-                sys_dirs.push(v.replace('/', "\\").to_lowercase());
+                sys_dirs.push(strip_path_prefix_aliases(&v));
             }
         }
     }
-    sys_dirs
+    if sys_dirs
         .iter()
         .any(|d| norm == *d || norm.starts_with(&format!("{}\\", d)))
+    {
+        return true;
+    }
+
+    // Startup per-user: ghi được vào đây là đường persistence. Allowlist đuôi của
+    // `write_file_atomic` không có `.lnk/.exe/.bat` nên tác động thấp, nhưng giữ ba
+    // danh sách (asset deny / fs deny / hàm này) đối xứng là điều kiện để ratchet CI
+    // còn ý nghĩa — lệch âm thầm là cách lỗ cũ từng quay lại.
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if home.is_empty() {
+        return false;
+    }
+    let startup = format!(
+        "{}\\appdata\\roaming\\microsoft\\windows\\start menu\\programs\\startup",
+        strip_path_prefix_aliases(&home)
+    );
+    norm == startup || norm.starts_with(&format!("{}\\", startup))
 }
 
 #[derive(serde::Serialize)]
@@ -4364,6 +4507,29 @@ fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Resu
     validate_disk_copy_request(&source, &path)?;
     let source_path = std::path::Path::new(&source);
     let target = std::path::Path::new(&path);
+
+    // SEC (audit 2026-08-28 §SEC.07): đích có tên staging của New Window sẽ được
+    // `register_document_window_staging` cấp quyền MỘT LẦN để `create_document_window`
+    // mở nó mà KHÔNG cần `fs_scope`. Nếu nguồn cũng không cần `fs_scope` thì renderer
+    // tự hợp pháp hoá được một PDF ngoài phạm vi người dùng đã cấp: copy vào
+    // `%TEMP%\prynx_print_new_window_<32hex>.pdf` rồi mở làm cửa sổ tài liệu — đúng thứ
+    // mà comment ở `document_window_registry` tuyên bố là không thể.
+    //
+    // Chỉ siết ĐÚNG đường đặc quyền này; Save As bình thường vẫn ghi được ra vị trí
+    // người dùng chọn mà không đòi scope (nếu đòi, luồng lưu kết quả sẽ vỡ).
+    // Kiểm TRƯỚC khi copy để không để lại file rác ở `%TEMP%`.
+    if document_window_registry::is_document_window_staging_path(target) {
+        let canonical_source = std::fs::canonicalize(source_path)
+            .map_err(|_| "Không chuẩn hóa được đường dẫn PDF nguồn".to_string())?;
+        if !app.fs_scope().is_allowed(&canonical_source) {
+            return Err(
+                "PDF nguồn chưa được người dùng cấp quyền cho cửa sổ mới (chọn qua hộp thoại \
+                 hoặc kéo-thả)."
+                    .to_string(),
+            );
+        }
+    }
+
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => std::path::PathBuf::from("."),
@@ -5663,6 +5829,100 @@ mod batch_folder_tests {
         assert!(!is_sensitive_path("C:\\Users\\bob\\Documents\\artwork.pdf"));
         assert!(!is_sensitive_path("D:/jobs/proof.png"));
         assert!(!is_sensitive_path("C:\\profiles\\CoatedFOGRA39.icc"));
+    }
+
+    /// SEC (audit 2026-08-28 §SEC.04): trước bản vá, mọi ca dưới đây trả `false` (lọt)
+    /// vì deny-list so khớp chuỗi THÔ. Đường khai thác: `read_system_file` cho đuôi
+    /// `.json` ⇒ renderer bị chèn mã đọc được `.aws\sso\cache\*.json` (bearer token).
+    #[test]
+    fn sensitive_path_khong_bi_di_vong_bang_bien_the_path() {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        if home.is_empty() {
+            return; // môi trường không có HOME: các luật theo thư mục không áp dụng
+        }
+
+        // 1. Tiền tố verbatim `\\?\` — Win32 fs::read chấp nhận, deny-list cũ thì không thấy.
+        let verbatim_aws = format!("\\\\?\\{home}\\.aws\\sso\\cache\\token.json");
+        assert!(is_sensitive_path(&verbatim_aws));
+        // Chốt LÝ DO bản vá phải tồn tại: cách so khớp CŨ (chuỗi thô, không bóc tiền tố)
+        // trả `false` cho đúng path trên. Nếu ai đó gỡ `strip_path_prefix_aliases` khỏi
+        // `is_sensitive_path` thì assert bên trên đỏ, và assert này giải thích tại sao.
+        assert!(
+            !is_sensitive_path_text(&verbatim_aws.replace('/', "\\").to_lowercase()),
+            "hành vi CŨ (so chuỗi thô) đáng lẽ để lọt — nếu nó chặn được thì test này \
+             không còn chứng minh gì, phải viết lại ca kiểm"
+        );
+        // 2. Tiền tố NT `\??\`.
+        assert!(is_sensitive_path(&format!(
+            "\\??\\{home}\\.docker\\config.json"
+        )));
+        // 3. Tiền tố lồng nhau.
+        assert!(is_sensitive_path(&format!(
+            "\\\\?\\\\??\\{home}\\.ssh\\known_hosts"
+        )));
+        // 4. Master key DPAPI qua verbatim — đọc được là giải mã được prynx_license.dat.
+        assert!(is_sensitive_path(&format!(
+            "\\\\?\\{home}\\AppData\\Roaming\\Microsoft\\Protect\\x"
+        )));
+
+        // 5. Admin share trỏ về ổ cục bộ.
+        assert!(is_sensitive_path("\\\\localhost\\C$\\Users\\bob\\.aws\\x.json"));
+        assert!(is_sensitive_path("\\\\127.0.0.1\\ADMIN$\\y"));
+        assert!(is_sensitive_path("\\\\?\\UNC\\localhost\\C$\\Users\\bob\\.aws\\x.json"));
+        // 6. Device namespace.
+        assert!(is_sensitive_path("\\\\.\\PhysicalDrive0"));
+
+        // KHÔNG chặn oan share NAS hợp lệ của xưởng in (tên share không kết thúc bằng `$`).
+        assert!(!is_sensitive_path("\\\\nas\\khuon\\job-2026.pdf"));
+        assert!(!is_sensitive_path("\\\\server\\in-an\\proof.png"));
+        // Và không chặn oan path thường có tiền tố verbatim.
+        assert!(!is_sensitive_path("\\\\?\\D:\\jobs\\artwork.pdf"));
+    }
+
+    /// Junction/symlink và tên ngắn 8.3 chỉ bịt được bằng canonicalize — nhánh thứ hai
+    /// của `is_sensitive_path`. Test tạo junction thật nên chỉ chạy trên Windows.
+    #[cfg(windows)]
+    #[test]
+    fn sensitive_path_resolve_junction_ve_thu_muc_nhay_cam() {
+        let home = match std::env::var("USERPROFILE") {
+            Ok(value) if !value.is_empty() => value,
+            _ => return,
+        };
+        let secret_dir = std::path::Path::new(&home).join(".aws");
+        if std::fs::create_dir_all(&secret_dir).is_err() {
+            return;
+        }
+        let secret_file = secret_dir.join("prynx-audit-probe.json");
+        if std::fs::write(&secret_file, b"{}").is_err() {
+            return;
+        }
+
+        let link = test_dir("junction").join("link");
+        let _ = std::fs::remove_dir_all(&link);
+        let created = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &link.to_string_lossy(),
+                &secret_dir.to_string_lossy(),
+            ])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+
+        if created {
+            // Chuỗi thô KHÔNG khớp prefix `%USERPROFILE%\.aws` — chỉ canonicalize mới thấy.
+            let through_link = link.join("prynx-audit-probe.json");
+            assert!(
+                is_sensitive_path(&through_link.to_string_lossy()),
+                "junction phải bị resolve về .aws"
+            );
+            let _ = std::fs::remove_dir_all(&link);
+        }
+        let _ = std::fs::remove_file(&secret_file);
     }
 
     #[test]

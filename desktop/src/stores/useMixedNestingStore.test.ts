@@ -14,7 +14,12 @@ import {
   type MixedNestingPart,
   type MixedNestingTabState,
 } from './useMixedNestingStore';
-import type { JobStatus, PartRotationConstraint, RingMm } from '../lib/mixed-nesting/types';
+import {
+  MIXED_NESTING_PROTOCOL_VERSION,
+  type JobStatus,
+  type PartRotationConstraint,
+  type RingMm,
+} from '../lib/mixed-nesting/types';
 
 const store = () => useMixedNestingStore.getState();
 
@@ -48,8 +53,8 @@ function manifest(tab: MixedNestingTabState, jobId: string, overrides: Record<st
     })),
   );
   return {
-    protocolVersion: 1,
-    engineVersion: '0.1.0',
+    protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+    engineVersion: '0.2.0',
     jobId,
     seed: tab.seed,
     status: 'completed',
@@ -189,6 +194,15 @@ describe('mặc định xoay', () => {
       expect(json.toLowerCase(), cam).not.toContain(cam.toLowerCase());
     }
     expect(request.orientationPolicy.reflection).toBe('forbidden');
+    expect(request.layoutIntent).toBe('quantity_fulfillment');
+  });
+
+  it('standalone luôn giữ validator và request theo quantity_fulfillment', () => {
+    store().initTab('t');
+    store().addPart('t', part({ quantity: 3 }));
+    const request = buildRequestFromTab(store().getTab('t'));
+    expect(request.layoutIntent).toBe('quantity_fulfillment');
+    expect(request.parts[0].quantity).toBe(3);
   });
 
   it('bốn mode thu hẹp per-part serialize nguyên vẹn', () => {

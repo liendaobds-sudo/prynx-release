@@ -30,10 +30,15 @@ const api = vi.hoisted(() => ({
     backendTrimShift: vi.fn(),
 }));
 const saveBlobMock = vi.hoisted(() => vi.fn());
+const savePrintFiles = vi.hoisted(() => ({
+    savePrintFilesToFolder: vi.fn(),
+    pagesPerTypeFor: vi.fn(() => 2),
+}));
 const ARTIFACT_LEASE_TOKEN = 'a'.repeat(64);
 
 vi.mock('./api', () => api);
 vi.mock('./saveBlob', () => ({ saveBlob: saveBlobMock }));
+vi.mock('./savePrintFiles', () => savePrintFiles);
 vi.mock('@tauri-apps/plugin-fs', () => ({
     stat: vi.fn().mockResolvedValue({ size: 4096 }),
 }));
@@ -53,10 +58,124 @@ describe('runProcessEngine N-Up native fast path', () => {
         api.downloadNupJob.mockResolvedValue(
             new Blob(['downloaded'], { type: 'application/pdf' }),
         );
+        savePrintFiles.savePrintFilesToFolder.mockResolvedValue({ ok: 2 });
     });
 
     afterEach(() => {
         vi.unstubAllGlobals();
+    });
+
+    const makeNupContext = (): ProcessContext => ({
+        file: new File(['source'], 'sticker.pdf', { type: 'application/pdf' }),
+        commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+        setError: vi.fn(),
+        setIsProcessing: vi.fn(),
+        setProcessStatus: vi.fn(),
+        setReportMsg: vi.fn(),
+        setBatchOutput: vi.fn(),
+        getWorkingBytes: vi.fn(),
+        getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\sticker.pdf'),
+    });
+
+    const makeNupSettings = (extra: Record<string, unknown> = {}) => ({
+        impositionMode: ImpositionMode.NUp,
+        imposerMode: 'diecut',
+        isDieCutMode: true,
+        sheetWidth: 320,
+        sheetHeight: 450,
+        paperThickness: 0,
+        bleed: 0,
+        ...extra,
+    }) as unknown as import('./pdfImposer').ProcessingSettings;
+
+    it('dùng savePrintConfig canonical để tự lưu mà không gửi config local sang backend', async () => {
+        const context = makeNupContext();
+        await runProcessEngine(context, makeNupSettings({
+            savePrintConfig: {
+                autoSave: true,
+                folder: 'D:\\print',
+                nameMode: 'report',
+                folderMode: 'per_order',
+                includeOrderCode: true,
+                includeDate: false,
+                orderCode: 'DH-001',
+                labelName: 'Tem A',
+            },
+        }), false);
+
+        expect(api.downloadNupJob).toHaveBeenCalledOnce();
+        expect(savePrintFiles.savePrintFilesToFolder).toHaveBeenCalledWith(
+            expect.any(Blob),
+            'D:\\print',
+            expect.objectContaining({ nameMode: 'report', orderCode: 'DH-001' }),
+            expect.objectContaining({ labelName: 'Tem A' }),
+        );
+        const payload = api.startNupJobBackend.mock.calls[0][1];
+        expect(payload).not.toHaveProperty('saveByReport');
+        expect(payload).not.toHaveProperty('autoSavePrint');
+        expect(payload).not.toHaveProperty('savePrintConfig');
+    });
+
+    it('canonical autoSave=false thắng alias autoSavePrint=true', async () => {
+        await runProcessEngine(makeNupContext(), makeNupSettings({
+            autoSavePrint: true,
+            savePrintConfig: {
+                autoSave: false,
+                folder: 'D:\\print',
+                nameMode: 'number',
+                folderMode: 'flat',
+                includeOrderCode: false,
+                includeDate: false,
+            },
+        }), false);
+
+        expect(api.downloadNupJob).not.toHaveBeenCalled();
+        expect(savePrintFiles.savePrintFilesToFolder).not.toHaveBeenCalled();
+    });
+
+    it('giữ fallback autoSavePrint cho caller legacy thiếu autoSave trong config', async () => {
+        await runProcessEngine(makeNupContext(), makeNupSettings({
+            autoSavePrint: true,
+            savePrintConfig: {
+                folder: 'D:\\legacy-print',
+                nameMode: 'original',
+                folderMode: 'flat',
+                includeOrderCode: false,
+                includeDate: true,
+            },
+        }), false);
+
+        expect(savePrintFiles.savePrintFilesToFolder).toHaveBeenCalledWith(
+            expect.any(Blob),
+            'D:\\legacy-print',
+            expect.any(Object),
+            expect.any(Object),
+        );
+    });
+
+    it('saveByReport stale không bật lưu và không đi vào backend', async () => {
+        await runProcessEngine(makeNupContext(), makeNupSettings({
+            saveByReport: true,
+        }), false);
+
+        expect(savePrintFiles.savePrintFilesToFolder).not.toHaveBeenCalled();
+        expect(api.startNupJobBackend.mock.calls[0][1]).not.toHaveProperty('saveByReport');
+    });
+
+    it('autoSave canonical với folder chỉ có khoảng trắng vẫn không ghi file', async () => {
+        await runProcessEngine(makeNupContext(), makeNupSettings({
+            savePrintConfig: {
+                autoSave: true,
+                folder: '   ',
+                nameMode: 'report',
+                folderMode: 'per_order',
+                includeOrderCode: true,
+                includeDate: false,
+            },
+        }), false);
+
+        expect(api.downloadNupJob).not.toHaveBeenCalled();
+        expect(savePrintFiles.savePrintFilesToFolder).not.toHaveBeenCalled();
     });
 
     it('serializes whole-sheet decal as guillotine with marks and no die fields', async () => {
@@ -172,12 +291,15 @@ describe('runProcessEngine N-Up native fast path', () => {
                 },
                 pontsOnCutFile: false,
                 cncTwoSided: false,
+                groupingStrategy: 'free_gang',
         } satisfies Omit<DieCutSettings, 'pontConfig'> & { pontConfig: PontConfig };
         await runProcessEngine(context, settings, false);
 
         const payload = api.startNupJobBackend.mock.calls[0][1];
         expect(payload.imposerMode).toBe('cnc');
+        expect(payload.groupingStrategy).toBe('free_gang');
         expect(payload.pontConfig.itemName).toBe('MKLINE');
+        expect(payload.exportUniqueSheets).toBe(true);
         expect(payload).not.toHaveProperty('pontsOnCutFile');
     });
 
@@ -254,6 +376,7 @@ describe('runProcessEngine N-Up native fast path', () => {
                 diagnosticPendingRequestId: 'sr-test-ui-p4',
                 diagnosticPreviewCapacity: 16,
                 diagnosticPreviewState: 'pending',
+                forceLegacyGrid: true,
             } as unknown as import('./pdfImposer').ProcessingSettings,
             false,
         );
@@ -276,6 +399,7 @@ describe('runProcessEngine N-Up native fast path', () => {
             diagnosticPendingRequestId: 'sr-test-ui-p4',
             diagnosticPreviewCapacity: 16,
             diagnosticPreviewState: 'pending',
+            forceLegacyGrid: true,
         });
         expect(commitWorkingFile).toHaveBeenCalledWith(
             expect.any(Blob),

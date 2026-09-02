@@ -10,9 +10,25 @@ import { useTranslation } from 'react-i18next';
 import { ImposerSettingsContext } from "../useImposerSettingsStore";
 // UIUX (audit 2026-07-27 §B-05): lỗi kỹ thuật → câu Việt + hướng khắc phục
 import { formatError } from "../../../lib/errorMessages";
+import {
+  cancelNestingPreviewJob,
+  createNestingPreviewJob,
+  getNestingPreviewJobResult,
+  waitForNestingPreviewJob,
+  type NestingPreviewJobProgress,
+} from "../../../lib/mixed-nesting/api";
+// §B10: preview PHẢI quyết định true-shape giống backend route_true_shape (auto-route theo
+// phân loại hình), không còn theo option thủ công gridStrategy==='true_shape_nesting'.
+import {
+  TRUE_SHAPE_NESTING_ENABLED,
+  shouldUseTrueShapeNesting,
+  trueShapeJobMembershipKey,
+} from "../trueShapeNestingRollout";
 import { resolveCellDirectionDegrees, resolveTrapezoidPreviewRatios, shouldAutoSwitchToMixedGuillotine, type CellDirectionDegrees } from "./gridPreviewHelpers";
 
 export interface GridPreviewProps {
+  /** Tab nền vẫn mounted; false phải dừng job và cấm kết quả cũ ghi vào store. */
+  isActive?: boolean;
   activeTool?: ActiveToolType | string;
   taskMode: string;
   isDieCut?: boolean;
@@ -59,6 +75,18 @@ export interface GridPreviewProps {
   isDetectingShape?: boolean;
   pontType?: string;
   pontConfig?: PontConfig;
+  /** Cấu hình gia công phải đi cùng phiên nesting để export render đúng manifest preview. */
+  separateCutPage?: boolean;
+  pontsOnCutFile?: boolean;
+  exportUniqueSheets?: boolean;
+  reportDisplay?: NupSettings["reportDisplay"];
+  reportMaterial?: string;
+  reportLamination?: number;
+  reportLaminationSides?: number;
+  reportOrderCode?: string;
+  /** Admission true-shape: override OCG chưa materialize phải giữ lane legacy. */
+  hiddenOcgLayerIds?: readonly (string | number)[];
+  saveByReport?: boolean;
   onCapacityChange?: (capacity: number) => void;
   onMixedPlacedByPage?: (m: Record<number, number>) => void;
   fileId?: string;
@@ -85,13 +113,16 @@ export interface GridPreviewProps {
   imposerMode?: string;
   cncTwoSided?: boolean;
   cncFlipEdge?: "long" | "short";
+  cncDuplexMarks?: boolean;
   cutType?: string;
   fillBlockGap?: number;
   dieSizeMode?: "die" | "page";
   dieOffsetMm?: number;
   /** PDF đã bake chỉnh sửa viewer — parity preview≡output (không đọc file gốc). */
   getWorkingFile?: () => Promise<File>;
-  /** Đổi khi xoay/xóa/sắp trang → invalidate cache path preview. */
+  /** OCG explicit bắt buộc resolver thành công; cấm fallback source path/file ID. */
+  requiresWorkingSource?: boolean;
+  /** Đổi khi xoay/xóa/sắp trang hoặc OCG → invalidate cache path preview. */
   previewSourceKey?: string;
   /** Mã đối chiếu cục bộ của một tab/tài liệu; không chứa tên hay đường dẫn file. */
   diagnosticTraceId?: string;
@@ -104,6 +135,8 @@ export interface GridPreviewDiagnosticEvent {
   generation: number;
   phase: "pending" | "applied" | "failed" | "aborted" | "stale";
   capacity?: number;
+  /** Quyết định engine lưới đã chốt; được giữ cả khi probe per-view pending/failed. */
+  forceLegacyGrid?: boolean;
 }
 
 // =====================================================================
@@ -139,6 +172,9 @@ interface BackendLayoutSheet {
   overallWidth: number;
   overallHeight: number;
   totalItems: number;
+  /** S&R hybrid: engine đã chọn riêng cho chính tờ này. */
+  strategyUsed?: string;
+  absPlacement?: boolean;
   cutLines?: { v: number[]; h: number[] };
   cutSegments?: BackendCutSegment[];
   cutTree?: { rect?: { x: number; y: number; width: number; height: number } };
@@ -195,6 +231,21 @@ interface BackendLayoutResult {
   warnings?: string[];
   /** chia cụm zone modes: MỌI tờ (mỗi tờ 1 bộ loại) để lật ◄ n/N ► không fetch lại. */
   sheets?: BackendLayoutSheet[];
+}
+
+/**
+ * B10-6: chỉ publication true-shape có đủ danh tính trang nguồn mới được tái dùng
+ * khi viewer cuộn trang. `physicalSheetIndex` là thứ tự tờ đã nén, không phải pageIdx.
+ */
+function hasReusableStepRepeatSheets(result: BackendLayoutResult): boolean {
+  return ["true_shape_nesting", "per_design_best"].includes(result.strategyUsed)
+    && Array.isArray(result.sheets)
+    && result.sheets.length > 0
+    && result.sheets.every((sheet) => (
+      Array.isArray(sheet.cells)
+      && sheet.cells.length > 0
+      && sheet.cells.every((cell) => Number.isInteger(cell.pageIdx))
+    ));
 }
 
 // =====================================================================
@@ -354,10 +405,237 @@ function pageValue<T>(map: Record<number, T> | undefined, page: number): T | und
   return map[page] ?? byString[String(page)];
 }
 
+/**
+ * Chuẩn hóa số lượng/capacity trước khi đưa vào phép chia hiển thị.
+ *
+ * UI có thể nhận chuỗi rỗng hoặc giá trị thập phân từ input number; S&R luôn
+ * tính theo số tem nguyên và không cho phép số âm. Giữ helper thuần để tránh
+ * một giá trị bất thường làm NaN lan vào dòng "Cần in".
+ */
+function nonNegativeInteger(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+}
+
+/** Lấy SL của đúng trang đang xem; override hiện diện (kể cả 0) thắng SL chung. */
+function quantityForPage(
+  pageIdx: number,
+  targetQuantity: number | string | undefined,
+  targetQuantitiesByPage: Record<number, number> | undefined,
+): number {
+  const hasOverride = targetQuantitiesByPage
+    && Object.prototype.hasOwnProperty.call(targetQuantitiesByPage, pageIdx);
+  const override = hasOverride ? pageValue(targetQuantitiesByPage, pageIdx) : undefined;
+  return nonNegativeInteger(override !== undefined ? override : targetQuantity);
+}
+
+/**
+ * Sức chứa của một mẫu trong Bình trang S&R.
+ *
+ * True-shape nhiều mẫu trả mỗi mẫu một `sheet`; `totalItems` là capacity hình
+ * học của mẫu đó, còn `cells.length` chỉ là fallback cho payload cũ. Khi trang
+ * đang xem không có sheet đại diện (SL=0), giữ tờ hiện hành/ tờ đầu để vẫn cho
+ * người dùng một capacity hữu ích thay vì lấy `sheetsNeeded` của cả batch.
+ */
+function stepRepeatCapacityForPage(
+  result: BackendLayoutResult,
+  pageIdx: number,
+  activeSheet: number,
+): number {
+  const sheets = result.sheets;
+  if (Array.isArray(sheets) && sheets.length > 0) {
+    const matching = sheets.find((sheet) => (
+      Array.isArray(sheet.cells)
+      && sheet.cells.some((cell) => cell.pageIdx === pageIdx)
+    ));
+    const selected = matching
+      ?? sheets[activeSheet]
+      ?? sheets.find((sheet) => Array.isArray(sheet.cells) && sheet.cells.length > 0)
+      ?? sheets[0];
+    const sheetCapacity = nonNegativeInteger(selected?.totalItems);
+    if (sheetCapacity > 0) return sheetCapacity;
+    const cellCapacity = nonNegativeInteger(selected?.cells?.length);
+    if (cellCapacity > 0) return cellCapacity;
+  }
+
+  // Legacy/grid S&R không có `sheets`; placedByPage vẫn là capacity theo mẫu.
+  const placed = result.placedByPage?.[String(pageIdx)];
+  const placedCapacity = nonNegativeInteger(placed);
+  if (placedCapacity > 0) return placedCapacity;
+  return nonNegativeInteger(result.totalItems) || nonNegativeInteger(result.cells?.length);
+}
+
 function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException) return error.name === "AbortError";
   if (error instanceof Error) return error.name === "AbortError";
   return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "AbortError";
+}
+
+interface LayoutConversionOptions {
+  ptToMm: number;
+  layoutType?: string;
+  viewerPageCount: number;
+  targetQuantitiesByPage?: Record<number, number>;
+  targetQuantity: number;
+}
+
+/** B10-6: một đường đổi đơn vị dùng chung cho preview tạm và kết quả cuối. */
+function convertLayoutResultToMm(
+  data: BackendLayoutResult,
+  options: LayoutConversionOptions,
+): BackendLayoutResult {
+  const { ptToMm, layoutType, viewerPageCount, targetQuantitiesByPage, targetQuantity } = options;
+  const convertCell = (cell: BackendLayoutCell): BackendLayoutCell => ({
+    ...cell,
+    x: cell.x * ptToMm,
+    y: cell.y * ptToMm,
+    absX: cell.absX != null ? cell.absX * ptToMm : undefined,
+    absY: cell.absY != null ? cell.absY * ptToMm : undefined,
+    width: cell.width * ptToMm,
+    height: cell.height * ptToMm,
+    // Đường bế thật dùng đúng transform backend; frontend chỉ đổi đơn vị, không tự xoay/lật.
+    diePolylines: cell.diePolylines
+      ? cell.diePolylines.map((polyline) =>
+          polyline.map(([x, y]) => [x * ptToMm, y * ptToMm]),
+        )
+      : undefined,
+  });
+
+  let cells = data.cells.map(convertCell);
+  // Failsafe ratio_stack: backend cũ có thể trả nhiều loại hơn số trang viewer còn sống.
+  if (
+    layoutType === "ratio_stack"
+    && viewerPageCount > 0
+    && (data.isMixedPreview || cells.some((cell) => cell.pageIdx != null))
+  ) {
+    const uniquePages = new Set(
+      cells.map((cell) => cell.pageIdx).filter((page): page is number => typeof page === "number"),
+    );
+    if (uniquePages.size > viewerPageCount) {
+      console.warn(
+        `[GridPreview] ratio_stack backend ${uniquePages.size} loại > viewer ${viewerPageCount} — gán lại client`,
+      );
+      cells = reassignRatioStackPageIdx(
+        cells,
+        viewerPageCount,
+        targetQuantitiesByPage,
+        targetQuantity,
+      );
+    }
+  }
+
+  return {
+    ...data,
+    overallWidth: data.overallWidth * ptToMm,
+    overallHeight: data.overallHeight * ptToMm,
+    cells,
+    cutLines: data.cutLines
+      ? {
+          v: (data.cutLines.v || []).map((x) => x * ptToMm),
+          h: (data.cutLines.h || []).map((y) => y * ptToMm),
+        }
+      : undefined,
+    cutSegments: data.cutSegments
+      ? data.cutSegments.map((line) => ({
+          ...line,
+          coordinate: line.coordinate * ptToMm,
+          start: line.start * ptToMm,
+          end: line.end * ptToMm,
+        }))
+      : undefined,
+    // Đổi mọi tờ một lần để pager lật tức thì, không fetch lại.
+    sheets: Array.isArray(data.sheets)
+      ? data.sheets.map((sheet) => ({
+          ...sheet,
+          overallWidth: (sheet.overallWidth || 0) * ptToMm,
+          overallHeight: (sheet.overallHeight || 0) * ptToMm,
+          totalItems: sheet.totalItems || 0,
+          usableRect: sheet.cutTree?.rect
+            ? {
+                x: Number(sheet.cutTree.rect.x) * ptToMm,
+                y: Number(sheet.cutTree.rect.y) * ptToMm,
+                width: Number(sheet.cutTree.rect.width) * ptToMm,
+                height: Number(sheet.cutTree.rect.height) * ptToMm,
+              }
+            : undefined,
+          cells: (sheet.cells || []).map(convertCell),
+          cutLines: sheet.cutLines
+            ? {
+                v: (sheet.cutLines.v || []).map((x) => x * ptToMm),
+                h: (sheet.cutLines.h || []).map((y) => y * ptToMm),
+              }
+            : undefined,
+          cutSegments: Array.isArray(sheet.cutSegments)
+            ? sheet.cutSegments.map((line) => ({
+                ...line,
+                coordinate: line.coordinate * ptToMm,
+                start: line.start * ptToMm,
+                end: line.end * ptToMm,
+              }))
+            : undefined,
+        }))
+      : undefined,
+  };
+}
+
+function placedByPageForLayout(
+  result: BackendLayoutResult,
+  options: { layoutType?: string; viewerPageCount: number },
+): Record<number, number> {
+  const { layoutType, viewerPageCount } = options;
+  if (
+    layoutType === "ratio_stack"
+    && viewerPageCount > 0
+    && result.cells.some((cell) => cell.pageIdx != null)
+  ) {
+    const sourceCells = Array.isArray(result.sheets)
+      ? result.sheets.flatMap((sheet) => sheet.cells || [])
+      : result.cells;
+    const counts: Record<number, number> = {};
+    for (const cell of sourceCells) {
+      const page = cell.pageIdx;
+      if (typeof page === "number" && page < viewerPageCount) {
+        counts[page] = (counts[page] || 0) + 1;
+      }
+    }
+    return counts;
+  }
+  if (result.placedByPage && typeof result.placedByPage === "object") {
+    const counts: Record<number, number> = {};
+    for (const [key, value] of Object.entries(result.placedByPage)) {
+      counts[Number(key)] = value;
+    }
+    return counts;
+  }
+  if (result.isMixedPreview) {
+    const counts: Record<number, number> = {};
+    for (const cell of result.cells) {
+      if (typeof cell.pageIdx === "number") {
+        counts[cell.pageIdx] = (counts[cell.pageIdx] || 0) + 1;
+      }
+    }
+    return counts;
+  }
+  return {};
+}
+
+function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Đã hủy preview.", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("Đã hủy preview.", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 const CELL_DIRECTION_STYLES: Record<
@@ -453,6 +731,14 @@ function renderCellDirectionIndicator(
 // Debounce delay for API calls (ms)
 // =====================================================================
 const DEBOUNCE_MS = 250;
+// PERF (audit 2026-08-29 §NEST-SINGLEFLIGHT): solver sync không dừng chỉ vì browser
+// abort request. Debounce dài hơn khi nesting gom chuỗi gõ report/mã đơn thành một lượt,
+// tránh mỗi ký tự tạo một identity khác và khởi chạy thêm cold solve 16–40 giây.
+const NESTING_DEBOUNCE_MS = 750;
+const NESTING_CANCEL_MAX_ATTEMPTS = 3;
+const NESTING_CANCEL_RETRY_MS = 120;
+// B10-6: localhost treo cũng phải nhả trạng thái hủy trong thời gian hữu hạn.
+const NESTING_CANCEL_ATTEMPT_TIMEOUT_MS = 2_000;
 
 // =====================================================================
 // Shape rendering helpers
@@ -914,12 +1200,56 @@ function renderCellShape(
   );
 }
 
+function renderCellDiePolylines(
+  diePolylinesPx: number[][][] | undefined,
+  blockId: number,
+  side: "front" | "back",
+) {
+  const rings = (diePolylinesPx || [])
+    .map((polyline) =>
+      polyline.filter(
+        (point) =>
+          point.length >= 2 &&
+          Number.isFinite(point[0]) &&
+          Number.isFinite(point[1]),
+      ),
+    )
+    .filter((polyline) => polyline.length >= 3);
+  if (rings.length === 0) return null;
+
+  const color = BLOCK_COLORS[blockId % BLOCK_COLORS.length];
+  // UIUX (audit 2026-08-29 §B10-7): mỗi vòng contour là một subpath riêng;
+  // evenodd giữ đúng lỗ rỗng thay vì nối các vòng thành một polygon giả.
+  const pathData = rings
+    .map(
+      (ring) =>
+        `M ${ring.map(([x, y]) => `${x} ${y}`).join(" L ")} Z`,
+    )
+    .join(" ");
+
+  return (
+    <path
+      data-testid="true-shape-contour"
+      data-side={side}
+      data-ring-count={rings.length}
+      d={pathData}
+      fill={color.fill}
+      fillRule="evenodd"
+      clipRule="evenodd"
+      stroke={color.stroke}
+      strokeWidth={0.8}
+      strokeLinejoin="round"
+    />
+  );
+}
+
 // =====================================================================
 // GridPreview Component
 // =====================================================================
 export default function GridPreview(props: GridPreviewProps) {
   const { t } = useTranslation();
   const {
+    isActive = true,
     activeTool = "nup",
     taskMode,
     isDieCut,
@@ -956,6 +1286,16 @@ export default function GridPreview(props: GridPreviewProps) {
     shapeParamsByPage,
     pontType,
     pontConfig,
+    separateCutPage = true,
+    pontsOnCutFile = true,
+    exportUniqueSheets = true,
+    reportDisplay,
+    reportMaterial,
+    reportLamination,
+    reportLaminationSides,
+    reportOrderCode,
+    hiddenOcgLayerIds,
+    saveByReport,
     onCapacityChange,
     onMixedPlacedByPage,
     fileId,
@@ -980,11 +1320,13 @@ export default function GridPreview(props: GridPreviewProps) {
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
+    cncDuplexMarks,
     cutType,
     fillBlockGap,
     dieSizeMode,
     dieOffsetMm,
     getWorkingFile,
+    requiresWorkingSource = false,
     previewSourceKey,
     diagnosticTraceId = "",
     onDiagnosticEvent,
@@ -1007,6 +1349,83 @@ export default function GridPreview(props: GridPreviewProps) {
     ) || rectangleStickerInking
   ) ? alternateRotation : "none";
 
+  // §B10: auto-route true-shape theo phân loại hình — bản sao FRONTEND của route_true_shape
+  // backend. TÍNH MỘT LẦN rồi dùng khắp nơi (cache key, chọn nhánh fetch, debounce, render)
+  // để preview và export KHÔNG THỂ lệch quyết định. Chỉ hình đặc biệt (CUSTOM) + "Xếp tối ưu"
+  // trên die-cut/CNC (loại 1 Dao / nguyên tấm / dàn nhiều kích thước) mới đi true-shape.
+  const usesTrueShape = useMemo(
+    () =>
+      shouldUseTrueShapeNesting({
+        enabled: TRUE_SHAPE_NESTING_ENABLED,
+        imposerMode,
+        isDieCut,
+        pageSheetMode,
+        taskMode,
+        layoutType,
+        gridStrategy,
+        cutType,
+        groupingStrategy,
+        clusterMode,
+        alternateRotation: effectiveAlternateRotation,
+        cutBorderEnabled: cutBorder?.enabled === true,
+        hiddenOcgLayerIds,
+        saveByReport,
+        cncTwoSided,
+        cncDuplexMarks,
+        shapesByPage,
+        targetQuantity,
+        targetQuantitiesByPage,
+        shapeParamsByPage,
+      }),
+    [
+      imposerMode,
+      isDieCut,
+      pageSheetMode,
+      taskMode,
+      layoutType,
+      gridStrategy,
+      cutType,
+      groupingStrategy,
+      clusterMode,
+      effectiveAlternateRotation,
+      cutBorder?.enabled,
+      hiddenOcgLayerIds,
+      saveByReport,
+      cncTwoSided,
+      cncDuplexMarks,
+      shapesByPage,
+      targetQuantity,
+      targetQuantitiesByPage,
+      shapeParamsByPage,
+    ],
+  );
+
+  const normalizedTaskMode = String(taskMode || "").trim().toLowerCase();
+  const isStepRepeatLayout = ["step_repeat", "sr"].includes(normalizedTaskMode)
+    || String(layoutType || "").trim().toLowerCase() === "repeat";
+  const usesProgressiveStepRepeat = usesTrueShape && isStepRepeatLayout;
+
+  // PERF (audit 2026-09-02 §PREVIEW-SEMANTIC-KEY): Bình trang luôn xếp đầy một
+  // tờ đại diện cho mỗi mẫu. Số lượng chỉ quyết định mẫu nào tham gia; đổi 100 →
+  // 200 không đổi một pose nào và không được hủy/solve lại preview đang dùng được.
+  const stepRepeatQuantityLayoutKey = useMemo(
+    () => isStepRepeatLayout
+      ? trueShapeJobMembershipKey({
+          shapesByPage,
+          targetQuantity,
+          targetQuantitiesByPage,
+          shapeParamsByPage,
+        })
+      : "",
+    [
+      isStepRepeatLayout,
+      shapesByPage,
+      targetQuantity,
+      targetQuantitiesByPage,
+      shapeParamsByPage,
+    ],
+  );
+
   const settingsStore = React.useContext(ImposerSettingsContext);
 
   const [expanded, setExpanded] = useState(false);
@@ -1015,9 +1434,29 @@ export default function GridPreview(props: GridPreviewProps) {
   );
   const [isLoading, setIsLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [nestingProgress, setNestingProgress] = useState<NestingPreviewJobProgress | null>(null);
+  const [isCancellingNesting, setIsCancellingNesting] = useState(false);
   // chia cụm zone modes: tờ đang xem (0-based) để lật ◄ n/N ►.
   const [activeSheet, setActiveSheet] = useState(0);
+  // B10-6: quality gate/cancel có thể chốt lưới theo toàn job S&R. Chỉ khi
+  // identity này còn khớp mới cho đổi trang gọi probe lưới nhẹ thay vì nesting.
+  const [legacyStepRepeatDecisionKey, setLegacyStepRepeatDecisionKey] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const activeNestingJobRef = useRef<{
+    jobId: string;
+    generation: number;
+    requestId: string;
+    traceId: string;
+  } | null>(null);
+  // Request frontend tồn tại từ lúc phát `pending`, trước khi server trả job_id.
+  const activePreviewRequestRef = useRef<{
+    generation: number;
+    requestId: string;
+    traceId: string;
+    terminal: boolean;
+    forceLegacyGrid: boolean;
+  } | null>(null);
+  const cancellingNestingJobsRef = useRef(new Map<string, Promise<void>>());
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCapacityChangeRef = useRef(onCapacityChange);
 
@@ -1060,8 +1499,9 @@ export default function GridPreview(props: GridPreviewProps) {
   };
 
   const resolvePreviewSource = async (): Promise<{ path?: string; file_id?: string }> => {
-    const cacheKey = previewSourceKey ?? "default";
-    const viewerState = parsePreviewViewerState(cacheKey);
+    const viewerStateKey = previewSourceKey ?? "default";
+    const cacheKey = `${viewerStateKey}|working:${requiresWorkingSource ? 1 : 0}`;
+    const viewerState = parsePreviewViewerState(viewerStateKey);
     // Đổi pageOrder (xóa/sắp trang) → bỏ cache path/fileId cũ.
     if (previewPathCacheRef.current && previewPathCacheRef.current.key !== cacheKey) {
       previewPathCacheRef.current = null;
@@ -1078,7 +1518,7 @@ export default function GridPreview(props: GridPreviewProps) {
         maxOrderLenSeenRef.current = order.length;
       }
     }
-    let mustBake = previewViewerStateRequiresMaterialization(
+    let mustBake = requiresWorkingSource || previewViewerStateRequiresMaterialization(
       viewerState,
       maxOrderLenSeenRef.current,
     );
@@ -1186,14 +1626,42 @@ export default function GridPreview(props: GridPreviewProps) {
   // unit consistency with shape_props (bodyW, smallD, etc.).
   // Then convert the response back to mm for SVG rendering.
   // ==========================================
-  const MM_TO_PT = 2.83465;
+  // PARITY (audit 2026-08-29 §NEST-PARITY-1): phải đúng hệt backend. Hằng rút gọn
+  // 2.83465 làm 320 mm thành 320.000488889 mm sau vòng đổi đơn vị, đủ làm miss
+  // session identity và buộc export solve lại.
+  const MM_TO_PT = 72 / 25.4;
   const PT_TO_MM = 1 / MM_TO_PT;
 
   // Generation id — chặn response cũ (10 trang) ghi đè response mới (4 trang).
   const previewGenRef = useRef(0);
+  // B10-6: generation chặn request cũ; rank chặn provisional về MUỘN trong cùng generation.
+  const publicationRef = useRef<{ generation: number; rank: 0 | 1 | 2 }>({
+    generation: 0,
+    rank: 0,
+  });
+  const provisionalLayoutRef = useRef<{
+    generation: number;
+    requestId: string;
+    traceId: string;
+    perViewKey: string;
+    result: BackendLayoutResult;
+  } | null>(null);
   /** Cache layout theo khóa ổn định — cuộn trang view KHÔNG đụng cache/API. */
   const layoutKeyRef = useRef("");
   const layoutCacheRef = useRef<BackendLayoutResult | null>(null);
+  // Decision là một phần của publication cache; thiếu nó thì A→B→A có thể preview lưới
+  // nhưng export lại auto-route true-shape.
+  const layoutCacheForceLegacyRef = useRef(false);
+  // B10-6: publication true-shape all-page đã chứa mọi representative sheet. Ref này
+  // giữ đúng object đã publish để map viewer page → sheet mà không đụng lifecycle fetch.
+  const reusableStepRepeatLayoutRef = useRef<{
+    identity: string;
+    result: BackendLayoutResult;
+  } | null>(null);
+  const viewerSheetSelectionRef = useRef<{
+    pageIdx: number;
+    result: BackendLayoutResult | null;
+  }>({ pageIdx, result: null });
 
   // ── Khi nào cuộn trang view KHÔNG được refetch layout ──
   // • 1 khuôn (mọi trang cùng type / master inherit) → 1 layout, cuộn chỉ xem.
@@ -1287,8 +1755,9 @@ export default function GridPreview(props: GridPreviewProps) {
     ? _geometryPageIdx
     : (_layoutIgnoresViewPage ? 0 : pageIdx);
 
-  /** Khóa layout: mọi thứ ảnh hưởng xếp tem — KHÔNG gồm pageIdx view. */
-  const layoutFetchKey = useMemo(() => {
+  /** Khóa per-view: hình học singular hiện hành vẫn phải đổi cho fallback lưới. */
+  const perViewLayoutFetchKey = useMemo(() => {
+    const quantityAffectsLayout = !isStepRepeatLayout;
     return JSON.stringify({
       uw: Math.round(usableW * 100) / 100,
       uh: Math.round(usableH * 100) / 100,
@@ -1305,6 +1774,9 @@ export default function GridPreview(props: GridPreviewProps) {
       sp: _shapeParamsDep,
       pont: pontType,
       pontC: pontType && pontType !== "none" ? pontConfig : null,
+      // §B10: routing đi qua usesTrueShape (auto-route theo hình), không còn theo option
+      // gridStrategy thủ công. Bỏ vào key để đổi phân loại → gọi lại đúng nhánh preview.
+      ts: usesTrueShape,
       tm: taskMode,
       lt: layoutType,
       df: duplexFlow,
@@ -1339,8 +1811,9 @@ export default function GridPreview(props: GridPreviewProps) {
       ccnt: clusterCount,
       cg: clusterGap,
       cd: clusterDistribution,
-      tq: targetQuantity,
-      tqbp: targetQuantitiesByPage || {},
+      tq: quantityAffectsLayout ? targetQuantity : undefined,
+      tqbp: quantityAffectsLayout ? (targetQuantitiesByPage || {}) : undefined,
+      srqp: isStepRepeatLayout ? stepRepeatQuantityLayoutKey : undefined,
       im: imposerMode || "",
       c2: !!cncTwoSided,
       cfe: cncFlipEdge || "",
@@ -1349,6 +1822,9 @@ export default function GridPreview(props: GridPreviewProps) {
       dsm: dieSizeMode,
       dom: dieOffsetMm,
       psk: previewSourceKey || "",
+      rws: requiresWorkingSource,
+      // Tab nền vẫn mounted trong App; đổi active phải chạy cleanup để hủy job cũ.
+      active: isActive !== false,
       detecting: shouldDeferPreviewLayout(!!isDieCut, !!isDetectingShape),
     });
   }, [
@@ -1361,6 +1837,7 @@ export default function GridPreview(props: GridPreviewProps) {
     gapY,
     splitGap,
     gridStrategy,
+    usesTrueShape,
     effectiveAlternateRotation,
     columns,
     rows,
@@ -1401,6 +1878,8 @@ export default function GridPreview(props: GridPreviewProps) {
     clusterDistribution,
     targetQuantity,
     targetQuantitiesByPage,
+    isStepRepeatLayout,
+    stepRepeatQuantityLayoutKey,
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
@@ -1409,10 +1888,211 @@ export default function GridPreview(props: GridPreviewProps) {
     dieSizeMode,
     dieOffsetMm,
     previewSourceKey,
+    requiresWorkingSource,
+    isActive,
     isDetectingShape,
   ]);
 
+  // All-page effect không rerun khi cuộn; async callback phải đối chiếu key viewer mới
+  // nhất trước khi publish capacity/layout page-local.
+  const latestPerViewLayoutFetchKeyRef = useRef(perViewLayoutFetchKey);
+  latestPerViewLayoutFetchKeyRef.current = perViewLayoutFetchKey;
+
+  // B10-6: một job S&R true-shape luôn mang maps của toàn file. Loại singular geometry
+  // của trang đang xem khỏi identity để cuộn không hủy/submit lại job 13 mẫu.
+  const allPageStepRepeatFetchKey = useMemo(() => {
+    if (!usesProgressiveStepRepeat) return "";
+    try {
+      const canonical = JSON.parse(perViewLayoutFetchKey) as Record<string, unknown>;
+      canonical.iw = 0;
+      canonical.ih = 0;
+      canonical.st = _shapesByPageKey;
+      canonical.sp = _shapeParamsByPageKey;
+      canonical.detecting = false;
+      canonical.srAll = true;
+      return JSON.stringify(canonical);
+    } catch {
+      return `srAll:${_shapesByPageKey}:${_shapeParamsByPageKey}:${perViewLayoutFetchKey}`;
+    }
+  }, [
+    usesProgressiveStepRepeat,
+    perViewLayoutFetchKey,
+    _shapesByPageKey,
+    _shapeParamsByPageKey,
+  ]);
+
+  const usesAuthoritativeLegacyStepRepeat = usesProgressiveStepRepeat
+    && legacyStepRepeatDecisionKey === allPageStepRepeatFetchKey;
+  const effectiveLayoutFetchKey = usesProgressiveStepRepeat
+    && !usesAuthoritativeLegacyStepRepeat
+    ? allPageStepRepeatFetchKey
+    : perViewLayoutFetchKey;
+
+  const markAuthoritativeLegacyStepRepeat = (): void => {
+    if (!usesProgressiveStepRepeat) return;
+    if (reusableStepRepeatLayoutRef.current?.identity === allPageStepRepeatFetchKey) {
+      reusableStepRepeatLayoutRef.current = null;
+    }
+    setLegacyStepRepeatDecisionKey(allPageStepRepeatFetchKey);
+  };
+
+  const terminalizePreviewDiagnostic = (
+    generation: number,
+    phase: GridPreviewDiagnosticEvent["phase"],
+    capacity?: number,
+    forceLegacyGrid = false,
+  ): void => {
+    const activeRequest = activePreviewRequestRef.current;
+    if (
+      !activeRequest
+      || activeRequest.generation !== generation
+      || activeRequest.terminal
+    ) {
+      return;
+    }
+    activeRequest.terminal = true;
+    const effectiveForceLegacyGrid = forceLegacyGrid || activeRequest.forceLegacyGrid;
+    onDiagnosticEventRef.current?.({
+      traceId: activeRequest.traceId,
+      requestId: activeRequest.requestId,
+      generation,
+      phase,
+      ...(capacity != null ? { capacity } : {}),
+      ...(effectiveForceLegacyGrid ? { forceLegacyGrid: true } : {}),
+    });
+    activePreviewRequestRef.current = null;
+  };
+
+  const cancelNestingJobWithRetry = (jobId: string): Promise<void> => {
+    const inFlight = cancellingNestingJobsRef.current.get(jobId);
+    if (inFlight) return inFlight;
+
+    const operation = (async () => {
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= NESTING_CANCEL_MAX_ATTEMPTS; attempt += 1) {
+        const attemptController = new AbortController();
+        let timeoutId: number | null = null;
+        try {
+          await Promise.race([
+            cancelNestingPreviewJob(jobId, attemptController.signal),
+            new Promise<never>((_resolve, reject) => {
+              timeoutId = window.setTimeout(() => {
+                attemptController.abort();
+                reject(new DOMException(
+                  "Quá thời gian chờ hủy preview nesting.",
+                  "TimeoutError",
+                ));
+              }, NESTING_CANCEL_ATTEMPT_TIMEOUT_MS);
+            }),
+          ]);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt < NESTING_CANCEL_MAX_ATTEMPTS) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, NESTING_CANCEL_RETRY_MS);
+            });
+          }
+        } finally {
+          if (timeoutId != null) window.clearTimeout(timeoutId);
+        }
+      }
+      console.warn("[GridPreview] Không hủy được job preview nesting sau khi thử lại:", lastError);
+    })();
+    const tracked = operation.finally(() => {
+      cancellingNestingJobsRef.current.delete(jobId);
+    });
+    cancellingNestingJobsRef.current.set(jobId, tracked);
+    return tracked;
+  };
+
+  const cancelActiveNestingJob = (expectedGeneration?: number): Promise<void> | null => {
+    const active = activeNestingJobRef.current;
+    if (!active || (expectedGeneration != null && active.generation !== expectedGeneration)) return null;
+    // Xóa active ref để cleanup không dội lệnh; map retry vẫn giữ jobId tới khi ACK/đủ lượt.
+    activeNestingJobRef.current = null;
+    return cancelNestingJobWithRetry(active.jobId);
+  };
+
+  const handleCancelNestingPreview = (): void => {
+    const active = activeNestingJobRef.current;
+    const cancelledGeneration = previewGenRef.current;
+    const pendingRequest = activePreviewRequestRef.current?.generation === cancelledGeneration
+      ? activePreviewRequestRef.current
+      : null;
+    const provisional = usesProgressiveStepRepeat
+      && provisionalLayoutRef.current?.generation === cancelledGeneration
+      ? provisionalLayoutRef.current
+      : null;
+    // Fence trước, cancel sau: result vừa về cùng tick cũng không còn quyền ghi UI.
+    previewGenRef.current += 1;
+    publicationRef.current = { generation: previewGenRef.current, rank: 2 };
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const cancellation = cancelActiveNestingJob();
+
+    if (provisional) {
+      // B10-6: Hủy chỉ dừng tối ưu nền; provisional vẫn thuộc per-view đã tạo nó.
+      // Nếu viewer đã cuộn, cache theo origin để effect legacy buộc probe trang mới.
+      markAuthoritativeLegacyStepRepeat();
+      const matchesCurrentView = provisional.perViewKey === perViewLayoutFetchKey;
+      layoutKeyRef.current = provisional.perViewKey;
+      layoutCacheRef.current = provisional.result;
+      layoutCacheForceLegacyRef.current = true;
+      if (matchesCurrentView) {
+        setLayoutResult(provisional.result);
+        onCapacityChangeRef.current?.(provisional.result.totalItems);
+      }
+      setPreviewError(null);
+      terminalizePreviewDiagnostic(
+        cancelledGeneration,
+        "applied",
+        matchesCurrentView ? provisional.result.totalItems : undefined,
+        true,
+      );
+    } else {
+      // Không có provisional hiện hành: xóa preview stale để user không nhầm là kết quả mới.
+      layoutKeyRef.current = "";
+      layoutCacheRef.current = null;
+      layoutCacheForceLegacyRef.current = false;
+      setLayoutResult(null);
+      setActiveSheet(0);
+      setPreviewError(null);
+      onCapacityChangeRef.current?.(0);
+      onMixedPlacedByPageRef.current?.({});
+      if (pendingRequest) {
+        terminalizePreviewDiagnostic(cancelledGeneration, "aborted");
+      }
+    }
+    provisionalLayoutRef.current = null;
+    setIsCancellingNesting(!!active);
+    setIsLoading(false);
+    setNestingProgress({
+      phase: "cancelled",
+      progress: nestingProgress?.progress ?? 0,
+      elapsedMs: nestingProgress?.elapsedMs ?? 0,
+      messageCode: "cancelled_by_user",
+    });
+    if (active) {
+      // Registry cancel idempotent; trạng thái UI không cần chờ round-trip mới dừng spinner.
+      void cancellation?.finally(() => setIsCancellingNesting(false));
+    } else {
+      setIsCancellingNesting(false);
+    }
+  };
+
   useEffect(() => {
+    // Chụp route cho đúng generation. Sau quality gate legacy, viewer page chỉ được
+    // gọi endpoint lưới đồng bộ; tuyệt đối không đi lại createNestingPreviewJob.
+    const requestUsesLegacyStepRepeat = usesAuthoritativeLegacyStepRepeat;
+    const requestUsesTrueShape = usesTrueShape && !requestUsesLegacyStepRepeat;
+    const requestUsesProgressiveStepRepeat = usesProgressiveStepRepeat
+      && requestUsesTrueShape;
+
     // Clear any pending debounce
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
@@ -1423,6 +2103,14 @@ export default function GridPreview(props: GridPreviewProps) {
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
+    }
+    void cancelActiveNestingJob();
+
+    // App giữ tab nền mounted. Không được cho tab nền chiếm CPU hoặc công bố capacity.
+    if (!isActive) {
+      setIsLoading(false);
+      setIsCancellingNesting(false);
+      return;
     }
 
     // Never launch an expensive CUSTOM/NFP preview while its shape is still
@@ -1442,16 +2130,38 @@ export default function GridPreview(props: GridPreviewProps) {
       return;
     }
 
-    // ── CACHE HIT: cùng khuôn/settings → giữ nguyên layout, 0 API, 0 loading ──
+    const previousRequest = activePreviewRequestRef.current;
+    if (previousRequest && !previousRequest.terminal) {
+      terminalizePreviewDiagnostic(previousRequest.generation, "stale");
+    }
+
+    // ── CACHE HIT: khôi phục CẢ layout lẫn decision của publication ──
     if (
-      layoutKeyRef.current === layoutFetchKey &&
+      layoutKeyRef.current === effectiveLayoutFetchKey &&
       layoutCacheRef.current
     ) {
+      const cachedResult = layoutCacheRef.current;
+      const gen = ++previewGenRef.current;
+      const requestId = `${diagnosticTraceId || "preview"}-c${gen}`.slice(0, 96);
+      publicationRef.current = { generation: gen, rank: 2 };
+      provisionalLayoutRef.current = null;
       setIsLoading(false);
+      if (cancellingNestingJobsRef.current.size === 0) {
+        setIsCancellingNesting(false);
+      }
       setPreviewError(null);
-      setLayoutResult((prev) =>
-        prev === layoutCacheRef.current ? prev : layoutCacheRef.current,
-      );
+      setLayoutResult((prev) => (
+        prev === cachedResult ? prev : cachedResult
+      ));
+      onCapacityChangeRef.current?.(cachedResult.totalItems);
+      onDiagnosticEventRef.current?.({
+        traceId: diagnosticTraceId,
+        requestId,
+        generation: gen,
+        phase: "applied",
+        capacity: cachedResult.totalItems,
+        forceLegacyGrid: layoutCacheForceLegacyRef.current,
+      });
       return;
     }
 
@@ -1459,12 +2169,33 @@ export default function GridPreview(props: GridPreviewProps) {
     // KHÔNG setLayoutResult(null) → hết giật trắng khi detect/settings đổi.
     setIsLoading(true);
     setPreviewError(null);
+    setIsCancellingNesting(false);
+    setNestingProgress(null);
     const gen = ++previewGenRef.current;
+    publicationRef.current = { generation: gen, rank: 0 };
+    provisionalLayoutRef.current = null;
     const requestId = `${diagnosticTraceId || "preview"}-p${gen}`.slice(0, 96);
+    // Đăng ký pending NGAY khi generation đổi (trước debounce/bake) để quyết định
+    // legacy của publication cũ không thể rò sang lệnh Bình cho settings mới.
+    activePreviewRequestRef.current = {
+      traceId: diagnosticTraceId,
+      requestId,
+      generation: gen,
+      terminal: false,
+      forceLegacyGrid: requestUsesLegacyStepRepeat,
+    };
+    onDiagnosticEventRef.current?.({
+      traceId: diagnosticTraceId,
+      requestId,
+      generation: gen,
+      phase: "pending",
+      ...(requestUsesLegacyStepRepeat ? { forceLegacyGrid: true } : {}),
+    });
 
     // Số trang viewer (SSOT cho ratio_stack) — luôn gửi, không để backend đoán từ file gốc.
     const viewerPageCount = resolvePreviewPageCount(previewSourceKey, sourceTotalPages || 0);
 
+    let effectActive = true;
     debounceRef.current = setTimeout(async () => {
       // Abort previous in-flight request
       if (abortRef.current) {
@@ -1472,19 +2203,28 @@ export default function GridPreview(props: GridPreviewProps) {
       }
       const controller = new AbortController();
       abortRef.current = controller;
+      const isCurrentGeneration = () => (
+        effectActive
+        && isActive
+        && !controller.signal.aborted
+        && gen === previewGenRef.current
+        && diagnosticTraceIdRef.current === diagnosticTraceId
+      );
+      // Progressive bắt đầu ở 250 ms; đồng hồ debounce nesting vẫn chạy đủ 750 ms tính từ đây.
+      const nestingStartDelay: Promise<boolean> = requestUsesProgressiveStepRepeat
+        ? waitForAbortableDelay(NESTING_DEBOUNCE_MS - DEBOUNCE_MS, controller.signal)
+            .then(() => true, () => false)
+        : Promise.resolve(true);
+      let finalizeWithProvisional: (reason: string) => boolean = () => false;
 
       try {
         const _tPrev = performance.now();
         const previewSrc = await resolvePreviewSource();
-        if (diagnosticTraceIdRef.current !== diagnosticTraceId) {
+        // Nguồn PDF có thể mất hàng giây để bake/upload. Trong lúc await, user có thể
+        // đổi settings, chuyển tab hoặc đóng component; tuyệt đối không tạo job stale.
+        if (!isCurrentGeneration()) {
           return;
         }
-        onDiagnosticEventRef.current?.({
-          traceId: diagnosticTraceId,
-          requestId,
-          generation: gen,
-          phase: "pending",
-        });
         void previewPerfLog("preview-layout START", {
           trace_id: diagnosticTraceId,
           request_id: requestId,
@@ -1538,12 +2278,20 @@ export default function GridPreview(props: GridPreviewProps) {
           item_h: (typeof itemHPt === 'number' && itemHPt > 0) ? itemHPt : itemH * MM_TO_PT,
           gap_x: gapX * MM_TO_PT,
           gap_y: gapY * MM_TO_PT,
-          strategy: gridStrategy || "optimal_auto",
+          // §B10: `strategy` là TOKEN giao thức của endpoint preview nesting ("chạy true-shape"),
+          // không phải "Cách xếp" người dùng. usesTrueShape đã định tuyến (bản sao route_true_shape),
+          // nên gửi token true_shape_nesting để /preview-layout/jobs nhận đúng nhánh nesting; còn
+          // gridStrategy thật (optimal_auto) vẫn giữ nguyên cho export dùng route_true_shape.
+          strategy: requestUsesTrueShape ? "true_shape_nesting" : (gridStrategy || "optimal_auto"),
+          // PARITY (audit 2026-08-31 §NEST-PREVIEW-INTENT): token engine giống nhau,
+          // nhưng chỉ auto-route optimal_auto được quyền nhường layout lưới.
+          allow_legacy_fallback: requestUsesTrueShape,
           alternate_rotation: effectiveAlternateRotation,
           cols: columns || 0,
           rows: rows || 0,
           shape_type: pageSheetMode ? "RECTANGLE" : _reqShapeType,
           shape_props: pageSheetMode ? {} : _reqShapeProps,
+          pont_type: pontType || "none",
           pont_config: pontType && pontType !== "none" ? pontConfig : null,
           sheet_w: sheetWidth * MM_TO_PT,
           sheet_h: sheetHeight * MM_TO_PT,
@@ -1567,6 +2315,14 @@ export default function GridPreview(props: GridPreviewProps) {
           fill_block_gap: pageSheetMode ? undefined : (fillBlockGap ?? 0),
           die_size_mode: pageSheetMode ? undefined : (dieSizeMode || "die"),
           die_offset_mm: pageSheetMode ? undefined : (dieOffsetMm ?? 0),
+          separate_cut_page: pageSheetMode ? true : separateCutPage,
+          ponts_on_cut_file: pontsOnCutFile,
+          export_unique_sheets: exportUniqueSheets,
+          report_display: reportDisplay,
+          report_material: reportMaterial,
+          report_lamination: reportLamination,
+          report_lamination_sides: reportLaminationSides,
+          report_order_code: reportOrderCode,
           grouping_strategy: groupingStrategy,
           cluster_combine_mode: clusterCombineMode,
           cluster_nesting: clusterNesting !== false,
@@ -1618,39 +2374,269 @@ export default function GridPreview(props: GridPreviewProps) {
           diagnostic_request_id: requestId,
         };
 
-        const res = await authenticatedFetch(`${getApiUrl()}/imposition/preview-layout`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          let message = `Không thể tính preview (${res.status}).`;
-          try {
-            const parsed = JSON.parse(errText);
-            if (typeof parsed?.detail === "string") message = parsed.detail;
-            else if (typeof parsed?.error === "string") message = parsed.error;
-          } catch {
-            if (errText.trim()) message = errText.trim();
-          }
-          // UIUX (audit 2026-08-01 §MG-AUTO): backend đã đọc kích thước xén thật.
-          // Nếu mode lưới đồng cỡ từ chối nhiều khổ, đổi đúng store của tab sang
-          // mixed-guillotine rồi effect tự gọi lại preview; không nháy lỗi đỏ cho user.
+        const conversionOptions: LayoutConversionOptions = {
+          ptToMm: PT_TO_MM,
+          layoutType,
+          viewerPageCount,
+          targetQuantitiesByPage,
+          targetQuantity: Number(targetQuantity) || 0,
+        };
+        const publishPlacedByPage = (result: BackendLayoutResult): void => {
+          onMixedPlacedByPageRef.current?.(placedByPageForLayout(result, {
+            layoutType,
+            viewerPageCount,
+          }));
+        };
+        const publishProvisional = (data: BackendLayoutResult): BackendLayoutResult | null => {
+          const publication = publicationRef.current;
           if (
-            settingsStore &&
-            shouldAutoSwitchToMixedGuillotine({
-              status: res.status,
-              message,
-              taskMode,
-              layoutType,
-              isDieCut,
-              pageSheetMode,
-              imposerMode,
-            })
+            !data.success
+            || !isCurrentGeneration()
+            || publication.generation !== gen
+            || publication.rank >= 2
           ) {
-            void previewPerfLog("preview-layout AUTO_SWITCH_MIXED_SIZE", {
+            return null;
+          }
+          const converted = convertLayoutResultToMm(data, conversionOptions);
+          publicationRef.current = { generation: gen, rank: 1 };
+          provisionalLayoutRef.current = {
+            generation: gen,
+            requestId,
+            traceId: diagnosticTraceId,
+            perViewKey: perViewLayoutFetchKey,
+            result: converted,
+          };
+          if (perViewLayoutFetchKey === latestPerViewLayoutFetchKeyRef.current) {
+            setActiveSheet(0);
+            setLayoutResult(converted);
+            setPreviewError(null);
+            onCapacityChangeRef.current?.(converted.totalItems);
+            publishPlacedByPage(converted);
+          }
+          void previewPerfLog("preview-layout PROVISIONAL", {
+            trace_id: diagnosticTraceId,
+            request_id: requestId,
+            generation: gen,
+            ms: Math.round(performance.now() - _tPrev),
+            capacity: converted.totalItems,
+            strategy: data.strategyUsed || "optimal_auto",
+          });
+          return converted;
+        };
+        finalizeWithProvisional = (reason: string): boolean => {
+          const provisional = provisionalLayoutRef.current;
+          if (!isCurrentGeneration() || provisional?.generation !== gen) return false;
+          publicationRef.current = { generation: gen, rank: 2 };
+          markAuthoritativeLegacyStepRepeat();
+          const matchesCurrentView = provisional.perViewKey
+            === latestPerViewLayoutFetchKeyRef.current;
+          layoutKeyRef.current = provisional.perViewKey;
+          layoutCacheRef.current = provisional.result;
+          layoutCacheForceLegacyRef.current = true;
+          if (matchesCurrentView) {
+            setLayoutResult((previous) => (
+              previous === provisional.result ? previous : provisional.result
+            ));
+            onCapacityChangeRef.current?.(provisional.result.totalItems);
+            publishPlacedByPage(provisional.result);
+          }
+          setPreviewError(null);
+          setIsLoading(false);
+          terminalizePreviewDiagnostic(
+            gen,
+            "applied",
+            matchesCurrentView ? provisional.result.totalItems : undefined,
+            true,
+          );
+          void previewPerfLog("preview-layout PROVISIONAL_FINAL", {
+            trace_id: diagnosticTraceId,
+            request_id: requestId,
+            generation: gen,
+            ms: Math.round(performance.now() - _tPrev),
+            capacity: provisional.result.totalItems,
+            reason,
+          });
+          provisionalLayoutRef.current = null;
+          return true;
+        };
+
+        if (requestUsesProgressiveStepRepeat) {
+          const provisionalBody = { ...body, strategy: "optimal_auto" };
+          // PERF (audit 2026-08-30 §B10-6): hiện tiler nhanh trước; lỗi kênh tạm không
+          // được hủy job nesting. Kết quả cuối vẫn do quality gate backend quyết định.
+          void authenticatedFetch(`${getApiUrl()}/imposition/preview-layout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(provisionalBody),
+            signal: controller.signal,
+          })
+            .then(async (response): Promise<BackendLayoutResult> => {
+              if (!response.ok) {
+                const detail = await response.text();
+                throw new Error(detail.trim() || `Không thể tính preview tạm (${response.status}).`);
+              }
+              return response.json();
+            })
+            .then((data) => {
+              publishProvisional(data);
+              return data;
+            })
+            .catch((error: unknown) => {
+              if (!isAbortError(error) && isCurrentGeneration()) {
+                console.warn("[GridPreview] Không dựng được preview lưới tạm:", error);
+                void previewPerfLog("preview-layout PROVISIONAL_FAIL", {
+                  trace_id: diagnosticTraceId,
+                  request_id: requestId,
+                  generation: gen,
+                  ms: Math.round(performance.now() - _tPrev),
+                });
+              }
+              return null;
+            });
+        }
+
+        let data: BackendLayoutResult;
+        if (requestUsesTrueShape) {
+          // PV-A2: POST tạo job không mang AbortSignal. Nếu request bị supersede trong
+          // lúc chờ 202, ta vẫn nhận job_id rồi hủy được; abort POST sẽ tạo job mồ côi.
+          // S&R đã gọi provisional ở mốc 250 ms nhưng vẫn giữ debounce nesting 750 ms để
+          // người dùng gõ liên tục không tạo chuỗi cold solve.
+          if (!(await nestingStartDelay) || !isCurrentGeneration()) return;
+          const accepted = await createNestingPreviewJob(body);
+          if (!accepted.job_id) {
+            throw new Error(t(
+              'imposition.gridPreview:khong_nhan_duoc_ma_job_preview_nesting',
+              'Không nhận được mã theo dõi preview nesting. Hãy thử lại.',
+            ));
+          }
+          if (!isCurrentGeneration()) {
+            void cancelNestingJobWithRetry(accepted.job_id);
+            terminalizePreviewDiagnostic(
+              gen,
+              controller.signal.aborted ? "aborted" : "stale",
+            );
+            return;
+          }
+          activeNestingJobRef.current = {
+            jobId: accepted.job_id,
+            generation: gen,
+            requestId,
+            traceId: diagnosticTraceId,
+          };
+          setNestingProgress({
+            phase: accepted.status || "queued",
+            progress: 0,
+            elapsedMs: 0,
+          });
+
+          const finalStatus = await waitForNestingPreviewJob(accepted.job_id, {
+            signal: controller.signal,
+            onStatus: (status) => {
+              if (!isCurrentGeneration()) return false;
+              setNestingProgress(status.progress ?? {
+                phase: status.status,
+                progress: status.terminal && status.status === "completed" ? 1 : 0,
+                elapsedMs: 0,
+              });
+              return true;
+            },
+          });
+          if (!isCurrentGeneration()) {
+            void cancelActiveNestingJob(gen);
+            terminalizePreviewDiagnostic(
+              gen,
+              controller.signal.aborted ? "aborted" : "stale",
+            );
+            return;
+          }
+          if (finalStatus.status === "cancelled") {
+            activeNestingJobRef.current = null;
+            setNestingProgress(finalStatus.progress ?? {
+              phase: "cancelled",
+              progress: 0,
+              elapsedMs: 0,
+              messageCode: "cancelled_by_user",
+            });
+            if (requestUsesProgressiveStepRepeat && finalizeWithProvisional("nesting_cancelled")) {
+              return;
+            }
+            publicationRef.current = { generation: gen, rank: 2 };
+            setIsLoading(false);
+            terminalizePreviewDiagnostic(gen, "aborted");
+            return;
+          }
+          if (finalStatus.status !== "completed") {
+            activeNestingJobRef.current = null;
+            throw new Error(
+              finalStatus.message || t(
+                'imposition.gridPreview:preview_nesting_khong_co_ket_qua',
+                'Preview nesting kết thúc nhưng chưa có kết quả. Hãy thử lại.',
+              ),
+            );
+          }
+          data = await getNestingPreviewJobResult<BackendLayoutResult>(
+            accepted.job_id,
+            controller.signal,
+          );
+          if (activeNestingJobRef.current?.jobId === accepted.job_id) {
+            activeNestingJobRef.current = null;
+          }
+        } else {
+          // Solver lưới nhẹ giữ endpoint đồng bộ. Không có nhánh nào hạ nesting về grid.
+          const res = await authenticatedFetch(`${getApiUrl()}/imposition/preview-layout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+
+          if (!res.ok) {
+            const errText = await res.text();
+            let message = `Không thể tính preview (${res.status}).`;
+            try {
+              const parsed = JSON.parse(errText);
+              if (typeof parsed?.detail === "string") message = parsed.detail;
+              else if (typeof parsed?.error === "string") message = parsed.error;
+            } catch {
+              if (errText.trim()) message = errText.trim();
+            }
+            // UIUX (audit 2026-08-01 §MG-AUTO): backend đã đọc kích thước xén thật.
+            // Nếu mode lưới đồng cỡ từ chối nhiều khổ, đổi đúng store của tab sang
+            // mixed-guillotine rồi effect tự gọi lại preview; không nháy lỗi đỏ cho user.
+            if (
+              settingsStore &&
+              shouldAutoSwitchToMixedGuillotine({
+                status: res.status,
+                message,
+                taskMode,
+                layoutType,
+                isDieCut,
+                pageSheetMode,
+                imposerMode,
+              })
+            ) {
+              void previewPerfLog("preview-layout AUTO_SWITCH_MIXED_SIZE", {
+                trace_id: diagnosticTraceId,
+                request_id: requestId,
+                generation: gen,
+                ms: Math.round(performance.now() - _tPrev),
+                status: res.status,
+              });
+              if (gen === previewGenRef.current) {
+                terminalizePreviewDiagnostic(gen, "aborted");
+                settingsStore.getState().setLayoutType("mixed_guillotine");
+              }
+              return;
+            }
+            console.error(
+              "Preview layout API error:",
+              res.status,
+              "Payload:",
+              JSON.stringify(body, null, 2),
+              "Response:",
+              errText,
+            );
+            void previewPerfLog("preview-layout FAIL", {
               trace_id: diagnosticTraceId,
               request_id: requestId,
               generation: gen,
@@ -1658,56 +2644,21 @@ export default function GridPreview(props: GridPreviewProps) {
               status: res.status,
             });
             if (gen === previewGenRef.current) {
-              onDiagnosticEventRef.current?.({
-                traceId: diagnosticTraceId,
-                requestId,
-                generation: gen,
-                phase: "aborted",
-              });
-              settingsStore.getState().setLayoutType("mixed_guillotine");
+              terminalizePreviewDiagnostic(gen, "failed");
+              setLayoutResult(null);
+              setIsLoading(false);
+              setPreviewError(message);
+              if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
             }
             return;
           }
-          console.error(
-            "Preview layout API error:",
-            res.status,
-            "Payload:",
-            JSON.stringify(body, null, 2),
-            "Response:",
-            errText,
-          );
-          void previewPerfLog("preview-layout FAIL", {
-            trace_id: diagnosticTraceId,
-            request_id: requestId,
-            generation: gen,
-            ms: Math.round(performance.now() - _tPrev),
-            status: res.status,
-          });
-          if (gen === previewGenRef.current) {
-            onDiagnosticEventRef.current?.({
-              traceId: diagnosticTraceId,
-              requestId,
-              generation: gen,
-              phase: "failed",
-            });
-            setLayoutResult(null);
-            setIsLoading(false);
-            setPreviewError(message);
-            if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
-          }
-          return;
+
+          data = await res.json();
         }
 
-        const data: BackendLayoutResult = await res.json();
-
-        if (controller.signal.aborted || gen !== previewGenRef.current) {
+        if (!isCurrentGeneration()) {
           const phase = controller.signal.aborted ? "aborted" : "stale";
-          onDiagnosticEventRef.current?.({
-            traceId: diagnosticTraceId,
-            requestId,
-            generation: gen,
-            phase,
-          });
+          terminalizePreviewDiagnostic(gen, phase);
           void previewPerfLog(`preview-layout ${phase.toUpperCase()}`, {
             trace_id: diagnosticTraceId,
             request_id: requestId,
@@ -1718,221 +2669,150 @@ export default function GridPreview(props: GridPreviewProps) {
           return;
         }
 
-        // Only apply if this request wasn't aborted AND still latest generation
+        // Chỉ terminal mới ghi cache/diagnostic applied. Backend đã so ở cấp toàn job;
+        // frontend tuyệt đối không so `totalItems` của riêng tờ đầu.
         if (!controller.signal.aborted && gen === previewGenRef.current) {
           if (data.success) {
-            // Convert response from points → mm for SVG rendering
-            // Frontend does NOT modify rotation flags — backend is single source of truth
-            let cells = data.cells.map((cell) => ({
-              ...cell,
-              x: cell.x * PT_TO_MM,
-              y: cell.y * PT_TO_MM,
-              absX: cell.absX != null ? cell.absX * PT_TO_MM : undefined,
-              absY: cell.absY != null ? cell.absY * PT_TO_MM : undefined,
-              width: cell.width * PT_TO_MM,
-              height: cell.height * PT_TO_MM,
-              // Đường bế THẬT (backend đã áp đúng transform của file xuất) — pt→mm,
-              // toạ độ TOP-DOWN trang. Frontend chỉ vẽ y nguyên, KHÔNG tự xoay/lật.
-              diePolylines: cell.diePolylines
-                ? cell.diePolylines.map((pl: number[][]) =>
-                    pl.map(([px, py]) => [px * PT_TO_MM, py * PT_TO_MM]),
-                  )
-                : undefined,
-            }));
+            const convertedFinal = convertLayoutResultToMm(data, conversionOptions);
+            const provisional = provisionalLayoutRef.current?.generation === gen
+              ? provisionalLayoutRef.current.result
+              : null;
+            const backendPublishedAllPage = [
+              "true_shape_nesting",
+              "per_design_best",
+            ].includes(data.strategyUsed);
+            const keepProvisional = requestUsesProgressiveStepRepeat
+              && !backendPublishedAllPage
+              && provisional !== null;
+            const chosenResult = keepProvisional ? provisional : convertedFinal;
+            const forceLegacyGrid = requestUsesLegacyStepRepeat
+              || (requestUsesProgressiveStepRepeat && !backendPublishedAllPage);
+            const resultMatchesCurrentView = !forceLegacyGrid
+              || perViewLayoutFetchKey === latestPerViewLayoutFetchKeyRef.current;
 
-            // Failsafe ratio_stack: backend vẫn trả > viewerPageCount loại
-            // (file 10 trang + total_pages bị bỏ) → gán lại pageIdx theo viewer.
-            if (
-              layoutType === "ratio_stack" &&
-              viewerPageCount > 0 &&
-              (data.isMixedPreview || cells.some((c) => c.pageIdx != null))
-            ) {
-              const uniq = new Set(
-                cells.map((c) => c.pageIdx).filter((p) => typeof p === "number"),
-              );
-              if (uniq.size > viewerPageCount) {
-                console.warn(
-                  `[GridPreview] ratio_stack backend ${uniq.size} loại > viewer ${viewerPageCount} — gán lại client`,
-                );
-                cells = reassignRatioStackPageIdx(
-                  cells,
-                  viewerPageCount,
-                  targetQuantitiesByPage,
-                  Number(targetQuantity) || 0,
-                );
+            // Rank 2 được đặt TRƯỚC setState: provisional cùng generation về sau không có
+            // quyền ghi đè kết quả terminal.
+            publicationRef.current = { generation: gen, rank: 2 };
+            if (forceLegacyGrid) {
+              markAuthoritativeLegacyStepRepeat();
+            } else if (requestUsesProgressiveStepRepeat && backendPublishedAllPage) {
+              // Chỉ sheets có pageIdx đầy đủ mới được đồng bộ theo viewer. Kết quả thiếu
+              // contract vẫn hiển thị tờ đầu nhưng không được đoán bằng ordinal nén.
+              if (hasReusableStepRepeatSheets(convertedFinal)) {
+                reusableStepRepeatLayoutRef.current = {
+                  identity: allPageStepRepeatFetchKey,
+                  result: convertedFinal,
+                };
+              } else if (
+                reusableStepRepeatLayoutRef.current?.identity === allPageStepRepeatFetchKey
+              ) {
+                reusableStepRepeatLayoutRef.current = null;
               }
+              setLegacyStepRepeatDecisionKey((current) => (
+                current === allPageStepRepeatFetchKey ? null : current
+              ));
             }
-
-            const convertedResult: BackendLayoutResult = {
-              ...data,
-              overallWidth: data.overallWidth * PT_TO_MM,
-              overallHeight: data.overallHeight * PT_TO_MM,
-              cells,
-              // cutLines (chia cụm) — pt→mm, cùng không gian abs với cells.
-              cutLines: data.cutLines
-                ? {
-                    v: (data.cutLines.v || []).map((x: number) => x * PT_TO_MM),
-                    h: (data.cutLines.h || []).map((y: number) => y * PT_TO_MM),
-                  }
-                : undefined,
-              cutSegments: data.cutSegments
-                ? data.cutSegments.map((line) => ({
-                    ...line,
-                    coordinate: line.coordinate * PT_TO_MM,
-                    start: line.start * PT_TO_MM,
-                    end: line.end * PT_TO_MM,
-                  }))
-                : undefined,
-              // sheets (chia cụm zone modes) — convert MỌI tờ pt→mm để lật không fetch lại.
-              sheets: Array.isArray(data.sheets)
-                ? data.sheets.map((sh: BackendLayoutSheet) => ({
-                    ...sh,
-                    overallWidth: (sh.overallWidth || 0) * PT_TO_MM,
-                    overallHeight: (sh.overallHeight || 0) * PT_TO_MM,
-                    totalItems: sh.totalItems || 0,
-                    usableRect: sh.cutTree?.rect
-                      ? {
-                          x: Number(sh.cutTree.rect.x) * PT_TO_MM,
-                          y: Number(sh.cutTree.rect.y) * PT_TO_MM,
-                          width: Number(sh.cutTree.rect.width) * PT_TO_MM,
-                          height: Number(sh.cutTree.rect.height) * PT_TO_MM,
-                        } : undefined,
-                    cells: (sh.cells || []).map((cell: BackendLayoutCell) => ({
-                      ...cell,
-                      x: cell.x * PT_TO_MM,
-                      y: cell.y * PT_TO_MM,
-                      absX: cell.absX != null ? cell.absX * PT_TO_MM : undefined,
-                      absY: cell.absY != null ? cell.absY * PT_TO_MM : undefined,
-                      width: cell.width * PT_TO_MM,
-                      height: cell.height * PT_TO_MM,
-                      // diePolylines (đường bế THẬT, pt top-down) → mm, KHỚP đơn vị cells.
-                      diePolylines: cell.diePolylines
-                        ? cell.diePolylines.map((pl: number[][]) =>
-                            pl.map(([px, py]) => [px * PT_TO_MM, py * PT_TO_MM]),
-                          )
-                        : undefined,
-                    })),
-                    cutLines: sh.cutLines
-                      ? {
-                          v: (sh.cutLines.v || []).map((x: number) => x * PT_TO_MM),
-                          h: (sh.cutLines.h || []).map((y: number) => y * PT_TO_MM),
-                        }
-                      : undefined,
-                    cutSegments: Array.isArray(sh.cutSegments)
-                      ? sh.cutSegments.map((line: BackendCutSegment) => ({
-                          ...line,
-                          coordinate: line.coordinate * PT_TO_MM,
-                          start: line.start * PT_TO_MM,
-                          end: line.end * PT_TO_MM,
-                        }))
-                      : undefined,
-                  }))
-                : undefined,
-            };
-            setActiveSheet(0);
-            layoutKeyRef.current = layoutFetchKey;
-            layoutCacheRef.current = convertedResult;
-            setLayoutResult(convertedResult);
+            layoutKeyRef.current = forceLegacyGrid
+              ? perViewLayoutFetchKey
+              : effectiveLayoutFetchKey;
+            layoutCacheRef.current = chosenResult;
+            layoutCacheForceLegacyRef.current = forceLegacyGrid;
+            if (!keepProvisional && resultMatchesCurrentView) {
+              setActiveSheet(0);
+              setLayoutResult(chosenResult);
+              onCapacityChangeRef.current?.(chosenResult.totalItems);
+              publishPlacedByPage(chosenResult);
+            }
             setPreviewError(null);
-            onDiagnosticEventRef.current?.({
-              traceId: diagnosticTraceId,
-              requestId,
-              generation: gen,
-              phase: "applied",
-              capacity: convertedResult.totalItems,
-            });
+            provisionalLayoutRef.current = null;
+            terminalizePreviewDiagnostic(
+              gen,
+              "applied",
+              resultMatchesCurrentView ? chosenResult.totalItems : undefined,
+              forceLegacyGrid,
+            );
             void previewPerfLog("preview-layout APPLIED", {
               trace_id: diagnosticTraceId,
               request_id: requestId,
               generation: gen,
               ms: Math.round(performance.now() - _tPrev),
-              capacity: convertedResult.totalItems,
+              capacity: chosenResult.totalItems,
               strategy: data.strategyUsed || "",
-              mixed: !!data.isMixedPreview,
+              mixed: !!chosenResult.isMixedPreview,
+              progressive: requestUsesProgressiveStepRepeat,
+              kept_provisional: keepProvisional,
               split_gap_mm: splitGap,
             });
-            if (onCapacityChangeRef.current)
-              onCapacityChangeRef.current(convertedResult.totalItems);
-            if (onMixedPlacedByPageRef.current) {
-              const pbp = data.placedByPage;
-              if (
-                layoutType === "ratio_stack" &&
-                viewerPageCount > 0 &&
-                cells.some((c) => c.pageIdx != null)
-              ) {
-                // Nhiều tờ mẫu: gộp toàn bộ tờ để không làm mất capacity của
-                // các mẫu nằm sau tờ đầu. Một tờ vẫn dùng cells đã gán lại.
-                const ratioCells = Array.isArray(data.sheets)
-                  ? data.sheets.flatMap((sheet) => sheet.cells || [])
-                  : cells;
-                const m: Record<number, number> = {};
-                for (const cell of ratioCells) {
-                  const pi = cell.pageIdx;
-                  if (typeof pi === "number" && pi < viewerPageCount) {
-                    m[pi] = (m[pi] || 0) + 1;
-                  }
-                }
-                onMixedPlacedByPageRef.current(m);
-              } else if (pbp && typeof pbp === "object") {
-                const m: Record<number, number> = {};
-                Object.keys(pbp).forEach((k) => {
-                  m[Number(k)] = pbp[k];
-                });
-                onMixedPlacedByPageRef.current(m);
-              } else if (data.isMixedPreview && Array.isArray(data.cells)) {
-                const m: Record<number, number> = {};
-                for (const cell of data.cells) {
-                  const pi = cell.pageIdx;
-                  if (typeof pi === "number") m[pi] = (m[pi] || 0) + 1;
-                }
-                onMixedPlacedByPageRef.current(m);
-              } else {
-                onMixedPlacedByPageRef.current({});
-              }
-            }
           } else {
+            if (requestUsesProgressiveStepRepeat && finalizeWithProvisional("terminal_unsuccessful")) {
+              return;
+            }
+            publicationRef.current = { generation: gen, rank: 2 };
+            terminalizePreviewDiagnostic(gen, "failed");
             setLayoutResult(null);
-            if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
-            // UIUX (audit 2026-07-27 §B-05): giữ nội dung lỗi backend, nối gợi ý khắc phục khi lỗi quá khổ/không vừa
-            const beMsg = data.error || t('imposition.gridPreview:khong_the_tinh_bo_cuc_preview', 'Không thể tính bố cục preview.');
-            const oversizeHint = /không vừa|quá khổ|exceed|too large/i.test(beMsg)
+            onCapacityChangeRef.current?.(0);
+            // UIUX (audit 2026-07-27 §B-05): giữ lỗi backend và nối gợi ý khắc phục.
+            const backendMessage = data.error || t(
+              'imposition.gridPreview:khong_the_tinh_bo_cuc_preview',
+              'Không thể tính bố cục preview.',
+            );
+            const oversizeHint = /không vừa|quá khổ|exceed|too large/i.test(backendMessage)
               ? t('imposition.gridPreview:goi_y_qua_kho', ' — thử giảm số hàng/cột, tăng khổ giấy hoặc giảm lề.')
               : '';
-            setPreviewError(beMsg + oversizeHint);
+            setPreviewError(backendMessage + oversizeHint);
           }
           setIsLoading(false);
         }
       } catch (err: unknown) {
         if (isAbortError(err)) {
-          onDiagnosticEventRef.current?.({
-            traceId: diagnosticTraceId,
-            requestId,
-            generation: gen,
-            phase: "aborted",
-          });
+          // Hủy bằng nút B10-6 đã tăng generation và có thể chốt provisional thành
+          // `applied`; không được phát `aborted` muộn rồi ghi đè snapshot đó.
+          if (gen === previewGenRef.current) {
+            terminalizePreviewDiagnostic(gen, "aborted");
+          }
           void previewPerfLog("preview-layout ABORTED", {
             trace_id: diagnosticTraceId,
             request_id: requestId,
             generation: gen,
           });
-        } else if (gen === previewGenRef.current) {
-          onDiagnosticEventRef.current?.({
-            traceId: diagnosticTraceId,
-            requestId,
-            generation: gen,
-            phase: "failed",
-          });
+        } else if (isCurrentGeneration()) {
+          void cancelActiveNestingJob(gen);
+          if (requestUsesProgressiveStepRepeat && finalizeWithProvisional("nesting_failed")) {
+            setNestingProgress((previous) => ({
+              phase: "failed",
+              progress: previous?.progress ?? 0,
+              elapsedMs: previous?.elapsedMs ?? 0,
+            }));
+            console.warn("[GridPreview] Nesting nền lỗi; giữ preview lưới hợp lệ:", err);
+            return;
+          }
+          publicationRef.current = { generation: gen, rank: 2 };
+          terminalizePreviewDiagnostic(gen, "failed");
           console.error("Preview layout fetch error:", err);
           setLayoutResult(null);
           setIsLoading(false);
+          if (requestUsesTrueShape) {
+            setNestingProgress((previous) => ({
+              phase: "failed",
+              progress: previous?.progress ?? 0,
+              elapsedMs: previous?.elapsedMs ?? 0,
+            }));
+          }
           // UIUX (audit 2026-07-27 §B-05): formatError thay vì err.message thô
           setPreviewError(formatError(err, t('imposition.gridPreview:khong_dung_duoc_preview_bo_cuc', 'Không dựng được preview bố cục')));
-          if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
+          onCapacityChangeRef.current?.(0);
         }
       }
-    }, DEBOUNCE_MS);
+    }, requestUsesProgressiveStepRepeat
+      ? DEBOUNCE_MS
+      : (requestUsesTrueShape ? NESTING_DEBOUNCE_MS : DEBOUNCE_MS));
 
     return () => {
+      const activeRequest = activePreviewRequestRef.current;
+      if (activeRequest?.generation === gen && !activeRequest.terminal) {
+        terminalizePreviewDiagnostic(gen, "stale");
+      }
+      effectActive = false;
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
         debounceRef.current = null;
@@ -1941,10 +2821,42 @@ export default function GridPreview(props: GridPreviewProps) {
         abortRef.current.abort();
         abortRef.current = null;
       }
+      void cancelActiveNestingJob(gen);
     };
-    // Một khóa layoutFetchKey gộp toàn bộ input xếp tem (không gồm pageIdx view).
+    // effectiveLayoutFetchKey là all-page khi nesting còn authoritative, và chỉ đổi
+    // sang per-view sau khi quality gate/cancel đã chốt legacy.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional single-key cache
-  }, [layoutFetchKey]);
+  }, [effectiveLayoutFetchKey]);
+
+  useEffect(() => {
+    const publication = reusableStepRepeatLayoutRef.current;
+    const reusableResult = publication?.identity === allPageStepRepeatFetchKey
+      ? publication.result
+      : null;
+    const previousSelection = viewerSheetSelectionRef.current;
+    const viewerPageChanged = previousSelection.pageIdx !== pageIdx;
+    const publicationChanged = previousSelection.result !== reusableResult;
+    viewerSheetSelectionRef.current = { pageIdx, result: reusableResult };
+
+    if (
+      !usesProgressiveStepRepeat
+      || !reusableResult
+      || layoutResult !== reusableResult
+      || (!viewerPageChanged && !publicationChanged)
+    ) {
+      return;
+    }
+
+    // B10-6: pageIdx trong cells là danh tính trang thật. Trang SL=0 không có sheet,
+    // vì vậy không đổi lựa chọn; tuyệt đối không dùng physicalSheetIndex/ordinal.
+    const matchingSheet = reusableResult.sheets?.findIndex((sheet) => (
+      sheet.cells.some((cell) => Number.isInteger(cell.pageIdx) && cell.pageIdx === pageIdx)
+    )) ?? -1;
+    if (matchingSheet >= 0) {
+      setActiveSheet(matchingSheet);
+    }
+    // Không phụ thuộc activeSheet: pager tay phải giữ nguyên tới khi viewer đổi trang.
+  }, [allPageStepRepeatFetchKey, layoutResult, pageIdx, usesProgressiveStepRepeat]);
 
   // LƯU Ý: kiểm tra sheetWidth/sheetHeight <= 0 được dời xuống SAU svgCells useMemo
   // (hook cuối) để không gọi hook có điều kiện → tránh React #300 crash.
@@ -1979,9 +2891,24 @@ export default function GridPreview(props: GridPreviewProps) {
       })()
     : null;
 
+  // UIUX/PERF (audit 2026-09-02 §PREVIEW-SEMANTIC-KEY): S&R chỉ cache
+  // hình học một tờ đại diện. `sheetsNeeded` của response true-shape là số tờ
+  // đại diện/số mẫu, KHÔNG phải số bản phải in của mẫu đang xem. Tính số tờ
+  // ngay trên UI từ SL hiện tại để đổi SL không gọi lại preview.
+  const stepRepeatQuantity = isStepRepeatLayout
+    ? quantityForPage(pageIdx, targetQuantity, targetQuantitiesByPage)
+    : 0;
+  const stepRepeatCapacity = isStepRepeatLayout && layoutResult
+    ? stepRepeatCapacityForPage(layoutResult, pageIdx, activeSheet)
+    : 0;
+
   let totalSheets = 1;
   if (layoutResult && layoutResult.totalItems > 0) {
-    if (layoutResult.sheetsNeeded != null && layoutResult.sheetsNeeded > 0) {
+    if (isStepRepeatLayout) {
+      if (stepRepeatQuantity > 0 && stepRepeatCapacity > 0) {
+        totalSheets = Math.ceil(stepRepeatQuantity / stepRepeatCapacity);
+      }
+    } else if (layoutResult.sheetsNeeded != null && layoutResult.sheetsNeeded > 0) {
       totalSheets = layoutResult.sheetsNeeded;
     } else if (_nupTotal != null) {
       totalSheets = Math.max(1, Math.ceil(_nupTotal / layoutResult.totalItems));
@@ -2267,8 +3194,78 @@ export default function GridPreview(props: GridPreviewProps) {
     );
   };
 
+  const nestingProgressPercent = Math.max(
+    0,
+    Math.min(100, Math.round((nestingProgress?.progress ?? 0) * 100)),
+  );
+  const nestingPhaseLabel = (() => {
+    if (isCancellingNesting) {
+      return t('imposition.gridPreview:dang_huy_preview_nesting', 'Đang hủy preview…');
+    }
+    switch (nestingProgress?.phase) {
+      case "queued":
+      case "waiting_resources":
+        return t('imposition.gridPreview:nesting_dang_cho', 'Đang chờ tài nguyên để xếp tem…');
+      case "normalizing":
+        return t('imposition.gridPreview:nesting_dang_chuan_hoa', 'Đang chuẩn hóa đường bế…');
+      case "baseline":
+        return t('imposition.gridPreview:nesting_dang_xep_nen', 'Đang xếp phương án nền…');
+      case "nesting":
+      case "improving":
+        return t('imposition.gridPreview:nesting_dang_toi_uu', 'Đang tối ưu vị trí và góc xoay…');
+      case "validating":
+        return t('imposition.gridPreview:nesting_dang_kiem_tra', 'Đang kiểm tra va chạm và khoảng hở…');
+      case "cancelled":
+        return t('imposition.gridPreview:nesting_da_huy', 'Đã hủy preview.');
+      case "completed":
+        return t('imposition.gridPreview:nesting_da_xong', 'Đã xếp xong.');
+      case "failed":
+        return t('imposition.gridPreview:nesting_that_bai', 'Không thể xếp preview.');
+      default:
+        return t('imposition.gridPreview:dang_tinh_toan_bo_cuc');
+    }
+  })();
+
   return (
     <div className="flex flex-col items-center bg-slate-50 dark:bg-zinc-900/50 rounded-lg p-3 border border-slate-200 dark:border-white/10 mt-2">
+      {usesTrueShape && (
+        (isLoading && !usesAuthoritativeLegacyStepRepeat) || isCancellingNesting
+      ) && (
+        <div
+          data-testid="nesting-preview-progress"
+          data-phase={nestingProgress?.phase || "queued"}
+          className="mb-2 flex w-full max-w-md items-center gap-2 rounded border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-[11px] text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-200"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span role="status" aria-live="polite" aria-atomic="true" className="truncate">
+                {nestingPhaseLabel}
+              </span>
+              <span className="tabular-nums">{nestingProgressPercent}%</span>
+            </div>
+            <div className="mt-1 h-1 overflow-hidden rounded bg-indigo-100 dark:bg-indigo-900">
+              <div
+                data-testid="nesting-preview-progress-bar"
+                role="progressbar"
+                aria-label={nestingPhaseLabel}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={nestingProgressPercent}
+                className="h-full rounded bg-indigo-500 transition-[width] duration-300"
+                style={{ width: `${nestingProgressPercent}%` }}
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelNestingPreview}
+            disabled={isCancellingNesting}
+            className="shrink-0 rounded border border-indigo-300 bg-white px-2 py-1 font-semibold text-indigo-700 hover:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-700 dark:bg-zinc-900 dark:text-indigo-200"
+          >
+            {t('imposition.gridPreview:huy_preview_nesting', 'Hủy preview')}
+          </button>
+        </div>
+      )}
       {layoutResult ? (
         <div className="flex flex-col items-center gap-2 w-full">
           {/* Stats */}
@@ -2302,14 +3299,22 @@ export default function GridPreview(props: GridPreviewProps) {
                 </>
               )}
             {!_isCutStacks &&
-              (Number(targetQuantity) > 0 ||
-              _isRatioStack ||
-              Object.values(targetQuantitiesByPage || {}).some((v) => Number(v) > 0)) && (
+              (isStepRepeatLayout
+                ? stepRepeatQuantity > 0 && stepRepeatCapacity > 0
+                : Number(targetQuantity) > 0 ||
+                  _isRatioStack ||
+                  Object.values(targetQuantitiesByPage || {}).some((v) => Number(v) > 0)) && (
               <>
                 <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
-                <div className="text-slate-600 dark:text-zinc-400">
+                <div
+                  data-testid="needed-sheets-stat"
+                  className="text-slate-600 dark:text-zinc-400"
+                >
                   {t('imposition.gridPreview:can_in')}{" "}
-                  <span className="font-bold text-indigo-600 dark:text-indigo-400">
+                  <span
+                    data-testid="needed-sheets-count"
+                    className="font-bold text-indigo-600 dark:text-indigo-400"
+                  >
                     {totalSheets}
                   </span>{" "}
                   {t('imposition.gridPreview:to')}
@@ -2686,18 +3691,11 @@ export default function GridPreview(props: GridPreviewProps) {
                         : null) ?? layoutResult?.diePolygon;
                     return (
                       <g key={c.idx}>
-                        {c.diePolylinesPx ? (
-                          <polygon
-                            points={c.diePolylinesPx
-                              .flat()
-                              .map((pt: number[]) => `${pt[0]},${pt[1]}`)
-                              .join(" ")}
-                            fill={color.fill}
-                            stroke={color.stroke}
-                            strokeWidth={0.8}
-                            strokeLinejoin="round"
-                          />
-                        ) : (
+                        {renderCellDiePolylines(
+                          c.diePolylinesPx,
+                          colorIndexFor(c.blockId),
+                          "front",
+                        ) ??
                           renderCellShape(
                             c.sx,
                             c.sy,
@@ -2711,8 +3709,7 @@ export default function GridPreview(props: GridPreviewProps) {
                             c.idx,
                             itemDiePoly,
                             effectiveAlternateRotation !== "none",
-                          )
-                        )}
+                          )}
                         {effectiveAlternateRotation !== "none" &&
                           renderCellDirectionIndicator(
                             c.sx,
@@ -2969,20 +3966,25 @@ export default function GridPreview(props: GridPreviewProps) {
 
                         return (
                           <g key={c.idx}>
-                            {renderCellShape(
-                              c.sx,
-                              c.sy,
-                              c.sw,
-                              c.sh,
-                              c.isRotated,
-                              c.is180,
+                            {renderCellDiePolylines(
+                              c.diePolylinesPx,
                               colorIndexFor(c.blockId),
-                              itemShape,
-                              parsedItemParams,
-                              c.idx,
-                              itemDiePoly,
-                              effectiveAlternateRotation !== "none",
-                            )}
+                              "back",
+                            ) ??
+                              renderCellShape(
+                                c.sx,
+                                c.sy,
+                                c.sw,
+                                c.sh,
+                                c.isRotated,
+                                c.is180,
+                                colorIndexFor(c.blockId),
+                                itemShape,
+                                parsedItemParams,
+                                c.idx,
+                                itemDiePoly,
+                                effectiveAlternateRotation !== "none",
+                              )}
                             {effectiveAlternateRotation !== "none" &&
                               renderCellDirectionIndicator(
                                 c.sx,

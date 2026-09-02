@@ -33,6 +33,25 @@ export type {
     DieCutConfig,
 } from './generated';
 
+// Khối trên là RE-EXPORT nên các tên đó không nằm trong scope cục bộ; cần import
+// riêng để suy kiểu bên dưới.
+import type { GridStrategy as CoreGridStrategy } from './generated';
+
+/**
+ * Nhãn chiến lược xếp, SUY TỪ enum Rust qua `ts-rs`.
+ *
+ * NEST (audit 2026-08-28 §A4a): trước đây tập nhãn này được viết tay ở 6 chỗ
+ * trong 5 file, song song với enum Rust. Thêm một giá trị phải sửa đủ 6 chỗ, và
+ * quên một chỗ thì lệch hợp đồng im lặng. Giờ chỉ có MỘT nguồn:
+ * `imposition_core/src/model.rs` → `generated/GridStrategy.ts` → type này.
+ *
+ * Đường truyền hiện tại vẫn gửi `gridStrategy` dạng **chuỗi thuần** (không phải
+ * object tagged `{kind}`), nên đây là `GridStrategy['kind']` chứ không phải
+ * `GridStrategy`. Việc đổi wire format sang tagged là lô riêng: nó chạm preset đã
+ * lưu của người dùng, store persist và cả ba callsite submit/preview/preview-batch.
+ */
+export type GridStrategyKind = CoreGridStrategy['kind'];
+
 export interface PontConfig {
     shape: 'circle' | 'l_inverted' | 'l_corner';
     size: number;
@@ -142,6 +161,8 @@ export const DEFAULT_CUT_BORDER_CONFIG: CutBorderConfig = {
 export type AlternateRotation = 'none' | 'row' | 'column';
 
 export interface NupSettings {
+    /** FIX (audit 2026-08-29 §SR-MODE-1): tác vụ phải đi cùng payload đến backend. */
+    taskMode: 'step_repeat' | 'nup';
     // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): mode riêng, không thay đổi hành vi các mode cũ.
     layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine';
     formsize: string;
@@ -153,7 +174,7 @@ export interface NupSettings {
     targetQuantity?: number;
     targetQuantitiesByPage?: Record<number, number>;
     hiddenOcgLayerIds?: number[];
-    gridStrategy: 'manual' | 'simple_auto' | 'optimal_auto' | 'staggered' | 'row_alt' | 'head_to_tail';
+    gridStrategy: GridStrategyKind;
     alternateRotation: AlternateRotation;
     clusterTileW?: number;
     clusterTileH?: number;
@@ -176,6 +197,8 @@ export interface NupSettings {
     diagnosticPendingRequestId?: string;
     diagnosticPreviewCapacity?: number;
     diagnosticPreviewState?: 'none' | 'pending' | 'applied' | 'failed';
+    /** B10-6: publication preview đã chốt engine lưới; chỉ truyền cho đúng lượt export. */
+    forceLegacyGrid?: boolean;
     clusterNesting?: boolean;
     gapX: number;
     gapY: number;
@@ -212,7 +235,7 @@ export interface NupSettings {
     shapeParams?: string | null;
     detectedShapesByPage?: Record<number, string>;
     detectedShapeParamsByPage?: Record<number, Record<string, unknown>>;
-    groupingStrategy?: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     mixedExcessPercent?: number;
     // ═══ Report & xuất tờ duy nhất (spec: binh-tem-be-report) ═══
     exportUniqueSheets?: boolean;
@@ -221,6 +244,7 @@ export interface NupSettings {
     reportLamination?: number;
     reportLaminationSides?: number;
     reportOrderCode?: string;
+    /** @deprecated MAP-NEST-11: cờ stale không có writer; job mới không đọc hoặc serialize. */
     saveByReport?: boolean;
     // ═══ Bình Bế Rớt (CNC) — spec: binh-be-rot-cnc ═══
     cncMode?: boolean;
@@ -228,16 +252,21 @@ export interface NupSettings {
     cncFlipEdge?: 'long' | 'short';
     cncDuplexMarks?: boolean;
     // ═══ Tự động lưu file in (cài trước khi bình) ═══
+    /** @deprecated Dùng savePrintConfig.autoSave; chỉ còn fallback cho caller cũ. */
     autoSavePrint?: boolean;
-    savePrintConfig?: {
-        folder: string;
-        nameMode: 'report' | 'number' | 'original';
-        folderMode: 'per_order' | 'flat';
-        includeOrderCode: boolean;
-        includeDate: boolean;
-        orderCode?: string;
-        labelName?: string;
-    };
+    savePrintConfig?: SavePrintConfig;
+}
+
+/** Cấu hình lưu file in cục bộ; không được serialize sang backend. */
+export interface SavePrintConfig {
+    autoSave: boolean;
+    folder: string;
+    nameMode: 'report' | 'number' | 'original';
+    folderMode: 'per_order' | 'flat';
+    includeOrderCode: boolean;
+    includeDate: boolean;
+    orderCode?: string;
+    labelName?: string;
 }
 
 // ═══ Cấu hình hiển thị Report sản phẩm (Product_Info) ═══

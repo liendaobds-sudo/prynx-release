@@ -6,7 +6,11 @@ import NestingPreview from './NestingPreview';
 import ResultSummary from './ResultSummary';
 import type { PartSource } from '../../lib/mixed-nesting/previewGeometry';
 import { UNPLACED_TEXT, formatMm, formatPercent } from '../../lib/mixed-nesting/resultText';
-import type { PlacementManifest, SheetSpec } from '../../lib/mixed-nesting/types';
+import {
+  MIXED_NESTING_PROTOCOL_VERSION,
+  type PlacementManifest,
+  type SheetSpec,
+} from '../../lib/mixed-nesting/types';
 
 const apiMocks = vi.hoisted(() => ({
   getCapabilities: vi.fn(),
@@ -86,8 +90,8 @@ function manifest(overrides: Partial<PlacementManifest> = {}): PlacementManifest
     },
   ];
   return {
-    protocolVersion: 1,
-    engineVersion: '0.1.0',
+    protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+    engineVersion: '0.2.0',
     jobId: 'job-1',
     seed: 20260826,
     status: 'completed',
@@ -144,12 +148,13 @@ afterEach(() => {
 
 describe('MixedNestingTool', () => {
   const CAPABILITIES = {
-    protocolVersion: 1,
-    engineVersion: '0.1.0',
+    protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+    engineVersion: '0.2.0',
     reflection: 'forbidden' as const,
     defaultRotation: 'free' as const,
     continuousTranslation: true,
     profiles: ['fast', 'balanced', 'tight'],
+    layoutIntents: ['quantity_fulfillment', 'autofill_single_sheet'],
     maxRequestBytes: 24 * 1024 * 1024,
   };
 
@@ -482,12 +487,13 @@ const EXPORT_RESULT = {
 
 describe('MixedNestingTool — xuất PDF', () => {
   const CAPABILITIES = {
-    protocolVersion: 1,
-    engineVersion: '0.1.0',
+    protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
+    engineVersion: '0.2.0',
     reflection: 'forbidden' as const,
     defaultRotation: 'free' as const,
     continuousTranslation: true,
     profiles: ['fast', 'balanced', 'tight'],
+    layoutIntents: ['quantity_fulfillment', 'autofill_single_sheet'],
     maxRequestBytes: 24 * 1024 * 1024,
   };
 

@@ -475,3 +475,71 @@ describe('AdvancedSettingsSection — thứ tự trường report', () => {
         })).toBe('Decal Đế vàng - DH-001 - Cán bóng');
     });
 });
+
+
+// NEST (audit 2026-08-28 §A4a-3b → §B10): option "Nesting theo đường bế" thủ công ĐÃ BỎ.
+// Auto-route theo phân loại hình (CUSTOM → true-shape) nay chạy NGẦM trong "Xếp tối ưu",
+// nên dropdown "Cách xếp" chỉ còn optimal_auto / simple_auto / manual ở MỌI công cụ.
+//
+// Test policy (`trueShapeNestingRollout.test.tsx`) khoá quy tắc auto-route; test này khoá
+// việc option cũ KHÔNG còn rò ra DOM (từng là canary die-cut/CNC) — nếu lỡ nối lại thì
+// người dùng lại thấy một lựa chọn thừa mà backend không còn coi là do người dùng chọn.
+describe('Cách xếp — chỉ ba option chuẩn, không còn option nesting thủ công', () => {
+    const REMOVED_OPTION = 'true_shape_nesting';
+
+    function strategyOptionValues(): string[] {
+        const selects = Array.from(
+            document.querySelectorAll<HTMLSelectElement>('select'),
+        );
+        const target = selects.find((element) =>
+            Array.from(element.options).some(
+                (option) => option.value === 'optimal_auto',
+            ),
+        );
+        if (!target) throw new Error('Không tìm thấy dropdown Cách xếp trong DOM.');
+        return Array.from(target.options).map((option) => option.value);
+    }
+
+    it('KHÔNG còn option true_shape_nesting ở nhánh gang Tem bế và CNC', () => {
+        for (const activeTool of ['sticker_imposer', 'cnc_imposer'] as const) {
+            renderGridSettings({ activeTool, taskMode: 'nup' });
+            expect(strategyOptionValues()).not.toContain(REMOVED_OPTION);
+            cleanup();
+        }
+    });
+
+    it('KHÔNG còn ở Bình trang/S&R', () => {
+        for (const activeTool of ['sticker_imposer', 'cnc_imposer'] as const) {
+            renderGridSettings({ activeTool, taskMode: 'step_repeat' });
+            expect(strategyOptionValues()).not.toContain(REMOVED_OPTION);
+            cleanup();
+        }
+    });
+
+    it('KHÔNG còn ở công cụ ngoài Tem bế/CNC', () => {
+        renderGridSettings({ activeTool: 'nup', taskMode: 'nup' });
+        expect(strategyOptionValues()).not.toContain(REMOVED_OPTION);
+    });
+
+    it('dropdown đúng ba option chuẩn, thứ tự giữ nguyên, default optimal_auto', () => {
+        renderGridSettings({ activeTool: 'sticker_imposer', taskMode: 'nup' });
+        const values = strategyOptionValues();
+        expect(values).toEqual(['optimal_auto', 'simple_auto', 'manual']);
+        // Default vẫn là optimal_auto (khớp nupSlice + DEFAULT_GRID_STRATEGY).
+        const selects = Array.from(
+            document.querySelectorAll<HTMLSelectElement>('select'),
+        );
+        const target = selects.find((element) =>
+            Array.from(element.options).some(
+                (option) => option.value === 'optimal_auto',
+            ),
+        );
+        expect(target?.value).toBe('optimal_auto');
+    });
+
+    it('không thêm ô nhập góc nào cho người dùng', () => {
+        renderGridSettings({ activeTool: 'sticker_imposer', taskMode: 'nup' });
+        // Đích cuối là solver tự tìm góc; UI tuyệt đối không có control góc.
+        expect(screen.queryByLabelText(/góc|angle|rotation/i)).toBeNull();
+    });
+});

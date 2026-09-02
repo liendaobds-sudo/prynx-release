@@ -50,7 +50,6 @@ function getErrorMessage(error: unknown): string {
 
 export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
   const { t } = useTranslation();
-  const user = useAuthStore(s => s.user);
   const licenseKey = useAuthStore(s => s.licenseKey);
   const remainingDays = useAuthStore(s => s.remainingDays);
   const licenseExpiresAt = useAuthStore(s => s.licenseExpiresAt);
@@ -165,9 +164,8 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
           </p>
         </div>
 
-        {/* Account + license */}
+        {/* License (đăng nhập Google đã gỡ 2026-08-28 — kích hoạt bằng key, không có tài khoản) */}
         <div className="px-6 py-4 space-y-2 text-[13px] border-b border-slate-100 dark:border-white/10">
-          <Row label={t('misc.about:tai_khoan')} value={user?.email || t('misc.about:chua_dang_nhap')} />
           {remainingDays !== null && (
             <Row
               label={t('misc.about:han_dung')}
@@ -197,7 +195,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
               </div>
             </div>
           )}
-          {!licenseKey && user && !showKeyForm && (
+          {!licenseKey && !showKeyForm && (
             <div className="flex justify-end">
               <button
                 type="button"

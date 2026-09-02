@@ -57,6 +57,8 @@ export interface CutExportResult {
   bytes_sent?: number;
   total_items?: number;
   error?: string;
+  /** Mã ổn định khi proof inspect bị stale/tamper/replay; không parse từ `error`. */
+  proof_error?: string;
 }
 
 export interface CutConnectionTestResult {
@@ -116,6 +118,8 @@ export interface CutExportFromFileRequest {
   ignore_limits?: boolean;
   force_layer?: string;
   copies?: number;
+  /** Bằng chứng opaque do `/cut-inspect` cấp; client chỉ chuyển tiếp nguyên vẹn. */
+  inspect_proof?: string;
 }
 
 export async function cutExportFromFile(
@@ -154,11 +158,86 @@ export interface CutPreviewResult {
   candidates?: CutLayerCandidates;
 }
 
+/** Yêu cầu inspect hợp nhất một file PDF nguồn bế (chỉ số trang là zero-based). */
+export interface CutInspectRequest {
+  path: string;
+  page_idx?: number;
+  force_layer?: string;
+}
+
+export interface CutInspectFingerprint {
+  algorithm: string;
+  sha256: string;
+  size_bytes: number;
+  mtime_ns?: number;
+}
+
+/** Phần preview do endpoint inspect trả về (backend không lặp cờ `ok`). */
+export interface CutInspectPreview {
+  svg?: string;
+  total_items?: number;
+  sheet_w_mm?: number;
+  sheet_h_mm?: number;
+  page_idx?: number;
+}
+
+/** Kết quả quét trang/lớp + preview trong một lượt mở PDF. */
+export interface CutInspectResult {
+  ok: boolean;
+  fingerprint?: CutInspectFingerprint;
+  cut_pages?: number[];
+  num_pages?: number;
+  selected_page_idx?: number | null;
+  candidates?: CutLayerCandidates;
+  preview?: CutInspectPreview | null;
+  /** `undefined` = sidecar cũ; `null` = endpoint mới nhưng trang không có CUT. */
+  inspect_proof?: string | null;
+  /** Proof opaque cùng revision cho toàn bộ trang CUT, key là page index zero-based. */
+  inspect_proofs?: Record<string, string>;
+  error?: string;
+}
+
+export class CutInspectUnavailableError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "CutInspectUnavailableError";
+    this.status = status;
+  }
+}
+
+/**
+ * Inspect hợp nhất: backend mở/hash PDF một lần rồi trả trang CUT, lớp/spot,
+ * trang được chọn và SVG preview. `signal` huỷ lượt inspect cũ khi người dùng
+ * chuyển tờ/lớp nhanh.
+ */
+export async function inspectCutFile(
+  req: CutInspectRequest,
+  signal?: AbortSignal,
+): Promise<CutInspectResult> {
+  const res = await authenticatedFetch(`${getApiUrl()}/imposition/cut-inspect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new CutInspectUnavailableError(
+      res.status,
+      i18n.t('cutExport:loi_may_chu_res_status_text', { status: res.status, text }),
+    );
+  }
+  return (await res.json()) as CutInspectResult;
+}
+
 export async function cutPreviewFromFile(
   path: string,
   pageIdx = 0,
   forceLayer?: string,
   autoPage = false,
+  signal?: AbortSignal,
 ): Promise<CutPreviewResult> {
   const res = await authenticatedFetch(
     `${getApiUrl()}/imposition/cut-preview-from-file`,
@@ -166,6 +245,7 @@ export async function cutPreviewFromFile(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, page_idx: pageIdx, force_layer: forceLayer, auto_page: autoPage }),
+      signal,
     },
   );
   if (!res.ok) {
@@ -175,11 +255,16 @@ export async function cutPreviewFromFile(
   return (await res.json()) as CutPreviewResult;
 }
 
-export async function listCutLayers(path: string, pageIdx = 0): Promise<CutLayerCandidates> {
+export async function listCutLayers(
+  path: string,
+  pageIdx = 0,
+  signal?: AbortSignal,
+): Promise<CutLayerCandidates> {
   const res = await authenticatedFetch(`${getApiUrl()}/imposition/cut-layers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, page_idx: pageIdx }),
+    signal,
   });
   if (!res.ok) return { layers: [], spots: [] };
   const d = await res.json();
@@ -187,11 +272,12 @@ export async function listCutLayers(path: string, pageIdx = 0): Promise<CutLayer
 }
 
 /** Danh sách chỉ số trang KHUÔN (có đường cắt) — bỏ qua trang in. */
-export async function listCutPages(path: string): Promise<number[]> {
+export async function listCutPages(path: string, signal?: AbortSignal): Promise<number[]> {
   const res = await authenticatedFetch(`${getApiUrl()}/imposition/cut-pages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
+    signal,
   });
   if (!res.ok) return [];
   const d = await res.json();

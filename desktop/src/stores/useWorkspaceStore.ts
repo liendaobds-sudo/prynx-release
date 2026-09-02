@@ -149,6 +149,62 @@ export interface WorkspaceOcgLayer {
     objects?: WorkspaceOcgLayerObject[];
 }
 
+export type WorkspaceOcgVisibilityIntent = 'source-default' | 'explicit';
+
+/**
+ * FIX/PARITY (audit 2026-08-29 §MAP-NEST-10): `[]` không tự nói được là
+ * "giữ mặc định nguồn" hay "người dùng yêu cầu hiện tất cả". Provenance này
+ * buộc override vào đúng File + edit generation chứa object number OCG đó.
+ */
+export interface WorkspaceOcgVisibilityProvenance {
+    readonly intent: WorkspaceOcgVisibilityIntent;
+    readonly sourceFile: File | null;
+    /** Backend file ID đã dùng để đọc cây OCG của đúng source. */
+    readonly sourceFileId: string;
+    readonly sourceEditGeneration: number;
+    readonly baselineLoaded: boolean;
+    readonly sourceDefaultHiddenLayerIds: readonly number[];
+}
+
+function canonicalOcgLayerIds(ids: readonly number[]): number[] {
+    return Array.from(new Set(ids)).sort((left, right) => left - right);
+}
+
+function createEmptyOcgVisibilityProvenance(): WorkspaceOcgVisibilityProvenance {
+    return {
+        intent: 'source-default',
+        sourceFile: null,
+        sourceFileId: '',
+        sourceEditGeneration: -1,
+        baselineLoaded: false,
+        sourceDefaultHiddenLayerIds: [],
+    };
+}
+
+function sameOcgVisibilityProvenance(
+    left: WorkspaceOcgVisibilityProvenance,
+    right: WorkspaceOcgVisibilityProvenance,
+): boolean {
+    return left.intent === right.intent
+        && left.sourceFile === right.sourceFile
+        && left.sourceFileId === right.sourceFileId
+        && left.sourceEditGeneration === right.sourceEditGeneration
+        && left.baselineLoaded === right.baselineLoaded
+        && left.sourceDefaultHiddenLayerIds.length === right.sourceDefaultHiddenLayerIds.length
+        && left.sourceDefaultHiddenLayerIds.every(
+            (id, index) => id === right.sourceDefaultHiddenLayerIds[index],
+        );
+}
+
+export function workspaceOcgVisibilityFingerprint(
+    provenance: Pick<WorkspaceOcgVisibilityProvenance, 'intent'>,
+    hiddenLayerIds: readonly number[],
+): string {
+    return provenance.intent === 'explicit'
+        ? `explicit:${canonicalOcgLayerIds(hiddenLayerIds).join(',')}`
+        : 'source-default';
+}
+
 export interface WatermarkPreviewSettings {
     watermarkType: 'text' | 'image';
     watermarkText: string;
@@ -311,6 +367,8 @@ export interface WorkspaceState {
     // ── OCG Layers ──
     pdfOcgLayers: WorkspaceOcgLayer[];
     hiddenOcgLayerIds: number[];
+    /** Phân biệt trạng thái mặc định của source với override tường minh, kể cả `[]`. */
+    ocgVisibilityProvenance: WorkspaceOcgVisibilityProvenance;
     lockedOcgLayerIds: number[];
     expandedOcgLayerIds: number[];
     hiddenObjectKeys: string[];
@@ -429,7 +487,26 @@ export interface WorkspaceState {
     setEditAddMode: (updater: ('text' | 'image' | null) | ((prev: 'text' | 'image' | null) => 'text' | 'image' | null)) => void;
 
     setPdfOcgLayers: (layers: WorkspaceOcgLayer[]) => void;
+    /** Seed trạng thái `/D` từ đúng revision nguồn; response cũ bị bỏ qua. */
+    seedOcgVisibilityDefaults: (
+        hiddenLayerIds: number[],
+        sourceFile: File | null,
+        sourceEditGeneration: number,
+        sourceFileId?: string,
+    ) => void;
+    /** Publish cây/default/lock trong một transaction sau khi xác minh owner backend. */
+    seedOcgLayerState: (
+        layers: WorkspaceOcgLayer[],
+        hiddenLayerIds: number[],
+        lockedLayerIds: number[],
+        sourceFile: File,
+        sourceEditGeneration: number,
+        sourceFileId: string,
+    ) => void;
+    /** Setter dành riêng cho ý định người dùng, kể cả khi giá trị trùng baseline. */
     setHiddenOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
+    /** Chỉ action tường minh này mới hủy override và trở lại `/D` của source. */
+    resetOcgVisibilityToSourceDefault: () => void;
     setLockedOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
     setExpandedOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
     setHiddenObjectKeys: (updater: string[] | ((prev: string[]) => string[])) => void;
@@ -472,15 +549,35 @@ export interface WorkspaceDocumentRevisionToken {
     readonly viewerPageInstanceIds: readonly string[] | undefined;
     readonly viewerPageRotations: readonly number[] | undefined;
     readonly editGeneration: number;
+    /** Optional chỉ để tương thích token tự dựng cũ; helper capture luôn ghi đủ. */
+    readonly hiddenOcgLayerIds?: readonly number[];
+    readonly ocgVisibilityProvenance?: WorkspaceOcgVisibilityProvenance;
 }
 
 type WorkspaceDocumentRevisionSource = Pick<
     WorkspaceState,
-    'file' | 'viewerPageOrder' | 'viewerPageInstanceIds' | 'viewerPageRotations' | 'editGeneration'
+    | 'file'
+    | 'viewerPageOrder'
+    | 'viewerPageInstanceIds'
+    | 'viewerPageRotations'
+    | 'editGeneration'
+    | 'hiddenOcgLayerIds'
+    | 'ocgVisibilityProvenance'
 >;
 
 function cloneFrozenArray<T>(value: readonly T[] | undefined): readonly T[] | undefined {
     return value === undefined ? undefined : Object.freeze([...value]);
+}
+
+function cloneFrozenOcgVisibilityProvenance(
+    provenance: WorkspaceOcgVisibilityProvenance,
+): WorkspaceOcgVisibilityProvenance {
+    return Object.freeze({
+        ...provenance,
+        sourceDefaultHiddenLayerIds: Object.freeze([
+            ...provenance.sourceDefaultHiddenLayerIds,
+        ]),
+    });
 }
 
 function sameOptionalArray<T>(
@@ -512,12 +609,22 @@ export function captureWorkspaceDocumentRevision(
     state: WorkspaceDocumentRevisionSource,
     sourceFile: File | null = state.file,
 ): WorkspaceDocumentRevisionToken {
+    // Override OCG chỉ có nghĩa với đúng File chứa object number đó. Resolver cho
+    // nguồn ngoài không được phép vô tình replay intent của workspace hiện tại.
+    const ownsOcgState = sourceFile === state.file;
+    const provenance = ownsOcgState
+        ? state.ocgVisibilityProvenance
+        : createEmptyOcgVisibilityProvenance();
     return Object.freeze({
         file: sourceFile,
         viewerPageOrder: cloneFrozenArray(state.viewerPageOrder),
         viewerPageInstanceIds: cloneFrozenArray(state.viewerPageInstanceIds),
         viewerPageRotations: cloneFrozenArray(state.viewerPageRotations),
         editGeneration: state.editGeneration,
+        hiddenOcgLayerIds: Object.freeze(
+            ownsOcgState ? [...state.hiddenOcgLayerIds] : [],
+        ),
+        ocgVisibilityProvenance: cloneFrozenOcgVisibilityProvenance(provenance),
     });
 }
 
@@ -531,6 +638,19 @@ export function isWorkspaceDocumentRevisionCurrent(
         && sameOptionalArray(expected.viewerPageOrder, state.viewerPageOrder)
         && sameOptionalArray(expected.viewerPageInstanceIds, state.viewerPageInstanceIds)
         && sameOptionalArray(expected.viewerPageRotations, state.viewerPageRotations)
+        && (
+            expected.hiddenOcgLayerIds === undefined
+            && expected.ocgVisibilityProvenance === undefined
+            // Token legacy không thể chứng minh bytes sau override; fail-closed.
+            && state.ocgVisibilityProvenance.intent !== 'explicit'
+            || expected.hiddenOcgLayerIds !== undefined
+            && expected.ocgVisibilityProvenance !== undefined
+            && sameOptionalArray(expected.hiddenOcgLayerIds, state.hiddenOcgLayerIds)
+            && sameOcgVisibilityProvenance(
+                expected.ocgVisibilityProvenance,
+                state.ocgVisibilityProvenance,
+            )
+        )
     );
 }
 
@@ -612,6 +732,7 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
 
     pdfOcgLayers: [],
     hiddenOcgLayerIds: [],
+    ocgVisibilityProvenance: createEmptyOcgVisibilityProvenance(),
     lockedOcgLayerIds: [],
     expandedOcgLayerIds: [],
     hiddenObjectKeys: [],
@@ -648,10 +769,11 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     setPhase: (phase) => set({ phase }),
     setFile: (file) => set((state) => {
         const sameFile = workspaceFileIdentity(state.file) === workspaceFileIdentity(file);
+        const sameOcgSource = state.file === file;
         return {
             file,
-            selectionFileId: sameFile ? state.selectionFileId : '',
-            selectionDocumentIdentity: sameFile ? state.selectionDocumentIdentity : '',
+            selectionFileId: sameOcgSource ? state.selectionFileId : '',
+            selectionDocumentIdentity: sameOcgSource ? state.selectionDocumentIdentity : '',
             fontInspectionCache: sameFile ? state.fontInspectionCache : null,
             viewerSelectedPageIndices: sameFile ? state.viewerSelectedPageIndices : [],
             detectedShapeType: null,
@@ -661,6 +783,17 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
             detectedShapeParamsByPage: {},
             classicCutlineViewerPreview: null,
             viewerActivePagePhysical: null,
+            // Object number OCG chỉ ổn định trong đúng File object đã parse. Kể cả
+            // file mới có cùng tên/kích thước cũng phải bỏ toàn bộ provenance cũ.
+            pdfOcgLayers: sameOcgSource ? state.pdfOcgLayers : [],
+            hiddenOcgLayerIds: sameOcgSource ? state.hiddenOcgLayerIds : [],
+            ocgVisibilityProvenance: sameOcgSource
+                ? state.ocgVisibilityProvenance
+                : createEmptyOcgVisibilityProvenance(),
+            lockedOcgLayerIds: sameOcgSource ? state.lockedOcgLayerIds : [],
+            expandedOcgLayerIds: sameOcgSource ? state.expandedOcgLayerIds : [],
+            hiddenObjectKeys: sameOcgSource ? state.hiddenObjectKeys : [],
+            ocgPreviewUrl: sameOcgSource ? state.ocgPreviewUrl : null,
         };
     }),
     setImageBatchFiles: (imageBatchFiles) => set({ imageBatchFiles }),
@@ -721,6 +854,13 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     )),
     advanceEditGeneration: () => set((state) => ({
         editGeneration: state.editGeneration + 1,
+        // Live edit có thể ghi lại xref; không replay ID OCG của generation cũ.
+        pdfOcgLayers: [],
+        hiddenOcgLayerIds: [],
+        ocgVisibilityProvenance: createEmptyOcgVisibilityProvenance(),
+        lockedOcgLayerIds: [],
+        expandedOcgLayerIds: [],
+        ocgPreviewUrl: null,
     })),
     setDocumentPreparationBarrier: (barrier) => set({ documentPreparationBarrier: barrier }),
     setHighlightedIssue: (issue) => set({ highlightedIssue: issue }),
@@ -995,6 +1135,13 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
             objectSelectionContext: id && state.objectSelectionContext
                 ? { ...state.objectSelectionContext, fileId: id }
                 : null,
+            // Cây/ID OCG được đọc qua backend file ID; đổi owner phải seed lại.
+            pdfOcgLayers: [],
+            hiddenOcgLayerIds: [],
+            ocgVisibilityProvenance: createEmptyOcgVisibilityProvenance(),
+            lockedOcgLayerIds: [],
+            expandedOcgLayerIds: [],
+            ocgPreviewUrl: null,
         };
     }),
     setFontInspectionCache: (cache) => set({ fontInspectionCache: cache }),
@@ -1023,13 +1170,138 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     setPdfOcgLayers: (layers) => set((state) => (
         state.pdfOcgLayers === layers ? state : { pdfOcgLayers: layers }
     )),
-    // Cùng idempotent array: LayerPanel / ImpositionTab hay clear `[]` trong effect.
+    seedOcgVisibilityDefaults: (
+        hiddenLayerIds,
+        sourceFile,
+        sourceEditGeneration,
+        sourceFileId,
+    ) => set((state) => {
+        const boundFileId = sourceFileId ?? state.selectionFileId;
+        // Async response của file/generation/backend owner cũ tuyệt đối không được
+        // gắn object ID lên source mới.
+        if (
+            state.file !== sourceFile
+            || state.editGeneration !== sourceEditGeneration
+            || (sourceFileId !== undefined && state.selectionFileId !== sourceFileId)
+        ) return state;
+
+        const sourceDefaults = canonicalOcgLayerIds(hiddenLayerIds);
+        const previous = state.ocgVisibilityProvenance;
+        const sameBinding = previous.sourceFile === sourceFile
+            && previous.sourceFileId === boundFileId
+            && previous.sourceEditGeneration === sourceEditGeneration;
+        const keepsExplicitOverride = sameBinding && previous.intent === 'explicit';
+        const nextHidden = keepsExplicitOverride
+            ? canonicalOcgLayerIds(state.hiddenOcgLayerIds)
+            : sourceDefaults;
+        const nextProvenance: WorkspaceOcgVisibilityProvenance = {
+            intent: keepsExplicitOverride ? 'explicit' : 'source-default',
+            sourceFile,
+            sourceFileId: boundFileId,
+            sourceEditGeneration,
+            baselineLoaded: true,
+            sourceDefaultHiddenLayerIds: sourceDefaults,
+        };
+        if (
+            sameOptionalArray(state.hiddenOcgLayerIds, nextHidden)
+            && sameOcgVisibilityProvenance(previous, nextProvenance)
+        ) return state;
+        return {
+            hiddenOcgLayerIds: nextHidden,
+            ocgVisibilityProvenance: nextProvenance,
+        };
+    }),
+    seedOcgLayerState: (
+        layers,
+        hiddenLayerIds,
+        lockedLayerIds,
+        sourceFile,
+        sourceEditGeneration,
+        sourceFileId,
+    ) => set((state) => {
+        if (
+            state.file !== sourceFile
+            || state.editGeneration !== sourceEditGeneration
+            || state.selectionFileId !== sourceFileId
+        ) return state;
+
+        const sourceDefaults = canonicalOcgLayerIds(hiddenLayerIds);
+        const previous = state.ocgVisibilityProvenance;
+        const sameBinding = previous.sourceFile === sourceFile
+            && previous.sourceFileId === sourceFileId
+            && previous.sourceEditGeneration === sourceEditGeneration;
+        const keepsExplicitOverride = sameBinding && previous.intent === 'explicit';
+        return {
+            pdfOcgLayers: layers,
+            hiddenOcgLayerIds: keepsExplicitOverride
+                ? canonicalOcgLayerIds(state.hiddenOcgLayerIds)
+                : sourceDefaults,
+            ocgVisibilityProvenance: {
+                intent: keepsExplicitOverride ? 'explicit' : 'source-default',
+                sourceFile,
+                sourceFileId,
+                sourceEditGeneration,
+                baselineLoaded: true,
+                sourceDefaultHiddenLayerIds: sourceDefaults,
+            },
+            lockedOcgLayerIds: canonicalOcgLayerIds(lockedLayerIds),
+        };
+    }),
+    // Setter này đại diện cho hành động user, nên cùng giá trị vẫn phải giữ intent
+    // explicit. Chỉ `resetOcgVisibilityToSourceDefault` mới được hủy provenance đó.
     setHiddenOcgLayerIds: (updater) => set((state) => {
-        const next = typeof updater === 'function' ? updater(state.hiddenOcgLayerIds) : updater;
-        const prev = state.hiddenOcgLayerIds;
-        if (prev === next) return state;
-        if (Array.isArray(prev) && Array.isArray(next) && prev.length === next.length && prev.every((id, i) => id === next[i])) return state;
-        return { hiddenOcgLayerIds: next };
+        const requested = typeof updater === 'function'
+            ? updater(state.hiddenOcgLayerIds)
+            : updater;
+        const next = canonicalOcgLayerIds(requested);
+        const previous = state.ocgVisibilityProvenance;
+        const sameBinding = previous.sourceFile === state.file
+            && previous.sourceFileId === state.selectionFileId
+            && previous.sourceEditGeneration === state.editGeneration;
+        const nextProvenance: WorkspaceOcgVisibilityProvenance = {
+            intent: 'explicit',
+            sourceFile: state.file,
+            sourceFileId: state.selectionFileId,
+            sourceEditGeneration: state.editGeneration,
+            baselineLoaded: sameBinding ? previous.baselineLoaded : false,
+            sourceDefaultHiddenLayerIds: sameBinding
+                ? canonicalOcgLayerIds(previous.sourceDefaultHiddenLayerIds)
+                : [],
+        };
+        if (
+            sameOptionalArray(state.hiddenOcgLayerIds, next)
+            && sameOcgVisibilityProvenance(previous, nextProvenance)
+        ) return state;
+        return {
+            hiddenOcgLayerIds: next,
+            ocgVisibilityProvenance: nextProvenance,
+        };
+    }),
+    resetOcgVisibilityToSourceDefault: () => set((state) => {
+        const previous = state.ocgVisibilityProvenance;
+        const sameBinding = previous.sourceFile === state.file
+            && previous.sourceFileId === state.selectionFileId
+            && previous.sourceEditGeneration === state.editGeneration;
+        const baselineLoaded = sameBinding && previous.baselineLoaded;
+        const nextHidden = baselineLoaded
+            ? canonicalOcgLayerIds(previous.sourceDefaultHiddenLayerIds)
+            : [];
+        const nextProvenance: WorkspaceOcgVisibilityProvenance = {
+            intent: 'source-default',
+            sourceFile: baselineLoaded ? state.file : null,
+            sourceFileId: baselineLoaded ? state.selectionFileId : '',
+            sourceEditGeneration: baselineLoaded ? state.editGeneration : -1,
+            baselineLoaded,
+            sourceDefaultHiddenLayerIds: nextHidden,
+        };
+        if (
+            sameOptionalArray(state.hiddenOcgLayerIds, nextHidden)
+            && sameOcgVisibilityProvenance(previous, nextProvenance)
+        ) return state;
+        return {
+            hiddenOcgLayerIds: nextHidden,
+            ocgVisibilityProvenance: nextProvenance,
+        };
     }),
     setLockedOcgLayerIds: (updater) => set((state) => {
         const next = typeof updater === 'function' ? updater(state.lockedOcgLayerIds) : updater;

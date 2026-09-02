@@ -414,9 +414,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         isObjectEditMode,
         currentEditObjects,
         setPdfOcgLayers,
+        hiddenOcgLayerIds, ocgVisibilityProvenance, seedOcgLayerState,
         setHiddenObjectIds,
         setLockedObjectIds,
-        setHiddenOcgLayerIds, setLockedOcgLayerIds,
+        setLockedOcgLayerIds,
         selectionFileId, setSelectionFileId, vdpFields, setVdpFields, isCropMode, setIsCropMode, commitCropSelection, setIsObjectEditMode, setViewerToolMode,
         selectedVdpFieldIds, setSelectedVdpFieldIds,
         showCloseConfirm, setShowCloseConfirm,
@@ -446,9 +447,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         isObjectEditMode: state.isObjectEditMode,
         currentEditObjects: state.currentEditObjects,
         setPdfOcgLayers: state.setPdfOcgLayers,
+        hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        ocgVisibilityProvenance: state.ocgVisibilityProvenance,
+        seedOcgLayerState: state.seedOcgLayerState,
         setHiddenObjectIds: state.setHiddenObjectIds,
         setLockedObjectIds: state.setLockedObjectIds,
-        setHiddenOcgLayerIds: state.setHiddenOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
+        setLockedOcgLayerIds: state.setLockedOcgLayerIds,
         selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields, isCropMode: state.isCropMode, setIsCropMode: state.setIsCropMode, commitCropSelection: state.commitCropSelection, setIsObjectEditMode: state.setIsObjectEditMode, setViewerToolMode: state.setViewerToolMode,
         selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
@@ -469,8 +473,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             viewerPageInstanceIds,
             viewerPageRotations,
             editGeneration,
+            hiddenOcgLayerIds,
+            ocgVisibilityProvenance,
         }),
-        [file, viewerPageOrder, viewerPageInstanceIds, viewerPageRotations, editGeneration],
+        [
+            file,
+            viewerPageOrder,
+            viewerPageInstanceIds,
+            viewerPageRotations,
+            editGeneration,
+            hiddenOcgLayerIds,
+            ocgVisibilityProvenance,
+        ],
     );
 
     // P1-T03: Use dedicated store for these (migrated)
@@ -544,9 +558,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         hasConfigPanel: hasActiveRightTool,
         viewerReservedWidth: TOOL_MENU_VIEWER_MIN_WIDTH,
     });
+    const maximumRightToolMenuWidth = Math.max(
+        TOOL_MENU_ICON_WIDTH,
+        Math.floor(workspaceWidth - TOOL_MENU_VIEWER_MIN_WIDTH),
+    );
     const effectiveToolMenuLayout = preferredCatalogSplitWidth === null
         ? baseEffectiveToolMenuLayout
-        : resolveToolMenuDividerLayout(baseEffectiveToolMenuLayout, preferredCatalogSplitWidth);
+        : resolveToolMenuDividerLayout(
+            baseEffectiveToolMenuLayout,
+            preferredCatalogSplitWidth,
+            maximumRightToolMenuWidth,
+        );
     const effectiveToolMenuMode = effectiveToolMenuLayout.mode;
     useEffect(() => {
         if (!hasActiveRightTool) setPreferredCatalogSplitWidth(null);
@@ -1814,14 +1836,24 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // virtual layers in the store, so checking only pdfOcgLayers.length is not safe.
     useEffect(() => {
         let cancelled = false;
+        const sourceFile = file;
+        const sourceEditGeneration = editGeneration;
 
         const handleRefreshLayers = async (event?: Event) => {
             if (event && (event as CustomEvent).detail?.tabId !== tabId) return;
             const fid = selectionFileId;
-            if (!fid) {
-                setPdfOcgLayers([]);
-                setHiddenOcgLayerIds([]);
-                setLockedOcgLayerIds([]);
+            if (!fid || !sourceFile) {
+                const current = store.getState();
+                if (
+                    current.file === sourceFile
+                    && current.editGeneration === sourceEditGeneration
+                    && current.selectionFileId === ''
+                ) {
+                    setPdfOcgLayers([]);
+                    setLockedOcgLayerIds([]);
+                }
+                // Chưa đọc `/D` thì không được bịa baseline rỗng: explicit `[]`
+                // phát sinh trước response vẫn phải được materialize.
                 return;
             }
             try {
@@ -1838,9 +1870,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     if (Array.isArray(layer.children)) walk(layer.children);
                 });
                 walk(layers);
-                setPdfOcgLayers(layers);
-                setHiddenOcgLayerIds(hidden);
-                setLockedOcgLayerIds(locked);
+                // FIX/PARITY (audit 2026-08-29 §MAP-NEST-10): publish cây,
+                // baseline `/D` và lock trong một transaction đã fence bằng cả
+                // File + edit generation + backend file ID.
+                seedOcgLayerState(
+                    layers,
+                    hidden,
+                    locked,
+                    sourceFile,
+                    sourceEditGeneration,
+                    fid,
+                );
             } catch (e) {
                 if (!cancelled) console.warn("Failed to refresh OCG layers", e);
             }
@@ -1853,7 +1893,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             cancelled = true;
             window.removeEventListener('refresh-ocg-layers', handleRefreshLayers);
         };
-    }, [selectionFileId, setPdfOcgLayers, setHiddenOcgLayerIds, setLockedOcgLayerIds, tabId]);
+    }, [
+        editGeneration,
+        file,
+        seedOcgLayerState,
+        selectionFileId,
+        setLockedOcgLayerIds,
+        setPdfOcgLayers,
+        tabId,
+    ]);
 
 
     const handleDeleteObjects = useCallback(async (objs: PdfObject[], pageNum: number) => {
@@ -2284,6 +2332,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             if (dragTarget === 'catalog') {
                 if (dividerCatalogWidth !== null) setPreferredCatalogSplitWidth(dividerCatalogWidth);
             } else if (layout) {
+                // Outer handle chốt lại toàn bộ layout, không giữ split cũ khiến
+                // tổng width vừa kéo bị bật ngược sau pointerup.
+                setPreferredCatalogSplitWidth(null);
                 setToolMenuLayout(layout.mode, layout.fullWidth);
             }
         };
@@ -2312,7 +2363,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     catalogWidth: startCatalogWidth,
                     totalWidth: startTotalWidth,
                     canExpandFull: true,
-                }, startCatalogWidth + deltaX);
+                }, startCatalogWidth + deltaX, maximumTotalWidth);
                 draftTotalWidth = draftEffectiveLayout.totalWidth;
                 sidebarDraftLayoutRef.current = null;
                 sidebarDividerCatalogWidthRef.current = draftEffectiveLayout.catalogWidth;
@@ -2533,7 +2584,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 .some((rotation) => (((rotation % 360) + 360) % 360) !== 0));
             const hasNonIdentityOrder = !!workingRevision.viewerPageOrder
                 && workingRevision.viewerPageOrder.some((pageNumber, index) => pageNumber !== index + 1);
-            if (viewerDirty || editSessionDirty || initialRecovery || hasRotationEdits || hasNonIdentityOrder) {
+            const hasExplicitOcgVisibility = workingRevision
+                .ocgVisibilityProvenance?.intent === 'explicit';
+            if (
+                viewerDirty
+                || editSessionDirty
+                || initialRecovery
+                || hasRotationEdits
+                || hasNonIdentityOrder
+                || hasExplicitOcgVisibility
+            ) {
                 return undefined;
             }
             return sourcePath;
@@ -3103,6 +3163,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             bleed: config.bleed,
             sheetWidth: sheetW,
             sheetHeight: sheetH,
+            taskMode: config.taskMode,
             layoutType: config.layoutType,
             cols: config.columns || 0,
             rows: config.rows || 0,
@@ -3170,13 +3231,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             diagnosticPendingRequestId: config.diagnosticPendingRequestId,
             diagnosticPreviewCapacity: config.diagnosticPreviewCapacity,
             diagnosticPreviewState: config.diagnosticPreviewState,
+            forceLegacyGrid: config.forceLegacyGrid,
             // ═══ Bình Bế Rớt (CNC) ═══
             cncMode: config.cncMode,
             cncTwoSided: config.cncTwoSided,
             cncFlipEdge: config.cncFlipEdge,
             cncDuplexMarks: config.cncDuplexMarks,
-            // Tự động lưu file in
-            autoSavePrint: config.autoSavePrint,
+            // CONTRACT (audit 2026-08-29 §MAP-NEST-11): job mới chỉ chuyển tiếp
+            // cấu hình canonical; alias cũ không được tái phát xuống engine.
             savePrintConfig: config.savePrintConfig,
             // ═══ Report vẽ lên tờ (spec: binh-tem-be-report) — gồm cả CNC ═══
             reportDisplay: config.reportDisplay,
@@ -3185,7 +3247,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             reportLaminationSides: config.reportLaminationSides,
             reportOrderCode: config.reportOrderCode,
             exportUniqueSheets: config.exportUniqueSheets,
-            saveByReport: config.saveByReport,
         };
 
         processEngine(settings as unknown as ProcessingSettings, config.spawnNewTab);
@@ -3327,44 +3388,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
      * (bảo toàn .path để backend nạp nhanh qua native path).
      */
     const getWorkingFile = async (): Promise<File> => {
-        // BUG cũ: so identity với viewerNumPages (luôn = order.length sau xóa) →
-        // xóa đuôi 10→4 còn [1,2,3,4] bị coi "không sửa" → preview vẫn mở file 10 trang.
-        // Đúng: identity chỉ khi order === [1..N] với N = số trang FILE GỐC trên disk.
-        // viewerDirty: undo-stack sau xóa/sắp trang — failsafe khi đếm page gốc lỗi.
-        let hasOrderEdits = !!viewerDirty;
-        if (!hasOrderEdits && viewerPageOrder && file) {
-            try {
-                hasOrderEdits = !(await isViewerOrderIdentityForSource(file, viewerPageOrder));
-            } catch (e) {
-                // Không đọc được page count gốc → bake an toàn (tránh trả file 10 trang).
-                console.warn('[getWorkingFile] source page count failed, force bake:', e);
-                hasOrderEdits = true;
-            }
-        }
-        // viewerPageRotations giờ là number[] THEO VỊ TRÍ, flattenRotations luôn tạo mảng
-        // đầy đủ độ dài KỂ CẢ khi mọi góc = 0 → phải kiểm "có góc ≠ 0", không phải "có key"
-        // (nếu dùng .length sẽ bật cờ sửa oan → bake file thừa).
-        const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: unknown) => ((((r as number) % 360) + 360) % 360) !== 0));
-        if ((hasOrderEdits || hasRotEdits) && file) {
-            try {
-                const baked = await applyAcrobatEdits();
-                if (baked) {
-                    // KHÔNG gắn .path gốc — resolvePreviewSource ghi temp từ bytes bake.
-                    return new File([baked], file.name, { type: 'application/pdf' });
-                }
-                throw new Error('Không nhận được dữ liệu PDF sau khi áp dụng thay đổi trang.');
-            } catch (e) {
-                // PREVIEW (audit 2026-08-04 §W2.PA2): fail-closed. File gốc có thể
-                // chứa trang đã xóa hoặc thứ tự cũ; trả nó sẽ tạo preview sai âm thầm.
-                console.error('[getWorkingFile] bake failed:', e);
-                const failure = new Error(
-                    'Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại.',
-                );
-                (failure as Error & { cause?: unknown }).cause = e;
-                throw failure;
-            }
-        }
-        return file!;
+        // FIX/PARITY (audit 2026-08-29 §MAP-NEST-10): preview và execution dùng
+        // cùng resolver/revision. Explicit OCG (kể cả show-all `[]`) vì vậy nhận
+        // đúng bytes đã sửa `/OCProperties /D`, không còn resolver bake riêng.
+        const working = await getCropWorkingFile.resolveUnprepared();
+        if (working) return working;
+        throw new Error('Không thể tạo PDF làm việc từ revision hiện tại.');
     };
 
     /** @returns true nếu đã lưu thành công; false nếu huỷ dialog / lỗi. */
@@ -3828,9 +3857,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const rightToolMenuWidth = effectiveToolMenuLayout.totalWidth;
     const displayedToolMenuLayout = sidebarDraftLayout === null
         ? effectiveToolMenuLayout
-        : sidebarDragRef.current.target === 'catalog' || preferredCatalogSplitWidth === null
-            ? sidebarDraftLayout
-            : resolveToolMenuDividerLayout(sidebarDraftLayout, preferredCatalogSplitWidth);
+        : sidebarDraftLayout;
     const displayedIsSidebarOpen = displayedToolMenuLayout.mode === 'full';
     const effectiveRightToolMenuWidth = sidebarDraftLayout?.totalWidth
         ?? sidebarDraftTotalWidth
@@ -4236,13 +4263,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         {/* Mép ngoài: đổi tổng width của cả cụm. */}
                                         {/* UIUX (audit 2026-07-27 §B-25): vùng bắt chuột rộng gấp đôi (w-2.5), chỉ vẽ 1px ở giữa — nhìn không đổi */}
                                         <div
-                                            className="absolute left-0 top-0 bottom-0 w-2.5 -ml-[5px] cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
+                                            className="absolute left-0 top-0 bottom-0 w-2.5 -ml-[5px] cursor-col-resize touch-none hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
                                             onPointerDown={(event) => beginRightToolMenuDrag(event, 'outer')}
                                         >
                                             <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-px bg-app-line pointer-events-none" />
                                         </div>
-                                        {/* UIUX (audit 2026-08-25): divider thật giữa thiết lập và catalog;
-                                            kéo tại đây chỉ phân bổ hai pane, không resize Viewer. */}
+                                        {/* UIUX (audit 2026-08-29): divider ở mép catalog resize chính catalog;
+                                            panel thiết lập đứng yên, Viewer nhận/trả phần chiều rộng thay đổi. */}
                                         {hasActiveRightTool && displayedIsSidebarOpen && (
                                             <div
                                                 style={{ right: `${displayedToolMenuLayout.catalogWidth}px` }}

@@ -27,6 +27,7 @@ export const TERMINATION_TEXT: Record<TerminationReason, string> = {
   work_budget_exhausted: 'Hết ngân sách tìm kiếm — có thể còn phương án tốt hơn',
   deadline: 'Hết thời gian giới hạn — đây là phương án tốt nhất tìm được',
   max_sheets_reached: 'Chạm trần số tờ đã đặt',
+  sheet_full: 'Đã lấp đầy một tờ theo giới hạn hình học',
   cancelled: 'Đã hủy giữa lúc tìm',
 };
 

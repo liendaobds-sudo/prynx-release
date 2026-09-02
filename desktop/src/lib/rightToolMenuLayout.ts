@@ -222,33 +222,31 @@ export function resolveEffectiveToolMenuLayout(input: {
 }
 
 /**
- * UIUX (audit 2026-08-25): kéo divider giữa panel thiết lập và catalog chỉ
- * phân bổ lại hai pane, không đổi tổng width nên Viewer không bị reflow.
+ * UIUX (audit 2026-08-29): divider nằm đúng ở mép trái catalog nên phải resize
+ * catalog theo con trỏ. Giữ nguyên panel thiết lập và trả/chiếm chỗ từ Viewer;
+ * nếu giữ tổng width thì divider có thể bị khóa ngay tại vị trí ban đầu.
  */
 export function resolveToolMenuDividerLayout(
   layout: EffectiveToolMenuLayout,
   requestedCatalogWidth: number,
+  maximumTotalWidth = layout.configWidth + TOOL_MENU_FULL_MAX_WIDTH,
 ): EffectiveToolMenuLayout {
   if (layout.mode !== 'full' || layout.configWidth <= 0) return layout;
 
-  const minimumCatalogWidth = Math.max(
-    TOOL_MENU_FULL_MIN_WIDTH,
-    layout.totalWidth - TOOL_MENU_FULL_DEFAULT_WIDTH,
-  );
   const maximumCatalogWidth = Math.min(
     TOOL_MENU_FULL_MAX_WIDTH,
-    layout.totalWidth - TOOL_MENU_FULL_MIN_WIDTH,
+    Math.floor(maximumTotalWidth) - layout.configWidth,
   );
-  if (maximumCatalogWidth < minimumCatalogWidth) return layout;
+  if (maximumCatalogWidth < TOOL_MENU_FULL_MIN_WIDTH) return layout;
 
   const catalogWidth = Math.round(Math.min(
     maximumCatalogWidth,
-    Math.max(minimumCatalogWidth, requestedCatalogWidth),
+    Math.max(TOOL_MENU_FULL_MIN_WIDTH, requestedCatalogWidth),
   ));
   return {
     ...layout,
-    configWidth: layout.totalWidth - catalogWidth,
     catalogWidth,
+    totalWidth: layout.configWidth + catalogWidth,
   };
 }
 

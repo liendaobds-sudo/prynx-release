@@ -18,7 +18,7 @@ import { MIXED_NESTING_PROTOCOL_VERSION, type PlacementManifest } from './types'
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocolVersion: MIXED_NESTING_PROTOCOL_VERSION,
-    engineVersion: '0.1.0',
+    engineVersion: '0.2.0',
     jobId: 'deadbeefdeadbeefdeadbeefdeadbeef',
     seed: 20260826,
     status: 'completed',
@@ -100,7 +100,7 @@ describe('manifest hợp lệ', () => {
     }
   });
 
-  it('nhận đủ bốn lý do unplaced và năm terminationReason', () => {
+  it('nhận đủ bốn lý do unplaced và sáu terminationReason', () => {
     for (const reason of [
       'NO_FEASIBLE_POSE',
       'SEARCH_BUDGET_EXHAUSTED',
@@ -118,6 +118,7 @@ describe('manifest hợp lệ', () => {
       'work_budget_exhausted',
       'deadline',
       'max_sheets_reached',
+      'sheet_full',
       'cancelled',
     ]) {
       const raw = manifest({
@@ -206,11 +207,23 @@ describe('manifest hỏng', () => {
   });
 
   it('sai protocolVersion', () => {
-    expect(issueCodes(manifest({ protocolVersion: 2 }))).toContain('PROTOCOL_MISMATCH');
-    expect(issueCodes(manifest({ protocolVersion: '1' }))).toContain('PROTOCOL_MISMATCH');
+    expect(
+      issueCodes(manifest({ protocolVersion: MIXED_NESTING_PROTOCOL_VERSION + 1 })),
+    ).toContain('PROTOCOL_MISMATCH');
+    expect(
+      issueCodes(manifest({ protocolVersion: String(MIXED_NESTING_PROTOCOL_VERSION) })),
+    ).toContain('PROTOCOL_MISMATCH');
     const noVersion = manifest();
     delete noVersion.protocolVersion;
     expect(issueCodes(noVersion)).toContain('PROTOCOL_MISMATCH');
+  });
+
+  it('unplaced thiếu partId bị chặn trước khi cast manifest', () => {
+    const raw = manifest({
+      unplaced: [{ instanceId: 'part-a#0003', reason: 'NO_FEASIBLE_POSE' }],
+      stats: { ...(manifest().stats as Record<string, unknown>), unplacedCount: 1 },
+    });
+    expect(issueCodes(raw)).toContain('WRONG_TYPE');
   });
 
   it('chưa qua validator của engine thì KHÔNG được preview', () => {
@@ -362,14 +375,23 @@ describe('manifest hỏng', () => {
 
 describe('bảo toàn số lượng', () => {
   it('đủ số con thì đi qua', () => {
-    expect(validateManifest(manifest(), { expectedQuantities: { 'part-a': 2 } }).ok).toBe(true);
+    expect(validateManifest(manifest(), {
+      layoutIntent: 'quantity_fulfillment',
+      expectedQuantities: { 'part-a': 2 },
+    }).ok).toBe(true);
   });
 
   it('thiếu hoặc thừa con bị chặn', () => {
-    expect(issueCodes(manifest(), { expectedQuantities: { 'part-a': 3 } })).toContain(
+    expect(issueCodes(manifest(), {
+      layoutIntent: 'quantity_fulfillment',
+      expectedQuantities: { 'part-a': 3 },
+    })).toContain(
       'QUANTITY_MISMATCH',
     );
-    expect(issueCodes(manifest(), { expectedQuantities: { 'part-a': 2, 'part-b': 1 } })).toContain(
+    expect(issueCodes(manifest(), {
+      layoutIntent: 'quantity_fulfillment',
+      expectedQuantities: { 'part-a': 2, 'part-b': 1 },
+    })).toContain(
       'QUANTITY_MISMATCH',
     );
   });
@@ -381,7 +403,10 @@ describe('bảo toàn số lượng', () => {
       ],
       stats: { ...(manifest().stats as Record<string, unknown>), placedCount: 1 },
     });
-    expect(issueCodes(raw, { expectedQuantities: { 'part-a': 1 } })).toContain('QUANTITY_MISMATCH');
+    expect(issueCodes(raw, {
+      layoutIntent: 'quantity_fulfillment',
+      expectedQuantities: { 'part-a': 1 },
+    })).toContain('QUANTITY_MISMATCH');
   });
 
   it('unplaced vẫn tính vào số lượng — không được bỏ part để giảm số tờ', () => {
@@ -392,7 +417,60 @@ describe('bảo toàn số lượng', () => {
       unplaced: [{ instanceId: 'part-a#0002', partId: 'part-a', reason: 'NO_FEASIBLE_POSE' }],
       stats: { ...(manifest().stats as Record<string, unknown>), placedCount: 1, unplacedCount: 1 },
     });
-    expect(validateManifest(raw, { expectedQuantities: { 'part-a': 2 } }).ok).toBe(true);
+    expect(validateManifest(raw, {
+      layoutIntent: 'quantity_fulfillment',
+      expectedQuantities: { 'part-a': 2 },
+    }).ok).toBe(true);
+  });
+});
+
+describe('bất biến autofill một tờ', () => {
+  const options = {
+    layoutIntent: 'autofill_single_sheet' as const,
+    expectedPartIds: ['part-a'],
+  };
+
+  it('nhận nhiều placement cùng design, không phụ thuộc quantity', () => {
+    const raw = manifest({
+      stats: {
+        ...(manifest().stats as Record<string, unknown>),
+        terminationReason: 'sheet_full',
+      },
+    });
+    expect(validateManifest(raw, options).ok).toBe(true);
+  });
+
+  it('chặn nhiều tờ, unplaced, thiếu design và design lạ', () => {
+    const twoSheets = manifest({
+      stats: { ...(manifest().stats as Record<string, unknown>), sheetCount: 2 },
+    });
+    expect(issueCodes(twoSheets, options)).toContain('LAYOUT_INTENT_MISMATCH');
+
+    const withUnplaced = manifest({
+      unplaced: [{
+        instanceId: 'part-a#0003',
+        partId: 'part-a',
+        reason: 'NO_FEASIBLE_POSE',
+      }],
+      stats: { ...(manifest().stats as Record<string, unknown>), unplacedCount: 1 },
+    });
+    expect(issueCodes(withUnplaced, options)).toContain('LAYOUT_INTENT_MISMATCH');
+
+    expect(issueCodes(manifest(), {
+      layoutIntent: 'autofill_single_sheet',
+      expectedPartIds: ['part-a', 'part-b'],
+    })).toContain('LAYOUT_INTENT_MISMATCH');
+
+    const unknown = manifest({
+      placements: [{
+        instanceId: 'part-la#0001',
+        partId: 'part-la',
+        sheetIndex: 0,
+        pose: { rotationDeg: 0, translateXmm: 1, translateYmm: 1 },
+      }],
+      stats: { ...(manifest().stats as Record<string, unknown>), placedCount: 1 },
+    });
+    expect(issueCodes(unknown, options)).toContain('LAYOUT_INTENT_MISMATCH');
   });
 });
 

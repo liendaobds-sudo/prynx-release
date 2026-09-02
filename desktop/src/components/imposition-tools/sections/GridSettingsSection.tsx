@@ -7,6 +7,12 @@ import { useShallow } from "zustand/react/shallow";
 import { parsePastedQuantities } from "../../../lib/parsePastedQuantities";
 import { useTranslation } from 'react-i18next';
 import { resolveImpositionModes } from "../pageSheetPolicy";
+// §B10: option "Nesting theo đường bế" thủ công đã BỎ — auto-route theo phân loại hình
+// (CUSTOM → true-shape) chạy ngầm. resolveGridStrategy vẫn giữ để chuẩn hoá giá trị rò cũ.
+import {
+  TRUE_SHAPE_NESTING_ENABLED,
+  resolveGridStrategy,
+} from "../trueShapeNestingRollout";
 
 export interface GridSettingsProps {
   taskMode: string;
@@ -505,10 +511,18 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <select
-                value={gridStrategy}
+                value={resolveGridStrategy({
+                  enabled: TRUE_SHAPE_NESTING_ENABLED,
+                  activeTool,
+                  taskMode,
+                  gridStrategy,
+                })}
                 onChange={(e) => setGridStrategy(e.target.value)}
                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
               >
+                {/* NEST §B10: "Xếp tối ưu" nay TỰ ĐỘNG định tuyến tem hình đặc biệt (CUSTOM)
+                    sang true-shape nesting; hình có tên vẫn dùng tiler chuyên biệt. "Lưới đơn
+                    giản" = lưới bbox. Vì vậy option "Nesting theo đường bế" thủ công đã bỏ. */}
                 <option value="optimal_auto">{t('imposition.gridSettings:xep_toi_uu')}</option>
                 <option value="simple_auto">{t('imposition.gridSettings:luoi_don_gian')}</option>
                 <option value="manual">{t('imposition.gridSettings:tuy_chinh')}</option>

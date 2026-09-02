@@ -19,6 +19,7 @@ import {
   MIXED_NESTING_PROTOCOL_VERSION,
   TERMINATION_REASONS,
   UNPLACED_REASONS,
+  type LayoutIntent,
   type PlacementManifest,
   type PlacementRecord,
   type Pose,
@@ -41,6 +42,7 @@ export type ValidationIssueCode =
   | 'FORBIDDEN_FIELD'
   | 'NOT_VALIDATED'
   | 'QUANTITY_MISMATCH'
+  | 'LAYOUT_INTENT_MISMATCH'
   | 'STATS_MISMATCH'
   | 'UNKNOWN_ENUM';
 
@@ -172,15 +174,31 @@ export function hasFractionalTranslation(pose: Pose, epsilon = 1e-9): boolean {
 //  Manifest
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface ValidateManifestOptions {
+interface ValidateManifestOptionsBase {
   /**
    * Số lượng mong đợi theo `partId` (từ request đã gửi). Có thì validator kiểm **bảo toàn
    * số lượng**; không có thì bỏ qua phần đó, vì frontend không được tự bịa kỳ vọng.
    */
-  expectedQuantities?: Readonly<Record<string, number>>;
   /** Cho phép manifest ở trạng thái `cancelled`/`failed` đi qua (chỉ để xem, không export). */
   allowNonCompleted?: boolean;
 }
+
+export type ValidateManifestOptions =
+  | (ValidateManifestOptionsBase & {
+      layoutIntent?: undefined;
+      expectedQuantities?: never;
+      expectedPartIds?: never;
+    })
+  | (ValidateManifestOptionsBase & {
+      layoutIntent: Extract<LayoutIntent, 'quantity_fulfillment'>;
+      expectedQuantities: Readonly<Record<string, number>>;
+      expectedPartIds?: never;
+    })
+  | (ValidateManifestOptionsBase & {
+      layoutIntent: Extract<LayoutIntent, 'autofill_single_sheet'>;
+      expectedPartIds: readonly string[];
+      expectedQuantities?: never;
+    });
 
 function validatePlacement(
   raw: unknown,
@@ -319,6 +337,9 @@ export function validateManifest(
       } else {
         seenIds.add(item.instanceId);
       }
+      if (typeof item.partId !== 'string' || item.partId.length === 0) {
+        issues.push(issue(`${path}.partId`, 'WRONG_TYPE', 'partId phải là chuỗi.'));
+      }
       if (!UNPLACED_REASONS.includes(item.reason as never)) {
         issues.push(issue(`${path}.reason`, 'UNKNOWN_ENUM', `reason lạ: ${String(item.reason)}.`));
       }
@@ -398,8 +419,13 @@ export function validateManifest(
     }
   }
 
-  // ── Bảo toàn số lượng ──
-  if (options.expectedQuantities && Array.isArray(raw.placements) && Array.isArray(raw.unplaced)) {
+  // ── Bất biến theo layoutIntent của REQUEST ──
+  // Không suy intent từ quantity, terminationReason hay hình dạng manifest.
+  if (
+    options.layoutIntent === 'quantity_fulfillment'
+    && Array.isArray(raw.placements)
+    && Array.isArray(raw.unplaced)
+  ) {
     const actual = new Map<string, number>();
     for (const list of [raw.placements, raw.unplaced]) {
       for (const item of list) {
@@ -426,6 +452,55 @@ export function validateManifest(
             `quantity.${partId}`,
             'QUANTITY_MISMATCH',
             `Manifest có chi tiết ${partId} không thuộc yêu cầu.`,
+          ),
+        );
+      }
+    }
+  } else if (
+    options.layoutIntent === 'autofill_single_sheet'
+    && Array.isArray(raw.placements)
+    && Array.isArray(raw.unplaced)
+  ) {
+    if (raw.unplaced.length !== 0) {
+      issues.push(
+        issue(
+          'unplaced',
+          'LAYOUT_INTENT_MISMATCH',
+          'Kết quả tự lấp đầy một tờ không được có danh sách unplaced.',
+        ),
+      );
+    }
+    if (isPlainObject(raw.stats) && raw.stats.sheetCount !== 1) {
+      issues.push(
+        issue(
+          'stats.sheetCount',
+          'LAYOUT_INTENT_MISMATCH',
+          `Tự lấp đầy phải trả đúng một tờ, nhận ${String(raw.stats.sheetCount)}.`,
+        ),
+      );
+    }
+    const expected = new Set(options.expectedPartIds);
+    const placed = new Set<string>();
+    for (const item of raw.placements) {
+      if (!isPlainObject(item) || typeof item.partId !== 'string') continue;
+      placed.add(item.partId);
+      if (!expected.has(item.partId)) {
+        issues.push(
+          issue(
+            `parts.${item.partId}`,
+            'LAYOUT_INTENT_MISMATCH',
+            `Manifest có chi tiết ${item.partId} không thuộc yêu cầu autofill.`,
+          ),
+        );
+      }
+    }
+    for (const partId of expected) {
+      if (!placed.has(partId)) {
+        issues.push(
+          issue(
+            `parts.${partId}`,
+            'LAYOUT_INTENT_MISMATCH',
+            `Autofill chưa xếp được ít nhất một con của chi tiết ${partId}.`,
           ),
         );
       }

@@ -203,25 +203,25 @@ describe('rightToolMenuLayout — hai mode', () => {
     });
   });
 
-  it('divider phân bổ config/catalog nhưng giữ nguyên tổng width', () => {
+  it('divider thu catalog và trả đúng phần chiều rộng cho Viewer', () => {
     const layout = {
       mode: 'full' as const,
       configWidth: 390,
-      catalogWidth: 390,
-      totalWidth: 780,
+      catalogWidth: 432,
+      totalWidth: 822,
       canExpandFull: true,
     };
 
-    expect(resolveToolMenuDividerLayout(layout, 490)).toEqual({
+    expect(resolveToolMenuDividerLayout(layout, 332, 1200)).toEqual({
       mode: 'full',
-      configWidth: 290,
-      catalogWidth: 490,
-      totalWidth: 780,
+      configWidth: 390,
+      catalogWidth: 332,
+      totalWidth: 722,
       canExpandFull: true,
     });
   });
 
-  it('divider giữ giới hạn pane và bỏ qua mode icons', () => {
+  it('divider giữ giới hạn catalog, budget tổng và bỏ qua mode icons', () => {
     const layout = {
       mode: 'full' as const,
       configWidth: 390,
@@ -231,13 +231,13 @@ describe('rightToolMenuLayout — hai mode', () => {
     };
     expect(resolveToolMenuDividerLayout(layout, 100)).toMatchObject({
       configWidth: 390,
-      catalogWidth: 390,
-      totalWidth: 780,
+      catalogWidth: 280,
+      totalWidth: 670,
     });
-    expect(resolveToolMenuDividerLayout(layout, 900)).toMatchObject({
-      configWidth: 280,
-      catalogWidth: 500,
-      totalWidth: 780,
+    expect(resolveToolMenuDividerLayout(layout, 900, 900)).toMatchObject({
+      configWidth: 390,
+      catalogWidth: 510,
+      totalWidth: 900,
     });
 
     const icons = { ...layout, mode: 'icons' as const, catalogWidth: 48 };
