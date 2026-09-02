@@ -86,8 +86,8 @@ Bằng chứng chính:
 - Execute payload: `desktop/src/components/imposition-tools/ImposerDashboard.tsx:1520-1588`.
 - Frontend gọi job: `desktop/src/lib/processHandlers.ts:248-445`.
 - Backend job: `backend/app/api/routes/imposition.py:850-1085`.
-- Single-design/S&R đã shape-aware: `backend/app/workers/sticker_layout/layout_compute.py:22-100,202-528`.
-- `optimal_auto` hiện xếp hạng candidate grid/L-shape/NFP cho một loại, không phải mixed nesting tổng quát: `backend/app/workers/sticker_layout/orchestrator.py:75-310,333-522`.
+- Single-design/S&R đã shape-aware: `backend/app/workers/sticker_imposer_pkg/layout_compute.py:22-100,202-528`.
+- `optimal_auto` hiện xếp hạng candidate grid/L-shape/NFP cho một loại, không phải mixed nesting tổng quát: `backend/app/workers/sticker_imposer_pkg/orchestrator.py:75-310,333-522`.
 - Multi-design vẫn dùng bbox/MaxRects: `backend/app/workers/nup_engine.py:1987-2076,2106-2194`; preview tương ứng tại `backend/app/api/routes/imposition.py:2635-2704`.
 
 ### 3.3. Bình bế rớt/CNC

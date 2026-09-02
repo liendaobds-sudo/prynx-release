@@ -1,6 +1,6 @@
 # PrynX — Threat model ngắn cho security review
 
-**Cập nhật:** 2026-08-15
+**Cập nhật:** 2026-08-28 (bổ sung bất biến sau audit chống crack — xem `SECURITY_ARCHITECTURE.md` §26)
 
 **Vai trò:** scan context ngắn, dùng trước mọi review/audit. `SECURITY_ARCHITECTURE.md` và code/test hiện tại giữ phần chi tiết; tài liệu này không thay thế bằng chứng.
 
@@ -39,10 +39,12 @@
 ## 5. Bất biến bảo mật
 
 - Production compiled phải fail-closed khi thiếu/sai token, signature, claim, secret hoặc cấu hình; `DEV_MODE` không được mở cổng production.
-- Authn/authz/feature gate của engine/tác vụ có giá trị phải cưỡng chế ở Tauri/backend/server; UI chỉ là lớp UX/defense-in-depth. Tool client-only phải được ghi rõ accepted risk và vẫn re-check khi quyền đổi.
+- Authn/authz/feature gate của engine/tác vụ có giá trị phải cưỡng chế ở Tauri/backend/server; UI chỉ là lớp UX/defense-in-depth. Tool client-only phải được ghi rõ accepted risk và vẫn re-check khi quyền đổi. **Mọi quyền trong `PRO_FEATURES` phải xuất hiện trong ít nhất một `require_feature`/`enforce_feature` ở backend** — cưỡng chế bằng ratchet `backend/tests/test_pro_feature_enforcement_coverage.py`; ngoại lệ client-only phải khai tường minh trong `_CLIENT_ONLY_ACCEPTED_RISK` và có kiểm hai chiều (audit 2026-08-28 §SEC.01: `cut_export` từng khai `impo.cnc` là Pro ở ba nơi nhưng backend không kiểm ⇒ Free dùng được).
+- Kích hoạt PrynX chỉ đi qua Edge Function (`service_role`). RPC công khai (`verify_license`, `verify_license_guarded`) phải **từ chối `product_id='prynx'`** cho caller không phải `service_role`, nhưng vẫn phục vụ các sản phẩm khác (`bexen`/`mecso`/`mecbia`/`dulieu`/`multi_tem_placer`/`print_monitor_app`) vì đó là toàn bộ cơ chế license của chúng. Đếm activation phải serialize bằng advisory lock; rate-limit không được tin hop đầu của `x-forwarded-for`.
 - Sidecar chỉ nghe loopback; route/WS ngoài allowlist phải xác thực mặc định. HMAC phải ràng buộc request đầy đủ, chống replay và không cho renderer ghi đè header tin cậy.
 - Claim license chỉ được dùng sau verify Ed25519; private/signing/service key không xuất hiện trong client, source map, argv hoặc log.
-- Đường dẫn phải canonicalize rồi mới so scope; chặn traversal, symlink/junction, UNC/device path, arbitrary overwrite và đọc file nhạy cảm. Không chữa lỗi fast-path bằng allowlist toàn Desktop, `%TEMP%` hay ổ đĩa; file ngoài thư mục PrynX phải có capability native hoặc upload bytes.
+- Đường dẫn phải canonicalize rồi mới so scope; chặn traversal, symlink/junction, UNC/device path, arbitrary overwrite và đọc file nhạy cảm. Không chữa lỗi fast-path bằng allowlist toàn Desktop, `%TEMP%` hay ổ đĩa; file ngoài thư mục PrynX phải có capability native hoặc upload bytes. **Deny-list không được so khớp chuỗi thô**: `is_sensitive_path` phải bóc tiền tố `\\?\`/`\??\`/`\\?\UNC\`, chặn admin share (`\\host\C$`) và device namespace, rồi canonicalize và so lại — chuỗi thô để lọt verbatim path, tên 8.3 và junction (audit 2026-08-28 §SEC.04). Share NAS thường vẫn phải dùng được.
+- Renderer không được biến một chuỗi thành quyền thực thi: lệnh spawn tiến trình (`launch_external_app`) chỉ nhận `.exe` đã nằm trong allowlist do native quản (kết quả dò registry / vừa chọn qua hộp thoại native / đã duyệt phiên trước). Đường cấp quyền một lần (staging grant của New Window) phải đòi nguồn nằm trong `fs_scope` — nếu không, một lệnh copy không kiểm scope sẽ tự hợp pháp hoá path bất kỳ (audit 2026-08-28 §SEC.05/§SEC.07).
 - File/result của user không được lộ qua IDOR, static mount, signed URL sai scope, exception hoặc log. Companion PDF Upscale dùng marker lease atomic trong `RESULTS_DIR`: lease ngắn khi chưa commit, claim sau commit, release khi đóng tab và sweep được sau restart; endpoint claim/release vẫn chịu license + feature gate.
 - Input định dạng và native FFI luôn không tin cậy; giới hạn parser/process phải bảo vệ tính bí mật, toàn vẹn và ổn định.
 - Release phải chốt cùng một Git commit sạch trước/sau build, ghi hai feature gate, Python ABI, build mode và sidecar provenance vào manifest; artifact smoke phải chứng minh signed Free bị từ chối một quyền Pro. Native merger phải qua staged symbol gate và behavior smoke thật trên PNG có pHYs + alpha + RGB ICC, kiểm MediaBox, `/SMask` và `/ICCBased /N 3`. Secret không nằm trong repo/artifact/log và output cũ không được tái sử dụng âm thầm.

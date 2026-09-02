@@ -32,6 +32,7 @@ tiến trình**; việc nặng chạy process con riêng nên trần job không 
 | `PRYNX_FEATURE_GATING_ENABLED` | dev: tắt; binary đóng gói: bật cưỡng bức | Với source dev, đặt `true` để test Free/Pro. Binary Nuitka luôn bật và bỏ qua yêu cầu tắt. Dùng `run_dev.bat --gated` để đặt đồng thời biến này và `VITE_FEATURE_GATING_ENABLED=true` cho frontend |
 | `PRYNX_LOGO_REBUILD_ENABLED` | `false` | Cờ release backend cho Phục hồi & Vector hóa Logo. Dev thông dịch vẫn mở bằng `DEV_MODE=true`; bản đóng gói lấy giá trị đã nung trong Tauri host và ghi đè env kế thừa khi spawn sidecar. Pipeline phải đặt đồng thời với `VITE_LOGO_REBUILD_ENABLED`; hiện cả hai giữ `false` (HOLD) cho tới khi nghiệm thu production |
 | `PRYNX_MIXED_NESTING_ENABLED` | `false` | Cờ release backend cho **Bình lồng ghép tự do**. Dev thông dịch vẫn mở bằng `DEV_MODE=true`; bản đóng gói lấy giá trị đã nung. Pipeline phải đặt đồng thời với `VITE_MIXED_NESTING_ENABLED` — một bên bật lệch là trạng thái sai (UI hiện tool nhưng API trả 404, hoặc ngược lại). Cờ tắt chỉ chặn **tạo** source/job mới; Status/Cancel/Delete của job đã tồn tại vẫn hoạt động để không rò thread, suất scheduler hay file tạm |
+| `PRYNX_TRUE_SHAPE_NESTING_ENABLED` | `false` | Cờ release backend cho chiến lược **Nesting tối ưu theo đường bế** trong Bình tem bế/CNC. **Tách hẳn** khỏi `PRYNX_MIXED_NESTING_ENABLED` (công cụ standalone) để kill switch hai đường độc lập. Dev thông dịch vẫn mở bằng `DEV_MODE=true`; bản đóng gói lấy giá trị đã nung. `build_production.ps1` nung cặp cùng `VITE_TRUE_SHAPE_NESTING_ENABLED` và **throw** nếu hai bên lệch ở cả hai chốt (trước bundle, trước manifest). Đang HOLD tới khi Cổng Chặng B đóng — số đo Lô 0 cho thấy free-angle còn kém cardinal ở 8/9 ca |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | *(không)* | Chỉ dùng cho đường kích hoạt/kiểm tra license phía server |
 | `PRYNX_SUPABASE_URL`, `PRYNX_SUPABASE_SECRET_KEY` | *(không)* | Tương thích CI/CLI để lấy khóa resource khuôn bế; build lấy và xóa hai biến ngay đầu process, trước mọi tool con. Launcher chuẩn không dùng env: `build_production.ps1` tự giải mã kho DPAPI `%LOCALAPPDATA%\PrynX\ReleaseSecrets\secrets.clixml` đúng tại bước REST. Public release chỉ nhận khóa mới `sb_secret_` |
 
@@ -80,6 +81,8 @@ hơn thì tăng **worker trong job**, không tăng **số job** — mỗi job n�
 |---|---|---|
 | `PDFIUM_DLL_PATH` | tự dò `native/pdfium_lib/bin` | Trỏ thư mục chứa `pdfium.dll` cho module Rust |
 | `VIRTUAL_ENV` | theo venv | `rust_bridge` dùng để dò `pypdfium2_raw/pdfium.dll` khi không có `PDFIUM_DLL_PATH` |
+| `PRYNX_PARSER_SANDBOX` | bật | Đặt `off` để parse file KHÔNG tin cậy chạy cùng process thay vì process con (chỉ để gỡ lỗi — tắt là bỏ lớp chặn crash parser hạ sidecar, xem pentest §ATK.04) |
+| `PRYNX_PARSER_SANDBOX_TIMEOUT` | `120` (giây) | Trần thời gian cho một lần parse trong process con; nới khi tài liệu cực lớn bị cắt oan |
 | `IMPOSITION_RESTRICT_PATHS` | bật | Giới hạn đường dẫn file mà endpoint `*-by-path` được đọc |
 | `IMPOSITION_ALLOWED_DIRS` | *(không)* | Danh sách thư mục được phép, đi cùng biến trên |
 | `DATABASE_URL` | SQLite cục bộ | Chỉ đổi cho deployment web/docker cũ |
@@ -102,13 +105,14 @@ bên ngoài; tác vụ sửa file vượt khả năng engine nội bộ sẽ d�
 | `PRYNX_OUTLINE_TRUST_PPE` | theo `outline_text.py` | Tin kết quả outline của print engine thay vì hậu kiểm lại |
 | `PRYNX_SHAPE_CLIP` | theo `backend/app/workers/nup_clip_shape.py` | Bật/tắt clip theo hình khi bình tem |
 
-## 6. Log & chẩn đoán (mặc định TẮT — chỉ bật khi đang điều tra)
+## 6. Log & chẩn đoán (release mặc định TẮT — chỉ bật khi đang điều tra)
 
 | Biến | Mặc định | Ghi ra |
 |---|---|---|
 | `PRYNX_PERF` | tắt | Bật lấy mẫu hiệu năng. Khi tắt, code lấy mẫu **không chạy** dòng nào |
 | `PRYNX_PERF_DIR` | `tmp/` | Thư mục chứa file mẫu hiệu năng |
 | `PRYNX_PREVIEW_PERF_LOG` | tắt | Log thời gian dựng preview |
+| `PRYNX_NESTING_TRACE_ENABLED` / `PRYNX_NESTING_TRACE_PATH` | dev: bật; release: tắt / `%APPDATA%\PrynX\logs\nesting_trace.jsonl` | Trace JSONL preview → session → export của true-shape nesting. Chỉ ghi metadata/identity đã băm, dừng append khi file đạt 8 MiB; đặt `0` để tắt trong dev hoặc `1` để bật khi chẩn đoán installer |
 | `PRYNX_EDIT_BUG_LOG` / `PRYNX_EDIT_BUG_LOG_PATH` | tắt / `tmp/logs/edit_pdf_bug.jsonl` | Log chẩn đoán sửa PDF |
 | `PRYNX_EDIT_TEXT_MOVE_LOG` / `PRYNX_EDIT_TEXT_MOVE_LOG_PATH` | tắt | Log riêng cho thao tác di chuyển text |
 | `PRYNX_ROT_AUDIT` | tắt | Log audit góc quay (mỗi process worker tự gắn handler) |

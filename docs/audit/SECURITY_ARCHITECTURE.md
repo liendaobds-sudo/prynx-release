@@ -984,3 +984,106 @@ payload thật: khoá đúng mở được, thiếu khoá và khoá sai đều b
 3. QA trên **BẢN ĐÃ CÀI** (§15.1): kích hoạt online → mở tool Dieline; rồi **rút mạng** và
    mở lại để xác nhận đường offline 72h; và kiểm bản Free **không** mở được Dieline.
 4. Bản cũ đã phát hành không bị ảnh hưởng (binary của chúng nhúng plaintext).
+
+---
+
+## 26. Audit chống crack 2026-08-28 — vá 12/15 finding
+
+> Báo cáo: `docs/BAO_CAO_AUDIT_CHONG_CRACK_2026-08-28.md`
+> Log sửa chi tiết: `docs/CHONG_CRACK_FIXES_2026-08-28.md`
+> Bối cảnh: audit theo yêu cầu, lo ngại đối thủ dùng AI để bẻ khoá.
+
+### 26.1. Kết luận về câu hỏi "AI có bẻ được không"
+
+Phân tách hai loại tấn công vì chúng cần biện pháp khác nhau:
+
+- **Giả mạo license (keygen, tự ký token):** AI không giúp gì. Muốn giả token phải có private key
+  Ed25519 (chỉ ở Supabase secret); muốn mở engine dieline phải có claim `rk` nằm trong payload đã ký.
+  Đây là toán học, không phải logic. Lớp này đã verify lại và vẫn chắc.
+- **Tìm khe trong logic cưỡng chế:** đây mới là chỗ AI tạo lợi thế thật — đọc hết repo trong vài phút
+  rồi đối chiếu "quyền này khai Pro ở đâu" với "route này gate bằng gì". Đợt audit tìm được **đúng một
+  lỗ loại đó** (§SEC.01) và **một đường đi vòng ở server** (§SEC.02). Cả hai không cần crack gì.
+
+⇒ Ưu tiên đúng: **đóng khe cưỡng chế + thêm ratchet**, không phải thêm obfuscation. Đường crack tốn kém
+nhất cho đối thủ vẫn là §26.5 (patch exe), và nó chỉ đóng được bằng code signing.
+
+### 26.2. Đã vá (client + sidecar)
+
+| # | Mức | Vấn đề | Vá |
+|---|---|---|---|
+| SEC.01 | 🔴 | **Router `cut_export` không cưỡng chế `impo.cnc`.** 10 endpoint xuất luồng cắt + đẩy TCP/serial tới máy bế chỉ đòi `require_license` ⇒ license **Free** hợp lệ dùng được. Quyền khai Pro ở `feature_entitlements.PRO_FEATURES`, `features.ts`, `toolRegistry.ts` nhưng chỉ enforce ở `routes/imposition.py`; module này bỏ trắng. | `dependencies=[Depends(require_license), Depends(require_feature("impo.cnc"))]` ở **cấp router**. Test cũ override `require_license` bằng **bool** nên vô hiệu hoá luôn `require_feature` ⇒ đổi sang context Pro thật + thêm test 403. Kiểm độ nhạy: bỏ gate → 10 test đỏ. |
+| SEC.04 | 🟠 | **`is_sensitive_path` so chuỗi thô.** `\\?\C:\Users\<u>\.aws\sso\cache\*.json` (verbatim), `\??\`, tên 8.3, junction/symlink, `\\localhost\C$\...` đều lọt. Sink: `read_system_file` cho đuôi `.json` ⇒ renderer bị chèn mã đọc được bearer token; cùng lỗ áp cho protocol `localfile://`. | Vá tại **gốc** (giữ signature ⇒ mọi call-site được bảo vệ): `strip_path_prefix_aliases()` bóc tiền tố lồng nhau, `is_admin_or_device_share()` chặn `\\.\` + UNC share kết thúc `$`, rồi **canonicalize và so lại**. Share NAS hợp lệ (`\\nas\khuon`) không bị chặn. `is_sensitive_write_path` tách tương tự + bổ sung Startup per-user. |
+| SEC.05 | 🟠 | **`launch_external_app` = arbitrary process launch.** Guard chỉ "đuôi `.exe` + tồn tại" ⇒ renderer chạy được `.exe` bất kỳ trong Downloads hoặc `\\attacker\share\evil.exe`. Primitive mạnh nhất renderer có. | Allowlist ba nguồn, **không nguồn nào do renderer quyết**: kết quả `detect_design_apps` (registry, Rust xác minh) / vừa chọn qua hộp thoại native (`fs_scope`) / đã duyệt phiên trước (`design-apps-approved.json`, trần 16). Thêm chặn UNC + symlink. Frontend tự mở lại hộp thoại khi bị từ chối để không kẹt máy đã nhớ localStorage. |
+| SEC.07 | 🟠 | **`copy_file_atomic` + staging grant hợp pháp hoá path vượt `fs_scope`.** Đích tên staging của New Window được cấp quyền mở cửa sổ tài liệu mà không cần `fs_scope`, còn `copy_file_atomic` thì không kiểm `fs_scope` ⇒ renderer copy PDF ngoài phạm vi vào `%TEMP%` rồi mở. Phá vỡ tuyên bố ở comment `document_window_registry`. | **Chỉ** đường staging đòi canonical source nằm trong `fs_scope`; kiểm **trước** khi copy. Save As bình thường không đổi. |
+| SEC.13 | 🟡 | `FEATURE_GATING_ENABLED` mặc định **TẮT** khi chạy từ source ⇒ test entitlement xanh giả. | Mọi test entitlement mới tự `monkeypatch` gate = True; ghi rõ lý do tại chỗ. |
+| SEC.14 | 🟡 | Thiếu test 403; **và CI không chạy test của `cut_export`** (`pytest tests/` không phủ `app/workers/cut_export/tests/`) — đúng module vừa bị phát hiện thiếu gate. | CI đổi thành `pytest tests/ app/workers/cut_export/tests/`. Thêm `test_sticker_sheet_feature_gate.py` (10 endpoint × 403; trước đây `test_sticker_sheet_api.py` 2133 dòng có **0** assert 403). |
+
+### 26.3. Ratchet mới — đóng cả *class* lỗi §SEC.01
+
+`backend/tests/test_pro_feature_enforcement_coverage.py`: mọi quyền trong `PRO_FEATURES` phải xuất hiện
+trong ít nhất một `require_feature`/`enforce_feature`/`assert_feature` ở `backend/app`. Thêm quyền Pro mà
+không enforce ở đâu ⇒ CI đỏ ngay, thay vì chờ lần audit sau.
+
+Ratchet lập tức bắt `prepress.paper_library`. Đã xác minh là **accepted risk đã ghi** (§6 threat model:
+Paper Library chạy hoàn toàn trong WebView, gate ở `PaperLibraryTool.tsx:247`, **0** bề mặt backend) ⇒ đưa
+vào `_CLIENT_ONLY_ACCEPTED_RISK` kèm **kiểm hai chiều**: nếu một ngày backend enforce nó thì test đỏ và
+buộc xoá khỏi danh sách miễn trừ + cập nhật threat model. Không có chiều ngược này thì danh sách miễn trừ
+chỉ phình ra và âm thầm che mất lỗ thật.
+
+### 26.4. Đã vá (server — `printsolutions-main`, CHỜ DEPLOY)
+
+| # | Mức | Vấn đề | Vá |
+|---|---|---|---|
+| SEC.02 | 🟠 | **Đường activation PrynX công khai.** `verify_license_guarded` GRANT cho `anon` với `p_product_id DEFAULT 'prynx'` ⇒ chỉ cần anon key (công khai trong bundle) là đốt được suất thiết bị của license khách hàng thật, đi vòng hoàn toàn Edge Function. Cộng thêm: `verify_license` đếm activation kiểu **TOCTOU** không lock, và rate-limit tin **hop đầu** của `x-forwarded-for` (spoof được). | Migration `20260828100000`: chặn `product_id='prynx'` cho caller không phải `service_role`; `pg_advisory_xact_lock` quanh ĐẾM→CHÈN; IP lấy từ header hạ tầng, XFF lấy **hop cuối**. **Giữ nguyên quyền `anon` cho mọi sản phẩm khác** — xem 26.6. |
+| SEC.08 | 🟠 | `release_resource_keys` không có ràng buộc DB nào chống ghi lại khoá đã phát hành; bất biến chỉ được cưỡng chế ở tầng review migration + một test so **văn bản**. Ai/quy trình nào có `service_role` cũng ghi đè được ⇒ mọi máy khách đang chạy bản đó mất khả năng giải mã engine dieline. | Trigger `prynx_release_resource_key_immutable` chặn `UPDATE resource_key` khi `revoked_at IS NULL`. Đường thu hồi hợp pháp vẫn mở. |
+| SEC.06 | 🟠 | Edge `bin-packing` **fail-open hai lần**: kiểm subscription nằm trong `if (authHeader)` không có `else` (kèm comment "allow anonymous access for now"), và `subData` null thì vượt qua. Solver nesting — đúng loại IP mà `HYBRID_ANTICRACK_REPORT.md` khuyên đưa lên server **để giấu** — thành API công khai. Thêm nữa không có trần `quantity`/`items.length`. | Thiếu `Authorization` → 401; `!subData \|\| subData.has_access !== true` → 403; trần input kiểm **trước** khi bung `flatJobList` → 422; error handler trả `error.name` (anti-recon, theo BG2 §22.2). |
+| SEC.10 | 🟠 | `license-release` **chỉ verify** nhưng được cấp `LICENSE_SIGNING_KEY` để suy public key ⇒ mở rộng bán kính rò khoá ký của toàn hệ thống vô ích. | Đọc `LICENSE_PUBLIC_KEY` (kiểm 32 byte), fail-closed nếu thiếu. **Cố ý không fallback** về private key. |
+| SEC.12 | 🟡 | 32 JWT literal trong repo — chưa xác nhận `role`. | Đã decode: **cả 32 đều `role='anon'`, cùng một khoá**, project `ryvyuxjgdcvoxujqmggm`. **Không có `service_role` bị commit** ⇒ đóng finding. Biến thành gate thường trực trong `src/securityAuditAntiCrack2026_08_28.test.ts` (có test độ nhạy dùng token tự dựng; không bao giờ in token vào log). |
+
+### 26.5. Bài học verify — harness bắt 4 lỗi THẬT trong chính bản vá
+
+Đọc SQL không đủ. Harness Postgres 16 (Docker, `supabase/tests/`) bắt được bốn lỗi trong bản vá đầu của
+§SEC.02, **hai trong đó là fail-open làm lớp chặn vô hiệu hoàn toàn**:
+
+1. Nhánh dự phòng `session_user in ('postgres',...)` — `SET ROLE` **không** đổi `session_user`, nên request
+   anon của PostgREST vẫn qua. **Fail-open.**
+2. `return v_claims_role = 'service_role'` — claims thiếu/rỗng ⇒ NULL; `IF NOT <NULL>` **không** vào nhánh
+   chặn. **Fail-open.** (Ba-giá-trị SQL: phải `coalesce(..., false)`.)
+3. Chỉ đọc GUC `request.header.*` — PostgREST v10+ dùng **một** GUC `request.headers` dạng JSON; tên GUC hai
+   dấu chấm còn không `set_config` được. Rate-limit luôn rơi vào bucket `unknown`.
+4. Chỉ revoke `anon`/`authenticated` — `PUBLIC` có EXECUTE **mặc định**, nên `has_function_privilege('anon',…)`
+   vẫn TRUE. Thu hồi vô nghĩa.
+
+Chứng minh advisory lock có tác dụng (pgbench 16 client song song, license trần **2** máy):
+
+| | Số máy kích hoạt được |
+|---|---|
+| Code cũ | **16** |
+| Code mới | **2** |
+
+### 26.6. Vì sao KHÔNG revoke `verify_license` khỏi `anon`
+
+Phản xạ đầu tiên là REVOKE. Rà consumer cho thấy làm vậy sẽ **khoá chết toàn bộ tool đang bán**: các script
+`.jsx`/`.ps1` gọi RPC trực tiếp bằng anon key và đó là toàn bộ cơ chế license của chúng —
+`bexen`, `mecso`, `mecbia`, `dulieu`, `multi_tem_placer`, `print_monitor_app`, `LicenseBridge.ps1`.
+**Không tool nào gửi `prynx`.** Nên bản vá siết đúng mặt bị lạm dụng thay vì đóng cả cửa.
+
+Ghi lại vì đây là loại quyết định dễ làm sai trong một đợt "hardening": biện pháp mạnh nhất về bảo mật có
+thể là biện pháp tệ nhất về vận hành.
+
+### 26.7. Còn mở
+
+| # | Trạng thái | Cần gì |
+|---|---|---|
+| SEC.03 | **Còn mở** | Ba migration `20260726*` mất khỏi repo; `verify_license_edge` **không có định nghĩa** trong repo. Bốn control mà §24 ghi là "đã chắc" không tái dựng được từ clean checkout. Cần `supabase db pull` (credential production). |
+| SEC.11 | **Accepted risk** | Integrity exe/frontend không cưỡng chế trên NSIS. Đường crack hiện thực nhất: patch exe → patch pubkey trong sidecar Nuitka → tự ký token `plan=pro`. Chỉ đóng được bằng Authenticode + `WinVerifyTrust`. Quyết định chi phí. |
+| SEC.09 | **Accepted risk** | Cổng `rk` 3 bản/giờ, không trần tổng — đánh đổi có tài liệu. "Kẻ thu gom biết chờ" vẫn qua. |
+| SEC.15 | **Còn mở** | `save_as_only` chỉ là hint gửi renderer; thuộc spec `save-as-artifact-guard`. |
+
+### 26.8. Bổ sung vào checklist RELEASE (§15)
+
+- [ ] Mở PDF từ share NAV/NAS (`\\nas\...`) vẫn được — bản vá §SEC.04 chặn admin share (`$`) chứ không chặn share thường.
+- [ ] Mở file bằng Illustrator/Corel qua **cả hai** đường: app dò được, và app tự chọn `.exe` (§SEC.05).
+- [ ] Máy đã từng nhớ `.exe` tuỳ chọn trong localStorage: lần mở đầu sau cập nhật phải tự hiện hộp thoại chọn lại, không báo lỗi cụt.
+- [ ] New Window + Save As vẫn hoạt động (§SEC.07 siết nguồn staging).
+- [ ] Đăng nhập license PrynX thật sau khi `db push` migration `20260828100000` (§SEC.02 có thể chặn oan nếu Edge không mang `role=service_role`).
