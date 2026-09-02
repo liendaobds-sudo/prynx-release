@@ -101,6 +101,7 @@ New-Item -ItemType Directory -Path $frontendQaFull | Out-Null
 $frontendQaDesktop = Join-Path $frontendQaFull "desktop"
 $frontendQaNativeFixtures = Join-Path $frontendQaFull "native\tests\fixtures"
 $frontendQaImpositionFixtures = Join-Path $frontendQaFull "imposition_core\tests\fixtures"
+$frontendQaNormalizeSource = Join-Path $frontendQaFull "imposition_core\src\mixed_nesting"
 try {
     Write-Host "  [QA] Staging frontend source outside the live node_modules tree..." -ForegroundColor DarkGray
     & robocopy "$ROOT\desktop" $frontendQaDesktop /E /NFL /NDL /NJH /NJS /NP `
@@ -121,6 +122,11 @@ try {
     New-Item -ItemType Directory -Path $frontendQaImpositionFixtures | Out-Null
     Copy-Item -LiteralPath "$ROOT\imposition_core\tests\fixtures\grid_parity_simple_auto.json" `
         -Destination $frontendQaImpositionFixtures
+    # previewGeometry.test.ts locks frontend normalization against the Rust
+    # source contract. Stage the exact source file used by those assertions.
+    New-Item -ItemType Directory -Path $frontendQaNormalizeSource | Out-Null
+    Copy-Item -LiteralPath "$ROOT\imposition_core\src\mixed_nesting\normalize.rs" `
+        -Destination $frontendQaNormalizeSource
 
     Push-Location $frontendQaDesktop
     try {

@@ -48,7 +48,7 @@ import type {
 } from './types';
 
 /** Version quy tắc chuẩn hoá contour phía Rust (`normalize.rs`). */
-export const NORMALIZE_RULE_VERSION = 1;
+export const NORMALIZE_RULE_VERSION = 2;
 
 /** Version quy tắc suy ra pivot phía Rust (`normalize.rs`). */
 export const REFERENCE_POINT_RULE_VERSION = 1;
