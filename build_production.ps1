@@ -1178,6 +1178,22 @@ if (-not $SkipNuitka) {
         exit 1
     }
 
+    # BUILD (release 2026-09-02): Tauri QA compiles the resource globs before
+    # step 2. Stage ignored release resources now so a clean worktree is valid.
+    Copy-Item -Force "$ROOT\THIRD_PARTY_NOTICES.md" `
+        "$ROOT\desktop\src-tauri\THIRD_PARTY_NOTICES.md"
+    $preQaTesseractSource = "C:\Program Files\Tesseract-OCR"
+    $preQaTesseractDest = "$SIDECAR_DIR\tesseract"
+    if (-not (Test-Path -LiteralPath $preQaTesseractSource -PathType Container)) {
+        throw "Tesseract not found at $preQaTesseractSource."
+    }
+    New-Item -ItemType Directory -Force -Path $preQaTesseractDest | Out-Null
+    Copy-DirectoryWithRetry -SourcePattern "$preQaTesseractSource\*" `
+        -Destination $preQaTesseractDest
+    Get-ChildItem -Path $preQaTesseractDest -Filter *.exe -File `
+        -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "tesseract.exe" } | `
+        Remove-Item -Force -ErrorAction SilentlyContinue
+
     if (-not $SkipPreflightQA) {
         # BUILD (audit 2026-08-03 REL.09): PYTHONPATH already points at the wheel
         # built above. The child gate also proves pdfcompare_native resolves under
