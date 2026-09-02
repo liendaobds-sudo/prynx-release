@@ -1180,6 +1180,12 @@ if (-not $SkipNuitka) {
 
     # BUILD (release 2026-09-02): Tauri QA compiles the resource globs before
     # step 2. Stage ignored release resources now so a clean worktree is valid.
+    $noticeArgs = @("$ROOT\scripts\gen_third_party_notices.py", "--check")
+    $env:PYTHONIOENCODING = "utf-8"
+    & $VENV_PYTHON @noticeArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "THIRD_PARTY_NOTICES.md da lech dependency truoc release QA."
+    }
     Copy-Item -Force "$ROOT\THIRD_PARTY_NOTICES.md" `
         "$ROOT\desktop\src-tauri\THIRD_PARTY_NOTICES.md"
     $preQaTesseractSource = "C:\Program Files\Tesseract-OCR"
