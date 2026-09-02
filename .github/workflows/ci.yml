@@ -26,8 +26,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # SEC (audit 2026-08-28 §SEC.01/§SEC.14): `tests/` KHÔNG phủ hết. Bộ test của
+      # cut_export nằm ở `app/workers/cut_export/tests/` nên trước đây CI không chạy nó —
+      # đúng module vừa bị phát hiện thiếu gate `impo.cnc`. Liệt kê tường minh mọi thư mục
+      # test để một module có test riêng không âm thầm ở ngoài CI.
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ app/workers/cut_export/tests/ -v --tb=short
 
   preflight-qa:
     name: Preflight QA (golden + regression)

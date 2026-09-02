@@ -58,6 +58,8 @@ foreach ($environmentName in @(
     "PRYNX_FEATURE_GATING_ENABLED",
     "VITE_LOGO_REBUILD_ENABLED",
     "PRYNX_LOGO_REBUILD_ENABLED",
+    "VITE_TRUE_SHAPE_NESTING_ENABLED",
+    "PRYNX_TRUE_SHAPE_NESTING_ENABLED",
     "PRYNX_FRONTEND_HASH",
     "PRYNX_SIDECAR_HASH",
     "DEV_MODE",
@@ -398,6 +400,13 @@ Write-Host "  Free/Pro feature gating: ENABLED (frontend + backend)" -Foreground
 $env:VITE_LOGO_REBUILD_ENABLED = "false"
 $env:PRYNX_LOGO_REBUILD_ENABLED = "false"
 Write-Host "  Logo Rebuild release gate: HOLD (frontend + backend)" -ForegroundColor Yellow
+
+# NEST (audit 2026-08-28 §A4a-3): "Nesting toi uu theo duong be" van HOLD.
+# Cong Chang B chua dong: so do Lo 0 cho thay free-angle kem cardinal 8/9 ca.
+# Nung tuong minh de bao phat hanh khong bao gio phu thuoc .env cua may build.
+$env:VITE_TRUE_SHAPE_NESTING_ENABLED = "false"
+$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED = "false"
+Write-Host "  True-shape nesting release gate: HOLD (frontend + backend)" -ForegroundColor Yellow
 
 # ---- Step 0: Full release QA gate -----------------------------------------
 # The gate is executed after the native wheel is staged below. Running it here
@@ -1423,7 +1432,9 @@ if (-not $SkipTauri) {
     if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
         [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
         [string]$env:VITE_LOGO_REBUILD_ENABLED -ne "false" -or
-        [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false") {
+        [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false" -or
+        [string]$env:VITE_TRUE_SHAPE_NESTING_ENABLED -ne "false" -or
+        [string]$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne "false") {
         throw "Production frontend/backend feature gates must stay synchronized before bundling."
     }
 
@@ -1642,7 +1653,9 @@ if (-not $SkipTauri) {
         if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
             [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
             [string]$env:VITE_LOGO_REBUILD_ENABLED -ne "false" -or
-            [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false") {
+            [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false" -or
+            [string]$env:VITE_TRUE_SHAPE_NESTING_ENABLED -ne "false" -or
+            [string]$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne "false") {
             throw "Feature gate state changed before manifest creation."
         }
         $manifestGitOutput = if ($Release) {
