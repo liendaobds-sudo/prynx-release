@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-08-14 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-09-02 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -45,7 +45,7 @@ PrynX dùng nguyên bản, không sửa.
 - lightningcss-win32-arm64-msvc 1.32.0 — MPL-2.0
 - lightningcss-win32-x64-msvc 1.32.0 — MPL-2.0
 - option-ext 0.2.0 — MPL-2.0
-- pikepdf 9.5.0 — MPL-2.0
+- pikepdf 10.12.0 — MPL-2.0
 - psycopg2-binary 2.9.9 — LGPL with exceptions
 - r-efi 5.3.0 — MIT OR Apache-2.0 OR LGPL-2.1-or-later
 - r-efi 6.0.0 — MIT OR Apache-2.0 OR LGPL-2.1-or-later
@@ -182,9 +182,9 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | ordered-set | 4.1.0 | MIT License | phát hành |
 | [packaging](https://github.com/pypa/packaging) | 26.2 | Apache-2.0 OR BSD-2-Clause | build/test |
 | pdfcompare_native | 0.1.0 | CHƯA XÁC ĐỊNH | build/test |
-| [pdfminer.six](https://github.com/pdfminer/pdfminer.six) | 20251230 | MIT | build/test |
-| [pdfplumber](https://github.com/jsvine/pdfplumber) | 0.11.9 | MIT License | phát hành |
-| [pikepdf](https://github.com/pikepdf/pikepdf) | 9.5.0 | MPL-2.0 | phát hành |
+| [pdfminer.six](https://github.com/pdfminer/pdfminer.six) | 20260107 | MIT | build/test |
+| [pdfplumber](https://github.com/jsvine/pdfplumber) | 0.11.10 | MIT License | phát hành |
+| [pikepdf](https://github.com/pikepdf/pikepdf) | 10.12.0 | MPL-2.0 | phát hành |
 | [pillow](https://python-pillow.github.io) | 12.3.0 | MIT-CMU | phát hành |
 | [pip](https://pip.pypa.io/) | 26.2 | MIT | build/test |
 | pluggy | 1.6.0 | MIT | build/test |
@@ -198,7 +198,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [pydantic_core](https://github.com/pydantic/pydantic) | 2.46.4 | MIT | build/test |
 | [Pygments](https://pygments.org) | 2.20.0 | BSD-2-Clause | build/test |
 | [pypdf](https://github.com/py-pdf/pypdf) | 6.14.2 | BSD-3-Clause | phát hành |
-| [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | 4.30.0 | (Apache-2.0 OR BSD-3-Clause) AND LicenseRef-PdfiumThirdParty | phát hành |
+| [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | 5.13.0 | BSD-3-Clause, Apache-2.0, dependency licenses | phát hành |
 | [pyserial](https://github.com/pyserial/pyserial) | 3.5 | BSD | phát hành |
 | [pytesseract](https://github.com/madmaze/pytesseract) | 0.3.13 | Apache License 2.0 | phát hành |
 | [pytest](https://docs.pytest.org/en/latest/) | 9.0.3 | MIT | phát hành |
@@ -1592,7 +1592,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 
 - Nhị phân đóng gói: 6
 - Thư viện Python: 116
-- Crate Rust: 798
+- Crate Rust: 799
 - Gói npm: 531
 
 | Giấy phép | Số thành phần |
