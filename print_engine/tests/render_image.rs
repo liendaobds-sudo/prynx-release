@@ -72,8 +72,7 @@ fn render_image_with_options(
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
-    render_page(&doc, 1, 72.0, PageBox::Crop, options)
-        .expect("render phải thành công")
+    render_page(&doc, 1, 72.0, PageBox::Crop, options).expect("render phải thành công")
 }
 
 fn base_image(w: i64, h: i64, bpc: i64, cs: &str) -> Dictionary {
@@ -105,7 +104,10 @@ fn output_preview_images_filter_keeps_image_and_rejects_other_object_filters() {
         vec![0],
         RenderOptions::softproof().with_output_preview_filter(OutputPreviewFilter::Images),
     );
-    assert!(images.buffer.max_tac_percent() > 90.0, "Show=Images phải giữ ảnh");
+    assert!(
+        images.buffer.max_tac_percent() > 90.0,
+        "Show=Images phải giữ ảnh"
+    );
 
     for filter in [
         OutputPreviewFilter::Text,
@@ -117,7 +119,11 @@ fn output_preview_images_filter_keeps_image_and_rejects_other_object_filters() {
             vec![0],
             RenderOptions::softproof().with_output_preview_filter(filter),
         );
-        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?} không được giữ ảnh");
+        assert_eq!(
+            hidden.buffer.max_tac_percent(),
+            0.0,
+            "{filter:?} không được giữ ảnh"
+        );
     }
 }
 
@@ -517,6 +523,535 @@ fn image_mask_paints_with_current_fill_colour() {
     let h = r.buffer.height() as usize;
     assert_eq!(px(&r, 1, 0, h / 2), 255, "pixel 0 phải tô Magenta");
     assert_eq!(px(&r, 1, w - 1, h / 2), 0, "pixel 1 không được tô");
+}
+
+fn replace_page_resources(doc: &mut Document, resources: Dictionary) {
+    let resources_id = doc.add_object(resources);
+    let page_id = *doc
+        .get_pages()
+        .values()
+        .next()
+        .expect("fixture phải có một trang");
+    doc.get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .expect("trang fixture phải là dictionary")
+        .set("Resources", Object::Reference(resources_id));
+}
+
+const EXPLICIT_MASK_REASON: &str = "ảnh /Mask explicit không giải mã được";
+const COLOR_KEY_MASK_REASON: &str = "ảnh /Mask color-key chưa hỗ trợ";
+
+fn render_mask_document_with_options(doc: &Document, options: RenderOptions) -> PageRender {
+    render_page(doc, 1, 72.0, PageBox::Crop, options).expect("fixture mask phải render được")
+}
+
+fn render_mask_document(doc: &Document) -> PageRender {
+    render_mask_document_with_options(doc, RenderOptions::ink_accurate())
+}
+
+fn pattern_stencil_document(sample: u8, setup: &str) -> Document {
+    pattern_stencil_document_with_mask(sample, setup, None)
+}
+
+fn pattern_stencil_document_with_mask(
+    sample: u8,
+    setup: &str,
+    explicit_mask: Option<Object>,
+) -> Document {
+    let content = format!("{setup} /Pattern cs /P0 scn q 10 0 0 10 0 0 cm /Im0 Do Q");
+    let mut doc = build(&content, dictionary! {});
+    let pattern_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern",
+            "PatternType" => 1,
+            "PaintType" => 1,
+            "TilingType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 2.into(), 1.into()],
+            "XStep" => 2,
+            "YStep" => 1,
+            "Resources" => Dictionary::new(),
+        },
+        // Một cột đen, một cột trắng: bắt được cả lỗi tô màu đặc lẫn lỗi dùng
+        // image CTM làm pattern matrix.
+        b"0 0 0 1 k 0 0 1 1 re f".to_vec(),
+    ));
+    let mut stencil = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => 1,
+        "Height" => 1,
+        "BitsPerComponent" => 1,
+    };
+    stencil.set("ImageMask", Object::Boolean(true));
+    if let Some(explicit_mask) = explicit_mask {
+        stencil.set("Mask", explicit_mask);
+    }
+    let image_id = doc.add_object(Stream::new(stencil, vec![sample]));
+    replace_page_resources(
+        &mut doc,
+        dictionary! {
+            "Pattern" => dictionary! { "P0" => Object::Reference(pattern_id) },
+            "XObject" => dictionary! { "Im0" => Object::Reference(image_id) },
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! { "ca" => Object::Real(0.0) },
+                "GS1" => dictionary! { "ca" => Object::Real(0.5) },
+            },
+        },
+    );
+    doc
+}
+
+fn explicit_mask_document(content: &str, image_smask_sample: Option<u8>) -> Document {
+    explicit_mask_document_with_sizes(content, image_smask_sample, 2, 2, vec![0b0100_0000])
+}
+
+fn explicit_mask_document_with_sizes(
+    content: &str,
+    image_smask_sample: Option<u8>,
+    image_width: i64,
+    mask_width: i64,
+    mask_data: Vec<u8>,
+) -> Document {
+    let mut doc = build(content, dictionary! {});
+    let mut mask = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => mask_width,
+        "Height" => 1,
+        "BitsPerComponent" => 1,
+    };
+    mask.set("ImageMask", Object::Boolean(true));
+    // Default /Decode: 0 = opaque, 1 = transparent.
+    let mask_id = doc.add_object(Stream::new(mask, mask_data));
+    let mut image = base_image(image_width, 1, 8, "DeviceGray");
+    image.set("Mask", Object::Reference(mask_id));
+    if let Some(sample) = image_smask_sample {
+        let smask_id = doc.add_object(Stream::new(
+            base_image(image_width, 1, 8, "DeviceGray"),
+            vec![sample; image_width as usize],
+        ));
+        image.set("SMask", Object::Reference(smask_id));
+    }
+    let image_id = doc.add_object(Stream::new(image, vec![0; image_width as usize]));
+    replace_page_resources(
+        &mut doc,
+        dictionary! {
+            "XObject" => dictionary! { "Im0" => Object::Reference(image_id) },
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! { "ca" => Object::Real(0.0) },
+            },
+        },
+    );
+    doc
+}
+
+fn malformed_explicit_mask_document(content: &str, mask_obj: Object) -> Document {
+    let mut doc = build(content, dictionary! {});
+    let mut image = base_image(1, 1, 8, "DeviceGray");
+    image.set("Mask", mask_obj);
+    let image_id = doc.add_object(Stream::new(image, vec![0]));
+    replace_page_resources(
+        &mut doc,
+        dictionary! { "XObject" => dictionary! { "Im0" => Object::Reference(image_id) } },
+    );
+    doc
+}
+
+fn cyclic_explicit_mask_document(content: &str) -> Document {
+    let mut doc = build(content, dictionary! {});
+    let image_id = doc.add_object(Object::Null);
+    let mask_id = doc.add_object(Object::Null);
+
+    let mut image = base_image(1, 1, 8, "DeviceGray");
+    image.set("Mask", Object::Reference(mask_id));
+    doc.objects
+        .insert(image_id, Object::Stream(Stream::new(image, vec![0])));
+
+    let mut mask = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => 1,
+        "Height" => 1,
+        "BitsPerComponent" => 1,
+        "Mask" => Object::Reference(image_id),
+    };
+    mask.set("ImageMask", Object::Boolean(true));
+    doc.objects
+        .insert(mask_id, Object::Stream(Stream::new(mask, vec![0])));
+
+    replace_page_resources(
+        &mut doc,
+        dictionary! { "XObject" => dictionary! { "Im0" => Object::Reference(image_id) } },
+    );
+    doc
+}
+
+fn cyclic_smask_explicit_mask_document(content: &str) -> Document {
+    let mut doc = build(content, dictionary! {});
+    let image_id = doc.add_object(Object::Null);
+    let smask_id = doc.add_object(Object::Null);
+
+    let mut image = base_image(1, 1, 8, "DeviceGray");
+    image.set("SMask", Object::Reference(smask_id));
+    doc.objects
+        .insert(image_id, Object::Stream(Stream::new(image, vec![0])));
+
+    let mut smask = base_image(1, 1, 8, "DeviceGray");
+    smask.set("Mask", Object::Reference(image_id));
+    doc.objects
+        .insert(smask_id, Object::Stream(Stream::new(smask, vec![255])));
+
+    replace_page_resources(
+        &mut doc,
+        dictionary! { "XObject" => dictionary! { "Im0" => Object::Reference(image_id) } },
+    );
+    doc
+}
+
+#[test]
+fn pattern_painted_image_mask_preserves_spatial_pattern_and_clean_diagnostics() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A02): ImageMask chỉ cung cấp coverage;
+    // màu Pattern vẫn là hàm theo stream space, không được quy thành màu đặc.
+    let visible_doc = pattern_stencil_document(0, "");
+    let visible = render_mask_document(&visible_doc);
+    let width = visible.buffer.width() as usize;
+    let height = visible.buffer.height() as usize;
+    for x in 0..width {
+        assert_eq!(
+            px(&visible, 3, x, height / 2),
+            if x % 2 == 0 { 255 } else { 0 },
+            "pattern phải lặp theo stream space tại cột {x}"
+        );
+    }
+    assert_eq!(
+        visible
+            .buffer
+            .plate_u8(3)
+            .iter()
+            .filter(|value| **value > 0)
+            .count(),
+        width * height / 2
+    );
+    assert_eq!(
+        visible.warnings.dropped_objects, 0,
+        "{:?}",
+        visible.warnings
+    );
+    assert!(!visible.warnings.unsupported_transparency);
+    assert!(!visible.warnings.ink_unsound(), "{:?}", visible.warnings);
+
+    let half_alpha_doc = pattern_stencil_document(0, "/GS1 gs");
+    let half_alpha = render_mask_document(&half_alpha_doc);
+    assert!(
+        (px(&half_alpha, 3, 0, height / 2) as i16 - 128).abs() <= 1,
+        "fill alpha phải áp đúng một lần"
+    );
+    assert!(
+        !half_alpha.warnings.ink_unsound(),
+        "{:?}",
+        half_alpha.warnings
+    );
+
+    for (control, doc) in [
+        (
+            "stencil không tô",
+            pattern_stencil_document(0b1000_0000, ""),
+        ),
+        ("clip rỗng", pattern_stencil_document(0, "W n")),
+        ("ca bằng 0", pattern_stencil_document(0, "/GS0 gs")),
+    ] {
+        let rendered = render_mask_document(&doc);
+        assert_eq!(rendered.buffer.max_tac_percent(), 0.0, "{control}");
+        assert_eq!(rendered.warnings.dropped_objects, 0, "{control}");
+        assert!(!rendered.warnings.unsupported_transparency, "{control}");
+        assert!(
+            !rendered.warnings.ink_unsound(),
+            "{control}: {:?}",
+            rendered.warnings
+        );
+    }
+}
+
+#[test]
+fn output_preview_classifies_pattern_image_mask_as_image_host() {
+    let doc = pattern_stencil_document(0, "");
+    for filter in [OutputPreviewFilter::Images, OutputPreviewFilter::DeviceCmyk] {
+        let shown = render_mask_document_with_options(
+            &doc,
+            RenderOptions::softproof().with_output_preview_filter(filter),
+        );
+        assert!(shown.buffer.max_tac_percent() > 90.0, "{filter:?}");
+        assert_eq!(shown.warnings.dropped_objects, 0, "{:?}", shown.warnings);
+    }
+    for filter in [
+        OutputPreviewFilter::Text,
+        OutputPreviewFilter::LineArt,
+        OutputPreviewFilter::DeviceRgb,
+    ] {
+        let hidden = render_mask_document_with_options(
+            &doc,
+            RenderOptions::softproof().with_output_preview_filter(filter),
+        );
+        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?}");
+        assert!(!hidden.warnings.ink_unsound(), "{:?}", hidden.warnings);
+    }
+
+    let malformed = pattern_stencil_document_with_mask(0, "", Some(Object::Null));
+    let source_hidden = render_mask_document_with_options(
+        &malformed,
+        RenderOptions::softproof().with_output_preview_filter(OutputPreviewFilter::DeviceRgb),
+    );
+    assert_eq!(source_hidden.buffer.max_tac_percent(), 0.0);
+    assert!(
+        !source_hidden.warnings.ink_unsound(),
+        "Pattern bị source filter ẩn không được nhận warning Mask: {:?}",
+        source_hidden.warnings
+    );
+    let source_visible = render_mask_document_with_options(
+        &malformed,
+        RenderOptions::softproof().with_output_preview_filter(OutputPreviewFilter::Images),
+    );
+    assert!(source_visible.buffer.max_tac_percent() > 90.0);
+    assert!(source_visible.warnings.unsupported_transparency);
+}
+
+#[test]
+fn explicit_image_mask_stream_applies_binary_coverage_with_clean_diagnostics() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A05): explicit `/Mask` dùng polarity
+    // ImageMask và được resample vào alpha của ảnh cha.
+    let visible_doc = explicit_mask_document("q 10 0 0 10 0 0 cm /Im0 Do Q", None);
+    let visible = render_mask_document(&visible_doc);
+    let width = visible.buffer.width() as usize;
+    let height = visible.buffer.height() as usize;
+    assert_eq!(px(&visible, 3, 0, height / 2), 255);
+    assert_eq!(px(&visible, 3, width - 1, height / 2), 0);
+    assert_eq!(
+        visible
+            .buffer
+            .plate_u8(3)
+            .iter()
+            .filter(|value| **value > 0)
+            .count(),
+        width * height / 2
+    );
+    assert!(
+        !visible.warnings.unsupported_transparency,
+        "{:?}",
+        visible.warnings
+    );
+    assert_eq!(visible.warnings.dropped_objects, 0);
+    assert!(!visible.warnings.ink_unsound(), "{:?}", visible.warnings);
+
+    for (control, doc) in [
+        (
+            "ngoài viewport",
+            explicit_mask_document("q 10 0 0 10 20 0 cm /Im0 Do Q", None),
+        ),
+        (
+            "clip rỗng",
+            explicit_mask_document("q W n 10 0 0 10 0 0 cm /Im0 Do Q", None),
+        ),
+        (
+            "ca bằng 0",
+            explicit_mask_document("/GS0 gs q 10 0 0 10 0 0 cm /Im0 Do Q", None),
+        ),
+        (
+            "SMask ảnh bằng 0",
+            explicit_mask_document("q 10 0 0 10 0 0 cm /Im0 Do Q", Some(0)),
+        ),
+    ] {
+        let rendered = render_mask_document(&doc);
+        assert_eq!(rendered.buffer.max_tac_percent(), 0.0, "{control}");
+        assert!(!rendered.warnings.unsupported_transparency, "{control}");
+        assert_eq!(rendered.warnings.dropped_objects, 0, "{control}");
+        assert!(
+            !rendered.warnings.ink_unsound(),
+            "{control}: {:?}",
+            rendered.warnings
+        );
+    }
+}
+
+#[test]
+fn explicit_mask_resamples_from_texel_centres_when_dimensions_differ() {
+    // Mask 2 texel [opaque, transparent] trên ảnh cha 4 texel phải chia đúng
+    // 2+2; nội suy endpoint cũ cho sai 3+1.
+    let doc = explicit_mask_document_with_sizes(
+        "q 10 0 0 10 0 0 cm /Im0 Do Q",
+        None,
+        4,
+        2,
+        vec![0b0100_0000],
+    );
+    let rendered = render_mask_document(&doc);
+    let height = rendered.buffer.height() as usize;
+    assert_eq!(px(&rendered, 3, 4, height / 2), 255);
+    assert_eq!(px(&rendered, 3, 5, height / 2), 0);
+    assert!(!rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
+}
+
+#[test]
+fn explicit_image_mask_is_reapplied_for_each_cached_invocation() {
+    // Cache chỉ giữ mẫu nguồn; mỗi Do phải áp lại mask theo CTM placement riêng.
+    let doc = explicit_mask_document(
+        "q 5 0 0 10 0 0 cm /Im0 Do Q \
+         q 5 0 0 10 5 0 cm /Im0 Do Q \
+         q W n 10 0 0 10 0 0 cm /Im0 Do Q",
+        None,
+    );
+    let rendered = render_mask_document(&doc);
+    let height = rendered.buffer.height() as usize;
+    assert_eq!(px(&rendered, 3, 0, height / 2), 255);
+    assert_eq!(px(&rendered, 3, 4, height / 2), 0);
+    assert_eq!(px(&rendered, 3, 5, height / 2), 255);
+    assert_eq!(px(&rendered, 3, 9, height / 2), 0);
+    assert!(
+        !rendered.warnings.unsupported_transparency,
+        "{:?}",
+        rendered.warnings
+    );
+    assert!(!rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
+}
+
+#[test]
+fn smask_takes_precedence_over_explicit_mask_without_double_multiplication() {
+    let doc = explicit_mask_document("q 10 0 0 10 0 0 cm /Im0 Do Q", Some(128));
+    let rendered = render_mask_document(&doc);
+    let width = rendered.buffer.width() as usize;
+    let height = rendered.buffer.height() as usize;
+    for x in [0, width - 1] {
+        assert!(
+            (px(&rendered, 3, x, height / 2) as i16 - 128).abs() <= 1,
+            "SMask phải thắng /Mask tại cột {x}"
+        );
+    }
+    assert!(
+        !rendered.warnings.unsupported_transparency,
+        "{:?}",
+        rendered.warnings
+    );
+    assert!(!rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
+}
+
+#[test]
+fn null_and_dangling_explicit_masks_are_not_collapsed_to_absent() {
+    for (label, mask_obj) in [
+        ("null", Object::Null),
+        ("dangling", Object::Reference((99_999, 0))),
+    ] {
+        let visible_doc =
+            malformed_explicit_mask_document("q 10 0 0 10 0 0 cm /Im0 Do Q", mask_obj.clone());
+        let visible = render_mask_document(&visible_doc);
+        assert!(visible.buffer.max_tac_percent() > 99.0, "{label}");
+        assert!(visible.warnings.unsupported_transparency, "{label}");
+        assert!(visible.warnings.ink_unsound(), "{label}");
+        assert!(
+            visible
+                .warnings
+                .skipped_ops
+                .iter()
+                .any(|(reason, count)| reason == EXPLICIT_MASK_REASON && *count == 1),
+            "{label}: {:?}",
+            visible.warnings.skipped_ops
+        );
+
+        let clipped_doc =
+            malformed_explicit_mask_document("q W n 10 0 0 10 0 0 cm /Im0 Do Q", mask_obj);
+        let clipped = render_mask_document(&clipped_doc);
+        assert!(
+            !clipped.warnings.ink_unsound(),
+            "{label}: {:?}",
+            clipped.warnings
+        );
+    }
+}
+
+#[test]
+fn cyclic_explicit_mask_fails_loud_only_for_visible_invocation() {
+    // Guard phải chặn vòng parent -> Mask -> parent nhưng diagnostic vẫn defer
+    // tới placement thật sự phủ, không làm clip rỗng thành false-positive.
+    let visible_doc = cyclic_explicit_mask_document(
+        "q 10 0 0 10 0 0 cm /Im0 Do Q q W n 10 0 0 10 0 0 cm /Im0 Do Q",
+    );
+    let visible = render_mask_document(&visible_doc);
+    assert!(visible.buffer.max_tac_percent() > 99.0);
+    assert!(visible.warnings.unsupported_transparency);
+    assert!(visible.warnings.ink_unsound());
+    assert!(
+        visible
+            .warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, count)| reason == EXPLICIT_MASK_REASON && *count == 1),
+        "{:?}",
+        visible.warnings.skipped_ops
+    );
+
+    let clipped_doc = cyclic_explicit_mask_document("q W n 10 0 0 10 0 0 cm /Im0 Do Q");
+    let clipped = render_mask_document(&clipped_doc);
+    assert_eq!(clipped.buffer.max_tac_percent(), 0.0);
+    assert!(
+        !clipped.warnings.unsupported_transparency,
+        "{:?}",
+        clipped.warnings
+    );
+    assert!(!clipped.warnings.ink_unsound(), "{:?}", clipped.warnings);
+}
+
+#[test]
+fn explicit_mask_failure_nested_in_smask_is_deferred_to_parent_visibility() {
+    let visible_doc = cyclic_smask_explicit_mask_document("q 10 0 0 10 0 0 cm /Im0 Do Q");
+    let visible = render_mask_document(&visible_doc);
+    assert!(visible.buffer.max_tac_percent() > 99.0);
+    assert!(visible.warnings.unsupported_transparency);
+    assert!(visible.warnings.ink_unsound());
+    assert!(
+        visible
+            .warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, count)| reason == EXPLICIT_MASK_REASON && *count == 1),
+        "{:?}",
+        visible.warnings.skipped_ops
+    );
+
+    let clipped_doc = cyclic_smask_explicit_mask_document("q W n 10 0 0 10 0 0 cm /Im0 Do Q");
+    let clipped = render_mask_document(&clipped_doc);
+    assert_eq!(clipped.buffer.max_tac_percent(), 0.0);
+    assert!(!clipped.warnings.ink_unsound(), "{:?}", clipped.warnings);
+}
+
+#[test]
+fn color_key_image_mask_keeps_decode_time_taxonomy() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A05): `/Mask` mảng vẫn là color-key
+    // decode-time; không được đổi taxonomy sang explicit mask khi defer warning.
+    let mut image = base_image(1, 1, 8, "DeviceGray");
+    image.set(
+        "Mask",
+        Object::Array(vec![Object::Integer(0), Object::Integer(0)]),
+    );
+    let rendered = render_image(image, vec![0]);
+    assert!(rendered.warnings.unsupported_transparency);
+    assert!(rendered.warnings.ink_unsound());
+    assert_eq!(rendered.warnings.dropped_objects, 0);
+    assert!(
+        rendered
+            .warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, count)| reason == COLOR_KEY_MASK_REASON && *count == 1),
+        "{:?}",
+        rendered.warnings.skipped_ops
+    );
+    assert!(
+        !rendered
+            .warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, _)| reason == EXPLICIT_MASK_REASON),
+        "{:?}",
+        rendered.warnings.skipped_ops
+    );
 }
 
 #[test]
@@ -1043,4 +1578,542 @@ fn smask_image_samples_on_integer_bbox_grid_like_gs() {
     for x in 4..8 {
         assert_eq!(px(&r, 3, x, row), 255, "pixel {x} phải BẬT trên lưới bbox");
     }
+}
+
+fn replace_tiling_pattern_cell(doc: &mut Document, content: &str, resources: Dictionary) {
+    let mut found = false;
+    for object in doc.objects.values_mut() {
+        let Object::Stream(stream) = object else {
+            continue;
+        };
+        let is_tiling_pattern =
+            matches!(
+                stream.dict.get(b"Type"),
+                Ok(Object::Name(name)) if name.as_slice() == b"Pattern"
+            ) && matches!(stream.dict.get(b"PatternType"), Ok(Object::Integer(1)));
+        if is_tiling_pattern {
+            stream.content = content.as_bytes().to_vec();
+            stream.dict.set("Resources", Object::Dictionary(resources));
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "fixture phải tìm được tiling Pattern");
+}
+
+#[test]
+fn pattern_image_mask_warning_requires_effective_parent_surface_paint() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A02/A05): sink alpha 0 và paint chỉ
+    // dùng để dựng soft mask là surface phụ, không được làm Pattern host vô hình
+    // commit diagnostic `/Mask` explicit lên output trang.
+    let mut zero_alpha = pattern_stencil_document_with_mask(0, "", Some(Object::Null));
+    replace_tiling_pattern_cell(
+        &mut zero_alpha,
+        "/GSZero gs 0 0 0 1 k 0 0 2 1 re f",
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GSZero" => dictionary! { "ca" => Object::Real(0.0) },
+            },
+        },
+    );
+
+    let mut smask_only = pattern_stencil_document_with_mask(0, "", Some(Object::Null));
+    let mask_form = smask_only.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 2.into(), 1.into()],
+            "Resources" => Dictionary::new(),
+            "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+        },
+        b"0 g 0 0 2 1 re f".to_vec(),
+    ));
+    replace_tiling_pattern_cell(
+        &mut smask_only,
+        "/GSMask gs",
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GSMask" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => Object::Reference(mask_form),
+                    }),
+                },
+            },
+        },
+    );
+
+    for (label, doc) in [
+        ("cell-local ca bằng 0", zero_alpha),
+        ("cell chỉ dựng soft mask", smask_only),
+    ] {
+        let rendered = render_mask_document(&doc);
+        assert_eq!(rendered.buffer.max_tac_percent(), 0.0, "{label}");
+        assert!(
+            !rendered.warnings.unsupported_transparency,
+            "{label}: {:?}",
+            rendered.warnings
+        );
+        assert!(
+            !rendered
+                .warnings
+                .skipped_ops
+                .iter()
+                .any(|(reason, _)| reason == EXPLICIT_MASK_REASON),
+            "{label}: {:?}",
+            rendered.warnings.skipped_ops
+        );
+        assert!(
+            !rendered.warnings.ink_unsound(),
+            "{label}: {:?}",
+            rendered.warnings
+        );
+    }
+}
+
+fn nested_group_pattern_mask_document(group_alpha: f32, external_mask: Option<bool>) -> Document {
+    let mut doc = Document::with_version("1.7");
+    let pattern = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern",
+            "PatternType" => 1,
+            "PaintType" => 1,
+            "TilingType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+            "XStep" => 1,
+            "YStep" => 1,
+            "Resources" => Dictionary::new(),
+        },
+        b"0 0 0 1 k 0 0 1 1 re f".to_vec(),
+    ));
+    let mut stencil = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => 1,
+        "Height" => 1,
+        "BitsPerComponent" => 1,
+        "Mask" => Object::Null,
+    };
+    stencil.set("ImageMask", Object::Boolean(true));
+    let image = doc.add_object(Stream::new(stencil, vec![0]));
+    let group = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Resources" => dictionary! {
+                "Pattern" => dictionary! { "P0" => Object::Reference(pattern) },
+                "XObject" => dictionary! { "Im0" => Object::Reference(image) },
+            },
+            "Group" => dictionary! {
+                "S" => "Transparency",
+                "CS" => "DeviceCMYK",
+                "I" => Object::Boolean(true),
+            },
+        },
+        b"/Pattern cs /P0 scn q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec(),
+    ));
+
+    let mut ext_gstate = dictionary! { "ca" => Object::Real(group_alpha) };
+    if let Some(mask_paints) = external_mask {
+        let mask_content = if mask_paints {
+            b"0 g 0 0 10 10 re f".to_vec()
+        } else {
+            Vec::new()
+        };
+        let mask_form = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "FormType" => 1,
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+                "Resources" => Dictionary::new(),
+                "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+            },
+            mask_content,
+        ));
+        ext_gstate.set(
+            "SMask",
+            Object::Dictionary(dictionary! {
+                "S" => "Alpha",
+                "G" => Object::Reference(mask_form),
+            }),
+        );
+    }
+
+    let resources = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "F0" => Object::Reference(group) },
+        "ExtGState" => dictionary! { "GS0" => Object::Dictionary(ext_gstate) },
+    });
+    let content = doc.add_object(Stream::new(dictionary! {}, b"/GS0 gs /F0 Do".to_vec()));
+    let pages = (doc.new_object_id().0, 0);
+    let page = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages),
+        "Contents" => Object::Reference(content),
+        "Resources" => Object::Reference(resources),
+        "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+    });
+    doc.set_object(
+        pages,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1 },
+    );
+    let catalog = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(pages),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog));
+    doc
+}
+
+#[test]
+fn nested_group_only_propagates_explicit_mask_warning_after_visible_merge() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A05): image malformed nằm trong child
+    // surface chỉ được fail-loud khi alpha/SMask của chính group cho phép merge.
+    for (label, doc) in [
+        (
+            "group ca bằng 0",
+            nested_group_pattern_mask_document(0.0, None),
+        ),
+        (
+            "group có SMask alpha bằng 0",
+            nested_group_pattern_mask_document(1.0, Some(false)),
+        ),
+    ] {
+        let rendered = render_mask_document(&doc);
+        assert_eq!(rendered.buffer.max_tac_percent(), 0.0, "{label}");
+        assert!(
+            !rendered.warnings.ink_unsound(),
+            "{label}: {:?}",
+            rendered.warnings
+        );
+        assert!(
+            !rendered
+                .warnings
+                .skipped_ops
+                .iter()
+                .any(|(reason, _)| reason == EXPLICIT_MASK_REASON),
+            "{label}: {:?}",
+            rendered.warnings.skipped_ops
+        );
+    }
+
+    for (label, doc) in [
+        (
+            "group alpha dương",
+            nested_group_pattern_mask_document(1.0, None),
+        ),
+        (
+            "group có SMask alpha dương",
+            nested_group_pattern_mask_document(1.0, Some(true)),
+        ),
+    ] {
+        let rendered = render_mask_document(&doc);
+        assert!(rendered.buffer.max_tac_percent() > 99.0, "{label}");
+        assert!(rendered.warnings.ink_unsound(), "{label}");
+        assert!(rendered.warnings.unsupported_transparency, "{label}");
+        assert!(
+            rendered
+                .warnings
+                .skipped_ops
+                .iter()
+                .any(|(reason, count)| reason == EXPLICIT_MASK_REASON && *count == 1),
+            "{label}: {:?}",
+            rendered.warnings.skipped_ops
+        );
+    }
+}
+
+fn soft_mask_with_malformed_pattern_image_document(paint_after_gs: bool) -> Document {
+    let mut doc = Document::with_version("1.7");
+    let pattern = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern",
+            "PatternType" => 1,
+            "PaintType" => 1,
+            "TilingType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+            "XStep" => 1,
+            "YStep" => 1,
+            "Resources" => Dictionary::new(),
+        },
+        b"0 g 0 0 1 1 re f".to_vec(),
+    ));
+    let mut stencil = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => 1,
+        "Height" => 1,
+        "BitsPerComponent" => 1,
+        "Mask" => Object::Null,
+    };
+    stencil.set("ImageMask", Object::Boolean(true));
+    let image = doc.add_object(Stream::new(stencil, vec![0]));
+    let mask_form = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Resources" => dictionary! {
+                "Pattern" => dictionary! { "P0" => Object::Reference(pattern) },
+                "XObject" => dictionary! { "Im0" => Object::Reference(image) },
+            },
+            "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+        },
+        b"/Pattern cs /P0 scn q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec(),
+    ));
+    let resources = doc.add_object(dictionary! {
+        "ExtGState" => dictionary! {
+            "GS0" => dictionary! {
+                "SMask" => Object::Dictionary(dictionary! {
+                    "S" => "Alpha",
+                    "G" => Object::Reference(mask_form),
+                }),
+            },
+        },
+    });
+    let content = if paint_after_gs {
+        "/GS0 gs 0 0 0 1 k 0 0 10 10 re f"
+    } else {
+        "/GS0 gs"
+    };
+    let content = doc.add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
+    let pages = (doc.new_object_id().0, 0);
+    let page = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages),
+        "Contents" => Object::Reference(content),
+        "Resources" => Object::Reference(resources),
+        "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+    });
+    doc.set_object(
+        pages,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1 },
+    );
+    let catalog = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(pages),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog));
+    doc
+}
+
+#[test]
+fn soft_mask_child_warning_waits_until_the_mask_is_used_for_visible_paint() {
+    let unused = render_mask_document(&soft_mask_with_malformed_pattern_image_document(false));
+    assert_eq!(unused.buffer.max_tac_percent(), 0.0);
+    assert!(!unused.warnings.ink_unsound(), "{:?}", unused.warnings);
+
+    let used = render_mask_document(&soft_mask_with_malformed_pattern_image_document(true));
+    assert!(used.buffer.max_tac_percent() > 99.0);
+    assert!(used.warnings.ink_unsound());
+    assert!(
+        used.warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, count)| reason == EXPLICIT_MASK_REASON && *count == 1),
+        "{:?}",
+        used.warnings.skipped_ops
+    );
+}
+
+fn finish_spatial_mask_document(
+    mut doc: Document,
+    content: &str,
+    resources: Dictionary,
+    page_width: i64,
+) -> Document {
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
+    let resources_id = doc.add_object(resources);
+    let pages_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), page_width.into(), 10.into()],
+    });
+    doc.set_object(
+        pages_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog", "Pages" => Object::Reference(pages_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    doc
+}
+
+fn partial_group_external_smask_document(mask_opens_left: bool) -> Document {
+    let mut doc = Document::with_version("1.7");
+    let mut malformed = base_image(1, 1, 8, "DeviceGray");
+    malformed.set("Mask", Object::Null);
+    let malformed_id = doc.add_object(Stream::new(malformed, vec![0]));
+    let group_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! { "Bad" => Object::Reference(malformed_id) },
+            },
+            "Group" => dictionary! {
+                "S" => "Transparency",
+                "CS" => "DeviceCMYK",
+                "I" => Object::Boolean(true),
+            },
+        },
+        // Malformed image ở trái; object hợp lệ ở phải, cách nhau một dải trắng.
+        b"q 3 0 0 10 0 0 cm /Bad Do Q 0 0 0 1 k 7 0 3 10 re f".to_vec(),
+    ));
+    let mask_content = if mask_opens_left {
+        b"0 g 0 0 3 10 re f".to_vec()
+    } else {
+        b"0 g 7 0 3 10 re f".to_vec()
+    };
+    let mask_form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Resources" => dictionary! {},
+            "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+        },
+        mask_content,
+    ));
+    finish_spatial_mask_document(
+        doc,
+        "/GS0 gs /F0 Do",
+        dictionary! {
+            "XObject" => dictionary! { "F0" => Object::Reference(group_id) },
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => Object::Reference(mask_form_id),
+                    }),
+                },
+            },
+        },
+        10,
+    )
+}
+
+fn offset_soft_mask_reuse_document(paint_event_region: bool) -> Document {
+    let mut doc = Document::with_version("1.7");
+    let mut malformed = base_image(1, 1, 8, "DeviceGray");
+    malformed.set("Mask", Object::Null);
+    let malformed_id = doc.add_object(Stream::new(malformed, vec![0]));
+    let mask_form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            // BBox lệch xa gốc để regression bắt buộc dịch Region local → parent.
+            "BBox" => vec![20.into(), 0.into(), 40.into(), 10.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! { "Bad" => Object::Reference(malformed_id) },
+            },
+            "Group" => dictionary! { "S" => "Transparency", "CS" => "DeviceGray" },
+        },
+        // Event malformed ở [20,25); alpha hợp lệ độc lập ở [35,40).
+        b"q 5 0 0 10 20 0 cm /Bad Do Q 0 g 35 0 5 10 re f".to_vec(),
+    ));
+    let content = if paint_event_region {
+        concat!("/GS0 gs 0 0 0 1 k ", "35 0 5 10 re f ", "20 0 5 10 re f")
+    } else {
+        "/GS0 gs 0 0 0 1 k 35 0 5 10 re f"
+    };
+    finish_spatial_mask_document(
+        doc,
+        content,
+        dictionary! {
+            "ExtGState" => dictionary! {
+                "GS0" => dictionary! {
+                    "SMask" => Object::Dictionary(dictionary! {
+                        "S" => "Alpha",
+                        "G" => Object::Reference(mask_form_id),
+                    }),
+                },
+            },
+        },
+        50,
+    )
+}
+
+fn explicit_mask_warning_count(rendered: &PageRender) -> u32 {
+    rendered
+        .warnings
+        .skipped_ops
+        .iter()
+        .find(|(reason, _)| reason == EXPLICIT_MASK_REASON)
+        .map_or(0, |(_, count)| *count)
+}
+
+#[test]
+fn partial_group_smask_only_promotes_spatially_overlapping_child_event() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A05): object hợp lệ ở nửa phải không
+    // được kéo event malformed ở nửa trái qua external SMask chỉ mở nửa phải.
+    let disjoint = render_mask_document(&partial_group_external_smask_document(false));
+    assert!(disjoint.buffer.max_tac_percent() > 99.0);
+    assert_eq!(
+        explicit_mask_warning_count(&disjoint),
+        0,
+        "{:?}",
+        disjoint.warnings
+    );
+    assert!(!disjoint.warnings.ink_unsound(), "{:?}", disjoint.warnings);
+
+    let overlapping = render_mask_document(&partial_group_external_smask_document(true));
+    assert!(overlapping.buffer.max_tac_percent() > 99.0);
+    assert_eq!(
+        explicit_mask_warning_count(&overlapping),
+        1,
+        "event giao vùng mask phải fail-loud đúng một lần: {:?}",
+        overlapping.warnings
+    );
+    assert!(overlapping.warnings.ink_unsound());
+}
+
+#[test]
+fn soft_mask_event_waits_for_spatially_overlapping_reuse() {
+    // Lần dùng đầu chỉ paint vùng alpha hợp lệ ở phải. Metadata event phải còn
+    // sống nhưng chưa promote; lần dùng thứ hai giao vùng malformed mới cảnh báo.
+    let disjoint = render_page(
+        &offset_soft_mask_reuse_document(false),
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+    )
+    .expect("SMask lệch gốc phải render được");
+    assert!(disjoint.buffer.max_tac_percent() > 99.0);
+    assert_eq!(
+        explicit_mask_warning_count(&disjoint),
+        0,
+        "{:?}",
+        disjoint.warnings
+    );
+    assert!(!disjoint.warnings.ink_unsound(), "{:?}", disjoint.warnings);
+
+    let reused = render_page(
+        &offset_soft_mask_reuse_document(true),
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+    )
+    .expect("SMask tái sử dụng phải render được");
+    assert_eq!(
+        explicit_mask_warning_count(&reused),
+        1,
+        "Region local phải được dịch và event tái sử dụng chỉ đếm một lần: {:?}",
+        reused.warnings
+    );
+    assert!(reused.warnings.ink_unsound());
 }

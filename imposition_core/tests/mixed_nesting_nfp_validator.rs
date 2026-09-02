@@ -10,16 +10,24 @@
 //! 3. Validator chặn overlap / ngoài tờ / thiếu khoảng hở / scale / shear / mirror.
 //! 4. Validator **không** áp angle step hay lưới toạ độ.
 
-use imposition_core::mixed_nesting::collision::{judge_pair, min_distance_mm, rings_overlap};
+use imposition_core::mixed_nesting::collision::{
+    judge_pair, judge_pair_sheet_axis, min_distance_mm, rings_overlap, PairVerdict,
+};
 use imposition_core::mixed_nesting::model::{
-    ManifestStatus, MixedNestingRequest, OrientationPolicy, PartSpec, PlacementRecord, PointMm,
-    Pose, Profile, Reflection, RotationConstraint, SheetMarginMm, SheetSpec, TerminationReason,
-    Tolerance, UnplacedReason, UnplacedRecord,
+    AxisAlignedBoundsSpec, ClearanceSpec, FixedObstacleKind, FixedObstacleSpec, GroupingIntent,
+    LayoutAlignment, LayoutIntent, ManifestStatus, MixedNestingRequest, OrientationPolicy,
+    PartPlacementZoneSpec, PartSpec, PlacementRecord, PointMm, Pose, ProductionContractV1, Profile,
+    Reflection, RotationConstraint, SheetAxisClearanceMm, SheetMarginMm, SheetSpec,
+    TerminationReason, Tolerance, UnplacedReason, UnplacedRecord,
+    MIXED_NESTING_PRODUCTION_SCHEMA_VERSION, MIXED_NESTING_PROTOCOL_VERSION,
+    MIXED_NESTING_VALIDATOR_VERSION,
 };
 use imposition_core::mixed_nesting::nfp::{
-    feasible_region, inner_fit_rect, no_fit_polygon, region_area_mm2, region_contains,
-    region_vertices, NfpError, NFP_RULE_VERSION,
+    feasible_region, feasible_region_after_with_clearance, feasible_region_cached_with_clearance,
+    feasible_region_sheet_axis, inner_fit_rect, no_fit_polygon, no_fit_polygon_sheet_axis,
+    region_area_mm2, region_contains, region_vertices, NfpClearance, NfpError, NFP_RULE_VERSION,
 };
+use imposition_core::mixed_nesting::nfp_cache::NfpCache;
 use imposition_core::mixed_nesting::normalize::{normalize_request, BoundsMm, NormalizedRequest};
 use imposition_core::mixed_nesting::spatial::SpatialGrid;
 use imposition_core::mixed_nesting::transform::{place_ring_checked, signed_area_mm2};
@@ -121,7 +129,7 @@ fn nfp_parity(
 
 fn base_request(parts: Vec<PartSpec>) -> MixedNestingRequest {
     MixedNestingRequest {
-        protocol_version: 1,
+        protocol_version: MIXED_NESTING_PROTOCOL_VERSION,
         seed: 20_260_826,
         profile: Profile::Balanced,
         time_budget_ms: None,
@@ -137,13 +145,90 @@ fn base_request(parts: Vec<PartSpec>) -> MixedNestingRequest {
             max_sheets: 20,
         },
         gap_mm: 3.0,
+        layout_intent: Default::default(),
         orientation_policy: OrientationPolicy {
             default_rotation: RotationConstraint::Free,
             reflection: Reflection::Forbidden,
         },
         parts,
         job_id: None,
+        production_contract: None,
     }
+}
+
+fn production_request(
+    parts: Vec<PartSpec>,
+    clearance: ClearanceSpec,
+    fixed_obstacles: Vec<FixedObstacleSpec>,
+) -> MixedNestingRequest {
+    let mut request = base_request(parts);
+    request.gap_mm = 0.0;
+    request.production_contract = Some(ProductionContractV1 {
+        schema_version: MIXED_NESTING_PRODUCTION_SCHEMA_VERSION,
+        request_revision: 1,
+        input_hash: format!("sha256:{}", "a".repeat(64)),
+        layout_fingerprint: format!("sha256:{}", "b".repeat(64)),
+        alignment: LayoutAlignment::Center,
+        grouping_intent: GroupingIntent::FreeGang,
+        placement_zones: Vec::new(),
+        clearance,
+        fixed_obstacles,
+    });
+    request
+}
+
+fn axis_clearance(x_mm: f64, y_mm: f64) -> SheetAxisClearanceMm {
+    SheetAxisClearanceMm { x_mm, y_mm }
+}
+
+fn production_clearance(
+    part_x: f64,
+    part_y: f64,
+    edge_x: f64,
+    edge_y: f64,
+    obstacle_x: f64,
+    obstacle_y: f64,
+) -> ClearanceSpec {
+    ClearanceSpec {
+        part_to_part: axis_clearance(part_x, part_y),
+        part_to_sheet_edge: axis_clearance(edge_x, edge_y),
+        part_to_obstacle: axis_clearance(obstacle_x, obstacle_y),
+    }
+}
+
+fn normalized_maximize_area() -> NormalizedRequest {
+    let mut request = production_request(
+        vec![
+            part("part-a", 1, rect(10.0, 10.0)),
+            part("part-b", 1, rect(10.0, 10.0)),
+        ],
+        production_clearance(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        Vec::new(),
+    );
+    let production = request.production_contract.as_mut().unwrap();
+    production.grouping_intent = GroupingIntent::MaximizeArea;
+    // Cố ý đảo thứ tự để final validator phải tra zone bằng partId.
+    production.placement_zones = vec![
+        PartPlacementZoneSpec {
+            part_id: "part-b".to_string(),
+            bounds: AxisAlignedBoundsSpec {
+                min_x_mm: 10.0,
+                min_y_mm: 10.0,
+                max_x_mm: 690.0,
+                max_y_mm: 500.0,
+            },
+        },
+        PartPlacementZoneSpec {
+            part_id: "part-a".to_string(),
+            bounds: AxisAlignedBoundsSpec {
+                min_x_mm: 10.0,
+                min_y_mm: 500.0,
+                max_x_mm: 690.0,
+                max_y_mm: 990.0,
+            },
+        },
+    ];
+    normalize_request(&request).expect("partition maximize_area phải hợp lệ")
 }
 
 fn part(id: &str, quantity: u32, outer: Vec<PointMm>) -> PartSpec {
@@ -163,6 +248,17 @@ fn normalized(parts: Vec<PartSpec>) -> NormalizedRequest {
     normalize_request(&base_request(parts)).expect("request phải hợp lệ")
 }
 
+fn normalized_autofill(mut parts: Vec<PartSpec>) -> NormalizedRequest {
+    for part in &mut parts {
+        // Representation chuyển tiếp của field quantity vắng mặt; không phải cap.
+        part.quantity = 0;
+    }
+    let mut request = base_request(parts);
+    request.layout_intent = LayoutIntent::AutofillSingleSheet;
+    request.sheet.max_sheets = 1;
+    normalize_request(&request).expect("request autofill phải hợp lệ")
+}
+
 fn placement(instance: &str, part_id: &str, sheet: u32, pose: Pose) -> PlacementRecord {
     PlacementRecord {
         instance_id: instance.to_string(),
@@ -179,7 +275,7 @@ fn placement(instance: &str, part_id: &str, sheet: u32, pose: Pose) -> Placement
 
 #[test]
 fn version_quy_tac_nfp() {
-    assert_eq!(NFP_RULE_VERSION, 1);
+    assert_eq!(NFP_RULE_VERSION, 2);
     assert_eq!(
         NfpError::TooManyConvexPairs { pairs: 9_999 }.code(),
         "NFP_TOO_MANY_CONVEX_PAIRS"
@@ -427,6 +523,183 @@ fn mien_hop_le_ton_trong_gap() {
 }
 
 #[test]
+fn nfp_clearance_di_huong_giu_dung_truc_va_ca_zero() {
+    let stationary = rect(10.0, 10.0);
+    let moving = rect(10.0, 10.0);
+
+    let vertical =
+        no_fit_polygon_sheet_axis(&stationary, &moving, axis_clearance(0.0, 10.0), &tol()).unwrap();
+    let vertical_bounds = BoundsMm::from_ring(&vertical[0]).unwrap();
+    assert_eq!(
+        (
+            vertical_bounds.min_x,
+            vertical_bounds.min_y,
+            vertical_bounds.max_x,
+            vertical_bounds.max_y,
+        ),
+        (-10.0, -20.0, 10.0, 20.0)
+    );
+
+    let horizontal =
+        no_fit_polygon_sheet_axis(&stationary, &moving, axis_clearance(10.0, 0.0), &tol()).unwrap();
+    let horizontal_bounds = BoundsMm::from_ring(&horizontal[0]).unwrap();
+    assert_eq!(
+        (
+            horizontal_bounds.min_x,
+            horizontal_bounds.min_y,
+            horizontal_bounds.max_x,
+            horizontal_bounds.max_y,
+        ),
+        (-20.0, -10.0, 20.0, 10.0)
+    );
+}
+
+#[test]
+fn mien_hop_le_di_huong_khong_xoa_pose_theo_truc_gap_bang_zero() {
+    let moving = rect(10.0, 10.0);
+    let horizontal_usable = BoundsMm {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 31.0,
+        max_y: 11.0,
+    };
+    let horizontal_placed = vec![
+        rect_at(0.0, 0.0, 10.0, 10.0),
+        rect_at(10.0, 0.0, 10.0, 10.0),
+    ];
+    let horizontal = feasible_region_sheet_axis(
+        &horizontal_usable,
+        &horizontal_placed,
+        &moving,
+        axis_clearance(0.0, 10.0),
+        &tol(),
+    )
+    .unwrap();
+    assert!(
+        region_contains(&horizontal, pt(20.5, 0.5)),
+        "gapY không được xoá pose tách nhau theo X"
+    );
+
+    let vertical_usable = BoundsMm {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 11.0,
+        max_y: 31.0,
+    };
+    let vertical_placed = vec![
+        rect_at(0.0, 0.0, 10.0, 10.0),
+        rect_at(0.0, 10.0, 10.0, 10.0),
+    ];
+    let vertical = feasible_region_sheet_axis(
+        &vertical_usable,
+        &vertical_placed,
+        &moving,
+        axis_clearance(10.0, 0.0),
+        &tol(),
+    )
+    .unwrap();
+    assert!(
+        region_contains(&vertical, pt(0.5, 20.5)),
+        "gapX không được xoá pose tách nhau theo Y"
+    );
+}
+
+#[test]
+fn cache_va_incremental_phan_biet_hai_truc_clearance() {
+    let obstacle = rect(10.0, 10.0);
+    let moving = rect(10.0, 10.0);
+    let mut key_cache = NfpCache::new();
+    key_cache
+        .grown_nfp_with_clearance(
+            &obstacle,
+            &moving,
+            NfpClearance::sheet_axis(axis_clearance(0.0, 10.0)),
+            &tol(),
+        )
+        .unwrap();
+    key_cache
+        .grown_nfp_with_clearance(
+            &obstacle,
+            &moving,
+            NfpClearance::sheet_axis(axis_clearance(10.0, 0.0)),
+            &tol(),
+        )
+        .unwrap();
+    key_cache
+        .grown_nfp_with_clearance(
+            &obstacle,
+            &moving,
+            NfpClearance::sheet_axis(axis_clearance(0.0, 10.0)),
+            &tol(),
+        )
+        .unwrap();
+    key_cache
+        .grown_nfp(&obstacle, &moving, 10.0, &tol())
+        .unwrap();
+    assert_eq!(
+        (key_cache.misses(), key_cache.hits(), key_cache.len()),
+        (3, 1, 3)
+    );
+
+    let usable = BoundsMm {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 80.0,
+        max_y: 40.0,
+    };
+    let placed = vec![
+        rect_at(0.0, 0.0, 10.0, 10.0),
+        rect_at(20.0, 0.0, 10.0, 10.0),
+    ];
+    let clearance = NfpClearance::sheet_axis(axis_clearance(2.0, 7.0));
+    let mut cache = NfpCache::new();
+    let base = feasible_region_cached_with_clearance(
+        &usable,
+        &placed[..1],
+        &moving,
+        clearance,
+        &tol(),
+        &mut cache,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let incremental = feasible_region_after_with_clearance(
+        base,
+        &placed[1..],
+        &moving,
+        clearance,
+        &tol(),
+        &mut cache,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let full = feasible_region_cached_with_clearance(
+        &usable,
+        &placed,
+        &moving,
+        clearance,
+        &tol(),
+        &mut cache,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert!((region_area_mm2(&incremental) - region_area_mm2(&full)).abs() < 1e-9);
+    for x in 0..70 {
+        for y in 0..30 {
+            let sample = pt(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            assert_eq!(
+                region_contains(&incremental, sample),
+                region_contains(&full, sample),
+                "incremental lệch full tại {sample:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn dinh_cua_mien_la_ung_vien_tiep_xuc_khong_phai_luoi() {
     let usable = BoundsMm {
         min_x: 0.0,
@@ -594,6 +867,183 @@ fn luoi_ton_trong_margin_va_loai_duoc_cap_xa() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
+fn clearance_di_huong_duoc_do_trong_sheet_space_sau_pose() {
+    let a = rect(10.0, 10.0);
+    let clearance = axis_clearance(2.0, 0.5);
+
+    // Chỉ hở 1,5 mm theo X, trong khi projection Y còn chồng nhau.
+    let sat_x = rect_at(11.5, 0.0, 10.0, 10.0);
+    assert!(matches!(
+        judge_pair_sheet_axis(&a, &sat_x, clearance, &tol()),
+        PairVerdict::ClearanceTooSmall { .. }
+    ));
+
+    // X chỉ hở 0,5 mm nhưng Y đã hở 0,75 mm (> gapY 0,5): rectangle expansion
+    // theo trục tờ có một trục phân cách hợp lệ nên phải đạt.
+    let tach_y = rect_at(10.5, 10.75, 10.0, 10.0);
+    assert!(matches!(
+        judge_pair_sheet_axis(&a, &tach_y, clearance, &tol()),
+        PairVerdict::Ok { .. }
+    ));
+
+    // Cùng bất biến trên contour đã xoay 17°; hàm không hề biết local axes nữa.
+    let rotated = translate(&rotate(&rect(10.0, 4.0), 17.0), 0.0, 11.0);
+    assert!(matches!(
+        judge_pair_sheet_axis(&a, &rotated, axis_clearance(0.5, 2.0), &tol()),
+        PairVerdict::ClearanceTooSmall { .. }
+    ));
+}
+
+#[test]
+fn normalize_production_giu_identity_obstacle_va_inset_edge_clearance() {
+    let obstacle = FixedObstacleSpec {
+        obstacle_id: "boong-a".to_string(),
+        kind: FixedObstacleKind::Gripper,
+        outer: rect_at(100.0, 100.0, 30.0, 15.0),
+    };
+    let request = production_request(
+        vec![part("part-a", 1, rect(10.0, 10.0))],
+        production_clearance(3.0, 4.0, 5.0, 6.0, 7.0, 8.0),
+        vec![obstacle],
+    );
+    let normalized = normalize_request(&request).expect("production request phải chuẩn hoá được");
+
+    assert_eq!(normalized.sheet.material_usable.min_x, 10.0);
+    assert_eq!(normalized.sheet.material_usable.min_y, 10.0);
+    assert_eq!(normalized.sheet.usable.min_x, 15.0);
+    assert_eq!(normalized.sheet.usable.min_y, 16.0);
+    assert!((normalized.gap_mm - 5.0).abs() < 1e-12); // hypot(3,4), broad-phase bảo thủ
+    let production = normalized.production_contract.as_ref().unwrap();
+    assert_eq!(production.request_revision, 1);
+    assert_eq!(production.fixed_obstacles[0].obstacle_id, "boong-a");
+    assert_eq!(
+        production.fixed_obstacles[0].kind,
+        FixedObstacleKind::Gripper
+    );
+}
+
+#[test]
+fn validator_phan_biet_tran_to_edge_clearance_va_obstacle() {
+    let obstacle = FixedObstacleSpec {
+        obstacle_id: "dau-canh-01".to_string(),
+        kind: FixedObstacleKind::SheetMark,
+        outer: rect_at(100.0, 100.0, 20.0, 20.0),
+    };
+    let request = normalize_request(&production_request(
+        vec![part("part-a", 1, rect(10.0, 10.0))],
+        production_clearance(0.0, 0.0, 5.0, 5.0, 3.0, 3.0),
+        vec![obstacle],
+    ))
+    .unwrap();
+
+    // Vẫn trong material usable (x>=10), nhưng thiếu edge clearance (x phải >=15).
+    let near_edge = vec![placement(
+        "part-a#0001",
+        "part-a",
+        0,
+        Pose::new(0.0, 12.0, 30.0),
+    )];
+    let edge_report = validate_layout(
+        &request,
+        &LayoutUnderReview {
+            placements: &near_edge,
+            unplaced: &[],
+            stats: None,
+        },
+    );
+    assert!(edge_report.has(ValidationCode::SheetEdgeClearanceTooSmall));
+    assert!(!edge_report.has(ValidationCode::OutsideUsableArea));
+
+    let on_obstacle = vec![placement(
+        "part-a#0001",
+        "part-a",
+        0,
+        Pose::new(0.0, 105.0, 105.0),
+    )];
+    let overlap_report = validate_layout(
+        &request,
+        &LayoutUnderReview {
+            placements: &on_obstacle,
+            unplaced: &[],
+            stats: None,
+        },
+    );
+    assert!(overlap_report.has(ValidationCode::FixedObstacleOverlap));
+    assert!(overlap_report.obstacle_pairs_checked > 0);
+
+    // Không chồng nhưng chỉ hở 2 mm theo X, thấp hơn obstacle gap 3 mm.
+    let near_obstacle = vec![placement(
+        "part-a#0001",
+        "part-a",
+        0,
+        Pose::new(0.0, 88.0, 100.0),
+    )];
+    let clearance_report = validate_layout(
+        &request,
+        &LayoutUnderReview {
+            placements: &near_obstacle,
+            unplaced: &[],
+            stats: None,
+        },
+    );
+    assert!(clearance_report.has(ValidationCode::ObstacleClearanceTooSmall));
+}
+
+#[test]
+fn validator_khoa_bien_zone_doc_lap_va_dung_tolerance() {
+    assert_eq!(
+        ValidationCode::OutsidePlacementZone.as_str(),
+        "OUTSIDE_PLACEMENT_ZONE"
+    );
+    let request = normalized_maximize_area();
+    let tolerance = request.tolerance.linear_mm;
+    let cases = [
+        ("đúng biên", 500.0, false),
+        ("trong tolerance", 500.0 - 0.5 * tolerance, false),
+        ("vượt tolerance", 500.0 - 2.0 * tolerance, true),
+    ];
+
+    for (name, part_a_y, should_reject) in cases {
+        let placements = vec![
+            placement("part-a#0001", "part-a", 0, Pose::new(0.0, 100.0, part_a_y)),
+            placement("part-b#0001", "part-b", 0, Pose::new(0.0, 200.0, 100.0)),
+        ];
+        let report = validate_layout(
+            &request,
+            &LayoutUnderReview {
+                placements: &placements,
+                unplaced: &[],
+                stats: None,
+            },
+        );
+
+        assert_eq!(
+            report.has(ValidationCode::OutsidePlacementZone),
+            should_reject,
+            "ca {name}: {:?}",
+            report.codes()
+        );
+        assert!(
+            !report.has(ValidationCode::OutsideUsableArea)
+                && !report.has(ValidationCode::SheetEdgeClearanceTooSmall),
+            "biên zone nội bộ không được nhập nhằng với mép tờ: {:?}",
+            report.codes()
+        );
+        if should_reject {
+            let issue = report
+                .issues
+                .iter()
+                .find(|issue| issue.code == ValidationCode::OutsidePlacementZone)
+                .unwrap();
+            assert_eq!(issue.instance_id, "part-a#0001");
+            assert!(issue.measured < -tolerance, "mức tràn: {}", issue.measured);
+        } else {
+            assert!(report.valid, "ca {name} phải hợp lệ: {:?}", report.codes());
+        }
+    }
+}
+
+#[test]
 fn layout_hop_le_di_qua_validator() {
     let request = normalized(vec![part("part-a", 3, rect(80.0, 40.0))]);
     // Ba con xếp dọc, hở đúng 3 mm — bằng `gapMm` nên narrow phase thực sự phải đo.
@@ -609,7 +1059,7 @@ fn layout_hop_le_di_qua_validator() {
     };
     let report = validate_layout(&request, &layout);
     assert!(report.valid, "phải đạt, lỗi: {:?}", report.codes());
-    assert_eq!(report.validator_version, 1);
+    assert_eq!(report.validator_version, MIXED_NESTING_VALIDATOR_VERSION);
     assert!(
         (report.min_clearance_mm - 3.0).abs() < 1e-6,
         "khoảng hở nhỏ nhất phải đúng 3 mm, đo được {}",
@@ -617,6 +1067,90 @@ fn layout_hop_le_di_qua_validator() {
     );
     assert!(report.min_margin_mm > 0.0);
     assert!(report.pairs_checked > 0, "broad phase phải sinh cặp để đo");
+}
+
+#[test]
+fn validator_autofill_chan_gang_thieu_bat_ky_mau_nao() {
+    let request = normalized_autofill(vec![
+        part("part-a", 1, rect(80.0, 40.0)),
+        part("part-b", 1, rect(60.0, 30.0)),
+    ]);
+    let placements = vec![placement(
+        "part-a#0001",
+        "part-a",
+        0,
+        Pose::new(0.0, 20.0, 50.0),
+    )];
+    let report = validate_layout(
+        &request,
+        &LayoutUnderReview {
+            placements: &placements,
+            unplaced: &[],
+            stats: None,
+        },
+    );
+    assert!(!report.valid);
+    assert!(
+        report.has(ValidationCode::MissingAutofillPart),
+        "không được công bố tờ gang thiếu part-b: {:?}",
+        report.codes()
+    );
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.code == ValidationCode::MissingAutofillPart
+            && issue.instance_id == "part-b"));
+}
+
+#[test]
+fn validator_autofill_nhan_gang_co_du_moi_mau() {
+    let request = normalized_autofill(vec![
+        part("part-a", 1, rect(80.0, 40.0)),
+        part("part-b", 1, rect(60.0, 30.0)),
+    ]);
+    let placements = vec![
+        placement("part-a#0001", "part-a", 0, Pose::new(0.0, 20.0, 50.0)),
+        placement("part-b#0001", "part-b", 0, Pose::new(0.0, 120.0, 50.0)),
+    ];
+    let report = validate_layout(
+        &request,
+        &LayoutUnderReview {
+            placements: &placements,
+            unplaced: &[],
+            stats: None,
+        },
+    );
+    assert!(report.valid, "gang đủ mẫu phải đạt: {:?}", report.codes());
+}
+
+#[test]
+fn validator_autofill_khong_nhan_unplaced_gia_lam_no_san_xuat() {
+    let request = normalized_autofill(vec![part("part-a", 1, rect(80.0, 40.0))]);
+    let placements = vec![placement(
+        "part-a#0001",
+        "part-a",
+        0,
+        Pose::new(0.0, 20.0, 50.0),
+    )];
+    let unplaced = vec![UnplacedRecord {
+        instance_id: "part-a#0002".to_string(),
+        part_id: "part-a".to_string(),
+        reason: UnplacedReason::MaxSheetsReached,
+    }];
+    let report = validate_layout(
+        &request,
+        &LayoutUnderReview {
+            placements: &placements,
+            unplaced: &unplaced,
+            stats: None,
+        },
+    );
+    assert!(!report.valid);
+    assert!(
+        report.has(ValidationCode::QuantityMismatch),
+        "autofill không được công bố unplaced: {:?}",
+        report.codes()
+    );
 }
 
 #[test]
@@ -695,6 +1229,11 @@ fn validator_chan_tran_ra_ngoai_to() {
     assert!(
         report.has(ValidationCode::OutsideUsableArea),
         "{:?}",
+        report.codes()
+    );
+    assert!(
+        !report.has(ValidationCode::OutsidePlacementZone),
+        "free gang không được sinh lỗi zone: {:?}",
         report.codes()
     );
     assert!(report.min_margin_mm < 0.0, "lề phải âm khi đã tràn");

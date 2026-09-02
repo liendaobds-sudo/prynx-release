@@ -29,14 +29,18 @@
 //! chất cần thiết — bất biến với chỉ số đỉnh bắt đầu, bất biến với chiều vòng, và
 //! đồng biến với phép xoay (`centroid(R·p) = R·centroid(p)`).
 
+use std::collections::BTreeMap;
+use std::num::NonZeroU32;
+
 use super::model::{
-    ContractErrors, MixedNestingRequest, PartSpec, PointMm, Tolerance, MAX_RING_VERTICES,
+    ClearanceSpec, ContractErrors, FixedObstacleKind, GroupingIntent, LayoutAlignment,
+    MixedNestingRequest, PartSpec, PointMm, SheetAxisClearanceMm, Tolerance, MAX_RING_VERTICES,
 };
 use super::orientation::{resolve_part_domain, OrientationError, RotationDomain};
 use super::transform::{perimeter_mm, signed_area_mm2};
 
 /// Version của quy tắc chuẩn hoá contour. Đổi quy tắc là đổi hợp đồng.
-pub const NORMALIZE_RULE_VERSION: u32 = 1;
+pub const NORMALIZE_RULE_VERSION: u32 = 2;
 
 /// Version của quy tắc suy ra điểm tham chiếu.
 pub const REFERENCE_POINT_RULE_VERSION: u32 = 1;
@@ -228,10 +232,34 @@ impl std::error::Error for NormalizeFailure {}
 pub struct NormalizedSheet {
     pub width_mm: f64,
     pub height_mm: f64,
-    /// Vùng dùng được sau khi trừ lề. Trục Y hướng lên nên lề dưới là `min_y` và lề
-    /// trên trừ vào `max_y` — nhầm chiều này là đặt chi tiết lệch cả tờ.
+    /// Vùng vật liệu dùng được sau khi trừ lề, trước clearance tới mép.
+    pub material_usable: BoundsMm,
+    /// Vùng đặt pose sau khi tiếp tục trừ part↔sheet-edge clearance.
+    /// Trục Y hướng lên nên lề dưới là `min_y` và lề trên trừ vào `max_y`.
     pub usable: BoundsMm,
     pub max_sheets: u32,
+}
+
+/// Một vùng cấm production đã chuẩn hoá, sẵn sàng cho validator/solver.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizedFixedObstacle {
+    pub obstacle_id: String,
+    pub kind: FixedObstacleKind,
+    pub outer: Vec<PointMm>,
+    pub bounds: BoundsMm,
+}
+
+/// Identity và geometry constraints bất biến của đường Tem bế/CNC production.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizedProductionContractV1 {
+    pub schema_version: u32,
+    pub request_revision: u64,
+    pub input_hash: String,
+    pub layout_fingerprint: String,
+    pub alignment: LayoutAlignment,
+    pub grouping_intent: GroupingIntent,
+    pub clearance: ClearanceSpec,
+    pub fixed_obstacles: Vec<NormalizedFixedObstacle>,
 }
 
 /// Một loại chi tiết đã chuẩn hoá, sẵn sàng cho solver.
@@ -244,6 +272,9 @@ pub struct NormalizedPart {
     /// Lỗ khoét, CW, đã làm sạch. MVP coi là vật liệu đặc khi collision/score.
     pub holes: Vec<Vec<PointMm>>,
     pub bounds: BoundsMm,
+    /// Zone canonical theo intent `maximize_area`; `None` là free gang.
+    /// Dùng [`NormalizedRequest::placement_bounds_for`] để đồng thời giữ clearance mép tờ.
+    pub placement_zone: Option<BoundsMm>,
     /// Diện tích contour ngoài, mm², luôn dương.
     pub outer_area_mm2: f64,
     /// Tổng diện tích lỗ (trị tuyệt đối), mm².
@@ -266,6 +297,14 @@ impl NormalizedPart {
         self.outer_area_mm2
     }
 
+    /// Số lượng cần giao thật sự; None nghĩa là autofill không có đích số lượng.
+    ///
+    /// quantity = 0 chỉ là biểu diễn chuyển tiếp từ PartSpec sau khi chuẩn hoá
+    /// payload; bên gọi không được dùng nó làm trần số instance.
+    pub fn requested_quantity(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.quantity)
+    }
+
     /// Tổng diện tích của cả `quantity` con, mm².
     pub fn total_area_mm2(&self) -> f64 {
         self.effective_area_mm2() * f64::from(self.quantity)
@@ -280,21 +319,73 @@ pub struct NormalizedRequest {
     pub profile: super::model::Profile,
     pub time_budget_ms: Option<u64>,
     pub sheet: NormalizedSheet,
+    /// Khoảng broad-phase/baseline bảo thủ. Với production dị hướng, đây là đường
+    /// chéo `(gapX² + gapY²)^0.5`; final authority vẫn dùng `clearance` theo trục tờ.
     pub gap_mm: f64,
+    /// Xem [`super::model::LayoutIntent`] — quyết định `quantity` có phải yêu cầu hay
+    /// chỉ là biểu diễn vắng mặt của target.
+    pub layout_intent: super::model::LayoutIntent,
     pub parts: Vec<NormalizedPart>,
     pub tolerance: Tolerance,
     pub normalize_rule_version: u32,
+    pub production_contract: Option<NormalizedProductionContractV1>,
 }
 
 impl NormalizedRequest {
-    /// Tổng số instance phải xếp.
+    /// Tổng số instance được yêu cầu thật sự.
+    ///
+    /// Autofill không có target nên luôn trả 0.
     pub fn total_instances(&self) -> u64 {
-        self.parts.iter().map(|p| u64::from(p.quantity)).sum()
+        if self.layout_intent.quantity_la_yeu_cau() {
+            self.parts.iter().map(|p| u64::from(p.quantity)).sum()
+        } else {
+            0
+        }
     }
 
     /// Tổng diện tích chi tiết, mm² — tử số của `materialUtilization`.
     pub fn total_part_area_mm2(&self) -> f64 {
-        self.parts.iter().map(NormalizedPart::total_area_mm2).sum()
+        if self.layout_intent.quantity_la_yeu_cau() {
+            self.parts.iter().map(NormalizedPart::total_area_mm2).sum()
+        } else {
+            0.0
+        }
+    }
+
+    /// Khoảng cách vô hướng bảo thủ cho candidate/NFP/refine hiện hữu.
+    ///
+    /// Final validator vẫn dùng ba clearance dị hướng chính xác. Trong lúc candidate
+    /// generator chưa có Minkowski rectangle riêng, dùng đường chéo lớn nhất của
+    /// part↔part và part↔obstacle bảo đảm không sinh pose nguy hiểm (đổi lại có thể bỏ
+    /// một số pose hợp lệ; solver-quality sẽ tối ưu tiếp ở lô riêng).
+    pub fn conservative_solver_gap_mm(&self) -> f64 {
+        let Some(contract) = &self.production_contract else {
+            return self.gap_mm;
+        };
+        let obstacle = contract.clearance.part_to_obstacle;
+        self.gap_mm.max(obstacle.x_mm.hypot(obstacle.y_mm))
+    }
+
+    pub fn fixed_obstacles(&self) -> &[NormalizedFixedObstacle] {
+        self.production_contract
+            .as_ref()
+            .map_or(&[], |contract| contract.fixed_obstacles.as_slice())
+    }
+
+    /// Vùng containment có hiệu lực cho một mẫu.
+    ///
+    /// Zone chia đều phủ vùng vật liệu sau lề. Giao với `sheet.usable` tại đây giữ
+    /// clearance ở bốn mép ngoài mà không tạo khe giả giữa các dải nội bộ.
+    pub fn placement_bounds_for(&self, part: &NormalizedPart) -> BoundsMm {
+        let Some(zone) = part.placement_zone else {
+            return self.sheet.usable;
+        };
+        BoundsMm {
+            min_x: zone.min_x.max(self.sheet.usable.min_x),
+            min_y: zone.min_y.max(self.sheet.usable.min_y),
+            max_x: zone.max_x.min(self.sheet.usable.max_x),
+            max_y: zone.max_y.min(self.sheet.usable.max_y),
+        }
     }
 }
 
@@ -314,11 +405,57 @@ pub fn normalize_request(
     let tol = Tolerance::v1();
     let mut errors: Vec<NormalizeError> = Vec::new();
     let mut parts: Vec<NormalizedPart> = Vec::with_capacity(request.parts.len());
+    let placement_zones: BTreeMap<&str, BoundsMm> = request
+        .production_contract
+        .as_ref()
+        .map(|contract| {
+            contract
+                .placement_zones
+                .iter()
+                .map(|zone| {
+                    (
+                        zone.part_id.as_str(),
+                        BoundsMm {
+                            min_x: zone.bounds.min_x_mm,
+                            min_y: zone.bounds.min_y_mm,
+                            max_x: zone.bounds.max_x_mm,
+                            max_y: zone.bounds.max_y_mm,
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     for (index, part) in request.parts.iter().enumerate() {
-        match normalize_part(request, part, index, &tol) {
+        let placement_zone = placement_zones.get(part.part_id.as_str()).copied();
+        match normalize_part(request, part, index, placement_zone, &tol) {
             Ok(normalized) => parts.push(normalized),
             Err(mut part_errors) => errors.append(&mut part_errors),
+        }
+    }
+
+    let mut fixed_obstacles: Vec<NormalizedFixedObstacle> = Vec::new();
+    if let Some(contract) = &request.production_contract {
+        fixed_obstacles.reserve(contract.fixed_obstacles.len());
+        for (index, obstacle) in contract.fixed_obstacles.iter().enumerate() {
+            let path = format!("productionContract.fixedObstacles[{index}].outer");
+            match normalize_ring(&obstacle.outer, &path, Winding::Ccw, &tol) {
+                Ok(outer) => match BoundsMm::from_ring(&outer) {
+                    Some(bounds) => fixed_obstacles.push(NormalizedFixedObstacle {
+                        obstacle_id: obstacle.obstacle_id.clone(),
+                        kind: obstacle.kind,
+                        outer,
+                        bounds,
+                    }),
+                    None => errors.push(NormalizeError::new(
+                        NormalizeErrorCode::RingNotFinite,
+                        path,
+                        "Vùng cấm chứa toạ độ không hữu hạn.",
+                    )),
+                },
+                Err(mut obstacle_errors) => errors.append(&mut obstacle_errors),
+            }
         }
     }
 
@@ -327,17 +464,51 @@ pub fn normalize_request(
     }
 
     let margin = request.sheet.margin_mm;
+    let material_usable = BoundsMm {
+        min_x: margin.left,
+        min_y: margin.bottom,
+        max_x: request.sheet.width_mm - margin.right,
+        max_y: request.sheet.height_mm - margin.top,
+    };
+    let edge_clearance = request
+        .production_contract
+        .as_ref()
+        .map(|contract| contract.clearance.part_to_sheet_edge)
+        .unwrap_or_else(SheetAxisClearanceMm::zero);
     let sheet = NormalizedSheet {
         width_mm: request.sheet.width_mm,
         height_mm: request.sheet.height_mm,
+        material_usable,
         usable: BoundsMm {
-            min_x: margin.left,
-            min_y: margin.bottom,
-            max_x: request.sheet.width_mm - margin.right,
-            max_y: request.sheet.height_mm - margin.top,
+            min_x: material_usable.min_x + edge_clearance.x_mm,
+            min_y: material_usable.min_y + edge_clearance.y_mm,
+            max_x: material_usable.max_x - edge_clearance.x_mm,
+            max_y: material_usable.max_y - edge_clearance.y_mm,
         },
         max_sheets: request.sheet.max_sheets,
     };
+
+    let production_contract =
+        request
+            .production_contract
+            .as_ref()
+            .map(|contract| NormalizedProductionContractV1 {
+                schema_version: contract.schema_version,
+                request_revision: contract.request_revision,
+                input_hash: contract.input_hash.clone(),
+                layout_fingerprint: contract.layout_fingerprint.clone(),
+                alignment: contract.alignment,
+                grouping_intent: contract.grouping_intent,
+                clearance: contract.clearance,
+                fixed_obstacles,
+            });
+    let solver_gap_mm = production_contract
+        .as_ref()
+        .map(|contract| {
+            let gap = contract.clearance.part_to_part;
+            gap.x_mm.hypot(gap.y_mm)
+        })
+        .unwrap_or(request.gap_mm);
 
     Ok(NormalizedRequest {
         protocol_version: request.protocol_version,
@@ -345,10 +516,12 @@ pub fn normalize_request(
         profile: request.profile,
         time_budget_ms: request.time_budget_ms,
         sheet,
-        gap_mm: request.gap_mm,
+        gap_mm: solver_gap_mm,
+        layout_intent: request.layout_intent,
         parts,
         tolerance: tol,
         normalize_rule_version: NORMALIZE_RULE_VERSION,
+        production_contract,
     })
 }
 
@@ -356,6 +529,7 @@ fn normalize_part(
     request: &MixedNestingRequest,
     part: &PartSpec,
     index: usize,
+    placement_zone: Option<BoundsMm>,
     tol: &Tolerance,
 ) -> Result<NormalizedPart, Vec<NormalizeError>> {
     let base = format!("parts[{index}]");
@@ -446,6 +620,7 @@ fn normalize_part(
         outer,
         holes,
         bounds,
+        placement_zone,
         holes_area_mm2: holes_area,
         reference_point_mm,
         reference_point_rule_version: REFERENCE_POINT_RULE_VERSION,

@@ -81,10 +81,23 @@ pub enum Align {
 pub enum GridStrategy {
     SimpleAuto,
     OptimalAuto,
-    Manual { cols: u32, rows: u32 },
+    Manual {
+        cols: u32,
+        rows: u32,
+    },
     Staggered,
     RowAlt,
     HeadToTail,
+    /// NEST (audit 2026-08-28 §A4a): "Nesting tối ưu theo đường bế".
+    ///
+    /// Đây là **nhãn chiến lược trên đường truyền**, không phải một solver lưới:
+    /// khi chọn giá trị này, đường sản xuất Tem bế/CNC gọi kernel `mixed_nesting`
+    /// thay vì solver lưới, và hình học đến từ Placement Manifest.
+    ///
+    /// Enum này là nguồn chân lý duy nhất cho tập nhãn: bản TypeScript trong
+    /// `desktop/src/components/imposition-tools/generated/` được `ts-rs` sinh ra
+    /// từ đây, và phía TS phải suy union chuỗi từ bản sinh đó chứ không viết tay.
+    TrueShapeNesting,
 }
 
 /// Góc xoay ô khi đặt trang (đo theo PDF, CCW).

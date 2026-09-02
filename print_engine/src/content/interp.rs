@@ -1,7 +1,8 @@
 //! Interpreter content stream: operator PDF → thao tác mực.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Weak};
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use tiny_skia::{LineCap, LineJoin, Mask, Path, PathBuilder, Transform};
@@ -11,7 +12,7 @@ use crate::cancel::CancelToken;
 use crate::color::icc::{ColorManager, SoftProofSettings};
 use crate::color::space::{resolve_colorspace, resolve_function, OutputPreviewFilter};
 use crate::color::ColorSpace;
-use crate::content::gstate::{GraphicsState, StateStack};
+use crate::content::gstate::{GraphicsState, StateDepthOverflow, StateStack};
 use crate::content::inline_image::INLINE_OP;
 use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::geom::{Matrix, Rect, Region};
@@ -27,12 +28,70 @@ use crate::raster::Rasterizer;
 use crate::session::SharedResourceCache;
 use crate::shading::eval::SampledShading;
 use crate::shading::mesh::MeshTriangle;
-use crate::shading::{resolve_shading, Shading, ShadingKind};
+use crate::shading::{
+    resolve_shading_colorspace, resolve_shading_with_colorspace, Shading, ShadingKind,
+};
 use crate::text::font::{load_font, FontProgram, LoadedFont, Type3Data};
 use crate::text::outlines::{
     encode_path, GlyphOutline, StreamKey, TextBlockCodes, TextOutlineReport,
 };
 use crate::text::state::{TextObject, TextRenderMode};
+
+const EXPLICIT_MASK_DECODE_REASON: &str = "ảnh /Mask explicit không giải mã được";
+const FORM_STREAM_DECODE_REASON: &str = "Do Form (không giải nén được content stream)";
+const SMASK_STREAM_DECODE_REASON: &str = "SMask /G (content stream chỉ phục hồi được)";
+const PATTERN_STREAM_DECODE_REASON: &str = "Pattern (content stream chỉ phục hồi được)";
+const TYPE3_STREAM_DECODE_REASON: &str = "Type3 CharProc (content stream chỉ phục hồi được)";
+const STATE_DEPTH_OVERFLOW_REASON: &str = "q (vượt trần graphics-state)";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DeferredDiagnostic {
+    ExplicitMaskDecode,
+    SoftMaskStreamDecode,
+    PatternStreamDecode,
+    Type3StreamDecode,
+}
+
+impl DeferredDiagnostic {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::ExplicitMaskDecode => EXPLICIT_MASK_DECODE_REASON,
+            Self::SoftMaskStreamDecode => SMASK_STREAM_DECODE_REASON,
+            Self::PatternStreamDecode => PATTERN_STREAM_DECODE_REASON,
+            Self::Type3StreamDecode => TYPE3_STREAM_DECODE_REASON,
+        }
+    }
+
+    fn marks_unsupported_transparency(self) -> bool {
+        matches!(self, Self::ExplicitMaskDecode | Self::SoftMaskStreamDecode)
+    }
+
+    fn counts_as_dropped_object(self) -> bool {
+        matches!(self, Self::PatternStreamDecode | Self::Type3StreamDecode)
+    }
+}
+
+/// Provenance bảo thủ của diagnostic `/Mask`: mỗi invocation giữ một hộp bao
+/// pixel trên surface hiện hành. Hộp bao có thể phủ khoảng trống giữa các đảo
+/// coverage, nhưng không được vượt qua một vùng hoàn toàn rời nhau ở boundary.
+type ExplicitMaskEvents = HashMap<u64, Region>;
+
+/// Transaction của một operation lồng: footprint và diagnostic chỉ được merge
+/// lên cha sau khi operation hoàn tất. Hai phần phải đi cùng nhau; nếu chỉ giữ
+/// Region thì `/Mask` lỗi trong cell vẫn làm bẩn warning dù operation đã hủy.
+struct PaintTransaction {
+    region: Region,
+    explicit_mask_events: ExplicitMaskEvents,
+}
+
+impl Default for PaintTransaction {
+    fn default() -> Self {
+        Self {
+            region: Region::EMPTY,
+            explicit_mask_events: ExplicitMaskEvents::new(),
+        }
+    }
+}
 
 /// Ngưỡng scale thiết bị để bật raster bảo thủ cho vector.
 ///
@@ -405,11 +464,47 @@ pub struct Renderer<'a> {
     /// `tiling_half_cell` phồng 3.67/255 @100 DPI, 12.75 @72), trong khi RIP
     /// tham chiếu không thể hiện độ nở đó trên nội dung ô pattern.
     pattern_cell_depth: u32,
+    /// Loại object chủ khi đang chạy content của Pattern.
+    ///
+    /// Output Preview phân loại theo object dùng Pattern (Text/LineArt/Image), không
+    /// theo operator con trong ô. Source colorspace vẫn được kiểm tại từng sink con.
+    pattern_preview_owner: Option<PreviewObjectKind>,
     /// Đang ở trong ô của một **uncoloured** tiling pattern (`/PaintType 2`).
     ///
     /// Bên trong ô đó mọi operator màu bị bỏ qua (§8.7.3.3): màu do `scn` bên ngoài
     /// quyết định. Bộ đếm chứ không phải cờ vì ô có thể lồng pattern khác.
     suppress_color_ops: u32,
+    /// Bộ đếm sink đã composite, chỉ dùng để defer diagnostic của Pattern host
+    /// tới sau source/object filter. `wrapping_add` đủ vì chỉ so thay đổi cục bộ.
+    paint_serial: u64,
+    /// Hộp bao paint đã commit trên surface hiện hành.
+    surface_painted_region: Region,
+    /// Transaction theo operation lồng nhau. Sink chỉ ghi transaction trên cùng;
+    /// operation chỉ merge Region + event lên cha khi hoàn tất, nên error/cancel
+    /// không commit footprint hoặc diagnostic của nội dung dở dang.
+    paint_region_trackers: Vec<PaintTransaction>,
+    /// Surface child nằm dưới operation tracker cần footprint pixel thật, không
+    /// được dùng bbox yêu cầu của shading/group làm xấp xỉ.
+    exact_paint_region: bool,
+    /// Event `/Mask` explicit đã thực sự paint trên surface phụ hiện hành.
+    ///
+    /// CORRECTNESS (audit 2026-08-31 §PPE-A05): warning không được ghi thẳng
+    /// vào báo cáo khi đang render soft mask/transparency group; surface cha chỉ
+    /// nhận event nếu bước dùng-mask/merge có alpha hiệu lực dương. Region là hộp
+    /// bao bảo thủ trong hệ pixel của chính surface đó.
+    surface_explicit_mask_events: ExplicitMaskEvents,
+    /// Event đã đi tới surface trang, dùng để một soft mask tái sử dụng không
+    /// đếm lại cùng lỗi ở mọi sink.
+    reported_explicit_mask_events: HashSet<u64>,
+    /// Metadata event gắn với soft mask mà không đổi public type của GraphicsState.
+    /// Weak pointer ngăn địa chỉ allocator tái sử dụng làm nhận nhầm mask cũ.
+    soft_mask_explicit_events: HashMap<usize, (Weak<SoftMask>, ExplicitMaskEvents)>,
+    /// Loại diagnostic của từng event deferred; event có thể đi qua nhiều surface
+    /// trước khi tới trang nên không thể suy loại chỉ từ Region.
+    deferred_event_diagnostics: HashMap<u64, DeferredDiagnostic>,
+    next_explicit_mask_event: u64,
+    /// Độ sâu surface phụ do `render_form_into` dựng; 0 là output trang.
+    render_surface_depth: u32,
     /// Số lớp optional content đang **tắt** mà con trỏ đang nằm trong.
     ///
     /// Là bộ đếm ở mức renderer (không phải mức stream) để một Form XObject được
@@ -531,7 +626,18 @@ impl<'a> Renderer<'a> {
             smask_depth: 0,
             cur_depth: 0,
             pattern_cell_depth: 0,
+            pattern_preview_owner: None,
             suppress_color_ops: 0,
+            paint_serial: 0,
+            surface_painted_region: Region::EMPTY,
+            paint_region_trackers: Vec::new(),
+            exact_paint_region: false,
+            surface_explicit_mask_events: HashMap::new(),
+            reported_explicit_mask_events: HashSet::new(),
+            soft_mask_explicit_events: HashMap::new(),
+            deferred_event_diagnostics: HashMap::new(),
+            next_explicit_mask_event: 0,
+            render_surface_depth: 0,
             oc: OptionalContent::load_for_usage(doc, optional_content_usage),
             oc_hidden: 0,
             stream_ctx: vec![(StreamKey::Page, 0)],
@@ -539,6 +645,214 @@ impl<'a> Renderer<'a> {
             glyph_seq: 0,
             text_block_codes: HashMap::new(),
         })
+    }
+
+    fn preview_object_kind(&self, local_kind: PreviewObjectKind) -> PreviewObjectKind {
+        self.pattern_preview_owner.unwrap_or(local_kind)
+    }
+
+    fn allows_preview_object(&self, local_kind: PreviewObjectKind) -> bool {
+        self.opts
+            .allows_preview_object(self.preview_object_kind(local_kind))
+    }
+
+    fn allocate_deferred_event(&mut self, diagnostic: DeferredDiagnostic) -> u64 {
+        let event = self.next_explicit_mask_event;
+        self.next_explicit_mask_event = self.next_explicit_mask_event.wrapping_add(1);
+        self.deferred_event_diagnostics.insert(event, diagnostic);
+        event
+    }
+
+    /// Nhận event fail-loud từ surface hiện hành hoặc surface con đã merge.
+    fn accept_explicit_mask_events(&mut self, events: impl IntoIterator<Item = (u64, Region)>) {
+        // CORRECTNESS (audit 2026-08-31 §PPE-A05): event phát trong tiling phải
+        // transaction cùng footprint. Inner success merge lên transaction cha;
+        // error/cancel chỉ pop và bỏ cả hai.
+        if let Some(transaction) = self.paint_region_trackers.last_mut() {
+            for (event, region) in events {
+                if region.is_empty() {
+                    continue;
+                }
+                transaction
+                    .explicit_mask_events
+                    .entry(event)
+                    .and_modify(|known| *known = known.union(region))
+                    .or_insert(region);
+            }
+            return;
+        }
+
+        if self.render_surface_depth > 0 {
+            for (event, region) in events {
+                if region.is_empty() {
+                    continue;
+                }
+                self.surface_explicit_mask_events
+                    .entry(event)
+                    .and_modify(|known| *known = known.union(region))
+                    .or_insert(region);
+            }
+            return;
+        }
+
+        let mut new_events: HashMap<DeferredDiagnostic, u32> = HashMap::new();
+        for (event, region) in events {
+            if region.is_empty() || !self.reported_explicit_mask_events.insert(event) {
+                continue;
+            }
+            let diagnostic = self
+                .deferred_event_diagnostics
+                .get(&event)
+                .copied()
+                .unwrap_or(DeferredDiagnostic::ExplicitMaskDecode);
+            let count = new_events.entry(diagnostic).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+
+        for (diagnostic, new_count) in new_events {
+            if diagnostic.marks_unsupported_transparency() {
+                self.warnings.unsupported_transparency = true;
+            }
+            if diagnostic.counts_as_dropped_object() {
+                self.warnings.dropped_objects =
+                    self.warnings.dropped_objects.saturating_add(new_count);
+            }
+            let reason = diagnostic.reason();
+            if let Some((_, count)) = self
+                .warnings
+                .skipped_ops
+                .iter_mut()
+                .find(|(known, _)| known == reason)
+            {
+                *count = count.saturating_add(new_count);
+            } else {
+                self.warnings
+                    .skipped_ops
+                    .push((reason.to_string(), new_count));
+            }
+        }
+    }
+
+    /// Tạo một event cho đúng invocation đã vượt mọi clip/filter của image host.
+    fn defer_explicit_mask_failure(&mut self, painted_region: Region) {
+        if painted_region.is_empty() {
+            return;
+        }
+        let event = self.allocate_deferred_event(DeferredDiagnostic::ExplicitMaskDecode);
+        self.accept_explicit_mask_events(std::iter::once((event, painted_region)));
+    }
+
+    /// Gắn event sinh trong Form dựng soft mask với chính Arc của mask đó.
+    fn register_soft_mask_events(&mut self, mask: &Arc<SoftMask>, events: ExplicitMaskEvents) {
+        if events.is_empty() {
+            return;
+        }
+        self.soft_mask_explicit_events
+            .insert(Arc::as_ptr(mask) as usize, (Arc::downgrade(mask), events));
+    }
+
+    /// Ghi Region vào operation tracker hiện hành; nếu không có tracker thì
+    /// commit thẳng lên surface. Tracker con chỉ merge lên cha khi operation xanh.
+    fn record_painted_region(&mut self, painted_region: Region) {
+        if painted_region.is_empty() {
+            return;
+        }
+        if let Some(transaction) = self.paint_region_trackers.last_mut() {
+            transaction.region = transaction.region.union(painted_region);
+        } else {
+            self.surface_painted_region = self.surface_painted_region.union(painted_region);
+        }
+    }
+
+    /// Chỉ trả metadata còn sống và chưa từng đi tới output trang.
+    fn pending_soft_mask_events(&mut self, mask: &SoftMask) -> Option<ExplicitMaskEvents> {
+        let key = mask as *const SoftMask as usize;
+        let events = self
+            .soft_mask_explicit_events
+            .get(&key)
+            .and_then(|(weak, events)| {
+                weak.upgrade()
+                    .filter(|live| Arc::as_ptr(live) == mask as *const SoftMask)
+                    .map(|_| events.clone())
+            });
+        let Some(mut events) = events else {
+            // Entry chết có thể giữ cùng địa chỉ tới khi renderer kết thúc;
+            // xoá ngay để allocator tái sử dụng cũng không nhận nhầm event.
+            self.soft_mask_explicit_events.remove(&key);
+            return None;
+        };
+        events.retain(|event, region| {
+            !region.is_empty() && !self.reported_explicit_mask_events.contains(event)
+        });
+        (!events.is_empty()).then_some(events)
+    }
+
+    fn soft_mask_has_pending_events(&mut self, mask: &SoftMask) -> bool {
+        self.pending_soft_mask_events(mask).is_some()
+    }
+
+    /// Ghi nhận Region của sink đã tự tăng `paint_serial`, rồi propagate SMask.
+    fn finish_surface_paint(
+        &mut self,
+        soft_mask: Option<&SoftMask>,
+        painted_region: Region,
+    ) -> PpeResult<()> {
+        self.record_painted_region(painted_region);
+        self.propagate_soft_mask_events(soft_mask, painted_region)
+    }
+
+    /// Ghi nhận một sink có alpha hiệu lực dương trên surface hiện hành.
+    /// Event của soft mask chỉ đi tiếp ở đây, tức mask được **dùng để paint** chứ
+    /// không chỉ được dựng bởi operator `gs` rồi bỏ đó.
+    fn note_surface_paint(
+        &mut self,
+        soft_mask: Option<&SoftMask>,
+        painted_region: Region,
+    ) -> PpeResult<()> {
+        self.paint_serial = self.paint_serial.wrapping_add(1);
+        self.finish_surface_paint(soft_mask, painted_region)
+    }
+
+    fn propagate_soft_mask_events(
+        &mut self,
+        soft_mask: Option<&SoftMask>,
+        painted_region: Region,
+    ) -> PpeResult<()> {
+        let Some(mask) = soft_mask else {
+            return Ok(());
+        };
+        let Some(events) = self.pending_soft_mask_events(mask) else {
+            return Ok(());
+        };
+
+        // Chỉ đường diagnostic hiếm mới quét pixel. Lookup Weak/HashMap và root
+        // dedup đều hoàn tất trước vòng lặp; mỗi hàng vẫn poll cancellation.
+        let mut visible = ExplicitMaskEvents::new();
+        for (event, event_region) in events {
+            let candidate = intersect_regions(event_region, painted_region);
+            let diagnostic = self
+                .deferred_event_diagnostics
+                .get(&event)
+                .copied()
+                .unwrap_or(DeferredDiagnostic::ExplicitMaskDecode);
+            // Lỗi nằm trong nội dung được SMask che chỉ có ảnh hưởng nơi alpha
+            // mask dương. Lỗi decode của chính `/G` thì alpha 0 cũng có thể là
+            // hậu quả của lỗi, nên không được dùng alpha đó để tự che warning.
+            let region = if diagnostic == DeferredDiagnostic::SoftMaskStreamDecode {
+                candidate
+            } else {
+                bounding_region_where_cancelled(
+                    candidate,
+                    self.opts.cancel_token.as_ref(),
+                    |x, y| mask.value_at(x, y) > 0.0,
+                )?
+            };
+            if !region.is_empty() {
+                visible.insert(event, region);
+            }
+        }
+        self.accept_explicit_mask_events(visible);
+        Ok(())
     }
 
     pub fn warnings(&self) -> &RenderWarnings {
@@ -585,6 +899,28 @@ impl<'a> Renderer<'a> {
             .collect();
         blocks.sort_by_key(|b| (b.stream, b.text_object_index));
         self.text_outlines.blocks = blocks;
+    }
+
+    /// Ghi fail-loud một lần ở đầu mỗi episode vượt trần q-depth.
+    fn note_state_depth_overflow(&mut self, overflow: StateDepthOverflow) {
+        if !overflow.starts_episode() {
+            return;
+        }
+        self.warnings.note_skipped_op(STATE_DEPTH_OVERFLOW_REASON);
+        self.warnings.dropped_objects = self.warnings.dropped_objects.saturating_add(1);
+    }
+
+    /// Internal Form/group/Type3 không được sửa frame caller nếu save chạm trần.
+    /// Frame virtual vừa tạo được consume ngay vì object đó bị bỏ fail-closed.
+    fn save_internal_state(&mut self, stack: &mut StateStack) -> bool {
+        match stack.save() {
+            Ok(()) => true,
+            Err(overflow) => {
+                self.note_state_depth_overflow(overflow);
+                stack.restore();
+                false
+            }
+        }
     }
 
     /// Chạy một content stream với CTM và resources cho trước.
@@ -657,7 +993,16 @@ impl<'a> Renderer<'a> {
     ) -> PpeResult<()> {
         self.opts.check_cancelled()?;
         if depth > self.opts.max_form_depth {
-            self.warnings.note_skipped_op("Do (lồng quá sâu)");
+            // CORRECTNESS (audit 2026-08-31 §PPE-A01): stream lồng bị bỏ phải
+            // hạ soundness, không chỉ xuất hiện trong danh sách operator bỏ qua.
+            if stack
+                .current()
+                .clip_region
+                .is_none_or(|region| !region.is_empty())
+            {
+                self.warnings.note_skipped_op("Do (lồng quá sâu)");
+                self.warnings.dropped_objects = self.warnings.dropped_objects.saturating_add(1);
+            }
             return Ok(());
         }
 
@@ -669,8 +1014,9 @@ impl<'a> Renderer<'a> {
         let inline_images = program.inline_images();
 
         let mut path = PathState::default();
-        // Độ sâu `q` lúc vào — dùng để dọn `q` thừa khi stream kết thúc.
-        let entry_depth = stack.depth();
+        // Độ sâu logic `q` lúc vào — dùng để dọn cả frame physical lẫn virtual
+        // khi stream kết thúc.
+        let entry_depth = stack.logical_depth();
         // Ngăn xếp marked content của **stream này**: mỗi phần tử ghi "khối này có
         // mở một lớp đang tắt hay không". Cục bộ theo stream vì `BDC`/`EMC` phải cân
         // trong cùng một stream; còn bộ đếm `oc_hidden` thì ở mức renderer để lớp tắt
@@ -683,9 +1029,48 @@ impl<'a> Renderer<'a> {
             // Đặt lại ở mỗi operator: một lời gọi lồng (form, pattern, soft mask) đã
             // ghi độ sâu của nó vào đây và không có nghĩa vụ phục hồi.
             self.cur_depth = depth;
+
+            // CORRECTNESS (audit 2026-08-31 §PPE-B02): khi physical stack đã đầy,
+            // chỉ q/Q được phép thay đổi virtual depth. Mọi paint/state op khác bị
+            // bỏ fail-closed nhưng cancellation vẫn được poll ở đầu vòng.
+            if stack.virtual_overflow_active() {
+                match op.operator.as_str() {
+                    "q" => {
+                        if let Err(overflow) = stack.save() {
+                            self.note_state_depth_overflow(overflow);
+                        }
+                    }
+                    "Q" => stack.restore(),
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Type3 d1 và PaintType 2 đều cấm mọi color-setting, kể cả resolve
+            // colorspace và assignment tên Pattern vốn không đi qua setter.
+            if self.suppress_color_ops > 0
+                && matches!(
+                    op.operator.as_str(),
+                    "g" | "G" | "rg" | "RG" | "k" | "K" | "cs" | "CS" | "sc" | "scn" | "SC" | "SCN"
+                )
+            {
+                continue;
+            }
+
             match op.operator.as_str() {
                 // ── Trạng thái ────────────────────────────────────────────────
-                "q" => stack.save(),
+                "q" => {
+                    if let Err(overflow) = stack.save() {
+                        let starts_episode = overflow.starts_episode();
+                        self.note_state_depth_overflow(overflow);
+                        if starts_episode {
+                            // Current path không thuộc graphics state. Nếu paint-op
+                            // trong episode bị skip mà giữ path cũ, nó có thể bị tô
+                            // muộn sau Q; bỏ path ngay để fail-closed.
+                            path = PathState::default();
+                        }
+                    }
+                }
                 "Q" => stack.restore(),
                 "cm" => {
                     if let Some(m) = matrix_from(operands) {
@@ -729,14 +1114,14 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 "d" => {
-                    let arr = operands
-                        .first()
-                        .and_then(|o| pdf::num_array(self.doc, o))
-                        .unwrap_or_default();
-                    let phase = num_operand(operands, 1).unwrap_or(0.0);
-                    let gs = stack.current_mut();
-                    gs.dash_array = arr;
-                    gs.dash_phase = phase;
+                    // lopdf chuẩn hóa Type3 d0/d1 thành operator `d` với toàn
+                    // toán hạng số. Chỉ Array mới là dash operator thật.
+                    if let Some(arr) = operands.first().and_then(|o| pdf::num_array(self.doc, o)) {
+                        let phase = num_operand(operands, 1).unwrap_or(0.0);
+                        let gs = stack.current_mut();
+                        gs.dash_array = arr;
+                        gs.dash_phase = phase;
+                    }
                 }
                 // Flatness / smoothness / rendering intent: ảnh hưởng tram ở RIP,
                 // không ảnh hưởng lượng mực danh nghĩa ⇒ bỏ qua có chủ ý.
@@ -1141,7 +1526,7 @@ impl<'a> Renderer<'a> {
 
         // `q` thừa khi stream kết thúc: dọn về đúng độ sâu để form lồng nhau không
         // rò trạng thái ra ngoài.
-        while stack.depth() > entry_depth {
+        while stack.logical_depth() > entry_depth {
             stack.restore();
         }
         Ok(())
@@ -1217,8 +1602,10 @@ impl<'a> Renderer<'a> {
         let gs = stack.current_mut();
         if stroke {
             gs.stroke_cs = cs;
+            gs.stroke_pattern = None;
         } else {
             gs.fill_cs = cs;
+            gs.fill_pattern = None;
         }
     }
 
@@ -1258,23 +1645,24 @@ impl<'a> Renderer<'a> {
         } else {
             (fill, stroke)
         };
-        let fill_uses_pattern = pattern_for(stack, false).is_some();
-        let stroke_uses_pattern = pattern_for(stack, true).is_some();
+        let fill_uses_pattern = uses_pattern_color_space(stack, false);
+        let stroke_uses_pattern = uses_pattern_color_space(stack, true);
+        let line_art_visible = self.allows_preview_object(PreviewObjectKind::LineArt);
         if fill.is_some()
-            && !fill_uses_pattern
-            && (!self.opts.allows_preview_object(PreviewObjectKind::LineArt)
-                || !self
-                    .opts
-                    .allows_preview_color_space(&stack.current().fill_cs))
+            && (!line_art_visible
+                || (!fill_uses_pattern
+                    && !self
+                        .opts
+                        .allows_preview_color_space(&stack.current().fill_cs)))
         {
             fill = None;
         }
         if stroke.is_some()
-            && !stroke_uses_pattern
-            && (!self.opts.allows_preview_object(PreviewObjectKind::LineArt)
-                || !self
-                    .opts
-                    .allows_preview_color_space(&stack.current().stroke_cs))
+            && (!line_art_visible
+                || (!stroke_uses_pattern
+                    && !self
+                        .opts
+                        .allows_preview_color_space(&stack.current().stroke_cs)))
         {
             stroke = None;
         }
@@ -1305,17 +1693,29 @@ impl<'a> Renderer<'a> {
         if let (Some(rule), Some(dev)) = (fill, device_path.as_ref()) {
             // Pattern đi đường riêng: màu không phải một giá trị mà là một hàm của
             // vị trí, nên không dựng được `InkPaint` duy nhất cho cả hình.
-            let pattern = pattern_for(stack, false);
-            let painted = match &pattern {
-                Some(name) => self.paint_with_pattern(name, resources, dev, rule, stack, false)?,
-                None => false,
-            };
-            if !painted && pattern.is_none() {
+            if fill_uses_pattern {
+                let owner = self.preview_object_kind(PreviewObjectKind::LineArt);
+                match pattern_for(stack, false) {
+                    Some(name) => {
+                        self.paint_with_pattern(&name, resources, dev, rule, stack, false, owner)?;
+                    }
+                    None => {
+                        self.note_missing_pattern_selection(false, dev, rule, stack);
+                    }
+                }
+            } else {
                 let paint = self.make_paint(stack, false)?;
                 if let Some(paint) = paint {
                     let clip = stack.current().clip.clone();
                     let soft = stack.current().soft_mask.clone();
-                    let Renderer { raster, buffer, .. } = self;
+                    let paint_serial_before = self.paint_serial;
+                    let mut painted_region = Region::EMPTY;
+                    let Renderer {
+                        raster,
+                        buffer,
+                        paint_serial,
+                        ..
+                    } = self;
                     let opaque_paint =
                         paint.alpha >= 1.0 - 1e-6 && soft.is_none() && paint.blend.is_normal();
                     let conservative = !self.opts.anti_alias
@@ -1341,7 +1741,12 @@ impl<'a> Renderer<'a> {
                         )
                     };
                     if let Some(cov) = coverage {
+                        let cov_region = cov.region;
                         buffer.composite_region(cov.data, cov.region, &paint)?;
+                        if paint.alpha > 0.0 {
+                            *paint_serial = paint_serial.wrapping_add(1);
+                            painted_region = painted_region.union(cov_region);
+                        }
                     }
                     // Vành fill-adjust (xem `Rasterizer::fill_adjust_ring`): bù
                     // khoảng nở scan-convert của RIP tham chiếu. Composite bằng
@@ -1357,8 +1762,17 @@ impl<'a> Renderer<'a> {
                             clip.as_deref(),
                             soft.as_deref(),
                         )? {
+                            let ring_region = ring.region;
                             buffer.composite_region_tac_guard(ring.data, ring.region, &paint)?;
+                            if paint.alpha > 0.0 {
+                                *paint_serial = paint_serial.wrapping_add(1);
+                                painted_region = painted_region.union(ring_region);
+                            }
                         }
+                    }
+                    let painted = *paint_serial != paint_serial_before;
+                    if painted {
+                        self.finish_surface_paint(soft.as_deref(), painted_region)?;
                     }
                 }
             }
@@ -1367,18 +1781,29 @@ impl<'a> Renderer<'a> {
         if stroke.is_some() {
             let stroke_params = stack.current().build_stroke();
             if let Some(outline) = stroke_to_path(&user_path, &stroke_params, &ctm) {
-                let pattern = pattern_for(stack, true);
-                if let Some(name) = &pattern {
-                    self.paint_with_pattern(
-                        name,
-                        resources,
-                        &outline,
-                        FillRule::NonZero,
-                        stack,
-                        true,
-                    )?;
-                }
-                let paint = if pattern.is_some() {
+                let paint = if stroke_uses_pattern {
+                    let owner = self.preview_object_kind(PreviewObjectKind::LineArt);
+                    match pattern_for(stack, true) {
+                        Some(name) => {
+                            self.paint_with_pattern(
+                                &name,
+                                resources,
+                                &outline,
+                                FillRule::NonZero,
+                                stack,
+                                true,
+                                owner,
+                            )?;
+                        }
+                        None => {
+                            self.note_missing_pattern_selection(
+                                true,
+                                &outline,
+                                FillRule::NonZero,
+                                stack,
+                            );
+                        }
+                    }
                     None
                 } else {
                     self.make_paint(stack, true)?
@@ -1386,7 +1811,14 @@ impl<'a> Renderer<'a> {
                 if let Some(paint) = paint {
                     let clip = stack.current().clip.clone();
                     let soft = stack.current().soft_mask.clone();
-                    let Renderer { raster, buffer, .. } = self;
+                    let paint_serial_before = self.paint_serial;
+                    let mut painted_region = Region::EMPTY;
+                    let Renderer {
+                        raster,
+                        buffer,
+                        paint_serial,
+                        ..
+                    } = self;
                     // Stroke có thể bao quanh một bbox rất lớn nhưng outline của chính nét
                     // vẫn mảnh; vì vậy không dùng kích thước bbox để loại như path fill.
                     // Nét giữ ngưỡng 1.2 cũ: đo corpus 72 DPI cho thấy scan-convert
@@ -1413,12 +1845,21 @@ impl<'a> Renderer<'a> {
                         )
                     };
                     if let Some(cov) = coverage {
+                        let cov_region = cov.region;
                         buffer.composite_region(cov.data, cov.region, &paint)?;
+                        if paint.alpha > 0.0 {
+                            *paint_serial = paint_serial.wrapping_add(1);
+                            painted_region = painted_region.union(cov_region);
+                        }
                     }
                     // KHÔNG nở vành cho nét: outline của nét đã qua "chạm là
                     // phủ" (mọi pixel nét đi qua đều tính), và đo corpus cho
                     // thấy RIP tham chiếu không nở nét thêm như nở fill — nở
                     // nữa chỉ phình mean (Hộp nước hoa +1.2/255 khi nở nét).
+                    let painted = *paint_serial != paint_serial_before;
+                    if painted {
+                        self.finish_surface_paint(soft.as_deref(), painted_region)?;
+                    }
                 }
             }
         }
@@ -1620,7 +2061,11 @@ impl<'a> Renderer<'a> {
                 };
                 match dict {
                     Some(d) => match self.build_soft_mask(&d, stack, depth) {
-                        Ok(Some(mask)) => Some(Some(Arc::new(mask))),
+                        Ok(Some((mask, events))) => {
+                            let mask = Arc::new(mask);
+                            self.register_soft_mask_events(&mask, events);
+                            Some(Some(mask))
+                        }
                         Ok(None) => None,
                         Err(error @ PpeError::Cancelled) => return Err(error),
                         Err(error @ PpeError::MemoryBudgetExceeded { .. }) => {
@@ -1774,6 +2219,31 @@ impl<'a> Renderer<'a> {
         Region::from_bounds(min_x, min_y, max_x, max_y, width, height)
     }
 
+    /// Kiểm tra hình chữ nhật sau ma trận có thể giao raster hiện hành hay không.
+    ///
+    /// CORRECTNESS (audit 2026-08-31 §PPE-B01): annotation ngoài tile không được
+    /// tạo cảnh báo fail-loud; toạ độ không hữu hạn cũng không đại diện pixel thật.
+    pub(crate) fn rect_may_intersect_buffer(&self, rect: Rect, ctm: &Matrix) -> bool {
+        if rect.is_empty() {
+            return false;
+        }
+        let corners = [
+            ctm.apply(rect.x0, rect.y0),
+            ctm.apply(rect.x1, rect.y0),
+            ctm.apply(rect.x0, rect.y1),
+            ctm.apply(rect.x1, rect.y1),
+        ];
+        if corners
+            .iter()
+            .any(|point| !point.0.is_finite() || !point.1.is_finite())
+        {
+            return false;
+        }
+        !self
+            .bbox_region(Some(rect), ctm, self.buffer.width(), self.buffer.height())
+            .is_empty()
+    }
+
     fn intersect_bbox_region(
         &self,
         current: Option<Region>,
@@ -1798,8 +2268,9 @@ impl<'a> Renderer<'a> {
         data: &[u8],
         resources: Option<&Dictionary>,
         initial: GraphicsState,
+        exact_paint_region: bool,
         depth: u32,
-    ) -> PpeResult<InkBuffer> {
+    ) -> PpeResult<(InkBuffer, Region, ExplicitMaskEvents)> {
         let child_extent = (child.width(), child.height());
         let child_raster = if child_extent != (self.raster.width(), self.raster.height()) {
             Some(Rasterizer::new_budgeted(
@@ -1812,6 +2283,18 @@ impl<'a> Renderer<'a> {
         };
         let parent = std::mem::replace(&mut self.buffer, child);
         let parent_raster = child_raster.map(|raster| std::mem::replace(&mut self.raster, raster));
+        // CORRECTNESS (audit 2026-08-31 §PPE-A02/A05): paint và diagnostic
+        // visibility trong surface phụ đều phải chờ bước dùng-mask/merge lên cha.
+        let parent_paint_serial = self.paint_serial;
+        let parent_painted_region =
+            std::mem::replace(&mut self.surface_painted_region, Region::EMPTY);
+        // Tracker của operation cha không được thấy paint nội bộ child; boundary
+        // group/SMask chỉ merge footprint đã lọc sau khi child thành công.
+        let parent_paint_region_trackers = std::mem::take(&mut self.paint_region_trackers);
+        let parent_exact_paint_region =
+            std::mem::replace(&mut self.exact_paint_region, exact_paint_region);
+        let parent_explicit_mask_events = std::mem::take(&mut self.surface_explicit_mask_events);
+        self.render_surface_depth = self.render_surface_depth.saturating_add(1);
         // Text object không được rò qua ranh giới group: `BT` bên trong group là một
         // khối chữ độc lập.
         let saved_text_obj = self.text_obj;
@@ -1820,11 +2303,21 @@ impl<'a> Renderer<'a> {
         let result = self.execute(data, resources, &mut sub, depth + 1);
         self.text_obj = saved_text_obj;
         self.text_clip = saved_text_clip;
+        self.render_surface_depth = self.render_surface_depth.saturating_sub(1);
         let child = std::mem::replace(&mut self.buffer, parent);
         if let Some(parent_raster) = parent_raster {
             self.raster = parent_raster;
         }
-        result.map(|()| child)
+        let child_painted_region =
+            std::mem::replace(&mut self.surface_painted_region, parent_painted_region);
+        self.paint_region_trackers = parent_paint_region_trackers;
+        self.exact_paint_region = parent_exact_paint_region;
+        self.paint_serial = parent_paint_serial;
+        let child_explicit_mask_events = std::mem::replace(
+            &mut self.surface_explicit_mask_events,
+            parent_explicit_mask_events,
+        );
+        result.map(|()| (child, child_painted_region, child_explicit_mask_events))
     }
 
     /// Dựng soft mask từ `/SMask` của ExtGState (§11.6.5).
@@ -1845,7 +2338,7 @@ impl<'a> Renderer<'a> {
         smask: &Dictionary,
         stack: &StateStack,
         depth: u32,
-    ) -> PpeResult<Option<SoftMask>> {
+    ) -> PpeResult<Option<(SoftMask, ExplicitMaskEvents)>> {
         if self.smask_depth >= MAX_SOFT_MASK_DEPTH {
             return Err(PpeError::Unsupported("soft mask lồng quá sâu".into()));
         }
@@ -1874,9 +2367,9 @@ impl<'a> Renderer<'a> {
                 ))
             }
         };
-        let data = stream
-            .decompressed_content()
-            .unwrap_or_else(|_| stream.content.clone());
+        let decoded = pdf::decode_stream(self.doc, &stream);
+        let stream_recovered = decoded.quality == pdf::DecodeQuality::Recovered;
+        let data = decoded.bytes;
 
         let form_matrix = pdf::dict_get(self.doc, &stream.dict, "Matrix")
             .and_then(|o| pdf::num_array(self.doc, o))
@@ -2012,7 +2505,10 @@ impl<'a> Renderer<'a> {
             // Luminosity dùng TR(luminosity(BC)). `backdrop` đã là đúng đầu
             // vào cho cả hai trường hợp (0 với Alpha).
             let outside = apply_transfer(backdrop);
-            return Ok(Some(self.buffer.new_soft_mask(Region::EMPTY, outside)?));
+            return Ok(Some((
+                self.buffer.new_soft_mask(Region::EMPTY, outside)?,
+                HashMap::new(),
+            )));
         }
 
         // Nội dung form được dịch về gốc cửa sổ; CTM của mặt nạ vẫn được neo tại
@@ -2029,10 +2525,25 @@ impl<'a> Renderer<'a> {
             self.blend_space = BlendSpace::DeviceRgb;
         }
         self.smask_depth += 1;
-        let rendered = self.render_form_into(child, &data, form_res.as_ref(), initial, depth);
+        let rendered =
+            self.render_form_into(child, &data, form_res.as_ref(), initial, false, depth);
         self.smask_depth -= 1;
         self.blend_space = saved_blend_space;
-        let rendered = rendered?;
+        let (rendered, _, explicit_mask_events) = rendered?;
+        // `render_form_into` vừa chạy trên child có gốc (0,0), còn SoftMask được
+        // tra bằng toạ độ surface cha. Không dịch provenance ở đây sẽ lọc sai mọi
+        // cửa sổ SMask không bắt đầu tại gốc trang.
+        let mut explicit_mask_events = translate_explicit_mask_events(
+            explicit_mask_events,
+            window.x0,
+            window.y0,
+            self.buffer.width(),
+            self.buffer.height(),
+        );
+        if stream_recovered {
+            let event = self.allocate_deferred_event(DeferredDiagnostic::SoftMaskStreamDecode);
+            explicit_mask_events.insert(event, window);
+        }
 
         let outside = apply_transfer(backdrop);
         let mut mask = self.buffer.new_soft_mask(window, outside)?;
@@ -2065,7 +2576,7 @@ impl<'a> Renderer<'a> {
             };
             *value = apply_transfer(raw);
         }
-        Ok(Some(mask))
+        Ok(Some((mask, explicit_mask_events)))
     }
 
     /// `Do` — vẽ XObject.
@@ -2125,9 +2636,40 @@ impl<'a> Renderer<'a> {
                 let form_res = pdf::dict_get_dict(self.doc, &stream.dict, "Resources")
                     .cloned()
                     .or_else(|| Some(resources.clone()));
-                let data = stream
-                    .decompressed_content()
-                    .unwrap_or_else(|_| stream.content.clone());
+                // CORRECTNESS (audit 2026-09-01 §PPE-E2): helper chung giữ
+                // provenance recovery; Form chỉ fail-loud khi BBox thật sự giao
+                // clip hiện hành, nên resource lỗi ngoài viewport vẫn sạch.
+                let decoded = pdf::decode_stream(self.doc, stream);
+                let decompression_failed = decoded.quality == pdf::DecodeQuality::Recovered;
+                let data = decoded.bytes;
+                if decompression_failed {
+                    let form_ctm = form_matrix.then(&stack.current().ctm);
+                    let visible_region = self.intersect_bbox_region(
+                        stack.current().clip_region,
+                        bbox,
+                        &form_ctm,
+                        self.buffer.width(),
+                        self.buffer.height(),
+                    );
+                    let clip = stack.current().clip.clone();
+                    let visible = if visible_region.is_empty() {
+                        false
+                    } else if let Some(mask) = clip.as_deref() {
+                        let width = self.buffer.width() as usize;
+                        any_pixel_where_cancelled(
+                            visible_region,
+                            self.opts.cancel_token.as_ref(),
+                            |x, y| mask.data()[y as usize * width + x as usize] > 0,
+                        )?
+                    } else {
+                        true
+                    };
+                    if visible {
+                        self.warnings.note_skipped_op(FORM_STREAM_DECODE_REASON);
+                        self.warnings.dropped_objects =
+                            self.warnings.dropped_objects.saturating_add(1);
+                    }
+                }
 
                 // Transparency group (§11.6.6): `/Group << /S /Transparency >>`.
                 let group = pdf::dict_get_dict(self.doc, &stream.dict, "Group").filter(|g| {
@@ -2195,7 +2737,11 @@ impl<'a> Renderer<'a> {
                     return result;
                 }
 
-                stack.save();
+                if !self.save_internal_state(stack) {
+                    // `stream_ctx` đã push ở đầu Form; skip sớm vẫn phải cân.
+                    self.stream_ctx.pop();
+                    return Ok(());
+                }
                 {
                     let gs = stack.current_mut();
                     gs.ctm = form_matrix.then(&gs.ctm);
@@ -2214,9 +2760,9 @@ impl<'a> Renderer<'a> {
                 let gs = stack.current_mut();
                 gs.clip = self.intersect_bbox(clip, bbox, &ctm);
                 gs.clip_region = Some(clip_region);
-                let saved_depth = stack.depth();
+                let saved_depth = stack.logical_depth();
                 let result = self.execute_with_ctm(&data, form_res.as_ref(), stack, depth + 1, ctm);
-                while stack.depth() > saved_depth {
+                while stack.logical_depth() > saved_depth {
                     stack.restore();
                 }
                 stack.restore();
@@ -2286,15 +2832,17 @@ impl<'a> Renderer<'a> {
 
         let transparent = ca < 1.0 - 1e-6 || soft.is_some();
         if !transparent && blend.is_normal() && !isolated {
-            stack.save();
+            if !self.save_internal_state(stack) {
+                return Ok(());
+            }
             stack.current_mut().ctm = ctm;
             let clip = stack.current().clip.clone();
             let gs = stack.current_mut();
             gs.clip = self.intersect_bbox(clip, bbox, &ctm);
             gs.clip_region = Some(group_region);
-            let saved_depth = stack.depth();
+            let saved_depth = stack.logical_depth();
             let result = self.execute(data, resources, stack, depth + 1);
-            while stack.depth() > saved_depth {
+            while stack.logical_depth() > saved_depth {
                 stack.restore();
             }
             stack.restore();
@@ -2329,11 +2877,20 @@ impl<'a> Renderer<'a> {
             self.buffer.child_non_isolated()?
         };
 
+        let exact_group_paint_region =
+            self.exact_paint_region || !self.paint_region_trackers.is_empty();
         let saved_blend_space = self.blend_space;
         self.blend_space = group_blend_space;
-        let rendered = self.render_form_into(child, data, resources, initial, depth);
+        let rendered = self.render_form_into(
+            child,
+            data,
+            resources,
+            initial,
+            exact_group_paint_region,
+            depth,
+        );
         self.blend_space = saved_blend_space;
-        let mut child = rendered?;
+        let (mut child, child_painted_region, child_explicit_mask_events) = rendered?;
 
         if rgb_group {
             let has_group_content = child.alpha_plane().iter().any(|alpha| *alpha > 1e-6);
@@ -2362,6 +2919,85 @@ impl<'a> Renderer<'a> {
         self.buffer.adopt_channels_from(&child)?;
         self.opts.check_cancelled()?;
 
+        // CORRECTNESS (audit 2026-08-31 §PPE-A02/A05): paint nội bộ child đã
+        // được cô lập; boundary chỉ commit phần vừa có child alpha vừa qua external
+        // SMask. Scan bbox đầy đủ chỉ bật trên đường diagnostic có event pending.
+        let merged_region = group_region
+            .clamped(self.buffer.width(), self.buffer.height())
+            .clamped(child.width(), child.height());
+        let child_merge_region = intersect_regions(child_painted_region, merged_region);
+        let host_soft_has_pending_events = soft
+            .as_deref()
+            .is_some_and(|mask| self.soft_mask_has_pending_events(mask));
+        let child_width = child.width() as usize;
+        let group_painted_region = if ca <= 0.0 || child_merge_region.is_empty() {
+            Region::EMPTY
+        } else {
+            match soft.as_deref() {
+                Some(mask) if host_soft_has_pending_events || exact_group_paint_region => {
+                    bounding_region_where_cancelled(
+                        child_merge_region,
+                        self.opts.cancel_token.as_ref(),
+                        |x, y| {
+                            let index = y as usize * child_width + x as usize;
+                            child
+                                .alpha_plane()
+                                .get(index)
+                                .is_some_and(|alpha| *alpha > 0.0)
+                                && mask.value_at(x, y) > 0.0
+                        },
+                    )?
+                }
+                Some(mask) => {
+                    let paints = any_pixel_where_cancelled(
+                        child_merge_region,
+                        self.opts.cancel_token.as_ref(),
+                        |x, y| {
+                            let index = y as usize * child_width + x as usize;
+                            child
+                                .alpha_plane()
+                                .get(index)
+                                .is_some_and(|alpha| *alpha > 0.0)
+                                && mask.value_at(x, y) > 0.0
+                        },
+                    )?;
+                    if paints {
+                        child_merge_region
+                    } else {
+                        Region::EMPTY
+                    }
+                }
+                None => child_merge_region,
+            }
+        };
+
+        // Mỗi event child phải tự vượt boundary. `ca = 0`, event đã report và
+        // group không paint đều thoát trước scan; đường hiếm còn lại poll mỗi hàng.
+        let mut visible_child_events = ExplicitMaskEvents::new();
+        if !group_painted_region.is_empty() {
+            for (event, event_region) in child_explicit_mask_events {
+                if self.reported_explicit_mask_events.contains(&event) {
+                    continue;
+                }
+                let candidate = intersect_regions(event_region, child_merge_region);
+                let region = bounding_region_where_cancelled(
+                    candidate,
+                    self.opts.cancel_token.as_ref(),
+                    |x, y| {
+                        let index = y as usize * child_width + x as usize;
+                        child
+                            .alpha_plane()
+                            .get(index)
+                            .is_some_and(|alpha| *alpha > 0.0)
+                            && soft.as_deref().is_none_or(|mask| mask.value_at(x, y) > 0.0)
+                    },
+                )?;
+                if !region.is_empty() {
+                    visible_child_events.insert(event, region);
+                }
+            }
+        }
+
         if isolated {
             self.buffer
                 .merge_isolated(&child, group_region, ca, soft.as_deref(), blend, overprint);
@@ -2376,6 +3012,12 @@ impl<'a> Renderer<'a> {
             );
         }
         self.opts.check_cancelled()?;
+        if !group_painted_region.is_empty() {
+            // `note_surface_paint` còn có thể lỗi/hủy khi lọc host SMask. Chỉ
+            // commit event child sau khi boundary đó hoàn tất.
+            self.note_surface_paint(soft.as_deref(), group_painted_region)?;
+            self.accept_explicit_mask_events(visible_child_events);
+        }
         Ok(())
     }
 
@@ -2506,7 +3148,7 @@ impl<'a> Renderer<'a> {
         stack: &mut StateStack,
     ) -> PpeResult<()> {
         self.opts.check_cancelled()?;
-        if !self.opts.allows_preview_object(PreviewObjectKind::Image)
+        if !self.allows_preview_object(PreviewObjectKind::Image)
             && !self.opts.needs_source_space_for_preview()
         {
             return Ok(());
@@ -2550,17 +3192,25 @@ impl<'a> Renderer<'a> {
             }
         };
         self.opts.check_cancelled()?;
-        let source_color_space = if img.stencil.is_some() {
+        let is_stencil = img.stencil.is_some();
+        let stencil_uses_pattern = is_stencil && uses_pattern_color_space(stack, false);
+        let source_color_space = if is_stencil {
             Some(&stack.current().fill_cs)
         } else {
             img.colorspace.as_ref()
         };
-        if !self.opts.allows_preview_object(PreviewObjectKind::Image)
-            || source_color_space
-                .is_none_or(|color_space| !self.opts.allows_preview_color_space(color_space))
+        // Pattern không có một source colorspace duy nhất; filter màu được áp tại
+        // từng sink trong cell, còn host vẫn phải nằm trong lane Images.
+        if !self.allows_preview_object(PreviewObjectKind::Image)
+            || (!stencil_uses_pattern
+                && source_color_space
+                    .is_none_or(|color_space| !self.opts.allows_preview_color_space(color_space)))
         {
             return Ok(());
         }
+        // CORRECTNESS (audit 2026-08-31 §PPE-A05): metadata lỗi nằm trong mẫu
+        // cache, nhưng diagnostic là của từng placement có coverage hữu hiệu.
+        let explicit_mask_warning_pending = img.explicit_mask_decode_failed;
 
         // Ảnh có `/SMask` lấy mẫu trên lưới CĂNG-BBOX thay vì lưới CTM chính
         // xác — xem `mask_sample_ctm`. Không có bước này, mọi ảnh mờ thu nhỏ
@@ -2601,7 +3251,135 @@ impl<'a> Renderer<'a> {
         if x0 >= x1 || y0 >= y1 {
             return Ok(());
         }
-        let is_stencil = img.stencil.is_some();
+        let stencil_pattern = if stencil_uses_pattern {
+            stack.current().fill_pattern.clone()
+        } else {
+            None
+        };
+
+        let (base_alpha, overprint, blend, clip, soft, overprint_mode) = {
+            let gs = stack.current();
+            (
+                gs.fill_alpha.clamp(0.0, 1.0),
+                gs.fill_overprint,
+                gs.blend_mode,
+                gs.clip.clone(),
+                gs.soft_mask.clone(),
+                gs.overprint_mode,
+            )
+        };
+        if base_alpha <= 0.0 {
+            return Ok(());
+        }
+
+        // CORRECTNESS (audit 2026-08-31 §PPE-A02): Pattern là hàm theo vị trí,
+        // nên ImageMask phải trở thành một clip coverage rồi dispatch painter đúng
+        // một lần. Image CTM chỉ dựng hình học stencil; painter vẫn ghép
+        // `pattern_matrix.then(stream_base_ctm)` và không bị scale theo ảnh.
+        if stencil_uses_pattern {
+            let mut stencil_mask = Mask::new(self.raster.width(), self.raster.height()).ok_or(
+                PpeError::BadRasterSize {
+                    w: self.raster.width() as i64,
+                    h: self.raster.height() as i64,
+                    dpi: 0.0,
+                },
+            )?;
+            let mask_data = stencil_mask.data_mut();
+            let iw = img.width as f64;
+            let ih = img.height as f64;
+            let mut stencil_region = Region::EMPTY;
+            for dy in y0..y1 {
+                self.opts.check_cancelled()?;
+                for dx in x0..x1 {
+                    let (px, py) = (dx as f64 + 0.5, dy as f64 + 0.5);
+                    let u = inv64[0] * px + inv64[2] * py + inv64[4];
+                    let v = inv64[1] * px + inv64[3] * py + inv64[5];
+                    if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                        continue;
+                    }
+                    let sx = tex_index(u * iw, img.width);
+                    let sy = tex_index((1.0 - v) * ih, img.height);
+                    let index = dy as usize * buf_w as usize + dx as usize;
+                    let clip_coverage = clip
+                        .as_ref()
+                        .map_or(1.0, |mask| mask.data()[index] as f32 / 255.0);
+                    if clip_coverage <= 0.0 {
+                        continue;
+                    }
+                    let mut image_alpha = 0.0f32;
+                    for (candidate_sx, candidate_sy) in
+                        image_sample_candidates(inv, dx, dy, img.width, img.height, (sx, sy))
+                    {
+                        if img.stencil_at(candidate_sx, candidate_sy) {
+                            image_alpha = image_alpha.max(img.alpha_at(candidate_sx, candidate_sy));
+                        }
+                    }
+                    let coverage = image_alpha * clip_coverage;
+                    if coverage > 0.0 {
+                        mask_data[index] = (coverage.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                        include_pixel(&mut stencil_region, dx as u32, dy as u32);
+                    }
+                }
+            }
+            if stencil_region.is_empty() {
+                return Ok(());
+            }
+
+            let Some(image_path) =
+                rect_path(0.0, 0.0, 1.0, 1.0).and_then(|path| path.transform(to_ts(&ctm)))
+            else {
+                return Ok(());
+            };
+            let old_region = stack
+                .current()
+                .clip_region
+                .unwrap_or_else(|| Region::full(self.raster.width(), self.raster.height()));
+            let pattern_host_region = intersect_regions(old_region, stencil_region);
+            let mut initial = stack.current().clone();
+            initial.clip = Some(Arc::new(stencil_mask));
+            initial.clip_region = Some(pattern_host_region);
+            // `soft_mask` và `fill_alpha` vẫn nằm trong state tạm: pattern painter
+            // sẽ nhân mỗi lớp đúng một lần rồi xoá soft mask ở cell con.
+            let mut pattern_stack = StateStack::new(initial);
+            let paint_serial_before = self.paint_serial;
+            match stencil_pattern.as_deref() {
+                Some(pattern_name) => {
+                    self.paint_with_pattern(
+                        pattern_name,
+                        resources,
+                        &image_path,
+                        FillRule::NonZero,
+                        &mut pattern_stack,
+                        false,
+                        PreviewObjectKind::Image,
+                    )?;
+                }
+                None => {
+                    self.note_missing_pattern_selection(
+                        false,
+                        &image_path,
+                        FillRule::NonZero,
+                        &pattern_stack,
+                    );
+                }
+            }
+            // Chỉ commit diagnostic khi một sink trong Pattern đã vượt object +
+            // source filter và composite thật. Pattern bị filter/clip không được
+            // biến một invocation vô hình thành `ink_unsound`.
+            if explicit_mask_warning_pending && self.paint_serial != paint_serial_before {
+                let event_region = match soft.as_deref() {
+                    Some(mask) => bounding_region_where_cancelled(
+                        pattern_host_region,
+                        self.opts.cancel_token.as_ref(),
+                        |x, y| mask.value_at(x, y) > 0.0,
+                    )?,
+                    None => pattern_host_region,
+                };
+                self.defer_explicit_mask_failure(event_region);
+            }
+            return Ok(());
+        }
+
         // Stencil (`/ImageMask`) lấy màu từ trạng thái tô hiện hành, không từ ảnh.
         let stencil_paint = if is_stencil {
             match self.make_paint(stack, false)? {
@@ -2612,12 +3390,6 @@ impl<'a> Renderer<'a> {
             None
         };
 
-        let gs = stack.current();
-        let base_alpha = gs.fill_alpha.clamp(0.0, 1.0);
-        let overprint = gs.fill_overprint;
-        let blend = gs.blend_mode;
-        let clip = gs.clip.clone();
-        let soft = gs.soft_mask.clone();
         let image_rgb_sidecar = self.blend_space == BlendSpace::DeviceRgb
             && !overprint
             && img.supports_device_rgb()
@@ -2634,7 +3406,7 @@ impl<'a> Renderer<'a> {
         }
         // Như ở shading: `OPM = 1` phải được áp cho cả đường ảnh, vì ảnh cũng dựng
         // `InkPaint` trực tiếp cho từng pixel thay vì đi qua `make_paint`.
-        let opm_one = gs.overprint_mode == 1
+        let opm_one = overprint_mode == 1
             && matches!(
                 img.colorspace,
                 Some(ColorSpace::DeviceCMYK) | Some(ColorSpace::IccBased { .. })
@@ -2669,6 +3441,8 @@ impl<'a> Renderer<'a> {
         let mut ink_scratch: Vec<f32> = Vec::with_capacity(8);
         let iw = img.width as f64;
         let ih = img.height as f64;
+        let paint_serial_before = self.paint_serial;
+        let mut painted_region = Region::EMPTY;
 
         for dy in y0..y1 {
             // PERF (audit 2026-08-09 §ZOOM.7): một atomic-load mỗi hàng giúp request zoom
@@ -2706,7 +3480,7 @@ impl<'a> Renderer<'a> {
                     continue;
                 }
 
-                if let Some(paint) = &stencil_paint {
+                if is_stencil {
                     let candidates =
                         image_sample_candidates(inv, dx, dy, img.width, img.height, (sx, sy));
                     let mut best = None;
@@ -2721,9 +3495,13 @@ impl<'a> Renderer<'a> {
                         }
                     }
                     if let Some(coverage) = best {
-                        let mut p = paint.clone();
-                        p.alpha = coverage;
-                        self.buffer.composite_at(index, 1.0, &p);
+                        if let Some(paint) = &stencil_paint {
+                            let mut p = paint.clone();
+                            p.alpha = coverage;
+                            self.buffer.composite_at(index, 1.0, &p);
+                            self.paint_serial = self.paint_serial.wrapping_add(1);
+                            include_pixel(&mut painted_region, dx as u32, dy as u32);
+                        }
                     }
                     continue;
                 }
@@ -2831,6 +3609,8 @@ impl<'a> Renderer<'a> {
                         paint = paint.with_overprint_mode_1();
                     }
                     self.buffer.composite_at(index, 1.0, &paint);
+                    self.paint_serial = self.paint_serial.wrapping_add(1);
+                    include_pixel(&mut painted_region, dx as u32, dy as u32);
                     ink_scratch = paint.ink;
                     continue;
                 }
@@ -2945,7 +3725,19 @@ impl<'a> Renderer<'a> {
                     paint = paint.with_overprint_mode_1();
                 }
                 self.buffer.composite_at(index, 1.0, &paint);
+                if paint.alpha > 0.0 {
+                    self.paint_serial = self.paint_serial.wrapping_add(1);
+                    include_pixel(&mut painted_region, dx as u32, dy as u32);
+                }
                 ink_scratch = paint.ink;
+            }
+        }
+        if self.paint_serial != paint_serial_before {
+            // Lọc/propagate host SMask còn có thể bị hủy. Event của chính image
+            // chỉ vào transaction/surface sau khi bước fallible này thành công.
+            self.finish_surface_paint(soft.as_deref(), painted_region)?;
+            if explicit_mask_warning_pending {
+                self.defer_explicit_mask_failure(painted_region);
             }
         }
 
@@ -2964,8 +3756,9 @@ impl<'a> Renderer<'a> {
     ) -> PpeResult<()> {
         // Không tìm được shading là **mất nội dung**, không phải chuyện vô hại:
         // `sh` luôn tô một vùng, nên bỏ qua im lặng sẽ để lại một khoảng trắng mà
-        // báo cáo vẫn nói trang sạch.
-        if self.oc_hidden_now() {
+        // báo cáo vẫn nói trang sạch. Object lane ẩn có chủ đích phải thoát trước
+        // lookup/decode để mesh hỏng không tạo provenance oan.
+        if self.oc_hidden_now() || !self.allows_preview_object(PreviewObjectKind::SmoothShade) {
             return Ok(());
         }
         let entry = match pdf::dict_get_dict(self.doc, resources, "Shading")
@@ -2979,8 +3772,27 @@ impl<'a> Renderer<'a> {
                 return Ok(());
             }
         };
-        let shading = match resolve_shading(self.doc, &entry, Some(resources), &mut self.warnings) {
-            Ok(s) => s,
+        let mut metadata_warnings = RenderWarnings::default();
+        let colorspace = match resolve_shading_colorspace(
+            self.doc,
+            &entry,
+            Some(resources),
+            &mut metadata_warnings,
+        ) {
+            Ok(colorspace) => colorspace,
+            Err(e) => {
+                merge_render_warnings(&mut self.warnings, &metadata_warnings);
+                self.warnings.note_skipped_op(&format!("sh ({e})"));
+                self.warnings.dropped_objects += 1;
+                return Ok(());
+            }
+        };
+        if !self.opts.allows_preview_color_space(&colorspace) {
+            return Ok(());
+        }
+        merge_render_warnings(&mut self.warnings, &metadata_warnings);
+        let shading = match resolve_shading_with_colorspace(self.doc, &entry, colorspace) {
+            Ok(shading) => shading,
             Err(e) => {
                 // Kiểu lưới hoặc dict hỏng: ghi nhận để kết quả bị từ chối an toàn.
                 self.warnings.note_skipped_op(&format!("sh ({e})"));
@@ -2988,13 +3800,6 @@ impl<'a> Renderer<'a> {
                 return Ok(());
             }
         };
-        if !self
-            .opts
-            .allows_preview_object(PreviewObjectKind::SmoothShade)
-            || !self.opts.allows_preview_color_space(&shading.colorspace)
-        {
-            return Ok(());
-        }
 
         let ctm = stack.current().ctm;
         let gs = stack.current();
@@ -3025,6 +3830,7 @@ impl<'a> Renderer<'a> {
         stroke: bool,
     ) -> PpeResult<()> {
         let gs = stack.current();
+        let soft_for_events = gs.soft_mask.clone();
         let alpha = if stroke {
             gs.stroke_alpha
         } else {
@@ -3057,6 +3863,13 @@ impl<'a> Renderer<'a> {
             gs.soft_mask.is_some(),
             shading_rgb_sidecar,
         );
+        let mut exact_paint_region =
+            self.exact_paint_region || !self.paint_region_trackers.is_empty();
+        if !exact_paint_region {
+            exact_paint_region = soft_for_events
+                .as_deref()
+                .is_some_and(|mask| self.soft_mask_has_pending_events(mask));
+        }
 
         // Lưới đi đường riêng: màu của nó nằm ở đỉnh tam giác, không phải là hàm của
         // vị trí, nên bảng LUT theo `t` không dùng được.
@@ -3067,7 +3880,9 @@ impl<'a> Renderer<'a> {
                 &shading.colorspace,
                 ctm,
                 coverage,
+                soft_for_events.as_deref(),
                 region,
+                exact_paint_region,
                 alpha,
                 overprint,
                 blend,
@@ -3093,6 +3908,11 @@ impl<'a> Renderer<'a> {
 
         if !shading_rgb_sidecar && sampled.uses_only_process_channels() {
             let cancel_token = self.opts.cancel_token.as_ref();
+            let painted = AtomicBool::new(false);
+            let paint_x0 = AtomicU32::new(region.x1);
+            let paint_y0 = AtomicU32::new(region.y1);
+            let paint_x1 = AtomicU32::new(region.x0);
+            let paint_y1 = AtomicU32::new(region.y0);
             let parallel = self.buffer.composite_process_shading_pixels_parallel(
                 region,
                 blend,
@@ -3114,16 +3934,42 @@ impl<'a> Renderer<'a> {
                             }
                         }
                     }
-                    Some((process, declared, (coverage * alpha).clamp(0.0, 1.0)))
+                    let sample_alpha = (coverage * alpha).clamp(0.0, 1.0);
+                    if sample_alpha <= 0.0 {
+                        return None;
+                    }
+                    painted.store(true, Ordering::Relaxed);
+                    if exact_paint_region {
+                        paint_x0.fetch_min(x, Ordering::Relaxed);
+                        paint_y0.fetch_min(y, Ordering::Relaxed);
+                        paint_x1.fetch_max(x.saturating_add(1), Ordering::Relaxed);
+                        paint_y1.fetch_max(y.saturating_add(1), Ordering::Relaxed);
+                    }
+                    Some((process, declared, sample_alpha))
                 },
             );
             if parallel {
                 self.opts.check_cancelled()?;
+                if painted.load(Ordering::Relaxed) {
+                    let painted_region = if exact_paint_region {
+                        Region {
+                            x0: paint_x0.load(Ordering::Relaxed),
+                            y0: paint_y0.load(Ordering::Relaxed),
+                            x1: paint_x1.load(Ordering::Relaxed),
+                            y1: paint_y1.load(Ordering::Relaxed),
+                        }
+                    } else {
+                        region
+                    };
+                    self.note_surface_paint(soft_for_events.as_deref(), painted_region)?;
+                }
                 return Ok(());
             }
         }
 
         let mut ink_scratch: Vec<f32> = vec![0.0; n];
+        let paint_serial_before = self.paint_serial;
+        let mut painted_region = Region::EMPTY;
 
         for y in region.y0..region.y1 {
             self.opts.check_cancelled()?;
@@ -3160,8 +4006,22 @@ impl<'a> Renderer<'a> {
                     paint = paint.with_overprint_mode_1();
                 }
                 self.buffer.composite_at(index, 1.0, &paint);
+                if paint.alpha > 0.0 {
+                    self.paint_serial = self.paint_serial.wrapping_add(1);
+                    if exact_paint_region {
+                        include_pixel(&mut painted_region, x, y);
+                    }
+                }
                 ink_scratch = paint.ink;
             }
+        }
+        if self.paint_serial != paint_serial_before {
+            let painted_region = if exact_paint_region {
+                painted_region
+            } else {
+                region
+            };
+            self.finish_surface_paint(soft_for_events.as_deref(), painted_region)?;
         }
         Ok(())
     }
@@ -3179,7 +4039,9 @@ impl<'a> Renderer<'a> {
         cs: &ColorSpace,
         ctm: &Matrix,
         coverage: ShadingCoverage<'_>,
+        soft_for_events: Option<&SoftMask>,
         region: Region,
+        exact_paint_region: bool,
         alpha: f32,
         overprint: bool,
         blend: BlendMode,
@@ -3192,6 +4054,8 @@ impl<'a> Renderer<'a> {
         }
 
         let mut ink_scratch: Vec<f32> = Vec::new();
+        let paint_serial_before = self.paint_serial;
+        let mut painted_region = Region::EMPTY;
         let preserve_rgb = self.blend_space == BlendSpace::DeviceRgb
             && !overprint
             && cs.supports_device_rgb_blending()
@@ -3305,18 +4169,98 @@ impl<'a> Renderer<'a> {
                         paint = paint.with_overprint_mode_1();
                     }
                     self.buffer.composite_at(index, 1.0, &paint);
+                    if paint.alpha > 0.0 {
+                        self.paint_serial = self.paint_serial.wrapping_add(1);
+                        if exact_paint_region {
+                            include_pixel(&mut painted_region, x, y);
+                        }
+                    }
                     ink_scratch = paint.ink;
                 }
             }
         }
+        if self.paint_serial != paint_serial_before {
+            let painted_region = if exact_paint_region {
+                painted_region
+            } else {
+                region
+            };
+            self.finish_surface_paint(soft_for_events, painted_region)?;
+        }
         Ok(())
     }
 
-    /// Tô/vẽ nét bằng pattern. `Ok(true)` nếu đã vẽ được.
+    /// Kiểm tra target Pattern có thực sự phủ pixel sau clip và soft mask hay không.
     ///
-    /// Chỉ shading pattern (`/PatternType 2`) được vẽ. Tiling pattern
-    /// (`/PatternType 1`) chưa dựng nên bị ghi nhận và kết quả bị từ chối —
-    /// tô một màu xấp xỉ ở đây sẽ cho ra lượng mực bịa.
+    /// Chỉ gọi trên nhánh lỗi: happy path tự dựng coverage đúng một lần trong
+    /// painter tương ứng. Nhờ vậy resource hỏng nằm hoàn toàn ngoài clip không
+    /// biến một trang đúng thành `ink_unsound`.
+    fn pattern_target_is_visible(
+        &mut self,
+        device_path: &Path,
+        rule: FillRule,
+        stack: &StateStack,
+    ) -> bool {
+        let clip = stack.current().clip.clone();
+        let soft = stack.current().soft_mask.clone();
+        self.raster
+            .fill_path(
+                device_path,
+                rule,
+                self.opts.anti_alias,
+                clip.as_deref(),
+                soft.as_deref(),
+            )
+            .is_some()
+    }
+
+    /// Ghi nhận Pattern đã được chọn nhưng không thể dựng.
+    ///
+    /// CORRECTNESS (audit 2026-08-31 §PTXT.2): chỉ ghi `skipped_ops` là chưa đủ;
+    /// worker suy ra fail-loud từ `dropped_objects`. Trả `false` để caller không
+    /// bịa màu đặc thay cho Pattern.
+    fn note_dropped_pattern(&mut self, pattern_name: &str, reason: &str) -> bool {
+        self.warnings
+            .note_skipped_op(&format!("Pattern /{pattern_name}: {reason}"));
+        self.warnings.dropped_objects = self.warnings.dropped_objects.saturating_add(1);
+        false
+    }
+
+    /// Chỉ fail-loud khi Pattern lỗi làm mất pixel có thể nhìn thấy.
+    fn note_dropped_pattern_if_visible(
+        &mut self,
+        pattern_name: &str,
+        reason: &str,
+        device_path: &Path,
+        rule: FillRule,
+        stack: &StateStack,
+    ) -> bool {
+        if !self.pattern_target_is_visible(device_path, rule, stack) {
+            return true;
+        }
+        self.note_dropped_pattern(pattern_name, reason)
+    }
+
+    fn note_missing_pattern_selection(
+        &mut self,
+        stroke: bool,
+        device_path: &Path,
+        rule: FillRule,
+        stack: &StateStack,
+    ) -> bool {
+        if !self.pattern_target_is_visible(device_path, rule, stack) {
+            return true;
+        }
+        let target = if stroke { "stroke" } else { "fill" };
+        self.warnings.note_skipped_op(&format!(
+            "Pattern {target}: colorspace /Pattern chưa chọn resource bằng scn/SCN"
+        ));
+        self.warnings.dropped_objects = self.warnings.dropped_objects.saturating_add(1);
+        false
+    }
+
+    /// Tô/vẽ nét bằng tiling hoặc shading Pattern. `Ok(true)` khi đã xử lý xong;
+    /// `Ok(false)` chỉ khi object visible bị bỏ và diagnostics đã được ghi.
     fn paint_with_pattern(
         &mut self,
         pattern_name: &str,
@@ -3325,27 +4269,56 @@ impl<'a> Renderer<'a> {
         rule: FillRule,
         stack: &mut StateStack,
         stroke: bool,
+        owner: PreviewObjectKind,
     ) -> PpeResult<bool> {
+        // Object bị Output Preview ẩn có chủ đích không phải object bị bỏ. Kiểm
+        // host trước lookup để resource hỏng trong lane đang ẩn không tạo fail-loud oan.
+        if !self.opts.allows_preview_object(owner) {
+            return Ok(true);
+        }
         let Some(res) = resources else {
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "thiếu /Resources",
+                device_path,
+                rule,
+                stack,
+            ));
         };
         let Some(patterns) = pdf::dict_get_dict(self.doc, res, "Pattern") else {
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "thiếu dictionary /Pattern",
+                device_path,
+                rule,
+                stack,
+            ));
         };
         let Ok(raw) = patterns.get(pattern_name.as_bytes()) else {
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "không tìm thấy resource",
+                device_path,
+                rule,
+                stack,
+            ));
         };
         let entry = pdf::deref(self.doc, raw).clone();
-        let (pattern_dict, cell_data) = match &entry {
-            Object::Dictionary(d) => (d.clone(), None),
-            Object::Stream(s) => (
-                s.dict.clone(),
-                Some(
-                    s.decompressed_content()
-                        .unwrap_or_else(|_| s.content.clone()),
-                ),
-            ),
-            _ => return Ok(false),
+        let (pattern_dict, cell_data, cell_decode_quality) = match &entry {
+            Object::Dictionary(d) => (d.clone(), None, pdf::DecodeQuality::Exact),
+            Object::Stream(stream) => {
+                let decoded = pdf::decode_stream(self.doc, stream);
+                (stream.dict.clone(), Some(decoded.bytes), decoded.quality)
+            }
+            _ => {
+                return Ok(self.note_dropped_pattern_if_visible(
+                    pattern_name,
+                    "resource không phải dictionary/stream",
+                    device_path,
+                    rule,
+                    stack,
+                ));
+            }
         };
         let pattern_dict = &pattern_dict;
 
@@ -3353,45 +4326,76 @@ impl<'a> Renderer<'a> {
             .and_then(pdf::as_num)
             .unwrap_or(0.0) as i32;
         if ptype == 1 {
-            if !self.opts.allows_preview_object(PreviewObjectKind::LineArt) {
-                return Ok(true);
-            }
             return self.paint_tiling_pattern(
+                pattern_name,
                 pattern_dict,
                 cell_data,
+                cell_decode_quality,
                 device_path,
                 rule,
                 stack,
                 stroke,
+                owner,
             );
         }
         if ptype != 2 {
-            self.warnings
-                .note_skipped_op(&format!("pattern kiểu {ptype} không hợp lệ"));
-            self.warnings.dropped_objects += 1;
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                &format!("kiểu {ptype} không hợp lệ"),
+                device_path,
+                rule,
+                stack,
+            ));
         }
 
         let Ok(shading_obj) = pattern_dict.get(b"Shading") else {
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "shading pattern thiếu /Shading",
+                device_path,
+                rule,
+                stack,
+            ));
         };
         let shading_obj = shading_obj.clone();
-        let shading = match resolve_shading(self.doc, &shading_obj, resources, &mut self.warnings) {
-            Ok(s) => s,
+        let mut metadata_warnings = RenderWarnings::default();
+        let colorspace = match resolve_shading_colorspace(
+            self.doc,
+            &shading_obj,
+            resources,
+            &mut metadata_warnings,
+        ) {
+            Ok(colorspace) => colorspace,
             Err(e) => {
-                self.warnings
-                    .note_skipped_op(&format!("shading pattern ({e})"));
-                self.warnings.dropped_objects += 1;
-                return Ok(false);
+                let handled = self.note_dropped_pattern_if_visible(
+                    pattern_name,
+                    &format!("shading pattern ({e})"),
+                    device_path,
+                    rule,
+                    stack,
+                );
+                if !handled {
+                    merge_render_warnings(&mut self.warnings, &metadata_warnings);
+                }
+                return Ok(handled);
             }
         };
-        if !self
-            .opts
-            .allows_preview_object(PreviewObjectKind::SmoothShade)
-            || !self.opts.allows_preview_color_space(&shading.colorspace)
-        {
+        if !self.opts.allows_preview_color_space(&colorspace) {
             return Ok(true);
         }
+        merge_render_warnings(&mut self.warnings, &metadata_warnings);
+        let shading = match resolve_shading_with_colorspace(self.doc, &shading_obj, colorspace) {
+            Ok(shading) => shading,
+            Err(e) => {
+                return Ok(self.note_dropped_pattern_if_visible(
+                    pattern_name,
+                    &format!("shading pattern ({e})"),
+                    device_path,
+                    rule,
+                    stack,
+                ));
+            }
+        };
 
         // Pattern space nối vào ma trận khởi đầu của content stream đang
         // dùng pattern, không phải CTM sau các `cm` bên trong stream (§8.7.2).
@@ -3449,36 +4453,49 @@ impl<'a> Renderer<'a> {
     /// nguy hiểm.
     fn paint_tiling_pattern(
         &mut self,
+        pattern_name: &str,
         pattern: &Dictionary,
         cell_data: Option<Vec<u8>>,
+        cell_decode_quality: pdf::DecodeQuality,
         device_path: &Path,
         rule: FillRule,
         stack: &mut StateStack,
         stroke: bool,
+        owner: PreviewObjectKind,
     ) -> PpeResult<bool> {
-        /// Trần số ô cho một lần tô.
         const MAX_TILES: usize = 1024;
 
         let Some(data) = cell_data else {
-            self.warnings
-                .note_skipped_op("tiling pattern không có content stream");
-            self.warnings.dropped_objects += 1;
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "tiling pattern không có content stream",
+                device_path,
+                rule,
+                stack,
+            ));
         };
         let depth = self.cur_depth;
         if depth + 1 > self.opts.max_form_depth {
-            self.warnings.note_skipped_op("tiling pattern lồng quá sâu");
-            self.warnings.dropped_objects += 1;
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "tiling pattern lồng quá sâu",
+                device_path,
+                rule,
+                stack,
+            ));
         }
 
         let Some(bbox) = pdf::dict_get(self.doc, pattern, "BBox")
             .and_then(|o| pdf::num_array(self.doc, o))
             .and_then(|v| (v.len() >= 4).then(|| Rect::new(v[0], v[1], v[2], v[3])))
         else {
-            self.warnings.note_skipped_op("tiling pattern thiếu /BBox");
-            self.warnings.dropped_objects += 1;
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "tiling pattern thiếu /BBox",
+                device_path,
+                rule,
+                stack,
+            ));
         };
         // `/XStep` mặc định bằng bề rộng `/BBox`; bước 0 hoặc âm là file hỏng và sẽ
         // làm vòng lặp vô hạn nếu tin.
@@ -3493,10 +4510,13 @@ impl<'a> Renderer<'a> {
             .map(f32::abs)
             .unwrap_or(bbox.height());
         if xstep <= 0.0 || ystep <= 0.0 {
-            self.warnings
-                .note_skipped_op("tiling pattern có bước không hợp lệ");
-            self.warnings.dropped_objects += 1;
-            return Ok(false);
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "tiling pattern có bước không hợp lệ",
+                device_path,
+                rule,
+                stack,
+            ));
         }
         let paint_type = pdf::dict_get(self.doc, pattern, "PaintType")
             .and_then(pdf::as_num)
@@ -3510,7 +4530,13 @@ impl<'a> Renderer<'a> {
         // CTM sau các `cm` bên trong stream.
         let ctm = pattern_matrix.then(&self.stream_base_ctm);
         let Some(inv) = ctm.invert() else {
-            return Ok(false); // ma trận suy biến ⇒ pattern không chiếm diện tích
+            return Ok(self.note_dropped_pattern_if_visible(
+                pattern_name,
+                "tiling pattern có /Matrix suy biến",
+                device_path,
+                rule,
+                stack,
+            ));
         };
 
         // Vùng phủ = đường dẫn ∩ clip ∩ soft mask, giữ dạng mặt nạ để dùng làm clip
@@ -3563,7 +4589,9 @@ impl<'a> Renderer<'a> {
         let min_y = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min);
         let max_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
         if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-            return Ok(false);
+            return Ok(
+                self.note_dropped_pattern(pattern_name, "tiling pattern có phạm vi không hữu hạn")
+            );
         }
         let i0 = ((min_x - bbox.x1) / xstep).floor() as i64;
         let i1 = ((max_x - bbox.x0) / xstep).ceil() as i64;
@@ -3576,81 +4604,121 @@ impl<'a> Renderer<'a> {
             return Ok(true);
         }
         if tiles > MAX_TILES as u128 {
-            self.warnings
-                .note_skipped_op(&format!("tiling pattern {tiles} ô vượt trần {MAX_TILES}"));
-            self.warnings.dropped_objects += 1;
-            return Ok(false);
+            return Ok(self.note_dropped_pattern(
+                pattern_name,
+                &format!("tiling pattern {tiles} ô vượt trần {MAX_TILES}"),
+            ));
         }
 
-        for j in j0..=j1 {
-            for i in i0..=i1 {
-                let tile_ctm = Matrix::translate(i as f32 * xstep, j as f32 * ystep).then(&ctm);
+        self.paint_region_trackers.push(PaintTransaction::default());
+        let operation_result = (|| -> PpeResult<bool> {
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    let tile_ctm = Matrix::translate(i as f32 * xstep, j as f32 * ystep).then(&ctm);
 
-                let mut initial = stack.current().clone();
-                initial.ctm = tile_ctm;
-                // Soft mask đã được nhân vào `base_mask`; giữ lại sẽ nhân hai lần.
-                initial.soft_mask = None;
-                initial.fill_pattern = None;
-                initial.stroke_pattern = None;
-                initial.clip = self.intersect_bbox(Some(base_mask.clone()), Some(bbox), &tile_ctm);
-                initial.clip_region = Some(intersect_regions(
-                    region,
-                    self.bbox_region(
-                        Some(bbox),
-                        &tile_ctm,
-                        self.buffer.width(),
-                        self.buffer.height(),
-                    ),
-                ));
+                    let mut initial = stack.current().clone();
+                    initial.ctm = tile_ctm;
+                    // Soft mask đã được nhân vào `base_mask`; giữ lại sẽ nhân hai lần.
+                    initial.soft_mask = None;
+                    initial.fill_pattern = None;
+                    initial.stroke_pattern = None;
+                    let tile_clip =
+                        self.intersect_bbox(Some(base_mask.clone()), Some(bbox), &tile_ctm);
+                    let tile_clip_region = intersect_regions(
+                        region,
+                        self.bbox_region(
+                            Some(bbox),
+                            &tile_ctm,
+                            self.buffer.width(),
+                            self.buffer.height(),
+                        ),
+                    );
+                    // CORRECTNESS (audit 2026-08-31 §PPE-A05): khoảng chỉ số ô
+                    // có guard bảo thủ ở biên. Ô có clip rỗng không được chạy
+                    // resource lỗi rồi chặn operation trước khi tới ô nhìn thấy.
+                    if tile_clip_region.is_empty() {
+                        continue;
+                    }
+                    initial.clip = tile_clip;
+                    initial.clip_region = Some(tile_clip_region);
 
-                if paint_type == 2 {
-                    // Uncoloured: màu **không** nằm trong ô; nó là toán hạng của
-                    // `scn` với colorspace nền của `/Pattern`. Mọi operator màu bên
-                    // trong ô bị bỏ qua (§8.7.3.3) — nếu không, ô sẽ tự đặt màu đen
-                    // và mất hẳn màu mà file yêu cầu.
-                    let gs = stack.current();
-                    let (base_cs, comps) = if stroke {
-                        (pattern_base_cs(&gs.stroke_cs), gs.stroke_comps.clone())
+                    if paint_type == 2 {
+                        // Uncoloured: màu **không** nằm trong ô; nó là toán hạng của
+                        // `scn` với colorspace nền của `/Pattern`. Mọi operator màu bên
+                        // trong ô bị bỏ qua (§8.7.3.3) — nếu không, ô sẽ tự đặt màu đen
+                        // và mất hẳn màu mà file yêu cầu.
+                        let gs = stack.current();
+                        let (base_cs, comps) = if stroke {
+                            (pattern_base_cs(&gs.stroke_cs), gs.stroke_comps.clone())
+                        } else {
+                            (pattern_base_cs(&gs.fill_cs), gs.fill_comps.clone())
+                        };
+                        let Some(base_cs) = base_cs else {
+                            return Ok(self.note_dropped_pattern(
+                                pattern_name,
+                                "tiling pattern /PaintType 2 thiếu colorspace nền",
+                            ));
+                        };
+                        initial.fill_cs = base_cs.clone();
+                        initial.stroke_cs = base_cs;
+                        initial.fill_comps = comps.clone();
+                        initial.stroke_comps = comps;
                     } else {
-                        (pattern_base_cs(&gs.fill_cs), gs.fill_comps.clone())
-                    };
-                    let Some(base_cs) = base_cs else {
-                        self.warnings
-                            .note_skipped_op("tiling pattern /PaintType 2 thiếu colorspace nền");
-                        self.warnings.dropped_objects += 1;
-                        return Ok(false);
-                    };
-                    initial.fill_cs = base_cs.clone();
-                    initial.stroke_cs = base_cs;
-                    initial.fill_comps = comps.clone();
-                    initial.stroke_comps = comps;
-                } else {
-                    // Coloured: ô tự khai màu, khởi tạo là đen (§8.7.3.1).
-                    initial.fill_cs = ColorSpace::DeviceGray;
-                    initial.stroke_cs = ColorSpace::DeviceGray;
-                    initial.fill_comps = vec![0.0];
-                    initial.stroke_comps = vec![0.0];
-                }
+                        // Coloured: ô tự khai màu, khởi tạo là đen (§8.7.3.1).
+                        initial.fill_cs = ColorSpace::DeviceGray;
+                        initial.stroke_cs = ColorSpace::DeviceGray;
+                        initial.fill_comps = vec![0.0];
+                        initial.stroke_comps = vec![0.0];
+                    }
 
-                let mut sub = StateStack::new(initial);
-                let saved_text_obj = self.text_obj;
-                let saved_text_clip = self.text_clip.take();
-                if paint_type == 2 {
-                    self.suppress_color_ops += 1;
+                    let mut sub = StateStack::new(initial);
+                    let saved_text_obj = self.text_obj;
+                    let saved_text_clip = self.text_clip.take();
+                    let saved_preview_owner = self.pattern_preview_owner;
+                    self.pattern_preview_owner = Some(owner);
+                    if paint_type == 2 {
+                        self.suppress_color_ops += 1;
+                    }
+                    self.pattern_cell_depth += 1;
+                    let saved_depth = self.cur_depth;
+                    let result = self.execute(&data, cell_res.as_ref(), &mut sub, depth + 1);
+                    self.cur_depth = saved_depth;
+                    self.pattern_cell_depth -= 1;
+                    if paint_type == 2 {
+                        self.suppress_color_ops -= 1;
+                    }
+                    self.pattern_preview_owner = saved_preview_owner;
+                    self.text_obj = saved_text_obj;
+                    self.text_clip = saved_text_clip;
+                    result?;
                 }
-                self.pattern_cell_depth += 1;
-                let result = self.execute(&data, cell_res.as_ref(), &mut sub, depth + 1);
-                self.pattern_cell_depth -= 1;
-                if paint_type == 2 {
-                    self.suppress_color_ops -= 1;
-                }
-                self.text_obj = saved_text_obj;
-                self.text_clip = saved_text_clip;
-                result?;
             }
+            Ok(true)
+        })();
+        let mut transaction = self.paint_region_trackers.pop().unwrap_or_default();
+        let completed = operation_result?;
+        self.opts.check_cancelled()?;
+
+        // Chỉ source/object sink đủ điều kiện mới ghi transaction.region. Gắn
+        // provenance sau cổng đó để Show=DeviceRGB không làm Pattern CMYK ẩn
+        // thành dropped object oan.
+        if cell_decode_quality == pdf::DecodeQuality::Recovered && !transaction.region.is_empty() {
+            let event = self.allocate_deferred_event(DeferredDiagnostic::PatternStreamDecode);
+            transaction
+                .explicit_mask_events
+                .insert(event, transaction.region);
         }
 
-        Ok(true)
+        // Soft mask của host đã được bake vào `base_mask` rồi xoá khỏi state
+        // từng cell. Chỉ sau khi toàn bộ operation thành công mới dùng footprint
+        // sink thật để lọc event, rồi commit Region + direct event lên cha.
+        if !transaction.region.is_empty() {
+            self.propagate_soft_mask_events(soft.as_deref(), transaction.region)?;
+            self.record_painted_region(transaction.region);
+        }
+        self.accept_explicit_mask_events(transaction.explicit_mask_events);
+
+        Ok(completed)
     }
 
     /// Tra font trong `/Font` của resources, có cache theo tham chiếu object.
@@ -3829,17 +4897,53 @@ impl<'a> Renderer<'a> {
             return Ok(());
         };
 
-        let text_object_visible = self.opts.allows_preview_object(PreviewObjectKind::Text);
+        let text_owner = self.preview_object_kind(PreviewObjectKind::Text);
+        let text_object_visible = self.opts.allows_preview_object(text_owner);
+        let fill_uses_pattern = uses_pattern_color_space(stack, false);
         if mode.fills()
             && text_object_visible
-            && self
-                .opts
-                .allows_preview_color_space(&stack.current().fill_cs)
+            && (fill_uses_pattern
+                || self
+                    .opts
+                    .allows_preview_color_space(&stack.current().fill_cs))
         {
-            if let Some(paint) = self.make_paint(stack, false)? {
+            // CORRECTNESS (audit 2026-08-31 §PTXT.1): Pattern là một hàm theo vị
+            // trí, không thể quy về `InkPaint`. Glyph phải đi cùng semantic
+            // `paint_with_pattern` như path; nếu gọi `make_paint` thì Pattern trả
+            // `None` và chữ bị bỏ im lặng.
+            if fill_uses_pattern {
+                match pattern_for(stack, false) {
+                    Some(name) => {
+                        self.paint_with_pattern(
+                            &name,
+                            resources,
+                            &device_path,
+                            FillRule::NonZero,
+                            stack,
+                            false,
+                            text_owner,
+                        )?;
+                    }
+                    None => {
+                        self.note_missing_pattern_selection(
+                            false,
+                            &device_path,
+                            FillRule::NonZero,
+                            stack,
+                        );
+                    }
+                }
+            } else if let Some(paint) = self.make_paint(stack, false)? {
                 let clip = stack.current().clip.clone();
                 let soft = stack.current().soft_mask.clone();
-                let Renderer { raster, buffer, .. } = self;
+                let paint_serial_before = self.paint_serial;
+                let mut painted_region = Region::EMPTY;
+                let Renderer {
+                    raster,
+                    buffer,
+                    paint_serial,
+                    ..
+                } = self;
                 if let Some(cov) = raster.fill_path_centered(
                     &device_path,
                     FillRule::NonZero,
@@ -3847,15 +4951,27 @@ impl<'a> Renderer<'a> {
                     clip.as_deref(),
                     soft.as_deref(),
                 ) {
+                    let cov_region = cov.region;
                     buffer.composite_region(cov.data, cov.region, &paint)?;
+                    if paint.alpha > 0.0 {
+                        *paint_serial = paint_serial.wrapping_add(1);
+                        painted_region = painted_region.union(cov_region);
+                    }
+                }
+                let painted = *paint_serial != paint_serial_before;
+                if painted {
+                    self.finish_surface_paint(soft.as_deref(), painted_region)?;
                 }
             }
         }
+
+        let stroke_uses_pattern = uses_pattern_color_space(stack, true);
         if mode.strokes()
             && text_object_visible
-            && self
-                .opts
-                .allows_preview_color_space(&stack.current().stroke_cs)
+            && (stroke_uses_pattern
+                || self
+                    .opts
+                    .allows_preview_color_space(&stack.current().stroke_cs))
         {
             // Nét của chữ có bề rộng theo toạ độ người dùng, nên phải dựng outline
             // trong không gian glyph rồi mới biến đổi — giống hệt đường vector.
@@ -3863,10 +4979,39 @@ impl<'a> Renderer<'a> {
             let glyph_user = outline.as_ref().clone().transform(to_ts(&trm));
             if let Some(p) = glyph_user {
                 if let Some(outlined) = stroke_to_path(&p, &stroke, &gs_ctm) {
-                    if let Some(paint) = self.make_paint(stack, true)? {
+                    if stroke_uses_pattern {
+                        match pattern_for(stack, true) {
+                            Some(name) => {
+                                self.paint_with_pattern(
+                                    &name,
+                                    resources,
+                                    &outlined,
+                                    FillRule::NonZero,
+                                    stack,
+                                    true,
+                                    text_owner,
+                                )?;
+                            }
+                            None => {
+                                self.note_missing_pattern_selection(
+                                    true,
+                                    &outlined,
+                                    FillRule::NonZero,
+                                    stack,
+                                );
+                            }
+                        }
+                    } else if let Some(paint) = self.make_paint(stack, true)? {
                         let clip = stack.current().clip.clone();
                         let soft = stack.current().soft_mask.clone();
-                        let Renderer { raster, buffer, .. } = self;
+                        let paint_serial_before = self.paint_serial;
+                        let mut painted_region = Region::EMPTY;
+                        let Renderer {
+                            raster,
+                            buffer,
+                            paint_serial,
+                            ..
+                        } = self;
                         if let Some(cov) = raster.fill_path_centered(
                             &outlined,
                             FillRule::NonZero,
@@ -3874,7 +5019,16 @@ impl<'a> Renderer<'a> {
                             clip.as_deref(),
                             soft.as_deref(),
                         ) {
+                            let cov_region = cov.region;
                             buffer.composite_region(cov.data, cov.region, &paint)?;
+                            if paint.alpha > 0.0 {
+                                *paint_serial = paint_serial.wrapping_add(1);
+                                painted_region = painted_region.union(cov_region);
+                            }
+                        }
+                        let painted = *paint_serial != paint_serial_before;
+                        if painted {
+                            self.finish_surface_paint(soft.as_deref(), painted_region)?;
                         }
                     }
                 }
@@ -3971,9 +5125,43 @@ impl<'a> Renderer<'a> {
         let Ok(proc_obj) = t3.char_procs.get(name.as_bytes()) else {
             return Ok(());
         };
-        let Some(data) = pdf::stream_data(self.doc, proc_obj) else {
+        let Some(decoded) = pdf::stream_data_with_quality(self.doc, proc_obj) else {
             return Ok(());
         };
+        let stream_recovered = decoded.quality == pdf::DecodeQuality::Recovered;
+        let data = decoded.bytes;
+        // CORRECTNESS (audit 2026-08-31 §PPE-A06): classify width operator trước
+        // mọi mutation rồi replay chính PageProgram này; d1 là glyph uncoloured,
+        // d0 vẫn được dùng màu nội bộ. Operator width đầu tiên thắng nếu file hỏng.
+        let program = PageProgram::compile(&data)?;
+        let suppress_glyph_color = program
+            .operations()
+            .iter()
+            .find_map(|op| match op.operator.as_str() {
+                "d1" => Some(true),
+                "d0" => Some(false),
+                // lopdf tokenizes operator có hậu tố số thành `d`; d1 có 6 số
+                // (wx wy llx lly urx ury), d0 có 2 số (wx wy). Dash `d` thật
+                // bắt đầu bằng Array nên không đi vào hai nhánh này.
+                "d" if op.operands.len() == 6
+                    && op
+                        .operands
+                        .iter()
+                        .all(|operand| pdf::as_num(operand).is_some()) =>
+                {
+                    Some(true)
+                }
+                "d" if op.operands.len() == 2
+                    && op
+                        .operands
+                        .iter()
+                        .all(|operand| pdf::as_num(operand).is_some()) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            })
+            .unwrap_or(false);
 
         let trm = crate::text::state::glyph_matrix(&stack.current().text, &self.text_obj.matrix);
         let ctm = t3.font_matrix.then(&trm).then(&stack.current().ctm);
@@ -3981,18 +5169,49 @@ impl<'a> Renderer<'a> {
         // Resources của font Type3 thắng resources của trang; thiếu thì kế thừa.
         let res = t3.resources.clone().or_else(|| resources.cloned());
 
-        stack.save();
+        if !self.save_internal_state(stack) {
+            return Ok(());
+        }
         stack.current_mut().ctm = ctm;
-        let saved_depth = stack.depth();
+        let saved_depth = stack.logical_depth();
         // Glyph Type3 có thể vẽ chữ bên trong → phải lưu text object, nếu không
         // con trỏ chữ của dòng ngoài sẽ bị glyph làm lệch.
         let saved_text_obj = self.text_obj;
-        let result = self.execute(&data, res.as_ref(), stack, depth + 1);
+        let saved_suppress_color_ops = self.suppress_color_ops;
+        if suppress_glyph_color {
+            self.suppress_color_ops = self.suppress_color_ops.saturating_add(1);
+        }
+        if stream_recovered {
+            // CORRECTNESS (audit 2026-09-01 §PPE-E2): transaction giữ warning
+            // cùng footprint thật của glyph; glyph ngoài clip hoặc replay lỗi
+            // không được làm bẩn provenance của trang.
+            self.paint_region_trackers.push(PaintTransaction::default());
+        }
+        let result = self.execute_program(&program, res.as_ref(), stack, depth + 1);
+        let recovered_transaction = if stream_recovered {
+            self.paint_region_trackers.pop()
+        } else {
+            None
+        };
+        self.suppress_color_ops = saved_suppress_color_ops;
         self.text_obj = saved_text_obj;
-        while stack.depth() > saved_depth {
+        while stack.logical_depth() > saved_depth {
             stack.restore();
         }
         stack.restore();
+
+        if result.is_ok() {
+            if let Some(mut transaction) = recovered_transaction {
+                if !transaction.region.is_empty() {
+                    let event = self.allocate_deferred_event(DeferredDiagnostic::Type3StreamDecode);
+                    transaction
+                        .explicit_mask_events
+                        .insert(event, transaction.region);
+                    self.record_painted_region(transaction.region);
+                }
+                self.accept_explicit_mask_events(transaction.explicit_mask_events);
+            }
+        }
         result
     }
 
@@ -4370,6 +5589,81 @@ fn image_sample_candidates(
     out
 }
 
+/// Nới hộp bao để chứa thêm một pixel đã composite.
+fn include_pixel(region: &mut Region, x: u32, y: u32) {
+    *region = region.union(Region {
+        x0: x,
+        y0: y,
+        x1: x.saturating_add(1),
+        y1: y.saturating_add(1),
+    });
+}
+
+/// Hộp bao các pixel trong `candidate` thỏa điều kiện visibility.
+///
+/// Chỉ dùng trên đường diagnostic hiếm; giữ Region thay coverage map để metadata
+/// nhỏ, đổi lại khoảng trống giữa các đảo vẫn được xem là vùng bảo thủ.
+fn bounding_region_where_cancelled(
+    candidate: Region,
+    cancel_token: Option<&CancelToken>,
+    mut visible: impl FnMut(u32, u32) -> bool,
+) -> PpeResult<Region> {
+    let mut region = Region::EMPTY;
+    for y in candidate.y0..candidate.y1 {
+        if let Some(token) = cancel_token {
+            token.check()?;
+        }
+        for x in candidate.x0..candidate.x1 {
+            if visible(x, y) {
+                include_pixel(&mut region, x, y);
+            }
+        }
+    }
+    Ok(region)
+}
+
+/// Kiểm tra existence có short-circuit, vẫn nhả render khi token bị hủy.
+fn any_pixel_where_cancelled(
+    candidate: Region,
+    cancel_token: Option<&CancelToken>,
+    mut visible: impl FnMut(u32, u32) -> bool,
+) -> PpeResult<bool> {
+    for y in candidate.y0..candidate.y1 {
+        if let Some(token) = cancel_token {
+            token.check()?;
+        }
+        for x in candidate.x0..candidate.x1 {
+            if visible(x, y) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Đưa provenance của Form soft-mask từ cửa sổ local về hệ pixel surface cha.
+fn translate_explicit_mask_events(
+    events: ExplicitMaskEvents,
+    offset_x: u32,
+    offset_y: u32,
+    width: u32,
+    height: u32,
+) -> ExplicitMaskEvents {
+    events
+        .into_iter()
+        .filter_map(|(event, region)| {
+            let translated = Region {
+                x0: region.x0.saturating_add(offset_x),
+                y0: region.y0.saturating_add(offset_y),
+                x1: region.x1.saturating_add(offset_x),
+                y1: region.y1.saturating_add(offset_y),
+            }
+            .clamped(width, height);
+            (!translated.is_empty()).then_some((event, translated))
+        })
+        .collect()
+}
+
 /// Giao hai hộp bao clip; kết quả không bao giờ được nới rộng clip cũ.
 fn intersect_regions(a: Region, b: Region) -> Region {
     let region = Region {
@@ -4635,12 +5929,17 @@ fn pattern_base_cs(cs: &ColorSpace) -> Option<ColorSpace> {
     }
 }
 
-fn pattern_for(stack: &StateStack, stroke: bool) -> Option<String> {
+fn uses_pattern_color_space(stack: &StateStack, stroke: bool) -> bool {
     let gs = stack.current();
-    let cs = if stroke { &gs.stroke_cs } else { &gs.fill_cs };
-    if !matches!(cs, ColorSpace::Pattern { .. }) {
+    let color_space = if stroke { &gs.stroke_cs } else { &gs.fill_cs };
+    matches!(color_space, ColorSpace::Pattern { .. })
+}
+
+fn pattern_for(stack: &StateStack, stroke: bool) -> Option<String> {
+    if !uses_pattern_color_space(stack, stroke) {
         return None;
     }
+    let gs = stack.current();
     if stroke {
         gs.stroke_pattern.clone()
     } else {

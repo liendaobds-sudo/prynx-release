@@ -157,8 +157,24 @@ pub fn normalize_dash_array(array: &[f32]) -> Option<Vec<f32>> {
 /// engine hay xoá trạng thái gốc.
 pub struct StateStack {
     stack: Vec<GraphicsState>,
+    /// Số frame logic vượt trần physical. Không clone GraphicsState cho phần này:
+    /// interpreter sẽ chỉ nhận q/Q cho tới khi virtual depth trở về 0.
+    virtual_depth: usize,
     /// Số `Q` thừa đã gặp — báo lên cảnh báo để biết file lệch cấu trúc.
     pub unbalanced_restores: u32,
+}
+
+/// Một lần `q` không thể clone thêm graphics state vì đã chạm trần physical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateDepthOverflow {
+    starts_episode: bool,
+}
+
+impl StateDepthOverflow {
+    /// Chỉ frame virtual đầu tiên của một episode được phát warning.
+    pub fn starts_episode(self) -> bool {
+        self.starts_episode
+    }
 }
 
 /// Trần độ sâu `q` — spec khuyến nghị 28, thực tế file sinh tự động sâu hơn.
@@ -168,6 +184,7 @@ impl StateStack {
     pub fn new(initial: GraphicsState) -> Self {
         StateStack {
             stack: vec![initial],
+            virtual_depth: 0,
             unbalanced_restores: 0,
         }
     }
@@ -184,22 +201,38 @@ impl StateStack {
             .expect("ngăn xếp luôn có ít nhất 1 phần tử")
     }
 
+    /// Độ sâu physical, giữ hợp đồng cũ và không bao giờ vượt trần.
     pub fn depth(&self) -> usize {
         self.stack.len()
     }
 
-    /// `q` — lưu trạng thái.
-    pub fn save(&mut self) {
-        if self.stack.len() >= MAX_STATE_DEPTH {
-            return;
+    /// Độ sâu logic dùng để unwind chính xác cả frame virtual.
+    pub fn logical_depth(&self) -> usize {
+        self.stack.len().saturating_add(self.virtual_depth)
+    }
+
+    pub fn virtual_overflow_active(&self) -> bool {
+        self.virtual_depth > 0
+    }
+
+    /// `q` — lưu trạng thái. Khi chạm trần, chỉ tăng frame logic O(1) để `Q`
+    /// tương ứng không pop nhầm graphics state physical của caller.
+    pub fn save(&mut self) -> Result<(), StateDepthOverflow> {
+        if self.virtual_depth > 0 || self.stack.len() >= MAX_STATE_DEPTH {
+            let starts_episode = self.virtual_depth == 0;
+            self.virtual_depth = self.virtual_depth.saturating_add(1);
+            return Err(StateDepthOverflow { starts_episode });
         }
         let top = self.current().clone();
         self.stack.push(top);
+        Ok(())
     }
 
-    /// `Q` — phục hồi. Không bao giờ làm rỗng ngăn xếp.
+    /// `Q` — consume frame virtual trước physical. Không bao giờ làm rỗng stack.
     pub fn restore(&mut self) {
-        if self.stack.len() > 1 {
+        if self.virtual_depth > 0 {
+            self.virtual_depth -= 1;
+        } else if self.stack.len() > 1 {
             self.stack.pop();
         } else {
             self.unbalanced_restores += 1;
@@ -228,7 +261,7 @@ mod tests {
     #[test]
     fn save_restore_isolates_changes() {
         let mut s = StateStack::new(state());
-        s.save();
+        s.save().expect("frame đầu phải lưu được");
         s.current_mut().line_width = 9.0;
         s.current_mut().fill_overprint = true;
         s.restore();
@@ -249,10 +282,24 @@ mod tests {
     #[test]
     fn state_depth_is_capped() {
         let mut s = StateStack::new(state());
-        for _ in 0..(MAX_STATE_DEPTH + 50) {
-            s.save();
+        let saves = MAX_STATE_DEPTH + 50;
+        let mut overflow_episodes = 0;
+        for _ in 0..saves {
+            if let Err(overflow) = s.save() {
+                overflow_episodes += usize::from(overflow.starts_episode());
+            }
         }
-        assert!(s.depth() <= MAX_STATE_DEPTH);
+        assert_eq!(s.depth(), MAX_STATE_DEPTH);
+        assert_eq!(s.logical_depth(), saves + 1);
+        assert!(s.virtual_overflow_active());
+        assert_eq!(overflow_episodes, 1);
+
+        for _ in 0..saves {
+            s.restore();
+        }
+        assert_eq!(s.depth(), 1);
+        assert_eq!(s.logical_depth(), 1);
+        assert_eq!(s.unbalanced_restores, 0);
     }
 
     #[test]

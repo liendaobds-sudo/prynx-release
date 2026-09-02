@@ -527,7 +527,21 @@ fn prepare_apng(
     decoder.set_ignore_iccp_chunk(true);
     // PERF (audit 2026-08-03 §TC.4): kích thước đã được kiểm tra theo canvas và
     // backend đã gate RAM; không để mặc định 64 MiB làm chậm/fail máy mạnh.
-    decoder.set_limits(PngLimits { bytes: usize::MAX });
+    //
+    // SEC (pentest 2026-08-28 §ATK.03): KHÔNG để usize::MAX (tắt hẳn trần). Một APNG độc
+    // khai kích thước nhỏ nhưng nhồi luồng nén phình to (decompression bomb) có thể ép
+    // decoder cấp phát bộ nhớ khổng lồ → OOM/treo tiến trình. Nhưng cũng KHÔNG hard-cap
+    // cứng (phá large-format hợp lệ, vi phạm "máy mạnh chạy hết công suất"): đặt trần TỰ
+    // CO GIÃN theo pixel_count ĐÃ được kiểm ở trên. Ảnh lớn hợp lệ (đã qua kiểm canvas)
+    // được trần lớn tương ứng; ảnh khai nhỏ mà nhồi bom bị chặn ở mức nhỏ. 16 byte/px phủ
+    // trường hợp RGBA 16-bit có đệm double-buffer khi ghép frame APNG; +256 MiB headroom
+    // cho overhead decoder. Kích thước phi lý vẫn bị checked_mul canvas_bytes bên dưới bắt.
+    let apng_byte_limit = pixel_count
+        .saturating_mul(16)
+        .saturating_add(256 * 1024 * 1024);
+    decoder.set_limits(PngLimits {
+        bytes: apng_byte_limit,
+    });
     let mut reader = decoder
         .read_info()
         .map_err(|error| ImagePdfError::Invalid(format!("Không mở được APNG: {error}")))?;

@@ -34,12 +34,14 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use super::model::{canonicalize_angle_deg, PlacementRecord, PointMm, Tolerance};
+use super::model::{
+    canonicalize_angle_deg, PlacementRecord, PointMm, Tolerance, MAX_INSTANCES_TOTAL,
+};
 use super::normalize::{BoundsMm, NormalizedPart, NormalizedRequest};
 use super::transform::place_ring_checked;
 
 /// Version của định nghĩa điểm. Đổi tiêu chí là đổi layout ⇒ phải tăng số này.
-pub const SCORE_VERSION: u32 = 1;
+pub const SCORE_VERSION: u32 = 2;
 
 /// Lượng tử diện tích khi lượng tử hoá về `i64`, mm².
 ///
@@ -108,7 +110,11 @@ pub struct LayoutScore {
     /// tờ nào) và **thắng** ở tiêu chí 2. Một phương án không dựng lại được thì không
     /// phải phương án, nên nó phải bị loại trước khi đếm tờ.
     pub invalid_count: u64,
-    /// Tiêu chí 1 — số con chưa xếp.
+    /// Tiêu chí 1.
+    ///
+    /// Với `quantity_fulfillment`, đây vẫn là số con chưa xếp, bit-identical với v1.
+    /// Với `autofill_single_sheet`, đây là penalty tổng hợp: ưu tiên tăng số placement
+    /// ít nhất của mọi part, rồi tăng tổng placement. Xem [`autofill_penalty`].
     pub unplaced_count: u64,
     /// Tiêu chí 2 — số tờ đã dùng.
     pub sheet_count: u32,
@@ -119,6 +125,30 @@ pub struct LayoutScore {
     /// Tiêu chí 5 — khoá canonical đã sắp, quyết định khi bốn tiêu chí trên bằng nhau.
     pub tie_break: Vec<PlacementKey>,
     pub score_version: u32,
+}
+
+/// Mã hoá hai tiêu chí autofill đầu tiên vào một số nguyên "nhỏ hơn là tốt hơn".
+///
+/// `MAX_INSTANCES_TOTAL + 1` là cơ số an toàn: cải thiện `min(count mỗi part)` đúng một
+/// đơn vị luôn thắng mọi chênh lệch có thể có của tổng placement. Contract và baseline
+/// cùng chặn tổng placement ở `MAX_INSTANCES_TOTAL`.
+fn autofill_penalty(placed_per_part: &BTreeMap<&str, u64>) -> u64 {
+    let minimum = placed_per_part
+        .values()
+        .copied()
+        .min()
+        .unwrap_or(0)
+        .min(MAX_INSTANCES_TOTAL);
+    let total = placed_per_part
+        .values()
+        .copied()
+        .fold(0u64, u64::saturating_add)
+        .min(MAX_INSTANCES_TOTAL);
+    let radix = MAX_INSTANCES_TOTAL.saturating_add(1);
+    MAX_INSTANCES_TOTAL
+        .saturating_sub(minimum)
+        .saturating_mul(radix)
+        .saturating_add(MAX_INSTANCES_TOTAL.saturating_sub(total))
 }
 
 impl LayoutScore {
@@ -182,6 +212,11 @@ pub fn score_layout(
         .iter()
         .map(|part| (part.part_id.as_str(), part))
         .collect();
+    let mut placed_per_part: BTreeMap<&str, u64> = request
+        .parts
+        .iter()
+        .map(|part| (part.part_id.as_str(), 0))
+        .collect();
 
     // Gộp theo tờ: vùng bao đã dùng và tổng diện tích chi tiết.
     struct SheetUse {
@@ -205,6 +240,9 @@ pub fn score_layout(
             invalid_count += 1;
             continue;
         };
+        *placed_per_part
+            .get_mut(part.part_id.as_str())
+            .expect("part hợp lệ phải có bộ đếm autofill") += 1;
         let entry = sheets.entry(record.sheet_index).or_insert(SheetUse {
             envelope: None,
             part_area_mm2: 0.0,
@@ -246,9 +284,15 @@ pub fn score_layout(
         .collect();
     tie_break.sort();
 
+    let objective_penalty = if request.layout_intent.is_single_sheet_autofill() {
+        autofill_penalty(&placed_per_part)
+    } else {
+        unplaced_count
+    };
+
     LayoutScore {
         invalid_count,
-        unplaced_count,
+        unplaced_count: objective_penalty,
         sheet_count,
         last_sheet_used_area_fixed: quantize(last_sheet_area, SCORE_AREA_QUANTUM_MM2),
         wasted_within_envelope_fixed: quantize(wasted, SCORE_AREA_QUANTUM_MM2),
@@ -257,35 +301,48 @@ pub fn score_layout(
     }
 }
 
-/// Vùng bao đã dùng của một tờ, mm² — tiện cho report.
-pub fn sheet_envelope(
+/// Vùng bao đã dùng theo từng tờ, mm².
+///
+/// Duyệt placements đúng một lần để job nhiều tờ không biến thành O(số_tờ × số_con).
+/// Đây cũng là nguồn hình học dùng cho phép căn cụm trước publication.
+pub fn sheet_envelopes(
     request: &NormalizedRequest,
     placements: &[PlacementRecord],
-    sheet_index: u32,
-) -> Option<BoundsMm> {
+) -> Option<BTreeMap<u32, BoundsMm>> {
     let tol = request.tolerance;
     let parts: BTreeMap<&str, &NormalizedPart> = request
         .parts
         .iter()
         .map(|part| (part.part_id.as_str(), part))
         .collect();
-    let mut envelope: Option<BoundsMm> = None;
-    for record in placements.iter().filter(|r| r.sheet_index == sheet_index) {
+    let mut envelopes: BTreeMap<u32, BoundsMm> = BTreeMap::new();
+    for record in placements {
         let part = parts.get(record.part_id.as_str())?;
         let ring =
             place_ring_checked(&part.outer, &record.pose, part.reference_point_mm, &tol).ok()?;
         let bounds = BoundsMm::from_ring(&ring)?;
-        envelope = Some(match envelope {
-            None => bounds,
-            Some(current) => BoundsMm {
-                min_x: current.min_x.min(bounds.min_x),
-                min_y: current.min_y.min(bounds.min_y),
-                max_x: current.max_x.max(bounds.max_x),
-                max_y: current.max_y.max(bounds.max_y),
-            },
-        });
+        envelopes
+            .entry(record.sheet_index)
+            .and_modify(|current| {
+                *current = BoundsMm {
+                    min_x: current.min_x.min(bounds.min_x),
+                    min_y: current.min_y.min(bounds.min_y),
+                    max_x: current.max_x.max(bounds.max_x),
+                    max_y: current.max_y.max(bounds.max_y),
+                };
+            })
+            .or_insert(bounds);
     }
-    envelope
+    Some(envelopes)
+}
+
+/// Vùng bao đã dùng của một tờ, mm² — tiện cho report.
+pub fn sheet_envelope(
+    request: &NormalizedRequest,
+    placements: &[PlacementRecord],
+    sheet_index: u32,
+) -> Option<BoundsMm> {
+    sheet_envelopes(request, placements)?.remove(&sheet_index)
 }
 
 /// So hai vị trí theo thứ tự Bottom-Left xác định: `y` trước, rồi `x`.

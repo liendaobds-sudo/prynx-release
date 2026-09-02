@@ -141,7 +141,11 @@ fn output_preview_text_filter_keeps_text_and_rejects_other_object_filters() {
             &doc,
             RenderOptions::softproof().with_output_preview_filter(filter),
         );
-        assert_eq!(inked_pixels(&hidden, 3), 0, "{filter:?} không được giữ glyph");
+        assert_eq!(
+            inked_pixels(&hidden, 3),
+            0,
+            "{filter:?} không được giữ glyph"
+        );
     }
 }
 

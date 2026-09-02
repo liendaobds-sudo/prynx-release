@@ -77,10 +77,24 @@ impl PageDescriptor {
         }
     }
 
-    fn target(&self, which: PageBox) -> Rect {
-        self.box_value(which)
+    fn effective_crop(&self) -> Rect {
+        self.crop
             .and_then(|value| value.intersect(&self.media))
             .unwrap_or(self.media)
+    }
+
+    fn target(&self, which: PageBox) -> Rect {
+        // CORRECTNESS (audit 2026-09-01 §PPE-E1): ISO 32000 cho Trim/Bleed/Art
+        // kế thừa CropBox hiệu lực khi thiếu hoặc không giao MediaBox. Một hộp con
+        // hợp lệ chỉ bị chặn bởi MediaBox, không bị ép tiếp vào CropBox.
+        match which {
+            PageBox::Media => self.media,
+            PageBox::Crop => self.effective_crop(),
+            PageBox::Trim | PageBox::Bleed | PageBox::Art => self
+                .box_value(which)
+                .and_then(|value| value.intersect(&self.media))
+                .unwrap_or_else(|| self.effective_crop()),
+        }
     }
 
     fn program<'a>(&'a self, doc: &Document) -> PpeResult<&'a PageProgram> {
@@ -374,20 +388,14 @@ fn render_annotation_appearances(
         if flags & (1 | 2 | 32) != 0 {
             continue;
         }
-        // NoZoom/NoRotate cần ma trận theo viewport thay vì trang; chưa được phép
-        // áp phép co trang thông thường rồi tuyên bố color-verified.
-        if flags & (8 | 16) != 0 {
-            renderer.note_unsupported_annotation("Annotation /F NoZoom hoặc NoRotate chưa hỗ trợ");
-            continue;
-        }
-        if annotation.get(b"OC").is_ok() {
-            renderer.note_unsupported_annotation("Annotation /OC chưa áp trạng thái lớp");
-            continue;
-        }
 
         let subtype = pdf::dict_get(doc, annotation, "Subtype")
             .and_then(pdf::name_str)
             .unwrap_or_default();
+        // `/Popup` là cửa sổ UI do viewer mở, không phải nội dung raster của trang.
+        if subtype == "Popup" {
+            continue;
+        }
         let Some(rect_values) =
             pdf::dict_get(doc, annotation, "Rect").and_then(|value| pdf::num_array(doc, value))
         else {
@@ -407,10 +415,32 @@ fn render_annotation_appearances(
         if rect.is_empty() {
             continue;
         }
+        // CORRECTNESS (audit 2026-08-31 §PPE-B01): tile không chứa annotation
+        // phải sạch, kể cả khi appearance hoặc semantics của annotation chưa hỗ trợ.
+        if !renderer.rect_may_intersect_buffer(rect, &page_device) {
+            continue;
+        }
+
+        // NoZoom/NoRotate cần ma trận theo viewport thay vì trang; chưa được phép
+        // áp phép co trang thông thường rồi tuyên bố color-verified.
+        if flags & (8 | 16) != 0 {
+            renderer.note_unsupported_annotation("Annotation /F NoZoom hoặc NoRotate chưa hỗ trợ");
+            continue;
+        }
+        if annotation.get(b"OC").is_ok() {
+            renderer.note_unsupported_annotation("Annotation /OC chưa áp trạng thái lớp");
+            continue;
+        }
 
         let Some(ap) = pdf::dict_get_dict(doc, annotation, "AP") else {
             if subtype == "Widget" {
                 renderer.note_unsupported_annotation("Widget thiếu appearance /AP");
+            } else if subtype.is_empty() {
+                renderer.note_unsupported_annotation("Annotation thiếu appearance /AP");
+            } else {
+                renderer.note_unsupported_annotation(&format!(
+                    "Annotation /{subtype} thiếu appearance /AP"
+                ));
             }
             continue;
         };
@@ -465,9 +495,15 @@ fn render_annotation_appearances(
             ))
             .then(&Matrix::translate(rect.x0, rect.y0));
         let base_ctm = appearance_matrix.then(&fit).then(&page_device);
-        let data = stream
-            .decompressed_content()
-            .unwrap_or_else(|_| stream.content.clone());
+        let decoded = pdf::decode_stream(doc, stream);
+        if decoded.quality == pdf::DecodeQuality::Recovered {
+            // CORRECTNESS (audit 2026-09-01 §PPE-E2): Rect đã qua cổng giao
+            // viewport phía trên; appearance ngoài tile không tạo warning oan.
+            renderer.note_unsupported_annotation(
+                "Annotation appearance chỉ phục hồi được content stream",
+            );
+        }
+        let data = decoded.bytes;
         let mut clipped = format!(
             "q {} {} {} {} re W n\n",
             bbox.x0,

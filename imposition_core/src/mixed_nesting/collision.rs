@@ -25,7 +25,7 @@
 //! Vì vậy **chạm biên không phải chồng lấn**: [`rings_overlap`] chỉ báo `true` khi phần
 //! *trong* của hai hình giao nhau.
 
-use super::model::{PointMm, Tolerance};
+use super::model::{PointMm, SheetAxisClearanceMm, Tolerance};
 use super::normalize::BoundsMm;
 
 /// Khoảng cách hai điểm, mm.
@@ -254,10 +254,24 @@ fn project_onto(ring: &[PointMm], axis_x: f64, axis_y: f64) -> (f64, f64) {
 
 /// Khoảng cách nhỏ nhất giữa hai contour, mm. `0` khi chồng hoặc chạm nhau.
 pub fn min_distance_mm(a: &[PointMm], b: &[PointMm], tol: &Tolerance) -> f64 {
+    min_distance_disjoint_mm(a, b, tol, false)
+}
+
+/// Khoảng cách nhỏ nhất khi caller đã biết hai vòng không chồng nhau.
+///
+/// PERF (audit 2026-08-30 §NEST-D1-A): `judge_pair` vừa gọi `rings_overlap`; gọi
+/// lại qua `min_distance_mm` làm lặp toàn bộ phép cạnh-cạnh/SAT của đúng một cặp.
+/// Helper private này chỉ bỏ lần phán quyết trùng; API công khai vẫn tự kiểm đầy đủ.
+fn min_distance_disjoint_mm(
+    a: &[PointMm],
+    b: &[PointMm],
+    tol: &Tolerance,
+    known_disjoint: bool,
+) -> f64 {
     if a.len() < 3 || b.len() < 3 {
         return f64::INFINITY;
     }
-    if rings_overlap(a, b, tol) {
+    if !known_disjoint && rings_overlap(a, b, tol) {
         return 0.0;
     }
     let mut best = f64::MAX;
@@ -300,7 +314,7 @@ pub fn judge_pair(a: &[PointMm], b: &[PointMm], gap_mm: f64, tol: &Tolerance) ->
     if rings_overlap(a, b, tol) {
         return PairVerdict::Overlap;
     }
-    let measured = min_distance_mm(a, b, tol);
+    let measured = min_distance_disjoint_mm(a, b, tol, true);
     if measured + tol.linear_mm < gap_mm {
         return PairVerdict::ClearanceTooSmall {
             measured_mm: measured,
@@ -310,6 +324,102 @@ pub fn judge_pair(a: &[PointMm], b: &[PointMm], gap_mm: f64, tol: &Tolerance) ->
     PairVerdict::Ok {
         measured_mm: measured,
     }
+}
+
+/// Phán quyết clearance dị hướng theo trục tờ bằng Minkowski rectangle.
+///
+/// Với mỗi trục phân cách `n`, support của rectangle clearance là
+/// `gapX*|n.x| + gapY*|n.y|`. Các trục được xét sau khi pose đã áp vào contour, nên
+/// không có lỗi xoay một footprint đã nở theo local-space. Hình lõm được phân rã và
+/// mọi cặp mảnh lồi đều phải đạt; phân rã lỗi thì fail-closed.
+pub fn judge_pair_sheet_axis(
+    a: &[PointMm],
+    b: &[PointMm],
+    clearance: SheetAxisClearanceMm,
+    tol: &Tolerance,
+) -> PairVerdict {
+    if rings_overlap(a, b, tol) {
+        return PairVerdict::Overlap;
+    }
+    let measured = min_distance_mm(a, b, tol);
+    if clearance.x_mm <= tol.linear_mm && clearance.y_mm <= tol.linear_mm {
+        return PairVerdict::Ok {
+            measured_mm: measured,
+        };
+    }
+
+    let convex_a = super::geometry::is_convex_ring(a, tol);
+    let convex_b = super::geometry::is_convex_ring(b, tol);
+    let pieces_a = convex_pieces(a, convex_a, tol);
+    let pieces_b = convex_pieces(b, convex_b, tol);
+    let safe = !pieces_a.is_empty()
+        && !pieces_b.is_empty()
+        && pieces_a.iter().all(|piece_a| {
+            pieces_b
+                .iter()
+                .all(|piece_b| clearance_separating_axis_exists(piece_a, piece_b, clearance, tol))
+        });
+    if safe {
+        PairVerdict::Ok {
+            measured_mm: measured,
+        }
+    } else {
+        PairVerdict::ClearanceTooSmall {
+            measured_mm: measured,
+            required_mm: clearance.max_axis_mm(),
+        }
+    }
+}
+
+fn clearance_separating_axis_exists(
+    a: &[PointMm],
+    b: &[PointMm],
+    clearance: SheetAxisClearanceMm,
+    tol: &Tolerance,
+) -> bool {
+    if axis_has_required_separation(a, b, 1.0, 0.0, clearance, tol)
+        || axis_has_required_separation(a, b, 0.0, 1.0, clearance, tol)
+    {
+        return true;
+    }
+    for ring in [a, b] {
+        for index in 0..ring.len() {
+            let from = ring[index];
+            let to = ring[(index + 1) % ring.len()];
+            let edge_x = to.x - from.x;
+            let edge_y = to.y - from.y;
+            let length = edge_x.hypot(edge_y);
+            if length <= tol.linear_mm {
+                continue;
+            }
+            if axis_has_required_separation(a, b, -edge_y / length, edge_x / length, clearance, tol)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn axis_has_required_separation(
+    a: &[PointMm],
+    b: &[PointMm],
+    axis_x: f64,
+    axis_y: f64,
+    clearance: SheetAxisClearanceMm,
+    tol: &Tolerance,
+) -> bool {
+    let (a_min, a_max) = project_onto(a, axis_x, axis_y);
+    let (b_min, b_max) = project_onto(b, axis_x, axis_y);
+    let separation = if a_max <= b_min + tol.linear_mm {
+        b_min - a_max
+    } else if b_max <= a_min + tol.linear_mm {
+        a_min - b_max
+    } else {
+        return false;
+    };
+    let required = clearance.x_mm * axis_x.abs() + clearance.y_mm * axis_y.abs();
+    separation + tol.linear_mm >= required
 }
 
 /// Contour có nằm hẳn trong vùng dùng được của tờ hay không.

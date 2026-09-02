@@ -23,15 +23,15 @@
 
 use std::cmp::Ordering;
 
-use super::collision::{judge_pair, ring_within_bounds};
+use super::collision::{judge_pair, judge_pair_sheet_axis, min_distance_mm, ring_within_bounds};
 use super::control::{Interrupt, RunControl, SearchEffort};
-use super::model::{canonicalize_angle_deg, PointMm, Pose, Tolerance};
+use super::model::{canonicalize_angle_deg, PointMm, Pose, SheetAxisClearanceMm, Tolerance};
 use super::normalize::{BoundsMm, NormalizedPart};
 use super::score::SCORE_LENGTH_QUANTUM_MM;
 use super::transform::place_ring_checked;
 
 /// Version của quy tắc tinh chỉnh.
-pub const REFINE_RULE_VERSION: u32 = 1;
+pub const REFINE_RULE_VERSION: u32 = 2;
 
 /// Trần số bước tiến an toàn khi trượt tới tiếp xúc.
 ///
@@ -47,7 +47,7 @@ pub const REFINE_INITIAL_ANGLE_STEP_DEG: f64 = 8.0;
 /// Bước tịnh tiến khởi đầu của pattern search, mm. Co dần về 0.
 pub const REFINE_INITIAL_TRANSLATION_STEP_MM: f64 = 8.0;
 
-/// Ngữ cảnh bất biến của một lần tinh chỉnh.
+/// Ngữ cảnh legacy dùng clearance Euclid vô hướng.
 pub struct RefineContext<'a> {
     pub part: &'a NormalizedPart,
     /// Contour của các chi tiết **đã đặt trên cùng tờ**, đã transform.
@@ -57,35 +57,142 @@ pub struct RefineContext<'a> {
     pub tol: Tolerance,
 }
 
-impl RefineContext<'_> {
-    /// Contour của chi tiết tại một pose, nếu pose dựng được.
-    pub fn ring_at(&self, pose: &Pose) -> Option<Vec<PointMm>> {
+/// Ngữ cảnh production giữ riêng part↔part và part↔obstacle theo trục tờ.
+pub struct ProductionRefineContext<'a> {
+    pub part: &'a NormalizedPart,
+    pub placed_parts: &'a [Vec<PointMm>],
+    pub fixed_obstacles: &'a [Vec<PointMm>],
+    pub usable: &'a BoundsMm,
+    pub part_clearance: SheetAxisClearanceMm,
+    pub obstacle_clearance: SheetAxisClearanceMm,
+    pub tol: Tolerance,
+}
+
+trait RefineGeometryContext {
+    fn part(&self) -> &NormalizedPart;
+    fn usable(&self) -> &BoundsMm;
+    fn tolerance(&self) -> Tolerance;
+    fn is_valid_ring(&self, ring: &[PointMm]) -> bool;
+    fn safe_advance_mm(&self, ring: &[PointMm]) -> f64;
+    fn lift_clearance_mm(&self) -> f64;
+
+    fn ring_at(&self, pose: &Pose) -> Option<Vec<PointMm>> {
+        let part = self.part();
         place_ring_checked(
-            &self.part.outer,
+            &part.outer,
             pose,
-            self.part.reference_point_mm,
-            &self.tol,
+            part.reference_point_mm,
+            &self.tolerance(),
         )
         .ok()
     }
 
-    /// Pose có hợp lệ hay không: trong vùng dùng được và không phạm chi tiết nào.
-    ///
-    /// Dùng [`judge_pair`] — quan toà độc lập — nên "hợp lệ" ở đây cùng nghĩa với "hợp lệ"
-    /// mà validator sẽ kết luận. Không có hai định nghĩa hợp lệ song song.
-    pub fn is_valid(&self, ring: &[PointMm]) -> bool {
-        if !ring_within_bounds(ring, self.usable, &self.tol) {
-            return false;
-        }
-        !self
-            .placed
-            .iter()
-            .any(|other| !judge_pair(ring, other, self.gap_mm, &self.tol).is_ok())
-    }
-
     fn valid_ring_at(&self, pose: &Pose) -> Option<Vec<PointMm>> {
         let ring = self.ring_at(pose)?;
-        self.is_valid(&ring).then_some(ring)
+        self.is_valid_ring(&ring).then_some(ring)
+    }
+}
+
+impl RefineGeometryContext for RefineContext<'_> {
+    fn part(&self) -> &NormalizedPart {
+        self.part
+    }
+
+    fn usable(&self) -> &BoundsMm {
+        self.usable
+    }
+
+    fn tolerance(&self) -> Tolerance {
+        self.tol
+    }
+
+    fn is_valid_ring(&self, ring: &[PointMm]) -> bool {
+        ring_within_bounds(ring, self.usable, &self.tol)
+            && !self
+                .placed
+                .iter()
+                .any(|other| !judge_pair(ring, other, self.gap_mm, &self.tol).is_ok())
+    }
+
+    fn safe_advance_mm(&self, ring: &[PointMm]) -> f64 {
+        self.placed.iter().fold(f64::MAX, |safe, other| {
+            safe.min((min_distance_mm(ring, other, &self.tol) - self.gap_mm).max(0.0))
+        })
+    }
+
+    fn lift_clearance_mm(&self) -> f64 {
+        self.gap_mm
+    }
+}
+
+impl RefineGeometryContext for ProductionRefineContext<'_> {
+    fn part(&self) -> &NormalizedPart {
+        self.part
+    }
+
+    fn usable(&self) -> &BoundsMm {
+        self.usable
+    }
+
+    fn tolerance(&self) -> Tolerance {
+        self.tol
+    }
+
+    fn is_valid_ring(&self, ring: &[PointMm]) -> bool {
+        ring_within_bounds(ring, self.usable, &self.tol)
+            && !self.placed_parts.iter().any(|other| {
+                !judge_pair_sheet_axis(ring, other, self.part_clearance, &self.tol).is_ok()
+            })
+            && !self.fixed_obstacles.iter().any(|obstacle| {
+                !judge_pair_sheet_axis(ring, obstacle, self.obstacle_clearance, &self.tol).is_ok()
+            })
+    }
+
+    fn safe_advance_mm(&self, ring: &[PointMm]) -> f64 {
+        let part_radius = self.part_clearance.x_mm.hypot(self.part_clearance.y_mm);
+        let obstacle_radius = self
+            .obstacle_clearance
+            .x_mm
+            .hypot(self.obstacle_clearance.y_mm);
+        let part_safe = self.placed_parts.iter().fold(f64::MAX, |safe, other| {
+            safe.min((min_distance_mm(ring, other, &self.tol) - part_radius).max(0.0))
+        });
+        self.fixed_obstacles
+            .iter()
+            .fold(part_safe, |safe, obstacle| {
+                safe.min((min_distance_mm(ring, obstacle, &self.tol) - obstacle_radius).max(0.0))
+            })
+    }
+
+    fn lift_clearance_mm(&self) -> f64 {
+        self.part_clearance
+            .x_mm
+            .hypot(self.part_clearance.y_mm)
+            .max(
+                self.obstacle_clearance
+                    .x_mm
+                    .hypot(self.obstacle_clearance.y_mm),
+            )
+    }
+}
+
+impl RefineContext<'_> {
+    pub fn ring_at(&self, pose: &Pose) -> Option<Vec<PointMm>> {
+        RefineGeometryContext::ring_at(self, pose)
+    }
+
+    pub fn is_valid(&self, ring: &[PointMm]) -> bool {
+        self.is_valid_ring(ring)
+    }
+}
+
+impl ProductionRefineContext<'_> {
+    pub fn ring_at(&self, pose: &Pose) -> Option<Vec<PointMm>> {
+        RefineGeometryContext::ring_at(self, pose)
+    }
+
+    pub fn is_valid(&self, ring: &[PointMm]) -> bool {
+        self.is_valid_ring(ring)
     }
 }
 
@@ -159,12 +266,22 @@ pub fn slide_to_contact(
     direction: (f64, f64),
     max_distance_mm: f64,
 ) -> Option<Pose> {
+    slide_to_contact_impl(context, start, direction, max_distance_mm)
+}
+
+fn slide_to_contact_impl<C: RefineGeometryContext>(
+    context: &C,
+    start: &Pose,
+    direction: (f64, f64),
+    max_distance_mm: f64,
+) -> Option<Pose> {
+    let tol = context.tolerance();
     let start_ring = context.ring_at(start)?;
-    if !context.is_valid(&start_ring) {
+    if !context.is_valid_ring(&start_ring) {
         return None;
     }
     let length = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
-    if !length.is_finite() || length <= context.tol.linear_mm || !max_distance_mm.is_finite() {
+    if !length.is_finite() || length <= tol.linear_mm || !max_distance_mm.is_finite() {
         return Some(*start);
     }
     let (ux, uy) = (direction.0 / length, direction.1 / length);
@@ -180,24 +297,16 @@ pub fn slide_to_contact(
     let mut ring = start_ring;
     for _ in 0..SLIDE_ADVANCE_STEPS {
         let remaining = max_distance_mm - travelled;
-        if remaining <= context.tol.linear_mm {
+        if remaining <= tol.linear_mm {
             break;
         }
-        // Khoảng tiến an toàn theo vật cản: khoảng hở hiện tại trừ `gap` đã yêu cầu.
-        let mut safe = remaining;
-        for other in context.placed {
-            let clearance =
-                super::collision::min_distance_mm(&ring, other, &context.tol) - context.gap_mm;
-            safe = safe.min(clearance.max(0.0));
-            if safe <= context.tol.linear_mm {
-                break;
-            }
-        }
-        // Khoảng chạy tới biên: tính chính xác cho hộp bao theo hướng trượt.
+        // Với production, hypot chỉ là bước tiến bảo thủ; validity vẫn dùng rectangle
+        // sheet-axis riêng cho part và obstacle, nên bound này không loại pose hợp lệ.
+        let mut safe = remaining.min(context.safe_advance_mm(&ring));
         if let Some(bounds) = BoundsMm::from_ring(&ring) {
-            safe = safe.min(boundary_slack_mm(&bounds, context.usable, ux, uy));
+            safe = safe.min(boundary_slack_mm(&bounds, context.usable(), ux, uy));
         }
-        if safe <= context.tol.linear_mm {
+        if safe <= tol.linear_mm {
             break;
         }
         let next = travelled + safe;
@@ -235,20 +344,29 @@ fn boundary_slack_mm(bounds: &BoundsMm, usable: &BoundsMm, ux: f64, uy: f64) -> 
 /// Lặp vì sau khi sang trái có thể lại tụt xuống được — đó là cách "compact" thật, khác
 /// với việc đặt vào một ô lưới.
 pub fn compact_bottom_left(context: &RefineContext<'_>, start: &Pose, rounds: u32) -> Option<Pose> {
+    compact_bottom_left_impl(context, start, rounds)
+}
+
+fn compact_bottom_left_impl<C: RefineGeometryContext>(
+    context: &C,
+    start: &Pose,
+    rounds: u32,
+) -> Option<Pose> {
+    let tol = context.tolerance();
     let mut current = *start;
     context.valid_ring_at(&current)?;
-    let span = (context.usable.width_mm() + context.usable.height_mm()).max(1.0);
+    let span = (context.usable().width_mm() + context.usable().height_mm()).max(1.0);
     for _ in 0..rounds.max(1) {
         let before = (current.translate_x_mm, current.translate_y_mm);
-        if let Some(next) = slide_to_contact(context, &current, (0.0, -1.0), span) {
+        if let Some(next) = slide_to_contact_impl(context, &current, (0.0, -1.0), span) {
             current = next;
         }
-        if let Some(next) = slide_to_contact(context, &current, (-1.0, 0.0), span) {
+        if let Some(next) = slide_to_contact_impl(context, &current, (-1.0, 0.0), span) {
             current = next;
         }
         let moved =
             (current.translate_x_mm - before.0).abs() + (current.translate_y_mm - before.1).abs();
-        if moved <= context.tol.linear_mm {
+        if moved <= tol.linear_mm {
             break;
         }
     }
@@ -265,21 +383,30 @@ pub fn try_rotate_and_relocate(
     current: &Pose,
     delta_deg: f64,
 ) -> Option<Pose> {
-    let angle = canonicalize_angle_deg(current.rotation_deg + delta_deg, &context.tol)?;
-    if !context.part.rotation_domain.contains(angle, &context.tol) {
+    try_rotate_and_relocate_impl(context, current, delta_deg)
+}
+
+fn try_rotate_and_relocate_impl<C: RefineGeometryContext>(
+    context: &C,
+    current: &Pose,
+    delta_deg: f64,
+) -> Option<Pose> {
+    let tol = context.tolerance();
+    let angle = canonicalize_angle_deg(current.rotation_deg + delta_deg, &tol)?;
+    if !context.part().rotation_domain.contains(angle, &tol) {
         return None;
     }
     let rotated = Pose::new(angle, current.translate_x_mm, current.translate_y_mm);
     if context.valid_ring_at(&rotated).is_some() {
-        return compact_bottom_left(context, &rotated, 4);
+        return compact_bottom_left_impl(context, &rotated, 4);
     }
     // Vị trí cũ không còn dùng được sau khi xoay: nhấc lên và sang phải một quãng bằng
     // đường kính chi tiết, rồi nén lại. Quãng nhấc suy từ hình học, không phải hằng số.
     let lift = context
-        .part
+        .part()
         .bounds
         .diagonal_mm()
-        .max(context.gap_mm * 2.0)
+        .max(context.lift_clearance_mm() * 2.0)
         .max(1.0);
     for offset in [(0.0, lift), (lift, 0.0), (lift, lift)] {
         let lifted = Pose::new(
@@ -288,7 +415,7 @@ pub fn try_rotate_and_relocate(
             current.translate_y_mm + offset.1,
         );
         if context.valid_ring_at(&lifted).is_some() {
-            return compact_bottom_left(context, &lifted, 4);
+            return compact_bottom_left_impl(context, &lifted, 4);
         }
     }
     None
@@ -317,6 +444,25 @@ pub fn refine_pose(
     effort: SearchEffort,
     control: &RunControl,
 ) -> Result<Option<RefinedPose>, Interrupt> {
+    refine_pose_impl(context, start, effort, control)
+}
+
+pub fn refine_pose_production(
+    context: &ProductionRefineContext<'_>,
+    start: &Pose,
+    effort: SearchEffort,
+    control: &RunControl,
+) -> Result<Option<RefinedPose>, Interrupt> {
+    refine_pose_impl(context, start, effort, control)
+}
+
+fn refine_pose_impl<C: RefineGeometryContext>(
+    context: &C,
+    start: &Pose,
+    effort: SearchEffort,
+    control: &RunControl,
+) -> Result<Option<RefinedPose>, Interrupt> {
+    let tol = context.tolerance();
     let Some(start_ring) = context.valid_ring_at(start) else {
         return Ok(None);
     };
@@ -332,12 +478,12 @@ pub fn refine_pose(
     };
 
     // Nén ngay từ đầu: đó là nước đi rẻ nhất và gần như luôn cải thiện.
-    if let Some(compacted) = compact_bottom_left(context, &best.pose, 6) {
+    if let Some(compacted) = compact_bottom_left_impl(context, &best.pose, 6) {
         charge_evaluation(&mut best, control);
         accept_if_better(context, &mut best, compacted);
     }
 
-    let can_rotate = context.part.rotation_domain.is_continuous();
+    let can_rotate = context.part().rotation_domain.is_continuous();
     let mut angle_step = REFINE_INITIAL_ANGLE_STEP_DEG;
     let mut translation_step = REFINE_INITIAL_TRANSLATION_STEP_MM;
 
@@ -348,7 +494,7 @@ pub fn refine_pose(
         // ── Nước đi xoay: mỗi lần đổi góc đều giải lại vị trí ──
         if can_rotate {
             for delta in [angle_step, -angle_step] {
-                if let Some(candidate) = try_rotate_and_relocate(context, &best.pose, delta) {
+                if let Some(candidate) = try_rotate_and_relocate_impl(context, &best.pose, delta) {
                     charge_evaluation(&mut best, control);
                     if accept_if_better(context, &mut best, candidate) {
                         improved = true;
@@ -381,15 +527,15 @@ pub fn refine_pose(
             );
             charge_evaluation(&mut best, control);
             if context.valid_ring_at(&stepped).is_some() {
-                if let Some(compacted) = compact_bottom_left(context, &stepped, 4) {
+                if let Some(compacted) = compact_bottom_left_impl(context, &stepped, 4) {
                     if accept_if_better(context, &mut best, compacted) {
                         improved = true;
                     }
                 }
             } else if let Some(slid) =
-                slide_to_contact(context, &best.pose, direction, translation_step)
+                slide_to_contact_impl(context, &best.pose, direction, translation_step)
             {
-                if let Some(compacted) = compact_bottom_left(context, &slid, 4) {
+                if let Some(compacted) = compact_bottom_left_impl(context, &slid, 4) {
                     if accept_if_better(context, &mut best, compacted) {
                         improved = true;
                     }
@@ -401,7 +547,7 @@ pub fn refine_pose(
             // Không cải thiện ⇒ soi kỹ hơn. Bước tiến tới 0 nên pose cuối là liên tục.
             angle_step *= 0.5;
             translation_step *= 0.5;
-            if angle_step <= context.tol.angular_deg && translation_step <= context.tol.linear_mm {
+            if angle_step <= tol.angular_deg && translation_step <= tol.linear_mm {
                 break;
             }
         }
@@ -427,7 +573,11 @@ fn charge_evaluation(best: &mut RefinedPose, control: &RunControl) {
 }
 
 /// Nhận nước đi nếu nó **hợp lệ** và **tốt hơn**. Trả `true` khi đã nhận.
-fn accept_if_better(context: &RefineContext<'_>, best: &mut RefinedPose, candidate: Pose) -> bool {
+fn accept_if_better<C: RefineGeometryContext>(
+    context: &C,
+    best: &mut RefinedPose,
+    candidate: Pose,
+) -> bool {
     let Some(ring) = context.valid_ring_at(&candidate) else {
         return false;
     };

@@ -21,12 +21,14 @@ use imposition_core::mixed_nesting::control::{
 };
 use imposition_core::mixed_nesting::model::{
     canonicalize_angle_deg, format_instance_id, is_canonical_angle_deg, AngleArcDeg,
-    ContractErrorCode, ManifestStatus, MixedNestingRequest, OrientationPolicy, PartSpec,
-    PlacementManifest, PointMm, Pose, Profile, Reflection, RotationConstraint, RotationDomainKind,
-    SheetMarginMm, SheetSpec, TerminationReason, Tolerance, UnplacedReason,
+    AxisAlignedBoundsSpec, ClearanceSpec, ContractErrorCode, FixedObstacleKind, FixedObstacleSpec,
+    GroupingIntent, LayoutAlignment, LayoutIntent, ManifestStatus, MixedNestingRequest,
+    OrientationPolicy, PartPlacementZoneSpec, PartSpec, PlacementManifest, PointMm, Pose,
+    ProductionContractV1, Profile, Reflection, RotationConstraint, RotationDomainKind,
+    SheetAxisClearanceMm, SheetMarginMm, SheetSpec, TerminationReason, Tolerance, UnplacedReason,
     MIXED_NESTING_CANONICALIZATION_VERSION, MIXED_NESTING_ENGINE_VERSION,
-    MIXED_NESTING_PROTOCOL_VERSION, MIXED_NESTING_TOLERANCE_VERSION,
-    MIXED_NESTING_VALIDATOR_VERSION,
+    MIXED_NESTING_PRODUCTION_SCHEMA_VERSION, MIXED_NESTING_PROTOCOL_VERSION,
+    MIXED_NESTING_TOLERANCE_VERSION, MIXED_NESTING_VALIDATOR_VERSION,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,7 +37,7 @@ use imposition_core::mixed_nesting::model::{
 
 /// Request tối thiểu — sao đúng ví dụ JSON trong kế hoạch §9.2.
 const REQUEST_TOI_THIEU: &str = r#"{
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "seed": 20260826,
   "profile": "balanced",
   "timeBudgetMs": 30000,
@@ -63,11 +65,63 @@ const REQUEST_TOI_THIEU: &str = r#"{
 
 /// Manifest — sao đúng ví dụ JSON trong kế hoạch §9.3.
 const MANIFEST_MAU: &str = r#"{
-  "protocolVersion": 1,
-  "engineVersion": "0.1.0",
+  "schemaVersion": 1,
+  "manifestId": "uuid",
+  "protocolVersion": 2,
+  "engineVersion": "0.3.0",
   "jobId": "uuid",
+  "requestRevision": 7,
+  "inputHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "layoutFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "layoutIntent": "quantity_fulfillment",
   "seed": 20260826,
   "status": "completed",
+  "provenance": {
+    "nativeBuildIdentity": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "productionSchemaVersion": 3,
+    "toleranceVersion": 1,
+    "canonicalizationVersion": 1,
+    "normalizeRuleVersion": 2,
+    "referencePointRuleVersion": 1,
+    "kernelVersion": 1,
+    "nfpRuleVersion": 1,
+    "scoreVersion": 2,
+    "solverVersion": 3,
+    "multiStartVersion": 3,
+    "baselineVersion": 4,
+    "candidateRuleVersion": 1,
+    "refineRuleVersion": 1
+  },
+  "search": {
+    "budget": {
+      "trialCount": 12,
+      "orientationProposalsPerPart": 32,
+      "beamWidth": 8,
+      "refinementRounds": 6,
+      "multiStartRestarts": 3,
+      "evaluationBudget": 100000,
+      "timeBudgetMs": 30000
+    },
+    "trialsRun": 12,
+    "trialsRejected": 0,
+    "selectedCandidate": { "kind": "smart_trial", "trialId": 4 },
+    "baselineScore": {
+      "invalidCount": 0,
+      "primaryPenalty": 0,
+      "sheetCount": 2,
+      "lastSheetUsedAreaFixed": 200000,
+      "wastedWithinEnvelopeFixed": 50000,
+      "scoreVersion": 2
+    },
+    "selectedScore": {
+      "invalidCount": 0,
+      "primaryPenalty": 0,
+      "sheetCount": 2,
+      "lastSheetUsedAreaFixed": 180000,
+      "wastedWithinEnvelopeFixed": 40000,
+      "scoreVersion": 2
+    }
+  },
   "placements": [
     {
       "instanceId": "part-a#0001",
@@ -95,7 +149,7 @@ const MANIFEST_MAU: &str = r#"{
   },
   "validation": {
     "valid": true,
-    "validatorVersion": 1
+    "validatorVersion": 2
   }
 }"#;
 
@@ -145,13 +199,79 @@ fn request_dung_tay(parts: Vec<PartSpec>) -> MixedNestingRequest {
             max_sheets: 20,
         },
         gap_mm: 3.0,
+        layout_intent: Default::default(),
         orientation_policy: OrientationPolicy {
             default_rotation: RotationConstraint::Free,
             reflection: Reflection::Forbidden,
         },
         parts,
         job_id: None,
+        production_contract: None,
     }
+}
+
+fn hash_mau(byte: char) -> String {
+    format!(
+        "sha256:{}",
+        std::iter::repeat(byte).take(64).collect::<String>()
+    )
+}
+
+fn production_contract_mau() -> ProductionContractV1 {
+    ProductionContractV1 {
+        schema_version: MIXED_NESTING_PRODUCTION_SCHEMA_VERSION,
+        request_revision: 7,
+        input_hash: hash_mau('a'),
+        layout_fingerprint: hash_mau('b'),
+        alignment: LayoutAlignment::Center,
+        grouping_intent: GroupingIntent::FreeGang,
+        placement_zones: Vec::new(),
+        clearance: ClearanceSpec {
+            part_to_part: SheetAxisClearanceMm {
+                x_mm: 2.0,
+                y_mm: 3.0,
+            },
+            part_to_sheet_edge: SheetAxisClearanceMm {
+                x_mm: 4.0,
+                y_mm: 5.0,
+            },
+            part_to_obstacle: SheetAxisClearanceMm {
+                x_mm: 6.0,
+                y_mm: 7.0,
+            },
+        },
+        fixed_obstacles: vec![FixedObstacleSpec {
+            obstacle_id: "boong-01".to_string(),
+            kind: FixedObstacleKind::Gripper,
+            outer: hinh_chu_nhat(30.0, 12.0),
+        }],
+    }
+}
+
+fn placement_zone_mau(part_id: &str, min_y_mm: f64, max_y_mm: f64) -> PartPlacementZoneSpec {
+    PartPlacementZoneSpec {
+        part_id: part_id.to_string(),
+        bounds: AxisAlignedBoundsSpec {
+            min_x_mm: 10.0,
+            min_y_mm,
+            max_x_mm: 690.0,
+            max_y_mm,
+        },
+    }
+}
+
+fn request_maximize_area_hop_le() -> MixedNestingRequest {
+    let mut request = request_dung_tay(vec![part_mau("part-a"), part_mau("part-b")]);
+    request.gap_mm = 0.0;
+    let mut production = production_contract_mau();
+    production.grouping_intent = GroupingIntent::MaximizeArea;
+    // Cố ý đảo thứ tự mảng: association phải theo partId, không theo vị trí JSON.
+    production.placement_zones = vec![
+        placement_zone_mau("part-b", 10.0, 500.0),
+        placement_zone_mau("part-a", 500.0, 990.0),
+    ];
+    request.production_contract = Some(production);
+    request
 }
 
 /// Parse rồi validate. Trả `Err(mô tả)` cho cả hai loại thất bại để test chỉ cần
@@ -181,11 +301,12 @@ fn them_khoa_goc(json: &str, doan_them: &str) -> String {
 
 #[test]
 fn version_hop_dong_duoc_chot() {
-    assert_eq!(MIXED_NESTING_PROTOCOL_VERSION, 1);
-    assert_eq!(MIXED_NESTING_ENGINE_VERSION, "0.1.0");
-    assert_eq!(MIXED_NESTING_VALIDATOR_VERSION, 1);
+    assert_eq!(MIXED_NESTING_PROTOCOL_VERSION, 2);
+    assert_eq!(MIXED_NESTING_ENGINE_VERSION, "0.3.0");
+    assert_eq!(MIXED_NESTING_VALIDATOR_VERSION, 2);
     assert_eq!(MIXED_NESTING_TOLERANCE_VERSION, 1);
     assert_eq!(MIXED_NESTING_CANONICALIZATION_VERSION, 1);
+    assert_eq!(MIXED_NESTING_PRODUCTION_SCHEMA_VERSION, 3);
 
     // Tolerance có version và KHÔNG đến từ client.
     let tol = Tolerance::v1();
@@ -198,7 +319,7 @@ fn version_hop_dong_duoc_chot() {
 fn request_toi_thieu_parse_dung_hop_dong() {
     let request = parse_roi_validate(REQUEST_TOI_THIEU).expect("request mẫu phải hợp lệ");
 
-    assert_eq!(request.protocol_version, 1);
+    assert_eq!(request.protocol_version, 2);
     assert_eq!(request.seed, 20_260_826);
     assert_eq!(request.profile, Profile::Balanced);
     assert_eq!(request.time_budget_ms, Some(30_000));
@@ -212,6 +333,9 @@ fn request_toi_thieu_parse_dung_hop_dong() {
 
     // Server-owned: request công khai không mang jobId.
     assert!(request.job_id.is_none());
+    // Payload lab/legacy cũ vẫn parse được; production adapter mới là nơi bắt buộc
+    // gắn identity + clearance + obstacles.
+    assert!(request.production_contract.is_none());
 
     // Round-trip qua JSON không đổi giá trị.
     let lai = serde_json::to_string(&request).unwrap();
@@ -220,10 +344,182 @@ fn request_toi_thieu_parse_dung_hop_dong() {
 }
 
 #[test]
+fn production_contract_round_trip_giu_gap_xy_va_obstacle_identity() {
+    let mut request = request_hop_le();
+    request.gap_mm = 0.0;
+    request.production_contract = Some(production_contract_mau());
+    request
+        .validate()
+        .expect("production contract mẫu phải hợp lệ");
+
+    let json = serde_json::to_value(&request).unwrap();
+    let production = &json["productionContract"];
+    assert_eq!(
+        production["schemaVersion"],
+        MIXED_NESTING_PRODUCTION_SCHEMA_VERSION
+    );
+    assert_eq!(production["requestRevision"], 7);
+    assert_eq!(production["groupingIntent"], "free_gang");
+    assert_eq!(production["placementZones"], serde_json::json!([]));
+    assert_eq!(production["clearance"]["partToPart"]["xMm"], 2.0);
+    assert_eq!(production["clearance"]["partToPart"]["yMm"], 3.0);
+    assert_eq!(production["fixedObstacles"][0]["kind"], "gripper");
+    assert_eq!(production["fixedObstacles"][0]["obstacleId"], "boong-01");
+
+    let round_trip: MixedNestingRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(round_trip, request);
+}
+
+#[test]
+fn maximize_area_round_trip_giu_partition_theo_part_id() {
+    let request = request_maximize_area_hop_le();
+    request
+        .validate()
+        .expect("partition ngang bằng diện tích phải hợp lệ");
+
+    let json = serde_json::to_value(&request).unwrap();
+    let production = &json["productionContract"];
+    assert_eq!(production["groupingIntent"], "maximize_area");
+    assert_eq!(production["placementZones"][0]["partId"], "part-b");
+    assert_eq!(production["placementZones"][0]["bounds"]["minYmm"], 10.0);
+    assert_eq!(production["placementZones"][1]["partId"], "part-a");
+    assert_eq!(production["placementZones"][1]["bounds"]["maxYmm"], 990.0);
+
+    let round_trip: MixedNestingRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(round_trip, request);
+}
+
+#[test]
+fn grouping_intent_tu_choi_zone_sai_contract() {
+    let mut free_gang = request_hop_le();
+    free_gang.gap_mm = 0.0;
+    let mut production = production_contract_mau();
+    production.placement_zones = vec![placement_zone_mau("part-a", 10.0, 990.0)];
+    free_gang.production_contract = Some(production);
+    assert!(free_gang
+        .validate()
+        .expect_err("free gang không được mang zone")
+        .has(ContractErrorCode::PlacementZonesForbidden));
+
+    let mut missing = request_maximize_area_hop_le();
+    missing
+        .production_contract
+        .as_mut()
+        .unwrap()
+        .placement_zones
+        .pop();
+    assert!(missing
+        .validate()
+        .expect_err("maximize area phải đủ một zone cho mỗi part")
+        .has(ContractErrorCode::PlacementZoneMissingPart));
+
+    let mut duplicate = request_maximize_area_hop_le();
+    duplicate
+        .production_contract
+        .as_mut()
+        .unwrap()
+        .placement_zones[0]
+        .part_id = "part-a".to_string();
+    let duplicate_errors = duplicate
+        .validate()
+        .expect_err("partId trùng trong zone phải bị chặn");
+    assert!(duplicate_errors.has(ContractErrorCode::PlacementZoneDuplicatePart));
+    assert!(duplicate_errors.has(ContractErrorCode::PlacementZoneMissingPart));
+
+    let mut outside = request_maximize_area_hop_le();
+    outside
+        .production_contract
+        .as_mut()
+        .unwrap()
+        .placement_zones[0]
+        .bounds
+        .min_x_mm = 9.0;
+    assert!(outside
+        .validate()
+        .expect_err("zone ngoài vùng sau lề phải bị chặn")
+        .has(ContractErrorCode::PlacementZoneOutsideUsableArea));
+
+    let mut partition = request_maximize_area_hop_le();
+    partition
+        .production_contract
+        .as_mut()
+        .unwrap()
+        .placement_zones[0]
+        .bounds
+        .min_y_mm = 11.0;
+    assert!(partition
+        .validate()
+        .expect_err("các dải không phủ kín hoặc không bằng nhau phải bị chặn")
+        .has(ContractErrorCode::PlacementZonePartitionInvalid));
+}
+
+#[test]
+fn production_contract_bat_buoc_job_id_o_preflight_server_owned() {
+    let mut request = request_hop_le();
+    request.gap_mm = 0.0;
+    request.production_contract = Some(production_contract_mau());
+
+    let missing = request
+        .validate_server_owned_fields()
+        .expect_err("production request chưa có jobId phải bị bridge chặn");
+    assert!(missing.has(ContractErrorCode::ProductionJobIdRequired));
+    assert!(missing
+        .items()
+        .iter()
+        .any(|item| item.path == "jobId" && item.code.as_str() == "PRODUCTION_JOB_ID_REQUIRED"));
+
+    request.job_id = Some("".to_string());
+    assert!(request
+        .validate_server_owned_fields()
+        .expect_err("jobId rỗng phải bị từ chối")
+        .has(ContractErrorCode::ProductionJobIdRequired));
+
+    request.job_id = Some("job-production-0001".to_string());
+    request
+        .validate_server_owned_fields()
+        .expect("jobId server-owned hợp lệ phải qua preflight");
+}
+
+#[test]
+fn production_contract_tu_choi_hai_nguon_gap_va_identity_khong_canonical() {
+    let mut request = request_hop_le();
+    request.production_contract = Some(production_contract_mau());
+    let errors = request
+        .validate()
+        .expect_err("gapMm cũ không được song song clearance mới");
+    assert!(errors.has(ContractErrorCode::LegacyGapWithProductionContract));
+
+    request.gap_mm = 0.0;
+    request.production_contract.as_mut().unwrap().input_hash = "sha256:ABC".to_string();
+    let errors = request
+        .validate()
+        .expect_err("hash không canonical phải bị chặn");
+    assert!(errors.has(ContractErrorCode::IdentityHashInvalid));
+}
+
+#[test]
+fn production_contract_tu_choi_clearance_am_va_obstacle_id_trung() {
+    let mut request = request_hop_le();
+    request.gap_mm = 0.0;
+    let mut production = production_contract_mau();
+    production.clearance.part_to_obstacle.y_mm = -0.01;
+    production
+        .fixed_obstacles
+        .push(production.fixed_obstacles[0].clone());
+    request.production_contract = Some(production);
+
+    let errors = request
+        .validate()
+        .expect_err("constraint production xấu phải bị chặn");
+    assert!(errors.has(ContractErrorCode::ClearanceOutOfRange));
+    assert!(errors.has(ContractErrorCode::DuplicateObstacleId));
+}
+
+#[test]
 fn reject_protocol_version_sai() {
-    for version in ["0", "2", "999"] {
+    for version in ["0", "1", "999"] {
         let json = REQUEST_TOI_THIEU.replace(
-            "\"protocolVersion\": 1",
+            "\"protocolVersion\": 2",
             &format!("\"protocolVersion\": {version}"),
         );
         let loi = parse_roi_validate(&json).expect_err("protocol lệch phải bị từ chối");
@@ -679,7 +975,23 @@ fn manifest_round_trip_giu_du_do_chinh_xac() {
     let manifest: PlacementManifest =
         serde_json::from_str(MANIFEST_MAU).expect("manifest mẫu phải parse được");
 
-    assert_eq!(manifest.protocol_version, 1);
+    assert_eq!(manifest.protocol_version, 2);
+    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(manifest.manifest_id, manifest.job_id);
+    assert_eq!(manifest.request_revision, Some(7));
+    assert_eq!(
+        manifest.input_hash.as_deref(),
+        Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        manifest.layout_fingerprint.as_deref(),
+        Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
+    assert_eq!(manifest.layout_intent, LayoutIntent::QuantityFulfillment);
+    assert_eq!(manifest.provenance.solver_version, 3);
+    assert_eq!(manifest.provenance.baseline_version, 4);
+    assert_eq!(manifest.search.trials_run, 12);
+    assert_eq!(manifest.search.selected_score.score_version, 2);
     assert_eq!(manifest.engine_version, MIXED_NESTING_ENGINE_VERSION);
     assert_eq!(manifest.status, ManifestStatus::Completed);
     assert_eq!(manifest.placements.len(), 1);
@@ -1191,4 +1503,145 @@ fn p1_chua_co_solver() {
     let manifest: PlacementManifest = serde_json::from_str(MANIFEST_MAU).unwrap();
     assert_eq!(manifest.stats.sheet_count, 2);
     // Không tồn tại đường nối giữa hai đầu này ở P1 — solver là việc của P3/P4.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  10. layoutIntent — CHẶNG A LÔ 1 (2026-08-27)
+//
+//  Nguồn: docs/BAO_CAO_LO_0_NESTING_TU_DO_TEM_CNC_2026-08-27.md §7 (LO0-4, LO0-9).
+//
+//  Lô này chỉ chốt contract/validator, chưa sửa vòng solver:
+//    a. payload cũ thiếu `layoutIntent` + có quantity vẫn là quantity fulfillment;
+//    b. quantity fulfillment bắt buộc quantity dương;
+//    c. autofill bắt buộc quantity vắng mặt và đúng một tờ;
+//    d. representation `0` trong raw core chỉ là absence và không đi ra wire.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn json_autofill_khong_quantity() -> String {
+    let mot_to = REQUEST_TOI_THIEU
+        .replace("\"maxSheets\": 20", "\"maxSheets\": 1")
+        .replace("\"quantity\": 12,", "");
+    them_khoa_goc(&mot_to, "\"layoutIntent\": \"autofill_single_sheet\"")
+}
+
+#[test]
+fn layout_intent_vang_mat_thi_la_quantity_fulfillment() {
+    // Payload cũ của công cụ standalone không khai `layoutIntent`. Mặc định phải là ý
+    // định CŨ, nếu không thì thêm một trường tuỳ chọn lại lặng lẽ đổi hành vi đã ship.
+    let request = request_hop_le();
+    assert_eq!(request.layout_intent, LayoutIntent::QuantityFulfillment);
+    assert!(request.layout_intent.quantity_la_yeu_cau());
+    assert_eq!(
+        request.parts[0]
+            .requested_quantity()
+            .map(|value| value.get()),
+        Some(12)
+    );
+    assert!(request.validate().is_ok());
+}
+
+#[test]
+fn autofill_round_trip_vang_quantity_tren_day_truyen() {
+    let json = json_autofill_khong_quantity();
+    let request: MixedNestingRequest =
+        serde_json::from_str(&json).expect("payload có layoutIntent phải parse được");
+    assert_eq!(request.layout_intent, LayoutIntent::AutofillSingleSheet);
+    assert!(!request.layout_intent.quantity_la_yeu_cau());
+    assert_eq!(request.parts[0].requested_quantity(), None);
+    assert_eq!(request.total_instances(), 0);
+    assert!(request.validate().is_ok());
+
+    let lai = serde_json::to_string(&request).unwrap();
+    assert!(
+        lai.contains("\"layoutIntent\":\"autofill_single_sheet\""),
+        "tên trên dây truyền phải là snake_case: {lai}"
+    );
+    assert!(
+        !lai.contains("\"quantity\""),
+        "absence nội bộ không được serialize thành quantity giả: {lai}"
+    );
+}
+
+#[test]
+fn quantity_fulfillment_thieu_quantity_bi_tu_choi() {
+    let json = REQUEST_TOI_THIEU.replace("\"quantity\": 12,", "");
+    let request: MixedNestingRequest =
+        serde_json::from_str(&json).expect("field quantity vắng phải parse được vào raw core");
+    assert_eq!(request.layout_intent, LayoutIntent::QuantityFulfillment);
+    assert_eq!(request.parts[0].requested_quantity(), None);
+    let errors = request
+        .validate()
+        .expect_err("quantity fulfillment phải có quantity dương");
+    assert!(
+        errors.has(ContractErrorCode::QuantityOutOfRange),
+        "phải báo quantity bắt buộc: {errors}"
+    );
+}
+
+#[test]
+fn autofill_co_quantity_bi_tu_choi() {
+    let mot_to = REQUEST_TOI_THIEU.replace("\"maxSheets\": 20", "\"maxSheets\": 1");
+    let json = them_khoa_goc(&mot_to, "\"layoutIntent\": \"autofill_single_sheet\"");
+    let request: MixedNestingRequest =
+        serde_json::from_str(&json).expect("quantity dương vẫn parse để validate chéo intent");
+    let errors = request
+        .validate()
+        .expect_err("autofill phải bỏ hẳn quantity");
+    assert!(
+        errors.has(ContractErrorCode::AutofillQuantityMustBeAbsent),
+        "phải báo đúng lỗi quantity không thuộc autofill: {errors}"
+    );
+    assert_eq!(
+        ContractErrorCode::AutofillQuantityMustBeAbsent.as_str(),
+        "AUTOFILL_QUANTITY_MUST_BE_ABSENT"
+    );
+}
+
+#[test]
+fn quantity_hien_dien_bang_khong_bi_tu_choi_ngay_tren_wire() {
+    let json = REQUEST_TOI_THIEU.replace("\"quantity\": 12", "\"quantity\": 0");
+    assert!(
+        serde_json::from_str::<MixedNestingRequest>(&json).is_err(),
+        "quantity=0 hiện diện không được đánh đồng với field vắng"
+    );
+}
+
+#[test]
+fn autofill_khai_nhieu_hon_mot_to_bi_tu_choi() {
+    // Không tự ép maxSheets = 1: request và hành vi phải có cùng một nguồn chân lý.
+    let mut request: MixedNestingRequest =
+        serde_json::from_str(&json_autofill_khong_quantity()).unwrap();
+    request.sheet.max_sheets = 4;
+    let errors = request.validate().expect_err("phải bị từ chối");
+    assert!(
+        errors.has(ContractErrorCode::AutofillRequiresSingleSheet),
+        "phải có mã AUTOFILL_REQUIRES_SINGLE_SHEET: {errors}"
+    );
+}
+
+#[test]
+fn autofill_part_qua_nho_vuot_capacity_bound_bi_tu_choi() {
+    let mut request: MixedNestingRequest =
+        serde_json::from_str(&json_autofill_khong_quantity()).unwrap();
+    request.parts[0].outer = hinh_chu_nhat(0.001, 0.001);
+    let errors = request
+        .validate()
+        .expect_err("cận trên số instance phải bị protocol chặn");
+    assert!(
+        errors.has(ContractErrorCode::AutofillCapacityBoundTooLarge),
+        "phải báo đúng protocol bound, không dùng quantity giả: {errors}"
+    );
+    assert_eq!(
+        ContractErrorCode::AutofillCapacityBoundTooLarge.as_str(),
+        "AUTOFILL_CAPACITY_BOUND_TOO_LARGE"
+    );
+}
+
+#[test]
+fn sheet_full_serialize_dung_ten_snake_case() {
+    // Tên này đi vào manifest và vào log xưởng — đổi là breaking change.
+    let json = serde_json::to_string(&TerminationReason::SheetFull).unwrap();
+    assert_eq!(json, "\"sheet_full\"");
+    let lai: TerminationReason = serde_json::from_str("\"sheet_full\"").unwrap();
+    assert_eq!(lai, TerminationReason::SheetFull);
 }

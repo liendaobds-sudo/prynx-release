@@ -118,11 +118,7 @@ fn axial(extend: Option<[bool; 2]>) -> Dictionary {
     d
 }
 
-fn render_with_options(
-    content: &str,
-    resources: Dictionary,
-    options: RenderOptions,
-) -> PageRender {
+fn render_with_options(content: &str, resources: Dictionary, options: RenderOptions) -> PageRender {
     let doc = build(content, resources);
     render_page(&doc, 1, 72.0, PageBox::Crop, options).expect("render phải thành công")
 }
@@ -258,10 +254,12 @@ fn output_preview_smooth_shades_filter_keeps_gradient_and_rejects_other_objects(
     let smooth = render_with_options(
         "/Sh0 sh",
         shading_res(axial(None)),
-        RenderOptions::softproof()
-            .with_output_preview_filter(OutputPreviewFilter::SmoothShades),
+        RenderOptions::softproof().with_output_preview_filter(OutputPreviewFilter::SmoothShades),
     );
-    assert!(smooth.buffer.max_tac_percent() > 90.0, "Show=Smooth Shades phải giữ gradient");
+    assert!(
+        smooth.buffer.max_tac_percent() > 90.0,
+        "Show=Smooth Shades phải giữ gradient"
+    );
 
     for filter in [
         OutputPreviewFilter::Text,
@@ -273,7 +271,11 @@ fn output_preview_smooth_shades_filter_keeps_gradient_and_rejects_other_objects(
             shading_res(axial(None)),
             RenderOptions::softproof().with_output_preview_filter(filter),
         );
-        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?} không được giữ gradient");
+        assert_eq!(
+            hidden.buffer.max_tac_percent(),
+            0.0,
+            "{filter:?} không được giữ gradient"
+        );
     }
 }
 

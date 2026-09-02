@@ -32,6 +32,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::num::NonZeroU32;
 
 use serde::de::{Deserializer, Error as DeError};
 use serde::{Deserialize, Serialize};
@@ -42,14 +43,14 @@ use serde::{Deserialize, Serialize};
 
 /// Phiên bản protocol JSON giữa sidecar và engine. Request khai báo version khác
 /// giá trị này bị từ chối — không có nhánh "đoán ý" theo hình dạng payload.
-pub const MIXED_NESTING_PROTOCOL_VERSION: u32 = 1;
+pub const MIXED_NESTING_PROTOCOL_VERSION: u32 = 2;
 
 /// Phiên bản engine lồng ghép. Cố ý TÁCH khỏi version crate `imposition_core`:
 /// đây là hợp đồng của riêng `mixed_nesting`, dùng để so provenance của manifest.
-pub const MIXED_NESTING_ENGINE_VERSION: &str = "0.1.0";
+pub const MIXED_NESTING_ENGINE_VERSION: &str = "0.3.0";
 
 /// Phiên bản final validator (ghi vào `manifest.validation.validatorVersion`).
-pub const MIXED_NESTING_VALIDATOR_VERSION: u32 = 1;
+pub const MIXED_NESTING_VALIDATOR_VERSION: u32 = 2;
 
 /// Phiên bản bộ tolerance tuyến tính/góc. Đổi số dung sai là đổi hợp đồng ⇒ phải
 /// tăng version này để manifest cũ không bị đọc sai.
@@ -85,6 +86,12 @@ pub const MAX_PART_ID_LEN: usize = 128;
 pub const MAX_ROTATION_ANGLES: usize = 4_096;
 /// Số cung tối đa trong `ranges { arcs }`.
 pub const MAX_ROTATION_ARCS: usize = 1_024;
+/// Số vùng cấm cố định tối đa trong production contract.
+pub const MAX_FIXED_OBSTACLES: usize = 4_096;
+/// Độ dài tối đa của `obstacleId`.
+pub const MAX_OBSTACLE_ID_LEN: usize = 128;
+/// Độ dài tối đa của job ID server-owned.
+pub const MAX_JOB_ID_LEN: usize = 128;
 /// Trần `timeBudgetMs` (24 giờ) — chặn deadline vô hạn thực tế.
 pub const MAX_TIME_BUDGET_MS: u64 = 24 * 60 * 60 * 1_000;
 /// Số lỗi tối đa gom lại trong một lần validate (tránh phình bộ nhớ khi payload xấu).
@@ -97,6 +104,19 @@ pub const MAX_REPORTED_ERRORS: usize = 64;
 /// Dung sai tuyến tính mặc định (mm). Nhỏ hơn mọi sai số cơ khí của dao bế nhưng
 /// vẫn cao hơn nhiễu biểu diễn `f64` ở thang mm của tờ in.
 pub const DEFAULT_LINEAR_TOL_MM: f64 = 1e-6;
+
+/// Tỉ lệ dung sai của luật lồi **nghiêm** mà phép Minkowski nhanh yêu cầu.
+///
+/// FIX (audit 2026-08-28 §NFP-CONVEX): trước đây `kernel::minkowski_convex` viết cứng
+/// `1e-9` còn `geometry::convex_decompose` nhận lồi theo `Tolerance::linear_mm` (mặc
+/// định `1e-6`). Chênh **1000×** nên mảnh có đỉnh lõm trong dải `[1e-9·P, 1e-6·P]` qua
+/// được phân rã rồi bị kernel chặn bằng `KERNEL_NOT_CONVEX` — người dùng thấy "không
+/// bình được trang" trên khuôn **gần lồi**, trong khi khuôn lõm rõ lại chạy tốt.
+///
+/// Hằng này là luật duy nhất cho câu hỏi "lồi đủ để Minkowski chưa". Đặt ở `model` vì
+/// `geometry` cố ý **không** phụ thuộc `kernel` (xem doc đầu `geometry.rs`), nên hai bên
+/// chỉ có thể dùng chung qua module nền này.
+pub const CONVEX_STRICT_TOL_RATIO: f64 = 1e-9;
 
 /// Dung sai góc mặc định (degree). Cao hơn sai số round-trip degree↔radian (~1e-12°)
 /// vài bậc, nên canonicalization ổn định mà không "ăn" góc thật.
@@ -474,6 +494,61 @@ pub struct OrientationPolicy {
     pub reflection: Reflection,
 }
 
+/// Ý định bố cục — quyết định request có mang **số lượng cần giao** hay không.
+///
+/// Đây là hai bài toán khác nhau về nghiệp vụ, không phải hai tuỳ chọn của một bài toán:
+///
+/// - `QuantityFulfillment`: thợ in đặt N con. `PartSpec.quantity` là **yêu cầu**. Thiếu
+///   một con là lỗi sản xuất, nên nó phải vào `unplaced` kèm lý do.
+/// - `AutofillSingleSheet`: thợ in muốn "lấp đầy một tờ", chưa có số lượng. Trường
+///   `quantity` phải **vắng mặt** trên wire; core biểu diễn sự vắng mặt tạm thời bằng
+///   `0`, tuyệt đối không được dùng số này làm trần tìm kiếm.
+///
+/// [CHẶNG-A LÔ 1 2026-08-27] Vì sao phải có trường này: đo ở Lô 0 cho thấy engine không
+/// phân biệt được hai ý định, nên đường sản xuất buộc phải bơm một `quantity` bịa cho ca
+/// autofill — đúng thứ kế hoạch §5 cấm ("Không tạo quantity giả cho autofill"). Và
+/// `terminationReason` trả về `max_sheets_reached` cho một ca autofill hoàn toàn thành
+/// công, đọc như thất bại.
+///
+/// Mặc định là `QuantityFulfillment` để payload cũ (công cụ Bình lồng ghép tự do
+/// standalone) giữ nguyên hành vi từng chữ số.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutIntent {
+    /// Phủ đủ số lượng, rồi giảm số tờ. `quantity` là yêu cầu.
+    #[default]
+    QuantityFulfillment,
+    /// Lấp đầy đúng một tờ, không có quantity đích.
+    ///
+    /// Bắt buộc `sheet.maxSheets == 1`; engine từ chối payload khai khác đi thay vì tự
+    /// sửa, để không có hai nguồn chân lý về "một tờ".
+    AutofillSingleSheet,
+    /// Bình trang một mẫu trên đúng một tờ; ưu tiên quỹ đạo tuần hoàn khi dựng được.
+    ///
+    /// Đây là intent production tường minh, không được suy từ số part hoặc hình học.
+    StepRepeatSingleSheet,
+}
+
+impl LayoutIntent {
+    /// Ý định này có coi `quantity` là yêu cầu phải phủ đủ hay không.
+    pub const fn quantity_la_yeu_cau(self) -> bool {
+        matches!(self, Self::QuantityFulfillment)
+    }
+
+    /// Hai intent không có quantity và cùng chạy solver lấp đầy một tờ.
+    pub const fn is_single_sheet_autofill(self) -> bool {
+        matches!(
+            self,
+            Self::AutofillSingleSheet | Self::StepRepeatSingleSheet
+        )
+    }
+
+    /// Chỉ S&R tường minh mới cho motif tuần hoàn quyền ưu tiên chế bản.
+    pub const fn prefers_periodic_motif(self) -> bool {
+        matches!(self, Self::StepRepeatSingleSheet)
+    }
+}
+
 /// Mức nỗ lực tìm kiếm. **Chỉ đổi work budget**, không đổi miền góc hợp lệ.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -483,6 +558,153 @@ pub enum Profile {
     #[default]
     Balanced,
     Tight,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Production contract — identity + clearance + fixed obstacles
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Phiên bản envelope production nằm trong request protocol hiện hành.
+pub const MIXED_NESTING_PRODUCTION_SCHEMA_VERSION: u32 = 3;
+
+/// Phiên bản schema của placement manifest production.
+///
+/// Tăng hằng số này khi đổi nghĩa hoặc xoá trường. Thêm trường tương thích ngược vẫn
+/// phải được cân nhắc cùng protocol vì frontend/backend cùng đọc manifest này.
+pub const MIXED_NESTING_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+/// Cách đặt **toàn bộ cụm** sau khi solver đã chốt tương quan giữa các chi tiết.
+///
+/// Trục Y của engine hướng lên: `top-*` neo `maxY`, `bottom-*` neo `minY`. Đây là
+/// field server-owned của production contract vì nó đổi pose authoritative, không
+/// phải tuỳ chọn riêng của preview/writer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LayoutAlignment {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    CenterLeft,
+    #[default]
+    Center,
+    CenterRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+/// Khoảng hở theo hai trục **của tờ** sau khi đã áp pose.
+///
+/// Đây không phải khoảng hở theo trục local của chi tiết. Với góc tự do, validator
+/// phải đo/nở dị hướng trong sheet-space; xoay một footprint đã nở trước là sai nghĩa.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SheetAxisClearanceMm {
+    pub x_mm: f64,
+    pub y_mm: f64,
+}
+
+impl SheetAxisClearanceMm {
+    pub const fn zero() -> Self {
+        Self {
+            x_mm: 0.0,
+            y_mm: 0.0,
+        }
+    }
+
+    pub fn max_axis_mm(self) -> f64 {
+        self.x_mm.max(self.y_mm)
+    }
+}
+
+/// Ba lớp khoảng hở không được nhập nhằng với nhau trong đường production.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClearanceSpec {
+    pub part_to_part: SheetAxisClearanceMm,
+    pub part_to_sheet_edge: SheetAxisClearanceMm,
+    pub part_to_obstacle: SheetAxisClearanceMm,
+}
+
+/// Nguồn nghiệp vụ của một vùng cấm cố định — giữ provenance để artifact giải thích
+/// vì sao một vùng trên tờ không được dùng.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixedObstacleKind {
+    Gripper,
+    SheetMark,
+    CncExcludeZone,
+    KeepOut,
+}
+
+/// Vùng cấm đã materialize trong hệ toạ độ tờ, trước khi solver chạy.
+///
+/// Mỗi thành phần multipolygon là một record riêng. V1 coi contour này là vật liệu
+/// đặc; không có đường đặt chi tiết vào lỗ của obstacle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FixedObstacleSpec {
+    pub obstacle_id: String,
+    pub kind: FixedObstacleKind,
+    pub outer: Vec<PointMm>,
+}
+
+/// Envelope server-owned bắt buộc trên đường Tem bế/CNC production.
+///
+/// `None` chỉ giữ tương thích cho công cụ lab cũ. Adapter production phải dựng đầy đủ
+/// envelope này; nhờ vậy identity và hình học không thể được cập nhật lệch nửa chừng.
+/// Ý định chia vùng độc lập với `layoutIntent` số lượng/autofill.
+///
+/// PARITY (audit 2026-08-29 MAP-NEST-04): `maximize_area` bắt buộc có partition
+/// server-owned; không được tái diễn giải thành free gang.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupingIntent {
+    #[default]
+    FreeGang,
+    MaximizeArea,
+}
+
+/// Hình chữ nhật axis-aligned trong hệ tờ (mm, gốc trái-dưới).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AxisAlignedBoundsSpec {
+    #[serde(rename = "minXmm")]
+    pub min_x_mm: f64,
+    #[serde(rename = "minYmm")]
+    pub min_y_mm: f64,
+    #[serde(rename = "maxXmm")]
+    pub max_x_mm: f64,
+    #[serde(rename = "maxYmm")]
+    pub max_y_mm: f64,
+}
+
+/// Vùng đặt server-owned gắn tường minh với một `partId`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PartPlacementZoneSpec {
+    pub part_id: String,
+    pub bounds: AxisAlignedBoundsSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionContractV1 {
+    pub schema_version: u32,
+    pub request_revision: u64,
+    /// Chuỗi canonical `sha256:` + 64 ký tự hex thường.
+    pub input_hash: String,
+    /// Khoá cả input identity, strategy, solver config và version hình học.
+    pub layout_fingerprint: String,
+    /// Căn cụm là một phần của output pose đã ký; Rust áp đúng một lần trước final
+    /// validation, writer không được dịch lại.
+    pub alignment: LayoutAlignment,
+    pub grouping_intent: GroupingIntent,
+    /// Rỗng khi free gang; maximize_area yêu cầu đúng một vùng cho mỗi part.
+    pub placement_zones: Vec<PartPlacementZoneSpec>,
+    pub clearance: ClearanceSpec,
+    #[serde(default)]
+    pub fixed_obstacles: Vec<FixedObstacleSpec>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -498,6 +720,17 @@ pub enum Profile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PartSpec {
     pub part_id: String,
+    /// Số lượng cần giao của `quantity_fulfillment`.
+    ///
+    /// [CHẶNG-A LÔ 1 2026-08-27] `0` chỉ là biểu diễn chuyển tiếp trong raw core cho
+    /// field **vắng mặt** của `autofill_single_sheet`; serialize sẽ bỏ field này. Nó
+    /// không phải số lượng, probe hay cap. Dùng [`Self::requested_quantity`] khi cần đọc
+    /// ngữ nghĩa số lượng.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_quantity_if_present",
+        skip_serializing_if = "quantity_is_absent"
+    )]
     pub quantity: u32,
     /// Contour CUT ngoài, mm. Vòng kín ngầm định (không lặp lại đỉnh đầu ở cuối).
     pub outer: Vec<PointMm>,
@@ -517,10 +750,32 @@ pub struct PartSpec {
 }
 
 impl PartSpec {
+    /// Số lượng được yêu cầu thật sự; `None` nghĩa là request autofill không có target.
+    pub fn requested_quantity(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.quantity)
+    }
+
     /// Tổng số đỉnh của chi tiết (contour ngoài + mọi lỗ).
     pub fn vertex_count(&self) -> usize {
         self.outer.len() + self.holes.iter().map(Vec::len).sum::<usize>()
     }
+}
+
+fn quantity_is_absent(quantity: &u32) -> bool {
+    *quantity == 0
+}
+
+fn deserialize_quantity_if_present<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let quantity = u32::deserialize(deserializer)?;
+    if quantity == 0 {
+        return Err(D::Error::custom(
+            "quantity có mặt thì phải lớn hơn 0; autofill phải bỏ hẳn trường này",
+        ));
+    }
+    Ok(quantity)
 }
 
 /// Request đầy đủ mà engine nhận từ sidecar.
@@ -546,16 +801,70 @@ pub struct MixedNestingRequest {
     /// Khoảng cách tối thiểu giữa hai contour CUT, mm. `0` được phép.
     pub gap_mm: f64,
     pub orientation_policy: OrientationPolicy,
+    /// Vắng mặt ⇒ `quantity_fulfillment` (giữ hành vi payload cũ).
+    #[serde(default)]
+    pub layout_intent: LayoutIntent,
     pub parts: Vec<PartSpec>,
     /// Server-owned. Route công khai KHÔNG nhận từ client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// Server-owned. Vắng mặt chỉ hợp lệ cho đường lab/legacy; production adapter
+    /// Tem bế/CNC phải gắn envelope này trước khi gọi native.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production_contract: Option<ProductionContractV1>,
+}
+
+impl Default for MixedNestingRequest {
+    /// Giá trị nền chỉ dành cho struct-update/builder nội bộ khi hợp đồng được mở rộng.
+    ///
+    /// Request này cố ý **không hợp lệ** vì `parts` rỗng; `Default` không được dùng để
+    /// bỏ qua admission. Lợi ích của nó là các fixture khai rõ toàn bộ trường nghiệp vụ
+    /// hiện tại vẫn tự nhận giá trị an toàn cho extension server-owned thêm về sau.
+    fn default() -> Self {
+        Self {
+            protocol_version: MIXED_NESTING_PROTOCOL_VERSION,
+            seed: 0,
+            profile: Profile::default(),
+            time_budget_ms: None,
+            sheet: SheetSpec {
+                width_mm: 1.0,
+                height_mm: 1.0,
+                margin_mm: SheetMarginMm {
+                    left: 0.0,
+                    right: 0.0,
+                    top: 0.0,
+                    bottom: 0.0,
+                },
+                max_sheets: 1,
+            },
+            gap_mm: 0.0,
+            orientation_policy: OrientationPolicy {
+                default_rotation: RotationConstraint::Free,
+                reflection: Reflection::Forbidden,
+            },
+            layout_intent: LayoutIntent::default(),
+            parts: Vec::new(),
+            job_id: None,
+            production_contract: None,
+        }
+    }
 }
 
 impl MixedNestingRequest {
-    /// Tổng số instance phải xếp.
+    /// Tổng số instance được yêu cầu thật sự.
+    ///
+    /// Autofill không có target nên luôn trả `0`, kể cả một payload autofill sai có
+    /// nhét quantity vào. Validation sẽ báo lỗi riêng cho payload đó.
+    ///
+    /// Vì vậy `MAX_INSTANCES_TOTAL` đếm trực tiếp bài quantity-driven; bài autofill
+    /// được bảo vệ bằng cận sức chứa hình học trong [`Self::validate`]. `0` ở đây
+    /// không phải tuyên bố rằng autofill không tốn tài nguyên.
     pub fn total_instances(&self) -> u64 {
-        self.parts.iter().map(|p| u64::from(p.quantity)).sum()
+        if self.layout_intent.quantity_la_yeu_cau() {
+            self.parts.iter().map(|p| u64::from(p.quantity)).sum()
+        } else {
+            0
+        }
     }
 
     /// Ràng buộc xoay có hiệu lực cho một chi tiết: phân giải `inherit` về policy job.
@@ -606,6 +915,22 @@ impl MixedNestingRequest {
         // ── Tờ vật liệu ──
         validate_sheet(&self.sheet, &tol, &mut errors);
 
+        // ── Ý định bố cục ──
+        // "Một tờ" phải được khai ở ĐÚNG MỘT chỗ. Nếu engine tự ép `maxSheets = 1` thì
+        // request và hành vi lệch nhau, và người đọc manifest không biết trần nào có
+        // hiệu lực. Từ chối rõ ràng còn hơn tự sửa im lặng.
+        if self.layout_intent.is_single_sheet_autofill() && self.sheet.max_sheets != 1 {
+            errors.push(ContractError::new(
+                ContractErrorCode::AutofillRequiresSingleSheet,
+                "sheet.maxSheets",
+                format!(
+                    "layoutIntent 'autofill_single_sheet' yêu cầu sheet.maxSheets = 1 \
+                     (đang khai {}).",
+                    self.sheet.max_sheets
+                ),
+            ));
+        }
+
         // ── Khoảng hở giữa các contour ──
         if !self.gap_mm.is_finite() {
             errors.push(ContractError::new(
@@ -619,6 +944,27 @@ impl MixedNestingRequest {
                 "gapMm",
                 "Khoảng cách giữa các nét cắt không được âm.".to_string(),
             ));
+        }
+
+        if let Some(contract) = &self.production_contract {
+            // Không cho hai nguồn chân lý. `gapMm` là contract legacy; production dùng
+            // ba lớp clearance tường minh trong envelope.
+            if self.gap_mm != 0.0 {
+                errors.push(ContractError::new(
+                    ContractErrorCode::LegacyGapWithProductionContract,
+                    "gapMm",
+                    "Production contract đã khai clearance tường minh nên gapMm phải bằng 0."
+                        .to_string(),
+                ));
+            }
+            validate_production_contract(
+                contract,
+                &self.sheet,
+                &self.parts,
+                self.layout_intent,
+                &tol,
+                &mut errors,
+            );
         }
 
         // ── Chính sách hướng cấp job ──
@@ -655,6 +1001,13 @@ impl MixedNestingRequest {
                 format!("Số loại chi tiết vượt giới hạn {MAX_PARTS}."),
             ));
         }
+        if self.layout_intent.prefers_periodic_motif() && self.parts.len() != 1 {
+            errors.push(ContractError::new(
+                ContractErrorCode::StepRepeatRequiresSinglePart,
+                "parts",
+                "Bình trang một tờ yêu cầu đúng một mẫu trong mỗi job.".to_string(),
+            ));
+        }
 
         let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
         let mut total_vertices: usize = 0;
@@ -667,8 +1020,16 @@ impl MixedNestingRequest {
                     "Mã chi tiết bị trùng — mỗi loại chi tiết phải có mã riêng.".to_string(),
                 ));
             }
-            validate_part(part, &base, &tol, &mut errors);
+            validate_part(part, self.layout_intent, &base, &tol, &mut errors);
             total_vertices = total_vertices.saturating_add(part.vertex_count());
+        }
+        if let Some(contract) = &self.production_contract {
+            total_vertices = contract
+                .fixed_obstacles
+                .iter()
+                .fold(total_vertices, |sum, item| {
+                    sum.saturating_add(item.outer.len())
+                });
         }
 
         if total_vertices > MAX_TOTAL_VERTICES {
@@ -677,6 +1038,38 @@ impl MixedNestingRequest {
                 "parts",
                 format!("Tổng số đỉnh của request vượt giới hạn {MAX_TOTAL_VERTICES}."),
             ));
+        }
+
+        if self.layout_intent.is_single_sheet_autofill() {
+            // Chốt protocol/security, không phải cap worker: autofill không có quantity
+            // để MAX_INSTANCES_TOTAL đếm trực tiếp, nên dùng cận trên sức chứa theo diện
+            // tích. Outer area được coi là vật liệu đặc (không trừ hole), khớp MVP.
+            let usable_area_mm2 = self.sheet.usable_width_mm() * self.sheet.usable_height_mm();
+            let min_outer_area_mm2 = self
+                .parts
+                .iter()
+                .map(|part| super::transform::signed_area_mm2(&part.outer).abs())
+                .filter(|area| area.is_finite() && *area > 0.0)
+                .min_by(|left, right| {
+                    left.partial_cmp(right)
+                        .expect("diện tích đã hữu hạn nên có thứ tự")
+                });
+            if usable_area_mm2.is_finite() && usable_area_mm2 > 0.0 {
+                if let Some(min_area) = min_outer_area_mm2 {
+                    let capacity_upper_bound = (usable_area_mm2 / min_area).ceil();
+                    if !capacity_upper_bound.is_finite()
+                        || capacity_upper_bound > MAX_INSTANCES_TOTAL as f64
+                    {
+                        errors.push(ContractError::new(
+                            ContractErrorCode::AutofillCapacityBoundTooLarge,
+                            "parts",
+                            format!(
+                                "Cận trên sức chứa autofill vượt giới hạn protocol: {MAX_INSTANCES_TOTAL} con."
+                            ),
+                        ));
+                    }
+                }
+            }
         }
 
         let total_instances = self.total_instances();
@@ -690,6 +1083,293 @@ impl MixedNestingRequest {
 
         errors.into_result()
     }
+
+    /// Kiểm các field chỉ tồn tại sau khi backend đã nhận request công khai.
+    ///
+    /// Core geometry test có thể dựng `ProductionContractV1` mà không cần giả một job
+    /// lifecycle; bridge native production thì bắt buộc gọi preflight này trước solve.
+    pub fn validate_server_owned_fields(&self) -> Result<(), ContractErrors> {
+        let mut errors = ContractErrors::default();
+        if self.production_contract.is_some() {
+            let job_id_hop_le = self.job_id.as_deref().is_some_and(|job_id| {
+                !job_id.is_empty()
+                    && job_id.len() <= MAX_JOB_ID_LEN
+                    && !job_id.chars().any(char::is_control)
+            });
+            if !job_id_hop_le {
+                errors.push(ContractError::new(
+                    ContractErrorCode::ProductionJobIdRequired,
+                    "jobId",
+                    "Production contract yêu cầu jobId server-owned hợp lệ.".to_string(),
+                ));
+            }
+        }
+        errors.into_result()
+    }
+}
+
+fn validate_production_contract(
+    contract: &ProductionContractV1,
+    sheet: &SheetSpec,
+    parts: &[PartSpec],
+    layout_intent: LayoutIntent,
+    tol: &Tolerance,
+    errors: &mut ContractErrors,
+) {
+    let base = "productionContract";
+    if contract.schema_version != MIXED_NESTING_PRODUCTION_SCHEMA_VERSION {
+        errors.push(ContractError::new(
+            ContractErrorCode::ProductionSchemaUnsupported,
+            format!("{base}.schemaVersion"),
+            format!(
+                "Production schema {} không được hỗ trợ (engine yêu cầu {}).",
+                contract.schema_version, MIXED_NESTING_PRODUCTION_SCHEMA_VERSION
+            ),
+        ));
+    }
+    if contract.request_revision == 0 {
+        errors.push(ContractError::new(
+            ContractErrorCode::RequestRevisionOutOfRange,
+            format!("{base}.requestRevision"),
+            "Revision của request production phải bắt đầu từ 1.".to_string(),
+        ));
+    }
+    for (value, field) in [
+        (&contract.input_hash, "inputHash"),
+        (&contract.layout_fingerprint, "layoutFingerprint"),
+    ] {
+        if !is_canonical_sha256(value) {
+            errors.push(ContractError::new(
+                ContractErrorCode::IdentityHashInvalid,
+                format!("{base}.{field}"),
+                "Identity phải ở dạng canonical sha256: + 64 ký tự hex thường.".to_string(),
+            ));
+        }
+    }
+
+    for (clearance, field) in [
+        (contract.clearance.part_to_part, "partToPart"),
+        (contract.clearance.part_to_sheet_edge, "partToSheetEdge"),
+        (contract.clearance.part_to_obstacle, "partToObstacle"),
+    ] {
+        for (value, axis) in [(clearance.x_mm, "xMm"), (clearance.y_mm, "yMm")] {
+            let path = format!("{base}.clearance.{field}.{axis}");
+            if !value.is_finite() {
+                errors.push(ContractError::new(
+                    ContractErrorCode::NotFinite,
+                    path,
+                    "Khoảng hở phải là số hữu hạn.".to_string(),
+                ));
+            } else if value < 0.0 {
+                errors.push(ContractError::new(
+                    ContractErrorCode::ClearanceOutOfRange,
+                    path,
+                    "Khoảng hở không được âm.".to_string(),
+                ));
+            }
+        }
+    }
+
+    let edge = contract.clearance.part_to_sheet_edge;
+    if edge.x_mm.is_finite()
+        && edge.y_mm.is_finite()
+        && (2.0 * edge.x_mm >= sheet.usable_width_mm() - tol.linear_mm
+            || 2.0 * edge.y_mm >= sheet.usable_height_mm() - tol.linear_mm)
+    {
+        errors.push(ContractError::new(
+            ContractErrorCode::ClearanceConsumesUsableArea,
+            format!("{base}.clearance.partToSheetEdge"),
+            "Khoảng hở tới mép làm vùng xếp không còn diện tích dương.".to_string(),
+        ));
+    }
+
+    // PARITY (audit 2026-08-29 MAP-NEST-04): free gang và chia đều diện tích
+    // là hai contract khác nhau. Zone là server-owned, không clamp hay suy đoán.
+    let zone_base = format!("{base}.placementZones");
+    match contract.grouping_intent {
+        GroupingIntent::FreeGang => {
+            if !contract.placement_zones.is_empty() {
+                errors.push(ContractError::new(
+                    ContractErrorCode::PlacementZonesForbidden,
+                    zone_base.clone(),
+                    "Xếp tự do không được mang vùng đặt riêng theo mẫu.".to_string(),
+                ));
+            }
+        }
+        GroupingIntent::MaximizeArea => {
+            if layout_intent.prefers_periodic_motif() {
+                errors.push(ContractError::new(
+                    ContractErrorCode::GroupingIntentNotAllowed,
+                    format!("{base}.groupingIntent"),
+                    "Bình trang một mẫu không dùng chia đều diện tích nhiều mẫu.".to_string(),
+                ));
+            }
+
+            let part_ids: BTreeSet<&str> = parts.iter().map(|part| part.part_id.as_str()).collect();
+            let mut seen_zones: BTreeSet<&str> = BTreeSet::new();
+            let mut valid_zones: Vec<&PartPlacementZoneSpec> = Vec::new();
+            let usable_min_x = sheet.margin_mm.left;
+            let usable_min_y = sheet.margin_mm.bottom;
+            let usable_max_x = sheet.width_mm - sheet.margin_mm.right;
+            let usable_max_y = sheet.height_mm - sheet.margin_mm.top;
+
+            for (index, zone) in contract.placement_zones.iter().enumerate() {
+                let item_base = format!("{zone_base}[{index}]");
+                if !part_ids.contains(zone.part_id.as_str()) {
+                    errors.push(ContractError::new(
+                        ContractErrorCode::PlacementZoneUnknownPart,
+                        format!("{item_base}.partId"),
+                        "Vùng đặt tham chiếu partId không có trong request.".to_string(),
+                    ));
+                    continue;
+                }
+                if !seen_zones.insert(zone.part_id.as_str()) {
+                    errors.push(ContractError::new(
+                        ContractErrorCode::PlacementZoneDuplicatePart,
+                        format!("{item_base}.partId"),
+                        "Một mẫu chỉ được có đúng một vùng đặt.".to_string(),
+                    ));
+                    continue;
+                }
+
+                let bounds = zone.bounds;
+                let coordinates = [
+                    (bounds.min_x_mm, "minXmm"),
+                    (bounds.min_y_mm, "minYmm"),
+                    (bounds.max_x_mm, "maxXmm"),
+                    (bounds.max_y_mm, "maxYmm"),
+                ];
+                let mut finite = true;
+                for (value, field) in coordinates {
+                    if !value.is_finite() {
+                        finite = false;
+                        errors.push(ContractError::new(
+                            ContractErrorCode::NotFinite,
+                            format!("{item_base}.bounds.{field}"),
+                            "Biên vùng đặt phải là số hữu hạn.".to_string(),
+                        ));
+                    }
+                }
+                if !finite {
+                    continue;
+                }
+                if bounds.max_x_mm - bounds.min_x_mm <= tol.linear_mm
+                    || bounds.max_y_mm - bounds.min_y_mm <= tol.linear_mm
+                {
+                    errors.push(ContractError::new(
+                        ContractErrorCode::PlacementZoneInvalidBounds,
+                        format!("{item_base}.bounds"),
+                        "Vùng đặt phải có chiều rộng và chiều cao dương.".to_string(),
+                    ));
+                    continue;
+                }
+                if bounds.min_x_mm < usable_min_x - tol.linear_mm
+                    || bounds.min_y_mm < usable_min_y - tol.linear_mm
+                    || bounds.max_x_mm > usable_max_x + tol.linear_mm
+                    || bounds.max_y_mm > usable_max_y + tol.linear_mm
+                {
+                    errors.push(ContractError::new(
+                        ContractErrorCode::PlacementZoneOutsideUsableArea,
+                        format!("{item_base}.bounds"),
+                        "Vùng đặt nằm ngoài vùng xếp hữu hiệu của tờ.".to_string(),
+                    ));
+                    continue;
+                }
+                valid_zones.push(zone);
+            }
+
+            for part in parts {
+                if !seen_zones.contains(part.part_id.as_str()) {
+                    errors.push(ContractError::new(
+                        ContractErrorCode::PlacementZoneMissingPart,
+                        zone_base.clone(),
+                        format!("Thiếu vùng đặt cho mẫu '{}'.", part.part_id),
+                    ));
+                }
+            }
+
+            // Maximize-area v1 là các dải ngang phủ kín vùng dùng được, cùng diện tích.
+            // Backend quyết thứ tự mẫu; core chỉ khóa partition hình học canonical.
+            if valid_zones.len() == parts.len()
+                && seen_zones.len() == parts.len()
+                && !parts.is_empty()
+            {
+                valid_zones.sort_by(|left, right| {
+                    right
+                        .bounds
+                        .max_y_mm
+                        .total_cmp(&left.bounds.max_y_mm)
+                        .then(left.part_id.cmp(&right.part_id))
+                });
+                let expected_height = (usable_max_y - usable_min_y) / parts.len() as f64;
+                let partition_tol = tol.linear_mm * 2.0;
+                let mut partition_valid = true;
+                for (index, zone) in valid_zones.iter().enumerate() {
+                    let bounds = zone.bounds;
+                    partition_valid &= (bounds.min_x_mm - usable_min_x).abs() <= partition_tol;
+                    partition_valid &= (bounds.max_x_mm - usable_max_x).abs() <= partition_tol;
+                    partition_valid &= ((bounds.max_y_mm - bounds.min_y_mm) - expected_height)
+                        .abs()
+                        <= partition_tol;
+                    if index == 0 {
+                        partition_valid &= (bounds.max_y_mm - usable_max_y).abs() <= partition_tol;
+                    } else {
+                        partition_valid &=
+                            (valid_zones[index - 1].bounds.min_y_mm - bounds.max_y_mm).abs()
+                                <= partition_tol;
+                    }
+                }
+                if let Some(last) = valid_zones.last() {
+                    partition_valid &= (last.bounds.min_y_mm - usable_min_y).abs() <= partition_tol;
+                }
+                if !partition_valid {
+                    errors.push(ContractError::new(
+                        ContractErrorCode::PlacementZonePartitionInvalid,
+                        zone_base,
+                        "Các vùng chia đều diện tích phải là dải ngang bằng nhau và phủ kín vùng xếp."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    if contract.fixed_obstacles.len() > MAX_FIXED_OBSTACLES {
+        errors.push(ContractError::new(
+            ContractErrorCode::TooManyFixedObstacles,
+            format!("{base}.fixedObstacles"),
+            format!("Số vùng cấm vượt giới hạn {MAX_FIXED_OBSTACLES}."),
+        ));
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for (index, obstacle) in contract.fixed_obstacles.iter().enumerate() {
+        let obstacle_base = format!("{base}.fixedObstacles[{index}]");
+        let id = obstacle.obstacle_id.as_str();
+        if id.is_empty() || id.len() > MAX_OBSTACLE_ID_LEN || id.chars().any(char::is_control) {
+            errors.push(ContractError::new(
+                ContractErrorCode::InvalidObstacleId,
+                format!("{obstacle_base}.obstacleId"),
+                "Mã vùng cấm rỗng, quá dài hoặc chứa ký tự điều khiển.".to_string(),
+            ));
+        } else if !seen.insert(id) {
+            errors.push(ContractError::new(
+                ContractErrorCode::DuplicateObstacleId,
+                format!("{obstacle_base}.obstacleId"),
+                "Mã vùng cấm bị trùng.".to_string(),
+            ));
+        }
+        validate_ring(&obstacle.outer, &format!("{obstacle_base}.outer"), errors);
+    }
+}
+
+fn is_canonical_sha256(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_sheet(sheet: &SheetSpec, tol: &Tolerance, errors: &mut ContractErrors) {
@@ -759,7 +1439,13 @@ fn validate_sheet(sheet: &SheetSpec, tol: &Tolerance, errors: &mut ContractError
     }
 }
 
-fn validate_part(part: &PartSpec, base: &str, tol: &Tolerance, errors: &mut ContractErrors) {
+fn validate_part(
+    part: &PartSpec,
+    layout_intent: LayoutIntent,
+    base: &str,
+    tol: &Tolerance,
+    errors: &mut ContractErrors,
+) {
     // ── Mã chi tiết ──
     if part.part_id.trim().is_empty() {
         errors.push(ContractError::new(
@@ -781,13 +1467,27 @@ fn validate_part(part: &PartSpec, base: &str, tol: &Tolerance, errors: &mut Cont
         ));
     }
 
-    // ── Số lượng ──
-    if part.quantity == 0 || part.quantity > MAX_QUANTITY_PER_PART {
-        errors.push(ContractError::new(
-            ContractErrorCode::QuantityOutOfRange,
-            format!("{base}.quantity"),
-            format!("Số lượng phải trong khoảng 1..={MAX_QUANTITY_PER_PART}."),
-        ));
+    // ── Số lượng theo intent ──
+    match layout_intent {
+        LayoutIntent::QuantityFulfillment
+            if part.quantity == 0 || part.quantity > MAX_QUANTITY_PER_PART =>
+        {
+            errors.push(ContractError::new(
+                ContractErrorCode::QuantityOutOfRange,
+                format!("{base}.quantity"),
+                format!(
+                    "Bình theo số lượng yêu cầu quantity trong khoảng 1..={MAX_QUANTITY_PER_PART}."
+                ),
+            ));
+        }
+        intent if intent.is_single_sheet_autofill() && part.requested_quantity().is_some() => {
+            errors.push(ContractError::new(
+                ContractErrorCode::AutofillQuantityMustBeAbsent,
+                format!("{base}.quantity"),
+                "Bình tự lấp đầy không nhận số lượng; hãy bỏ trường quantity.".to_string(),
+            ));
+        }
+        _ => {}
     }
 
     // ── Contour ngoài và lỗ ──
@@ -969,9 +1669,15 @@ pub enum ContractErrorCode {
     NotFinite,
     EmptyParts,
     TooManyParts,
+    /// Bình trang production phải được tách thành đúng một mẫu mỗi job.
+    StepRepeatRequiresSinglePart,
     DuplicatePartId,
     InvalidPartId,
     QuantityOutOfRange,
+    /// Autofill nhận một quantity thật thay vì field vắng mặt.
+    AutofillQuantityMustBeAbsent,
+    /// Cận trên sức chứa một tờ autofill vượt giới hạn protocol.
+    AutofillCapacityBoundTooLarge,
     TooManyInstances,
     RingTooFewVertices,
     RingTooManyVertices,
@@ -989,6 +1695,29 @@ pub enum ContractErrorCode {
     MaxSheetsOutOfRange,
     TimeBudgetOutOfRange,
     ProvenanceFieldEmpty,
+    /// `layoutIntent = autofill_single_sheet` mà `sheet.maxSheets != 1`.
+    AutofillRequiresSingleSheet,
+    ProductionSchemaUnsupported,
+    RequestRevisionOutOfRange,
+    IdentityHashInvalid,
+    LegacyGapWithProductionContract,
+    ClearanceOutOfRange,
+    ClearanceConsumesUsableArea,
+    TooManyFixedObstacles,
+    InvalidObstacleId,
+    DuplicateObstacleId,
+    /// Free gang không được mang zone server-owned.
+    PlacementZonesForbidden,
+    /// S&R không nhận grouping nhiều mẫu.
+    GroupingIntentNotAllowed,
+    PlacementZoneUnknownPart,
+    PlacementZoneDuplicatePart,
+    PlacementZoneMissingPart,
+    PlacementZoneInvalidBounds,
+    PlacementZoneOutsideUsableArea,
+    PlacementZonePartitionInvalid,
+    /// Production contract thiếu job ID server-owned hợp lệ.
+    ProductionJobIdRequired,
 }
 
 impl ContractErrorCode {
@@ -999,9 +1728,12 @@ impl ContractErrorCode {
             Self::NotFinite => "NOT_FINITE",
             Self::EmptyParts => "EMPTY_PARTS",
             Self::TooManyParts => "TOO_MANY_PARTS",
+            Self::StepRepeatRequiresSinglePart => "STEP_REPEAT_REQUIRES_SINGLE_PART",
             Self::DuplicatePartId => "DUPLICATE_PART_ID",
             Self::InvalidPartId => "INVALID_PART_ID",
             Self::QuantityOutOfRange => "QUANTITY_OUT_OF_RANGE",
+            Self::AutofillQuantityMustBeAbsent => "AUTOFILL_QUANTITY_MUST_BE_ABSENT",
+            Self::AutofillCapacityBoundTooLarge => "AUTOFILL_CAPACITY_BOUND_TOO_LARGE",
             Self::TooManyInstances => "TOO_MANY_INSTANCES",
             Self::RingTooFewVertices => "RING_TOO_FEW_VERTICES",
             Self::RingTooManyVertices => "RING_TOO_MANY_VERTICES",
@@ -1021,6 +1753,25 @@ impl ContractErrorCode {
             Self::MaxSheetsOutOfRange => "MAX_SHEETS_OUT_OF_RANGE",
             Self::TimeBudgetOutOfRange => "TIME_BUDGET_OUT_OF_RANGE",
             Self::ProvenanceFieldEmpty => "PROVENANCE_FIELD_EMPTY",
+            Self::AutofillRequiresSingleSheet => "AUTOFILL_REQUIRES_SINGLE_SHEET",
+            Self::ProductionSchemaUnsupported => "PRODUCTION_SCHEMA_UNSUPPORTED",
+            Self::RequestRevisionOutOfRange => "REQUEST_REVISION_OUT_OF_RANGE",
+            Self::IdentityHashInvalid => "IDENTITY_HASH_INVALID",
+            Self::LegacyGapWithProductionContract => "LEGACY_GAP_WITH_PRODUCTION_CONTRACT",
+            Self::ClearanceOutOfRange => "CLEARANCE_OUT_OF_RANGE",
+            Self::ClearanceConsumesUsableArea => "CLEARANCE_CONSUMES_USABLE_AREA",
+            Self::TooManyFixedObstacles => "TOO_MANY_FIXED_OBSTACLES",
+            Self::InvalidObstacleId => "INVALID_OBSTACLE_ID",
+            Self::DuplicateObstacleId => "DUPLICATE_OBSTACLE_ID",
+            Self::PlacementZonesForbidden => "PLACEMENT_ZONES_FORBIDDEN",
+            Self::GroupingIntentNotAllowed => "GROUPING_INTENT_NOT_ALLOWED",
+            Self::PlacementZoneUnknownPart => "PLACEMENT_ZONE_UNKNOWN_PART",
+            Self::PlacementZoneDuplicatePart => "PLACEMENT_ZONE_DUPLICATE_PART",
+            Self::PlacementZoneMissingPart => "PLACEMENT_ZONE_MISSING_PART",
+            Self::PlacementZoneInvalidBounds => "PLACEMENT_ZONE_INVALID_BOUNDS",
+            Self::PlacementZoneOutsideUsableArea => "PLACEMENT_ZONE_OUTSIDE_USABLE_AREA",
+            Self::PlacementZonePartitionInvalid => "PLACEMENT_ZONE_PARTITION_INVALID",
+            Self::ProductionJobIdRequired => "PRODUCTION_JOB_ID_REQUIRED",
         }
     }
 }
@@ -1209,6 +1960,12 @@ pub struct UnplacedRecord {
 pub enum TerminationReason {
     /// Đã xếp hết mọi instance và phủ xong work-plan.
     AllPlaced,
+    /// Tờ đã đầy — chỉ dùng cho `layoutIntent = autofill_single_sheet`.
+    ///
+    /// [CHẶNG-A LÔ 1 2026-08-27] Tách khỏi [`Self::MaxSheetsReached`] có chủ đích. Ca
+    /// autofill chạm trần một tờ là **thành công**; báo `max_sheets_reached` cho nó thì
+    /// thợ in và log đều đọc thành thất bại.
+    SheetFull,
     /// Hết ngân sách work-plan cố định (deterministic).
     WorkBudgetExhausted,
     /// Hết deadline wall-clock — chỉ cam kết best-so-far hợp lệ.
@@ -1244,6 +2001,87 @@ pub struct ValidationSummary {
     pub validator_version: u32,
 }
 
+/// Toàn bộ version hình học/search ảnh hưởng tới phương án được công bố.
+///
+/// Engine version một mình không đủ để giải thích vì sao hai lần chạy khác kết quả:
+/// thay normalize, NFP, score hay baseline đều có thể đổi layout. Manifest ghi tách
+/// từng version để backend quyết định chính xác khi nào cache/artifact đã stale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestAlgorithmVersions {
+    /// SHA-256 build identity do `native/build.rs` nhúng. Hai file .pyd dựng từ source
+    /// khác nhau không được nhận là cùng build chỉ vì trùng crate version.
+    pub native_build_identity: String,
+    pub production_schema_version: u32,
+    pub tolerance_version: u32,
+    pub canonicalization_version: u32,
+    pub normalize_rule_version: u32,
+    pub reference_point_rule_version: u32,
+    pub kernel_version: u32,
+    pub nfp_rule_version: u32,
+    pub score_version: u32,
+    pub solver_version: u32,
+    pub multi_start_version: u32,
+    pub baseline_version: u32,
+    pub candidate_rule_version: u32,
+    pub refine_rule_version: u32,
+}
+
+/// Nguồn của phương án cuối. Không dùng boolean `fallback`: trial thông minh và
+/// baseline là hai nguồn có provenance khác nhau, còn trial phải giữ đúng ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ManifestCandidateSource {
+    Baseline,
+    SmartTrial {
+        #[serde(rename = "trialId")]
+        trial_id: u64,
+    },
+}
+
+/// Ảnh chụp gọn của điểm lexicographic.
+///
+/// `primaryPenalty` là `unplaced_count` đối với quantity fulfillment và penalty cân
+/// bằng/số lượng đối với autofill. Tie-break cuối được dựng lại từ placements, nên
+/// không nhân đôi cả vector khoá vào manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestScore {
+    pub invalid_count: u64,
+    pub primary_penalty: u64,
+    pub sheet_count: u32,
+    pub last_sheet_used_area_fixed: i64,
+    pub wasted_within_envelope_fixed: i64,
+    pub score_version: u32,
+}
+
+/// Ngân sách thực tế đã cấp cho solver. Đây là work budget, không phải cap phần cứng.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSearchBudget {
+    pub trial_count: u32,
+    pub orientation_proposals_per_part: u32,
+    pub beam_width: u32,
+    pub refinement_rounds: u32,
+    pub multi_start_restarts: u32,
+    pub evaluation_budget: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_budget_ms: Option<u64>,
+}
+
+/// Provenance của vòng tìm kiếm và quyết định chọn phương án cuối.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSearchSummary {
+    pub budget: ManifestSearchBudget,
+    pub trials_run: u32,
+    pub trials_rejected: u32,
+    pub selected_candidate: ManifestCandidateSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_score: Option<ManifestScore>,
+    pub selected_score: ManifestScore,
+}
+
 /// Trạng thái cuối của job trong manifest. Manifest chỉ tồn tại ở trạng thái terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1260,11 +2098,28 @@ pub enum ManifestStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlacementManifest {
+    pub schema_version: u32,
+    /// V1 dùng một lifecycle đơn giản: một job chỉ được công bố tối đa một manifest
+    /// terminal, vì vậy `manifestId == jobId`. Backend sở hữu cả hai ID; engine không
+    /// tự sinh UUID/RNG và chỉ echo đúng ID đã được cấp.
+    pub manifest_id: String,
     pub protocol_version: u32,
     pub engine_version: String,
     pub job_id: String,
+    /// Ba trường identity chỉ `None` trên đường lab/legacy. Adapter Tem bế/CNC
+    /// production bắt buộc gắn `ProductionContractV1`; tầng persist phải fail-closed
+    /// nếu một trong ba trường này vắng mặt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_fingerprint: Option<String>,
+    pub layout_intent: LayoutIntent,
     pub seed: u64,
     pub status: ManifestStatus,
+    pub provenance: ManifestAlgorithmVersions,
+    pub search: ManifestSearchSummary,
     pub placements: Vec<PlacementRecord>,
     pub unplaced: Vec<UnplacedRecord>,
     pub stats: RunStats,

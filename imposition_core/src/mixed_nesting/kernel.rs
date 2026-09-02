@@ -408,8 +408,11 @@ fn is_convex_ccw(ring: &[PointMm]) -> bool {
     let n = ring.len();
     // Dung sai theo thang hình: tích có hướng có đơn vị mm², nên ngưỡng phải nhân
     // với chu vi để hình 5 mm và hình 700 mm dùng cùng một quy tắc.
+    //
+    // FIX (audit 2026-08-28 §NFP-CONVEX): hằng tỉ lệ chuyển sang `model` để
+    // `geometry::convex_decompose` dùng CÙNG luật. Trước đây hai bên lệch 1000×.
     let scale = super::transform::perimeter_mm(ring).max(1.0);
-    let tol = 1e-9 * scale;
+    let tol = super::model::CONVEX_STRICT_TOL_RATIO * scale;
     for index in 0..n {
         let a = ring[index];
         let b = ring[(index + 1) % n];

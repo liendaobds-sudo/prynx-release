@@ -13,9 +13,11 @@
 //!    (`Rᵀ R ≈ I`, `det ≈ +1`, bảo toàn hướng signed-area).
 
 use imposition_core::mixed_nesting::model::{
-    canonicalize_angle_deg, AngleArcDeg, MixedNestingRequest, OrientationPolicy, PartSpec, PointMm,
-    Pose, Profile, Reflection, RotationConstraint, RotationDomainKind, SheetMarginMm, SheetSpec,
-    Tolerance,
+    canonicalize_angle_deg, AngleArcDeg, AxisAlignedBoundsSpec, ClearanceSpec, GroupingIntent,
+    LayoutAlignment, MixedNestingRequest, OrientationPolicy, PartPlacementZoneSpec, PartSpec,
+    PointMm, Pose, ProductionContractV1, Profile, Reflection, RotationConstraint,
+    RotationDomainKind, SheetAxisClearanceMm, SheetMarginMm, SheetSpec, Tolerance,
+    MIXED_NESTING_PRODUCTION_SCHEMA_VERSION, MIXED_NESTING_PROTOCOL_VERSION,
 };
 use imposition_core::mixed_nesting::normalize::{
     derive_reference_point, find_self_intersection, normalize_request, normalize_ring, BoundsMm,
@@ -136,7 +138,7 @@ fn polygon_don_ngau_nhien(rng: &mut Rng, vertices: usize) -> Vec<PointMm> {
 
 fn request_mau(parts: Vec<PartSpec>, default_rotation: RotationConstraint) -> MixedNestingRequest {
     MixedNestingRequest {
-        protocol_version: 1,
+        protocol_version: MIXED_NESTING_PROTOCOL_VERSION,
         seed: 20_260_826,
         profile: Profile::Balanced,
         time_budget_ms: None,
@@ -152,12 +154,14 @@ fn request_mau(parts: Vec<PartSpec>, default_rotation: RotationConstraint) -> Mi
             max_sheets: 20,
         },
         gap_mm: 3.0,
+        layout_intent: Default::default(),
         orientation_policy: OrientationPolicy {
             default_rotation,
             reflection: Reflection::Forbidden,
         },
         parts,
         job_id: None,
+        ..MixedNestingRequest::default()
     }
 }
 
@@ -1233,6 +1237,111 @@ fn vung_dung_duoc_tru_le_dung_chieu_truc_y() {
     assert_eq!(normalized.normalize_rule_version, NORMALIZE_RULE_VERSION);
     assert_eq!(normalized.gap_mm, 3.0);
     assert!(normalized.time_budget_ms.is_none());
+    assert!(normalized.parts[0].placement_zone.is_none());
+    assert_eq!(
+        normalized.placement_bounds_for(&normalized.parts[0]),
+        normalized.sheet.usable,
+        "free gang phải dùng toàn vùng đặt hữu hiệu của tờ"
+    );
+}
+
+#[test]
+fn normalize_request_gan_zone_theo_part_id_va_giu_clearance_mep_to() {
+    let mut request = request_mau(
+        vec![
+            part_mau("part-a", chu_nhat(80.0, 40.0)),
+            part_mau("part-b", hinh_l_bat_doi_xung()),
+        ],
+        RotationConstraint::Free,
+    );
+    request.gap_mm = 0.0;
+    request.production_contract = Some(ProductionContractV1 {
+        schema_version: MIXED_NESTING_PRODUCTION_SCHEMA_VERSION,
+        request_revision: 1,
+        input_hash: format!("sha256:{}", "a".repeat(64)),
+        layout_fingerprint: format!("sha256:{}", "b".repeat(64)),
+        alignment: LayoutAlignment::Center,
+        grouping_intent: GroupingIntent::MaximizeArea,
+        // Cố ý ngược thứ tự parts để bắt implementation map theo index.
+        placement_zones: vec![
+            PartPlacementZoneSpec {
+                part_id: "part-b".to_string(),
+                bounds: AxisAlignedBoundsSpec {
+                    min_x_mm: 10.0,
+                    min_y_mm: 40.0,
+                    max_x_mm: 680.0,
+                    max_y_mm: 505.0,
+                },
+            },
+            PartPlacementZoneSpec {
+                part_id: "part-a".to_string(),
+                bounds: AxisAlignedBoundsSpec {
+                    min_x_mm: 10.0,
+                    min_y_mm: 505.0,
+                    max_x_mm: 680.0,
+                    max_y_mm: 970.0,
+                },
+            },
+        ],
+        clearance: ClearanceSpec {
+            part_to_part: SheetAxisClearanceMm {
+                x_mm: 3.0,
+                y_mm: 4.0,
+            },
+            part_to_sheet_edge: SheetAxisClearanceMm {
+                x_mm: 4.0,
+                y_mm: 5.0,
+            },
+            part_to_obstacle: SheetAxisClearanceMm::zero(),
+        },
+        fixed_obstacles: Vec::new(),
+    });
+
+    let normalized = normalize_request(&request).expect("partition production phải chuẩn hoá được");
+    let production = normalized.production_contract.as_ref().unwrap();
+    assert_eq!(production.grouping_intent, GroupingIntent::MaximizeArea);
+    assert_eq!(normalized.gap_mm, 5.0, "gap bảo thủ phải giữ hypot(3, 4)");
+
+    let part_a = &normalized.parts[0];
+    let part_b = &normalized.parts[1];
+    assert_eq!(
+        part_a.placement_zone,
+        Some(BoundsMm {
+            min_x: 10.0,
+            min_y: 505.0,
+            max_x: 680.0,
+            max_y: 970.0,
+        })
+    );
+    assert_eq!(
+        part_b.placement_zone,
+        Some(BoundsMm {
+            min_x: 10.0,
+            min_y: 40.0,
+            max_x: 680.0,
+            max_y: 505.0,
+        })
+    );
+    assert_eq!(
+        normalized.placement_bounds_for(part_a),
+        BoundsMm {
+            min_x: 14.0,
+            min_y: 505.0,
+            max_x: 676.0,
+            max_y: 965.0,
+        },
+        "dải trên chỉ trừ clearance ở các mép ngoài"
+    );
+    assert_eq!(
+        normalized.placement_bounds_for(part_b),
+        BoundsMm {
+            min_x: 14.0,
+            min_y: 45.0,
+            max_x: 676.0,
+            max_y: 505.0,
+        },
+        "biên chung y=505 không được tạo khe giả"
+    );
 }
 
 #[test]

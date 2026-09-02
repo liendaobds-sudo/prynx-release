@@ -635,7 +635,10 @@ mod tests {
                 // Rút trùng: thêm hậu tố để chắc chắn khác, vẫn trong tập ký tự cho phép.
                 other_version.push_str(".1");
             }
-            assert_ne!(version, other_version, "vòng {round}: hai AAD phải khác nhau");
+            assert_ne!(
+                version, other_version,
+                "vòng {round}: hai AAD phải khác nhau"
+            );
 
             let mut plaintext = vec![0u8; 24 + rng.below(96) as usize];
             rng.fill(&mut plaintext);

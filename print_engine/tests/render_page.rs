@@ -220,11 +220,8 @@ fn output_preview_source_filters_keep_only_the_declared_color_space() {
     let samples = [(2usize, 2usize), (7, 2), (2, 7), (7, 7)];
 
     for (filter, expected) in cases {
-        let rendered = render_output_preview_filter(
-            content,
-            spot_resources("PANTONE 485 C"),
-            filter,
-        );
+        let rendered =
+            render_output_preview_filter(content, spot_resources("PANTONE 485 C"), filter);
         for sample in samples {
             let ink = pixel_total_ink(&rendered, sample.0, sample.1);
             if sample == expected {
@@ -243,14 +240,8 @@ fn output_preview_filter_all_giu_nguyen_tung_byte_plate_mac_dinh() {
         "0.8 0.1 0.2 rg 5 0 5 10 re f",
     );
     let doc = build_pdf(content, dictionary! {}, [0.0, 0.0, 10.0, 10.0], None);
-    let default = render_page(
-        &doc,
-        1,
-        72.0,
-        PageBox::Crop,
-        RenderOptions::softproof(),
-    )
-    .expect("render mặc định phải thành công");
+    let default = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::softproof())
+        .expect("render mặc định phải thành công");
     let explicit_all = render_page(
         &doc,
         1,
@@ -278,11 +269,8 @@ fn output_preview_filter_all_giu_nguyen_tung_byte_plate_mac_dinh() {
 #[test]
 fn output_preview_line_art_filter_is_exclusive_on_a_path_only_page() {
     let content = "0 0 0 1 k 0 0 10 10 re f";
-    let line_art = render_output_preview_filter(
-        content,
-        dictionary! {},
-        OutputPreviewFilter::LineArt,
-    );
+    let line_art =
+        render_output_preview_filter(content, dictionary! {}, OutputPreviewFilter::LineArt);
     assert!(line_art.buffer.max_tac_percent() > 90.0);
 
     for filter in [
@@ -291,7 +279,11 @@ fn output_preview_line_art_filter_is_exclusive_on_a_path_only_page() {
         OutputPreviewFilter::SmoothShades,
     ] {
         let hidden = render_output_preview_filter(content, dictionary! {}, filter);
-        assert_eq!(hidden.buffer.max_tac_percent(), 0.0, "{filter:?} phải ẩn path");
+        assert_eq!(
+            hidden.buffer.max_tac_percent(),
+            0.0,
+            "{filter:?} phải ẩn path"
+        );
     }
 }
 
@@ -956,6 +948,331 @@ fn form_xobject_is_drawn_with_its_matrix() {
     assert_eq!(r.buffer.plate_u8(3)[row + w - 1], 255);
 }
 
+fn first_page_mut(doc: &mut Document) -> &mut Dictionary {
+    let page_id = *doc
+        .get_pages()
+        .values()
+        .next()
+        .expect("fixture phải có một trang");
+    doc.get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .expect("trang fixture phải là dictionary")
+}
+
+fn set_first_page_resources(doc: &mut Document, resources: Dictionary) {
+    let resources_id = doc.add_object(resources);
+    first_page_mut(doc).set("Resources", Object::Reference(resources_id));
+}
+
+fn nested_form_document(page_content: &str) -> Document {
+    let mut doc = build_pdf(page_content, dictionary! {}, [0.0, 0.0, 10.0, 10.0], None);
+    let mut next_form = None;
+
+    for form_index in (1..=13).rev() {
+        let mut form_dict = dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+        };
+        let content = if let Some(next_id) = next_form {
+            let next_name = format!("F{}", form_index + 1);
+            let mut xobjects = Dictionary::new();
+            xobjects.set(next_name.clone().into_bytes(), Object::Reference(next_id));
+            form_dict.set(
+                "Resources",
+                Object::Dictionary(dictionary! {
+                    "XObject" => Object::Dictionary(xobjects),
+                }),
+            );
+            format!("/{next_name} Do").into_bytes()
+        } else {
+            b"0 0 0 1 k 0 0 10 10 re f".to_vec()
+        };
+        next_form = Some(doc.add_object(Stream::new(form_dict, content)));
+    }
+
+    set_first_page_resources(
+        &mut doc,
+        dictionary! {
+            "XObject" => dictionary! {
+                "F1" => Object::Reference(next_form.expect("phải dựng đủ 13 Form")),
+            },
+        },
+    );
+    doc
+}
+
+fn broken_flate_form_document(offset_x: i64) -> Document {
+    let mut doc = build_pdf("/Fm0 Do", dictionary! {}, [0.0, 0.0, 10.0, 10.0], None);
+    let form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Matrix" => vec![
+                1.into(), 0.into(), 0.into(), 1.into(),
+                Object::Integer(offset_x), 0.into(),
+            ],
+            "Filter" => Object::Name(b"FlateDecode".to_vec()),
+        },
+        // Payload cố ý không phải zlib nhưng vẫn là operator PDF hợp lệ để thử recovery.
+        b"0 0 0 1 k 0 0 10 10 re f".to_vec(),
+    ));
+    set_first_page_resources(
+        &mut doc,
+        dictionary! {
+            "XObject" => dictionary! { "Fm0" => Object::Reference(form_id) },
+        },
+    );
+    doc
+}
+
+fn valid_flate_form_document() -> Document {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A03): control dương phải đi đúng
+    // nhánh single Flate nghiêm ngặt, không chạm recovery hay warning.
+    let operators = b"0 0 0 1 k 0 0 10 10 re f";
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, operators).expect("phải nén được Form fixture");
+    let compressed = encoder.finish().expect("phải hoàn tất zlib fixture");
+
+    let mut doc = build_pdf("/Fm0 Do", dictionary! {}, [0.0, 0.0, 10.0, 10.0], None);
+    let form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "Filter" => Object::Name(b"FlateDecode".to_vec()),
+        },
+        compressed,
+    ));
+    set_first_page_resources(
+        &mut doc,
+        dictionary! {
+            "XObject" => dictionary! { "Fm0" => Object::Reference(form_id) },
+        },
+    );
+    doc
+}
+
+fn annotation_without_ap_document(
+    subtype: &str,
+    rect: [i64; 4],
+    flags: i64,
+    media: [f32; 4],
+) -> Document {
+    let mut doc = build_pdf("", dictionary! {}, media, None);
+    let annotation_id = doc.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => Object::Name(subtype.as_bytes().to_vec()),
+        "Rect" => vec![
+            Object::Integer(rect[0]), Object::Integer(rect[1]),
+            Object::Integer(rect[2]), Object::Integer(rect[3]),
+        ],
+        "F" => flags,
+    });
+    first_page_mut(&mut doc).set(
+        "Annots",
+        Object::Array(vec![Object::Reference(annotation_id)]),
+    );
+    doc
+}
+
+#[test]
+fn form_depth_overflow_is_fail_loud_only_when_visible() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A01): Form thứ 13 bị chặn phải hạ
+    // soundness đúng một lần, nhưng clip rỗng không đại diện object bị mất.
+    let render_nested = |content: &str| {
+        let doc = nested_form_document(content);
+        let mut options = RenderOptions::ink_accurate();
+        options.max_form_depth = 12;
+        render_page(&doc, 1, 72.0, PageBox::Crop, options)
+            .expect("chuỗi Form lồng phải render được")
+    };
+
+    let visible = render_nested("/F1 Do");
+    assert_eq!(visible.buffer.max_tac_percent(), 0.0);
+    assert_eq!(visible.warnings.dropped_objects, 1);
+    assert!(visible.warnings.ink_unsound());
+    assert!(
+        visible
+            .warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, count)| reason == "Do (lồng quá sâu)" && *count == 1),
+        "{:?}",
+        visible.warnings.skipped_ops
+    );
+
+    let clipped = render_nested("W n /F1 Do");
+    assert_eq!(clipped.warnings.dropped_objects, 0);
+    assert!(!clipped.warnings.ink_unsound(), "{:?}", clipped.warnings);
+}
+
+#[test]
+fn broken_flate_form_recovery_is_fail_loud_only_when_visible() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A03): raw recovery không được che việc
+    // Form visible khai Flate nhưng giải nén thất bại; Form ngoài raster phải sạch.
+    let visible_doc = broken_flate_form_document(0);
+    let visible = render_page(
+        &visible_doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+    )
+    .expect("Form Flate hỏng phải đi được đường recovery");
+    assert_eq!(
+        visible.buffer.plate_u8(3)[center(&visible)],
+        255,
+        "raw operators cứu được phải thật sự tô kẽm K"
+    );
+    assert!(
+        (visible.buffer.max_tac_percent() - 100.0).abs() < 0.5,
+        "raw recovery phải giữ đúng 100% K"
+    );
+    assert_eq!(visible.warnings.dropped_objects, 1);
+    assert!(visible.warnings.ink_unsound());
+    assert!(
+        visible.warnings.skipped_ops.iter().any(|(reason, count)| {
+            reason.contains("Do Form") && reason.contains("giải nén") && *count == 1
+        }),
+        "{:?}",
+        visible.warnings.skipped_ops
+    );
+
+    let outside_doc = broken_flate_form_document(20);
+    let outside = render_page(
+        &outside_doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+    )
+    .expect("Form ngoài raster phải được bỏ qua an toàn");
+    assert_eq!(outside.warnings.dropped_objects, 0);
+    assert!(!outside.warnings.ink_unsound(), "{:?}", outside.warnings);
+}
+
+#[test]
+fn valid_single_flate_form_renders_without_recovery_warning() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-A03): Form Flate hợp lệ phải tô bình
+    // thường và không bị taxonomy recovery của payload hỏng bắt nhầm.
+    let doc = valid_flate_form_document();
+    let rendered = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .expect("Form single Flate hợp lệ phải render được");
+    assert_eq!(rendered.buffer.plate_u8(3)[center(&rendered)], 255);
+    assert!((rendered.buffer.max_tac_percent() - 100.0).abs() < 0.5);
+    assert_eq!(rendered.warnings.dropped_objects, 0);
+    assert!(!rendered.warnings.ink_unsound(), "{:?}", rendered.warnings);
+    assert!(
+        !rendered
+            .warnings
+            .skipped_ops
+            .iter()
+            .any(|(reason, _)| reason.contains("giải nén")),
+        "{:?}",
+        rendered.warnings.skipped_ops
+    );
+}
+
+#[test]
+fn text_annotation_without_ap_is_fail_loud_only_when_rendered() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-B01): chỉ annotation được yêu cầu dựng
+    // và giao raster hiện hành mới được hạ soundness vì thiếu appearance `/AP`.
+    let visible_doc =
+        annotation_without_ap_document("Text", [1, 1, 9, 9], 0, [0.0, 0.0, 10.0, 10.0]);
+    let disabled = render_page(
+        &visible_doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate(),
+    )
+    .expect("đường không dựng annotation phải render được");
+    assert_eq!(disabled.warnings.dropped_objects, 0);
+    assert!(!disabled.warnings.ink_unsound(), "{:?}", disabled.warnings);
+
+    let enabled = render_page(
+        &visible_doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_annotations(true),
+    )
+    .expect("đường dựng annotation phải render được");
+    assert_eq!(enabled.warnings.dropped_objects, 1);
+    assert!(enabled.warnings.ink_unsound());
+    assert!(
+        enabled.warnings.skipped_ops.iter().any(|(reason, count)| {
+            reason.contains("/Text") && reason.contains("/AP") && *count == 1
+        }),
+        "{:?}",
+        enabled.warnings.skipped_ops
+    );
+
+    // Hidden và NoView không được render; Popup chỉ là cửa sổ phụ thuộc annotation
+    // cha nên bản thân nó không cần appearance riêng để giữ soundness.
+    for (control, doc) in [
+        (
+            "Hidden",
+            annotation_without_ap_document("Text", [1, 1, 9, 9], 2, [0.0, 0.0, 10.0, 10.0]),
+        ),
+        (
+            "NoView",
+            annotation_without_ap_document("Text", [1, 1, 9, 9], 32, [0.0, 0.0, 10.0, 10.0]),
+        ),
+        (
+            "Popup",
+            annotation_without_ap_document("Popup", [1, 1, 9, 9], 0, [0.0, 0.0, 10.0, 10.0]),
+        ),
+    ] {
+        let rendered = render_page(
+            &doc,
+            1,
+            72.0,
+            PageBox::Crop,
+            RenderOptions::ink_accurate().with_annotations(true),
+        )
+        .expect("annotation control phải được bỏ qua sạch");
+        assert_eq!(rendered.warnings.dropped_objects, 0, "{control}");
+        assert!(
+            !rendered.warnings.ink_unsound(),
+            "{control}: {:?}",
+            rendered.warnings
+        );
+        assert!(
+            !rendered
+                .warnings
+                .skipped_ops
+                .iter()
+                .any(|(reason, _)| reason.contains("/AP")),
+            "{control}: {:?}",
+            rendered.warnings.skipped_ops
+        );
+    }
+
+    // Rect vẫn nằm trong page 100×100 nhưng hoàn toàn ngoài tile góc trên-trái.
+    let outside_doc =
+        annotation_without_ap_document("Text", [80, 0, 90, 10], 0, [0.0, 0.0, 100.0, 100.0]);
+    let outside = render_page_managed_region(
+        &outside_doc,
+        1,
+        72.0,
+        PageBox::Crop,
+        RenderOptions::ink_accurate().with_annotations(true),
+        None,
+        Some(RasterClip {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }),
+    )
+    .expect("annotation ngoài tile phải được bỏ qua");
+    assert_eq!(outside.warnings.dropped_objects, 0);
+    assert!(!outside.warnings.ink_unsound(), "{:?}", outside.warnings);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Trung thực về giới hạn (fail loud)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1069,4 +1386,129 @@ fn anti_alias_mode_softens_edges_while_ink_mode_does_not() {
     let has_partial = |r: &PageRender| r.buffer.plane(3).iter().any(|v| *v > 0.001 && *v < 0.999);
     assert!(has_partial(&aa), "chế độ xem trước phải có AA");
     assert!(!has_partial(&ink), "chế độ đo mực phải nhị phân");
+}
+
+const STATE_DEPTH_OVERFLOW_REASON: &str = "q (vượt trần graphics-state)";
+
+fn skipped_warning_count(rendered: &PageRender, reason: &str) -> u32 {
+    rendered
+        .warnings
+        .skipped_ops
+        .iter()
+        .find(|(current, _)| current == reason)
+        .map_or(0, |(_, count)| *count)
+}
+
+#[test]
+fn q_depth_257_does_not_leak_state_or_paint() {
+    // CORRECTNESS (audit 2026-08-31 §PPE-B02): frame vượt trần là virtual.
+    // Nội dung trong episode bị bỏ fail-closed; Q consume virtual trước physical.
+    let mut content = String::from("0 0 0 1 k ");
+    content.push_str(&"q ".repeat(257));
+    content.push_str("1 0 1 0 k 0 0 5 10 re f ");
+    content.push_str(&"Q ".repeat(257));
+    content.push_str("5 0 5 10 re f");
+    let rendered = render(&content, dictionary! {});
+    let width = rendered.buffer.width() as usize;
+    let row = (rendered.buffer.height() as usize / 2) * width;
+
+    for channel in 0..4 {
+        assert_eq!(
+            rendered.buffer.plate_u8(channel)[row + 1],
+            0,
+            "nửa trái nằm trong overflow phải trắng, channel={channel}"
+        );
+    }
+    assert_eq!(rendered.buffer.plate_u8(3)[row + 8], 255);
+    assert_eq!(rendered.buffer.plate_u8(0)[row + 8], 0);
+    assert_eq!(rendered.buffer.plate_u8(2)[row + 8], 0);
+    assert_eq!(
+        skipped_warning_count(&rendered, STATE_DEPTH_OVERFLOW_REASON),
+        1
+    );
+    assert_eq!(skipped_warning_count(&rendered, "Q (không cân)"), 0);
+    assert_eq!(rendered.warnings.dropped_objects, 1);
+    assert!(rendered.warnings.ink_unsound());
+}
+
+#[test]
+fn q_overflow_warns_once_per_episode() {
+    let mut content = "q ".repeat(255);
+    content.push_str("q q Q Q q Q ");
+    content.push_str(&"Q ".repeat(255));
+    let rendered = render(&content, dictionary! {});
+
+    assert_eq!(
+        skipped_warning_count(&rendered, STATE_DEPTH_OVERFLOW_REASON),
+        2,
+        "hai q virtual lồng chỉ là một episode; q sau khi về 0 mở episode mới"
+    );
+    assert_eq!(skipped_warning_count(&rendered, "Q (không cân)"), 0);
+    assert_eq!(rendered.warnings.dropped_objects, 2);
+}
+
+fn internal_save_overflow_document(transparency_group: bool) -> Document {
+    let mut content = String::from("0 0 0 1 k ");
+    content.push_str(&"q ".repeat(255));
+    content.push_str("/Fm Do ");
+    content.push_str(&"Q ".repeat(255));
+    content.push_str("5 0 5 10 re f");
+    let mut doc = build_pdf(&content, dictionary! {}, [0.0, 0.0, 10.0, 10.0], None);
+    let mut form_dict = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Form",
+        "FormType" => 1,
+        "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+        "Resources" => dictionary! {},
+    };
+    if transparency_group {
+        form_dict.set(
+            "Group",
+            Object::Dictionary(dictionary! {
+                "S" => "Transparency",
+                "CS" => "DeviceCMYK",
+                "I" => Object::Boolean(false),
+            }),
+        );
+    }
+    let form_id = doc.add_object(Stream::new(form_dict, b"1 0 1 0 k 0 0 5 10 re f".to_vec()));
+    set_first_page_resources(
+        &mut doc,
+        dictionary! {
+            "XObject" => dictionary! { "Fm" => Object::Reference(form_id) },
+        },
+    );
+    doc
+}
+
+#[test]
+fn internal_form_and_group_save_overflow_are_contained() {
+    for (label, is_group) in [("Form thường", false), ("transparency group", true)] {
+        let doc = internal_save_overflow_document(is_group);
+        let rendered = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+            .unwrap_or_else(|error| panic!("{label} phải render được: {error}"));
+        let width = rendered.buffer.width() as usize;
+        let row = (rendered.buffer.height() as usize / 2) * width;
+
+        for channel in 0..4 {
+            assert_eq!(
+                rendered.buffer.plate_u8(channel)[row + 1],
+                0,
+                "{label}: object bị skip không được paint, channel={channel}"
+            );
+        }
+        assert_eq!(
+            rendered.buffer.plate_u8(3)[row + 8],
+            255,
+            "{label}: post-paint phải giữ state caller"
+        );
+        assert_eq!(
+            skipped_warning_count(&rendered, STATE_DEPTH_OVERFLOW_REASON),
+            1,
+            "{label}: {:?}",
+            rendered.warnings
+        );
+        assert_eq!(skipped_warning_count(&rendered, "Q (không cân)"), 0);
+        assert_eq!(rendered.warnings.dropped_objects, 1);
+    }
 }

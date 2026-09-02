@@ -26,7 +26,9 @@
 
 use std::collections::BTreeMap;
 
-use super::collision::{judge_pair, ring_within_bounds, signed_margin_to_bounds_mm, PairVerdict};
+use super::collision::{
+    judge_pair, judge_pair_sheet_axis, ring_within_bounds, signed_margin_to_bounds_mm, PairVerdict,
+};
 use super::model::{
     canonicalize_angle_deg, format_instance_id, PlacementRecord, PointMm, RunStats,
     TerminationReason, UnplacedRecord, MIXED_NESTING_VALIDATOR_VERSION,
@@ -40,6 +42,8 @@ use super::transform::{place_ring_checked, RigidityViolation};
 pub enum ValidationCode {
     /// Số lượng đặt + chưa đặt không khớp `quantity` đã khai.
     QuantityMismatch,
+    /// Autofill không có placement nào của một part đầu vào.
+    MissingAutofillPart,
     /// `instanceId` trùng.
     DuplicateInstanceId,
     /// `instanceId` không đúng dạng hoặc không thuộc chi tiết nào.
@@ -58,10 +62,18 @@ pub enum ValidationCode {
     TransformNotRigid,
     /// Contour tràn khỏi vùng dùng được.
     OutsideUsableArea,
+    /// Nằm trong vùng vật liệu nhưng không đủ khoảng hở tới mép tờ.
+    SheetEdgeClearanceTooSmall,
+    /// Chi tiết vượt vùng diện tích đã phân riêng cho mẫu.
+    OutsidePlacementZone,
     /// Hai chi tiết chồng lấn.
     Overlap,
     /// Khoảng hở nhỏ hơn `gapMm`.
     ClearanceTooSmall,
+    /// Chi tiết chồng vùng cấm cố định.
+    FixedObstacleOverlap,
+    /// Chi tiết không đủ khoảng hở tới vùng cấm cố định.
+    ObstacleClearanceTooSmall,
     /// `sourceRevision` không khớp request nội bộ.
     SourceRevisionMismatch,
     /// Thống kê không khớp placements thực.
@@ -72,6 +84,7 @@ impl ValidationCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::QuantityMismatch => "QUANTITY_MISMATCH",
+            Self::MissingAutofillPart => "MISSING_AUTOFILL_PART",
             Self::DuplicateInstanceId => "DUPLICATE_INSTANCE_ID",
             Self::UnknownInstanceId => "UNKNOWN_INSTANCE_ID",
             Self::UnknownPartId => "UNKNOWN_PART_ID",
@@ -81,8 +94,12 @@ impl ValidationCode {
             Self::AngleOutsideDomain => "ANGLE_OUTSIDE_DOMAIN",
             Self::TransformNotRigid => "TRANSFORM_NOT_RIGID",
             Self::OutsideUsableArea => "OUTSIDE_USABLE_AREA",
+            Self::SheetEdgeClearanceTooSmall => "SHEET_EDGE_CLEARANCE_TOO_SMALL",
+            Self::OutsidePlacementZone => "OUTSIDE_PLACEMENT_ZONE",
             Self::Overlap => "OVERLAP",
             Self::ClearanceTooSmall => "CLEARANCE_TOO_SMALL",
+            Self::FixedObstacleOverlap => "FIXED_OBSTACLE_OVERLAP",
+            Self::ObstacleClearanceTooSmall => "OBSTACLE_CLEARANCE_TOO_SMALL",
             Self::SourceRevisionMismatch => "SOURCE_REVISION_MISMATCH",
             Self::StatsMismatch => "STATS_MISMATCH",
         }
@@ -92,6 +109,9 @@ impl ValidationCode {
     pub fn message_vi(self) -> &'static str {
         match self {
             Self::QuantityMismatch => "Số con đã xếp không khớp số lượng đã khai.",
+            Self::MissingAutofillPart => {
+                "Bình tự lấp đầy đang thiếu một mẫu; không thể giao file thiếu nội dung."
+            }
             Self::DuplicateInstanceId => "Có hai con trùng định danh.",
             Self::UnknownInstanceId => "Định danh con không thuộc chi tiết nào trong lệnh.",
             Self::UnknownPartId => "Mã chi tiết không có trong lệnh.",
@@ -103,8 +123,14 @@ impl ValidationCode {
                 "Phép đặt không phải xoay-và-dịch thuần — có lật, phóng hoặc kéo xiên."
             }
             Self::OutsideUsableArea => "Có chi tiết tràn ra ngoài vùng in sau khi trừ lề.",
+            Self::SheetEdgeClearanceTooSmall => "Chi tiết không đủ khoảng hở tới mép vùng in.",
+            Self::OutsidePlacementZone => {
+                "Có chi tiết vượt vùng diện tích được chia; cần tính lại phương án."
+            }
             Self::Overlap => "Có hai chi tiết chồng lên nhau.",
             Self::ClearanceTooSmall => "Khoảng hở giữa hai nét cắt nhỏ hơn mức đã khai.",
+            Self::FixedObstacleOverlap => "Có chi tiết chồng lên vùng cấm cố định.",
+            Self::ObstacleClearanceTooSmall => "Chi tiết không đủ khoảng hở tới vùng cấm cố định.",
             Self::SourceRevisionMismatch => {
                 "Bản mẫu đã thay đổi so với lúc tính — cần tính lại phương án."
             }
@@ -160,6 +186,8 @@ pub struct ValidationReport {
     pub issues: Vec<ValidationIssue>,
     /// Số cặp thực sự phải đo ở narrow phase — chứng minh broad phase có tác dụng.
     pub pairs_checked: usize,
+    /// Số cặp placement↔obstacle đã đi qua narrow phase.
+    pub obstacle_pairs_checked: usize,
     /// Khoảng hở nhỏ nhất đo được trên toàn layout, mm.
     pub min_clearance_mm: f64,
     /// Lề nhỏ nhất tới biên vùng dùng được, mm. Âm là đã tràn.
@@ -199,6 +227,7 @@ pub fn validate_layout(
     let mut min_clearance = f64::MAX;
     let mut min_margin = f64::MAX;
     let mut pairs_checked = 0usize;
+    let mut obstacle_pairs_checked = 0usize;
 
     let push = |issues: &mut Vec<ValidationIssue>, issue: ValidationIssue| {
         if issues.len() < MAX_ISSUES {
@@ -268,6 +297,15 @@ pub fn validate_layout(
             );
         }
     }
+    // [CHẶNG-A LÔ 1 2026-08-27] Bất biến số lượng phụ thuộc ý định bố cục.
+    //
+    // `quantity_fulfillment`: `quantity` là YÊU CẦU ⇒ đặt + chưa đặt phải bằng đúng nó.
+    // Thiếu một con mà không ai ghi lý do là manifest sai.
+    //
+    // `autofill_single_sheet`: không có quantity đích. `quantity = 0` chỉ biểu diễn
+    // field vắng mặt ở raw core, không phải cap. Vì vậy validator chỉ cấm `unplaced`;
+    // lô solver tiếp theo phải tự sinh instance cho tới deterministic saturation.
+    let intent_yeu_cau_du_so = request.layout_intent.quantity_la_yeu_cau();
     for part in &request.parts {
         let placed = placed_per_part
             .get(part.part_id.as_str())
@@ -277,11 +315,29 @@ pub fn validate_layout(
             .get(part.part_id.as_str())
             .copied()
             .unwrap_or(0);
-        if placed + unplaced != part.quantity {
+        if !intent_yeu_cau_du_so && placed == 0 {
+            // Gang autofill không được âm thầm bỏ một design. Quy tắc này cố ý bảo thủ:
+            // part quá khổ cũng làm candidate invalid; admission ở lô sau sẽ phân loại
+            // lỗi hình học rõ hơn trước khi solver chạy.
+            let mut issue = ValidationIssue::simple(ValidationCode::MissingAutofillPart, "");
+            issue.instance_id = part.part_id.clone();
+            issue.required = 1.0;
+            push(&mut issues, issue);
+        }
+        let sai = if intent_yeu_cau_du_so {
+            placed + unplaced != part.quantity
+        } else {
+            unplaced > 0
+        };
+        if sai {
             let mut issue = ValidationIssue::simple(ValidationCode::QuantityMismatch, "");
             issue.instance_id = part.part_id.clone();
             issue.measured = f64::from(placed + unplaced);
-            issue.required = f64::from(part.quantity);
+            issue.required = if intent_yeu_cau_du_so {
+                f64::from(part.quantity)
+            } else {
+                0.0
+            };
             push(&mut issues, issue);
         }
     }
@@ -355,14 +411,41 @@ pub fn validate_layout(
                 ),
             );
         }
-        let margin = signed_margin_to_bounds_mm(&ring, &request.sheet.usable);
+        let margin = signed_margin_to_bounds_mm(&ring, &request.sheet.material_usable);
         min_margin = min_margin.min(margin);
-        if !ring_within_bounds(&ring, &request.sheet.usable, &tol) {
+        if !ring_within_bounds(&ring, &request.sheet.material_usable, &tol) {
             let mut issue =
                 ValidationIssue::simple(ValidationCode::OutsideUsableArea, &record.instance_id);
             issue.measured = margin;
             push(&mut issues, issue);
+        } else if !ring_within_bounds(&ring, &request.sheet.usable, &tol) {
+            let mut issue = ValidationIssue::simple(
+                ValidationCode::SheetEdgeClearanceTooSmall,
+                &record.instance_id,
+            );
+            issue.measured = margin;
+            issue.required = request
+                .production_contract
+                .as_ref()
+                .map(|contract| contract.clearance.part_to_sheet_edge.max_axis_mm())
+                .unwrap_or(0.0);
+            push(&mut issues, issue);
         }
+
+        // PARITY (audit 2026-08-29 MAP-NEST-04): final validator tự kiểm zone,
+        // độc lập với candidate/NFP để solver không thể công bố layout vượt dải.
+        if part.placement_zone.is_some() {
+            let placement_bounds = request.placement_bounds_for(part);
+            if !ring_within_bounds(&ring, &placement_bounds, &tol) {
+                let mut issue = ValidationIssue::simple(
+                    ValidationCode::OutsidePlacementZone,
+                    &record.instance_id,
+                );
+                issue.measured = signed_margin_to_bounds_mm(&ring, &placement_bounds);
+                push(&mut issues, issue);
+            }
+        }
+
         let Some(bounds) = super::normalize::BoundsMm::from_ring(&ring) else {
             push(
                 &mut issues,
@@ -387,6 +470,10 @@ pub fn validate_layout(
         by_sheet.entry(item.sheet_index).or_default().push(index);
     }
     let cell_hint = average_extent_mm(&placed_rings.iter().map(|p| p.bounds).collect::<Vec<_>>());
+    let part_clearance = request
+        .production_contract
+        .as_ref()
+        .map(|contract| contract.clearance.part_to_part);
     for indices in by_sheet.values() {
         let mut grid = SpatialGrid::new(&request.sheet.usable, cell_hint);
         for &index in indices {
@@ -401,7 +488,13 @@ pub fn validate_layout(
                 }
                 let other = &placed_rings[candidate.id];
                 pairs_checked += 1;
-                match judge_pair(&subject.ring, &other.ring, request.gap_mm, &tol) {
+                let verdict = match part_clearance {
+                    Some(clearance) => {
+                        judge_pair_sheet_axis(&subject.ring, &other.ring, clearance, &tol)
+                    }
+                    None => judge_pair(&subject.ring, &other.ring, request.gap_mm, &tol),
+                };
+                match verdict {
                     PairVerdict::Overlap => {
                         min_clearance = 0.0;
                         let mut issue =
@@ -419,6 +512,62 @@ pub fn validate_layout(
                             subject.instance_id,
                         );
                         issue.other_instance_id = other.instance_id.to_string();
+                        issue.measured = measured_mm;
+                        issue.required = required_mm;
+                        push(&mut issues, issue);
+                    }
+                    PairVerdict::Ok { measured_mm } => {
+                        min_clearance = min_clearance.min(measured_mm);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 7. Vùng cấm cố định và clearance tới obstacle ──
+    if let Some(contract) = &request.production_contract {
+        let obstacle_bounds: Vec<_> = contract
+            .fixed_obstacles
+            .iter()
+            .map(|obstacle| obstacle.bounds)
+            .collect();
+        let obstacle_cell_hint = average_extent_mm(&obstacle_bounds);
+        let mut obstacle_grid =
+            SpatialGrid::new(&request.sheet.material_usable, obstacle_cell_hint);
+        for (index, obstacle) in contract.fixed_obstacles.iter().enumerate() {
+            obstacle_grid.insert(index, obstacle.bounds);
+        }
+        let obstacle_clearance = contract.clearance.part_to_obstacle;
+        let broad_margin = obstacle_clearance.x_mm.hypot(obstacle_clearance.y_mm);
+        for subject in &placed_rings {
+            for candidate in obstacle_grid.query(&subject.bounds, broad_margin, &tol) {
+                let obstacle = &contract.fixed_obstacles[candidate.id];
+                obstacle_pairs_checked += 1;
+                match judge_pair_sheet_axis(
+                    &subject.ring,
+                    &obstacle.outer,
+                    obstacle_clearance,
+                    &tol,
+                ) {
+                    PairVerdict::Overlap => {
+                        min_clearance = 0.0;
+                        let mut issue = ValidationIssue::simple(
+                            ValidationCode::FixedObstacleOverlap,
+                            subject.instance_id,
+                        );
+                        issue.other_instance_id = obstacle.obstacle_id.clone();
+                        push(&mut issues, issue);
+                    }
+                    PairVerdict::ClearanceTooSmall {
+                        measured_mm,
+                        required_mm,
+                    } => {
+                        min_clearance = min_clearance.min(measured_mm);
+                        let mut issue = ValidationIssue::simple(
+                            ValidationCode::ObstacleClearanceTooSmall,
+                            subject.instance_id,
+                        );
+                        issue.other_instance_id = obstacle.obstacle_id.clone();
                         issue.measured = measured_mm;
                         issue.required = required_mm;
                         push(&mut issues, issue);
@@ -471,6 +620,7 @@ pub fn validate_layout(
         validator_version: MIXED_NESTING_VALIDATOR_VERSION,
         issues,
         pairs_checked,
+        obstacle_pairs_checked,
         min_clearance_mm: if min_clearance == f64::MAX {
             f64::INFINITY
         } else {

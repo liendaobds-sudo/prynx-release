@@ -26,6 +26,7 @@ use print_engine::color::space::OutputPreviewFilter;
 use print_engine::color::{ColorManager, RenderIntent};
 use print_engine::content::RenderOptions;
 use print_engine::ink::SpotAlternate;
+use print_engine::oc::OptionalContentUsage;
 use print_engine::page::{
     open as ppe_open, render_page_managed, render_page_managed_region, PageBox, RasterClip,
 };
@@ -51,6 +52,16 @@ fn output_preview_filter_from_str(value: &str) -> PyResult<OutputPreviewFilter> 
         "smooth-shades" => Ok(OutputPreviewFilter::SmoothShades),
         other => Err(PyValueError::new_err(format!(
             "output_preview_filter không hợp lệ: {other}"
+        ))),
+    }
+}
+
+fn optional_content_usage_from_str(value: &str) -> PyResult<OptionalContentUsage> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "print" => Ok(OptionalContentUsage::Print),
+        "view" => Ok(OptionalContentUsage::View),
+        other => Err(PyValueError::new_err(format!(
+            "optional_content_usage không hợp lệ: {other} (print|view)"
         ))),
     }
 }
@@ -322,6 +333,8 @@ impl PpeRenderSession {
         clip_y = None,
         clip_width = None,
         clip_height = None,
+        optional_content_usage = "print",
+        render_annotations = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn render_softproof(
@@ -343,6 +356,8 @@ impl PpeRenderSession {
         clip_y: Option<u32>,
         clip_width: Option<u32>,
         clip_height: Option<u32>,
+        optional_content_usage: &str,
+        render_annotations: bool,
     ) -> PyResult<Py<PyDict>> {
         self.check_owner(owner_id)?;
         if page == 0 {
@@ -363,6 +378,7 @@ impl PpeRenderSession {
         let which_box = page_box_from_str(page_box)?;
         let clip = raster_clip_from_parts(clip_x, clip_y, clip_width, clip_height)?;
         let output_preview_filter = output_preview_filter_from_str(output_preview_filter)?;
+        let optional_content_usage = optional_content_usage_from_str(optional_content_usage)?;
         let proof_settings = softproof_settings(
             simulate_paper_color,
             simulate_black_ink,
@@ -407,7 +423,11 @@ impl PpeRenderSession {
                     .map(std::fs::read)
                     .transpose()
                     .map_err(|error| format!("không đọc được fallback_font: {error}"))?;
+                // CORRECTNESS (audit 2026-08-31 §LÔ-B): policy Viewer phải đi
+                // xuyên binding; mặc định vẫn là /Print và không dựng annotation.
                 let mut opts = RenderOptions::softproof()
+                    .with_optional_content_usage(optional_content_usage)
+                    .with_annotations(render_annotations)
                     .with_overprint_simulation(simulate_overprint)
                     .with_output_preview_filter(output_preview_filter)
                     .with_softproof_settings(proof_settings)
@@ -1145,6 +1165,8 @@ pub fn ppe_compose_separation_subset(
     clip_y = None,
     clip_width = None,
     clip_height = None,
+    optional_content_usage = "print",
+    render_annotations = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn ppe_softproof(
@@ -1167,6 +1189,8 @@ pub fn ppe_softproof(
     clip_y: Option<u32>,
     clip_width: Option<u32>,
     clip_height: Option<u32>,
+    optional_content_usage: &str,
+    render_annotations: bool,
 ) -> PyResult<Py<PyDict>> {
     if page == 0 {
         return Err(PyValueError::new_err(
@@ -1195,12 +1219,17 @@ pub fn ppe_softproof(
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
     let output_preview_filter = output_preview_filter_from_str(output_preview_filter)?;
+    let optional_content_usage = optional_content_usage_from_str(optional_content_usage)?;
     let proof_settings = softproof_settings(
         simulate_paper_color,
         simulate_black_ink,
         page_background_rgb,
     );
+    // CORRECTNESS (audit 2026-08-31 §LÔ-B): stateless và session phải dùng
+    // cùng policy OCG/annotation để HTTP fallback không đổi artifact Viewer.
     let base_opts = RenderOptions::softproof()
+        .with_optional_content_usage(optional_content_usage)
+        .with_annotations(render_annotations)
         .with_overprint_simulation(simulate_overprint)
         .with_output_preview_filter(output_preview_filter)
         .with_softproof_settings(proof_settings)
@@ -1618,6 +1647,10 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     caps.set_item("softproof_requires_icc", true)?;
     caps.set_item("softproof_paper_color", true)?;
     caps.set_item("softproof_black_ink", true)?;
+    // Capability của chính chữ ký binding, tách khỏi capability semantic core:
+    // `.pyd` cũ biết View/annotation nhưng chưa chắc nhận được hai keyword này.
+    caps.set_item("softproof_optional_content_usage_option", true)?;
+    caps.set_item("softproof_render_annotations_option", true)?;
     caps.set_item("softproof_page_background", true)?;
     caps.set_item(
         "output_preview_filters",

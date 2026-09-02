@@ -24,6 +24,7 @@ use imposition_core::mixed_nesting::control::{
 use imposition_core::mixed_nesting::model::{
     AngleArcDeg, MixedNestingRequest, OrientationPolicy, PartSpec, PointMm, Pose, Profile,
     Reflection, RotationConstraint, SheetMarginMm, SheetSpec, Tolerance,
+    MIXED_NESTING_PROTOCOL_VERSION,
 };
 use imposition_core::mixed_nesting::nfp::feasible_region;
 use imposition_core::mixed_nesting::normalize::{normalize_request, BoundsMm, NormalizedRequest};
@@ -72,7 +73,7 @@ fn part(id: &str, quantity: u32, outer: Vec<PointMm>) -> PartSpec {
 
 fn request_of(parts: Vec<PartSpec>, w: f64, h: f64, margin: f64, gap: f64) -> MixedNestingRequest {
     MixedNestingRequest {
-        protocol_version: 1,
+        protocol_version: MIXED_NESTING_PROTOCOL_VERSION,
         seed: 20_260_826,
         profile: Profile::Balanced,
         time_budget_ms: None,
@@ -88,12 +89,14 @@ fn request_of(parts: Vec<PartSpec>, w: f64, h: f64, margin: f64, gap: f64) -> Mi
             max_sheets: 20,
         },
         gap_mm: gap,
+        layout_intent: Default::default(),
         orientation_policy: OrientationPolicy {
             default_rotation: RotationConstraint::Free,
             reflection: Reflection::Forbidden,
         },
         parts,
         job_id: None,
+        ..MixedNestingRequest::default()
     }
 }
 
@@ -127,7 +130,7 @@ fn local_ring(request: &NormalizedRequest, index: usize, angle: f64) -> Vec<Poin
 #[test]
 fn version_quy_tac_ung_vien_va_tinh_chinh() {
     assert_eq!(CANDIDATE_RULE_VERSION, 1);
-    assert_eq!(REFINE_RULE_VERSION, 1);
+    assert_eq!(REFINE_RULE_VERSION, 2);
     // Chia đôi đủ sâu để "tiếp xúc" mịn hơn dung sai nhiều bậc.
     assert_eq!(SLIDE_ADVANCE_STEPS, 64);
 }

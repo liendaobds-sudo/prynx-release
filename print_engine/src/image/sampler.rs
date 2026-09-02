@@ -13,7 +13,9 @@
 //! Với colorspace một thành phần (Gray, Indexed, Separation) engine dựng LUT 256
 //! ô nên chi phí quy màu về gần bằng không.
 
-use lopdf::{Dictionary, Document, Object};
+use std::collections::HashSet;
+
+use lopdf::{Dictionary, Document, Object, ObjectId};
 
 use crate::cancel::CancelToken;
 use crate::color::icc::ColorManager;
@@ -64,6 +66,11 @@ pub struct SampledImage {
     /// Khi có, mẫu màu phải được khử preblend trước ICC rồi mới composite bằng
     /// alpha; nếu không viền bán trong suốt sẽ bị pha màu nền lần thứ hai.
     matte: Option<Vec<f32>>,
+    /// Explicit `/Mask` tồn tại nhưng không thể giải mã an toàn.
+    ///
+    /// Không phát warning tại decode-time: cùng ảnh có thể được cache rồi đặt cả
+    /// trong lẫn ngoài clip. Renderer chỉ hạ soundness ở invocation thật sự phủ.
+    pub(crate) explicit_mask_decode_failed: bool,
 }
 
 impl SampledImage {
@@ -362,6 +369,61 @@ pub(crate) fn decode_image_with_cancel(
     warn: &mut RenderWarnings,
     cancel_token: Option<&CancelToken>,
 ) -> PpeResult<SampledImage> {
+    let mut guard = ImageDecodeGuard::default();
+    decode_image_guarded(doc, stream_obj, resources, warn, cancel_token, &mut guard)
+}
+
+/// CORRECTNESS (audit 2026-08-31 §PPE-A05): `/Mask` và `/SMask` đều có thể
+/// tham chiếu vòng. Giữ tập reference đang hoạt động cùng trần cho stream inline;
+/// đây là guard recursion, không phải cap hiệu năng theo cấu hình máy.
+#[derive(Default)]
+struct ImageDecodeGuard {
+    active: HashSet<ObjectId>,
+    depth: usize,
+}
+
+const MAX_IMAGE_MASK_DEPTH: usize = 32;
+
+fn decode_image_guarded(
+    doc: &Document,
+    stream_obj: &Object,
+    resources: Option<&Dictionary>,
+    warn: &mut RenderWarnings,
+    cancel_token: Option<&CancelToken>,
+    guard: &mut ImageDecodeGuard,
+) -> PpeResult<SampledImage> {
+    if guard.depth >= MAX_IMAGE_MASK_DEPTH {
+        return Err(PpeError::MalformedPdf(format!(
+            "chuỗi Mask/SMask vượt {MAX_IMAGE_MASK_DEPTH} lớp"
+        )));
+    }
+    let reference = match stream_obj {
+        Object::Reference(id) => Some(*id),
+        _ => None,
+    };
+    if reference.is_some_and(|id| !guard.active.insert(id)) {
+        return Err(PpeError::MalformedPdf(
+            "chuỗi Mask/SMask tham chiếu vòng".into(),
+        ));
+    }
+
+    guard.depth += 1;
+    let result = decode_image_inner(doc, stream_obj, resources, warn, cancel_token, guard);
+    guard.depth -= 1;
+    if let Some(id) = reference {
+        guard.active.remove(&id);
+    }
+    result
+}
+
+fn decode_image_inner(
+    doc: &Document,
+    stream_obj: &Object,
+    resources: Option<&Dictionary>,
+    warn: &mut RenderWarnings,
+    cancel_token: Option<&CancelToken>,
+    guard: &mut ImageDecodeGuard,
+) -> PpeResult<SampledImage> {
     check_cancelled(cancel_token)?;
     let stream = match pdf::deref(doc, stream_obj) {
         Object::Stream(s) => s,
@@ -490,19 +552,24 @@ pub(crate) fn decode_image_with_cancel(
         None
     };
 
-    let alpha = decode_soft_mask(doc, dict, width, height, warn, cancel_token)?;
-    let matte = decode_soft_mask_matte(doc, dict, colorspace.as_ref(), n_comps, warn);
-
-    // `/Mask [min max ...]` dùng chính component của colorspace cha. Nếu quy đổi/
-    // đo màu mà bỏ mask này, vùng đáng lẽ trong suốt sẽ lên mực. Chưa dựng được
-    // color-key mask thì phải hạ soundness, tuyệt đối không báo trang clean.
-    if matches!(
-        pdf::dict_get(doc, dict, "Mask").map(|value| pdf::deref(doc, value)),
-        Some(Object::Array(_))
-    ) {
-        warn.unsupported_transparency = true;
-        warn.note_skipped_op("ảnh /Mask color-key chưa hỗ trợ");
-    }
+    // `/SMask` thắng `/Mask` theo semantic image dictionary: không được nhân
+    // cả hai rồi làm ảnh trong hơn file yêu cầu. `/None` không phải soft mask.
+    let has_soft_mask = dict.get(b"SMask").ok().is_some_and(|object| {
+        !matches!(
+            pdf::name_str(pdf::deref(doc, object)).as_deref(),
+            Some("None")
+        )
+    });
+    let (alpha, explicit_mask_decode_failed) = if has_soft_mask {
+        decode_soft_mask(doc, dict, width, height, warn, cancel_token, guard)?
+    } else {
+        decode_explicit_mask(doc, dict, width, height, warn, cancel_token, guard)?
+    };
+    let matte = if has_soft_mask {
+        decode_soft_mask_matte(doc, dict, colorspace.as_ref(), n_comps, warn)
+    } else {
+        None
+    };
 
     check_cancelled(cancel_token)?;
     Ok(SampledImage {
@@ -516,7 +583,79 @@ pub(crate) fn decode_image_with_cancel(
         stencil,
         alpha,
         matte,
+        explicit_mask_decode_failed,
     })
+}
+
+/// Giải explicit `/Mask` dạng stream thành opacity nhị phân trên lưới ảnh cha.
+///
+/// `/Mask` mảng vẫn thuộc taxonomy color-key chưa hỗ trợ. Lỗi stream được giữ
+/// trong [`SampledImage`] để renderer chỉ cảnh báo khi invocation có coverage.
+fn decode_explicit_mask(
+    doc: &Document,
+    dict: &Dictionary,
+    width: u32,
+    height: u32,
+    warn: &mut RenderWarnings,
+    cancel_token: Option<&CancelToken>,
+    guard: &mut ImageDecodeGuard,
+) -> PpeResult<(Option<Vec<f32>>, bool)> {
+    let mask_obj = match dict.get(b"Mask") {
+        Ok(mask_obj) => mask_obj,
+        Err(_) => return Ok((None, false)),
+    };
+    match pdf::deref(doc, mask_obj) {
+        Object::Array(_) => {
+            warn.unsupported_transparency = true;
+            warn.note_skipped_op("ảnh /Mask color-key chưa hỗ trợ");
+            return Ok((None, false));
+        }
+        Object::Stream(_) => {}
+        _ => return Ok((None, true)),
+    }
+
+    check_cancelled(cancel_token)?;
+    // Warning nội bộ của mask cũng phải defer theo invocation của ảnh cha.
+    let mut mask_warnings = RenderWarnings::default();
+    let mask =
+        match decode_image_guarded(doc, mask_obj, None, &mut mask_warnings, cancel_token, guard) {
+            Ok(mask) => mask,
+            Err(error @ PpeError::Cancelled) => return Err(error),
+            Err(_) => return Ok((None, true)),
+        };
+    if mask.stencil.is_none()
+        || mask.alpha.is_some()
+        || mask.explicit_mask_decode_failed
+        || mask_warnings.ink_unsound()
+    {
+        return Ok((None, true));
+    }
+
+    let mut alpha = vec![0.0f32; (width as usize) * (height as usize)];
+    for y in 0..height {
+        check_cancelled(cancel_token)?;
+        for x in 0..width {
+            let mx = resample_mask_index(x, mask.width, width);
+            let my = resample_mask_index(y, mask.height, height);
+            alpha[y as usize * width as usize + x as usize] =
+                if mask.stencil_at(mx, my) { 1.0 } else { 0.0 };
+        }
+    }
+    Ok((Some(alpha), false))
+}
+
+/// Lấy texel mask gần tâm texel ảnh cha nhất trên cùng hình vuông đơn vị.
+///
+/// Dùng tâm thay vì nội suy hai endpoint: 4→2 phải là `[0,0,1,1]`, không phải
+/// `[0,0,0,1]`. Số học u64 giữ kết quả xác định và không đưa float vào decoder.
+#[inline]
+fn resample_mask_index(target: u32, source_size: u32, target_size: u32) -> u32 {
+    if source_size <= 1 || target_size == 0 {
+        return 0;
+    }
+    let numerator = (2 * target as u64 + 1) * source_size as u64;
+    let denominator = 2 * target_size as u64;
+    (numerator / denominator).min(source_size as u64 - 1) as u32
 }
 
 /// Đọc `/Matte` từ stream SMask và chỉ nhận colorspace có component 0..1.
@@ -562,13 +701,14 @@ fn decode_soft_mask(
     height: u32,
     warn: &mut RenderWarnings,
     cancel_token: Option<&CancelToken>,
-) -> PpeResult<Option<Vec<f32>>> {
+    guard: &mut ImageDecodeGuard,
+) -> PpeResult<(Option<Vec<f32>>, bool)> {
     let smask_obj = match dict.get(b"SMask") {
         Ok(object) => object,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok((None, false)),
     };
     check_cancelled(cancel_token)?;
-    let mask = match decode_image_with_cancel(doc, smask_obj, None, warn, cancel_token) {
+    let mask = match decode_image_guarded(doc, smask_obj, None, warn, cancel_token, guard) {
         Ok(m) => m,
         Err(error @ PpeError::Cancelled) => return Err(error),
         Err(_) => {
@@ -576,7 +716,7 @@ fn decode_soft_mask(
             // đáng ra trong suốt sẽ thêm mực không có thật.
             warn.unsupported_transparency = true;
             warn.note_skipped_op("SMask ảnh (không giải mã được)");
-            return Ok(None);
+            return Ok((None, false));
         }
     };
 
@@ -600,7 +740,7 @@ fn decode_soft_mask(
             out[y as usize * width as usize + x as usize] = v.clamp(0.0, 1.0);
         }
     }
-    Ok(Some(out))
+    Ok((Some(out), mask.explicit_mask_decode_failed))
 }
 
 /// Giải mã JPEG. Trả (mẫu interleaved u8, số thành phần).
@@ -1042,6 +1182,7 @@ mod tests {
             stencil: None,
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         }
     }
 
@@ -1077,6 +1218,7 @@ mod tests {
             stencil: None,
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         };
         // Chỉ số phải giữ nguyên 0 và 3, KHÔNG chia 255.
         assert_eq!(img.components_at(0, 0)[0], 0.0);
@@ -1099,6 +1241,7 @@ mod tests {
             stencil: None,
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         };
         assert!(img.supports_device_rgb());
         let rgb = img.device_rgb_at(1, 0).unwrap();
@@ -1124,6 +1267,7 @@ mod tests {
             stencil: None,
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         };
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
@@ -1153,6 +1297,7 @@ mod tests {
             stencil: None,
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         };
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
@@ -1181,6 +1326,7 @@ mod tests {
             stencil: None,
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         };
         let mut space = InkSpace::new();
         let mut warn = RenderWarnings::default();
@@ -1217,11 +1363,29 @@ mod tests {
             stencil: None,
             alpha: Some(vec![128.0 / 255.0]),
             matte: Some(vec![1.0, 1.0, 1.0]),
+            explicit_mask_decode_failed: false,
         };
         let rgb = img.components_at(0, 0);
         assert!((rgb[0] - 1.0).abs() < 1e-6);
         assert!(rgb[1] < 0.01, "green={}", rgb[1]);
         assert!(rgb[2] < 0.01, "blue={}", rgb[2]);
+    }
+
+    #[test]
+    fn explicit_mask_resampling_uses_texel_centres() {
+        assert_eq!(
+            (0..4)
+                .map(|x| resample_mask_index(x, 2, 4))
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1, 1]
+        );
+        assert_eq!(
+            (0..2)
+                .map(|x| resample_mask_index(x, 4, 2))
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(resample_mask_index(0, 2, 1), 1);
     }
 
     #[test]
@@ -1237,6 +1401,7 @@ mod tests {
             stencil: Some(vec![true, false]),
             alpha: None,
             matte: None,
+            explicit_mask_decode_failed: false,
         };
         assert!(img.stencil_at(0, 0));
         assert!(!img.stencil_at(1, 0));

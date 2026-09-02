@@ -59,6 +59,7 @@ pub mod kernel;
 pub mod model;
 pub mod multi_start;
 pub mod nfp;
+pub mod nfp_cache;
 pub mod normalize;
 pub mod orientation;
 pub mod refine;
@@ -73,19 +74,24 @@ pub use control::{
     ProgressSnapshot, RunControl, SearchEffort, StopCriterion,
 };
 pub use model::{
-    canonicalize_angle_deg, format_instance_id, is_canonical_angle_deg, AngleArcDeg, ContractError,
-    ContractErrorCode, ContractErrors, ManifestStatus, MixedNestingRequest, OrientationPolicy,
-    PartSpec, PlacementManifest, PlacementRecord, PointMm, Pose, Profile, Reflection,
-    RotationConstraint, RotationDomainKind, RunStats, SheetMarginMm, SheetSpec, TerminationReason,
-    Tolerance, UnplacedReason, UnplacedRecord, ValidationSummary,
+    canonicalize_angle_deg, format_instance_id, is_canonical_angle_deg, AngleArcDeg,
+    AxisAlignedBoundsSpec, ClearanceSpec, ContractError, ContractErrorCode, ContractErrors,
+    FixedObstacleKind, FixedObstacleSpec, GroupingIntent, LayoutAlignment, LayoutIntent,
+    ManifestAlgorithmVersions, ManifestCandidateSource, ManifestScore, ManifestSearchBudget,
+    ManifestSearchSummary, ManifestStatus, MixedNestingRequest, OrientationPolicy,
+    PartPlacementZoneSpec, PartSpec, PlacementManifest, PlacementRecord, PointMm, Pose,
+    ProductionContractV1, Profile, Reflection, RotationConstraint, RotationDomainKind, RunStats,
+    SheetAxisClearanceMm, SheetMarginMm, SheetSpec, TerminationReason, Tolerance, UnplacedReason,
+    UnplacedRecord, ValidationSummary, CONVEX_STRICT_TOL_RATIO, DEFAULT_LINEAR_TOL_MM,
     MIXED_NESTING_CANONICALIZATION_VERSION, MIXED_NESTING_ENGINE_VERSION,
+    MIXED_NESTING_MANIFEST_SCHEMA_VERSION, MIXED_NESTING_PRODUCTION_SCHEMA_VERSION,
     MIXED_NESTING_PROTOCOL_VERSION, MIXED_NESTING_TOLERANCE_VERSION,
     MIXED_NESTING_VALIDATOR_VERSION,
 };
 pub use normalize::{
     normalize_request, BoundsMm, NormalizeError, NormalizeErrorCode, NormalizeFailure,
-    NormalizedPart, NormalizedRequest, NormalizedSheet, Winding, NORMALIZE_RULE_VERSION,
-    REFERENCE_POINT_RULE_VERSION,
+    NormalizedFixedObstacle, NormalizedPart, NormalizedProductionContractV1, NormalizedRequest,
+    NormalizedSheet, Winding, NORMALIZE_RULE_VERSION, REFERENCE_POINT_RULE_VERSION,
 };
 pub use orientation::{
     circular_distance_deg, resolve_part_domain, resolve_rotation_domain, CanonicalArc,
@@ -102,8 +108,8 @@ pub use baseline::{
 };
 pub use candidates::{candidate_angles, order_parts, translation_candidates, PartOrder};
 pub use collision::{
-    bounds_gap_mm, bounds_may_touch, judge_pair, min_distance_mm, ring_within_bounds,
-    rings_overlap, segment_distance_mm, PairVerdict,
+    bounds_gap_mm, bounds_may_touch, judge_pair, judge_pair_sheet_axis, min_distance_mm,
+    ring_within_bounds, rings_overlap, segment_distance_mm, PairVerdict,
 };
 pub use geometry::{convex_decompose, is_convex_ring, point_in_ring, reflex_vertex_indices};
 pub use kernel::{
@@ -115,10 +121,14 @@ pub use multi_start::{
     MULTI_START_VERSION,
 };
 pub use nfp::{
-    feasible_region, inner_fit_rect, no_fit_polygon, region_contains, region_vertices, NfpError,
-    RegionMm, NFP_RULE_VERSION,
+    feasible_region, feasible_region_cached, inner_fit_rect, no_fit_polygon, region_contains,
+    region_vertices, NfpError, RegionMm, NFP_RULE_VERSION,
 };
-pub use refine::{compact_bottom_left, refine_pose, slide_to_contact, RefineContext, RefinedPose};
+pub use nfp_cache::{NfpCache, KEY_QUANTUM_MM as NFP_CACHE_KEY_QUANTUM_MM};
+pub use refine::{
+    compact_bottom_left, refine_pose, slide_to_contact, RefineContext, RefinedPose,
+    REFINE_RULE_VERSION,
+};
 pub use score::{score_layout, LayoutScore, PlacementKey, SCORE_VERSION};
 pub use solver::{plan_trials, run_trial, TrialError, TrialPlan, TrialResult, SOLVER_VERSION};
 pub use spatial::{SpatialEntry, SpatialGrid};

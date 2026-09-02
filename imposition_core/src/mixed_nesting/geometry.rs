@@ -38,6 +38,92 @@ pub fn cross_tolerance_mm2(ring: &[PointMm], tol: &Tolerance) -> f64 {
     tol.linear_mm * perimeter_mm(ring).max(1.0)
 }
 
+/// Lồi theo luật **nghiêm** mà phép Minkowski nhanh của kernel yêu cầu.
+///
+/// FIX (audit 2026-08-28 §NFP-CONVEX): dùng chung
+/// [`super::model::CONVEX_STRICT_TOL_RATIO`] với `kernel::is_convex_ccw`, để mảnh do
+/// [`convex_decompose`] trả về luôn được kernel nhận. Khác [`is_convex_ring`] ở chỗ
+/// hàm này **không** nhận `Tolerance` của caller: luật Minkowski là luật của kernel,
+/// không phải tham số nghiệp vụ.
+fn is_convex_strict(ring: &[PointMm]) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let flipped = signed_area_mm2(ring) < 0.0;
+    let threshold = super::model::CONVEX_STRICT_TOL_RATIO * perimeter_mm(ring).max(1.0);
+    let count = ring.len();
+    for index in 0..count {
+        let previous = ring[(index + count - 1) % count];
+        let current = ring[index];
+        let next = ring[(index + 1) % count];
+        let mut cross = turn_cross_mm2(previous, current, next);
+        if flipped {
+            cross = -cross;
+        }
+        if cross < -threshold {
+            return false;
+        }
+    }
+    true
+}
+
+/// Bỏ đỉnh trùng và đỉnh **gần thẳng** (độ võng dưới dung sai).
+///
+/// FIX (audit 2026-08-28 §NFP-CONVEX): đây là bước làm cho luật lồi nghiêm dùng được
+/// trên dữ liệu thật. Contour từ PDF mang đỉnh trùng (bộ trích nét sinh ra) và đỉnh
+/// gần thẳng (sample bezier, làm tròn toạ độ). Chúng vô nghĩa về cơ khí — dao bế không
+/// cắt nổi sai số dưới `linear_mm` — nhưng lại là đúng nhóm đỉnh có thể lõm nhẹ do làm
+/// tròn, tức nhóm gây `KERNEL_NOT_CONVEX`.
+///
+/// Giữ nguyên hướng vòng. Không bao giờ trả về dưới 3 đỉnh nếu đầu vào có diện tích
+/// thật: ngưỡng dựa trên `turn_cross_mm2` nên đỉnh của hình lồi thật luôn vượt ngưỡng.
+fn drop_near_straight_vertices(ring: &[PointMm], tol: &Tolerance) -> Vec<PointMm> {
+    // Bỏ đỉnh trùng liền kề trước, nếu không `turn_cross_mm2` sẽ ra 0 vì cạnh dài 0
+    // và ta không phân biệt được "thẳng" với "trùng".
+    let mut distinct: Vec<PointMm> = Vec::with_capacity(ring.len());
+    for point in ring {
+        match distinct.last() {
+            Some(last) if same_point(*last, *point, tol) => {}
+            _ => distinct.push(*point),
+        }
+    }
+    while distinct.len() > 1 {
+        let first = distinct[0];
+        let last = distinct[distinct.len() - 1];
+        if same_point(first, last, tol) {
+            distinct.pop();
+        } else {
+            break;
+        }
+    }
+    if distinct.len() < 3 {
+        return distinct;
+    }
+
+    let threshold = cross_tolerance_mm2(&distinct, tol);
+    let mut kept: Vec<PointMm> = Vec::with_capacity(distinct.len());
+    let count = distinct.len();
+    for index in 0..count {
+        let previous = *kept
+            .last()
+            .unwrap_or(&distinct[(index + count - 1) % count]);
+        let current = distinct[index];
+        let next = distinct[(index + 1) % count];
+        if turn_cross_mm2(previous, current, next).abs() <= threshold {
+            continue; // gần thẳng ⇒ bỏ, biên gần như không đổi
+        }
+        kept.push(current);
+    }
+    if kept.len() < 3 {
+        return distinct; // thà giữ vòng gốc còn hơn trả hình suy biến
+    }
+    kept
+}
+
+fn same_point(a: PointMm, b: PointMm, tol: &Tolerance) -> bool {
+    (a.x - b.x).abs() <= tol.linear_mm && (a.y - b.y).abs() <= tol.linear_mm
+}
+
 /// Vòng có lồi hay không. Đỉnh thẳng hàng được coi là lồi.
 pub fn is_convex_ring(ring: &[PointMm], tol: &Tolerance) -> bool {
     if ring.len() < 3 {
@@ -188,8 +274,21 @@ pub fn convex_decompose(ring: &[PointMm], tol: &Tolerance) -> Vec<Vec<PointMm>> 
     if ring.len() < 3 {
         return Vec::new();
     }
-    let ccw = as_ccw(ring);
-    if is_convex_ring(&ccw, tol) {
+    // FIX (audit 2026-08-28 §NFP-CONVEX): hai bước dưới đây phải đi cùng nhau.
+    //
+    // 1. Bỏ đỉnh **gần thẳng**. Đỉnh có độ võng dưới dung sai không mang thông tin
+    //    hình học nào (dao bế không cắt nổi sai số nanomet) nhưng lại là đỉnh duy nhất
+    //    có thể lõm nhẹ do làm tròn toạ độ. Bỏ chúng làm luật nghiêm ở bước 2 an toàn:
+    //    đỉnh còn lại có |cross| > dung sai lỏng ≫ dung sai nghiêm, nên hai luật đồng ý.
+    // 2. Xét lồi theo luật **nghiêm** — đúng luật `kernel::minkowski_convex` đòi. Nếu
+    //    chỉ xét theo luật lỏng thì mảnh trả về có thể bị kernel chặn ngay sau đó
+    //    (`KERNEL_NOT_CONVEX`), đúng lỗi người dùng gặp trên khuôn gần lồi.
+    let cleaned = drop_near_straight_vertices(ring, tol);
+    let ccw = as_ccw(&cleaned);
+    if ccw.len() < 3 {
+        return Vec::new();
+    }
+    if is_convex_strict(&ccw) {
         return vec![ccw];
     }
     let triangles = triangulate_indices(&ccw, tol);
@@ -204,7 +303,7 @@ pub fn convex_decompose(ring: &[PointMm], tol: &Tolerance) -> Vec<Vec<PointMm>> 
         let mut merged_any = false;
         'outer: for left in 0..pieces.len() {
             for right in (left + 1)..pieces.len() {
-                if let Some(candidate) = merge_if_convex(&pieces[left], &pieces[right], &ccw, tol) {
+                if let Some(candidate) = merge_if_convex(&pieces[left], &pieces[right], &ccw) {
                     pieces[left] = candidate;
                     pieces.remove(right);
                     merged_any = true;
@@ -228,12 +327,7 @@ pub fn convex_decompose(ring: &[PointMm], tol: &Tolerance) -> Vec<Vec<PointMm>> 
 /// Hai mảnh CCW kề nhau chia sẻ một cạnh theo **hai chiều ngược nhau**: mảnh trái có
 /// cạnh có hướng `u→v`, mảnh phải có `v→u`. Ghép bằng cách đi hết biên mảnh trái từ `v`
 /// về `u`, rồi đi hết biên mảnh phải từ `u` về `v`, bỏ hai đỉnh lặp ở chỗ nối.
-fn merge_if_convex(
-    left: &[usize],
-    right: &[usize],
-    ring: &[PointMm],
-    tol: &Tolerance,
-) -> Option<Vec<usize>> {
+fn merge_if_convex(left: &[usize], right: &[usize], ring: &[PointMm]) -> Option<Vec<usize>> {
     let (ln, rn) = (left.len(), right.len());
     for li in 0..ln {
         let u = left[li];
@@ -252,7 +346,8 @@ fn merge_if_convex(
                 return None;
             }
             let points: Vec<PointMm> = merged.iter().map(|i| ring[*i]).collect();
-            if is_convex_ring(&points, tol) && signed_area_mm2(&points) > 0.0 {
+            // Luật NGHIÊM: chỉ gộp khi kernel cũng sẽ nhận mảnh này là lồi.
+            if is_convex_strict(&points) && signed_area_mm2(&points) > 0.0 {
                 return Some(merged);
             }
             return None;

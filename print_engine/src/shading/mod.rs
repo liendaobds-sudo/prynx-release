@@ -75,6 +75,34 @@ pub struct Shading {
     pub background: Option<Vec<f32>>,
 }
 
+fn shading_dictionary<'a>(doc: &'a Document, obj: &'a Object) -> PpeResult<&'a Dictionary> {
+    match pdf::deref(doc, obj) {
+        Object::Dictionary(dict) => Ok(dict),
+        Object::Stream(stream) => Ok(&stream.dict),
+        _ => Err(PpeError::MalformedPdf(
+            "shading không phải dict/stream".into(),
+        )),
+    }
+}
+
+/// Chỉ phân giải metadata không gian màu, trước khi chạm payload mesh.
+///
+/// CORRECTNESS (audit 2026-09-01 §PPE-E2): Output Preview có thể loại toàn bộ
+/// source DeviceRGB/DeviceCMYK. Caller dùng helper này để gate trước decode,
+/// tránh biến object bị ẩn có stream hỏng thành cảnh báo mất nội dung.
+pub fn resolve_shading_colorspace(
+    doc: &Document,
+    obj: &Object,
+    resources: Option<&Dictionary>,
+    warn: &mut RenderWarnings,
+) -> PpeResult<ColorSpace> {
+    let dict = shading_dictionary(doc, obj)?;
+    let cs_obj = dict
+        .get(b"ColorSpace")
+        .map_err(|_| PpeError::MalformedPdf("shading thiếu ColorSpace".into()))?;
+    resolve_colorspace(doc, cs_obj, resources, warn)
+}
+
 /// Phân giải shading dictionary.
 pub fn resolve_shading(
     doc: &Document,
@@ -82,27 +110,23 @@ pub fn resolve_shading(
     resources: Option<&Dictionary>,
     warn: &mut RenderWarnings,
 ) -> PpeResult<Shading> {
+    let colorspace = resolve_shading_colorspace(doc, obj, resources, warn)?;
+    resolve_shading_with_colorspace(doc, obj, colorspace)
+}
+
+/// Hoàn tất shading sau khi caller đã kiểm tra source-color visibility.
+pub fn resolve_shading_with_colorspace(
+    doc: &Document,
+    obj: &Object,
+    colorspace: ColorSpace,
+) -> PpeResult<Shading> {
     let resolved = pdf::deref(doc, obj);
-    let dict = match resolved {
-        Object::Dictionary(d) => d,
-        Object::Stream(s) => &s.dict,
-        _ => {
-            return Err(PpeError::MalformedPdf(
-                "shading không phải dict/stream".into(),
-            ))
-        }
-    };
+    let dict = shading_dictionary(doc, obj)?;
 
     let shading_type = pdf::dict_get(doc, dict, "ShadingType")
         .and_then(pdf::as_num)
         .ok_or_else(|| PpeError::MalformedPdf("shading thiếu ShadingType".into()))?
         as i32;
-
-    let cs_obj = dict
-        .get(b"ColorSpace")
-        .map_err(|_| PpeError::MalformedPdf("shading thiếu ColorSpace".into()))?
-        .clone();
-    let colorspace = resolve_colorspace(doc, &cs_obj, resources, warn)?;
 
     let function = match dict.get(b"Function") {
         Ok(f) => Some(resolve_function(doc, f)?),
@@ -177,14 +201,20 @@ pub fn resolve_shading(
                     "shading kiểu {shading_type} phải là stream"
                 )));
             };
-            let data = stream
-                .decompressed_content()
-                .unwrap_or_else(|_| stream.content.clone());
+            let decoded = pdf::decode_stream(doc, stream);
+            if decoded.quality == pdf::DecodeQuality::Recovered {
+                // CORRECTNESS (audit 2026-09-01 §PPE-E2): bytes nén/raw không
+                // được diễn giải như bitstream mesh; làm vậy có thể bịa đỉnh màu
+                // hợp lệ từ dữ liệu hỏng và cho kết quả prepress false-clean.
+                return Err(PpeError::MalformedPdf(format!(
+                    "shading lưới kiểu {shading_type} không giải nén chính xác được"
+                )));
+            }
             let triangles = mesh::parse_mesh(
                 doc,
                 dict,
                 shading_type,
-                &data,
+                &decoded.bytes,
                 function.as_ref(),
                 colorspace.n_components(),
             )?;

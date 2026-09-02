@@ -1012,9 +1012,7 @@ mod tests {
             .expect("font phải có cmap")
             .subtables
             .into_iter()
-            .filter(|subtable| {
-                subtable.platform_id == ttf_parser::PlatformId::Macintosh
-            })
+            .filter(|subtable| subtable.platform_id == ttf_parser::PlatformId::Macintosh)
             .find_map(|subtable| subtable.glyph_index(0x80).map(|gid| gid.0))
             .expect("cmap Macintosh phải có mã 0x80");
         assert_ne!(expected, 0x80, "ca test phải phân biệt GID với mã byte");
