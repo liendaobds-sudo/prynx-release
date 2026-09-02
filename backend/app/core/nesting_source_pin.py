@@ -20,9 +20,9 @@ from typing import Any, BinaryIO, Callable, Mapping, Sequence
 import pikepdf
 
 from app.config import settings
+from app.core import artifact_lease as artifact_lease_module
 from app.core.artifact_lease import (
     ARTIFACT_INITIAL_LEASE_SECONDS,
-    NestingSourceLeaseResolution,
     discard_artifact_lease,
     create_artifact_lease,
     promote_artifact_lease,
@@ -88,7 +88,9 @@ class PinnedNestingSource:
     pages: tuple[PinnedPageMetadata, ...]
     snapshot_path: Path
     lease_token: str
-    lease_resolution: NestingSourceLeaseResolution | None = None
+    lease_resolution: (
+        artifact_lease_module.NestingSourceLeaseResolution | None
+    ) = None
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,7 @@ class VerifiedNestingSourceProof:
     pages: tuple[PinnedPageMetadata, ...]
     snapshot_path: Path
     lease_token: str
-    lease_resolution: NestingSourceLeaseResolution
+    lease_resolution: artifact_lease_module.NestingSourceLeaseResolution
 
 
 def _q(value: Any, field: str) -> float:
@@ -808,7 +810,9 @@ def resolve_final_source(
     *,
     renew: bool = True,
     inspection_cache: dict[str, tuple[PinnedPageMetadata, ...]] | None = None,
-    lease_resolution: NestingSourceLeaseResolution | None = None,
+    lease_resolution: (
+        artifact_lease_module.NestingSourceLeaseResolution | None
+    ) = None,
 ) -> ResolvedPinnedSource:
     try:
         canonical_locator = _canonical_uuid(locator_id, "locatorId")
@@ -827,7 +831,12 @@ def resolve_final_source(
             require_final=True,
         )
     elif (
-        not isinstance(lease_resolution, NestingSourceLeaseResolution)
+        # [RELEASE-QA FIX 2026-09-02]: backend reload tạo lại dataclass receipt;
+        # luôn đối chiếu class hiện hành của module để không từ chối lease hợp lệ.
+        not isinstance(
+            lease_resolution,
+            artifact_lease_module.NestingSourceLeaseResolution,
+        )
         or lease_resolution.locator_id != canonical_locator
         or lease_resolution.phase != "final"
     ):

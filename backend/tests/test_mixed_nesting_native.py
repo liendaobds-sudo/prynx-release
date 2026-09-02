@@ -491,7 +491,7 @@ def test_create_run_that_bai_khi_engine_khong_dung_duoc(monkeypatch: pytest.Monk
 def test_capabilities_dung_hop_dong():
     caps = svc.engine_capabilities()
     assert caps.protocol_version == 2
-    assert caps.engine_version == "0.2.0"
+    assert caps.engine_version == "0.3.0"
     assert caps.reflection == "forbidden"
     assert caps.default_rotation == "free"
     assert caps.continuous_translation is True
@@ -512,7 +512,7 @@ def test_solve_tra_manifest_hop_le():
     assert manifest["seed"] == 20260826
     assert manifest["status"] == "completed"
     assert manifest["validation"]["valid"] is True
-    assert manifest["validation"]["validatorVersion"] == 1
+    assert manifest["validation"]["validatorVersion"] == 2
     assert len(manifest["placements"]) + len(manifest["unplaced"]) == 3
     # Tên trường pose đúng hợp đồng §9.3, kể cả chữ thường của `mm`.
     pose = manifest["placements"][0]["pose"]
