@@ -1,8 +1,10 @@
 /**
  * Form đổi license key — dùng chung About + LicenseLockOverlay.
  * Logic verify-first nằm trong useAuthStore.changeLicenseKey.
+ * UIUX (audit 2026-09-03): dùng cùng token bề mặt/nút với app để luồng nhập key
+ * không tách thành một modal xanh riêng.
  */
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { useTranslation } from 'react-i18next';
 import { toast } from '../ui/Toast';
@@ -30,24 +32,28 @@ export default function ChangeLicenseKeyPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [confirm, setConfirm] = useState(false);
+  const inputId = useId();
+  const errorId = `${inputId}-error`;
+  const confirmTitleId = `${inputId}-confirm-title`;
+  const confirmHintId = `${inputId}-confirm-hint`;
 
   const dark = variant === 'dark';
 
   const inputCls = dark
-    ? 'w-full h-10 px-3 rounded-lg border border-white/15 bg-black/30 text-[13px] font-mono text-white outline-none focus:border-indigo-400 placeholder:text-slate-500'
-    : 'w-full h-9 px-3 rounded-lg border border-slate-300 dark:border-white/15 bg-white dark:bg-zinc-900 text-[13px] font-mono text-slate-800 dark:text-zinc-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40';
+    ? 'w-full h-10 px-3 rounded-app-md border border-white/15 bg-zinc-900/80 text-[13px] font-mono text-zinc-100 outline-none transition-[border-color,box-shadow] focus:border-app-accent focus:ring-2 focus:ring-app-accent-soft placeholder:text-zinc-500 disabled:cursor-not-allowed disabled:opacity-60'
+    : 'w-full h-10 px-3 rounded-app-md border border-app-line bg-app-2 text-[13px] font-mono text-app-text-1 outline-none transition-[border-color,box-shadow] focus:border-app-accent focus:ring-2 focus:ring-app-accent-soft placeholder:text-app-text-3 disabled:cursor-not-allowed disabled:opacity-60';
 
   const labelCls = dark
     ? 'block text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5'
-    : 'block text-[11px] font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-wide mb-1.5';
+    : 'block text-[11px] font-semibold text-app-text-2 uppercase tracking-wide mb-1.5';
 
   const cancelBtn = dark
-    ? 'px-3 h-9 rounded-lg text-[13px] font-semibold text-slate-300 hover:bg-white/10 disabled:opacity-50'
-    : 'px-3 h-8 rounded-lg text-[12px] font-semibold text-slate-600 dark:text-zinc-300 hover:bg-slate-200/80 dark:hover:bg-zinc-700 disabled:opacity-50';
+    ? 'px-3 h-9 rounded-app-md text-[13px] font-semibold text-zinc-300 hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-50'
+    : 'px-3 h-9 rounded-app-md text-[12px] font-semibold text-app-text-2 hover:bg-app-3 focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-50';
 
   const primaryBtn = dark
-    ? 'px-3 h-9 rounded-lg text-[13px] font-semibold bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50'
-    : 'px-3 h-8 rounded-lg text-[12px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50';
+    ? 'px-3 h-9 rounded-app-md text-[13px] font-semibold bg-app-accent hover:bg-app-accent-hover text-white focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-50'
+    : 'px-3 h-9 rounded-app-md text-[12px] font-semibold bg-app-accent hover:bg-app-accent-hover text-white focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-50';
 
   const runChange = async () => {
     if (busy) return;
@@ -86,11 +92,14 @@ export default function ChangeLicenseKeyPanel({
 
   return (
     <div className={dark ? 'space-y-3 text-left' : 'space-y-2.5'}>
-      <label className={labelCls}>{t('misc.about:license_key_moi')}</label>
+      <label htmlFor={inputId} className={labelCls}>{t('misc.about:license_key_moi')}</label>
       <input
+        id={inputId}
         type="text"
         autoFocus={autoFocus}
         value={input}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
         disabled={busy}
         onChange={(e) => { setInput(e.target.value); setError(''); }}
         onKeyDown={(e) => {
@@ -102,7 +111,7 @@ export default function ChangeLicenseKeyPanel({
         spellCheck={false}
       />
       {error && (
-        <p className="text-[12px] text-rose-400 leading-snug">{error}</p>
+        <p id={errorId} role="alert" className={`text-[12px] leading-snug ${dark ? 'text-rose-300' : 'text-app-danger'}`}>{error}</p>
       )}
       <div className="flex justify-end gap-2 pt-0.5">
         {onCancel && (
@@ -122,19 +131,21 @@ export default function ChangeLicenseKeyPanel({
 
       {confirm && (
         <div
-          className="fixed inset-0 z-[100001] flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-confirm flex items-center justify-center bg-black/50 p-4 backdrop-blur-[2px]"
           onClick={() => !busy && setConfirm(false)}
           role="alertdialog"
           aria-modal="true"
+          aria-labelledby={confirmTitleId}
+          aria-describedby={confirmHintId}
         >
           <div
-            className="w-full max-w-xs rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 shadow-2xl p-5 space-y-3"
+            className="w-full max-w-xs space-y-3 rounded-app-xl border border-app-line bg-app-2 p-5 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="text-[14px] text-slate-800 dark:text-zinc-100 font-medium leading-relaxed">
+            <p id={confirmTitleId} className="text-[14px] font-medium leading-relaxed text-app-text-1">
               {t('misc.about:xac_nhan_doi_key')}
             </p>
-            <p className="text-[12px] text-slate-500 dark:text-zinc-400 leading-snug">
+            <p id={confirmHintId} className="text-[12px] leading-snug text-app-text-2">
               {t('misc.about:xac_nhan_doi_key_hint')}
             </p>
             <div className="flex justify-end gap-2">
@@ -142,7 +153,7 @@ export default function ChangeLicenseKeyPanel({
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirm(false)}
-                className="px-3 h-9 rounded-lg text-[13px] font-semibold text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+                className="px-3 h-9 rounded-app-md text-[13px] font-semibold text-app-text-2 hover:bg-app-3 focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-50"
               >
                 {t('misc.about:huy')}
               </button>
@@ -150,7 +161,7 @@ export default function ChangeLicenseKeyPanel({
                 type="button"
                 disabled={busy}
                 onClick={() => void runChange()}
-                className="px-3 h-9 rounded-lg text-[13px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50"
+                className="px-3 h-9 rounded-app-md bg-app-accent text-[13px] font-semibold text-white hover:bg-app-accent-hover focus-visible:ring-2 focus-visible:ring-app-accent disabled:opacity-50"
               >
                 {busy ? t('misc.about:dang_xac_thuc') : t('misc.about:dong_y_doi_key')}
               </button>

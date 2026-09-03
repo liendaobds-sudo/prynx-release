@@ -43,44 +43,83 @@ export default function LoginScreen() {
   };
 
   return (
-    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-slate-900 bg-[url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=2564&auto=format&fit=crop')] bg-cover bg-center before:absolute before:inset-0 before:bg-slate-900/80 before:backdrop-blur-sm">
-      <div className="relative z-10 w-full max-w-md p-8 overflow-hidden bg-white/10 dark:bg-black/40 border border-white/20 shadow-2xl backdrop-blur-xl rounded-2xl">
-        
-        {/* Glow Effects */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[150%] h-32 bg-indigo-500/30 blur-[80px] rounded-full pointer-events-none"></div>
+    <div className="fixed inset-0 z-[99999] overflow-y-auto bg-app-1 text-app-text-1">
+      {/* UIUX (audit 2026-09-03): nền kích hoạt dùng token của app, bỏ ảnh nền từ
+          CDN và lớp phủ xanh đậm khiến màn hình lệch hẳn khỏi giao diện sáng. */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div className="absolute -left-24 -top-24 h-72 w-72 rounded-full bg-app-accent-soft blur-3xl" />
+        <div className="absolute -bottom-32 -right-20 h-80 w-80 rounded-full bg-slate-200/70 blur-3xl dark:bg-zinc-800/50" />
+      </div>
 
-        <div className="text-center mb-8 relative z-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 mb-4 shadow-lg shadow-indigo-500/30">
-            <span className="text-3xl text-white">📄</span>
-          </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">PrynX</h2>
-          <p className="text-indigo-200 mt-2 text-sm">Professional PDF Imposition & Validation</p>
-        </div>
+      <div className="relative flex min-h-full items-center justify-center p-4 sm:p-8">
+        <main
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="login-title"
+          className="relative z-10 w-full max-w-[440px] overflow-hidden rounded-app-xl border border-app-line bg-app-2 shadow-[0_24px_70px_rgba(15,23,42,0.14)] animate-fade-in dark:shadow-[0_24px_70px_rgba(0,0,0,0.36)]"
+        >
+          <div className="h-1 w-full bg-app-accent" aria-hidden="true" />
 
-        {errorMsg && (
-          <div className="mb-6 p-4 rounded-lg bg-red-500/20 border border-red-500/50 text-red-200 text-sm flex items-start gap-2 relative z-10">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        <div className="relative z-10 space-y-6">
-          <form onSubmit={handleVerifyLicense} className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
+          <div className="p-6 sm:p-8">
+            <header className="mb-7 flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-app-lg border border-app-accent/20 bg-app-accent-soft shadow-sm">
+                <img src="/logo.png" alt="" className="h-8 w-8 object-contain dark:invert" />
+              </div>
+              <div className="min-w-0 pt-0.5">
+                <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-app-text-3">PrynX</p>
+                <h1 id="login-title" className="mt-1 text-xl font-bold tracking-tight text-app-text-1">
                   {t('misc.login:hay_nhap_ma_ban_quyen_license_key_cua')}
+                </h1>
+              </div>
+            </header>
+
+            <div className="mb-6 flex items-start gap-3 rounded-app-lg border border-app-line-soft bg-app-3 px-3.5 py-3">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="mt-0.5 shrink-0 text-app-accent" aria-hidden="true">
+                <path d="M12 3 4.5 6.5v5.2c0 4.5 3.1 7.6 7.5 9.3 4.4-1.7 7.5-4.8 7.5-9.3V6.5L12 3Z" />
+                <path d="m9 12 2 2 4-4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <p className="text-xs leading-relaxed text-app-text-2">
+                {t('misc.about:dan_hoac_nhap_key')}
+              </p>
+            </div>
+
+            {errorMsg && (
+              <div
+                role="alert"
+                aria-live="polite"
+                className="mb-5 flex items-start gap-2.5 rounded-app-md border border-red-200 bg-red-50 px-3.5 py-3 text-sm text-red-700 dark:border-red-400/30 dark:bg-red-950/20 dark:text-red-300"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span className="leading-relaxed">{errorMsg}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleVerifyLicense} className="space-y-4 animate-fade-in" aria-busy={loading}>
+              <div>
+                <label htmlFor="prynx-license-key" className="mb-2 block text-sm font-semibold text-app-text-1">
+                  {t('misc.about:nhap_license_key')}
                 </label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-app-text-3">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
                   </div>
                   <input
+                    id="prynx-license-key"
                     type="text"
                     value={inputKey}
                     onChange={(e) => setInputKey(e.target.value)}
                     placeholder={t('misc.login:nhap_ma_ban_quyen')}
-                    className="w-full bg-black/30 border border-white/10 rounded-xl py-3.5 pl-10 pr-4 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono tracking-wider"
+                    className="h-12 w-full rounded-app-md border border-app-line bg-app-2 pl-10 pr-3.5 text-sm font-mono tracking-[0.08em] text-app-text-1 shadow-sm outline-none transition-[border-color,box-shadow] placeholder:text-app-text-3 focus:border-app-accent focus:ring-2 focus:ring-app-accent-soft"
                     autoFocus
+                    autoComplete="off"
+                    spellCheck={false}
                   />
                 </div>
               </div>
@@ -88,18 +127,23 @@ export default function LoginScreen() {
               <button
                 type="submit"
                 disabled={loading || !inputKey.trim()}
-                className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold text-[15px] transition-all hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] disabled:opacity-50 disabled:pointer-events-none"
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-app-md bg-app-accent px-4 text-[15px] font-semibold text-white shadow-sm transition-[background-color,box-shadow,transform] hover:bg-app-accent-hover hover:shadow-md active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {loading ? (
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                  <div role="status" className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-label={t('misc.about:dang_xac_thuc')} />
                 ) : (
                   <>
-                    {t('misc.login:xac_thuc')} <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+                    {t('misc.login:xac_thuc')}
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                      <polyline points="12 5 19 12 12 19" />
+                    </svg>
                   </>
                 )}
               </button>
             </form>
-        </div>
+          </div>
+        </main>
       </div>
     </div>
   );
