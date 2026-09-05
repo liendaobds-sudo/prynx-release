@@ -1543,6 +1543,11 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     cutlineFidelity: item.state.cutlineFidelity,
                     curveTension: item.state.curveTension,
                     minDetailAreaMm2: item.state.minDetailAreaMm2,
+                    cutlineDenoise: item.state.cutlineDenoise,
+                    expectedFingerprint: !canPreserveOriginal && outputFormat === 'pdf'
+                        && settings.cutMode !== 'none'
+                        ? item.state.cutlinePreview?.fingerprint
+                        : undefined,
                 })),
                 pageOrder,
                 dpi: exportPages[0].state.outputDpi,
@@ -1563,6 +1568,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 cutlineFidelity: exportPages[0].state.cutlineFidelity,
                 curveTension: exportPages[0].state.curveTension,
                 minDetailAreaMm2: exportPages[0].state.minDetailAreaMm2,
+                cutlineDenoise: exportPages[0].state.cutlineDenoise,
                 signal: controller.signal,
             });
             const current = get().tabs[tabId];

@@ -146,6 +146,8 @@ export interface StickerSheetPageExport {
     cutlineFidelity?: number;
     curveTension?: number;
     minDetailAreaMm2?: number;
+    cutlineDenoise?: number;
+    expectedFingerprint?: string;
 }
 
 export interface StickerCutlinePreviewPath {
@@ -450,6 +452,7 @@ export async function exportStickerSheet(
         cutlineFidelity?: number;
         curveTension?: number;
         minDetailAreaMm2?: number;
+        cutlineDenoise?: number;
         signal?: AbortSignal;
     },
 ): Promise<StickerSheetExportPayload> {
@@ -464,6 +467,8 @@ export async function exportStickerSheet(
         cutline_fidelity: page.cutlineFidelity ?? options.cutlineFidelity ?? 50,
         curve_tension: page.curveTension ?? options.curveTension ?? 50,
         min_detail_area_mm2: page.minDetailAreaMm2 ?? options.minDetailAreaMm2 ?? 1,
+        cutline_denoise: page.cutlineDenoise ?? options.cutlineDenoise,
+        expected_fingerprint: page.expectedFingerprint,
     }));
     const response = await authenticatedFetch(
         `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/export`,
@@ -479,7 +484,8 @@ export async function exportStickerSheet(
                 cutline_smoothness: options.cutlineSmoothness ?? 50,
                 cutline_fidelity: options.cutlineFidelity ?? 50,
                 curve_tension: options.curveTension ?? 50,
-                min_detail_area_mm2: options.minDetailAreaMm2 ?? 1,
+        min_detail_area_mm2: options.minDetailAreaMm2 ?? 1,
+                cutline_denoise: options.cutlineDenoise,
                 offset_mm: options.offsetMm,
                 bleed_mm: options.bleedMm,
                 cut_mode: options.cutMode || 'original',

@@ -223,6 +223,9 @@ class StickerSheetPageExportRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
+    # QUALITY (audit 2026-09-06 §UNIFY.L1): export phải dùng đúng mức đã xem trước.
+    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
+    expected_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class StickerCutlinePreviewRequest(BaseModel):
@@ -300,6 +303,7 @@ class StickerSheetExportRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
+    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
     offset_mm: float = Field(default=0.0, ge=-10.0, le=10.0)
     bleed_mm: float = Field(default=2.0, ge=0.0, le=10.0)
     cut_mode: StickerCutMode = "original"

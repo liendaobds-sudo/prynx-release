@@ -48,6 +48,7 @@ from app.schemas.sticker_sheet import (
 from app.utils.file_handler import save_upload_file
 from app.workers.sticker_sheet_engine import StickerSheetError, analyze_sticker_sheet
 from app.workers.sticker_sheet_export import (
+    StickerCanonicalPreviewConflict,
     StickerSheetExportError,
     export_sticker_sheet,
     export_sticker_sheet_document,
@@ -445,6 +446,8 @@ async def preview_sticker_cutline_endpoint(
         )
     except StickerSheetSessionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except StickerCanonicalPreviewConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except StickerSheetExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -656,6 +659,13 @@ async def export_sticker_sheet_endpoint(
                 continue
             if int(page.manifest.get("mask_revision", 0)) != page_request.expected_revision:
                 stale.append(page_request.source_page)
+                continue
+            if page_request.expected_fingerprint:
+                actual_fingerprint = str(
+                    (page.cutline_export_cache or {}).get("fingerprint", "")
+                )
+                if actual_fingerprint != page_request.expected_fingerprint:
+                    stale.append(page_request.source_page)
         if not_ready:
             raise HTTPException(
                 status_code=409,
@@ -694,6 +704,7 @@ async def export_sticker_sheet_endpoint(
             "cutline_fidelity": request.cutline_fidelity,
             "curve_tension": request.curve_tension,
             "min_detail_area_mm2": request.min_detail_area_mm2,
+            "cutline_denoise": request.cutline_denoise,
         }
         if request.pages:
             result = await run_heavy_in_threadpool(
