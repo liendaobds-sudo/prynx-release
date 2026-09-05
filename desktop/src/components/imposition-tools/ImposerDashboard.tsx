@@ -295,6 +295,12 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         pontSettingsMode,
         stickerToolIdentity,
     } = resolveImpositionModes(activeTool, s.impositionUnit);
+    // PARITY (audit 2026-09-05 §PV26.1): Bình trang không chia nhóm; cả preview,
+    // bảng sức chứa và export phải cùng cấu hình hiệu lực. Không ghi đè profile
+    // để Dàn nhiều mẫu vẫn nhớ cách chia nhóm khi người dùng chuyển tác vụ lại.
+    const effectiveGroupingStrategy = s.taskMode === 'step_repeat'
+        ? 'none'
+        : (dieGeometryMode || s.markType === 'guillotine' ? s.groupingStrategy : 'none');
     const effectiveAlign = resolveEffectiveImpositionAlign(pageSheetMode, s.align);
     const stickerProductMode = stickerToolIdentity || activeTool === 'cnc_imposer';
     const cutBorderCapable = canUseCutBorder({
@@ -1216,7 +1222,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, s.columns, s.rows, activeTool, detectedDimensionsByPage, detectedShapesByPage, detectedShapeParamsByPage, s.pontType, s.pontConfig,
         // Ảnh hưởng SỐ ô/tờ per-type (secondary_gap / bleed / cụm) → phải tính lại capacity.
-        s.bleed, s.cutType, effectiveDieSizeMode, s.dieOffsetMm, effectiveFillBlockGap, s.marginMode, s.markType, s.groupingStrategy, s.impositionUnit,
+        s.bleed, s.cutType, effectiveDieSizeMode, s.dieOffsetMm, effectiveFillBlockGap, s.marginMode, s.markType, effectiveGroupingStrategy, s.impositionUnit,
         // Route true-shape phụ thuộc task/layout và tập mẫu tham gia. Bình trang bỏ
         // qua độ lớn SL; các layout còn lại vẫn phụ thuộc toàn bộ bảng số lượng.
         s.taskMode, s.layoutType, batchCapacityQuantityDependency, pageSheetMode, dieGeometryMode,
@@ -1237,8 +1243,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             return;
         }
         const isNupLike = s.taskMode === 'nup' || s.taskMode === 'step_repeat';
-        const effectiveGrouping = dieGeometryMode || s.markType === 'guillotine'
-            ? s.groupingStrategy : 'none';
         if ((!dieGeometryMode && !isNupLike) || sourceTotalPages <= 1 || !pdfFile || !getWorkingFile) return;
         const readWorkingFile = getWorkingFile;
         if (!batchCapacityDetectionReady(
@@ -1268,7 +1272,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 : (s.layoutType === 'repeat' ? 'sequential' : s.layoutType),
             gridStrategy: s.gridStrategy,
             cutType: s.cutType,
-            groupingStrategy: effectiveGrouping,
+            groupingStrategy: effectiveGroupingStrategy,
             // Tem/CNC không có UI chia cọc active; không để state ẩn chặn nhầm.
             clusterMode: dieGeometryMode ? 'none' : s.clusterMode,
             alternateRotation: effectiveAlternateRotation,
@@ -1409,7 +1413,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     die_offset_mm: dieGeometryMode ? (s.dieOffsetMm ?? 0) : undefined,
                     fill_block_gap: dieGeometryMode ? effectiveFillBlockGap : undefined,
                     split_gap: splitGapMm * MM_TO_PT,
-                    grouping_strategy: effectiveGrouping,
+                    grouping_strategy: effectiveGroupingStrategy,
                     cluster_combine_mode: s.clusterCombineMode,
                     cluster_sizing_mode: s.clusterSizingMode,
                     cluster_cols: s.clusterCols,
@@ -1658,9 +1662,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 formsize: finalFormsize, customSheetWidth: effSheetW, customSheetHeight: effSheetH,
                 bleed: s.bleed, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
                 alternateRotation: effectiveAlternateRotation,
-                groupingStrategy: s.taskMode === 'step_repeat'
-                    ? 'none'
-                    : (dieGeometryMode || s.markType === 'guillotine' ? s.groupingStrategy : 'none'),
+                groupingStrategy: effectiveGroupingStrategy,
                 clusterMode: effClusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap,
                 clusterGapMode: s.clusterGapMode, clusterDistribution: s.clusterDistribution, clusterBorder: s.clusterBorder,
                 splitGap: splitGap,
@@ -2113,8 +2115,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                     || s.taskMode === 'step_repeat'
                                 );
                                 const _effClusterModePv = _clusterAppliesPv ? s.clusterMode : 'none';
-                                const _effGroupingPv = stickerLike || s.markType === 'guillotine'
-                                    ? s.groupingStrategy : 'none';
                                 const itemDim = resolvePreviewItemDimension(
                                     pageSheetMode ? 'nup' : activeTool,
                                     shapePageIdx,
@@ -2142,7 +2142,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 mixedExcessPercent={s.mixedExcessPercent}
                                 splitGap={splitGap}
                                 gapX={s.gapX} gapY={s.gapY}
-                                groupingStrategy={_effGroupingPv}
+                                groupingStrategy={effectiveGroupingStrategy}
                                 clusterCombineMode={s.clusterCombineMode}
                                 clusterNesting={s.clusterNesting}
                                 clusterSizingMode={s.clusterSizingMode}

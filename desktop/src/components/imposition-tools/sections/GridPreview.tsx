@@ -26,6 +26,12 @@ import {
 } from "../trueShapeNestingRollout";
 import { resolveCellDirectionDegrees, resolveTrapezoidPreviewRatios, shouldAutoSwitchToMixedGuillotine, type CellDirectionDegrees } from "./gridPreviewHelpers";
 
+// UIUX (audit 2026-09-05 §PV26.2): nhận mã job hoặc status chưa có số đo
+// chỉ cho biết phase; không được biến thành 0%/100% do frontend tự đặt.
+type PreviewNestingProgress = Omit<NestingPreviewJobProgress, "progress"> & {
+  progress?: number;
+};
+
 export interface GridPreviewProps {
   /** Tab nền vẫn mounted; false phải dừng job và cấm kết quả cũ ghi vào store. */
   isActive?: boolean;
@@ -156,7 +162,7 @@ interface BackendLayoutCell {
   blockId: number;
   /** ratio_stack / mixed: chỉ số trang nguồn gán cho ô này */
   pageIdx?: number;
-  /** Đường bế thật theo polyline, cùng hệ tọa độ backend. */
+  /** Đường bế thật theo polyline (vòng hoàn chỉnh hoặc mảnh l/c), cùng hệ tọa độ backend. */
   diePolylines?: number[][][];
 }
 interface BackendCutSegment {
@@ -1205,42 +1211,166 @@ function renderCellDiePolylines(
   blockId: number,
   side: "front" | "back",
 ) {
-  const rings = (diePolylinesPx || [])
-    .map((polyline) =>
-      polyline.filter(
-        (point) =>
-          point.length >= 2 &&
-          Number.isFinite(point[0]) &&
-          Number.isFinite(point[1]),
+  type Point = [number, number];
+  // Sai số rất nhỏ sau pt→mm→px; không nới rộng vì hai lỗ gần nhau vẫn phải
+  // là hai vòng riêng, không được nối nhầm thành một contour.
+  const endpointEpsilon = 0.05;
+  const closeEnough = (a: Point, b: Point) =>
+    Math.hypot(a[0] - b[0], a[1] - b[1]) <= endpointEpsilon;
+  const reverse = (points: Point[]) => [...points].reverse();
+  const withoutJoinEndpoint = (points: Point[]) => points.slice(1);
+  const withoutPrependEndpoint = (points: Point[]) => points.slice(0, -1);
+
+  const polylines = (diePolylinesPx || [])
+    .map((polyline): Point[] => {
+      const cleaned: Point[] = [];
+      for (const point of polyline) {
+        if (
+          point.length < 2 ||
+          !Number.isFinite(point[0]) ||
+          !Number.isFinite(point[1])
+        ) {
+          continue;
+        }
+        const current: Point = [point[0], point[1]];
+        // Chỉ bỏ điểm lặp thực sự; không dùng endpointEpsilon ở đây vì cung
+        // Bézier sampled có thể có bước nhỏ khi preview thu nhỏ.
+        if (
+          !cleaned.length ||
+          Math.hypot(
+            cleaned[cleaned.length - 1][0] - current[0],
+            cleaned[cleaned.length - 1][1] - current[1],
+          ) > 1e-6
+        ) {
+          cleaned.push(current);
+        }
+      }
+      return cleaned;
+    })
+    .filter((polyline) => polyline.length >= 2);
+
+  const rings: Point[][] = [];
+  const openCandidates: Point[][] = [];
+  for (const polyline of polylines) {
+    // re/qu đã khép vòng bằng điểm đầu lặp lại; bỏ điểm lặp để Z không tạo
+    // thêm một đoạn zero-length. Vòng contour true-shape cũ không lặp điểm,
+    // được giữ nguyên và khép ở bước dựng path bên dưới.
+    if (polyline.length >= 3 && closeEnough(polyline[0], polyline[polyline.length - 1])) {
+      rings.push(polyline.slice(0, -1));
+    } else {
+      openCandidates.push(polyline);
+    }
+  }
+
+  // Backend nup_artwork trả từng lệnh l/c (line chỉ có 2 điểm, Bézier được
+  // lấy mẫu thành 11 điểm). Nối các mảnh theo endpoint trước khi vẽ; nếu tô
+  // từng mảnh và tự thêm Z thì khuôn cong biến thành các tam giác vụn.
+  const connected = openCandidates.filter((polyline, index) =>
+    openCandidates.some((other, otherIndex) =>
+      index !== otherIndex && (
+        closeEnough(polyline[0], other[0]) ||
+        closeEnough(polyline[0], other[other.length - 1]) ||
+        closeEnough(polyline[polyline.length - 1], other[0]) ||
+        closeEnough(polyline[polyline.length - 1], other[other.length - 1])
       ),
-    )
-    .filter((polyline) => polyline.length >= 3);
-  if (rings.length === 0) return null;
+    ),
+  );
+  const isolated = openCandidates.filter((polyline) => !connected.includes(polyline));
+  const openChains: Point[][] = [];
+  const remaining = [...connected];
+
+  while (remaining.length) {
+    let chain = remaining.shift()!;
+    let extended = true;
+    while (extended && remaining.length) {
+      extended = false;
+      for (let index = 0; index < remaining.length; index += 1) {
+        const candidate = remaining[index];
+        const candidateReversed = reverse(candidate);
+        const chainStart = chain[0];
+        const chainEnd = chain[chain.length - 1];
+        if (closeEnough(chainEnd, candidate[0])) {
+          chain = [...chain, ...withoutJoinEndpoint(candidate)];
+        } else if (closeEnough(chainEnd, candidate[candidate.length - 1])) {
+          chain = [...chain, ...withoutJoinEndpoint(candidateReversed)];
+        } else if (closeEnough(chainStart, candidate[candidate.length - 1])) {
+          chain = [...withoutPrependEndpoint(candidate), ...chain];
+        } else if (closeEnough(chainStart, candidate[0])) {
+          chain = [...withoutPrependEndpoint(candidateReversed), ...chain];
+        } else {
+          continue;
+        }
+        remaining.splice(index, 1);
+        extended = true;
+        break;
+      }
+    }
+
+    if (chain.length >= 3 && closeEnough(chain[0], chain[chain.length - 1])) {
+      rings.push(chain.slice(0, -1));
+    } else {
+      openChains.push(chain);
+    }
+  }
+
+  // Một polyline cô lập dài 11 điểm là một Bézier sampled (đoạn hở), còn
+  // contour true-shape dạng 3+ điểm là vòng hoàn chỉnh dù không lặp điểm đầu.
+  // Đoạn hở chỉ stroke, tuyệt đối không đóng giả bằng Z.
+  for (const polyline of isolated) {
+    if (polyline.length === 2 || polyline.length === 11) {
+      openChains.push(polyline);
+    } else if (polyline.length >= 3) {
+      rings.push(polyline);
+    }
+  }
+
+  if (rings.length === 0 && openChains.length === 0) return null;
 
   const color = BLOCK_COLORS[blockId % BLOCK_COLORS.length];
-  // UIUX (audit 2026-08-29 §B10-7): mỗi vòng contour là một subpath riêng;
-  // evenodd giữ đúng lỗ rỗng thay vì nối các vòng thành một polygon giả.
-  const pathData = rings
-    .map(
-      (ring) =>
-        `M ${ring.map(([x, y]) => `${x} ${y}`).join(" L ")} Z`,
-    )
-    .join(" ");
+  const pathData = (paths: Point[][], close: boolean) =>
+    paths
+      .map((path) =>
+        `M ${path.map(([x, y]) => `${x} ${y}`).join(" L ")}${close ? " Z" : ""}`,
+      )
+      .join(" ");
+  const nodes: React.ReactNode[] = [];
 
-  return (
-    <path
-      data-testid="true-shape-contour"
-      data-side={side}
-      data-ring-count={rings.length}
-      d={pathData}
-      fill={color.fill}
-      fillRule="evenodd"
-      clipRule="evenodd"
-      stroke={color.stroke}
-      strokeWidth={0.8}
-      strokeLinejoin="round"
-    />
-  );
+  // UIUX (audit 2026-09-05 §NEST26.2): mỗi vòng contour là một subpath riêng;
+  // evenodd giữ đúng lỗ rỗng. Các mảnh hở tách thành stroke-only path để SVG
+  // không tự fill/khép ngầm chúng.
+  if (rings.length > 0) {
+    nodes.push(
+      <path
+        key="closed"
+        data-testid="true-shape-contour"
+        data-side={side}
+        data-ring-count={rings.length}
+        d={pathData(rings, true)}
+        fill={color.fill}
+        fillRule="evenodd"
+        clipRule="evenodd"
+        stroke={color.stroke}
+        strokeWidth={0.8}
+        strokeLinejoin="round"
+      />,
+    );
+  }
+  if (openChains.length > 0) {
+    nodes.push(
+      <path
+        key="open"
+        data-testid="true-shape-open-contour"
+        data-side={side}
+        d={pathData(openChains, false)}
+        fill="none"
+        stroke={color.stroke}
+        strokeWidth={0.8}
+        strokeLinejoin="round"
+      />,
+    );
+  }
+
+  return nodes.length === 1 ? nodes[0] : <g>{nodes}</g>;
 }
 
 // =====================================================================
@@ -1434,7 +1564,7 @@ export default function GridPreview(props: GridPreviewProps) {
   );
   const [isLoading, setIsLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [nestingProgress, setNestingProgress] = useState<NestingPreviewJobProgress | null>(null);
+  const [nestingProgress, setNestingProgress] = useState<PreviewNestingProgress | null>(null);
   const [isCancellingNesting, setIsCancellingNesting] = useState(false);
   // chia cụm zone modes: tờ đang xem (0-based) để lật ◄ n/N ►.
   const [activeSheet, setActiveSheet] = useState(0);
@@ -1687,15 +1817,18 @@ export default function GridPreview(props: GridPreviewProps) {
     _isClusterPreview ||
     _isMixedGuillotine ||
     (_multiPage &&
+      !isStepRepeatLayout &&
       (layoutType === "ratio_stack" ||
         layoutType === "sequential" ||
         layoutType === "cut_stacks")) ||
-    (_multiPage && imposerMode === "cnc") ||
+    // CNC Bình trang (step_repeat/repeat) phải giữ page_idx đang xem để
+    // compute_sticker_layout_for_page dùng đúng khuôn của trang đó. Chỉ
+    // Dàn nhiều mẫu mới gom vào nhánh multi-pack; nếu gom nhầm sẽ khóa trang 0.
+    (_multiPage && imposerMode === "cnc" && !isStepRepeatLayout) ||
     // Die-cut multi nhưng không phải step_repeat “một loại/tờ”: pack chung
     (_multiPage &&
       !!isDieCut &&
-      taskMode !== "step_repeat" &&
-      layoutType !== "repeat");
+      !isStepRepeatLayout);
   const _layoutIgnoresViewPage =
     _singleMoldFamily || _multiPackLayout;
 
@@ -1817,6 +1950,9 @@ export default function GridPreview(props: GridPreviewProps) {
       im: imposerMode || "",
       c2: !!cncTwoSided,
       cfe: cncFlipEdge || "",
+      // PARITY (audit 2026-09-05 §NEST26.1): dấu canh CNC hai mặt là vật cản
+      // của solver; đổi cờ phải làm mất cache để preview không dùng bố trí simplex.
+      cdm: !!cncDuplexMarks,
       ct: cutType || "",
       fbg: fillBlockGap,
       dsm: dieSizeMode,
@@ -1883,6 +2019,7 @@ export default function GridPreview(props: GridPreviewProps) {
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
+    cncDuplexMarks,
     cutType,
     fillBlockGap,
     dieSizeMode,
@@ -2073,7 +2210,7 @@ export default function GridPreview(props: GridPreviewProps) {
     setIsLoading(false);
     setNestingProgress({
       phase: "cancelled",
-      progress: nestingProgress?.progress ?? 0,
+      progress: nestingProgress?.progress,
       elapsedMs: nestingProgress?.elapsedMs ?? 0,
       messageCode: "cancelled_by_user",
     });
@@ -2370,6 +2507,9 @@ export default function GridPreview(props: GridPreviewProps) {
           imposer_mode: pageSheetMode ? undefined : imposerMode,
           cnc_two_sided: pageSheetMode ? false : !!cncTwoSided,
           cnc_flip_edge: pageSheetMode ? undefined : (cncFlipEdge || "long"),
+          // UIUX (audit 2026-09-05 §NEST26.1): truyền đúng cờ dấu canh
+          // để preview dựng cùng 4 vật cản với manifest xuất CNC; simplex luôn false.
+          cnc_duplex_marks: pageSheetMode ? false : !!cncDuplexMarks,
           diagnostic_trace_id: diagnosticTraceId || undefined,
           diagnostic_request_id: requestId,
         };
@@ -2525,7 +2665,6 @@ export default function GridPreview(props: GridPreviewProps) {
           };
           setNestingProgress({
             phase: accepted.status || "queued",
-            progress: 0,
             elapsedMs: 0,
           });
 
@@ -2535,7 +2674,6 @@ export default function GridPreview(props: GridPreviewProps) {
               if (!isCurrentGeneration()) return false;
               setNestingProgress(status.progress ?? {
                 phase: status.status,
-                progress: status.terminal && status.status === "completed" ? 1 : 0,
                 elapsedMs: 0,
               });
               return true;
@@ -2553,7 +2691,6 @@ export default function GridPreview(props: GridPreviewProps) {
             activeNestingJobRef.current = null;
             setNestingProgress(finalStatus.progress ?? {
               phase: "cancelled",
-              progress: 0,
               elapsedMs: 0,
               messageCode: "cancelled_by_user",
             });
@@ -2777,7 +2914,7 @@ export default function GridPreview(props: GridPreviewProps) {
           if (requestUsesProgressiveStepRepeat && finalizeWithProvisional("nesting_failed")) {
             setNestingProgress((previous) => ({
               phase: "failed",
-              progress: previous?.progress ?? 0,
+              progress: previous?.progress,
               elapsedMs: previous?.elapsedMs ?? 0,
             }));
             console.warn("[GridPreview] Nesting nền lỗi; giữ preview lưới hợp lệ:", err);
@@ -2791,7 +2928,7 @@ export default function GridPreview(props: GridPreviewProps) {
           if (requestUsesTrueShape) {
             setNestingProgress((previous) => ({
               phase: "failed",
-              progress: previous?.progress ?? 0,
+              progress: previous?.progress,
               elapsedMs: previous?.elapsedMs ?? 0,
             }));
           }
@@ -3191,6 +3328,15 @@ export default function GridPreview(props: GridPreviewProps) {
     );
   };
 
+  // UIUX (audit 2026-09-05 §PV26.2): Tem/CNC dùng chung vùng trạng thái.
+  // Nhánh lưới (kể cả sau quality gate) không có tiến trình từ server; không
+  // gán % giả hoặc hiện nút hủy solver chỉ có ở job nesting.
+  const usesNestingProgress = (usesTrueShape && !usesAuthoritativeLegacyStepRepeat)
+    || isCancellingNesting;
+  const showPreviewProgress = isActive && (isLoading || isCancellingNesting);
+  const hasMeasuredProgress = usesNestingProgress
+    && nestingProgress !== null
+    && Number.isFinite(nestingProgress.progress);
   const nestingProgressPercent = Math.max(
     0,
     Math.min(100, Math.round((nestingProgress?.progress ?? 0) * 100)),
@@ -3198,6 +3344,9 @@ export default function GridPreview(props: GridPreviewProps) {
   const nestingPhaseLabel = (() => {
     if (isCancellingNesting) {
       return t('imposition.gridPreview:dang_huy_preview_nesting', 'Đang hủy preview…');
+    }
+    if (!usesNestingProgress) {
+      return t('imposition.gridPreview:dang_tinh_toan_bo_cuc');
     }
     switch (nestingProgress?.phase) {
       case "queued":
@@ -3225,12 +3374,10 @@ export default function GridPreview(props: GridPreviewProps) {
 
   return (
     <div className="flex flex-col items-center bg-slate-50 dark:bg-zinc-900/50 rounded-lg p-3 border border-slate-200 dark:border-white/10 mt-2">
-      {usesTrueShape && (
-        (isLoading && !usesAuthoritativeLegacyStepRepeat) || isCancellingNesting
-      ) && (
+      {showPreviewProgress && (
         <div
-          data-testid="nesting-preview-progress"
-          data-phase={nestingProgress?.phase || "queued"}
+          data-testid={usesNestingProgress ? "nesting-preview-progress" : "layout-preview-progress"}
+          data-phase={usesNestingProgress ? (nestingProgress?.phase || "queued") : "computing"}
           className="mb-2 flex w-full max-w-md items-center gap-2 rounded border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-[11px] text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-200"
         >
           <div className="min-w-0 flex-1">
@@ -3238,29 +3385,35 @@ export default function GridPreview(props: GridPreviewProps) {
               <span role="status" aria-live="polite" aria-atomic="true" className="truncate">
                 {nestingPhaseLabel}
               </span>
-              <span className="tabular-nums">{nestingProgressPercent}%</span>
+              {hasMeasuredProgress && (
+                <span className="tabular-nums">{nestingProgressPercent}%</span>
+              )}
             </div>
             <div className="mt-1 h-1 overflow-hidden rounded bg-indigo-100 dark:bg-indigo-900">
               <div
-                data-testid="nesting-preview-progress-bar"
+                data-testid={usesNestingProgress ? "nesting-preview-progress-bar" : "layout-preview-progress-bar"}
                 role="progressbar"
                 aria-label={nestingPhaseLabel}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={nestingProgressPercent}
-                className="h-full rounded bg-indigo-500 transition-[width] duration-300"
-                style={{ width: `${nestingProgressPercent}%` }}
+                aria-valuenow={hasMeasuredProgress ? nestingProgressPercent : undefined}
+                className={`h-full rounded bg-indigo-500 ${hasMeasuredProgress
+                  ? "transition-[width] duration-300"
+                  : "w-1/3 motion-safe:animate-pulse"}`}
+                style={hasMeasuredProgress ? { width: `${nestingProgressPercent}%` } : undefined}
               />
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleCancelNestingPreview}
-            disabled={isCancellingNesting}
-            className="shrink-0 rounded border border-indigo-300 bg-white px-2 py-1 font-semibold text-indigo-700 hover:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-700 dark:bg-zinc-900 dark:text-indigo-200"
-          >
-            {t('imposition.gridPreview:huy_preview_nesting', 'Hủy preview')}
-          </button>
+          {usesNestingProgress && (
+            <button
+              type="button"
+              onClick={handleCancelNestingPreview}
+              disabled={isCancellingNesting}
+              className="shrink-0 rounded border border-indigo-300 bg-white px-2 py-1 font-semibold text-indigo-700 hover:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-700 dark:bg-zinc-900 dark:text-indigo-200"
+            >
+              {t('imposition.gridPreview:huy_preview_nesting', 'Hủy preview')}
+            </button>
+          )}
         </div>
       )}
       {layoutResult ? (
@@ -4031,7 +4184,7 @@ export default function GridPreview(props: GridPreviewProps) {
             </div>
           )}
         </div>
-      ) : (
+      ) : showPreviewProgress && !previewError ? null : (
         <div className="text-sm text-slate-500 flex items-center gap-2">
           {previewError ? (
             <span className="text-red-600 dark:text-red-400 text-center">{previewError}</span>

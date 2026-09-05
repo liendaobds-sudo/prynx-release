@@ -278,6 +278,9 @@ function TrueShapeParityPreview({
   itemH = 20,
   gapX = 2,
   gridStrategy = "optimal_auto",
+  imposerMode,
+  cncTwoSided = false,
+  cncDuplexMarks = false,
 }: {
   reportOrderCode?: string;
   reportLabelName?: string;
@@ -300,6 +303,9 @@ function TrueShapeParityPreview({
   itemH?: number;
   gapX?: number;
   gridStrategy?: React.ComponentProps<typeof GridPreview>["gridStrategy"];
+  imposerMode?: string;
+  cncTwoSided?: boolean;
+  cncDuplexMarks?: boolean;
 } = {}) {
   const activeShapeParams = shapeParamsByPage?.[pageIdx];
   const effectiveLayoutType = layoutType
@@ -307,11 +313,15 @@ function TrueShapeParityPreview({
   return (
     <GridPreview
       isActive={isActive}
-      activeTool="sticker_imposer"
+      activeTool={imposerMode === "cnc" ? "cnc_imposer" : "sticker_imposer"}
       taskMode={taskMode}
       isDieCut
       layoutType={effectiveLayoutType}
       duplexFlow={duplexFlow}
+      imposerMode={imposerMode}
+      cncTwoSided={cncTwoSided}
+      cncFlipEdge="long"
+      cncDuplexMarks={cncDuplexMarks}
       // §B10: mặc định auto-route; test explicit truyền token để khóa intent fallback.
       gridStrategy={gridStrategy}
       columns={0}
@@ -641,6 +651,94 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("CNC S&R refetch theo trang và giữ đúng hình dạng khuôn từng trang", async () => {
+    // CNC S&R (step_repeat/repeat) là một khuôn trên mỗi mẫu, không phải multi-pack.
+    // Nếu GridPreview gộp mọi CNC nhiều trang vào _multiPackLayout, lần xem trang 2
+    // sẽ không refetch và request vẫn dùng page_idx/shape của trang 1.
+    authenticatedFetchMock.mockReset();
+    authenticatedFetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => capacityResponse(12, "optimal_auto"),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => capacityResponse(8, "optimal_auto"),
+      });
+
+    const shapesByPage = { 0: "RECTANGLE", 1: "PENTAGON" };
+    const shapeParamsByPage = {
+      0: { bodyW: pt(20), bodyH: pt(20) },
+      1: { bodyW: pt(30), bodyH: pt(25) },
+    };
+    const previewAt = (pageIdx: number) => (
+      <TrueShapeParityPreview
+        taskMode="step_repeat"
+        layoutType="repeat"
+        imposerMode="cnc"
+        pageIdx={pageIdx}
+        sourceTotalPages={2}
+        shapesByPage={shapesByPage}
+        shapeParamsByPage={shapeParamsByPage}
+        targetQuantitiesByPage={{ 0: 6, 1: 6 }}
+        itemW={pageIdx === 0 ? 20 : 30}
+      />
+    );
+
+    const view = render(previewAt(0));
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1), {
+      timeout: 3_000,
+    });
+
+    view.rerender(previewAt(1));
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(2), {
+      timeout: 3_000,
+    });
+
+    const secondBody = JSON.parse(String(authenticatedFetchMock.mock.calls[1]?.[1]?.body));
+    expect(secondBody.imposer_mode).toBe("cnc");
+    expect(secondBody.task_mode).toBe("step_repeat");
+    expect(secondBody.layout_type).toBe("repeat");
+    expect(secondBody.page_idx).toBe(1);
+    expect(secondBody.shape_type).toBe("PENTAGON");
+    expect(secondBody.shape_props).toEqual(shapeParamsByPage[1]);
+  });
+
+  it("CNC alias SR không bị gom thành multi-pack khi layout cũ còn là sequential", async () => {
+    authenticatedFetchMock.mockReset();
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => capacityResponse(8, "optimal_auto"),
+    });
+
+    render(
+      <TrueShapeParityPreview
+        taskMode="sr"
+        layoutType="sequential"
+        imposerMode="cnc"
+        pageIdx={1}
+        sourceTotalPages={2}
+        shapesByPage={{ 0: "RECTANGLE", 1: "PENTAGON" }}
+        shapeParamsByPage={{
+          0: { bodyW: pt(20), bodyH: pt(20) },
+          1: { bodyW: pt(30), bodyH: pt(25) },
+        }}
+        targetQuantitiesByPage={{ 0: 6, 1: 6 }}
+        itemW={30}
+      />,
+    );
+
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1), {
+      timeout: 3_000,
+    });
+    const body = JSON.parse(String(authenticatedFetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.page_idx).toBe(1);
+    expect(body.shape_type).toBe("PENTAGON");
+  });
+
   it("gửi đúng hợp đồng nesting để preview và export dùng chung identity", async () => {
     render(<TrueShapeParityPreview />);
 
@@ -664,7 +762,38 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(requestBody.export_unique_sheets).toBe(true);
     expect(requestBody.report_display.fieldOrder).toHaveLength(13);
     expect(requestBody.report_order_code).toBe("DH-001");
+    expect(requestBody.cnc_duplex_marks).toBe(false);
     expect(authenticatedFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("PARITY §NEST26.1: gửi dấu canh CNC hai mặt và đổi cờ làm mới cache", async () => {
+    const view = render(
+      <TrueShapeParityPreview
+        sourceTotalPages={2}
+        imposerMode="cnc"
+        cncTwoSided
+        cncDuplexMarks
+      />,
+    );
+
+    await waitFor(() => expect(nestingJobMocks.create).toHaveBeenCalledTimes(1), {
+      timeout: 3_000,
+    });
+    expect(nestingJobMocks.create.mock.calls[0]?.[0]?.cnc_two_sided).toBe(true);
+    expect(nestingJobMocks.create.mock.calls[0]?.[0]?.cnc_duplex_marks).toBe(true);
+
+    view.rerender(
+      <TrueShapeParityPreview
+        sourceTotalPages={2}
+        imposerMode="cnc"
+        cncTwoSided
+        cncDuplexMarks={false}
+      />,
+    );
+    await waitFor(() => expect(nestingJobMocks.create).toHaveBeenCalledTimes(2), {
+      timeout: 3_000,
+    });
+    expect(nestingJobMocks.create.mock.calls[1]?.[0]?.cnc_duplex_marks).toBe(false);
   });
 
   it("metadata report không làm chạy lại preview của token nesting tường minh", async () => {
@@ -849,6 +978,39 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       expect(contour.getAttribute("clip-rule")).toBe("evenodd");
       expect(contour.getAttribute("d")?.match(/\bM\b/g)).toHaveLength(2);
     }
+  });
+
+  it("NEST26.2: nối các đoạn CUT legacy và không đóng giả đoạn Bézier hở", async () => {
+    const p = (mm: number) => pt(mm);
+    const cubic = (x0: number, y0: number, x1: number, y1: number) =>
+      Array.from({ length: 11 }, (_unused, index) => {
+        const t = index / 10;
+        return [p(x0 + (x1 - x0) * t), p(y0 + (y1 - y0) * t)];
+      });
+    const diePolylines = [
+      [[p(10), p(10)], [p(30), p(10)]],
+      cubic(30, 10, 30, 30),
+      [[p(30), p(30)], [p(10), p(30)]],
+      cubic(10, 30, 10, 10),
+      cubic(50, 10, 60, 15), // đoạn hở cô lập: chỉ stroke, không Z/fill
+    ];
+    nestingJobMocks.result.mockResolvedValue({
+      ...capacityResponse(1, "true_shape_nesting"),
+      cells: [{ ...mixedCell(10, 0), diePolylines }],
+    });
+
+    render(<TrueShapeParityPreview />);
+
+    const contour = await waitFor(() => screen.getByTestId("true-shape-contour"), {
+      timeout: 3_000,
+    });
+    expect(contour.getAttribute("data-ring-count")).toBe("1");
+    expect(contour.getAttribute("d")?.match(/\bM\b/g)).toHaveLength(1);
+    expect(contour.getAttribute("d")?.trimEnd().endsWith("Z")).toBe(true);
+
+    const openContour = screen.getByTestId("true-shape-open-contour");
+    expect(openContour.getAttribute("fill")).toBe("none");
+    expect(openContour.getAttribute("d")?.includes(" Z")).toBe(false);
   });
 
   it("B10-6: quality gate chọn grid thì kết quả muộn không được downgrade provisional", async () => {
@@ -1189,6 +1351,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
 
   it("B10-6: legacy page probe giữ forceLegacyGrid qua pending và failure", async () => {
     const onDiagnosticEvent = vi.fn();
+    let failPagePreview!: (response: unknown) => void;
     authenticatedFetchMock.mockReset();
     authenticatedFetchMock
       .mockResolvedValueOnce({
@@ -1196,11 +1359,9 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
         status: 200,
         json: async () => capacityResponse(54, "optimal_auto"),
       })
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: async () => "grid probe failed",
-      });
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        failPagePreview = resolve;
+      }));
     nestingJobMocks.result.mockResolvedValue(capacityResponse(43, "optimal_auto"));
     const shapesByPage = { 0: "CUSTOM", 1: "CUSTOM" };
     const shapeParamsByPage = {
@@ -1228,9 +1389,20 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     await waitFor(() => expect(onDiagnosticEvent).toHaveBeenCalledWith(
       expect.objectContaining({ phase: "pending", forceLegacyGrid: true }),
     ));
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(2));
+    // PV26.2: đã chốt lưới thì vẫn có trạng thái chờ, nhưng không tái dùng %
+    // hay nút hủy của job nesting đã kết thúc trước đó.
+    expect(screen.getByTestId("layout-preview-progress").textContent).not.toContain("%");
+    expect(screen.queryByTestId("nesting-preview-progress")).toBeNull();
+    expect(screen.getByRole("progressbar").hasAttribute("aria-valuenow")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Hủy preview" })).toBeNull();
+    await act(async () => {
+      failPagePreview({ ok: false, status: 500, text: async () => "grid probe failed" });
+    });
     await waitFor(() => expect(onDiagnosticEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ phase: "failed", forceLegacyGrid: true }),
     ));
+    expect(screen.queryByRole("progressbar")).toBeNull();
     expect(authenticatedFetchMock).toHaveBeenCalledTimes(2);
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
   });
@@ -1335,6 +1507,8 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       timeout: 3_000,
     });
 
+    expect(screen.getByTestId("nesting-preview-progress").textContent).not.toContain("%");
+    expect(screen.getByRole("progressbar").hasAttribute("aria-valuenow")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Hủy preview" }));
     expect(onDiagnosticEvent).toHaveBeenLastCalledWith(expect.objectContaining({
       phase: "aborted",
@@ -1353,7 +1527,98 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     }));
   });
 
-  it("hiển thị phase/progress do job trả về rồi áp đúng kết quả", async () => {
+  it.each([undefined, "cnc"])("PV26.2: nhánh lưới có trạng thái chờ không giả phần trăm (%s)", async (imposerMode) => {
+    let finishPreview!: (response: unknown) => void;
+    authenticatedFetchMock.mockImplementationOnce(() => new Promise((resolve) => {
+      finishPreview = resolve;
+    }));
+
+    render(
+      <TrueShapeParityPreview
+        taskMode="step_repeat"
+        imposerMode={imposerMode}
+        shapesByPage={{ 0: "PENTAGON" }}
+      />,
+    );
+
+    const indicator = screen.getByTestId("layout-preview-progress");
+    expect(indicator.textContent).toContain("Đang tính toán bố cục");
+    expect(indicator.textContent).not.toContain("%");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("progressbar").hasAttribute("aria-valuenow")).toBe(false);
+    expect(screen.queryByTestId("nesting-preview-progress")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Hủy preview" })).toBeNull();
+
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      finishPreview({ ok: true, status: 200, json: async () => capacityResponse(32, "optimal_auto") });
+    });
+    await waitFor(() => expect(screen.queryByTestId("layout-preview-progress")).toBeNull());
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(nestingJobMocks.create).not.toHaveBeenCalled();
+  });
+
+  it("PV26.2: tab nền không giữ trạng thái chờ hoặc nhận kết quả lưới muộn", async () => {
+    const onCapacityChange = vi.fn();
+    let finishPreview!: (response: unknown) => void;
+    authenticatedFetchMock.mockImplementationOnce(() => new Promise((resolve) => {
+      finishPreview = resolve;
+    }));
+    const preview = (isActive: boolean) => (
+      <TrueShapeParityPreview
+        taskMode="step_repeat"
+        imposerMode="cnc"
+        shapesByPage={{ 0: "PENTAGON" }}
+        isActive={isActive}
+        onCapacityChange={onCapacityChange}
+      />
+    );
+
+    const view = render(preview(false));
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
+    view.rerender(preview(true));
+    expect(screen.getByTestId("layout-preview-progress")).toBeTruthy();
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
+
+    view.rerender(preview(false));
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    await act(async () => {
+      finishPreview({ ok: true, status: 200, json: async () => capacityResponse(32, "optimal_auto") });
+    });
+    expect(onCapacityChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("layout-preview-progress")).toBeNull();
+  });
+
+  it("PV26.2: nhận mã job chưa đồng nghĩa đã biết phần trăm", async () => {
+    type Progress = { phase: string; progress: number; elapsedMs: number };
+    let publishStatus!: (progress?: Progress) => void;
+    nestingJobMocks.wait.mockImplementation((_jobId, options) => {
+      publishStatus = (progress) => options.onStatus({
+        job_id: "nest-preview",
+        status: "running",
+        terminal: false,
+        progress,
+        has_result: false,
+      });
+      return new Promise(() => undefined);
+    });
+
+    render(<TrueShapeParityPreview imposerMode="cnc" />);
+    await waitFor(() => expect(nestingJobMocks.wait).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("nesting-preview-progress").textContent).not.toContain("%");
+    expect(screen.getByRole("progressbar").hasAttribute("aria-valuenow")).toBe(false);
+
+    act(() => publishStatus());
+    expect(screen.getByTestId("nesting-preview-progress").textContent).not.toContain("%");
+    act(() => publishStatus({ phase: "baseline", progress: 0, elapsedMs: 10 }));
+    expect(screen.getByText("0%")).toBeTruthy();
+    act(() => publishStatus({ phase: "baseline", progress: 0.42, elapsedMs: 30 }));
+    expect(screen.getByText("42%")).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("42");
+  });
+
+  it.each([undefined, "cnc"])("PV26.2: hiển thị phase/progress thật của job cho Tem/CNC (%s)", async (imposerMode) => {
     nestingJobMocks.wait.mockImplementation(async (_jobId, options) => {
       options.onStatus({
         job_id: "nest-preview",
@@ -1371,7 +1636,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       return new Promise(() => undefined);
     });
 
-    render(<TrueShapeParityPreview />);
+    render(<TrueShapeParityPreview imposerMode={imposerMode} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("nesting-preview-progress").getAttribute("data-phase"))
