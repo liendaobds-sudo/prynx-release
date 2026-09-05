@@ -386,9 +386,12 @@ fn fits_blank_sheet_with_obstacles(
     part: &NormalizedPart,
     angles: &[f64],
     obstacles: &[Vec<PointMm>],
+    cache: &mut NfpCache,
 ) -> Result<bool, NfpError> {
+    // PERF (audit 2026-09-05 §NEST26.2): đây là reason-check ngay sau lượt đặt chính.
+    // Dùng lại cache của baseline để các NFP fixed-obstacle đã dựng không bị tính lại
+    // lần nữa chỉ vì cần phân biệt `NoFeasiblePose` với `MaxSheetsReached`.
     let placement_bounds = request.placement_bounds_for(part);
-    let mut cache = NfpCache::new();
     for angle in angles {
         let Some(local) = local_ring_at(part, *angle, &request.tolerance) else {
             continue;
@@ -399,7 +402,7 @@ fn fits_blank_sheet_with_obstacles(
             obstacles,
             obstacles.len(),
             &local,
-            &mut cache,
+            cache,
             None,
         )?
         else {
@@ -842,6 +845,7 @@ pub fn run_baseline(
                 instance.part,
                 &with_fallback,
                 &fixed_obstacles,
+                &mut nfp_cache,
             )?;
             let reason = if !fits_empty_sheet {
                 UnplacedReason::NoFeasiblePose
@@ -2206,7 +2210,15 @@ fn run_autofill_candidate(
                     break 'angle;
                 }
                 // Nhớ lại miền vừa tính (kể cả rỗng: rỗng chỉ co thêm nên giữ rỗng).
-                feasible_cache.insert(cache_key, (region.clone(), placed_rings.len()));
+                // PERF (audit 2026-09-05 §NEST26.2): chuyển ownership vào cache rồi
+                // đọc lại bằng borrow; bản cũ clone toàn bộ RegionMm (có thể hàng nghìn
+                // đỉnh) ở mỗi góc/sweep dù cache là nơi duy nhất cần giữ miền.
+                feasible_cache.insert(cache_key, (region, placed_rings.len()));
+                let Some((region, _)) = feasible_cache.get(&cache_key) else {
+                    // Vừa insert nên nhánh này chỉ có thể xảy ra nếu BTreeMap bị thay đổi
+                    // bất thường; fail-closed thay vì dựng ứng viên từ miền không tồn tại.
+                    continue 'angle;
+                };
                 if region.is_empty() {
                     continue;
                 }
