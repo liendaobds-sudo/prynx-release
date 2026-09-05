@@ -1311,4 +1311,77 @@ describe('SEC.19 — giao dịch đổi license key', () => {
       vi.useRealTimers();
     }
   });
+
+  it('focus liên tiếp không tạo burst xác minh license', async () => {
+    // Khi mở/chuyển sang màn CNC, WebView có thể phát nhiều focus event liên tiếp.
+    // Mỗi event không được xin một challenge v3 mới; nếu không quota server (8 lượt/giờ
+    // cho cùng device/action) sẽ bị tiêu chỉ vì thao tác UI.
+    edge.invoke.mockResolvedValue(validResponse({ rk_status: 'granted' }));
+    useAuthStore.setState({ licenseToken: validToken(), licenseValid: true, isChecking: false });
+    useAuthStore.getState().startHeartbeat();
+
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('focus'));
+
+    await vi.waitFor(() => expect(licenseV3.run).toHaveBeenCalledTimes(1));
+    expect(useAuthStore.getState().licenseValid).toBe(true);
+  });
+
+  it('heartbeat và focus cùng nhịp chỉ thực hiện một lượt xác minh', async () => {
+    // Focus thường phát ra ngay khi cửa sổ được mở lại, trùng thời điểm heartbeat
+    // định kỳ. Hai trigger này phải dùng chung cooldown để không nhân đôi challenge.
+    vi.useFakeTimers();
+    const originalValidate = useAuthStore.getState().validateLicense;
+    const validateSpy = vi.fn(async () => true);
+    useAuthStore.setState({ validateLicense: validateSpy, isChecking: false });
+    try {
+      useAuthStore.getState().startHeartbeat();
+      await vi.advanceTimersToNextTimerAsync();
+      window.dispatchEvent(new Event('focus'));
+
+      expect(validateSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      useAuthStore.getState().stopHeartbeat();
+      useAuthStore.setState({ validateLicense: originalValidate });
+      vi.useRealTimers();
+    }
+  });
+
+  it('RATE_LIMITED không cho nút Thử lại tạo thêm challenge trong cooldown', async () => {
+    edge.invoke.mockResolvedValue({ data: { status: 'RATE_LIMITED' }, error: null });
+    useAuthStore.setState({ licenseToken: validToken() });
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'load_clock_anchor') return { status: 'missing' };
+      return undefined;
+    });
+
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
+    await expect(useAuthStore.getState().retryValidation()).resolves.toBeUndefined();
+
+    expect(licenseV3.run).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().isLicenseLocked).toBe(true);
+  });
+
+  it('RATE_LIMITED cho phép thử lại sau khi hết cooldown', async () => {
+    const token = validToken();
+    vi.useFakeTimers();
+    edge.invoke.mockResolvedValue({ data: { status: 'RATE_LIMITED' }, error: null });
+    useAuthStore.setState({ licenseToken: token });
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'load_clock_anchor') return { status: 'missing' };
+      return undefined;
+    });
+
+    try {
+      await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+      await expect(useAuthStore.getState().retryValidation()).resolves.toBeUndefined();
+
+      expect(licenseV3.run).toHaveBeenCalledTimes(2);
+      expect(useAuthStore.getState().isLicenseLocked).toBe(true);
+    } finally {
+      useAuthStore.getState().stopHeartbeat();
+      vi.useRealTimers();
+    }
+  });
 });

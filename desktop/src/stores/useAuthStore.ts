@@ -744,6 +744,9 @@ interface AuthState {
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let retryInterval: ReturnType<typeof setInterval> | null = null;
 let revokeTimer: ReturnType<typeof setTimeout> | null = null;
+// UIUX (audit 2026-09-05 §AUTH.RATE): RATE_LIMITED là trạng thái tạm thời của
+// server. Giữ một khoảng nghỉ để nút Thử lại không tự đốt tiếp quota v3.
+let rateLimitedRetryAfterMs = 0;
 // Generation riêng cho timer thu hồi. clearTimeout không đủ nếu callback đã
 // được đưa vào event loop; callback cũ phải tự chứng minh nó vẫn là lượt hiện
 // tại trước khi dọn token mới.
@@ -823,7 +826,13 @@ function serializeLicenseOperation<T>(operation: () => Promise<T>): Promise<T> {
   return tracked;
 }
 
-const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;      // SEC (audit 2026-08-22 §SEC.LIC.3): thu hồi online tối đa 5 phút; focus kiểm tra ngay.
+// UIUX (audit 2026-09-05 §AUTH.RATE): challenge v3 giới hạn 8 lượt/device/action
+// trong một giờ. Nhịp 5 phút tạo 12 lượt/giờ trước cả focus; 10 phút còn tối đa
+// 6 lượt/giờ, vẫn đủ dư địa cho một lượt focus sau khi người dùng quay lại app.
+// Token v3 có TTL 15 phút nên nhịp này vẫn refresh trước khi hết hạn.
+const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
+const SCHEDULED_VALIDATION_MIN_INTERVAL_MS = 10 * 60 * 1000;
+const RATE_LIMIT_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 const RETRY_INTERVAL_MS = 30 * 1000;              // 30 seconds (when locked)
 const REVOKE_GRACE_MS = 5 * 60 * 1000;            // 5 phút ân hạn để khách kịp lưu file trước khi khóa cứng
 
@@ -978,6 +987,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setLicenseKey: (key) => {
     const previousKey = get().licenseKey;
     const keyChanged = previousKey !== key;
+    if (keyChanged) rateLimitedRetryAfterMs = 0;
     const epoch = keyChanged
       // Setter là một đường thay đổi credential thật (startup reject, import
       // legacy, hoặc UI cũ). Invalidate cả change transaction đang chờ, không
@@ -1072,6 +1082,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           licenseSessionEpoch: finalEpoch,
           licenseSignOutPending: pendingSignOutRequests > 0,
         });
+        rateLimitedRetryAfterMs = 0;
       }
     });
   },
@@ -1255,6 +1266,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isLicenseLocked: false,
         lockReason: '',
       });
+      rateLimitedRetryAfterMs = 0;
       if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
       return true;
     };
@@ -1269,6 +1281,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
       if (!isCurrent()) return false;
 
+      // Một lượt online thành công đã giải phóng mọi cooldown tạm thời trước đó.
+      rateLimitedRetryAfterMs = 0;
       const claims = readValidatedV3ResponseClaims(response);
       if (!claims) {
         set({ dielineKeyStatus: 'unknown' });
@@ -1341,6 +1355,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const code = licenseProtocolV3ErrorCode(error);
       console.warn('[AUTH] License protocol v3 failed:', code);
       set({ dielineKeyStatus: 'unknown' });
+
+      if (code === 'RATE_LIMITED') {
+        // Server dùng cửa sổ trượt một giờ; retry sớm hơn chỉ làm tình trạng xấu
+        // thêm mà không tăng khả năng phục hồi. Không ảnh hưởng các lỗi terminal.
+        rateLimitedRetryAfterMs = Math.max(
+          rateLimitedRetryAfterMs,
+          Date.now() + RATE_LIMIT_RETRY_COOLDOWN_MS,
+        );
+      }
 
       if (code === 'DEVICE_LIMIT') {
         logSecurityEvent('device_limit');
@@ -1465,6 +1488,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
    * Manual retry: called by user clicking "Thử lại" on lock screen.
    */
   retryValidation: async () => {
+    // UIUX (audit 2026-09-05 §AUTH.RATE): tránh một cú click/automation tạo
+    // challenge mới ngay sau khi server vừa trả RATE_LIMITED.
+    if (Date.now() < rateLimitedRetryAfterMs) return;
     const isValid = await get().validateLicense();
     if (isValid) {
       set({ isLicenseLocked: false, lockReason: '' });
@@ -1633,6 +1659,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         remainingDays: response.remaining_days ?? null,
         licenseExpiresAt: response.expires_at || null,
         licenseValid: true,
+        lastValidated: Date.now(),
         isLicenseLocked: false,
         lockReason: '',
         licenseValidationOutcome: 'valid_online',
@@ -1799,12 +1826,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   startHeartbeat: () => {
     get().stopHeartbeat();
     // SEC (audit 2026-08-22 §SEC.LIC.3): khi quay lại cửa sổ sau thao tác quản trị,
-    // xác minh ngay thay vì chờ hết chu kỳ heartbeat.
+    // xác minh theo cổng chung với heartbeat, tránh tạo challenge trùng trong cùng
+    // một nhịp nhưng vẫn kiểm tra sớm khi đã qua khoảng tối thiểu.
+    let claimScheduledValidation: (() => boolean) | null = null;
     if (typeof window !== 'undefined') {
-      focusValidationHandler = () => { void get().validateLicense(); };
+      // WebView có thể phát nhiều focus liên tiếp khi chuyển tab/cửa sổ. Không
+      // để mỗi sự kiện tạo một challenge v3; heartbeat định kỳ vẫn là đường chính.
+      let lastScheduledValidationAt = get().lastValidated;
+      let hasScheduledValidation = lastScheduledValidationAt > 0;
+      const claimForWindow = (): boolean => {
+        const now = Date.now();
+        if (hasScheduledValidation
+          && now - lastScheduledValidationAt < SCHEDULED_VALIDATION_MIN_INTERVAL_MS) {
+          return false;
+        }
+        hasScheduledValidation = true;
+        lastScheduledValidationAt = now;
+        return true;
+      };
+      claimScheduledValidation = claimForWindow;
+      focusValidationHandler = () => {
+        if (get().isLicenseLocked || get().isChecking) return;
+        if (isLicenseOperationPending() || !claimForWindow()) return;
+        void get().validateLicense();
+      };
       window.addEventListener('focus', focusValidationHandler);
     }
     heartbeatInterval = setInterval(async () => {
+      // Đồng bộ cùng cổng focus để hai timer không xếp đôi challenge khi người
+      // dùng quay lại cửa sổ đúng lúc heartbeat nổ.
+      // Nếu không có window (SSR) thì heartbeat vẫn giữ nhịp, không cần debounce UI.
+      if (isLicenseOperationPending()) return;
+      if (claimScheduledValidation && !claimScheduledValidation()) return;
       const isValid = await get().validateLicense();
       if (!isValid && !get().isLicenseLocked) {
         // Don't sign out — just lock. validateLicense already sets isLicenseLocked.
@@ -1822,6 +1875,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
     if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
     if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
+    rateLimitedRetryAfterMs = 0;
     revokeGeneration += 1;
     if (focusValidationHandler && typeof window !== 'undefined') {
       window.removeEventListener('focus', focusValidationHandler);
