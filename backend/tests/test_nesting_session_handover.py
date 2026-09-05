@@ -86,6 +86,59 @@ def _settings(**overrides):
     return base
 
 
+@pytest.mark.parametrize("marks, expected_obstacles", [(True, 4), (False, 0)])
+def test_preview_request_cnc_duplex_marks_map_to_solver_obstacles(
+    monkeypatch, tmp_path: Path, marks: bool, expected_obstacles: int
+):
+    """PARITY (audit 2026-09-05 §NEST26.1): preview và export cùng vật cản dấu canh."""
+
+    from app.api.routes.imposition import PreviewLayoutRequest
+    from app.core.nesting_preview_capacity import settings_from_preview_request
+    from app.core.nesting_preview_session import job_identity_key
+    from app.workers import nup_true_shape_nesting as module
+
+    request = PreviewLayoutRequest(
+        usable_w=300.0,
+        usable_h=220.0,
+        item_w=40.0,
+        item_h=40.0,
+        gap_x=2.0,
+        gap_y=2.0,
+        strategy="true_shape_nesting",
+        is_die_cut=True,
+        imposer_mode="cnc",
+        cnc_two_sided=True,
+        cnc_duplex_marks=marks,
+        cnc_flip_edge="long",
+        sheet_w=320.0 * PT_PER_MM,
+        sheet_h=230.0 * PT_PER_MM,
+        target_quantities_by_page={"0": 6},
+        detected_shapes_by_page={"0": "CUSTOM", "1": "CUSTOM"},
+    )
+    settings = settings_from_preview_request(request)
+    assert settings["cncDuplexMarks"] is marks
+
+    # Chỉ cần shape tối thiểu để dựng job; detector thật được test riêng ở các ca PDF.
+    contour = SimpleNamespace(
+        page_index=0,
+        outer_top_down_user_units=((0.0, 0.0), (40.0, 0.0), (40.0, 40.0)),
+        holes_top_down_user_units=(),
+    )
+    shape = SimpleNamespace(page_contour=contour)
+    monkeypatch.setattr(
+        module, "_detect_shapes_for_nesting", lambda _source: {0: shape, 1: shape}
+    )
+    source = tmp_path / "cnc-preview.pdf"
+    source.write_bytes(b"audit fixture")
+    job = module.build_true_shape_nesting_job(str(source), settings, job_id="marks")
+    assert len(job.fixed_obstacles) == expected_obstacles
+    opposite_settings = {**settings, "cncDuplexMarks": not marks}
+    opposite_job = module.build_true_shape_nesting_job(
+        str(source), opposite_settings, job_id="marks-opposite"
+    )
+    assert job_identity_key(job) != job_identity_key(opposite_job)
+
+
 @pytest.fixture
 def source(tmp_path: Path) -> Path:
     path = tmp_path / "khuon.pdf"

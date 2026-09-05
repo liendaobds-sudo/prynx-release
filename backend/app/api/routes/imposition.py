@@ -1496,6 +1496,9 @@ class PreviewLayoutRequest(BaseModel):
     # ── Bình Bế Rớt (CNC) ghép nhiều mẫu — preview khớp output ──
     imposer_mode: Optional[str] = None
     cnc_two_sided: Optional[bool] = False
+    # PARITY (audit 2026-09-05 §NEST26.1): dấu canh CNC hai mặt phải
+    # nằm trong hợp đồng preview; thiếu field này preview không thể dựng vật cản.
+    cnc_duplex_marks: StrictBool = False
     cnc_flip_edge: Optional[str] = "long"
     cols: int = Field(default=0, ge=0, le=1000)
     rows: int = Field(default=0, ge=0, le=1000)

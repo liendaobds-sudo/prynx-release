@@ -101,6 +101,9 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
         # Front/Back và cùng cạnh lật với export; đây là field logic, không đổi đơn vị.
         "cncTwoSided": bool(getattr(req, "cnc_two_sided", False)),
         "cncFlipEdge": getattr(req, "cnc_flip_edge", None) or "long",
+        # PARITY (audit 2026-09-05 §NEST26.1): dấu canh cũng là một phần identity
+        # nesting vì chúng tạo 4 vật cản cố định trên tờ CNC hai mặt.
+        "cncDuplexMarks": bool(getattr(req, "cnc_duplex_marks", False)),
         "taskMode": getattr(req, "task_mode", "nup"),
         "layoutType": getattr(req, "layout_type", None),
         # PARITY (audit 2026-08-29 MAP-NEST-04): preview/export phải giữ đúng
