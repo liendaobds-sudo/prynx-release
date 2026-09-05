@@ -115,13 +115,10 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
           if (total > 0) setUpd({ kind: 'downloading', percent: Math.min(100, Math.round((got / total) * 100)) });
         } else if (ev.event === 'Finished') setUpd({ kind: 'downloading', percent: 100 });
       });
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('prepare_for_update');
-      } catch (cleanupError) {
-        // Dọn thất bại vẫn cài tiếp: hook NSIS còn một lớp diệt tiến trình nữa.
-        console.warn('[Updater] prepare_for_update failed:', cleanupError);
-      }
+      // SEC (audit 2026-09-04 §SEC.18/§SEC.22): cleanup lỗi phải dừng cài;
+      // catch ngoài sẽ đưa UI về trạng thái lỗi và không gọi install().
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('prepare_for_update');
       // install() kết thúc bằng process::exit(0); trình cài tự mở lại app (cờ /R) nên
       // không cần relaunch() — code sau lời gọi này không bao giờ chạy.
       await update.install();

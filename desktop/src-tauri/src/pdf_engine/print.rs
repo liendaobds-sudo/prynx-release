@@ -54,22 +54,27 @@ impl PrintJobControl {
     }
 }
 
-/// Breadcrumb chẩn đoán crash Ctrl+P release → %APPDATA%\PrynX\logs\print_debug.log
+/// Breadcrumb Ctrl+P chỉ dành cho binary dev.
 pub fn print_breadcrumb(msg: &str) {
-    log::info!("[PRINT] {}", msg);
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("print_debug.log"))
-        {
-            use std::io::Write;
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let _ = writeln!(f, "[{}] {}", now, msg);
+    #[cfg(debug_assertions)]
+    {
+        log::info!("[PRINT] {}", msg);
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("print_debug.log"))
+            {
+                use std::io::Write;
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let _ = writeln!(f, "[{}] {}", now, msg);
+            }
         }
     }
+    #[cfg(not(debug_assertions))]
+    let _ = msg;
 }
 
 #[tauri::command]
@@ -918,68 +923,72 @@ fn run_print_job(
     ));
 
     // Render one logical PDF page into a rectangle on the current sheet.
-    let render_page_in_rect =
-        |pg: i32, cell_x: i32, cell_y: i32, cell_w: f64, cell_h: f64| -> Result<(), String> {
-            if pg <= 0 {
-                return Ok(()); // blank slot (booklet pad)
-            }
-            let idx = pg - 1;
-            let mut w_pt: f64 = 0.0;
-            let mut h_pt: f64 = 0.0;
-            let ok = b.FPDF_GetPageSizeByIndex(doc, idx, &mut w_pt, &mut h_pt);
-            if ok == 0 || w_pt <= 0.0 || h_pt <= 0.0 {
-                return Err(format!("Không đọc được kích thước trang {}", pg));
-            }
-            let page = b.FPDF_LoadPage(doc, idx);
-            if page.is_null() {
-                return Err(format!("Không load được trang {}", pg));
-            }
-            let page_w_px = w_pt / 72.0 * dpi_x;
-            let page_h_px = h_pt / 72.0 * dpi_y;
-            let rotated_w_px = h_pt / 72.0 * dpi_x;
-            let rotated_h_px = w_pt / 72.0 * dpi_y;
-            let (scale, rotate_page) = plan_scale_with_rotation_dimensions(
-                page_w_px,
-                page_h_px,
-                rotated_w_px,
-                rotated_h_px,
-                cell_w,
-                cell_h,
-                opts.mode,
-                opts.auto_rotate,
-            );
-            let (effective_w, effective_h, rotation) = if rotate_page {
-                (rotated_w_px, rotated_h_px, 1)
-            } else {
-                (page_w_px, page_h_px, 0)
-            };
-            let draw_w = (effective_w * scale).round() as i32;
-            let draw_h = (effective_h * scale).round() as i32;
-            // PRINTWIN (audit 2026-08-13 §PRINTWIN.09): FPDF_RenderPage là hàm void —
-            // không có mã trả về để kiểm. Ca "tờ trắng im lặng" bắt được là kích thước
-            // vẽ suy biến (scale/ô đặt làm tròn về 0) → báo lỗi thay vì in tờ trắng.
-            if draw_w <= 0 || draw_h <= 0 {
-                b.FPDF_ClosePage(page);
-                return Err(format!(
+    let render_page_in_rect = |pg: i32,
+                               cell_x: i32,
+                               cell_y: i32,
+                               cell_w: f64,
+                               cell_h: f64|
+     -> Result<(), String> {
+        if pg <= 0 {
+            return Ok(()); // blank slot (booklet pad)
+        }
+        let idx = pg - 1;
+        let mut w_pt: f64 = 0.0;
+        let mut h_pt: f64 = 0.0;
+        let ok = b.FPDF_GetPageSizeByIndex(doc, idx, &mut w_pt, &mut h_pt);
+        if ok == 0 || w_pt <= 0.0 || h_pt <= 0.0 {
+            return Err(format!("Không đọc được kích thước trang {}", pg));
+        }
+        let page = b.FPDF_LoadPage(doc, idx);
+        if page.is_null() {
+            return Err(format!("Không load được trang {}", pg));
+        }
+        let page_w_px = w_pt / 72.0 * dpi_x;
+        let page_h_px = h_pt / 72.0 * dpi_y;
+        let rotated_w_px = h_pt / 72.0 * dpi_x;
+        let rotated_h_px = w_pt / 72.0 * dpi_y;
+        let (scale, rotate_page) = plan_scale_with_rotation_dimensions(
+            page_w_px,
+            page_h_px,
+            rotated_w_px,
+            rotated_h_px,
+            cell_w,
+            cell_h,
+            opts.mode,
+            opts.auto_rotate,
+        );
+        let (effective_w, effective_h, rotation) = if rotate_page {
+            (rotated_w_px, rotated_h_px, 1)
+        } else {
+            (page_w_px, page_h_px, 0)
+        };
+        let draw_w = (effective_w * scale).round() as i32;
+        let draw_h = (effective_h * scale).round() as i32;
+        // PRINTWIN (audit 2026-08-13 §PRINTWIN.09): FPDF_RenderPage là hàm void —
+        // không có mã trả về để kiểm. Ca "tờ trắng im lặng" bắt được là kích thước
+        // vẽ suy biến (scale/ô đặt làm tròn về 0) → báo lỗi thay vì in tờ trắng.
+        if draw_w <= 0 || draw_h <= 0 {
+            b.FPDF_ClosePage(page);
+            return Err(format!(
                     "Trang {} có kích thước vẽ không hợp lệ ({draw_w}×{draw_h}px) — kiểm tra tỉ lệ in và khổ giấy",
                     pg
                 ));
-            }
-            let off_x = cell_x + ((cell_w - draw_w as f64) / 2.0).round() as i32;
-            let off_y = cell_y + ((cell_h - draw_h as f64) / 2.0).round() as i32;
-            b.FPDF_RenderPage(
-                hdc,
-                page,
-                off_x,
-                off_y,
-                draw_w,
-                draw_h,
-                rotation,
-                render_flags,
-            );
-            b.FPDF_ClosePage(page);
-            Ok(())
-        };
+        }
+        let off_x = cell_x + ((cell_w - draw_w as f64) / 2.0).round() as i32;
+        let off_y = cell_y + ((cell_h - draw_h as f64) / 2.0).round() as i32;
+        b.FPDF_RenderPage(
+            hdc,
+            page,
+            off_x,
+            off_y,
+            draw_w,
+            draw_h,
+            rotation,
+            render_flags,
+        );
+        b.FPDF_ClosePage(page);
+        Ok(())
+    };
 
     let start_sheet = || -> Result<(), String> {
         if unsafe { StartPage(hdc) } <= 0 {

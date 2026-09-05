@@ -107,7 +107,14 @@ export function dispatchIncomingFileBatch(
 
   if (otherFiles.length === 0) return;
   if (intent === 'convert') {
-    onOpenApp('combine_pdf', { files: otherFiles });
+    // FILEIO (feedback 2026-09-04): một ảnh đã có đường normalize → PDF ngay
+    // trong ImpositionTab, nên mở thẳng Viewer. Chỉ giữ Combine khi Explorer
+    // gửi nhiều ảnh để người dùng còn kiểm tra thứ tự trước khi ghép.
+    if (otherFiles.length === 1) {
+      onOpenApp('imposition', { file: otherFiles[0] });
+    } else {
+      onOpenApp('combine_pdf', { files: otherFiles });
+    }
     return;
   }
 

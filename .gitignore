@@ -30,7 +30,11 @@ print_engine/target/
 *.rs.bk
 
 # Sidecar binaries (237 MB each — built by build_production.ps1, too large for GitHub)
-desktop/src-tauri/binaries/
+# SEC (audit 2026-09-04 §SEC.16-A1): chỉ vendor exact-set MAA đã khóa hash;
+# sidecar, Tesseract và các staging artifact khác vẫn bị bỏ qua.
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/maa/
+!desktop/src-tauri/binaries/maa/*.dll
 
 # Ban copy THIRD_PARTY_NOTICES.md dung de dong goi vao installer.
 # Ban duoc theo doi la ban o goc repo; build_production.ps1 copy no vao day.
@@ -174,3 +178,22 @@ backend/_audit_tmp2/
 backend/logs/
 logs/
 uploads/
+
+# Artifact audit/benchmark cục bộ — không phải source phát hành.
+/.tmp-security-audit/
+/backend/.audit-tmp/
+/backend/_codex_*
+/f2-*/
+/queue-contention-*/
+/semantic-review/
+/mixed_nesting_data/
+/backend/mixed_nesting_data/
+/pair/
+/profile_preview_tmp.py
+/_codex_*
+/_patch_*
+/_probe_*
+/_tmp_*
+/%
+/Copyright
+/Windows

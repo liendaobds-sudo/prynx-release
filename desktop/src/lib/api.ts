@@ -19,6 +19,189 @@ let _localUploadUnavailable = false;
 
 type TauriCoreInvoker = Pick<typeof import('@tauri-apps/api/core'), 'invoke'>;
 
+type RequestBodyMode = 'none' | 'raw-v1' | 'form-v1';
+
+interface RequestBodyBinding {
+  mode: RequestBodyMode;
+  commitment: string;
+  contentType: string;
+}
+
+interface PreparedBackendRequest {
+  request: Request;
+  bodyBinding: RequestBodyBinding;
+}
+
+const BODY_COMMITMENT_CHUNK_BYTES = 1024 * 1024;
+const BODY_COMMITMENT_VERSION = '2';
+const UTF8_ENCODER = new TextEncoder();
+const CHUNK_LEAF_DOMAIN = UTF8_ENCODER.encode('prynx-body-chunk-leaf-v1\0');
+const CHUNK_ROOT_DOMAIN = UTF8_ENCODER.encode('prynx-body-chunk-root-v1\0');
+const BODY_NONE_DOMAIN = UTF8_ENCODER.encode('prynx-body-none-v1\0');
+const FORM_TEXT_DOMAIN = UTF8_ENCODER.encode('prynx-body-form-text-v1\0');
+const FORM_FILE_PART_DOMAIN = UTF8_ENCODER.encode('prynx-body-form-file-part-v1\0');
+const FORM_ROOT_DOMAIN = UTF8_ENCODER.encode('prynx-body-form-root-v1\0');
+
+function uint64Bytes(value: number): Uint8Array {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Kích thước body không hợp lệ');
+  }
+  const bytes = new Uint8Array(8);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, Math.floor(value / 0x1_0000_0000), false);
+  view.setUint32(4, value >>> 0, false);
+  return bytes;
+}
+
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    merged.set(part, offset);
+    offset += part.byteLength;
+  }
+  return merged;
+}
+
+function framedBytes(bytes: Uint8Array): Uint8Array {
+  return concatBytes([uint64Bytes(bytes.byteLength), bytes]);
+}
+
+async function sha256Bytes(parts: readonly Uint8Array[]): Promise<Uint8Array> {
+  const bytes = concatBytes(parts);
+  // `concatBytes` luôn cấp một ArrayBuffer riêng, đúng độ dài. Khai rõ backing
+  // buffer để TS không mở rộng kiểu sang SharedArrayBuffer (WebCrypto không nhận).
+  const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer);
+  return new Uint8Array(digest);
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function chunkCommitment(
+  source: Blob | Uint8Array,
+  sourceDomain: string,
+): Promise<Uint8Array> {
+  const domain = UTF8_ENCODER.encode(sourceDomain);
+  const size = source instanceof Blob ? source.size : source.byteLength;
+  const leaves: Uint8Array[] = [];
+  for (let offset = 0, index = 0; offset < size; offset += BODY_COMMITMENT_CHUNK_BYTES, index += 1) {
+    const end = Math.min(size, offset + BODY_COMMITMENT_CHUNK_BYTES);
+    // SEC (audit 2026-09-03 §SEC.21): chỉ materialize tối đa một chunk; không
+    // clone/arrayBuffer toàn bộ PDF lớn chỉ để ký request.
+    const chunk = source instanceof Blob
+      ? new Uint8Array(await source.slice(offset, end).arrayBuffer())
+      : source.subarray(offset, end);
+    leaves.push(await sha256Bytes([
+      CHUNK_LEAF_DOMAIN,
+      framedBytes(domain),
+      uint64Bytes(index),
+      uint64Bytes(chunk.byteLength),
+      chunk,
+    ]));
+  }
+  return sha256Bytes([
+    CHUNK_ROOT_DOMAIN,
+    framedBytes(domain),
+    uint64Bytes(size),
+    uint64Bytes(leaves.length),
+    ...leaves,
+  ]);
+}
+
+function normalizeFormText(value: string): string {
+  return value.replace(/\r\n|\r|\n/g, '\r\n');
+}
+
+function assertSafeFormMetadata(value: string): void {
+  if (value.includes('\r') || value.includes('\n')) {
+    throw new Error('Tên field/file multipart chứa ký tự xuống dòng không được hỗ trợ');
+  }
+}
+
+async function formCommitment(
+  entries: Iterable<[string, string | Blob]>,
+): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  for (const [name, value] of entries) {
+    assertSafeFormMetadata(name);
+    const nameBytes = UTF8_ENCODER.encode(name);
+    if (typeof value === 'string') {
+      parts.push(await sha256Bytes([
+        FORM_TEXT_DOMAIN,
+        framedBytes(nameBytes),
+        framedBytes(UTF8_ENCODER.encode(normalizeFormText(value))),
+      ]));
+      continue;
+    }
+
+    const file = value as File;
+    const filename = file.name || 'blob';
+    assertSafeFormMetadata(filename);
+    const contentType = file.type || 'application/octet-stream';
+    const fileCommitment = await chunkCommitment(file, 'form-file');
+    parts.push(await sha256Bytes([
+      FORM_FILE_PART_DOMAIN,
+      framedBytes(nameBytes),
+      framedBytes(UTF8_ENCODER.encode(filename)),
+      framedBytes(UTF8_ENCODER.encode(contentType)),
+      uint64Bytes(file.size),
+      framedBytes(fileCommitment),
+    ]));
+  }
+  return sha256Bytes([FORM_ROOT_DOMAIN, uint64Bytes(parts.length), ...parts]);
+}
+
+async function buildBodyBinding(
+  body: BodyInit | null | undefined,
+  contentType: string,
+): Promise<RequestBodyBinding> {
+  if (body === null || body === undefined) {
+    return {
+      mode: 'none',
+      commitment: bytesToHex(await sha256Bytes([BODY_NONE_DOMAIN])),
+      contentType,
+    };
+  }
+  if (body instanceof FormData) {
+    return {
+      mode: 'form-v1',
+      commitment: bytesToHex(await formCommitment(body.entries())),
+      contentType,
+    };
+  }
+  if (body instanceof URLSearchParams) {
+    return {
+      mode: 'form-v1',
+      commitment: bytesToHex(await formCommitment(body.entries())),
+      contentType,
+    };
+  }
+
+  let source: Blob | Uint8Array;
+  if (typeof body === 'string') {
+    source = UTF8_ENCODER.encode(body);
+  } else if (body instanceof Blob) {
+    source = body;
+  } else if (body instanceof ArrayBuffer) {
+    source = new Uint8Array(body);
+  } else if (ArrayBuffer.isView(body)) {
+    source = new Uint8Array(body.buffer as ArrayBuffer, body.byteOffset, body.byteLength);
+  } else {
+    // ReadableStream là one-shot; pre-hash rồi gửi lại buộc phải giữ toàn bộ body.
+    // Hiện repo không có caller production dạng này, nên v2 từ chối thay vì âm thầm
+    // nhân RAM hoặc gửi request không được ràng buộc.
+    throw new Error('Body streaming one-shot chưa được hỗ trợ bởi request signing v2');
+  }
+  return {
+    mode: 'raw-v1',
+    commitment: bytesToHex(await chunkCommitment(source, 'http-body')),
+    contentType,
+  };
+}
+
 export function formatApiErrorDetail(detail: unknown, fallback: string): string {
   if (typeof detail === 'string') return detail || fallback;
   if (Array.isArray(detail)) {
@@ -59,21 +242,62 @@ export const getApiUrl = () => `${API_BASE}/api`;
 let _cachedTauriCore: TauriCoreInvoker | null = null;
 let _tauriAvailable: boolean | null = null;
 
-async function getLicenseHeaders(url: string, method = 'GET'): Promise<Record<string, string>> {
+// Các header này chỉ được phép xuất hiện sau khi native signer tạo xong một
+// chữ ký cho đúng snapshot key/token hiện tại. Xoá ở mọi đường vào (kể cả
+// `Request` đã dựng sẵn) để một caller không thể nhét lại chữ ký/token cũ khi
+// lượt sign-out hoặc đổi key đang diễn ra.
+const PROTECTED_AUTH_HEADER_PREFIXES = ['x-prynx-', 'x-license-'];
+const PROTECTED_AUTH_HEADER_NAMES = new Set(['x-hardware-id']);
+
+function stripProtectedAuthHeaders(headers: Headers): void {
+  for (const name of [...headers.keys()]) {
+    const lower = name.toLowerCase();
+    if (
+      PROTECTED_AUTH_HEADER_NAMES.has(lower)
+      || PROTECTED_AUTH_HEADER_PREFIXES.some(prefix => lower.startsWith(prefix))
+    ) {
+      headers.delete(name);
+    }
+  }
+}
+
+async function getLicenseHeaders(
+  url: string,
+  method: string,
+  bodyBinding: RequestBodyBinding,
+): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   try {
-    const { useAuthStore } = await import('../stores/useAuthStore');
+    const {
+      useAuthStore,
+      getLicenseOperationEpoch,
+      isLicenseOperationPending,
+      isNativeLicenseGateBlocked,
+    } = await import('../stores/useAuthStore');
     // SEC (feedback 2026-08-15 §UP.403): chụp key + token cùng một thời điểm để
     // header, cache native và chữ ký HMAC luôn thuộc cùng một phiên license.
     const authState = useAuthStore.getState();
+    const operationEpoch = getLicenseOperationEpoch();
     const licenseKey = authState.licenseKey || '';
+    const licenseToken = authState.licenseToken || '';
+    // Epoch là hàng rào chính; so sánh thêm state giúp bắt trường hợp một
+    // caller/adapter thay state mà không đi qua helper bump epoch.
+    const isCurrentOperation = () => {
+      const current = useAuthStore.getState();
+      return getLicenseOperationEpoch() === operationEpoch
+        && !isLicenseOperationPending()
+        && !isNativeLicenseGateBlocked()
+        && !current.licenseSignOutPending
+        && (current.licenseKey || '') === licenseKey
+        && (current.licenseToken || '') === licenseToken;
+    };
+    if (!isCurrentOperation()) return headers;
     headers['X-License-Key'] = licenseKey;
     // Token ngắn hạn do server ký — sidecar verify bằng public key (chống client tự phong hợp lệ).
-    const licenseToken = authState.licenseToken || '';
     if (licenseToken) headers['X-License-Token'] = licenseToken;
     
     // Quick check: skip Tauri IPC if not in Tauri environment
-    if (_tauriAvailable === false) return headers;
+    if (_tauriAvailable === false) return isCurrentOperation() ? headers : {};
     
     // VECTOR #13: Use captured invoke from main.tsx (immune to ES module patches)
     if (!_cachedTauriCore) {
@@ -89,22 +313,34 @@ async function getLicenseHeaders(url: string, method = 'GET'): Promise<Record<st
         _tauriAvailable = true;
       } catch {
         _tauriAvailable = false;
-        return headers;
+        return isCurrentOperation() ? headers : {};
       }
     }
+
+    if (!isCurrentOperation()) return {};
     
     const { invoke } = _cachedTauriCore;
     
     
-    // Sign request (must be per-request due to timestamp)
-    const urlPath = new URL(url).pathname;
+    // Sign request (must be per-request due to timestamp).  Giữ nguyên query
+    // string đã serialize cùng URL; nếu chỉ ký pathname, caller có thể đổi
+    // `?page/format/target` sau khi native signer đã cấp proof (SEC §SEC.21).
+    const parsedUrl = new URL(url);
+    const urlPath = parsedUrl.pathname + parsedUrl.search;
     try {
       const signedHeaders = await invoke('sign_api_request', {
         urlPath,
         licenseKey,
         licenseToken,
         method,
+        signatureVersion: BODY_COMMITMENT_VERSION,
+        bodyMode: bodyBinding.mode,
+        bodyCommitment: bodyBinding.commitment,
+        contentType: bodyBinding.contentType,
       }) as Record<string, string>;
+      // Nếu sign-out/đổi key xảy ra trong lúc IPC đang chờ, chữ ký cũ không còn
+      // được phép đi ra ngoài renderer. Đặc biệt không retry register bằng token cũ.
+      if (!isCurrentOperation()) return {};
       Object.assign(headers, signedHeaders);
     } catch (signErr) {
       // sign_api_request fail thường do cache Rust hết hạn hoặc token vừa được làm mới
@@ -112,36 +348,100 @@ async function getLicenseHeaders(url: string, method = 'GET'): Promise<Record<st
       // Nếu vẫn fail thì trả headers thiếu chữ ký → request sẽ bị 403 rõ ràng.
       console.debug('[API] Rust signing failed, attempting re-register:', signErr);
       try {
+        if (!isCurrentOperation()) return {};
         if (licenseKey) {
           // Re-register key trong Rust cache
           await invoke('register_validated_key', { licenseKey, token: licenseToken });
+          if (!isCurrentOperation()) return {};
           // Thử ký lại
           const retryHeaders = await invoke('sign_api_request', {
             urlPath,
             licenseKey,
             licenseToken,
             method,
+            signatureVersion: BODY_COMMITMENT_VERSION,
+            bodyMode: bodyBinding.mode,
+            bodyCommitment: bodyBinding.commitment,
+            contentType: bodyBinding.contentType,
           }) as Record<string, string>;
+          if (!isCurrentOperation()) return {};
           Object.assign(headers, retryHeaders);
         }
       } catch (retryErr) {
         console.debug('[API] Rust signing retry also failed:', retryErr);
       }
     }
+    if (!isCurrentOperation()) return {};
   } catch (e) {
     console.debug('[API] Could not get license headers:', e);
+    // Không để lỗi chuẩn bị auth rơi qua caller headers hoặc một snapshot cũ.
+    // Nếu import store thất bại thì không thể chứng minh request còn thuộc
+    // phiên hiện tại; trả rỗng để backend từ chối fail-closed.
+    return {};
   }
   return headers;
+}
+
+function bodyInputForRequest(input: RequestInfo | URL, init?: RequestInit): BodyInit | null {
+  if (init?.body !== undefined && init.body !== null) return init.body;
+  if (input instanceof Request && input.body !== null) {
+    throw new Error(
+      'Request đã mang body one-shot; hãy truyền URL cùng RequestInit để ký body theo chunk',
+    );
+  }
+  return null;
+}
+
+async function prepareBackendRequest(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<PreparedBackendRequest> {
+  // Dựng đúng MỘT Request để Content-Type/boundary được ký trùng với request gửi đi.
+  const outgoing = new Request(input, init);
+  const bodyBinding = await buildBodyBinding(
+    bodyInputForRequest(input, init),
+    outgoing.headers.get('content-type')?.trim() || '',
+  );
+  const mergedHeaders = new Headers(outgoing.headers);
+  stripProtectedAuthHeaders(mergedHeaders);
+  return {
+    request: new Request(outgoing, { headers: mergedHeaders }),
+    bodyBinding,
+  };
+}
+
+async function signPreparedBackendRequest(
+  prepared: PreparedBackendRequest,
+): Promise<Request> {
+  // SEC (audit 2026-09-04 §SEC.19/§ATK.09-R2): mỗi attempt lấy proof mới,
+  // nhưng luôn clone cùng Request đã serialize và dùng lại commitment đã băm.
+  const outgoing = prepared.request.clone();
+  const mergedHeaders = new Headers(outgoing.headers);
+  stripProtectedAuthHeaders(mergedHeaders);
+  const licenseHeaders = await getLicenseHeaders(
+    outgoing.url,
+    outgoing.method,
+    prepared.bodyBinding,
+  );
+  for (const [name, value] of Object.entries(licenseHeaders)) mergedHeaders.set(name, value);
+  return new Request(outgoing, { headers: mergedHeaders });
+}
+
+async function buildAuthenticatedBackendRequest(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Request> {
+  return signPreparedBackendRequest(await prepareBackendRequest(input, init));
 }
 
 /**
  * Enhanced fetch that automatically includes license headers + Rust-signed request.
  */
 export async function authenticatedFetch(url: string, init?: RequestInit): Promise<Response> {
-  const licenseHeaders = await getLicenseHeaders(url, init?.method || 'GET');
-  const mergedHeaders = new Headers(init?.headers as HeadersInit | undefined);
-  for (const [name, value] of Object.entries(licenseHeaders)) mergedHeaders.set(name, value);
-  return fetch(url, { ...init, headers: mergedHeaders });
+  // main.tsx cài interceptor sớm. Khi đã cài, để nó chuẩn bị/ký đúng một lần;
+  // tránh băm file lớn và sinh nonce thừa hai lần cho cùng request.
+  if (_backendFetchPatched) return fetch(url, init);
+  return fetch(await buildAuthenticatedBackendRequest(url, init));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,7 +452,7 @@ export async function authenticatedFetch(url: string, init?: RequestInit): Promi
 // bắt buộc chữ ký sidecar) sẽ bị 403 nếu gọi fetch thô. Thay vì sửa từng call
 // site (dễ sót), interceptor tự đính bộ header ký cho mọi request tới backend
 // (qua getLicenseHeaders → Rust sign).
-// An toàn: chỉ chạm URL backend; lỗi gì cũng fallback fetch gốc; không ký 2 lần.
+// An toàn: chỉ chạm URL backend; lỗi chuẩn bị/ký backend fail-closed, không ký 2 lần.
 // ─────────────────────────────────────────────────────────────────────────────
 let _backendFetchPatched = false;
 export function installBackendFetchAuth(): void {
@@ -197,14 +497,18 @@ export function installBackendFetchAuth(): void {
     return method === 'POST' && SAFE_RETRY_POST_PATHS.has(new URL(request.url).pathname);
   };
 
-  const fetchBackend = async (request: Request): Promise<Response> => {
+  const fetchBackend = async (prepared: PreparedBackendRequest): Promise<Response> => {
+    const { request } = prepared;
     const canRetry = canRetryBackendRequest(request);
     const retryDelays = SIDECAR_RECOVERY_PATHS.has(new URL(request.url).pathname)
       ? SIDECAR_RECOVERY_DELAYS_MS
       : RETRY_DELAYS_MS;
     for (let attempt = 0; ; attempt += 1) {
+      // Ký ngoài catch transport: lỗi chuẩn bị/ký phải fail-closed ngay, không bị
+      // hiểu nhầm là sidecar restart rồi tự lặp request.
+      const signedAttempt = await signPreparedBackendRequest(prepared);
       try {
-        return await origFetch(request.clone());
+        return await origFetch(signedAttempt);
       } catch (error) {
         const aborted =
           request.signal.aborted ||
@@ -217,42 +521,22 @@ export function installBackendFetchAuth(): void {
     }
   };
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    let url = '';
     try {
-      let url = '';
       if (typeof input === 'string') url = input;
       else if (input instanceof URL) url = input.href;
       else if (input && typeof (input as Request).url === 'string') url = (input as Request).url;
 
       if (isBackendUrl(url)) {
-        if (input instanceof Request) {
-          // Build the effective request first so method/body/header overrides in `init`
-          // are preserved and the HMAC is bound to the method actually sent.
-          const outgoing = new Request(input, init);
-          if (!outgoing.headers.has('X-PrynX-Signature')) {
-            const auth = await getLicenseHeaders(url, outgoing.method);
-            const merged = new Headers(outgoing.headers);
-            for (const k in auth) merged.set(k, auth[k]);
-            return fetchBackend(new Request(outgoing, { headers: merged }));
-          }
-          return fetchBackend(outgoing);
-        } else {
-          const merged = new Headers((init?.headers as HeadersInit) || undefined);
-          // SEC (audit 2026-07-26 F10): khong cho caller tu dat header auth. Xoa moi
-          // X-License-*/X-Hardware-Id/X-PrynX-* roi moi dinh header native da ky (ghi de
-          // vo dieu kien) — chan ca meo preset X-PrynX-Signature de bo ky.
-          for (const k of [...merged.keys()]) {
-            const lk = k.toLowerCase();
-            if (lk.startsWith('x-license-') || lk.startsWith('x-prynx-') || lk === 'x-hardware-id') {
-              merged.delete(k);
-            }
-          }
-          const auth = await getLicenseHeaders(url, init?.method || 'GET');
-          for (const k in auth) merged.set(k, auth[k]);
-          return fetchBackend(new Request(url, { ...init, headers: merged }));
-        }
+        // SEC (audit 2026-09-03 §SEC.21): helper dùng chung dựng effective Request,
+        // bind body + Content-Type và xóa mọi header auth do renderer tự đặt.
+        return fetchBackend(await prepareBackendRequest(input, init));
       }
-    } catch {
+    } catch (error) {
       // Chỉ lỗi chuẩn bị/ký mới tới đây; Promise transport được return nên không fallback unsigned.
+      // Backend production phải fail-closed: không gửi request backend trần khi
+      // snapshot license không còn chứng minh được.
+      if (isBackendUrl(url)) throw error;
     }
     return origFetch(input, init);
   };

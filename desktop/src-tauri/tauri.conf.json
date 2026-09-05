@@ -119,6 +119,7 @@
     ],
     "resources": [
       "binaries/tesseract/**/*",
+      "binaries/payload-manifest.json",
       "bin/pdfium.dll",
       "icons/file-pdf.ico",
       "THIRD_PARTY_NOTICES.md"

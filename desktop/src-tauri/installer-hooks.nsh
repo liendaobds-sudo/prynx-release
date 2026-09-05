@@ -75,9 +75,9 @@ prynx_kill_done_${LABEL}:
 
 ; Verb "Convert to PDF" — CHỈ cho ảnh (jpg/jpeg/png), KHÔNG cho .pdf (pdf→pdf vô nghĩa).
 ; Truyền cờ --prynx-action=convert để app phân biệt với Combine (cả 2 verb đều gọi cùng
-; exe): app đọc cờ qua get_startup_args → 1 ảnh + convert đi thẳng tab Ghép (xuất PDF)
-; thay vì tab Bình bài. Combine mang cờ --prynx-action=combine để PDF không bị router
-; Acrobat mặc định tách thành nhiều tab trước khi vào tab Ghép.
+; exe): app đọc cờ qua get_startup_args → 1 ảnh mở thẳng Viewer sau khi đổi sang PDF;
+; nhiều ảnh vào tab Ghép để kiểm tra thứ tự. Combine mang cờ --prynx-action=combine để
+; PDF không bị router Acrobat mặc định tách thành nhiều tab trước khi vào tab Ghép.
 !define CVTVERB "pdf-inspector-convert"
 !define CVTLABEL "Convert to PDF (PrynX)"
 !define PDFPROGID "PrynX.PDF"

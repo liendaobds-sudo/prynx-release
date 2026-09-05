@@ -65,10 +65,9 @@ def test_nup_lifecycle_reaches_terminal_and_releases_slot(monkeypatch, tmp_path,
     monkeypatch.setattr(imposition.settings, "IS_DESKTOP_APP", True)
     monkeypatch.setattr(perf_sampler, "ProcessRssSampler", _Sampler)
     monkeypatch.setattr(perf_sampler, "write_job_perf", records.append)
-    if perf_on:
-        monkeypatch.setenv("PRYNX_PERF", "1")
-    else:
-        monkeypatch.delenv("PRYNX_PERF", raising=False)
+    # Authority dev/release đã có test riêng; ca lifecycle chỉ điều khiển nhánh
+    # instrumentation để chứng minh cả bật lẫn tắt đều giải phóng slot.
+    monkeypatch.setattr(perf_sampler, "perf_enabled", lambda: perf_on)
 
     imposition.nup_jobs[job_id] = {
         "status": "queued",

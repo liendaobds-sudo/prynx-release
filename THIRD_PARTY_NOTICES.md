@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-09-02 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-09-05 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.

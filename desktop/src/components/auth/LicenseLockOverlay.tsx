@@ -85,7 +85,13 @@ function RevocationCountdown() {
  */
 export default function LicenseLockOverlay() {
   const { t } = useTranslation();
-  const { isLicenseLocked, lockReason, retryValidation, isRevoking } = useAuthStore();
+  const {
+    isLicenseLocked,
+    lockReason,
+    retryValidation,
+    isRevoking,
+    licenseValidationOutcome,
+  } = useAuthStore();
   const [isRetrying, setIsRetrying] = useState(false);
   const [showChangeKey, setShowChangeKey] = useState(false);
 
@@ -99,24 +105,31 @@ export default function LicenseLockOverlay() {
     setIsRetrying(false);
   };
 
-  const isLicense = lockReason.includes('Bản quyền');
-  const isExpired = lockReason.includes('hết hạn');
-  const isBlocked = lockReason.includes('bị chặn');
+  // SEC (audit 2026-09-05 startup): outcome là enum authority; không suy loại lỗi
+  // từ chữ hoa/thường trong câu hiển thị (DEVICE_LIMIT từng bị ghi nhầm là lỗi mạng).
+  const isDeviceLimit = licenseValidationOutcome === 'device_limit';
+  const isServerRejected = licenseValidationOutcome === 'server_rejected';
+  const isLicense = isDeviceLimit || isServerRejected;
+  // `server_rejected` hiện gộp thu hồi và hết hạn; chỉ phân biệt hai tiêu đề
+  // trong đúng nhóm terminal này, tuyệt đối không suy từ câu lỗi tạm thời.
+  const isExpired = isServerRejected
+    && lockReason.toLocaleLowerCase('vi').includes('hết hạn');
+  const isBlocked = lockReason.toLocaleLowerCase('vi').includes('bị chặn');
   const isSevere = isLicense || isBlocked;
 
-  const title = isLicense
-    ? (isExpired ? t('misc.licenseLockOverlay:ban_quyen_da_het_han') : t('misc.licenseLockOverlay:ban_quyen_da_bi_thu_hoi'))
-    : (isBlocked ? t('misc.licenseLockOverlay:phat_hien_su_co_ket_noi') : t('misc.licenseLockOverlay:can_ket_noi_mang'));
+  const title = isDeviceLimit
+    ? t('misc.licenseLockOverlay:dat_gioi_han_thiet_bi')
+    : isServerRejected
+      ? (isExpired ? t('misc.licenseLockOverlay:ban_quyen_da_het_han') : t('misc.licenseLockOverlay:ban_quyen_da_bi_thu_hoi'))
+      : isBlocked
+        ? t('misc.licenseLockOverlay:phat_hien_su_co_ket_noi')
+        : t('misc.licenseLockOverlay:khong_the_xac_minh_ban_quyen');
   const icon = isLicense ? '⛔' : (isBlocked ? '🚫' : '🔒');
   const tone = isSevere
     ? {
-      border: 'border-red-200 dark:border-red-400/40',
-      stripe: 'bg-app-danger',
       icon: 'bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-300',
     }
     : {
-      border: 'border-amber-200 dark:border-amber-400/40',
-      stripe: 'bg-app-warning',
       icon: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300',
     };
 
@@ -128,9 +141,8 @@ export default function LicenseLockOverlay() {
         aria-labelledby="license-lock-title"
         aria-describedby="license-lock-description"
         aria-busy={isRetrying}
-        className={`relative w-full ${showChangeKey ? 'max-w-[440px]' : 'max-w-[460px]'} overflow-hidden rounded-app-xl border bg-app-2 shadow-2xl animate-fade-in ${tone.border}`}
+        className={`relative w-full ${showChangeKey ? 'max-w-[440px]' : 'max-w-[460px]'} overflow-hidden rounded-app-xl border border-app-line bg-app-2 shadow-2xl animate-fade-in`}
       >
-        <div className={`h-1 w-full ${tone.stripe}`} aria-hidden="true" />
         <div className={`p-6 sm:p-8 ${showChangeKey ? 'text-left' : 'text-center'}`}>
           {!showChangeKey ? (
             <>

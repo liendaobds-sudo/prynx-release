@@ -40,6 +40,9 @@ def test_edit_bug_log_disabled_by_default(monkeypatch):
 
 
 def test_edit_bug_log_enabled_when_flag_on(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_EDIT_BUG_LOG", "1")
     # Giả lập runtime app (không phải pytest) — cờ enabled luôn tắt khi PYTEST_*.
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -57,6 +60,9 @@ def test_text_move_log_disabled_by_default(monkeypatch):
 
 
 def test_text_move_log_writes_when_flag_on(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_EDIT_TEXT_MOVE_LOG", "1")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("PRYNX_EDIT_TEXT_MOVE_LOG_PATH", str(tmp_path / "text_move.jsonl"))

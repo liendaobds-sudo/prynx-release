@@ -64,6 +64,19 @@ def _node_opts_out_of_auto_pro(nodeid: str) -> bool:
     return any(name in nodeid for name in _SKIP_AUTO_PRO)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sidecar_signing_secret(monkeypatch):
+    """Giữ URL kết quả ở enforced mode nhưng dùng secret cục bộ của fixture.
+
+    Production không còn nhận ``PRYNX_SIDECAR_TOKEN`` từ env khi ``DEV_MODE=false``;
+    vì vậy test phải gắn secret trực tiếp vào module đã import. Test âm vẫn có thể
+    monkeypatch thành ``None`` trong chính ca kiểm tra fail-closed.
+    """
+    from app.core import license_guard
+
+    monkeypatch.setattr(license_guard, "_SIDECAR_TOKEN", "pytest-sidecar-token")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_database_schema():
     """Create and remove the schema used by DB-backed integration tests."""

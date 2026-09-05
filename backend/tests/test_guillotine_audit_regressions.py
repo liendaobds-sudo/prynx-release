@@ -297,6 +297,7 @@ def test_sr_330x480_log_capacity_matches_rendered_pdf(
     monkeypatch, tmp_path, split_gap_mm, expected_capacity
 ):
     """Hồi quy ảnh audit: preview/export phải cùng 17 hoặc cùng 16 theo khe phụ."""
+    from app.config import settings as app_settings
     from app.utils import preview_perf_log as perf_log
 
     source = str(tmp_path / f"sr-{split_gap_mm}.pdf")
@@ -306,6 +307,9 @@ def test_sr_330x480_log_capacity_matches_rendered_pdf(
     _make_pdf(source, [((149.1 + 4.0) * mm, (53.3 + 4.0) * mm)])
 
     log_path = tmp_path / "preview_perf.log"
+    # SEC (audit 2026-09-05 §LOG.01): diagnostic chỉ được bật trong
+    # runtime dev; test phải khai rõ authority này thay vì chỉ đặt env.
+    monkeypatch.setattr(app_settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_PERF", "1")
     monkeypatch.setattr(perf_log, "log_paths", lambda: [log_path])
     perf_log._enabled = None

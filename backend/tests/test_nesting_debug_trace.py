@@ -21,7 +21,10 @@ from app.core.nesting_debug_trace import (
 
 
 def test_trace_ghi_jsonl_tai_duong_dan_cau_hinh(tmp_path, monkeypatch):
+    from app.config import settings
+
     trace_path = tmp_path / "logs" / "nesting_trace.jsonl"
+    monkeypatch.setattr(settings, "DEV_MODE", True)
     monkeypatch.setenv(TRACE_PATH_ENV, str(trace_path))
     monkeypatch.setenv(TRACE_ENABLED_ENV, "1")
 
@@ -47,7 +50,10 @@ def test_trace_ghi_jsonl_tai_duong_dan_cau_hinh(tmp_path, monkeypatch):
 
 
 def test_trace_tat_bang_env_khong_tao_file(tmp_path, monkeypatch):
+    from app.config import settings
+
     trace_path = tmp_path / "nesting_trace.jsonl"
+    monkeypatch.setattr(settings, "DEV_MODE", True)
     monkeypatch.setenv(TRACE_PATH_ENV, str(trace_path))
     monkeypatch.setenv(TRACE_ENABLED_ENV, "0")
 

@@ -331,7 +331,7 @@ def process_chunk(args):
                     _die_items_cache[_ck] = dict(_hom_master_die)
                     _die_path_cache[_pi] = _m_path
                     _seeded_n += 1
-                logger.info(
+                logger.debug(
                     "[SINGLE-MOLD/HOM] seed master die p=%s → %d content page(s)",
                     homogeneous_master_idx, _seeded_n,
                 )
@@ -749,16 +749,8 @@ def process_chunk(args):
                 placements_before_collision=len(placements),
                 split_gap_pt=main_secondary_gap,
             )
-            if diagnostic_trace_id:
-                logger.warning(
-                    "[IMPOSITION-DIAG] event=export.worker.placements trace=%s job=%s "
-                    "chunk=%s sheet=%s source=%s solver_capacity=%s "
-                    "placements_before_collision=%s split_gap_pt=%s",
-                    diagnostic_trace_id, diagnostic_job_id or job_id,
-                    chunk_idx, sheet_idx,
-                    "precalculated" if chunk_precalc_placements is not None else "solver",
-                    cur_capacity * cx_count * cy_count, len(placements), main_secondary_gap,
-                )
+            # SEC (audit 2026-09-05 §LOG.06): không nhân đôi payload
+            # diagnostic sang logger chuẩn; `_diag_log` đã fail-closed ngoài dev.
 
         # --- Duplex Mirroring ---
         # MIXED-GUILLOTINE (audit 2026-07-30 §MG.5): mặt sau mode mới đã được
@@ -878,20 +870,7 @@ def process_chunk(args):
                 except Exception:
                     pass
 
-                if sheet_idx == 0:
-                    _lay_dbg = _layout_cache.get(first_src_idx) or {}
-                    _ys = sorted(round(p['abs_y'], 1) for p in placements)
-                    logger.warning(
-                        "[DIAG-EXPORT] sheet0 shape=%s strategy=%s base_poly=%s zones=%d "
-                        "items_before=%d collisions=%d abs_y[min..max]=%.1f..%.1f ys=%s",
-                        (detected_shapes_by_page.get(str(first_src_idx)) or detected_shapes_by_page.get(first_src_idx)) if is_die_cut else 'CUSTOM',
-                        _lay_dbg.get('strategyUsed'), 'YES' if base_poly is not None else 'NONE',
-                        len(zones), len(placements), len(initial_cols),
-                        (_ys[0] if _ys else 0), (_ys[-1] if _ys else 0), _ys,
-                    )
-
                 if initial_cols:
-                    original_len = len(placements)
                     placements = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
                     try:
                         from app.workers.rot_audit_log import get_logger as _rot_get_logger
@@ -902,9 +881,6 @@ def process_chunk(args):
                         )
                     except Exception:
                         pass
-                    if sheet_idx == 0:
-                        logger.warning("[DIAG-EXPORT] sheet0 items_after_resolve=%d (removed %d)",
-                                       len(placements), original_len - len(placements))
 
         # --- Phase 3: Render ---
         if sheet_idx == start_sheet:
@@ -916,13 +892,6 @@ def process_chunk(args):
                 sheet=sheet_idx,
                 placements=len(placements),
             )
-            if diagnostic_trace_id:
-                logger.warning(
-                    "[IMPOSITION-DIAG] event=export.worker.render trace=%s job=%s "
-                    "chunk=%s sheet=%s placements=%s",
-                    diagnostic_trace_id, diagnostic_job_id or job_id,
-                    chunk_idx, sheet_idx, len(placements),
-                )
 
         # IMPOSE (audit 2026-09-01 §CLIPOWN.1): Bình cắt xén thường chia quyền
         # clip theo láng giềng hình học toàn tờ. Tem bế/CNC/page-sheet vẫn giữ bbox

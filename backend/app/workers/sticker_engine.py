@@ -16,6 +16,10 @@ from typing import Optional, Tuple
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 import logging
+from app.core.development_diagnostics import (
+    development_diagnostic_enabled,
+    development_runtime_enabled,
+)
 from app.core.pdfium_lock import pdfium_guard
 # QUALITY (audit 2026-08-06 §BG.2): bộ dò nền (mọi màu, trắng chỉ là một ca).
 from app.core.sticker_background import (
@@ -5366,14 +5370,14 @@ def denoise_cutline_mask(
     before = int(np.count_nonzero(mask >= 128))
     after = int(np.count_nonzero(smoothed >= 128))
     if before > 0 and after < before * _CUTLINE_PRESMOOTH_MIN_AREA_KEPT:
-        logger.info(
+        logger.debug(
             "Bỏ khử răng cưa (thanh kéo %.0f): mask quá mảnh (%d → %d pixel).",
             resolved,
             before,
             after,
         )
         return mask
-    logger.info(
+    logger.debug(
         "Khử răng cưa đường cắt: thanh kéo %.0f → sigma %.2f px (%.3f mm).",
         resolved,
         sigma,
@@ -5935,7 +5939,7 @@ def fit_prepared_alpha_cutline_geometry(
                 quality=quality,
             )
         best["quality"]["cutline_hook_tolerated"] = True
-        logger.info(
+        logger.debug(
             "Đường bế còn %d gai chưa khớp góc thật (nêm hẹp nhất %s mm, chế độ %s); "
             "đã chọn ứng viên ít gai nhất.",
             int(best["quality"].get("unprotected_cusp_count", 0)),
@@ -8013,8 +8017,8 @@ def _make_srgb_colorspace(pdf: pikepdf.Pdf):
         profile[pikepdf.Name("/N")] = 3
         profile[pikepdf.Name("/Alternate")] = pikepdf.Name.DeviceRGB
         return pikepdf.Array([pikepdf.Name("/ICCBased"), pdf.make_indirect(profile)])
-    except Exception as exc:
-        logger.warning("Cannot embed sRGB ICC profile; falling back to DeviceRGB: %s", exc)
+    except Exception:
+        logger.warning("Không thể nhúng ICC sRGB; dùng không gian màu dự phòng.")
         return pikepdf.Name.DeviceRGB
 
 
@@ -8439,7 +8443,7 @@ def _auto_sticker_hw_profile(
     }
 
     if not _hw_profile_logged:
-        logger.info(
+        logger.debug(
             "[STICKER] hw auto profile tier=%s workers=%d (%s) sticky_sec=%.0f (%s) "
             "ram_total_mb=%.0f cpu=%d",
             tier, workers, workers_src, sticky, sticky_src, ram, cpu_count,
@@ -8467,17 +8471,12 @@ def _mark_pool_crash_sticky() -> None:
     global _sticky_sequential_until
     ttl = _sticky_seq_seconds()
     if ttl <= 0:
-        logger.info(
+        logger.debug(
             "[STICKER] pool crash but sticky disabled (ttl=0) — vẫn thử pool job sau"
         )
         return
     _sticky_sequential_until = time.time() + ttl
-    logger.warning(
-        "[STICKER] sticky sequential ON for %.0fs (pool crash) — "
-        "in liên tục sẽ không spawn pool lại cho đến khi hết TTL "
-        "hoặc set STICKER_STICKY_SEQ_SEC=0",
-        ttl,
-    )
+    logger.warning("[STICKER] Chuyển sang xử lý tuần tự sau lỗi worker.")
 
 
 def _sticky_sequential_active() -> bool:
@@ -8538,7 +8537,7 @@ def _n_pages_should_parallelize(
         return False
     if _sticky_sequential_active():
         left = max(0.0, _sticky_sequential_until - time.time())
-        logger.info(
+        logger.debug(
             "[STICKER] skip parallel (sticky sequential, %.0fs left) pages=%d",
             left, n_pages,
         )
@@ -8595,7 +8594,7 @@ def _cap_sticker_workers(
         budget = max(0.0, avail * 0.65)
         by_ram = max(1, int(budget // per_worker))
         if by_ram < cap:
-            logger.info(
+            logger.debug(
                 "[STICKER] RAM cap workers %d→%d (avail_mb=%.0f per_worker_mb=%.0f "
                 "budget_mb=%.0f page=%.0fx%.0fpt light=%s)",
                 cap, by_ram, avail, per_worker, budget,
@@ -8604,9 +8603,7 @@ def _cap_sticker_workers(
         cap = min(cap, by_ram)
         if avail < 900:
             cap = 1
-            logger.warning(
-                "[STICKER] low RAM avail_mb=%.0f → force 1 worker", avail,
-            )
+            logger.warning("[STICKER] Bộ nhớ khả dụng thấp; giảm số worker.")
 
     # ``input_path`` và ``n_pages`` được giữ trong signature vì caller/test cũ,
     # nhưng dung lượng file/số trang không phản ánh peak RAM của MỘT worker.
@@ -8628,7 +8625,7 @@ def _process_sticker_chunk(args: dict):
     chunk_idx = args["chunk_idx"]
     pages = args.get("page_indices") or []
     t0 = time.perf_counter()
-    logger.info(
+    logger.debug(
         "[STICKER] chunk start idx=%s pages=%s pid=%s",
         chunk_idx, pages, os.getpid(),
     )
@@ -8681,16 +8678,15 @@ def _process_sticker_chunk(args: dict):
             _page_subset=args["page_indices"],
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
-        logger.info(
+        logger.debug(
             "[STICKER] chunk done idx=%s pages=%s s=%.2f pid=%s",
             chunk_idx, pages, time.perf_counter() - t0, os.getpid(),
         )
         return (chunk_idx, result)
-    except Exception:
+    except Exception as error:
         logger.error(
-            "[STICKER] chunk FAILED idx=%s pages=%s s=%.2f pid=%s",
-            chunk_idx, pages, time.perf_counter() - t0, os.getpid(),
-            exc_info=True,
+            "[STICKER] Xử lý chunk thất bại (loại=%s).",
+            type(error).__name__,
         )
         raise
 
@@ -8699,9 +8695,12 @@ class StickerEngine:
     def __init__(self, dpi: int = 300, debug: bool = False):
         self.dpi = dpi
         self.scale = dpi / 72.0
-        # Khi False (mặc định/production): KHÔNG ghi ảnh debug ra đĩa & KHÔNG log spam.
-        # Bật qua tham số hoặc biến môi trường STICKER_DEBUG=1.
-        self.debug = debug or os.environ.get("STICKER_DEBUG", "").lower() in ("1", "true", "yes")
+        # SEC (audit 2026-09-05 §LOG.03): ảnh mask/bleed có thể chứa nội dung
+        # khách hàng. Chỉ runtime dev thông dịch mới được bật bằng tham số hoặc
+        # STICKER_DEBUG=1; binary release luôn fail-closed.
+        self.debug = development_runtime_enabled() and (
+            bool(debug) or development_diagnostic_enabled("STICKER_DEBUG")
+        )
 
     def process_pdf(
         self,
@@ -8955,7 +8954,7 @@ class StickerEngine:
                     adaptive_page_indexes,
                 ):
                     alpha_corner_policy = "legacy"
-                    logger.info(
+                    logger.debug(
                         "[STICKER] giữ legacy vì PDF nguồn đã có CutContour"
                     )
                 elif alpha_source_pixel_mm is None:
@@ -8964,7 +8963,7 @@ class StickerEngine:
                         adaptive_page_indexes,
                     )
                     if alpha_source_pixel_mm is not None:
-                        logger.info(
+                        logger.debug(
                             "[STICKER] nhận diện ảnh toàn trang: source_pixel_mm=%.5f",
                             alpha_source_pixel_mm,
                         )
@@ -9001,11 +9000,11 @@ class StickerEngine:
                     input_mb = os.path.getsize(input_path) / (1024 * 1024)
                 except OSError:
                     input_mb = 0.0
-                logger.info(
+                logger.debug(
                     "[STICKER] parallel fan-out pages=%d input_mb=%.2f rectangle=%s "
-                    "bleed_mm=%s cut_mode=%s dpi=%s path=%s",
+                    "bleed_mm=%s cut_mode=%s dpi=%s",
                     n_pages_probe, input_mb, rectangle_mode, bleed_mm, cut_mode,
-                    self.dpi, os.path.basename(input_path),
+                    self.dpi,
                 )
                 with pdfium_guard():
                     doc_in_pdfium.close()
@@ -9224,13 +9223,13 @@ class StickerEngine:
                     # PERF (audit 2026-08-16 §BX.P05): trước đây chỉ log khi self.debug,
                     # nên trên bản phát hành không ai biết tờ lớn đang bị hạ về ~95–152 DPI.
                     # DPI thực của đường cắt là thông tin nghiệp vụ, phải có trong log.
-                    logger.info(
+                    logger.debug(
                         "[STICKER] DPI cap page %d: %.0f→%.0f DPI (scale %.4f→%.4f, trang %.0fx%.0f pt)",
                         page_idx + 1, float(self.dpi), self.dpi * shrink,
                         base_scale, self.scale, pw_pt, ph_pt,
                     )
                 if source_grid_limited:
-                    logger.info(
+                    logger.debug(
                         "[STICKER] source-grid page %d: %.0f→%.0f DPI "
                         "(scale %.4f→%.4f, source_pixel_mm=%.6f)",
                         page_idx + 1,
@@ -9321,8 +9320,8 @@ class StickerEngine:
                         ) = approved_background
                     approved_contour_page = True
                 if page_idx == 0 and self.debug:
-                    logger.warning(">>> PARAMS: cut_mode=%s offset_mm=%.2f bleed_mm=%.2f corner_style=%s remove_white_bg=%s bleed_color_type=%s fill_holes=%s", cut_mode, offset_mm, bleed_mm, corner_style, remove_white_bg, bleed_color_type, fill_holes)
-                    logger.warning(">>> IMAGE: shape=%s has_alpha=%s", img.shape, has_alpha)
+                    logger.debug(">>> PARAMS: cut_mode=%s offset_mm=%.2f bleed_mm=%.2f corner_style=%s remove_white_bg=%s bleed_color_type=%s fill_holes=%s", cut_mode, offset_mm, bleed_mm, corner_style, remove_white_bg, bleed_color_type, fill_holes)
+                    logger.debug(">>> IMAGE: shape=%s has_alpha=%s", img.shape, has_alpha)
                 
                 # RECTANGLE MODE: shape ĐÃ biết là cả page rect (nhánh dòng ~404 dựng
                 # dieline/cut/bleed_outer từ page bbox). Toàn bộ pipeline mask dưới đây
@@ -9435,7 +9434,7 @@ class StickerEngine:
                                             (~same_background).astype(np.uint8) * 255
                                         )
                                     color_bg_detected = bg_info
-                                    logger.info(
+                                    logger.debug(
                                         "[STICKER_BG] page=%d dò nền theo màu "
                                         "rgb=%s tolerance=%d confidence=%.2f",
                                         page_idx + 1,
@@ -9677,7 +9676,7 @@ class StickerEngine:
                     else:
                         bleed_outer_poly = rect_poly
                     if self.debug:
-                        logger.warning(
+                        logger.debug(
                             ">>> RECTANGLE MODE: page %.1fx%.1f pt, bleed_pts=%.2f, sides=%s",
                             page_in_width, page_in_height, bleed_pts,
                             ",".join(bleed_sides_to_names(bleed_sides_resolved)) or "none",
@@ -9743,7 +9742,7 @@ class StickerEngine:
                         dropped_specks = max(0, dropped_specks - 1)
                     if raw_polys:
                         if dropped_specks:
-                            logger.info(
+                            logger.debug(
                                 "[STICKER_BG] page=%d §BG.6 bỏ %d contour vụn "
                                 "(< %.2f mm²) do nhiễu nén",
                                 page_idx + 1, dropped_specks, min_detail_area_mm2,
@@ -9782,7 +9781,7 @@ class StickerEngine:
                                 geometry_px_per_point=self.scale,
                             )
                         if dropped_halo:
-                            logger.info(
+                            logger.debug(
                                 "[STICKER_BG] page=%d §NOODLE.1 bỏ %d mảnh JPEG "
                                 "mảnh bám sát silhouette chính",
                                 page_idx + 1,
@@ -9860,7 +9859,7 @@ class StickerEngine:
                                         else:
                                             recon_meta = dict(recon_meta)
                                             recon_meta["component_count"] = len(rebuilt_parts)
-                                        logger.info(
+                                        logger.debug(
                                             "[STICKER_BG] page=%d §NOODLE.6 bỏ %d mảnh JPEG "
                                             "sau khi nhận dạng hình chính=%s",
                                             page_idx + 1,
@@ -9874,11 +9873,14 @@ class StickerEngine:
                                 ):
                                     cut_draw_style = "round"
                         except Exception as _recon_err:
-                            logger.warning("shape reconstruct skip: %s", _recon_err)
+                            logger.warning(
+                                "Bỏ qua bước dựng lại hình (loại=%s).",
+                                type(_recon_err).__name__,
+                            )
                             recon_meta = {
                                 "shape_mode": page_shape_mode,
                                 "reconstructed": False,
-                                "error": str(_recon_err),
+                                "error": type(_recon_err).__name__,
                             }
 
                         # Vị trí đường cắt + mép ngoài bù xén — xem compute_cut_bleed_offsets.
@@ -10400,7 +10402,7 @@ class StickerEngine:
                         # Generate bleed_mask from bleed_outer_poly (extends BEYOND cut line)
                         if bleed_outer_poly is not None and not getattr(bleed_outer_poly, 'is_empty', True):
                             if self.debug:
-                                logger.warning(">>> RASTERIZE METHOD: Using bleed_outer_poly to generate bleed_mask (pad_b=%d, bleed_outer_offset=%.2f, scale=%.4f)", pad_b, bleed_outer_offset, self.scale)
+                                logger.debug(">>> RASTERIZE METHOD: Using bleed_outer_poly to generate bleed_mask (pad_b=%d, bleed_outer_offset=%.2f, scale=%.4f)", pad_b, bleed_outer_offset, self.scale)
                             mask_h, mask_w = padded_mask.shape
                             bleed_mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
                             
@@ -10432,7 +10434,7 @@ class StickerEngine:
                             bleed_mask = cv2.dilate(bleed_mask, raster_safety)
 
                             if self.debug:
-                                logger.warning(">>> RASTERIZE DONE: bleed_mask nonzero=%d, padded_mask nonzero=%d", np.count_nonzero(bleed_mask), np.count_nonzero(padded_mask))
+                                logger.debug(">>> RASTERIZE DONE: bleed_mask nonzero=%d, padded_mask nonzero=%d", np.count_nonzero(bleed_mask), np.count_nonzero(padded_mask))
                                 try:
                                     debug_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'debug_output')
                                     os.makedirs(debug_dir, exist_ok=True)
@@ -10440,12 +10442,15 @@ class StickerEngine:
                                     debug_img[bleed_mask > 0] = [0, 255, 0]  # Green = bleed area
                                     debug_img[padded_mask > 0] = [255, 255, 255]  # White = artwork
                                     cv2.imwrite(os.path.join(debug_dir, 'debug_bleed_mask.png'), debug_img)
-                                    logger.warning(">>> DEBUG IMAGE SAVED to %s", debug_dir)
-                                except Exception as e:
-                                    logger.warning(">>> DEBUG IMAGE FAILED: %s", e)
+                                    logger.debug(">>> DEBUG IMAGE SAVED")
+                                except Exception as error:
+                                    logger.debug(
+                                        ">>> DEBUG IMAGE FAILED (type=%s)",
+                                        type(error).__name__,
+                                    )
                         else:
                             if self.debug:
-                                logger.warning(">>> FALLBACK METHOD: Using cv2.dilate (no dieline_poly)")
+                                logger.debug(">>> FALLBACK METHOD: Using cv2.dilate (no dieline_poly)")
                             kernel = cv2.getStructuringElement(kernel_type, (bleed_px*2+1, bleed_px*2+1))
                             bleed_mask = cv2.dilate(padded_mask, kernel)
                         
@@ -10819,9 +10824,12 @@ class StickerEngine:
                                 cv2.imwrite(os.path.join(debug_dir, 'debug_bleed_result.png'), cv2.cvtColor(bleed_rgb[:,:,:3], cv2.COLOR_RGB2BGR) if not is_bleed_cmyk else bleed_rgb)
                                 cv2.imwrite(os.path.join(debug_dir, 'debug_padded_mask.png'), padded_mask)
                                 cv2.imwrite(os.path.join(debug_dir, 'debug_sticker_footprint.png'), sticker_footprint)
-                                logger.warning(">>> BLEED DEBUG: bleed_ring nonzero=%d, bleed_rgb mean=%s, bleed_color_type=%s", np.count_nonzero(bleed_ring), np.mean(bleed_rgb[bleed_ring > 0], axis=0) if np.count_nonzero(bleed_ring) > 0 else 'N/A', bleed_color_type)
-                            except Exception as e:
-                                logger.warning(">>> BLEED DEBUG FAILED: %s", e)
+                                logger.debug(">>> BLEED DEBUG: bleed_ring nonzero=%d, bleed_rgb mean=%s, bleed_color_type=%s", np.count_nonzero(bleed_ring), np.mean(bleed_rgb[bleed_ring > 0], axis=0) if np.count_nonzero(bleed_ring) > 0 else 'N/A', bleed_color_type)
+                            except Exception as error:
+                                logger.debug(
+                                    ">>> BLEED DEBUG FAILED (type=%s)",
+                                    type(error).__name__,
+                                )
 
                 # COLOR (audit 2026-08-24 §BCOLOR.04): với nguồn CMYK/DeviceN
                 # không ICC, ghép Form gốc cạnh bleed RGB vẫn tạo seam ở viewer.
@@ -10887,7 +10895,7 @@ class StickerEngine:
                             - (pad_bottom / self.scale)
                         )
                         color_render_strategy = "flattened-rgb"
-                        logger.info(
+                        logger.debug(
                             "[STICKER] màu flatten RGB trang %d: %dx%d "
                             "(nguồn DeviceCMYK thiếu ICC)",
                             page_idx + 1,
@@ -10991,7 +10999,7 @@ class StickerEngine:
                         # render khác box ta giả định (CropBox) hoặc self.scale sai.
                         _art_px_w = img_w - pad_left - pad_right
                         _art_px_h = img_h - pad_top - pad_bottom
-                        logger.warning(
+                        logger.debug(
                             ">>> ALIGN p%d: page_in=%.3fx%.3f pt | render_px=%dx%d → /scale=%.3fx%.3f pt | scale=%.5f (base=%.5f) | crop0=(%.3f,%.3f) | img_w_pt=%.3f shift=(%.3f,%.3f) exp=(l%.3f r%.3f b%.3f t%.3f) pad=(l%d r%d b%d t%d)",
                             page_idx, page_in_width, page_in_height,
                             _art_px_w, _art_px_h, _art_px_w / self.scale, _art_px_h / self.scale,
@@ -11417,7 +11425,7 @@ class StickerEngine:
                     page_meta["bleed_warning"] = page_warning
                 
                 all_pages_meta.append(page_meta)
-                logger.info(
+                logger.debug(
                     "[STICKER_STAGE] page=%d boundary=%s raster_px=%dx%d "
                     "render_dpi=%.2f render_s=%.3f contour_s=%.3f total_s=%.3f",
                     page_idx + 1,
@@ -11434,7 +11442,7 @@ class StickerEngine:
                     time.perf_counter() - page_started,
                 )
                 if rectangle_mode and bleed_color_type in ("inpaint", "trajectory"):
-                    logger.info(
+                    logger.debug(
                         "[STICKER_TIMING] page=%d gs_s=%.3f smooth_s=%.3f "
                         "compress_s=%.3f total_s=%.3f",
                         page_idx + 1,

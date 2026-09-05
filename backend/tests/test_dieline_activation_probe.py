@@ -162,7 +162,10 @@ def test_build_van_xoa_khoa_dieline_truoc_nuitka_tauri_nsis() -> None:
     dieline_locked_at = build.index("$script:DIELINE_LOCKED =")
     clear_key_at = build.index("Remove-Item Env:PRYNX_DIELINE_KEY_B64", dieline_locked_at)
     nuitka_at = build.index("& $VENV_PYTHON -m nuitka", clear_key_at)
-    tauri_at = build.index("npx @tauri-apps/cli build", clear_key_at)
+    tauri_at = build.index(
+        "& $script:PrynXNodePath $tauriCliPath build --config $tauriConfig",
+        clear_key_at,
+    )
     assert dieline_locked_at < clear_key_at < nuitka_at < tauri_at
 
 
@@ -299,6 +302,9 @@ def test_kho_probe_roundtrip_khong_ghi_plaintext_va_tu_choi_secret(tmp_path: Pat
     probe_license = "PRYNX-TEST-PROBE-0001-ABCD"
     store_path = tmp_path / "release-secrets" / "probe.clixml"
     env = os.environ.copy()
+    # Runner có thể là pwsh 7; để Windows PowerShell 5.1 tự dựng module path
+    # tương thích, không cho module Security bản Core che bản Desktop inbox.
+    env.pop("PSMODULEPATH", None)
     env["PRYNX_TEST_PROBE_LICENSE"] = probe_license
     env["PRYNX_TEST_PROBE_STORE"] = str(store_path)
     env["PRYNX_TEST_SCRIPT"] = str(STORE_SCRIPT)

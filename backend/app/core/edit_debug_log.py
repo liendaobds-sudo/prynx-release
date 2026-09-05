@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.development_diagnostics import development_diagnostic_enabled
+
 
 _WRITE_LOCK = threading.Lock()
 _DEFAULT_PATH = Path(__file__).resolve().parents[3] / "tmp" / "logs" / "edit_pdf_bug.jsonl"
@@ -22,8 +24,9 @@ def edit_bug_log_enabled() -> bool:
     # Mặc định TẮT: bật sẽ snapshot content stream + SHA256 PDF + ghi JSONL
     # mỗi move/resize/rotate → lag Edit PDF rõ. Chỉ bật khi debug:
     #   PRYNX_EDIT_BUG_LOG=1
-    value = os.environ.get("PRYNX_EDIT_BUG_LOG", "0").strip().lower()
-    return value in {"1", "true", "on", "yes"} and "PYTEST_CURRENT_TEST" not in os.environ
+    return development_diagnostic_enabled(
+        "PRYNX_EDIT_BUG_LOG"
+    ) and "PYTEST_CURRENT_TEST" not in os.environ
 
 
 def edit_text_move_log_enabled() -> bool:
@@ -32,8 +35,9 @@ def edit_text_move_log_enabled() -> bool:
     Mặc định TẮT. Bật khi cần chẩn đoán:
       PRYNX_EDIT_TEXT_MOVE_LOG=1
     """
-    value = os.environ.get("PRYNX_EDIT_TEXT_MOVE_LOG", "0").strip().lower()
-    return value in {"1", "true", "on", "yes"} and "PYTEST_CURRENT_TEST" not in os.environ
+    return development_diagnostic_enabled(
+        "PRYNX_EDIT_TEXT_MOVE_LOG"
+    ) and "PYTEST_CURRENT_TEST" not in os.environ
 
 
 def edit_text_move_log_path() -> Path:

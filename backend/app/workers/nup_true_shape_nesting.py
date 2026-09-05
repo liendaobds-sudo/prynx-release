@@ -683,7 +683,9 @@ def _attach_detected_trim_dimensions(
         settings[DETECTED_TRIM_DIMENSIONS_SETTING] = dimensions
     else:
         settings.pop(DETECTED_TRIM_DIMENSIONS_SETTING, None)
-    logger.warning(
+    # SEC (audit 2026-09-05 §LOG.06): kích thước authoritative chỉ
+    # là diagnostic dev; không đẩy payload hình học lên warning production.
+    logger.debug(
         "[DIM-DIE-TRACE] stage=handoff_dimensions job_id=%s dimensions_mm=%s",
         job_id,
         dimensions,
@@ -713,7 +715,7 @@ def _detect_shapes_for_nesting(source_path: str) -> dict[int, Any]:
     shapes = {int(shape.page): shape for shape in result.shapes}
     # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): chỉ ghi kích thước và tên file,
     # không serialize contour lớn. Dòng kế tiếp phải khớp số viewer trước khi vào bundle.
-    logger.warning(
+    logger.debug(
         "[DIM-DIE-TRACE] stage=detector_raw source=%s shapes=%s",
         os.path.basename(source_path),
         _detected_trim_dimensions_for_log(shapes),
@@ -759,7 +761,7 @@ def build_true_shape_nesting_job(
     _guard_scope(settings)
     tool = _tool_from_settings(settings)
     shapes = _detect_shapes_for_nesting(source_path)
-    logger.warning(
+    logger.debug(
         "[DIM-DIE-TRACE] stage=detector_selected job_id=%s tool=%s shapes=%s",
         job_id,
         tool,
@@ -827,7 +829,7 @@ def build_true_shape_nesting_jobs(
 
     tool = _tool_from_settings(settings)
     shapes = _detect_shapes_for_nesting(source_path)
-    logger.warning(
+    logger.debug(
         "[DIM-DIE-TRACE] stage=detector_selected job_id=%s tool=%s shapes=%s",
         job_id,
         tool,
@@ -1314,7 +1316,7 @@ def run_true_shape_nesting(
                     total_quantity=_job_total_quantity(job),
                     layout_intent=str(job.layout_intent),
                 )
-        logger.info(
+        logger.debug(
             "[NEST] true_shape_nesting job_id=%s tool=%s render TỪ manifest "
             "%s — không solve lại",
             job_id,
@@ -1415,7 +1417,7 @@ def run_true_shape_nesting(
                 layout_fingerprint=solved_production.layout_fingerprint,
             ),
         )
-    logger.info(
+    logger.debug(
         "[NEST] true_shape_nesting job_id=%s tool=%s intent=%s parts=%d "
         "max_sheets=%d reused_session=%s",
         job_id,
@@ -1565,7 +1567,7 @@ def _raise_export_quality_fallback(
 ) -> None:
     """Phát signal auto-route sau khi proof/probe đã quyết lưới thắng."""
 
-    logger.info(
+    logger.debug(
         "[NEST-GATE] export trang %s (%s): lưới %s ⇒ lùi engine cũ "
         "(nesting placed=%s sheets=%s qty=%s)",
         page_index,
@@ -1615,7 +1617,7 @@ def _enforce_export_quality_gate(
         total_quantity=total_quantity,
         grid_capacity=grid_capacity,
     ):
-        logger.info(
+        logger.debug(
             "[NEST-GATE] export trang %s (%s): lưới %s ⇒ lùi engine cũ "
             "(nesting placed=%s sheets=%s qty=%s)",
             page_index,
@@ -1770,9 +1772,7 @@ def _concat_pdf_pages_impl(
             try:
                 os.remove(staged_path)
             except OSError:
-                logger.warning(
-                    "Không xoá được PDF merge tạm %s", staged_path, exc_info=True
-                )
+                logger.warning("Không xoá được PDF merge tạm.")
     return page_count
 
 
@@ -1885,7 +1885,7 @@ def run_step_repeat_batch_wave(
 
     plan = plan_batch_hardware(len(jobs))
     grant_lease = register_shared_batch_worker_grants(plan.total_worker_grant)
-    logger.info("[NEST-S&R-BATCH] %s", plan.reason)
+    logger.debug("[NEST-S&R-BATCH] %s", plan.reason)
     missing = object()
     results: list[Any] = [missing] * len(jobs)
     all_futures: dict[Any, int] = {}
@@ -1928,7 +1928,7 @@ def run_step_repeat_batch_wave(
             grants = plan.grants_for_wave(len(wave_indices))
             # PERF (audit 2026-09-01 §SR13-WAVE): một wave dùng đúng tổng grant;
             # không để mỗi job tự nhận cpu-1 (13 job × 15 worker trên máy 16 lõi).
-            logger.info(
+            logger.debug(
                 "[NEST-S&R-BATCH] wave=%d jobs=%s worker_grants=%s",
                 wave_start // plan.max_parallel_jobs + 1,
                 wave_indices,
@@ -2279,7 +2279,7 @@ def _run_step_repeat_export(
                 designs.append(
                     (page_index, int(selected_placed), int(selected_sheets))
                 )
-                logger.info(
+                logger.debug(
                     "[NEST-GATE] export S&R mẫu %d/%d (trang %d): "
                     "lưới=%d nesting=%d ⇒ %s",
                     design_index + 1,
@@ -2304,7 +2304,7 @@ def _run_step_repeat_export(
         except FileNotFoundError:
             pass
         except OSError:
-            logger.warning("Không dọn được thư mục S&R tạm %s", temp_dir, exc_info=True)
+            logger.warning("Không dọn được thư mục S&R tạm.")
 
     return _step_repeat_report(designs, per_design_best=not manual_nesting)
 
@@ -2442,7 +2442,7 @@ def _attach_step_repeat_references(
                 reference[QUALITY_GATE_PROOF_FIELD] = verified.to_dict()
     except Exception:  # noqa: BLE001 - marker authoritative quyết định fail-closed
         if authoritative_marker_attached:
-            logger.info(
+            logger.debug(
                 "Không công bố đủ manifest preview S&R; export sẽ fail-closed.",
                 exc_info=True,
             )
@@ -2643,7 +2643,7 @@ def attach_preview_session_reference(
                 requestedAlign=settings.get("align"),
                 normalizedFinishing=summarize_finishing_settings(settings),
             )
-        logger.info(
+        logger.debug(
             "Không công bố được manifest phiên preview; export sẽ fail-closed.",
             exc_info=True,
         )

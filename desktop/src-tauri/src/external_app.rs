@@ -83,7 +83,10 @@ if ($pf86) {
 } | ConvertTo-Json -Compress
 "#;
 
-    let output = Command::new("powershell")
+    // SEC (audit 2026-09-04 §SEC.24-R1): renderer không kiểm soát PATH nhưng
+    // môi trường process cha có thể. Chỉ chạy Windows PowerShell do System32 trả về.
+    let powershell = crate::security::system_powershell_path().ok()?;
+    let output = Command::new(powershell)
         .args(["-NoProfile", "-NoLogo", "-Command", SCRIPT])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -211,8 +214,6 @@ fn remember_approved_app(app: &tauri::AppHandle, path: &str) {
 
 /// `app_path` có được phép khởi chạy hay không. Trả `Ok(canonical_key)` khi hợp lệ.
 fn authorize_app_path(app: &tauri::AppHandle, app_path: &str) -> Result<String, String> {
-    use tauri::Manager;
-
     if crate::is_network_or_device_path(app_path) {
         return Err("Không mở được ứng dụng từ đường dẫn mạng".to_string());
     }

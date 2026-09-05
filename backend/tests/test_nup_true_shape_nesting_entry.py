@@ -1060,6 +1060,7 @@ def test_jobs_step_repeat_mot_mau_van_mot_job(source: Path):
 def test_run_step_repeat_export_noi_n_to(monkeypatch, tmp_path):
     """3 mẫu ⇒ export nối 3 tờ (mỗi tờ front+cut = 2 trang ⇒ 6 trang); report gộp đúng."""
 
+    from app.config import settings as app_settings
     from app.workers import nup_true_shape_nesting as nts
 
     designs = [0, 1, 2]
@@ -1179,6 +1180,8 @@ def test_run_step_repeat_export_noi_n_to(monkeypatch, tmp_path):
     monkeypatch.setattr(nup_sheet_render, "nup_sheet_plan", _fake_plan)
     monkeypatch.setattr(nup_sheet_render, "render_nup_sheet", _fake_render_grid)
 
+    # SEC (audit 2026-09-05 §LOG.01): telemetry chỉ có authority trong dev.
+    monkeypatch.setattr(app_settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_PERF", "1")
     from app.core import perf_sampler
 
@@ -1229,9 +1232,11 @@ def test_run_step_repeat_export_noi_n_to(monkeypatch, tmp_path):
 def test_step_repeat_merge_loi_giu_output_cu_va_dem_attempt(monkeypatch, tmp_path):
     """Merge lỗi không thay output cũ và telemetry không báo thành công."""
 
+    from app.config import settings as app_settings
     from app.core import perf_sampler
     from app.workers import nup_true_shape_nesting as nts
 
+    monkeypatch.setattr(app_settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_PERF", "1")
     source_a = tmp_path / "a.pdf"
     source_b = tmp_path / "b.pdf"

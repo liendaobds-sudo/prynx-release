@@ -43,12 +43,25 @@ param(
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $PSScriptRoot
 $PUBLISH_DIR = Join-Path $ROOT "Ban_Phat_Hanh"
+. "$PSScriptRoot\windows_payload_guard.ps1"
+$TESSERACT_LOCK_PATH = Join-Path $PSScriptRoot "tesseract_payload.lock.json"
 $script:AppProcess = $null
 $script:TrackedProcesses = @{}
 $script:CreatedRoots = @{}
-$script:NuitkaCacheTarget = $null
-$script:NuitkaCacheBackup = $null
 $script:VerificationSucceeded = $false
+$script:TesseractPayloadLock = $null
+$script:InstallerDirectoryLease = $null
+$script:InstallerFileLease = $null
+$script:InstalledTesseractLease = $null
+$script:InstalledPayloadManifestLease = $null
+$script:InstalledSidecarLease = $null
+$smokeTemp = $null
+$selfTestExtraction = $null
+$appExtraction = $null
+$releaseSecretScanEvidence = $null
+$releaseSecretScanEvidenceV2 = $null
+$installedSecretScan = $null
+$nuitkaExtractionSecretScan = $null
 
 # Toolhelp32 doc duoc PID cha ma khong can WMI/CIM (co the bi policy doanh nghiep
 # chan). Handle dung process van duoc doi chieu them StartTime truoc khi kill.
@@ -199,6 +212,11 @@ function Assert-BuildManifestAttestation {
     if ((Get-ManifestField -Path $Path -Name "GIT_COMMIT") -notmatch '^[0-9a-fA-F]{40,64}$') {
         throw "Manifest GIT_COMMIT khong hop le."
     }
+    foreach ($hashField in @("TESSERACT_LOCK_SHA256", "PAYLOAD_MANIFEST_SHA256")) {
+        if ((Get-ManifestField -Path $Path -Name $hashField) -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "Manifest $hashField khong phai SHA-256 hop le."
+        }
+    }
 }
 
 function Assert-NoExistingPrynXProcess {
@@ -308,9 +326,21 @@ function Remove-SensitiveArtifactEnvironment {
     # SECURITY (audit 2026-08-03 REL.10): installer/app/sidecar khong duoc ke
     # thua signing key, publisher token hay service credential cua may build.
     $pattern = '(?i)(token|secret|password|private[_-]?key|service[_-]?key|api[_-]?key|access[_-]?key)'
+    $nuitkaStateNames = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($blockedName in @(
+        "NUITKA_ONEFILE_PARENT",
+        "NUITKA_ONEFILE_START",
+        "NUITKA_ONEFILE_TIME_US",
+        "NUITKA_ONEFILE_RANDOM",
+        "NUITKA_ONEFILE_DIRECTORY"
+    )) {
+        $null = $nuitkaStateNames.Add($blockedName)
+    }
     $environment = [Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process)
     foreach ($name in @($environment.Keys)) {
-        if ([string]$name -match $pattern) {
+        if ([string]$name -match $pattern -or $nuitkaStateNames.Contains([string]$name)) {
             [Environment]::SetEnvironmentVariable([string]$name, $null, [EnvironmentVariableTarget]::Process)
         }
     }
@@ -443,6 +473,8 @@ function Get-TrackedProcessIdentity {
 }
 
 function Stop-CreatedProcessTree {
+    $closeRequested = $false
+    $forcedPids = New-Object System.Collections.Generic.List[int]
     if ($null -ne $script:AppProcess) {
         try { Register-CreatedProcessTree -RootProcessId $script:AppProcess.Id } catch {
             Write-Host "  WARNING: Khong cap nhat duoc process tree truoc cleanup: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -451,10 +483,35 @@ function Stop-CreatedProcessTree {
         try {
             $script:AppProcess.Refresh()
             if (-not $script:AppProcess.HasExited) {
-                $null = $script:AppProcess.CloseMainWindow()
-                $null = $script:AppProcess.WaitForExit(5000)
+                $closeRequested = [bool]$script:AppProcess.CloseMainWindow()
             }
         } catch {}
+    }
+
+    if ($closeRequested) {
+        # SEC (audit 2026-09-02 SEC.18): Rust cho Uvicorn toi da 12 giay va doi
+        # dung bootstrap Nuitka toi da 20 giay. Doi ca cay 25 giay de bootstrap co
+        # co hoi xoa payload temporary; chi force-kill sau deadline.
+        $gracefulDeadline = [DateTime]::UtcNow.AddSeconds(25)
+        do {
+            if ($null -ne $script:AppProcess) {
+                try { Register-CreatedProcessTree -RootProcessId $script:AppProcess.Id } catch {}
+            }
+            $alive = @(
+                foreach ($record in @($script:TrackedProcesses.Values)) {
+                    if ($null -ne (Get-TrackedProcessIdentity -Record $record)) { $record }
+                }
+            )
+            if ($alive.Count -eq 0) {
+                return [pscustomobject]@{
+                    CloseRequested = $true
+                    GracefulTreeExit = $true
+                    ForcedPids = @()
+                }
+            }
+            if ([DateTime]::UtcNow -ge $gracefulDeadline) { break }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
     }
 
     foreach ($record in @($script:TrackedProcesses.Values | Sort-Object Depth -Descending)) {
@@ -463,10 +520,16 @@ function Stop-CreatedProcessTree {
             if ($null -ne $createdProcess) {
                 $createdProcess.Kill()
                 $null = $createdProcess.WaitForExit(5000)
+                $forcedPids.Add([int]$record.Id)
             }
         } catch {
             Write-Host "  WARNING: Khong dung duoc process smoke PID=$($record.Id): $($_.Exception.Message)" -ForegroundColor Yellow
         }
+    }
+    return [pscustomobject]@{
+        CloseRequested = $closeRequested
+        GracefulTreeExit = $false
+        ForcedPids = @($forcedPids)
     }
 }
 
@@ -623,6 +686,7 @@ function Assert-SidecarAiRuntimeOutput {
 function Invoke-SidecarAiRuntimeSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$SidecarPath,
+        [Parameter(Mandatory = $true)][string]$TempRoot,
         [int]$TimeoutSeconds = 240
     )
 
@@ -642,10 +706,36 @@ function Invoke-SidecarAiRuntimeSmoke {
         Register-CreatedProcessTree -RootProcessId $process.Id
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $captured = $null
+        do {
             Register-CreatedProcessTree -RootProcessId $process.Id
-            Stop-CreatedProcessTree
-            throw "Sidecar AI self-test vuot $TimeoutSeconds giay."
+            $entries = @(Get-NuitkaExtractionEntries -TempRoot $TempRoot)
+            if ($entries.Count -gt 1) {
+                throw "Self-test tao nhieu hon mot payload Nuitka dang hoat dong."
+            }
+            if ($entries.Count -eq 1) {
+                if ([int]$entries[0].BootstrapPid -ne [int]$process.Id) {
+                    throw "Payload self-test khong thuoc bootstrap PID=$($process.Id)."
+                }
+                if ($null -ne $captured -and -not [string]::Equals(
+                    [string]$captured.Path,
+                    [string]$entries[0].Path,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                    throw "Self-test thay doi extraction path trong cung mot luot."
+                }
+                $captured = $entries[0]
+            }
+            if ($process.WaitForExit(100)) { break }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                Register-CreatedProcessTree -RootProcessId $process.Id
+                $null = Stop-CreatedProcessTree
+                throw "Sidecar AI self-test vuot $TimeoutSeconds giay."
+            }
+        } while ($true)
+        if ($null -eq $captured) {
+            throw "Khong quan sat duoc extraction payload cua sidecar self-test."
         }
         $stdout = $stdoutTask.GetAwaiter().GetResult()
         $null = $stderrTask.GetAwaiter().GetResult()
@@ -653,93 +743,187 @@ function Invoke-SidecarAiRuntimeSmoke {
             throw "Frozen sidecar AI self-test tra ma $($process.ExitCode)."
         }
         Assert-SidecarAiRuntimeOutput -StandardOutput $stdout
+        return $captured
     } finally {
         try { $process.Dispose() } catch {}
     }
 }
 
-function Get-SidecarCachePath {
+function Assert-NoReparsePointInPathComponents {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($fullPath)
+    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith("\\")) {
+        throw "Verifier chi chap nhan duong dan smoke tren volume cuc bo: $fullPath"
+    }
+    $current = $root
+    $relative = $fullPath.Substring($root.Length)
+    foreach ($component in @($relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries))) {
+        $current = Join-Path $current $component
+        if (-not (Test-Path -LiteralPath $current)) { continue }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "SEC: Duong dan kiem tra chua reparse point: $current"
+        }
+    }
+    return $fullPath
+}
+
+function Assert-NoReleaseSecretInInstalledFile {
+    param([Parameter(Mandatory = $true)][System.IO.FileInfo]$File)
+
+    # SEC (audit 2026-09-04 §SEC.20-S2): giữ tên wrapper để các probe cũ còn
+    # tương thích; engine dùng chung quét streaming mọi byte và archive.
+    $null = Invoke-PrynXReleaseSecretFileScan `
+        -Path $File.FullName `
+        -DisplayPath "installed/$($File.Name)"
+}
+
+function Get-NuitkaExtractionEntries {
+    param([Parameter(Mandatory = $true)][string]$TempRoot)
+
+    $safeTempRoot = Assert-NoReparsePointInPathComponents -Path $TempRoot
+    $parent = [System.IO.Path]::GetFullPath((Join-Path $safeTempRoot "PrynX"))
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { return @() }
+    $null = Assert-NoReparsePointInPathComponents -Path $parent
+
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($item in @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop)) {
+        if (-not $item.PSIsContainer) {
+            throw "Cay extraction Nuitka co file bat thuong o cap goc: $($item.FullName)"
+        }
+        $match = [regex]::Match(
+            [string]$item.Name,
+            '^sidecar-(?<BootstrapPid>[1-9][0-9]{0,9})-(?<TimeUs>[0-9]{6})-(?<Random>[A-Za-z0-9_-]{11})$'
+        )
+        if (-not $match.Success) {
+            throw "Thu muc giai nen Nuitka co ten khong hop le: $($item.Name)"
+        }
+        $bootstrapPidValue = 0
+        if (-not [int]::TryParse($match.Groups['BootstrapPid'].Value, [ref]$bootstrapPidValue) -or $bootstrapPidValue -le 0) {
+            throw "PID trong ten payload Nuitka khong hop le: $($item.Name)"
+        }
+        $fullPath = Assert-NoReparsePointInPathComponents -Path $item.FullName
+        $directParent = [System.IO.Path]::GetDirectoryName($fullPath)
+        if (-not [string]::Equals($directParent, $parent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Thu muc giai nen Nuitka vuot khoi Temp smoke: $fullPath"
+        }
+        $entries.Add([pscustomobject]@{
+            Path = $fullPath
+            BootstrapPid = $bootstrapPidValue
+            TimeUs = $match.Groups['TimeUs'].Value
+            Random = $match.Groups['Random'].Value
+        })
+    }
+    return $entries
+}
+
+function Assert-NoNuitkaExtractionResidue {
     param(
-        [Parameter(Mandatory = $true)][string]$SidecarPath,
-        [Parameter(Mandatory = $true)][string]$CacheBase
+        [Parameter(Mandatory = $true)][string]$TempRoot,
+        [ValidateRange(0, 10000)][int]$WaitMilliseconds = 5000
     )
 
-    $versionInfo = (Get-Item -LiteralPath $SidecarPath).VersionInfo
-    $fileVersion = [string]$versionInfo.FileVersion
-    $productVersion = [string]$versionInfo.ProductVersion
-    if ([string]::IsNullOrWhiteSpace($fileVersion) -or [string]::IsNullOrWhiteSpace($productVersion)) {
-        throw "Sidecar phai co FileVersion va ProductVersion de xac dinh cache Nuitka."
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
+    do {
+        $entries = @(Get-NuitkaExtractionEntries -TempRoot $TempRoot)
+        if ($entries.Count -eq 0) { return }
+        if ([DateTime]::UtcNow -ge $deadline) { break }
+        Start-Sleep -Milliseconds 100
+    } while ($true)
+    if ($entries.Count -ne 0) {
+        throw "Nuitka temporary mode de lai payload sau khi sidecar thoat: $((@($entries | ForEach-Object { $_.Path })) -join ', ')"
     }
-    $cacheParent = Join-Path $CacheBase "PrynX"
-    # Nuitka {VERSION}: neu hai version bang nhau thi chi dung mot; neu lech moi ghep.
-    $fileVersion = $fileVersion.Trim()
-    $productVersion = $productVersion.Trim()
-    $effectiveVersion = if ($productVersion -eq $fileVersion) {
-        $fileVersion
-    } else {
-        $productVersion + "-" + $fileVersion
-    }
-    $cachePath = Join-Path $cacheParent ("sidecar-" + $effectiveVersion)
-    $resolvedParent = [System.IO.Path]::GetFullPath($cacheParent).TrimEnd('\')
-    $resolvedCache = [System.IO.Path]::GetFullPath($cachePath)
-    if (-not $resolvedCache.StartsWith($resolvedParent + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Cache Nuitka escaped LocalApplicationData: $resolvedCache"
-    }
-    return $resolvedCache
 }
 
-function Quarantine-NuitkaCache {
-    param([Parameter(Mandatory = $true)][string]$CachePath)
+function Get-ActiveNuitkaExtractionEntry {
+    param([Parameter(Mandatory = $true)][string]$TempRoot)
 
-    $script:NuitkaCacheTarget = $CachePath
-    $script:NuitkaCacheBackup = $null
-    if (Test-Path -LiteralPath $CachePath) {
-        $backup = $CachePath + ".verify-backup-" + [guid]::NewGuid().ToString("N")
-        Move-Item -LiteralPath $CachePath -Destination $backup -ErrorAction Stop
-        if ((Test-Path -LiteralPath $CachePath) -or -not (Test-Path -LiteralPath $backup)) {
-            throw "Khong quarantine duoc cache Nuitka cu."
+    $entries = @(Get-NuitkaExtractionEntries -TempRoot $TempRoot)
+    if ($entries.Count -ne 1) {
+        throw "Can dung mot thu muc payload Nuitka dang chay; tim thay $($entries.Count)."
+    }
+    return $entries[0]
+}
+
+function Test-TrackedProcessLineage {
+    param(
+        [Parameter(Mandatory = $true)]$Record,
+        [Parameter(Mandatory = $true)][int]$RootProcessId
+    )
+
+    $rootRecord = $script:CreatedRoots[[string]$RootProcessId]
+    if ($null -eq $rootRecord -or $null -eq (Get-TrackedProcessIdentity -Record $rootRecord)) {
+        return $false
+    }
+
+    $current = $Record
+    $visited = @{}
+    while ($null -ne $current) {
+        $currentId = [int]$current.Id
+        $key = [string]$currentId
+        if ($visited.ContainsKey($key)) { return $false }
+        $visited[$key] = $true
+        if ($null -eq (Get-TrackedProcessIdentity -Record $current)) { return $false }
+        if ($currentId -eq $RootProcessId) {
+            return [long]$current.CreationTicks -eq [long]$rootRecord.CreationTicks
         }
-        $script:NuitkaCacheBackup = $backup
+
+        $parentId = [int]$current.ParentId
+        if ($parentId -le 0) { return $false }
+        $current = $script:TrackedProcesses[[string]$parentId]
     }
+    return $false
 }
 
-function Restore-NuitkaCache {
-    if ([string]::IsNullOrWhiteSpace($script:NuitkaCacheTarget)) { return }
+function Get-TrackedSidecarBootstrapRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$SidecarPath,
+        [Parameter(Mandatory = $true)][int]$BootstrapPid,
+        [Parameter(Mandatory = $true)][int]$AppRootProcessId
+    )
 
-    $target = $script:NuitkaCacheTarget
-    $backup = $script:NuitkaCacheBackup
-    $createdQuarantine = $null
-    if (Test-Path -LiteralPath $target) {
-        try {
-            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
-        } catch {
-            # Uu tien tra cache cu ve dung cho: doi ten cay moi truoc, roi restore cu.
-            $createdQuarantine = $target + ".verify-created-" + [guid]::NewGuid().ToString("N")
-            Move-Item -LiteralPath $target -Destination $createdQuarantine -ErrorAction Stop
+    $expectedPath = [System.IO.Path]::GetFullPath($SidecarPath)
+    $record = $script:TrackedProcesses[[string]$BootstrapPid]
+    if ($null -eq $record -or [int]$record.Id -ne $BootstrapPid -or
+        $null -eq (Get-TrackedProcessIdentity -Record $record)) {
+        throw "Khong tim thay bootstrap sidecar dang song voi PID=$BootstrapPid trong cay da track."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$record.ExecutablePath)) {
+        throw "Bootstrap sidecar PID=$BootstrapPid khong doc duoc executable path."
+    }
+    $candidatePath = [System.IO.Path]::GetFullPath([string]$record.ExecutablePath)
+    if (-not [string]::Equals($candidatePath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Bootstrap PID=$BootstrapPid khong chay dung sidecar da cai."
+    }
+    if (-not (Test-TrackedProcessLineage -Record $record -RootProcessId $AppRootProcessId)) {
+        throw "Bootstrap sidecar PID=$BootstrapPid khong thuoc cay process cua app smoke."
+    }
+    return $record
+}
+
+function Get-SafeNuitkaPayloadFiles {
+    param([Parameter(Mandatory = $true)][string]$ExtractionPath)
+
+    $safeRoot = Assert-NoReparsePointInPathComponents -Path $ExtractionPath
+    $directories = New-Object System.Collections.Queue
+    $files = New-Object System.Collections.Generic.List[object]
+    $directories.Enqueue($safeRoot)
+    while ($directories.Count -gt 0) {
+        $directory = [string]$directories.Dequeue()
+        foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Payload Nuitka chua reparse point: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $directories.Enqueue($item.FullName)
+            } else {
+                $files.Add($item)
+            }
         }
     }
-    if ($backup) {
-        if (Test-Path -LiteralPath $target) { throw "Khong the restore cache Nuitka cu vi dich van ton tai." }
-        Move-Item -LiteralPath $backup -Destination $target -ErrorAction Stop
-        if (-not (Test-Path -LiteralPath $target)) { throw "Restore cache Nuitka cu that bai." }
-    }
-    if ($createdQuarantine -and (Test-Path -LiteralPath $createdQuarantine)) {
-        Remove-Item -LiteralPath $createdQuarantine -Recurse -Force -ErrorAction Stop
-    }
-    $script:NuitkaCacheTarget = $null
-    $script:NuitkaCacheBackup = $null
-}
-
-function Reset-TestNuitkaCache {
-    if ([string]::IsNullOrWhiteSpace($script:NuitkaCacheTarget)) {
-        throw "Cache Nuitka chua duoc quarantine."
-    }
-    if (Test-Path -LiteralPath $script:NuitkaCacheTarget) {
-        Remove-Item -LiteralPath $script:NuitkaCacheTarget -Recurse -Force -ErrorAction Stop
-    }
-    if (Test-Path -LiteralPath $script:NuitkaCacheTarget) {
-        throw "Khong xoa sach duoc cache Nuitka cua self-test."
-    }
+    return $files
 }
 
 # -- 1. Xac dinh artifact -----------------------------------------------------
@@ -806,7 +990,27 @@ if (-not ([System.IO.Path]::GetFullPath($installDir)).StartsWith($tempRoot + '\'
 Write-Step "2/5 Cai silent"
 Write-Host "  Dich: $installDir" -ForegroundColor DarkGray
 try {
-    $installerProcess = Start-Process -FilePath $Installer -ArgumentList "/S", "/D=$installDir" -WindowStyle Hidden -PassThru
+    # SEC (audit 2026-09-04 §SEC.23-L2): hash lai qua file handle va ghim moi
+    # ancestor path + installer identity xuyen Start-Process. Consumer tre cua
+    # installer khong the bi doi byte/path sau preflight.
+    $script:InstallerDirectoryLease = Open-PrynXPayloadDirectoryChainLease `
+        -DirectoryPath (Split-Path -Parent $Installer) `
+        -Purpose 'installer ancestor'
+    $script:InstallerFileLease = Open-PrynXPayloadFileLease `
+        -Path $Installer `
+        -ExpectedSha256 $declaredInstallerHash `
+        -Purpose 'installer artifact'
+    $installerHash = [string]$script:InstallerFileLease.Sha256
+
+    # SEC (audit 2026-09-03 §SEC.23): release manifest chi duoc tham chieu
+    # lock Tesseract dang nam trong clean source checkout cua verifier.
+    $script:TesseractPayloadLock = Read-PrynXTesseractPayloadLock -Path $TESSERACT_LOCK_PATH
+    $declaredTesseractLockHash = Get-ManifestField -Path $Manifest -Name "TESSERACT_LOCK_SHA256"
+    if ($declaredTesseractLockHash.ToLowerInvariant() -ne $script:TesseractPayloadLock.LockSha256) {
+        throw "SEC: Tesseract lock khong khop release manifest."
+    }
+
+    $installerProcess = Start-Process -FilePath $script:InstallerFileLease.Path -ArgumentList "/S", "/D=$installDir" -WindowStyle Hidden -PassThru
     Register-CreatedProcessRoot -Process $installerProcess
     Register-CreatedProcessTree -RootProcessId $installerProcess.Id
     $installerDeadline = [DateTime]::UtcNow.AddSeconds(180)
@@ -850,11 +1054,12 @@ try {
 
     $sidecarPath = Join-Path $appExe.Directory.FullName "pdf-inspector-backend.exe"
     if (-not (Test-Path -LiteralPath $sidecarPath -PathType Leaf)) { throw "Thieu sidecar da cai: $sidecarPath" }
-    $sidecarHash = (Get-FileHash -LiteralPath $sidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $declaredSidecarHash = Get-ManifestField -Path $Manifest -Name "SIDECAR_SHA256"
-    if ($sidecarHash -ne $declaredSidecarHash.ToLowerInvariant()) {
-        throw "Sidecar da cai khong khop SIDECAR_SHA256 trong manifest."
-    }
+    $script:InstalledSidecarLease = Open-PrynXPayloadFileLease `
+        -Path $sidecarPath `
+        -ExpectedSha256 $declaredSidecarHash `
+        -Purpose 'installed sidecar'
+    $sidecarHash = [string]$script:InstalledSidecarLease.Sha256
     Write-OK "Sidecar da cai khop manifest"
 
     $pdfiumPath = @(
@@ -882,9 +1087,6 @@ try {
             throw "Thieu payload OCR: $requiredPath"
         }
     }
-    Invoke-TesseractSmoke -Executable $tesseractPath -Tessdata $tessdataPath -ScratchDir $installDir
-    Write-OK "Tesseract OCR anh mau bang eng+vie"
-
     # GS-SUNSET (audit 2026-08-08 GS-C1): day la bat bien cua moi artifact,
     # khong phu thuoc caller nho truyen co hay marker tu khai trong payload.
     $gsBinaries = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -ErrorAction SilentlyContinue |
@@ -896,6 +1098,126 @@ try {
         Select-String -Pattern "Ghostscript|Artifex|AGPL" -List)
     if ($noticeHits.Count -gt 0) { throw "NOTICE van nhac Ghostscript/Artifex/AGPL." }
     Write-OK "Payload dat hop dong no-Ghostscript"
+
+    # SEC (audit 2026-09-04 §SEC.20-S2): quét toàn cây cài, gồm tên thư mục,
+    # file lớn/binary/archive, ADS và reparse point. Digest kiểm kê chỉ được ghi
+    # vào manifest ở bước 5 sau khi toàn bộ runtime smoke cũng đạt.
+    $installedSecretScan = Assert-PrynXReleasePayloadSecretFree `
+        -TreeRoots @($installDir) `
+        -Purpose 'installed-tree'
+    $releaseSecretScanEvidence = ConvertTo-PrynXReleaseSecretScanEvidence `
+        -ScanResult $installedSecretScan
+    Write-OK ("Khong co release secret trong cay cai: {0} file, {1} byte, {2} archive" -f @(
+            [long]$installedSecretScan.FileCount,
+            [long]$installedSecretScan.RawBytes,
+            [long]$installedSecretScan.ArchiveCount
+        ))
+
+    # SEC (audit 2026-09-03 §SEC.23): exact-set payload verification.
+    # Doc payload-manifest.json tu staging va so voi cay da cai.
+    # File thua, thieu, hash sai, reparse point hoac ADS deu fail.
+    $payloadManifestCandidates = @(
+        (Join-Path $appExe.Directory.FullName "binaries\payload-manifest.json"),
+        (Join-Path $appExe.Directory.FullName "payload-manifest.json")
+    )
+    $payloadManifestPaths = @($payloadManifestCandidates |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    # SEC (audit 2026-09-03 §SEC.23): manifest là chốt provenance bắt buộc.
+    # Thiếu hoặc có hai bản đều phải dừng; cảnh báo rồi chạy tiếp sẽ biến exact-set
+    # thành tuỳ chọn và cho phép artifact cũ/residue lọt qua gate runtime.
+    if ($payloadManifestPaths.Count -ne 1) {
+        throw "SEC: Can dung dung mot payload-manifest.json trong installed artifact; tim thay $($payloadManifestPaths.Count)."
+    }
+    $payloadManifestPath = Assert-NoReparsePointInPathComponents -Path ([string]$payloadManifestPaths[0])
+    $declaredPayloadManifestHash = Get-ManifestField -Path $Manifest -Name "PAYLOAD_MANIFEST_SHA256"
+    $script:InstalledPayloadManifestLease = Open-PrynXPayloadFileLease `
+        -Path $payloadManifestPath `
+        -ExpectedSha256 $declaredPayloadManifestHash `
+        -Purpose 'installed payload manifest'
+    # Payload root la thu muc cha cua manifest (binaries/ trong installed tree).
+    # Kiểm cả root và mọi path component trước khi enumerate để junction ở
+    # chính binaries/ không thể ẩn sau các descendant trông như file thường.
+    $payloadRoot = Assert-NoReparsePointInPathComponents -Path (Split-Path -Parent $payloadManifestPath)
+    $expectedTesseractRoot = [System.IO.Path]::GetFullPath((Join-Path $payloadRoot 'tesseract'))
+    if (-not [string]::Equals(
+        [System.IO.Path]::GetFullPath([string]$tesseractRoot),
+        $expectedTesseractRoot,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "SEC: Tesseract runtime path is outside the manifest payload root."
+    }
+
+    Write-Host "    Verifying exact-set payload inventory..." -ForegroundColor DarkGray
+    $payloadManifest = Get-Content -LiteralPath $payloadManifestPath -Raw | ConvertFrom-Json
+    $manifestFileMap = Assert-PrynXTesseractManifestMatchesLock `
+        -Manifest $payloadManifest `
+        -Lock $script:TesseractPayloadLock
+    # Hash, size va link-count duoc doc qua handle; lease giu file bat bien cho
+    # den khi Tesseract smoke ket thuc.
+    $script:InstalledTesseractLease = Open-PrynXPayloadLeaseSet `
+        -Root $tesseractRoot `
+        -Entries $script:TesseractPayloadLock.Entries `
+        -Purpose 'installed Tesseract'
+
+    # Kiem tra reparse point va ADS tren toan bo cay payload.
+    $payloadAllItems = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -Force -ErrorAction Stop)
+    foreach ($item in $payloadAllItems) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "SEC: Reparse point detected in installed payload: $($item.FullName)"
+        }
+        if (-not $item.PSIsContainer) {
+            $streams = @(Get-Item -LiteralPath $item.FullName -Stream * -ErrorAction Stop |
+                Where-Object { $_.Stream -ne ':$DATA' })
+            if ($streams.Count -gt 0) {
+                throw "SEC: ADS detected on installed payload file: $($item.FullName)"
+            }
+        }
+    }
+
+    $payloadFiles = @(Get-ChildItem -LiteralPath $payloadRoot -File -Recurse -Force -ErrorAction Stop)
+    $surplusFiles = @()
+    $missingFiles = @()
+    $hashMismatches = @()
+    $checkedPaths = @{}
+    foreach ($f in $payloadFiles) {
+        $relPath = $f.FullName.Substring($payloadRoot.Length + 1).Replace('\', '/')
+        if ($relPath -eq "payload-manifest.json") { continue }
+        if (-not $manifestFileMap.ContainsKey($relPath)) {
+            $surplusFiles += $relPath
+        } else {
+            $expected = $manifestFileMap[$relPath]
+            $actualHash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ([long]$f.Length -ne [long]$expected.Size -or
+                $actualHash -ne [string]$expected.Hash) {
+                $hashMismatches += $relPath
+            }
+            $checkedPaths[$relPath] = $true
+        }
+    }
+    foreach ($manifestEntryPath in $manifestFileMap.Keys) {
+        if (-not $checkedPaths.ContainsKey($manifestEntryPath)) {
+            $missingFiles += $manifestEntryPath
+        }
+    }
+    if ($surplusFiles.Count -gt 0) {
+        throw "SEC: Installed payload has surplus files not in manifest: $($surplusFiles -join ', ')"
+    }
+    if ($missingFiles.Count -gt 0) {
+        throw "SEC: Installed payload is missing files from manifest: $($missingFiles -join ', ')"
+    }
+    if ($hashMismatches.Count -gt 0) {
+        throw "SEC: Installed payload has hash/size mismatches: $($hashMismatches -join ', ')"
+    }
+    Write-OK "Exact-set payload inventory: $($manifestFileMap.Count) files verified"
+
+    # Chỉ thực thi resource sau khi exact-set/hash/reparse/ADS đã đạt. Nếu
+    # Tesseract bị tráo, verifier phải dừng trước khi chạy binary đó.
+    Invoke-TesseractSmoke -Executable $tesseractPath -Tessdata $tessdataPath -ScratchDir $installDir
+    Write-OK "Tesseract OCR anh mau bang eng+vie"
+    Close-PrynXPayloadLease -Lease $script:InstalledTesseractLease
+    Close-PrynXPayloadLease -Lease $script:InstalledPayloadManifestLease
+    $script:InstalledTesseractLease = $null
+    $script:InstalledPayloadManifestLease = $null
 
     # -- 4. Runtime smoke -----------------------------------------------------
     Write-Step "4/5 Runtime smoke"
@@ -911,18 +1233,15 @@ try {
     foreach ($directory in @($smokeAppData, $smokeLocalAppData, $smokeTemp)) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
     }
-    $nuitkaCacheBase = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    if ([string]::IsNullOrWhiteSpace($nuitkaCacheBase)) {
-        throw "Khong xac dinh duoc Windows LocalApplicationData cho cache Nuitka."
-    }
-    $cacheDir = Get-SidecarCachePath -SidecarPath $sidecarPath -CacheBase $nuitkaCacheBase
-    # Cache theo version duoc quarantine/restore de file du tu build cu khong the
-    # lam payload thieu cua artifact moi vuot smoke.
-    Quarantine-NuitkaCache -CachePath $cacheDir
+    $smokeNuitkaRoot = Join-Path $smokeTemp "PrynX"
+    New-Item -ItemType Directory -Force -Path $smokeNuitkaRoot | Out-Null
+    $null = Assert-NoReparsePointInPathComponents -Path $smokeNuitkaRoot
+    Assert-NoNuitkaExtractionResidue -TempRoot $smokeTemp
 
     # BUILD (audit 2026-08-03 REL.10): chay import/session/inference bang chinh
-    # frozen sidecar tren cache sach. Xoa cache vua tao de app launch tiep theo
-    # cung phai tu giai nen artifact cua lan test nay.
+    # frozen sidecar tren Temp rieng. SEC (audit 2026-09-02 SEC.18): sau khi
+    # process thoat, temporary mode phai xoa payload; app launch ke tiep lai giai
+    # nen tu outer executable vao path ngau nhien moi.
     $selfTestPreviousAppData = $env:APPDATA
     $selfTestPreviousLocalAppData = $env:LOCALAPPDATA
     $selfTestPreviousTemp = $env:TEMP
@@ -932,7 +1251,9 @@ try {
         $env:LOCALAPPDATA = $smokeLocalAppData
         $env:TEMP = $smokeTemp
         $env:TMP = $smokeTemp
-        Invoke-SidecarAiRuntimeSmoke -SidecarPath $sidecarPath
+        $selfTestExtraction = Invoke-SidecarAiRuntimeSmoke `
+            -SidecarPath $sidecarPath `
+            -TempRoot $smokeTemp
     } finally {
         $env:APPDATA = $selfTestPreviousAppData
         $env:LOCALAPPDATA = $selfTestPreviousLocalAppData
@@ -940,7 +1261,7 @@ try {
         $env:TMP = $selfTestPreviousTmp
     }
     Write-OK "Frozen sidecar gate Free/Pro + import ONNX + inference 3 model"
-    Reset-TestNuitkaCache
+    Assert-NoNuitkaExtractionResidue -TempRoot $smokeTemp
 
     Assert-NoExistingPrynXProcess
     Assert-InternalPortFree
@@ -999,10 +1320,35 @@ try {
     }
     Write-OK "PDFium OK; sidecar integrity + startup proof OK; app ready va song"
 
-    if (-not (Test-Path -LiteralPath $cacheDir -PathType Container)) {
-        throw "Sidecar san sang nhung khong tao cache payload Nuitka moi: $cacheDir"
+    Register-CreatedProcessTree -RootProcessId $script:AppProcess.Id
+    # SEC (audit 2026-09-02 SEC.18): temporary onefile DLL mode giu ca outer va
+    # inner cung executable path. Ten extraction moi la nguon bind bootstrap PID;
+    # sau do doi chieu PID + path + lineage, khong chon duy nhat theo path.
+    $appExtraction = Get-ActiveNuitkaExtractionEntry -TempRoot $smokeTemp
+    $sidecarBootstrap = Get-TrackedSidecarBootstrapRecord `
+        -SidecarPath $sidecarPath `
+        -BootstrapPid ([int]$appExtraction.BootstrapPid) `
+        -AppRootProcessId ([int]$script:AppProcess.Id)
+    # SEC (audit 2026-09-04 §SEC.20/23-L2): quet TOAN extraction trong khi app
+    # va bootstrap sidecar con song. Day la detection SAU execution, khong phai
+    # sandbox bao ve build host truoc khi binary chay. Regex/magic scanner cung
+    # khong tuyen bo bat duoc secret da ma hoa hoac bi chia manh.
+    $nuitkaExtractionSecretScan = Assert-PrynXReleasePayloadSecretFree `
+        -TreeRoots @($appExtraction.Path) `
+        -Purpose 'nuitka-extraction'
+    Write-OK ("Khong co release secret trong extraction Nuitka dang song: {0} file, {1} byte, {2} archive" -f @(
+            [long]$nuitkaExtractionSecretScan.FileCount,
+            [long]$nuitkaExtractionSecretScan.RawBytes,
+            [long]$nuitkaExtractionSecretScan.ArchiveCount
+        ))
+    if ([string]::Equals(
+        [string]$selfTestExtraction.Path,
+        [string]$appExtraction.Path,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Hai luot chay sidecar da tai su dung cung extraction path Nuitka."
     }
-    $cacheFiles = @(Get-ChildItem -LiteralPath $cacheDir -Recurse -File -ErrorAction SilentlyContinue)
+    $cacheFiles = @(Get-SafeNuitkaPayloadFiles -ExtractionPath $appExtraction.Path)
     foreach ($runtimeName in @("onnxruntime.dll", "onnxruntime_pybind11_state.pyd")) {
         $runtimeFile = $cacheFiles | Where-Object { $_.Name -eq $runtimeName } | Select-Object -First 1
         if (-not $runtimeFile -or $runtimeFile.Length -le 0) {
@@ -1029,10 +1375,47 @@ try {
     if ($script:AppProcess.HasExited) { throw "App thoat trong khi xac minh payload AI." }
     $healthAfterPayload = Invoke-RestMethod -Uri "http://127.0.0.1:8321/health" -Method Get -TimeoutSec 3
     if ([string]$healthAfterPayload.status -ne "ok") { throw "Sidecar mat health sau khi xac minh payload AI." }
+    Register-CreatedProcessTree -RootProcessId $script:AppProcess.Id
+    $appExtractionAfterPayload = Get-ActiveNuitkaExtractionEntry -TempRoot $smokeTemp
+    $sidecarBootstrapAfterPayload = Get-TrackedSidecarBootstrapRecord `
+        -SidecarPath $sidecarPath `
+        -BootstrapPid ([int]$appExtractionAfterPayload.BootstrapPid) `
+        -AppRootProcessId ([int]$script:AppProcess.Id)
+    if (-not [string]::Equals(
+        [string]$appExtraction.Path,
+        [string]$appExtractionAfterPayload.Path,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Extraction path Nuitka thay doi trong luc xac minh payload."
+    }
     Write-OK "Payload ONNX Runtime + ISNet + hai model Real-ESRGAN ($onnxProvider)"
+
+    # Dung app qua WM_CLOSE de chinh Rust gui shutdown HMAC, doi Uvicorn lifespan va
+    # bootstrap Nuitka tu xoa payload. Force-kill hoac residue deu lam verifier fail.
+    $shutdownEvidence = Stop-CreatedProcessTree
+    if (-not $shutdownEvidence.CloseRequested -or
+        -not $shutdownEvidence.GracefulTreeExit -or
+        @($shutdownEvidence.ForcedPids).Count -ne 0) {
+        throw "Khong chung minh duoc app va sidecar shutdown em, khong force-kill."
+    }
+    Assert-NoNuitkaExtractionResidue -TempRoot $smokeTemp -WaitMilliseconds 5000
+    foreach ($observedExtraction in @($selfTestExtraction, $appExtraction)) {
+        if ($null -ne $observedExtraction -and (Test-Path -LiteralPath $observedExtraction.Path)) {
+            throw "Extraction payload van ton tai sau shutdown: $($observedExtraction.Path)"
+        }
+    }
+    $shutdownLogText = Get-NewLogText -Path $startupLog -Offset $startupOffset
+    if ($shutdownLogText -notmatch '(?m)sidecar shutdown: graceful') {
+        throw "Startup breadcrumb khong chung minh nhanh graceful shutdown."
+    }
+    Write-OK "Hai extraction path khac nhau; graceful shutdown da xoa sach payload tam"
 
     # -- 5. Cap nhat manifest -------------------------------------------------
     Write-Step "5/5 Cap nhat manifest"
+    $releaseSecretScanEvidenceV2 = ConvertTo-PrynXReleaseSecretScanEvidenceV2 `
+        -InstallerSha256 $installerHash `
+        -InstalledTreeScan $installedSecretScan `
+        -NuitkaExtractionScan $nuitkaExtractionSecretScan
     $verifiedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
     $manifestLines = @(Get-Content -LiteralPath $Manifest)
     foreach ($field in @(
@@ -1045,7 +1428,10 @@ try {
         @{ Name = "RUNTIME_OCR"; Value = "tesseract-eng-vie-sample-ok" },
         @{ Name = "RUNTIME_ONNX_PAYLOAD"; Value = "models-ok-$onnxProvider" },
         @{ Name = "RUNTIME_ONNX_INFERENCE"; Value = "frozen-sidecar-3-models-ok" },
-        @{ Name = "RUNTIME_FREE_PRO_GATE"; Value = "enabled+free-denied-prepress.preflight" }
+        @{ Name = "RUNTIME_FREE_PRO_GATE"; Value = "enabled+free-denied-prepress.preflight" },
+        # v1 tam giu cho publisher hien tai; Lô 3 se chuyen gate upload sang v2.
+        @{ Name = "RELEASE_SECRET_SCAN"; Value = $releaseSecretScanEvidence },
+        @{ Name = "RELEASE_SECRET_SCAN_V2"; Value = $releaseSecretScanEvidenceV2 }
     )) {
         $manifestLines = @(Set-ManifestField -Lines $manifestLines -Name $field.Name -Value $field.Value)
     }
@@ -1053,18 +1439,62 @@ try {
     if ((Get-ManifestField -Path $Manifest -Name "RUNTIME_VERIFIED") -ne "yes") {
         throw "Khong ghi duoc trang thai RUNTIME_VERIFIED=yes."
     }
+    if ((Get-ManifestField -Path $Manifest -Name "RELEASE_SECRET_SCAN") -ne
+        $releaseSecretScanEvidence) {
+        throw "Khong ghi duoc bang chung RELEASE_SECRET_SCAN."
+    }
+    if ((Get-ManifestField -Path $Manifest -Name "RELEASE_SECRET_SCAN_V2") -ne
+        $releaseSecretScanEvidenceV2) {
+        throw "Khong ghi duoc bang chung RELEASE_SECRET_SCAN_V2."
+    }
     Write-OK "Manifest da co hash installed exe va runtime evidence"
     $script:VerificationSucceeded = $true
 } finally {
     $cleanupFailures = New-Object System.Collections.Generic.List[string]
-    try { Stop-CreatedProcessTree } catch { $cleanupFailures.Add("Process cleanup: $($_.Exception.Message)") }
+    try { $null = Stop-CreatedProcessTree } catch { $cleanupFailures.Add("Process cleanup: $($_.Exception.Message)") }
     foreach ($record in @($script:TrackedProcesses.Values)) {
         if ($null -ne (Get-TrackedProcessIdentity -Record $record)) {
             $cleanupFailures.Add("Process do verifier tao van song: PID=$($record.Id)")
         }
     }
     try { Assert-InternalPortFree } catch { $cleanupFailures.Add($_.Exception.Message) }
-    try { Restore-NuitkaCache } catch { $cleanupFailures.Add("Nuitka cache restore: $($_.Exception.Message)") }
+    if (-not [string]::IsNullOrWhiteSpace($smokeTemp)) {
+        try {
+            Assert-NoNuitkaExtractionResidue -TempRoot $smokeTemp
+        } catch {
+            $cleanupFailures.Add("Nuitka temporary cleanup: $($_.Exception.Message)")
+        }
+    }
+    # SEC (audit 2026-09-03 §SEC.23): mọi lease phải được nhả cả khi một smoke
+    # ném lỗi. Nếu giữ handle sang bước uninstall/remove, chính verifier sẽ làm
+    # cleanup thất bại và che mất nguyên nhân bảo mật ban đầu.
+    foreach ($leaseRecord in @(
+        @{ Name = 'Installed Tesseract lease'; Value = $script:InstalledTesseractLease },
+        @{ Name = 'Installed payload manifest lease'; Value = $script:InstalledPayloadManifestLease },
+        @{ Name = 'Installed sidecar lease'; Value = $script:InstalledSidecarLease },
+        @{ Name = 'Installer file identity lease'; Value = $script:InstallerFileLease },
+        @{ Name = 'Installer ancestor identity lease'; Value = $script:InstallerDirectoryLease },
+        @{
+            Name = 'Trusted Tesseract lock lease'
+            Value = if ($null -ne $script:TesseractPayloadLock) {
+                $script:TesseractPayloadLock.LockLease
+            } else {
+                $null
+            }
+        }
+    )) {
+        try {
+            Close-PrynXPayloadLease -Lease $leaseRecord.Value
+        } catch {
+            $cleanupFailures.Add("$($leaseRecord.Name) cleanup: $($_.Exception.Message)")
+        }
+    }
+    $script:InstalledTesseractLease = $null
+    $script:InstalledPayloadManifestLease = $null
+    $script:InstalledSidecarLease = $null
+    $script:InstallerFileLease = $null
+    $script:InstallerDirectoryLease = $null
+    $script:TesseractPayloadLock = $null
     if ($KeepInstall) {
         Write-Host "`n  Giu lai cay da cai: $installDir" -ForegroundColor Yellow
     } else {
@@ -1093,7 +1523,7 @@ try {
             } catch {
                 $cleanupFailures.Add("Uninstaller cleanup: $($_.Exception.Message)")
             }
-            try { Stop-CreatedProcessTree } catch { $cleanupFailures.Add("Uninstaller process cleanup: $($_.Exception.Message)") }
+            try { $null = Stop-CreatedProcessTree } catch { $cleanupFailures.Add("Uninstaller process cleanup: $($_.Exception.Message)") }
         }
         if (Test-Path -LiteralPath $installDir) {
             $resolvedInstall = [System.IO.Path]::GetFullPath($installDir)

@@ -10,6 +10,73 @@ $ROOT = Split-Path -Parent $PSScriptRoot
 $PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
 $NPM_CACHE = Join-Path ([System.IO.Path]::GetTempPath()) "prynx-npm-cache"
 $FRONTEND_QA_DIR = Join-Path ([System.IO.Path]::GetTempPath()) ("prynx-frontend-qa-" + [guid]::NewGuid().ToString("N"))
+$RUST_TOOLCHAIN_LOCK_PATH = Join-Path $PSScriptRoot 'rust_toolchain.lock.json'
+. (Join-Path $PSScriptRoot 'release_executable_guard.ps1')
+
+$qaToolLeases = New-Object System.Collections.Generic.List[object]
+$script:PrynXQaRustToolchainLease = $null
+$qaAmbientRustToolOverrides = @(Get-PrynXRustToolOverrideVariableNames)
+$qaEnvironmentSnapshot = @{}
+$qaEnvironmentNames = @(
+    'CARGO', 'CARGO_HOME', 'RUSTC', 'RUSTDOC', 'RUSTC_WRAPPER',
+    'RUSTC_WORKSPACE_WRAPPER', 'ComSpec', 'NODE_OPTIONS', 'NODE_PATH',
+    'NAPI_RS_NATIVE_LIBRARY_PATH'
+) + @($qaAmbientRustToolOverrides)
+foreach ($environmentName in @($qaEnvironmentNames | Select-Object -Unique)) {
+    $value = [Environment]::GetEnvironmentVariable(
+        $environmentName,
+        [EnvironmentVariableTarget]::Process
+    )
+    $qaEnvironmentSnapshot[$environmentName] = @{
+        Exists = $null -ne $value
+        Value = if ($null -ne $value) { [string]$value } else { $null }
+    }
+}
+
+function Initialize-PrynXQaToolAuthority {
+    # SEC (audit 2026-09-04 §SEC.24-R4): QA chot compiler + rust-std theo
+    # lock versioned, khong con tin bo rustup proxy cung hash trong .cargo\bin.
+    $leases = @{}
+    foreach ($kind in @('Node', 'Robocopy', 'Cmd')) {
+        $lease = Open-PrynXTrustedReleaseExecutableLease -Kind $kind
+        $qaToolLeases.Add($lease)
+        $leases[$kind] = $lease
+    }
+    $script:PrynXQaRustToolchainLease = Open-PrynXTrustedRustToolchainLease `
+        -LockPath $RUST_TOOLCHAIN_LOCK_PATH
+    $qaToolLeases.Add($script:PrynXQaRustToolchainLease)
+    $nodeRoot = [System.IO.Path]::GetDirectoryName([string]$leases.Node.Path)
+    $npmRelativePath = 'node_modules\npm\bin\npm-cli.js'
+    $npmLease = Open-PrynXTrustedReleaseFileSetLease `
+        -AllowedRoot $nodeRoot `
+        -RelativePaths @($npmRelativePath) `
+        -Purpose 'release QA npm CLI'
+    $qaToolLeases.Add($npmLease)
+
+    $script:PrynXQaNodePath = [string]$leases.Node.Path
+    $script:PrynXQaNpmCliPath = [string]$npmLease.Files[$npmRelativePath].Path
+    $script:PrynXQaRobocopyPath = [string]$leases.Robocopy.Path
+    $script:PrynXQaCargoPath = [string]$script:PrynXQaRustToolchainLease.CargoPath
+    $env:CARGO = $script:PrynXQaCargoPath
+    $env:CARGO_HOME = [string]$script:PrynXQaRustToolchainLease.CargoHome
+    $env:RUSTC = [string]$script:PrynXQaRustToolchainLease.RustcPath
+    $env:RUSTDOC = [string]$script:PrynXQaRustToolchainLease.RustdocPath
+    [Environment]::SetEnvironmentVariable(
+        'RUSTC_WRAPPER', '', [EnvironmentVariableTarget]::Process
+    )
+    [Environment]::SetEnvironmentVariable(
+        'RUSTC_WORKSPACE_WRAPPER', '', [EnvironmentVariableTarget]::Process
+    )
+    $env:ComSpec = [string]$leases.Cmd.Path
+    Remove-Item Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+    Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:NAPI_RS_NATIVE_LIBRARY_PATH -ErrorAction SilentlyContinue
+    Assert-PrynXRustToolEnvironment `
+        -CargoPath $script:PrynXQaRustToolchainLease.CargoPath `
+        -RustcPath $script:PrynXQaRustToolchainLease.RustcPath `
+        -RustdocPath $script:PrynXQaRustToolchainLease.RustdocPath `
+        -CargoHome $script:PrynXQaRustToolchainLease.CargoHome
+}
 
 function Invoke-Checked {
     param(
@@ -24,6 +91,34 @@ function Invoke-Checked {
     }
 }
 
+function Invoke-CheckedCargo {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string[]]$CargoArguments
+    )
+
+    Invoke-Checked $Label {
+        Assert-PrynXRustToolEnvironment `
+            -CargoPath $script:PrynXQaRustToolchainLease.CargoPath `
+            -RustcPath $script:PrynXQaRustToolchainLease.RustcPath `
+            -RustdocPath $script:PrynXQaRustToolchainLease.RustdocPath `
+            -CargoHome $script:PrynXQaRustToolchainLease.CargoHome
+        Assert-PrynXCargoConfigurationAuthority `
+            -CargoHome $script:PrynXQaRustToolchainLease.CargoHome `
+            -WorkingDirectories @([string](Get-Location).Path)
+        Assert-PrynXRustToolchainExactSet -Lease $script:PrynXQaRustToolchainLease
+        & $script:PrynXQaCargoPath @CargoArguments
+        $cargoExit = $LASTEXITCODE
+        Assert-PrynXRustToolchainExactSet -Lease $script:PrynXQaRustToolchainLease
+        Assert-PrynXCargoConfigurationAuthority `
+            -CargoHome $script:PrynXQaRustToolchainLease.CargoHome `
+            -WorkingDirectories @([string](Get-Location).Path)
+        if ($cargoExit -ne 0) {
+            throw "$Label failed with exit code $cargoExit"
+        }
+    }
+}
+
 # BUILD (audit 2026-08-11 §REL.QA.UTF8): pytest fd-capture đọc theo UTF-8, còn
 # ProcessPool con trên Windows có thể kế thừa code page hệ thống và ghi byte khác
 # UTF-8 vào cùng handle. Ép đồng nhất encoding cho toàn bộ Python con rồi hoàn
@@ -33,6 +128,19 @@ $previousPythonIoEncoding = [Environment]::GetEnvironmentVariable(
     [EnvironmentVariableTarget]::Process
 )
 try {
+$null = Clear-PrynXAmbientRustToolOverrides
+Initialize-PrynXQaToolAuthority
+Assert-PrynXCargoConfigurationAuthority `
+    -CargoHome $script:PrynXQaRustToolchainLease.CargoHome `
+    -WorkingDirectories @(
+        "$ROOT\native",
+        "$ROOT\imposition_core",
+        "$ROOT\print_engine",
+        "$ROOT\desktop",
+        "$ROOT\desktop\src-tauri"
+    )
+Assert-PrynXRustToolchainExactSet -Lease $script:PrynXQaRustToolchainLease
+Assert-PrynXRustToolchainIdentity -Lease $script:PrynXQaRustToolchainLease
 $env:PYTHONIOENCODING = "utf-8:replace"
 
 if (-not (Test-Path -LiteralPath $PYTHON)) {
@@ -104,7 +212,7 @@ $frontendQaImpositionFixtures = Join-Path $frontendQaFull "imposition_core\tests
 $frontendQaNormalizeSource = Join-Path $frontendQaFull "imposition_core\src\mixed_nesting"
 try {
     Write-Host "  [QA] Staging frontend source outside the live node_modules tree..." -ForegroundColor DarkGray
-    & robocopy "$ROOT\desktop" $frontendQaDesktop /E /NFL /NDL /NJH /NJS /NP `
+    & $script:PrynXQaRobocopyPath "$ROOT\desktop" $frontendQaDesktop /E /NFL /NDL /NJH /NJS /NP `
         /XD node_modules dist target binaries `
         /XF *.log
     $copyExit = $LASTEXITCODE
@@ -131,10 +239,14 @@ try {
     Push-Location $frontendQaDesktop
     try {
         Invoke-Checked "Locked frontend dependencies (isolated)" {
-            npm.cmd ci --no-audit --no-fund --cache $NPM_CACHE
+            & $script:PrynXQaNodePath $script:PrynXQaNpmCliPath ci --no-audit --no-fund --cache $NPM_CACHE
         }
-        Invoke-Checked "Frontend typecheck (isolated)" { npm.cmd run typecheck }
-        Invoke-Checked "Frontend test suite (isolated)" { npm.cmd test }
+        Invoke-Checked "Frontend typecheck (isolated)" {
+            & $script:PrynXQaNodePath $script:PrynXQaNpmCliPath run typecheck
+        }
+        Invoke-Checked "Frontend test suite (isolated)" {
+            & $script:PrynXQaNodePath $script:PrynXQaNpmCliPath test
+        }
     } finally {
         Pop-Location
     }
@@ -147,16 +259,16 @@ try {
 
 Push-Location "$ROOT\imposition_core"
 try {
-    Invoke-Checked "Imposition core tests" { cargo test --locked }
-    Invoke-Checked "Imposition core release compile" { cargo check --release --locked }
+    Invoke-CheckedCargo "Imposition core tests" @('test', '--locked')
+    Invoke-CheckedCargo "Imposition core release compile" @('check', '--release', '--locked')
 } finally {
     Pop-Location
 }
 
 Push-Location "$ROOT\print_engine"
 try {
-    Invoke-Checked "Print engine tests" { cargo test --locked }
-    Invoke-Checked "Print engine release compile" { cargo check --release --locked }
+    Invoke-CheckedCargo "Print engine tests" @('test', '--locked')
+    Invoke-CheckedCargo "Print engine release compile" @('check', '--release', '--locked')
 } finally {
     Pop-Location
 }
@@ -183,8 +295,8 @@ $env:PYO3_ENVIRONMENT_SIGNATURE = $PYTHON + "|" + $nativePythonVersion
 $env:PATH = $nativePythonBase + [System.IO.Path]::PathSeparator + $previousNativePath
 Push-Location "$ROOT\native"
 try {
-    Invoke-Checked "Native PDF tests" { cargo test --locked }
-    Invoke-Checked "Native PDF release compile" { cargo check --release --locked }
+    Invoke-CheckedCargo "Native PDF tests" @('test', '--locked')
+    Invoke-CheckedCargo "Native PDF release compile" @('check', '--release', '--locked')
 } finally {
     Pop-Location
     $env:PATH = $previousNativePath
@@ -202,8 +314,8 @@ try {
 
 Push-Location "$ROOT\desktop\src-tauri"
 try {
-    Invoke-Checked "Tauri command tests" { cargo test --locked }
-    Invoke-Checked "Tauri release compile" { cargo check --release --locked }
+    Invoke-CheckedCargo "Tauri command tests" @('test', '--locked')
+    Invoke-CheckedCargo "Tauri release compile" @('check', '--release', '--locked')
 } finally {
     Pop-Location
 }
@@ -215,4 +327,14 @@ Write-Host "  [QA] All release regression suites passed." -ForegroundColor Green
         $previousPythonIoEncoding,
         [EnvironmentVariableTarget]::Process
     )
+    foreach ($toolLease in $qaToolLeases) {
+        Close-PrynXReleaseExecutableLease -Lease $toolLease
+    }
+    foreach ($entry in $qaEnvironmentSnapshot.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable(
+            [string]$entry.Key,
+            $(if ($entry.Value.Exists) { [string]$entry.Value.Value } else { $null }),
+            [EnvironmentVariableTarget]::Process
+        )
+    }
 }

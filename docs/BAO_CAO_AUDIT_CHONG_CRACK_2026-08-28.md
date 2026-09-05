@@ -1,5 +1,10 @@
 # Báo cáo audit bảo mật — chống crack & leo quyền (2026-08-28)
 
+> **Nhãn tài liệu:** `[HISTORICAL]`. Đây là ảnh chụp audit và quyết định tại ngày 2026-08-28.
+> Các số đếm, proof gap và lifecycle trong phần gốc bên dưới được giữ để truy vết, nhưng đã được
+> **supersede về trạng thái hiện hành** bởi mục “Cập nhật 2026-09-04” ngay sau bảng này và báo cáo
+> `BAO_CAO_AUDIT_CHONG_CRACK_BLACKBOX_WHITEBOX_2026-09-02.md`.
+>
 > **Chế độ:** Audit chuẩn (đọc-only), phạm vi license/entitlement/anti-tamper.
 > **Lý do:** lo ngại đối thủ dùng AI để bẻ khóa PrynX.
 > **Repo/revision:** `d:\pdfcompare` @ `c863931` (2026-08-27) — **working tree KHÔNG sạch**
@@ -7,17 +12,49 @@
 > **Threat model dùng để xếp hạng:** `docs/audit/PRYNX_THREAT_MODEL.md` (2026-08-15) — đã xác nhận còn khớp code.
 > **Quan hệ với audit trước:** re-audit F1–F12 của `SECURITY_AUDIT_INDEPENDENT_2026-07-26.md` + rà phần code mới
 > (151 commit, ~17k dòng thêm ở core/routes/src-tauri/stores) chưa từng qua security review.
-> **Trạng thái:** ĐÃ DUYỆT VÀ SỬA (2026-08-28). 12/15 finding đã vá; 3 còn lại cần hạ tầng hoặc
+> **Trạng thái tại chốt 2026-08-28:** ĐÃ DUYỆT VÀ SỬA. 12/15 finding đã vá; 3 còn lại khi đó cần hạ tầng hoặc
 > quyết định thương mại. Log sửa + bằng chứng verify: `docs/CHONG_CRACK_FIXES_2026-08-28.md`.
 > Tóm tắt kiến trúc: `docs/audit/SECURITY_ARCHITECTURE.md` §26.
 >
-> | Lifecycle | Finding |
+> | Lifecycle lịch sử tại 2026-08-28 | Finding |
 > |---|---|
 > | **Verified** (có test âm trước / dương sau) | §SEC.01, §SEC.04, §SEC.05, §SEC.07, §SEC.13, §SEC.14 |
 > | **Applied**, chờ deploy để thành Verified | §SEC.02, §SEC.06, §SEC.08, §SEC.10 |
 > | **False positive → Closed** (kèm gate thường trực) | §SEC.12 |
 > | **Accepted risk** (giữ nguyên, có tài liệu) | §SEC.09, §SEC.11 |
-> | **Còn mở** | §SEC.03 (cần credential production), §SEC.15 (thuộc spec `save-as-artifact-guard`) |
+> | **Còn mở tại thời điểm đó** | §SEC.03 (cần credential production), §SEC.15 (sau đó đã có control source/test; xem cập nhật dưới) |
+
+## Cập nhật hiện hành 2026-09-04 — supersede trạng thái, không viết lại lịch sử
+
+Đợt hardening sau báo cáo này đã thay đổi trạng thái của các finding liên quan. “Verified” trong bảng
+dưới chỉ có nghĩa là control hiện diện trong source và đã qua test mục tiêu; nó **không** tự chứng minh
+bản cài, production, chứng thư, thiết bị thật hoặc quy trình phát hành.
+
+| Phạm vi | Trạng thái hiện hành | Bằng chứng/control đã có | Proof gap còn lại |
+|---|---|---|---|
+| §SEC.15 — Save As artifact | **Applied → Verified (source/test)** | Native cấp grant one-shot ràng buộc đúng cửa sổ, canonical target và TTL; giữ lease trên source cùng các ancestor, không share `DELETE`; timer tự thu hồi grant sau 2 phút. Tuyên bố cũ “`save_as_only` chỉ là renderer hint” không còn mô tả source hiện tại. | `[EXTERNAL]` UI runtime trên bản cài, share NAS và filesystem không phải NTFS. |
+| §SEC.19 / §ATK.09 — replay qua sidecar respawn | **Applied → Verified (source/test)** cho khe replay theo thế hệ | Session key được derive theo từng `sidecar generation`; chữ ký của thế hệ cũ không hợp lệ sau respawn, kể cả khi nonce table của tiến trình mới đang rỗng. | §SEC.19 tổng thể chưa `Closed`: còn clock fault-injection, packaged runtime và trạng thái deploy. |
+| §SEC.21 — request binding | **Applied → Verified (source/test)** | Signature v2 bind method, raw path/query, credential snapshot, content type, body mode và body commitment; raw bytes được bind cho JSON/string/binary; FormData bind thứ tự, field trùng và metadata file; streaming chỉ được chấp nhận sau kiểm commitment tại EOF. Ratchet hiện phủ **191/191 route đã đăng ký** — đây là số route được kiểm coverage, không phải 191 test. | `[EXTERNAL]` packaged-runtime proof trên artifact phát hành. |
+| §SEC.23 — payload provenance | **Applied → Verified (source/test mục tiêu)** | Tesseract được pin version/path/size/SHA-256; guard có kiểm hardlink/link-count, ADS, reparse point và identity lease trước khi chạy payload. | `[EXTERNAL]` clean build/install/uninstall, artifact provenance xuyên pipeline và runtime trên VM sạch. |
+| §SEC.24-R1–R7 — trusted tool/source/publisher authority | **Applied → Verified (source/test mục tiêu)** | R1–R3 pin/lease executable và exact npm/Tauri entrypoint; R4 khóa Rust toolchain bằng content-addressed exact-set/provenance; R5 pin đúng một updater endpoint/destination HTTPS canonical trên `github.com`; R6 khóa Git metadata/config/index + GitHub config/credential/grammar, SemVer ASCII-only, exact raw/escaped tag route, signing-key Known Folder và Notepad; R7 neo BAT bootstrap vào `%__APPDIR__%`, không tin `%SystemRoot%`/`PATH`. | Trusted checkout là prerequisite cục bộ; `[EXTERNAL]` gồm packaged runtime, OAuth/Credential Manager/GitHub thật, `gh` tương lai, Authenticode artifact và packaged double-click/hostile-`PATH`. Không suy severity mới từ riêng đợt hardening này. |
+
+Policy `hosts.yml` của R6 chỉ là lexical allowlist cho credential key/YAML block-style canonical đã đối
+chiếu với GitHub CLI 2.93.0, **không phải YAML-general scanner**. Login thật phải ghi config nên OAuth,
+Credential Manager, GitHub account/repo/network và serialization của `gh` tương lai vẫn cần runtime/re-audit.
+
+Checkout hiện tại bị release guard chặn đúng thiết kế vì `.git/config` có
+`extensions.worktreeConfig=true`, `.git/info/exclude` dài 335 byte/non-empty và
+`.git/info/attributes` thiếu. Đây là prerequisite cục bộ cần chuẩn hóa hoặc thay bằng trusted clean clone,
+không phải lỗi guard hay `[EXTERNAL]`.
+
+**Release vẫn `HOLD`.** Những việc không thể đóng chỉ bằng source/test vẫn gồm: đối chiếu và deploy DB/Edge
+production; rotate/revoke/audit secret/key thật; Authenticode certificate; thiết kế TPM/CNG và policy cho máy
+không có TPM; clean build/install/uninstall cùng fault-injection trên VM; Save As UI/NAS/non-NTFS; OAuth/
+Credential Manager/GitHub và packaged BAT double-click/hostile-`PATH`. Quyền admin, debugger, memory patch,
+interpreter/file-association hijack ở Ring-3 vẫn là residual accepted risk, không có nghĩa client “không thể crack”.
+
+Phần §0–§6 bên dưới là nội dung audit gốc. Mọi câu “còn mở”, số test hoặc đề xuất trong đó phải được đọc
+theo mốc 2026-08-28; nếu xung đột, bảng cập nhật này và báo cáo re-audit mới hơn là nguồn trạng thái.
 
 ---
 
@@ -365,12 +402,16 @@ Không phải lỗ production. Ghi nhận vì nó tạo **an toàn giả trong d
 
 ---
 
-### §SEC.15 — 🟡 P3 — `save_as_only` chỉ là hint gửi renderer
+### §SEC.15 — 🟡 P3 — Phát hiện lịch sử: `save_as_only` chỉ là hint gửi renderer `[SUPERSEDED]`
 
-- **Bằng chứng:** `[VERIFIED]` · **Vị trí:** `document_window_registry.rs:72`, set ở `:618`
+- **Bằng chứng tại snapshot 2026-08-28:** `[VERIFIED]` · **Vị trí lịch sử:** `document_window_registry.rs:72`, set ở `:618`
 
-Không có enforcement native nào chặn cửa sổ nhân bản ghi đè file gốc. Với giả định renderer không tin cậy thì cờ này
-bằng 0 giá trị bảo mật. Liên quan trực tiếp spec `save-as-artifact-guard` đang mở.
+Tại snapshot này chưa có enforcement native chặn cửa sổ nhân bản ghi đè file gốc; `save_as_only` chỉ là hint
+renderer và liên quan trực tiếp spec `save-as-artifact-guard` khi đó còn mở.
+
+**Superseded 2026-09-04:** source hiện tại đã có grant/lease native bind cửa sổ–target–TTL, khóa source và
+ancestor không share `DELETE`, cùng timer tự thu hồi sau 2 phút; trạng thái là **Applied → Verified
+(source/test)**. Runtime UI, NAS và filesystem không phải NTFS vẫn `[EXTERNAL]`.
 
 ---
 

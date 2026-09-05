@@ -1,13 +1,23 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const invokeMock = vi.hoisted(() => vi.fn());
+const authStateMock = vi.hoisted(() => ({
+  licenseKey: 'LICENSE-KEY',
+  licenseToken: 'license-token',
+  licenseSignOutPending: false,
+}));
 
 // RELEASE QA (audit 2026-08-03 §REL.09): nhóm này kiểm transport manifest,
 // còn chữ ký/auth đã có api.auth.test.ts. Mock store để cold import Supabase/Zustand
 // không bị tính vào ca đầu khi 173 file chạy song song trong staging sạch.
 vi.mock('../stores/useAuthStore', () => ({
   useAuthStore: {
-    getState: () => ({ licenseKey: '', licenseToken: '' }),
+    getState: () => authStateMock,
   },
+  getLicenseOperationEpoch: () => 0,
+  isLicenseOperationPending: () => false,
+  isNativeLicenseGateBlocked: () => false,
 }));
 
 import {
@@ -17,9 +27,34 @@ import {
   backendMergePdfsJob,
 } from './api';
 
+const originalBlobArrayBuffer = Blob.prototype.arrayBuffer;
+
+function installBlobArrayBufferForJsdom(): void {
+  if (typeof Blob.prototype.arrayBuffer === 'function') return;
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    value(this: Blob): Promise<ArrayBuffer> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error);
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.readAsArrayBuffer(this);
+      });
+    },
+  });
+}
+
+function requestFrom(input: RequestInfo | URL, init?: RequestInit): Request {
+  return input instanceof Request ? input : new Request(input, init);
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
+
 function enableTauriRuntime() {
   window.__TAURI_INTERNALS__ = {};
-  window.__PRYNX_INVOKE__ = vi.fn(async () => ({})) as unknown as NonNullable<
+  window.__PRYNX_INVOKE__ = invokeMock as unknown as NonNullable<
     typeof window.__PRYNX_INVOKE__
   >;
 }
@@ -41,17 +76,41 @@ function readBlobBytes(blob: Blob): Promise<ArrayBuffer> {
 }
 
 describe('backend merge native transport', () => {
+  beforeEach(() => {
+    installBlobArrayBufferForJsdom();
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (command: string) => (
+      command === 'sign_api_request'
+        ? {
+          'X-PrynX-Signature': 'trusted-signature',
+          'X-PrynX-Timestamp': '123',
+          'X-PrynX-Nonce': 'test-nonce',
+          'X-PrynX-Signature-Version': '2',
+        }
+        : undefined
+    ));
+  });
+
   afterEach(() => {
     delete window.__TAURI_INTERNALS__;
     delete window.__PRYNX_INVOKE__;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    if (originalBlobArrayBuffer) {
+      Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+        configurable: true,
+        value: originalBlobArrayBuffer,
+      });
+    } else {
+      Reflect.deleteProperty(Blob.prototype, 'arrayBuffer');
+    }
   });
 
   it('keeps native manifest inputs and the result out of WebView blobs', async () => {
     enableTauriRuntime();
-    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
-      const body = init.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      const body = await request.clone().formData();
       expect(body.get('file_paths')).toBe(JSON.stringify(['C:\\docs\\one.pdf']));
       expect(body.get('return_path')).toBe('true');
       expect(body.getAll('files')).toHaveLength(0);
@@ -75,9 +134,11 @@ describe('backend merge native transport', () => {
     enableTauriRuntime();
     const onProgress = vi.fn();
     let statusRequestCount = 0;
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && init?.method === 'POST') {
-        const body = init.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      const url = request.url;
+      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && request.method === 'POST') {
+        const body = await request.clone().formData();
         expect(body.get('source_paths')).toBe(JSON.stringify(['C:\\docs\\one.pdf']));
         expect(body.get('return_path')).toBe('true');
         expect(body.getAll('files')).toHaveLength(0);
@@ -153,15 +214,11 @@ describe('backend merge native transport', () => {
     enableTauriRuntime();
     const nativeFile = pathStub('native.pdf', 'D:\\native\\native.pdf');
     const memoryFile = new File(['memory-pdf'], 'memory.pdf', { type: 'application/pdf' });
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && init?.method === 'POST') {
-        const body = init.body as FormData;
-        expect(body.get('source_paths')).toBe(JSON.stringify(['D:\\native\\native.pdf', null]));
-        expect(body.get('return_path')).toBe('true');
-        const uploads = body.getAll('files') as File[];
-        expect(uploads).toHaveLength(1);
-        expect(uploads[0].name).toBe('memory.pdf');
-        expect(uploads[0].size).toBe(memoryFile.size);
+    const appendSpy = vi.spyOn(FormData.prototype, 'append');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      const url = request.url;
+      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && request.method === 'POST') {
         return new Response(JSON.stringify({ job_id: 'combine-mixed' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -197,8 +254,19 @@ describe('backend merge native transport', () => {
       { pollIntervalMs: 0 },
     )).resolves.toEqual({ path: 'D:\\results\\mixed.pdf', filename: 'Combined.pdf' });
 
-    expect(fetchMock.mock.calls.every(([url]) => (
-      !String(url).startsWith('http://localfile.localhost/')
+    expect(appendSpy).toHaveBeenCalledWith(
+      'source_paths',
+      JSON.stringify(['D:\\native\\native.pdf', null]),
+    );
+    expect(appendSpy).toHaveBeenCalledWith('return_path', 'true');
+    const uploads = appendSpy.mock.calls
+      .filter(([name]) => name === 'files')
+      .map(([, value]) => value as File);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].name).toBe('memory.pdf');
+    expect(uploads[0].size).toBe(memoryFile.size);
+    expect(fetchMock.mock.calls.every(([input]) => (
+      !requestUrl(input).startsWith('http://localfile.localhost/')
     ))).toBe(true);
   });
 
@@ -209,8 +277,10 @@ describe('backend merge native transport', () => {
     const statusResponse = new Promise<Response>((resolve) => { releaseStatus = resolve; });
     let markStatusRequested!: () => void;
     const statusRequested = new Promise<void>((resolve) => { markStatusRequested = resolve; });
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && init?.method === 'POST') {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      const url = request.url;
+      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && request.method === 'POST') {
         return new Response(JSON.stringify({ job_id: 'combine-cancel' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -252,17 +322,19 @@ describe('backend merge native transport', () => {
 
     await expect(operation).rejects.toMatchObject({ name: 'AbortError' });
     await vi.waitFor(() => {
-      expect(fetchMock.mock.calls.filter(([url]) => (
-        String(url).endsWith('/api/pdf-tools/merge-manifest/jobs/combine-cancel/cancel')
+      expect(fetchMock.mock.calls.filter(([input]) => (
+        requestUrl(input).endsWith('/api/pdf-tools/merge-manifest/jobs/combine-cancel/cancel')
       ))).toHaveLength(1);
     });
   });
 
   it('starts legacy Interleave through the same zero-copy job lifecycle', async () => {
     enableTauriRuntime();
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && init?.method === 'POST') {
-        const body = init.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      const url = request.url;
+      if (url.endsWith('/api/pdf-tools/merge-manifest/jobs') && request.method === 'POST') {
+        const body = await request.clone().formData();
         expect(body.get('mode')).toBe('interleave');
         expect(body.get('manifest')).toBeNull();
         expect(body.get('source_paths')).toBe(JSON.stringify([
@@ -310,9 +382,10 @@ describe('backend merge native transport', () => {
   it('materializes a spoofed-size path-stub before legacy Merge/Interleave upload', async () => {
     enableTauriRuntime();
     const diskBytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]);
-    const uploads: File[] = [];
+    const appendSpy = vi.spyOn(FormData.prototype, 'append');
 
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
       if (url.startsWith('http://localfile.localhost/')) {
         return new Response(diskBytes, {
           status: 200,
@@ -320,10 +393,6 @@ describe('backend merge native transport', () => {
         });
       }
 
-      const body = init?.body as FormData;
-      uploads.push(body.get('files') as File);
-      expect(body.getAll('files')).toHaveLength(1);
-      expect(body.get('mode')).toBe('interleave');
       return new Response(new Blob(['merged'], { type: 'application/pdf' }), {
         status: 200,
         headers: { 'content-type': 'application/pdf' },
@@ -334,18 +403,23 @@ describe('backend merge native transport', () => {
     const file = pathStub('nguon.pdf', 'D:\\viec\\nguon.pdf', 500_000_000);
     await backendMergePdfs([file], 'interleave');
 
+    expect(appendSpy).toHaveBeenCalledWith('mode', 'interleave');
+    const uploads = appendSpy.mock.calls
+      .filter(([name]) => name === 'files')
+      .map(([, value]) => value as File);
     expect(uploads).toHaveLength(1);
     const [uploaded] = uploads;
     expect(uploaded.name).toBe('nguon.pdf');
     expect(uploaded.size).toBe(diskBytes.byteLength);
     await expect(readBlobBytes(uploaded)).resolves.toEqual(diskBytes.buffer);
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/pdf-tools/merge'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/api/pdf-tools/merge'))).toBe(true);
   });
 
   it('does not call merge backend when the native path cannot be materialized', async () => {
     enableTauriRuntime();
     let backendCalls = 0;
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
       if (url.startsWith('http://localfile.localhost/')) {
         return new Response('offline', { status: 403 });
       }

@@ -151,7 +151,7 @@ def compute_report_data(
         dims = f"{_format_report_mm(width_mm)} x {_format_report_mm(height_mm)} mm"
         # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): lane lưới cũ không đi qua
         # RenderBundle, nên phải ghi raw dimensions ngay tại builder dùng chung này.
-        _logger.warning(
+        _logger.debug(
             "[DIM-DIE-TRACE] stage=legacy_report_dimensions mode=%r "
             "raw_width_mm=%r raw_height_mm=%r formatted=%r",
             mode_label,
@@ -265,8 +265,10 @@ def _ensure_font() -> str:
             pdfmetrics.registerFont(TTFont(_FONT_NAME, _FONT_PATH))
             _font_registered = True
             return _FONT_NAME
-    except Exception as e:
-        _logger.warning("[REPORT] Không đăng ký được font DejaVu: %s — dùng Helvetica.", e)
+    except Exception:
+        # SEC (audit 2026-09-05 §LOG.06): exception font có thể chứa
+        # đường dẫn runtime; warning vận hành chỉ giữ hành động fallback.
+        _logger.warning("[REPORT] Không đăng ký được font; dùng font dự phòng.")
     return "Helvetica"
 
 
@@ -370,7 +372,7 @@ def stamp_reports_on_pdf(input_pdf: str, output_pdf: str, reports_by_page: Dict[
         int(page_index): dimension_pattern.findall(str(report_text))
         for page_index, report_text in sorted(reports_by_page.items())
     }
-    _logger.warning(
+    _logger.debug(
         "[DIM-DIE-TRACE] stage=stamp input=%s output=%s pages=%s "
         "dimension_tokens=%s",
         os.path.basename(input_pdf),
@@ -381,8 +383,8 @@ def stamp_reports_on_pdf(input_pdf: str, output_pdf: str, reports_by_page: Dict[
 
     try:
         import pikepdf
-    except Exception as e:
-        _logger.warning("[REPORT] pikepdf không khả dụng: %s", e)
+    except Exception:
+        _logger.warning("[REPORT] Không thể nạp thư viện xử lý PDF.")
         return False
 
     try:
@@ -404,13 +406,13 @@ def stamp_reports_on_pdf(input_pdf: str, output_pdf: str, reports_by_page: Dict[
                 # lệch vị trí. Overlay được dựng theo MediaBox (pw×ph ở trên) nên PHẢI
                 # truyền rect=MediaBox để đặt đúng khung. TrimBox=MediaBox → scale=1 (vô hại).
                 page.add_overlay(overlay.pages[0], rect=pikepdf.Rectangle(float(mb[0]), float(mb[1]), float(mb[2]), float(mb[3])))
-            except Exception as e:
-                _logger.warning("[REPORT] Vẽ report trang %d lỗi: %s", idx, e)
+            except Exception:
+                _logger.warning("[REPORT] Không thể vẽ thông tin trên trang %d.", idx)
         pdf.save(output_pdf)
         pdf.close()
         return True
-    except Exception as e:
-        _logger.warning("[REPORT] stamp_reports_on_pdf lỗi: %s", e)
+    except Exception:
+        _logger.warning("[REPORT] Không thể ghi thông tin lên file PDF.")
         return False
 
 

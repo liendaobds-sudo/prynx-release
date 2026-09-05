@@ -25,6 +25,7 @@ from app.core.detect_shape_service import (
     raster_fallback_budget as _raster_fallback_budget,
     run_vector_detection,
 )
+from app.core.development_diagnostics import development_diagnostic_enabled
 from app.core.imposition_file_access import validate_imposition_pdf_path as _validate_file_path
 from app.core import nup_job_state
 from app.api.routes.document_tools import get_pdf_meta  # compatibility re-export
@@ -110,8 +111,8 @@ async def execute_plan_imposition(
     
     try:
         plan = json.loads(plan_json)
-    except json.JSONDecodeError as e:
-        logger.warning(f"Invalid JSON plan: {e}")
+    except json.JSONDecodeError:
+        logger.warning("Kế hoạch bình bản không phải JSON hợp lệ.")
         raise HTTPException(status_code=400, detail="Invalid JSON plan")
     
     # Save uploaded file
@@ -270,7 +271,9 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
         )
     except Exception as exc:
         _logger.warning(
-            "Spot extraction on page %s failed: %s", page_idx + 1, exc
+            "Không thể trích separation trên trang %s (loại=%s).",
+            page_idx + 1,
+            type(exc).__name__,
         )
         _perf(
             "DETECT",
@@ -399,17 +402,15 @@ async def _detect_on_canonical(
 
 @router.post("/perf-beacon")
 async def preview_perf_beacon(body: dict, license_info: dict = Depends(require_license)):
-    """FE gửi mốc timeline (detect/preview/batch) → ghi logs/preview_perf.log."""
+    """Nhận timeline chỉ trong runtime dev đã opt-in; release luôn no-op."""
+    if not development_diagnostic_enabled("PRYNX_PERF"):
+        return {"ok": True}
     from app.utils.preview_perf_log import log as _perf
     msg = str((body or {}).get("msg") or "beacon")[:200]
     fields = {
         k: v for k, v in (body or {}).items()
         if k != "msg" and isinstance(v, (str, int, float, bool))
     }
-    # DIAG (feedback 2026-09-01 §DIM-DIE): trace kích thước DEV phải đọc được
-    # trong app.log kể cả khi PRYNX_PERF tắt; payload chỉ chứa số đo/mode, không có path.
-    if msg.startswith("[DIM-DIE-TRACE]"):
-        logger.warning("%s fields=%s", msg, fields)
     _perf("FE", msg, **fields)
     return {"ok": True}
 
@@ -434,16 +435,14 @@ async def api_detect_shape(body: dict):
         path_in = body.get("path")
         if path_in:
             file_path = await asyncio.to_thread(_validate_file_path, path_in)
-            _detect_logger.info(f"[DETECT_SHAPE] Direct path → {file_path}")
+            _detect_logger.debug("[DETECT_SHAPE] nguồn trực tiếp đã được xác thực")
         else:
             file_id = body.get("fileId")
             if not file_id:
                 raise ValueError("Missing 'path' or 'fileId'")
 
             file_path = await asyncio.to_thread(_resolve_detect_file_id, file_id)
-            _detect_logger.info(
-                f"[DETECT_SHAPE] Resolved fileId={file_id} → file_path={file_path}"
-            )
+            _detect_logger.debug("[DETECT_SHAPE] fileId đã được resolve")
 
         import os
         if not await asyncio.to_thread(os.path.exists, file_path):
@@ -467,8 +466,11 @@ async def api_detect_shape(body: dict):
                 )
             if _kw:
                 config = DetectionConfig(**_kw)
-        except Exception as _e:
-            _detect_logger.warning(f"[DETECT_SHAPE] override config bỏ qua: {_e}")
+        except Exception as error:
+            _detect_logger.warning(
+                "[DETECT_SHAPE] Bỏ qua cấu hình tuỳ chỉnh không hợp lệ (loại=%s).",
+                type(error).__name__,
+            )
 
         from app.utils.preview_perf_log import log as _perf, reset_session, Span
 
@@ -504,8 +506,12 @@ async def api_detect_shape(body: dict):
         return response
 
     except Exception as e:
-        import traceback
-        _detect_logger.error(f"Failed to detect shape: {e}\n{traceback.format_exc()}")
+        # SEC (audit 2026-09-05 §LOG.02): không ghi raw exception/traceback
+        # của parser PDF vào logger production.
+        _detect_logger.error(
+            "Nhận diện hình bế thất bại (loại=%s).",
+            type(e).__name__,
+        )
         try:
             from app.utils.preview_perf_log import log as _perf
             _perf("DETECT", "api_FAIL", err=str(e)[:120])
@@ -632,8 +638,8 @@ def _delete_nup_output_if_unleased(output_path: str) -> None:
         with artifact_delete_guard(output_path) as may_delete:
             if may_delete and os.path.exists(output_path):
                 os.remove(output_path)
-    except OSError as error:
-        logger.warning("Không dọn được output bình bản chưa công bố %s: %s", output_path, error)
+    except OSError:
+        logger.warning("Không dọn được output bình bản chưa công bố.")
 
 
 def _publish_nup_terminal_state(
@@ -718,10 +724,9 @@ def _publish_nup_terminal_state_impl(
                 # đóng output. create_* tự xác minh file + allowlist trước marker.
                 lease_token = create_artifact_lease("imposition", output_path)
             except Exception as error:
-                logger.exception(
-                    "Không tạo được artifact lease cho job bình bản %s: %s",
-                    job_id,
-                    error,
+                logger.error(
+                    "Không tạo được artifact lease cho job bình bản (loại=%s).",
+                    type(error).__name__,
                 )
                 job["status"] = "failed"
                 job["report"] = ""
@@ -844,11 +849,7 @@ def _spawn_nup_process(
             proc.start()
             job["process"] = proc
             job["pid"] = proc.pid
-            logger.warning(
-                "[IMPOSITION-DIAG] event=job.child.started job=%s pid=%s",
-                job_id,
-                proc.pid,
-            )
+            logger.debug("N-Up child đã khởi động")
         if perf_on:
             try:
                 from app.core.perf_sampler import ProcessRssSampler
@@ -867,12 +868,7 @@ def _spawn_nup_process(
             except Exception:
                 sampler = None
         proc.join()
-        logger.warning(
-            "[IMPOSITION-DIAG] event=job.child.exited job=%s pid=%s exitcode=%s",
-            job_id,
-            proc.pid,
-            proc.exitcode,
-        )
+        logger.debug("N-Up child đã kết thúc với mã %s", proc.exitcode)
         with _NUP_JOBS_LOCK:
             current_job = nup_jobs.get(job_id)
             cancelled = bool(
@@ -952,7 +948,10 @@ def _terminate_nup_process(proc, timeout: float = 1.0) -> bool:
             proc.join(timeout=timeout)
         return not proc.is_alive()
     except Exception as exc:
-        logger.warning("Unable to stop N-Up process cleanly: %s", exc)
+        logger.warning(
+            "Không thể dừng tiến trình N-Up sạch sẽ (loại=%s).",
+            type(exc).__name__,
+        )
         return False
 
 
@@ -969,23 +968,13 @@ def _nup_process_worker(
     from app.utils.preview_perf_log import log as _perf, sanitize_diagnostic_id
     _trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
     _safe_job_id = sanitize_diagnostic_id(job_id)
-    logger.warning(
-        "[IMPOSITION-DIAG] event=job.child.enter trace=%s job=%s pid=%s",
-        _trace_id,
-        _safe_job_id,
-        os.getpid(),
-    )
+    logger.debug("N-Up child bắt đầu xử lý")
     try:
         # Child là nơi first-open thật xảy ra; kiểm lại sát lời gọi engine để
         # thu hẹp cửa sổ giữa admission và lúc PDF được mở.
         if source_fingerprint is not None:
             assert_source_fingerprint(source_fingerprint)
         report_msg = run_nup_engine(source_path, output_path, settings, job_id=job_id, progress_callback=None)
-        if _trace_id:
-            logger.warning(
-                "[IMPOSITION-DIAG] event=job.completed trace=%s job=%s",
-                _trace_id, _safe_job_id,
-            )
         _perf("EXPORT", "job.completed", trace_id=_trace_id, job_id=_safe_job_id)
         
         # Write success state
@@ -995,17 +984,9 @@ def _nup_process_worker(
             
     except BaseException as e:  # Process boundary: SystemExit cũng phải để lại state chẩn đoán.
         error_message = str(e).strip() or type(e).__name__
-        logger.exception(
-            "[IMPOSITION-DIAG] event=job.child.failed trace=%s job=%s error_type=%s",
-            _trace_id,
-            _safe_job_id,
-            type(e).__name__,
-        )
-        if _trace_id:
-            logger.warning(
-                "[IMPOSITION-DIAG] event=job.failed trace=%s job=%s error_type=%s",
-                _trace_id, _safe_job_id, type(e).__name__,
-            )
+        # SEC (audit 2026-09-05 §LOG.02): không ghi traceback/path/payload của
+        # tài liệu vào app.log production; UI vẫn nhận lỗi nghiệp vụ qua state file.
+        logger.error("N-Up child thất bại (loại=%s)", type(e).__name__)
         _perf(
             "EXPORT", "job.failed",
             trace_id=_trace_id,
@@ -1068,10 +1049,7 @@ def _prepare_and_queue_nup_process(
         )
     except Exception:
         # Giữ fail-soft của route cũ: grid và job không có preview vẫn được render.
-        logger.info(
-            "Bỏ qua tham chiếu phiên nesting; job vẫn chạy bình thường.",
-            exc_info=True,
-        )
+        logger.debug("Bỏ qua tham chiếu phiên nesting; job tiếp tục bình thường.")
 
     if _nup_job_cancelled(job_id):
         _NUP_SUBMISSION_SLOTS.release()
@@ -1246,18 +1224,6 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "diagnostic_trace_id": _diagnostic_trace_id,
         "source_fingerprint": source_fingerprint,
     }
-    if _diagnostic_trace_id:
-        logger.warning(
-            "[IMPOSITION-DIAG] event=job.accepted trace=%s job=%s "
-            "preview_request=%s pending_request=%s preview_capacity=%s preview_state=%s "
-            "layout=%s strategy=%s sheet_mm=%sx%s gap_mm=%sx%s bleed_mm=%s split_gap_mm=%s",
-            _diagnostic_trace_id, job_id, _diagnostic_preview_request_id,
-            _diagnostic_pending_request_id, settings.get("diagnosticPreviewCapacity"),
-            _diagnostic_preview_state, _diagnostic_layout_type, _diagnostic_strategy,
-            settings.get("sheetWidth"), settings.get("sheetHeight"),
-            settings.get("gapX"), settings.get("gapY"), settings.get("bleed"),
-            settings.get("splitGap"),
-        )
     _perf(
         "EXPORT", "job.accepted",
         trace_id=_diagnostic_trace_id,
@@ -3821,7 +3787,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         secondary_gap=_split_gap_val,
                         alternate_rotation=_preview_alternate_rotation,
                     )
-                logger.info(f"[PREVIEW SOLVER RESULT] totalItems={result.get('totalItems')} strategy={result.get('strategyUsed')}")
                 _diag_log(
                     "PREVIEW", "solver.result",
                     trace_id=_diagnostic_trace_id,
@@ -3841,20 +3806,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     capacity=result.get("totalItems"),
                     strategy_used=result.get("strategyUsed"),
                 )
-                if _diagnostic_trace_id:
-                    logger.warning(
-                        "[IMPOSITION-DIAG] event=preview.solver.result trace=%s request=%s "
-                        "capacity=%s layout=%s strategy=%s sheet_mm=%.3fx%.3f "
-                        "usable_mm=%.3fx%.3f item_pt=%.3fx%.3f gap_mm=%.3fx%.3f "
-                        "bleed_mm=%.3f split_gap_mm=%.3f",
-                        _diagnostic_trace_id, _diagnostic_request_id,
-                        result.get("totalItems"), _diagnostic_layout_type, _diagnostic_strategy,
-                        req.sheet_w / 2.83465, req.sheet_h / 2.83465,
-                        req.usable_w / 2.83465, req.usable_h / 2.83465,
-                        req.item_w, req.item_h,
-                        req.gap_x / 2.83465, req.gap_y / 2.83465,
-                        req.bleed / 2.83465, (req.split_gap or 0) / 2.83465,
-                    )
                 result['shapeType'] = 'CUSTOM'
                 result['strategyUsed'] = req.strategy
                 result['widthUsed'] = result.get('overallWidth', 0)
@@ -4025,19 +3976,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _mb = getattr(req, 'margin_bottom', 0) or 0
             _mt = getattr(req, 'margin_top', 0) or 0
             placements = finalize_placements(items, req.usable_w, req.usable_h, _ml, _mb, _mt, page_idx)
-            _n_before = len(placements)
-            _ays_before = sorted(round(p['abs_y'], 1) for p in placements)
             placements = resolve_pont_collisions_on_placements(placements, req, base_poly)
-            logger.warning(
-                "[PARITY-DBG PREVIEW] file=%s shape=%s strategy=%s base_poly=%s "
-                "items_in=%d items_out=%d usable=%.1fx%.1f sheet=%.1fx%.1f "
-                "margins(l/b/t)=%.1f/%.1f/%.1f abs_y_before=%s",
-                (req.path or req.file_id), result.get('shapeType'), result.get('strategyUsed'),
-                'YES' if base_poly is not None else 'NONE',
-                _n_before, len(placements), req.usable_w, req.usable_h,
-                getattr(req, 'sheet_w', 0), getattr(req, 'sheet_h', 0),
-                _ml, _mb, _mt, _ays_before,
-            )
 
             abs_cells = []
             max_w = 0.0
@@ -4678,8 +4617,8 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         )
                     except Exception as exc:
                         logger.warning(
-                            "[BATCH CAPACITY] page-sheet pont collision failed: %s",
-                            exc,
+                            "[BATCH CAPACITY] Tính va chạm ốc bế thất bại (loại=%s).",
+                            type(exc).__name__,
                         )
                 _cap = len(_cells)
             if not _use_sticker and _batch_ck is not None:
@@ -4689,8 +4628,12 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                     if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
                         _BATCH_CAP_CACHE.popitem(last=False)
             return int(_cap)
-        except Exception as e:
-            logger.warning("[BATCH CAPACITY] page %s failed: %s", page_idx, e)
+        except Exception as error:
+            logger.warning(
+                "[BATCH CAPACITY] Tính trang %s thất bại (loại=%s).",
+                page_idx,
+                type(error).__name__,
+            )
             return 0
 
     doc = pdf_lib.open(file_path)
@@ -4763,7 +4706,10 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         try:
                             cap = future.result()
                         except Exception as exc:
-                            logger.warning("[BATCH CAPACITY] geometry group failed: %s", exc)
+                            logger.warning(
+                                "[BATCH CAPACITY] Tính nhóm hình học thất bại (loại=%s).",
+                                type(exc).__name__,
+                            )
                             cap = 0
                         for _, page_idx in valid_group:
                             results[page_idx] = cap

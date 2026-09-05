@@ -338,8 +338,17 @@ fn parse_shadow_render_enabled(raw: Option<&str>) -> bool {
     })
 }
 
+fn shadow_render_enabled_for_build(debug_build: bool, raw: Option<&str>) -> bool {
+    // SEC (audit 2026-09-05 §LOG.01): shadow render là harness chẩn đoán,
+    // không phải tính năng production. Env trên máy khách không được mở lại.
+    debug_build && parse_shadow_render_enabled(raw)
+}
+
 pub fn viewer_shadow_render_enabled() -> bool {
-    parse_shadow_render_enabled(std::env::var("PRYNX_VIEWER_SHADOW_RENDER").ok().as_deref())
+    shadow_render_enabled_for_build(
+        cfg!(debug_assertions),
+        std::env::var("PRYNX_VIEWER_SHADOW_RENDER").ok().as_deref(),
+    )
 }
 
 const DEFAULT_RENDER_WORKER_MODE: RenderWorkerMode = RenderWorkerMode::Auto;
@@ -2630,6 +2639,17 @@ fn spawn_render_worker_client(lane: WorkerLane) -> Result<RenderWorkerClient, St
     let mut child = command
         .spawn()
         .map_err(|error| format!("Không spawn được display worker: {error}"))?;
+    let child_pid = child.id();
+    // SEC (audit 2026-09-04 §SEC.22): gán Job ngay sau spawn, trước khi đọc
+    // pipe hoặc khởi tạo thread. Chạy worker ngoài Job sẽ giữ file cài đặt sau
+    // crash, nên phải hủy tiến trình và fail-closed khi kernel từ chối gán.
+    if let Err(error) = crate::process_guard::adopt_child_process(child_pid) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "Không bảo vệ được display worker bằng Job Object: {error}"
+        ));
+    }
     let stdin = child
         .stdin
         .take()
@@ -2650,11 +2670,6 @@ fn spawn_render_worker_client(lane: WorkerLane) -> Result<RenderWorkerClient, St
                 }
             });
     }
-    let child_pid = child.id();
-    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Display worker giữ $INSTDIR\pdf-inspector.exe và
-    // bin\pdfium.dll. Nếu app chết bẩn mà worker còn sống, NSIS không ghi đè được hai file
-    // này khi cập nhật. Job Object bảo đảm OS dọn hộ, không phụ thuộc EOF stdin.
-    crate::process_guard::adopt_child_process(child_pid);
     let nonce = format!(
         "{}-{}-{:016x}",
         std::process::id(),
@@ -3576,7 +3591,16 @@ fn kill_render_worker_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
+        let taskkill = match crate::process_guard::system_taskkill_path() {
+            Ok(path) => path,
+            Err(error) => {
+                log::error!(
+                    "[RENDER_WORKER] Không tìm được taskkill.exe hệ thống cho PID={pid}: {error}"
+                );
+                return;
+            }
+        };
+        let _ = std::process::Command::new(taskkill)
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .output();
@@ -3758,9 +3782,12 @@ mod tests {
         assert!(!parse_shadow_render_enabled(None));
         for raw in ["", "0", "false", "off", "sai"] {
             assert!(!parse_shadow_render_enabled(Some(raw)), "{raw}");
+            assert!(!shadow_render_enabled_for_build(true, Some(raw)), "{raw}");
         }
         for raw in ["1", "true", " YES ", "on"] {
             assert!(parse_shadow_render_enabled(Some(raw)), "{raw}");
+            assert!(shadow_render_enabled_for_build(true, Some(raw)), "{raw}");
+            assert!(!shadow_render_enabled_for_build(false, Some(raw)), "{raw}");
         }
     }
 

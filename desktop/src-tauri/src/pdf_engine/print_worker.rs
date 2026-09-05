@@ -119,8 +119,7 @@ impl OleGuard {
         {
             // S_OK/S_FALSE đều thành công; lỗi (vd thread đã MTA) thì vẫn chạy tiếp —
             // không chặn job in chỉ vì thiếu OLE, driver cơ bản vẫn hoạt động.
-            let initialized =
-                unsafe { windows::Win32::System::Ole::OleInitialize(None).is_ok() };
+            let initialized = unsafe { windows::Win32::System::Ole::OleInitialize(None).is_ok() };
             if !initialized {
                 print_breadcrumb("worker: OleInitialize failed (tiếp tục không OLE)");
             }
@@ -485,9 +484,18 @@ fn run_isolated_inner(
         }
     };
     let child_pid = child.id();
-    // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Print worker cũng là pdf-inspector.exe nên nó
-    // khóa đúng file mà trình cài cần ghi đè; và hộp thoại driver có thể giữ nó rất lâu.
-    crate::process_guard::adopt_child_process(child_pid);
+    // SEC (audit 2026-09-04 §SEC.22): print worker khóa chính executable và có
+    // thể sống lâu trong dialog driver. Không cho nó chạy ngoài Job nếu host crash.
+    if let Err(error) = crate::process_guard::adopt_child_process(child_pid) {
+        let _ = child.kill();
+        let _ = child.wait();
+        unregister_print_context(print_context.as_ref(), 0);
+        let _ = std::fs::remove_file(&job_path);
+        let _ = std::fs::remove_file(&out_path);
+        return Err(format!(
+            "Không bảo vệ được print worker bằng Job Object: {error}"
+        ));
+    }
     #[cfg(windows)]
     {
         // PRINTWIN (audit 2026-08-13 §PRINTWIN.03): cấp quyền foreground cho worker —
@@ -684,7 +692,16 @@ fn kill_worker_pid(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
+        let taskkill = match crate::process_guard::system_taskkill_path() {
+            Ok(path) => path,
+            Err(error) => {
+                print_breadcrumb(&format!(
+                    "cancel: trusted taskkill unavailable pid={pid} error={error}"
+                ));
+                return;
+            }
+        };
+        let _ = std::process::Command::new(taskkill)
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x08000000)
             .output();

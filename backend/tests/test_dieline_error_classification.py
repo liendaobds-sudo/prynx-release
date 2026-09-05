@@ -137,8 +137,17 @@ def _rust_error_literals(path: Path, func_names: tuple[str, ...]) -> set[str]:
 
 def test_moi_loi_ban_quyen_ben_rust_deu_duoc_phan_loai_khong_phai_422() -> None:
     assert LICENSE_RS.is_file(), f"Không tìm thấy {LICENSE_RS}"
-    literals = _rust_error_literals(LICENSE_RS, ("authorize_dieline", "decode_url", "now_seconds"))
-    assert len(literals) >= 10, f"Trích được quá ít thông điệp ({len(literals)}) — regex sai?"
+    literals = _rust_error_literals(
+        LICENSE_RS,
+        (
+            "authorize_dieline",
+            "validate_dieline_claims",
+            "validate_v3_device_binding",
+            "decode_url",
+            "now_seconds",
+        ),
+    )
+    assert len(literals) >= 25, f"Trích được quá ít thông điệp ({len(literals)}) — regex sai?"
 
     chua_phan_loai = sorted(
         message for message in literals

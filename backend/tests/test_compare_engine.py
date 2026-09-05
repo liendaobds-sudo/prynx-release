@@ -392,6 +392,7 @@ def test_imposition_tiled_artifact_keeps_tracking_boxes(tmp_path, monkeypatch):
         "imposition-artifact",
         1,
         stripe_height=31,
+        sign_url=False,
         tracking_boxes=tiled._imposition_tracking_boxes,
         imposition_mode=True,
     )

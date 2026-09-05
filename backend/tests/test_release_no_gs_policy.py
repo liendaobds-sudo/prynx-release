@@ -235,18 +235,19 @@ def test_release_auto_uses_clean_user_when_prynx_is_already_installed():
     release = _read(RELEASE_UPDATE)
     assert '"$ROOT\\scripts\\verify_artifact_clean_user.ps1"' in release
     assert "$needsCleanUserSmoke" in release
-    assert 'Start-Process -FilePath "powershell.exe"' in release
+    assert "Open-PrynXTrustedReleaseExecutableLease -Kind \"WindowsPowerShell\"" in release
+    assert "Start-Process -FilePath $verifierPowerShellPath" in release
     assert "-Verb RunAs -Wait -PassThru" in release
 
 
 def test_release_qa_covers_typecheck_and_print_engine():
     text = _read(RELEASE_QA)
-    assert "npm.cmd run typecheck" in text
+    assert "$script:PrynXQaNpmCliPath run typecheck" in text
     assert r'Push-Location "$ROOT\print_engine"' in text
-    assert 'Invoke-Checked "Print engine tests" { cargo test --locked }' in text
+    assert 'Invoke-CheckedCargo "Print engine tests" @(\'test\', \'--locked\')' in text
     assert (
-        'Invoke-Checked "Print engine release compile" '
-        '{ cargo check --release --locked }'
+        'Invoke-CheckedCargo "Print engine release compile" '
+        "@('check', '--release', '--locked')"
     ) in text
 
 
@@ -278,9 +279,46 @@ def test_release_uses_updater_signature_generated_for_each_version():
     assert "TAURI_SIGNING_PRIVATE_KEY" in release
     assert ".sig" in release
     assert '"createUpdaterArtifacts": false' in config
-    assert '$tauriSignerArgs = @("@tauri-apps/cli", "signer", "sign")' in build
-    assert '$tauriSignerArgs += "--password="' in build
-    assert "npx @tauriSignerArgs" in build
+    signer_args_at = build.index('$tauriSignerArgs = @("signer", "sign")')
+    key_file_at = build.index(
+        '$tauriSignerArgs += @("-f", [string]$script:TauriSigningKeyLease.Path)',
+        signer_args_at,
+    )
+    password_required_at = build.index(
+        "if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword))",
+        key_file_at,
+    )
+    password_env_at = build.index(
+        "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "
+        "$script:CapturedTauriSigningPrivateKeyPassword",
+        password_required_at,
+    )
+    signer_call_at = build.index(
+        "& $script:PrynXNodePath $tauriCliPath @tauriSignerArgs",
+        password_env_at,
+    )
+    signer_finally_at = build.index("} finally {", signer_call_at)
+    key_lease_close_at = build.index(
+        "Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease",
+        signer_finally_at,
+    )
+    password_clear_at = build.index(
+        "Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+        signer_finally_at,
+    )
+    signer_result_check_at = build.index("if ($signerExit -ne 0)", signer_finally_at)
+    assert signer_args_at < key_file_at < password_required_at < password_env_at
+    assert password_env_at < signer_call_at < signer_finally_at < key_lease_close_at
+    assert key_lease_close_at < password_clear_at < signer_result_check_at
+
+    signer_block = build[signer_args_at:signer_result_check_at]
+    signer_argument_lines = [
+        line for line in signer_block.splitlines() if "$tauriSignerArgs" in line
+    ]
+    assert signer_argument_lines
+    assert all("password" not in line.lower() for line in signer_argument_lines)
+    assert '$tauriSignerArgs += "--password="' not in build
+    assert "--password" not in signer_block
     assert "LastWriteTimeUtc -lt $installer.LastWriteTimeUtc" in build
 
 
@@ -295,7 +333,9 @@ def test_public_release_requires_committed_version_and_clean_source():
     release = _read(RELEASE_UPDATE)
     build = _read(BUILD)
     assert "Assert-CommittedReleaseVersion -ExpectedVersion $Version" in release
-    assert "status --porcelain=v1 --untracked-files=all" in release
+    assert "Invoke-PrynXGitReadOnlyCommand" in release
+    assert "-Command 'status'" in release
+    assert "-Arguments @('--porcelain=v1', '--untracked-files=all')" in release
     assert "[System.IO.File]::WriteAllText($confPath" not in release
     assert "[System.IO.File]::WriteAllText($pkgPath" not in release
     assert "[System.IO.File]::WriteAllText($cargoPath" not in release
@@ -473,7 +513,8 @@ def test_release_controller_owns_mutex_status_log_and_child_exit_code():
     assert "-EncodedCommand" in controller
     assert "commandPathBase64" in controller
     assert "Start-Process -FilePath \"powershell.exe\"" not in controller
-    assert "TAURI_SIGNING_PRIVATE_KEY_PASSWORD" not in gui
+    assert "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" not in gui
+    assert '"TAURI_SIGNING_PRIVATE_KEY_PASSWORD"' in gui
     assert "New-SigningPasswordPackage" in gui
     assert "ProtectedData]::Protect" in gui
     assert "ProtectedData]::Unprotect" in controller
@@ -486,7 +527,9 @@ def test_release_controller_owns_mutex_status_log_and_child_exit_code():
     assert "$btnLocal.Enabled = $enabled" in gui
     assert "$btnPublish.Enabled = $enabled" in gui
     assert "$statusTimer.Interval = 2000" in gui
-    assert 'Start-Process notepad.exe' in gui
+    assert 'Get-PrynXGuiExecutablePath -Kind "Notepad"' in gui
+    assert "Start-Process notepad.exe" not in gui
+    assert "-FilePath $notepadPath" in gui
     assert "Get-StageFromLog" in controller
     assert "ReadLineAsync" in controller
     assert "$logWriter.AutoFlush = $true" in controller

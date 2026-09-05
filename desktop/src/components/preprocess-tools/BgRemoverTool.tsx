@@ -1,8 +1,8 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { getApiUrl, authenticatedFetch } from '../../lib/api';
 import BgRemoverOptions from './BgRemoverOptions';
 import { useBgRemoverStore, defaultTabState } from './useBgRemoverStore';
-import { invalidateBatchResults } from './imageBatch/store';
+import { invalidateBatchResults, type BatchItem } from './imageBatch/store';
 import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/helpers';
 import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
@@ -14,6 +14,24 @@ import { tv } from '../../i18n';
 interface Props {
     tabId: string;
     pdfFile: File | null;
+    sourceImageFile?: File | null;
+}
+
+function filePath(file: File): string {
+    return 'path' in file && typeof file.path === 'string' ? file.path : '';
+}
+
+function isSupportedImage(file: File | null | undefined): file is File {
+    return Boolean(
+        file
+        && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i.test(file.name)),
+    );
+}
+
+function isSameSource(item: BatchItem, file: File): boolean {
+    const path = filePath(file);
+    if (path) return item.path === path;
+    return item.fileObj === file;
 }
 
 
@@ -153,7 +171,7 @@ async function handleSave(tabId: string) {
 // SIDEBAR — Rendered in the right settings panel
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function BgRemoverTool({ tabId, pdfFile }: Props) {
+export default function BgRemoverTool({ tabId, pdfFile, sourceImageFile }: Props) {
   const { t } = useTranslation();
     const tabState = useBgRemoverStore(state => state.tabs[tabId] || defaultTabState);
     const storeActions = useBgRemoverStore.getState();
@@ -164,27 +182,35 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
     const hasPending = batchItems.some(i => i.status === 'pending' || i.status === 'error');
     const hasSuccess = batchItems.some(i => i.status === 'success');
 
-    // Auto-add pdfFile
-    const addedRef = useRef<Set<string>>(new Set());
+    // UIUX (feedback 2026-09-04 §BG.SOURCE): Viewer hiển thị bản PDF đã chuẩn hóa,
+    // nhưng Tách nền phải nhận ảnh gốc đang mở. Chỉ thay item do workspace tự thêm;
+    // ảnh người dùng chọn thủ công vẫn được giữ nguyên trong batch.
     React.useEffect(() => {
-        const currentStore = useBgRemoverStore.getState();
-        currentStore.initTab(tabId);
-        if (!pdfFile) {
-            // console.log('[BgRemover] Auto-add: pdfFile is null');
-            return;
+        const store = useBgRemoverStore.getState();
+        store.initTab(tabId);
+        if (isProcessing) return;
+
+        const workspaceSource = isSupportedImage(sourceImageFile)
+            ? sourceImageFile
+            : isSupportedImage(pdfFile)
+                ? pdfFile
+                : null;
+        const currentItems = store.getTab(tabId).batchItems;
+        for (const item of currentItems) {
+            if (
+                item.sourceOrigin === 'workspace'
+                && (!workspaceSource || !isSameSource(item, workspaceSource))
+            ) {
+                store.removeItem(tabId, item.id);
+            }
         }
-        const isImage = pdfFile.type.startsWith('image/') || pdfFile.name.match(/\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i);
-        // console.log('[BgRemover] Auto-add: checking pdfFile', pdfFile.name, 'isImage:', !!isImage);
-        if (!isImage) return;
-        const sourcePath = 'path' in pdfFile && typeof pdfFile.path === 'string' ? pdfFile.path : '';
-        const key = sourcePath + '|' + pdfFile.name + '|' + pdfFile.size;
-        if (addedRef.current.has(key)) {
-            // console.log('[BgRemover] Auto-add: already added', key);
-            return;
-        }
-        addedRef.current.add(key);
-        normalizeAndAddFiles([pdfFile], tabId, useBgRemoverStore);
-    }, [pdfFile, tabId]);
+        if (!workspaceSource) return;
+        const remainingItems = store.getTab(tabId).batchItems;
+        if (remainingItems.some(item => isSameSource(item, workspaceSource))) return;
+        void normalizeAndAddFiles([workspaceSource], tabId, useBgRemoverStore, {
+            sourceOrigin: 'workspace',
+        });
+    }, [isProcessing, pdfFile, sourceImageFile, tabId]);
 
     // BG (audit 2026-07-28 §BG.01/02/08): chuẩn bị ngầm bằng một promise theo
     // model. Warmup không được khóa nút chạy; request thật dùng chung session lock.
@@ -324,4 +350,3 @@ export function BgRemoverPreview({ tabId, isActive }: { tabId: string; isActive:
         />
     );
 }
-

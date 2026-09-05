@@ -1,5 +1,21 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const invokeMock = vi.hoisted(() => vi.fn());
+const authStateMock = vi.hoisted(() => ({
+  licenseKey: 'LICENSE-KEY',
+  licenseToken: 'license-token',
+  licenseSignOutPending: false,
+}));
+
+vi.mock('../stores/useAuthStore', () => ({
+  useAuthStore: {
+    getState: () => authStateMock,
+  },
+  getLicenseOperationEpoch: () => 0,
+  isLicenseOperationPending: () => false,
+  isNativeLicenseGateBlocked: () => false,
+}));
 
 import {
   backendResizePages,
@@ -9,18 +25,66 @@ import {
   inspectResizeTransparency,
 } from './api';
 
+const originalBlobArrayBuffer = Blob.prototype.arrayBuffer;
+
+function installBlobArrayBufferForJsdom(): void {
+  if (typeof Blob.prototype.arrayBuffer === 'function') return;
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    value(this: Blob): Promise<ArrayBuffer> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error);
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.readAsArrayBuffer(this);
+      });
+    },
+  });
+}
+
+function requestFrom(input: RequestInfo | URL, init?: RequestInit): Request {
+  return input instanceof Request ? input : new Request(input, init);
+}
+
 
 describe('resize transparency API contract', () => {
+  beforeEach(() => {
+    installBlobArrayBufferForJsdom();
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (command: string) => (
+      command === 'sign_api_request'
+        ? {
+          'X-PrynX-Signature': 'trusted-signature',
+          'X-PrynX-Timestamp': '123',
+          'X-PrynX-Nonce': 'test-nonce',
+          'X-PrynX-Signature-Version': '2',
+        }
+        : undefined
+    ));
+    window.__TAURI_INTERNALS__ = {};
+    window.__PRYNX_INVOKE__ = invokeMock as typeof window.__PRYNX_INVOKE__;
+  });
+
   afterEach(() => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete window.__PRYNX_INVOKE__;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    if (originalBlobArrayBuffer) {
+      Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+        configurable: true,
+        value: originalBlobArrayBuffer,
+      });
+    } else {
+      Reflect.deleteProperty(Blob.prototype, 'arrayBuffer');
+    }
   });
 
   it('inspects a native PDF by path and returns 1-based transparent pages', async () => {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toContain('/api/pdf-tools/resize/inspect-transparency');
-      const body = init?.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      expect(request.url).toContain('/api/pdf-tools/resize/inspect-transparency');
+      const body = await request.clone().formData();
       expect(body.get('file_path')).toBe('D:\\alpha.pdf');
       expect(body.getAll('file')).toHaveLength(0);
       return new Response(JSON.stringify({
@@ -43,8 +107,8 @@ describe('resize transparency API contract', () => {
   });
 
   it('forwards resize-by-content explicitly to the resize route', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = init?.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await requestFrom(input, init).clone().formData();
       expect(body.get('file_path')).toBe('D:\\alpha.pdf');
       expect(body.get('page_size_mode')).toBe('fixed_width');
       expect(body.get('resize_by_content')).toBe('true');
@@ -75,12 +139,8 @@ describe('resize transparency API contract', () => {
   });
 
   it('nhận native output path trên desktop mà không tải lại PDF', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      value: {},
-      configurable: true,
-    });
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = init?.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await requestFrom(input, init).clone().formData();
       expect(body.get('return_path')).toBe('true');
       return new Response(JSON.stringify({
         path: 'D:\\results\\resized.pdf',
@@ -112,8 +172,8 @@ describe('resize transparency API contract', () => {
   });
 
   it('gửi native path cho shuffle mà không đính kèm carrier file', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = init?.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await requestFrom(input, init).clone().formData();
       expect(body.get('file_path')).toBe('D:\\large.pdf');
       expect(body.getAll('file')).toHaveLength(0);
       return new Response(new Blob(['result'], { type: 'application/pdf' }), {
@@ -129,8 +189,8 @@ describe('resize transparency API contract', () => {
   });
 
   it('giữ loại và tên PDF đơn do backend Split trả về', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = init?.body as FormData;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await requestFrom(input, init).clone().formData();
       expect(body.get('file_path')).toBe('D:\\large.pdf');
       expect(body.getAll('file')).toHaveLength(0);
       return new Response(new Blob(['result'], { type: 'application/pdf' }), {
@@ -225,8 +285,9 @@ describe('resize transparency API contract', () => {
   });
 
   it('đọc page-count nhẹ từ native path qua endpoint metadata', async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      expect(JSON.parse(String(init?.body))).toEqual({
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestFrom(input, init);
+      expect(await request.clone().json()).toEqual({
         path: 'D:\\large.pdf',
         summary_only: true,
       });

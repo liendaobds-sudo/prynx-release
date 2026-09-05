@@ -36,24 +36,92 @@ param(
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-# SEC (audit 2026-08-03 §REL.SECRET): nếu CI/CLI cũ truyền key qua env, lấy ra
-# và xóa NGAY trước bất kỳ git/node/rust/python process con nào. Launcher chuẩn
-# không dùng env; nó để build đọc kho DPAPI đúng tại bước REST bên dưới.
+# SEC (audit 2026-09-04 §SEC.24-R6): bootstrap chi dung .NET thuần. Phai chup
+# va xoa secret/cac bien dinh tuyen Git-GitHub TRUOC moi dot-source co Add-Type;
+# tren Windows PowerShell 5.1, Add-Type co the sinh compiler process con.
 $script:CapturedReleaseSupabaseSecret = [string]$env:PRYNX_SUPABASE_SECRET_KEY
 $script:CapturedLegacySupabaseServiceKey = [string]$env:PRYNX_SUPABASE_SERVICE_KEY
 $script:CapturedTauriSigningPrivateKey = [string]$env:TAURI_SIGNING_PRIVATE_KEY
 $script:CapturedTauriSigningKeyFile = [string]$env:PRYNX_TAURI_SIGNING_KEY_FILE
 $script:CapturedTauriSigningPrivateKeyPassword = [string]$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-Remove-Item Env:PRYNX_SUPABASE_SECRET_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:PRYNX_SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+$script:AmbientTauriConfigWasPresent = $null -ne [Environment]::GetEnvironmentVariable(
+    'TAURI_CONFIG',
+    [EnvironmentVariableTarget]::Process
+)
+$bootstrapEnvironment = [Environment]::GetEnvironmentVariables(
+    [EnvironmentVariableTarget]::Process
+)
+$script:AmbientGitAuthorityOverrides = @(
+    foreach ($bootstrapKey in @($bootstrapEnvironment.Keys)) {
+        $bootstrapName = [string]$bootstrapKey
+        if ($bootstrapName -match '^(?i:GIT_|GH_)' -or $bootstrapName -iin @(
+                'GITHUB_TOKEN',
+                'GITHUB_ENTERPRISE_TOKEN',
+                'XDG_CONFIG_HOME'
+            )) {
+            $bootstrapName
+        }
+    }
+) | Sort-Object -Unique
+foreach ($bootstrapName in @(
+        'PRYNX_SUPABASE_SECRET_KEY',
+        'PRYNX_SUPABASE_SERVICE_KEY',
+        'TAURI_SIGNING_PRIVATE_KEY',
+        'PRYNX_TAURI_SIGNING_KEY_FILE',
+        'TAURI_SIGNING_PRIVATE_KEY_PASSWORD',
+        'TAURI_CONFIG'
+    ) + @($script:AmbientGitAuthorityOverrides)) {
+    [Environment]::SetEnvironmentVariable(
+        [string]$bootstrapName,
+        $null,
+        [EnvironmentVariableTarget]::Process
+    )
+}
+$bootstrapEnvironment = $null
+
+. "$ROOT\scripts\windows_payload_guard.ps1"
+. "$ROOT\scripts\release_signing_key_guard.ps1"
+. "$ROOT\scripts\release_executable_guard.ps1"
+$script:TesseractPayloadLock = $null
+$script:TauriTesseractLease = $null
+$script:TauriPayloadManifestLease = $null
+$script:TauriSidecarLease = $null
+$script:TauriConfigDirectoryLease = $null
+$script:TauriBaseConfigLease = $null
+$script:TauriOverlayConfigLease = $null
+$script:TauriSigningKeyLease = $null
+$script:TauriCliRuntimeLease = $null
+$script:RustToolchainLease = $null
+$script:ReleaseToolLeases = New-Object System.Collections.Generic.List[object]
+$script:PrynXNodePath = ""
+$script:PrynXNpmCliPath = ""
+$script:PrynXGitPath = ""
+$script:PrynXRobocopyPath = ""
+$script:PrynXPowerShellPath = ""
+$script:PrynXCmdPath = ""
+$script:PrynXCargoPath = ""
+$script:PrynXRustcPath = ""
+$script:PrynXRustdocPath = ""
+$script:PrynXCargoHome = ""
+$script:PayloadManifestSha256 = $null
+
+$script:AmbientNodeLoaderVariables = @(
+    'NODE_OPTIONS', 'NODE_PATH', 'NAPI_RS_NATIVE_LIBRARY_PATH'
+) | Where-Object {
+    $null -ne [Environment]::GetEnvironmentVariable(
+        $_,
+        [EnvironmentVariableTarget]::Process
+    )
+}
+foreach ($nodeLoaderVariable in $script:AmbientNodeLoaderVariables) {
+    Remove-Item -LiteralPath "Env:$nodeLoaderVariable" -ErrorAction SilentlyContinue
+}
+$script:AmbientRustToolOverrides = @(Get-PrynXRustToolOverrideVariableNames)
 
 # BUILD (audit 2026-08-04 BLD.05): build co the duoc goi trong mot PowerShell
 # -NoExit, nen moi bien process do pipeline so huu phai tro ve dung trang thai dau.
 $script:BuildOwnedEnvironmentSnapshot = @{}
-foreach ($environmentName in @(
+$buildOwnedEnvironmentNames = @(
     "VITE_FEATURE_GATING_ENABLED",
     "PRYNX_FEATURE_GATING_ENABLED",
     "VITE_LOGO_REBUILD_ENABLED",
@@ -77,8 +145,17 @@ foreach ($environmentName in @(
     "RUSTFLAGS",
     "CARGO_PROFILE_RELEASE_LTO",
     "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
-    "CARGO_PROFILE_RELEASE_STRIP"
-)) {
+    "CARGO_PROFILE_RELEASE_STRIP",
+    "CARGO",
+    "CARGO_HOME",
+    "RUSTC",
+    "RUSTDOC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "ComSpec",
+    "NAPI_RS_NATIVE_LIBRARY_PATH"
+) + @($script:AmbientRustToolOverrides)
+foreach ($environmentName in @($buildOwnedEnvironmentNames | Select-Object -Unique)) {
     $environmentValue = [Environment]::GetEnvironmentVariable(
         $environmentName,
         [EnvironmentVariableTarget]::Process
@@ -100,7 +177,39 @@ function Restore-BuildOwnedEnvironment {
     }
 }
 
+function Assert-PrynXNoAmbientTauriConfig {
+    # SEC (audit 2026-09-04 §SEC.20/23): Tauri ghep TAURI_CONFIG vao effective
+    # config. Luon xoa truoc khi fail de khong truyen payload khong duoc audit
+    # cho bat ky process con nao neu caller bat exception va tiep tuc su dung host.
+    $ambientPresent = $null -ne [Environment]::GetEnvironmentVariable(
+        'TAURI_CONFIG',
+        [EnvironmentVariableTarget]::Process
+    )
+    Remove-Item Env:TAURI_CONFIG -ErrorAction SilentlyContinue
+    if ($ambientPresent) {
+        throw 'SEC: Ambient TAURI_CONFIG is forbidden for an audited production build.'
+    }
+}
+
 try {
+
+if ($script:AmbientTauriConfigWasPresent) {
+    $script:AmbientTauriConfigWasPresent = $false
+    throw 'SEC: Ambient TAURI_CONFIG was cleared and rejected before starting the build.'
+}
+if ($Release -and $script:AmbientNodeLoaderVariables.Count -gt 0) {
+    throw "SEC: Release tu choi ambient Node loader config: $($script:AmbientNodeLoaderVariables -join ', ')."
+}
+$null = Clear-PrynXAmbientRustToolOverrides
+if ($Release -and $script:AmbientRustToolOverrides.Count -gt 0) {
+    throw "SEC: Release tu choi ambient Rust/Cargo override: $($script:AmbientRustToolOverrides -join ', ')."
+}
+$null = Clear-PrynXAmbientGitAuthorityOverrides
+if ($script:AmbientGitAuthorityOverrides.Count -gt 0) {
+    throw "SEC: Production build tu choi ambient Git/GitHub override: $($script:AmbientGitAuthorityOverrides -join ', ')."
+}
+Assert-PrynXGitEnvironmentAuthority
+Assert-PrynXNoAmbientTauriConfig
 
 # Release artifacts must be rebuilt from current sources and must pass the full QA gate.
 if ($SkipNuitka) {
@@ -131,17 +240,93 @@ $VENV_PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
 $env:NUITKA_CACHE_DIR = Join-Path ([System.IO.Path]::GetTempPath()) "prynx-nuitka-cache"
 $SIDECAR_DIR = "$ROOT\desktop\src-tauri\binaries"
 $SIDECAR_NAME = "pdf-inspector-backend"
+$TARGET_TRIPLE = "x86_64-pc-windows-msvc"
 
 $TAURI_CONF = "$ROOT\desktop\src-tauri\tauri.conf.json"
 $PKG_JSON = "$ROOT\desktop\package.json"
 $PKG_LOCK = "$ROOT\desktop\package-lock.json"
 $CARGO_TOML = "$ROOT\desktop\src-tauri\Cargo.toml"
 $CARGO_LOCK = "$ROOT\desktop\src-tauri\Cargo.lock"
+$TESSERACT_LOCK_PATH = "$ROOT\scripts\tesseract_payload.lock.json"
+$RUST_TOOLCHAIN_LOCK_PATH = "$ROOT\scripts\rust_toolchain.lock.json"
+
+function Initialize-PrynXReleaseToolAuthority {
+    # SEC (audit 2026-09-04 §SEC.24-R4): executable vendor-signed lay tu
+    # Known Folder/System32; Rust dung byte-set versioned da khoa trong repo.
+    $leases = @{}
+    foreach ($kind in @('Node', 'Git', 'Robocopy', 'WindowsPowerShell', 'Cmd')) {
+        $lease = Open-PrynXTrustedReleaseExecutableLease -Kind $kind
+        $script:ReleaseToolLeases.Add($lease)
+        $leases[$kind] = $lease
+    }
+    $script:RustToolchainLease = Open-PrynXTrustedRustToolchainLease `
+        -LockPath $RUST_TOOLCHAIN_LOCK_PATH
+    $script:ReleaseToolLeases.Add($script:RustToolchainLease)
+
+    $nodeRoot = [System.IO.Path]::GetDirectoryName([string]$leases.Node.Path)
+    $npmRelativePath = 'node_modules\npm\bin\npm-cli.js'
+    $npmLease = Open-PrynXTrustedReleaseFileSetLease `
+        -AllowedRoot $nodeRoot `
+        -RelativePaths @($npmRelativePath) `
+        -Purpose 'npm CLI'
+    $script:ReleaseToolLeases.Add($npmLease)
+
+    $script:PrynXNodePath = [string]$leases.Node.Path
+    $script:PrynXNpmCliPath = [string]$npmLease.Files[$npmRelativePath].Path
+    $script:PrynXGitPath = [string]$leases.Git.Path
+    $script:PrynXRobocopyPath = [string]$leases.Robocopy.Path
+    $script:PrynXPowerShellPath = [string]$leases.WindowsPowerShell.Path
+    $script:PrynXCmdPath = [string]$leases.Cmd.Path
+    $script:PrynXCargoPath = [string]$script:RustToolchainLease.CargoPath
+    $script:PrynXRustcPath = [string]$script:RustToolchainLease.RustcPath
+    $script:PrynXRustdocPath = [string]$script:RustToolchainLease.RustdocPath
+    $script:PrynXCargoHome = [string]$script:RustToolchainLease.CargoHome
+
+    # Maturin/Tauri/Cargo child phai dung compiler direct-path dang lease.
+    # Hai wrapper rong vo hieu config wrapper; cac override khac da bi xoa/reject.
+    $env:CARGO = $script:PrynXCargoPath
+    $env:CARGO_HOME = $script:PrynXCargoHome
+    $env:RUSTC = $script:PrynXRustcPath
+    $env:RUSTDOC = $script:PrynXRustdocPath
+    [Environment]::SetEnvironmentVariable(
+        'RUSTC_WRAPPER', '', [EnvironmentVariableTarget]::Process
+    )
+    [Environment]::SetEnvironmentVariable(
+        'RUSTC_WORKSPACE_WRAPPER', '', [EnvironmentVariableTarget]::Process
+    )
+    $env:ComSpec = $script:PrynXCmdPath
+    Assert-PrynXRustToolEnvironment `
+        -CargoPath $script:PrynXCargoPath `
+        -RustcPath $script:PrynXRustcPath `
+        -RustdocPath $script:PrynXRustdocPath `
+        -CargoHome $script:PrynXCargoHome
+}
+
+function Open-PrynXTauriCliRuntimeLease {
+    if ($null -ne $script:TauriCliRuntimeLease) {
+        return $script:TauriCliRuntimeLease
+    }
+    $tauriModulesRoot = Join-Path $ROOT 'desktop\node_modules\@tauri-apps'
+    $relativePaths = @(
+        'cli\tauri.js',
+        'cli\main.js',
+        'cli\index.js',
+        'cli-win32-x64-msvc\cli.win32-x64-msvc.node'
+    )
+    $script:TauriCliRuntimeLease = Open-PrynXTrustedReleaseFileSetLease `
+        -AllowedRoot $tauriModulesRoot `
+        -RelativePaths $relativePaths `
+        -Purpose 'Tauri CLI runtime'
+    return $script:TauriCliRuntimeLease
+}
 
 function ConvertTo-BuildToolVersion {
     param([string]$VersionText)
 
-    $match = [regex]::Match($VersionText, '(?<!\d)(\d+)\.(\d+)\.(\d+)')
+    $match = [regex]::Match(
+        $VersionText,
+        '(?<![0-9])([0-9]+)\.([0-9]+)\.([0-9]+)'
+    )
     if (-not $match.Success) { return $null }
     try {
         return [version]::Parse(("{0}.{1}.{2}" -f @(
@@ -159,14 +344,14 @@ function ConvertTo-WindowsResourceVersion {
 
     $match = [regex]::Match(
         $VersionText,
-        '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$'
+        '^([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?\z'
     )
     if (-not $match.Success) { return $null }
 
     [long]$revision = 0
     $prerelease = $match.Groups[4].Value
     if (-not [string]::IsNullOrWhiteSpace($prerelease)) {
-        $numericIds = @($prerelease.Split('.') | Where-Object { $_ -match '^\d+$' })
+        $numericIds = @($prerelease.Split('.') | Where-Object { $_ -match '^[0-9]+$' })
         if ($numericIds.Count -gt 2) { return $null }
         if ($numericIds.Count -gt 0) {
             [long]$sequence = 0
@@ -206,6 +391,86 @@ sys.exit(0 if found else 1)
     return ($LASTEXITCODE -eq 0)
 }
 
+function Assert-PrynXJsonObjectExactKeys {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Keys,
+        [Parameter(Mandatory = $true)][string]$Purpose
+    )
+
+    if ($null -eq $Object -or $Object -is [System.Array] -or
+        $Object -is [string] -or $Object -is [System.ValueType]) {
+        throw "SEC: $Purpose must be a JSON object."
+    }
+    $expectedKeys = @($Keys | Sort-Object -Unique)
+    if ($expectedKeys.Count -ne $Keys.Count) {
+        throw "SEC: Internal duplicate key in $Purpose allowlist."
+    }
+    $actualKeys = @($Object.PSObject.Properties |
+        Where-Object { $_.MemberType -in @('NoteProperty', 'Property') } |
+        ForEach-Object { [string]$_.Name } |
+        Sort-Object -Unique)
+    if ($actualKeys.Count -ne $expectedKeys.Count -or
+        @(Compare-Object `
+                -ReferenceObject $expectedKeys `
+                -DifferenceObject $actualKeys `
+                -CaseSensitive).Count -ne 0) {
+        throw ("SEC: {0} JSON keys drifted. Expected exactly [{1}], found [{2}]." -f @(
+                $Purpose,
+                ($expectedKeys -join ', '),
+                ($actualKeys -join ', ')
+            ))
+    }
+}
+
+function Read-PrynXJsonDocumentFromLease {
+    param(
+        [Parameter(Mandatory = $true)]$Lease,
+        [Parameter(Mandatory = $true)][string]$Purpose
+    )
+
+    if ($null -eq $Lease -or $null -eq $Lease.PSObject.Properties['Stream'] -or
+        $null -eq $Lease.Stream) {
+        throw "SEC: Missing open file lease for $Purpose."
+    }
+    $reader = $null
+    try {
+        $Lease.Stream.Position = 0
+        $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+        $reader = [System.IO.StreamReader]::new(
+            $Lease.Stream,
+            $utf8,
+            $true,
+            4096,
+            $true
+        )
+        $jsonText = $reader.ReadToEnd()
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        $Lease.Stream.Position = 0
+    }
+    try {
+        return ($jsonText | ConvertFrom-Json -ErrorAction Stop)
+    } catch {
+        throw "SEC: Invalid JSON in $Purpose`: $($_.Exception.Message)"
+    }
+}
+
+function Assert-PrynXNoTauriPlatformConfig {
+    param([Parameter(Mandatory = $true)][string]$ConfigRoot)
+
+    foreach ($platformConfigName in @(
+            'tauri.windows.conf.json',
+            'tauri.windows.conf.json5',
+            'Tauri.windows.toml'
+        )) {
+        $platformConfigPath = Join-Path $ConfigRoot $platformConfigName
+        if (Test-Path -LiteralPath $platformConfigPath) {
+            throw "SEC: Automatic Tauri platform config is forbidden: $platformConfigName"
+        }
+    }
+}
+
 function Assert-BuildToolchain {
     # BUILD (audit 2026-08-03 REL.07/REL.08): fail early, before QA or file mutation.
     $requiredNode = '^20.19.0 || >=22.12.0'
@@ -214,9 +479,7 @@ function Assert-BuildToolchain {
         throw "desktop/package.json engines.node drifted from the audited contract: $requiredNode"
     }
 
-    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $nodeCmd) { throw "Node.js not found. Required: $requiredNode" }
-    $nodeText = (& node --version 2>&1 | Select-Object -First 1)
+    $nodeText = (& $script:PrynXNodePath --version 2>&1 | Select-Object -First 1)
     $nodeVersion = ConvertTo-BuildToolVersion "$nodeText"
     $nodeOk = $null -ne $nodeVersion -and (
         ($nodeVersion.Major -eq 20 -and $nodeVersion -ge [version]'20.19.0') -or
@@ -232,12 +495,25 @@ function Assert-BuildToolchain {
         throw "desktop/src-tauri/Cargo.toml must declare rust-version."
     }
     $requiredRust = ConvertTo-BuildToolVersion ($rustMatch.Groups[1].Value + '.0')
-    $rustCmd = Get-Command rustc -ErrorAction SilentlyContinue
-    if (-not $rustCmd) { throw "rustc not found. Required: >=$($rustMatch.Groups[1].Value)" }
-    $rustText = (& rustc --version 2>&1 | Select-Object -First 1)
-    $rustVersion = ConvertTo-BuildToolVersion "$rustText"
+    Assert-PrynXRustToolEnvironment `
+        -CargoPath $script:PrynXCargoPath `
+        -RustcPath $script:PrynXRustcPath `
+        -RustdocPath $script:PrynXRustdocPath `
+        -CargoHome $script:PrynXCargoHome
+    Assert-PrynXCargoConfigurationAuthority `
+        -CargoHome $script:PrynXCargoHome `
+        -WorkingDirectories @(
+            "$ROOT\native",
+            "$ROOT\imposition_core",
+            "$ROOT\print_engine",
+            "$ROOT\desktop",
+            "$ROOT\desktop\src-tauri"
+        )
+    Assert-PrynXRustToolchainExactSet -Lease $script:RustToolchainLease
+    Assert-PrynXRustToolchainIdentity -Lease $script:RustToolchainLease
+    $rustVersion = ConvertTo-BuildToolVersion $script:RustToolchainLease.Release
     if ($null -eq $requiredRust -or $null -eq $rustVersion -or $rustVersion -lt $requiredRust) {
-        throw "Rust $rustText is unsupported. Required: >=$($rustMatch.Groups[1].Value)"
+        throw "Rust $($script:RustToolchainLease.Release) is unsupported. Required: >=$($rustMatch.Groups[1].Value)"
     }
 
     Write-Host "  Toolchain: Node $nodeVersion | Rust $rustVersion" -ForegroundColor Green
@@ -247,17 +523,35 @@ function Assert-ReleaseSourceState {
     param([switch]$CaptureCommit)
 
     if (-not $Release) { return }
-    $inside = @(& git -C $ROOT rev-parse --is-inside-work-tree 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $inside.Count -ne 1 -or $inside[0].Trim() -ne "true") {
+    Assert-PrynXGitRepositoryAuthority `
+        -GitPath $script:PrynXGitPath `
+        -ExpectedRoot $ROOT
+    $insideResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGitPath `
+        -ExpectedRoot $ROOT `
+        -Command 'rev-parse' `
+        -Arguments @('--is-inside-work-tree')
+    $inside = @($insideResult.Output)
+    if ($insideResult.ExitCode -ne 0 -or $inside.Count -ne 1 -or $inside[0].Trim() -ne "true") {
         throw "Release build requires a valid Git worktree."
     }
-    $dirty = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
-    if ($LASTEXITCODE -ne 0) { throw "Cannot verify release worktree cleanliness." }
+    $dirtyResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGitPath `
+        -ExpectedRoot $ROOT `
+        -Command 'status' `
+        -Arguments @('--porcelain=v1', '--untracked-files=all')
+    $dirty = @($dirtyResult.Output)
+    if ($dirtyResult.ExitCode -ne 0) { throw "Cannot verify release worktree cleanliness." }
     if ($dirty.Count -gt 0) {
         throw "Release build requires a clean committed worktree; found $($dirty.Count) dirty entries."
     }
-    $commitOutput = @(& git -C $ROOT rev-parse HEAD 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $commitOutput.Count -ne 1) {
+    $commitResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGitPath `
+        -ExpectedRoot $ROOT `
+        -Command 'rev-parse' `
+        -Arguments @('HEAD')
+    $commitOutput = @($commitResult.Output)
+    if ($commitResult.ExitCode -ne 0 -or $commitOutput.Count -ne 1) {
         throw "Cannot resolve the release source commit."
     }
     $commit = $commitOutput[0].Trim()
@@ -269,33 +563,217 @@ function Assert-ReleaseSourceState {
     }
 }
 
-function Copy-DirectoryWithRetry {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourcePattern,
-        [Parameter(Mandatory = $true)][string]$Destination,
-        [int]$MaxAttempts = 5
-    )
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+function Assert-ReleaseSigningAuthority {
+    param([switch]$AcquireLease)
+
+    if (-not $Release) { return }
+    if (-not [string]::IsNullOrWhiteSpace($script:CapturedTauriSigningPrivateKey)) {
+        throw "Release tu choi private key updater truyen inline/environment; chi nhan file ngoai repo co ACL kin."
+    }
+    if ([string]::IsNullOrWhiteSpace($script:CapturedTauriSigningKeyFile)) {
+        throw "Build phat hanh can duong dan khoa ky updater."
+    }
+
+    if ($AcquireLease) {
+        Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease
+        $script:TauriSigningKeyLease = $null
+        $newLease = $null
         try {
-            Copy-Item -Path $SourcePattern -Destination $Destination -Recurse -Force -ErrorAction Stop
-            return
-        } catch {
-            if ($attempt -eq $MaxAttempts) { throw }
-            Write-Host "  Resource file busy; retry $attempt/$MaxAttempts..." -ForegroundColor Yellow
-            Start-Sleep -Seconds 1
+            $newLease = Open-PrynXUpdaterSigningKeyLease `
+                -Path $script:CapturedTauriSigningKeyFile `
+                -RepositoryRoot $ROOT `
+                -HasPassword (-not [string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword))
+            $script:CapturedTauriSigningKeyFile = [string]$newLease.Path
+            $script:TauriSigningKeyLease = $newLease
+            $newLease = $null
+        } finally {
+            # Neu viec chuyen lease vao script scope that bai, khong duoc de
+            # handle mo sot den het process build.
+            Close-PrynXPayloadLease -Lease $newLease
+        }
+        Write-Host "  Updater signing key: ACL + identity lease OK" -ForegroundColor Green
+    } else {
+        $script:CapturedTauriSigningKeyFile = Assert-PrynXUpdaterSigningKey `
+            -Path $script:CapturedTauriSigningKeyFile `
+            -RepositoryRoot $ROOT `
+            -HasPassword (-not [string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword))
+        Write-Host "  Updater signing key: passphrase + ACL metadata OK" -ForegroundColor Green
+    }
+}
+
+function Assert-NoReleaseSecretInPayloadFile {
+    param([Parameter(Mandatory = $true)][System.IO.FileInfo]$File)
+
+    # SEC (audit 2026-09-04 SEC.20-S2): compatibility wrapper for the staging
+    # exact-set guard. The shared scanner reads every byte regardless of size
+    # or extension and also expands supported ZIP-compatible archives. Its deny
+    # contract includes .clixml and sb_secret_[A-Za-z0-9_-]{20,}.
+    $null = Invoke-PrynXReleaseSecretFileScan `
+        -Path $File.FullName `
+        -DisplayPath "tauri-staging/$($File.Name)"
+}
+
+function Assert-NoReparsePointInPathComponents {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ([string]::IsNullOrWhiteSpace($pathRoot) -or $pathRoot.StartsWith("\\")) {
+        throw "SEC: Build staging must stay on a local volume: $fullPath"
+    }
+
+    $current = $pathRoot
+    $relative = $fullPath.Substring($pathRoot.Length)
+    foreach ($component in @($relative.Split(
+                [char[]]@('\', '/'),
+                [System.StringSplitOptions]::RemoveEmptyEntries
+            ))) {
+        $current = Join-Path $current $component
+        if (-not (Test-Path -LiteralPath $current)) { continue }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "SEC: Build staging path contains a reparse point: $current"
+        }
+    }
+    return $fullPath
+}
+
+function Assert-StagingSafeToRecreate {
+    param(
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string[]]$AllowedRootFiles,
+        [string[]]$PreservedRelativePaths = @()
+    )
+
+    # SEC (audit 2026-09-03 §SEC.23): build chỉ được xóa cây staging do chính
+    # pipeline sinh. Dữ liệu/WIP lạc vào binaries phải làm build dừng trước
+    # Remove-Item thay vì bị xóa cùng residue của lượt trước.
+    $stagingFull = Assert-NoReparsePointInPathComponents -Path $StagingRoot
+    if (-not (Test-Path -LiteralPath $stagingFull -PathType Container)) {
+        throw "SEC: Staging path exists but is not a directory: $stagingFull"
+    }
+
+    $allowedRootFileSet = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($allowedRootFile in $AllowedRootFiles) {
+        [void]$allowedRootFileSet.Add($allowedRootFile.Replace('\', '/'))
+    }
+    $preservedPathSet = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($preservedPath in $PreservedRelativePaths) {
+        [void]$preservedPathSet.Add($preservedPath.Replace('\', '/'))
+    }
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $stagingFull -Recurse -Force -ErrorAction Stop)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "SEC: Reparse point detected before staging cleanup: $($item.FullName)"
+        }
+        $relativePath = $item.FullName.Substring($stagingFull.Length + 1).Replace('\', '/')
+        $isGeneratedTesseract = [string]::Equals(
+            $relativePath,
+            'tesseract',
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or $relativePath.StartsWith('tesseract/', [System.StringComparison]::OrdinalIgnoreCase)
+        if ($isGeneratedTesseract -or $preservedPathSet.Contains($relativePath) -or
+            (-not $item.PSIsContainer -and $allowedRootFileSet.Contains($relativePath))) {
+            continue
+        }
+        throw "SEC: Unexpected path in build staging; refusing recursive cleanup: $relativePath"
+    }
+    return $stagingFull
+}
+
+function Assert-PayloadManifestMatchesStaging {
+    param(
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string]$PayloadManifestPath,
+        [Parameter(Mandatory = $true)][string[]]$ExcludedRelativePaths,
+        [Parameter(Mandatory = $true)]$TrustedTesseractLock
+    )
+
+    # SEC (audit 2026-09-03 §SEC.23): luôn đọc lại cây thật tại thời điểm gọi.
+    # Không được so manifest với FileInfo snapshot dùng để tạo chính manifest đó,
+    # vì file có thể bị thêm/xóa/đổi trong khoảng chờ Tauri đóng gói.
+    $stagingFull = (Assert-NoReparsePointInPathComponents -Path $StagingRoot).TrimEnd([char[]]@('\', '/'))
+    $manifestFull = Assert-NoReparsePointInPathComponents -Path $PayloadManifestPath
+    if (-not (Test-Path -LiteralPath $manifestFull -PathType Leaf) -or
+        -not [string]::Equals(
+            (Split-Path -Parent $manifestFull),
+            $stagingFull,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "SEC: Payload manifest must be a regular file at the staging root."
+    }
+
+    $manifest = Get-Content -LiteralPath $manifestFull -Raw -ErrorAction Stop | ConvertFrom-Json
+    # SEC (audit 2026-09-03 §SEC.23): manifest runtime khong duoc tu hop
+    # phap hoa byte vua thay trong staging; no phai trung lock da commit.
+    $manifestMap = Assert-PrynXTesseractManifestMatchesLock `
+        -Manifest $manifest `
+        -Lock $TrustedTesseractLock
+
+    $allItems = @(Get-ChildItem -LiteralPath $stagingFull -Recurse -Force -ErrorAction Stop)
+    foreach ($item in $allItems) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "SEC: Reparse point detected in staging: $($item.FullName)"
+        }
+    }
+
+    $seenPaths = @{}
+    foreach ($file in @($allItems | Where-Object { -not $_.PSIsContainer })) {
+        $streams = @(Get-Item -LiteralPath $file.FullName -Stream * -ErrorAction Stop |
+            Where-Object { $_.Stream -ne ':$DATA' })
+        if ($streams.Count -gt 0) {
+            throw "SEC: Alternate data stream detected on staging file: $($file.FullName)"
+        }
+
+        $relativePath = $file.FullName.Substring($stagingFull.Length + 1).Replace('\', '/')
+        if ([string]::Equals(
+            $relativePath,
+            [System.IO.Path]::GetFileName($manifestFull),
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or $ExcludedRelativePaths -contains $relativePath) {
+            continue
+        }
+        if (-not $relativePath.StartsWith('tesseract/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "SEC: Unexpected staging file outside declared resource globs: $relativePath"
+        }
+        if (-not $manifestMap.ContainsKey($relativePath)) {
+            throw "SEC: Payload manifest has a surplus staging file: $relativePath"
+        }
+
+        $expected = $manifestMap[$relativePath]
+        $actualHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        if ([long]$file.Length -ne [long]$expected.Size -or $actualHash -ne [string]$expected.Hash) {
+            throw "SEC: Payload manifest hash/size mismatch for staging file: $relativePath"
+        }
+        $seenPaths[$relativePath] = $true
+    }
+
+    foreach ($relativePath in $manifestMap.Keys) {
+        if (-not $seenPaths.ContainsKey($relativePath)) {
+            throw "SEC: Payload manifest is missing a staging file: $relativePath"
         }
     }
 }
 
-Assert-BuildToolchain
+Initialize-PrynXReleaseToolAuthority
+# SEC (audit 2026-09-04 §SEC.24-R4): lockfile tracked phai duoc Git xac
+# nhan sach truoc lan dau chay cargo/rustc/rustdoc tu cac hash trong lock.
 Assert-ReleaseSourceState -CaptureCommit
+Assert-BuildToolchain
+Assert-ReleaseSigningAuthority
+$script:TesseractPayloadLock = Read-PrynXTesseractPayloadLock -Path $TESSERACT_LOCK_PATH
+Write-Host "  Tesseract lock: $($script:TesseractPayloadLock.Version) / $($script:TesseractPayloadLock.LockSha256)" -ForegroundColor Green
 
 # ---- Optional: bump version from -Version (Build NOI BO / CLI) ----
 # Truoc day chi release_update.ps1 ghi version; build noi bo doc tauri.conf cu
 # -> go 1.0.0-beta.12 van ra installer .11. Ghi UTF-8 khong BOM (tranh hong JSON).
 if (-not [string]::IsNullOrWhiteSpace($Version)) {
     $Version = $Version.Trim()
-    if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
+    if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?\z') {
         Write-Host "ERROR: -Version phai la SemVer (vd 1.0.0-beta.12), nhan duoc: $Version" -ForegroundColor Red
         exit 1
     }
@@ -416,7 +894,7 @@ if (-not $SkipPreflightQA) {
         # Internal convenience path only: no new wheel exists, so retain the old
         # behavior and test the active dev runtime instead of silently skipping QA.
         Write-Host "[0/5] Running internal QA against the active dev native runtime..." -ForegroundColor Yellow
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
+        & $script:PrynXPowerShellPath -NoProfile -ExecutionPolicy Bypass -File "$ROOT\scripts\run_release_qa.ps1"
         if ($LASTEXITCODE -ne 0) {
             throw "Internal regression gate failed while -SkipNuitka was active."
         }
@@ -465,7 +943,7 @@ if (-not $SkipNuitka) {
             Copy-Item -LiteralPath "$ROOT\desktop\package.json" -Destination $toolStageDesktop
             Copy-Item -LiteralPath "$ROOT\desktop\package-lock.json" -Destination $toolStageDesktop
             Push-Location $toolStageDesktop
-            npm.cmd ci --no-audit --no-fund
+            & $script:PrynXNodePath $script:PrynXNpmCliPath ci --no-audit --no-fund
             $npmRepairExit = $LASTEXITCODE
             Pop-Location
             if ($npmRepairExit -ne 0) {
@@ -473,7 +951,7 @@ if (-not $SkipNuitka) {
                 throw "Failed to install locked frontend dependencies in isolated staging."
             }
 
-            & robocopy (Join-Path $toolStageDesktop "node_modules") `
+            & $script:PrynXRobocopyPath (Join-Path $toolStageDesktop "node_modules") `
                 "$ROOT\desktop\node_modules" /E /XC /XN /XO /R:1 /W:1 `
                 /NFL /NDL /NJH /NJS /NP
             $repairCopyExit = $LASTEXITCODE
@@ -492,7 +970,7 @@ if (-not $SkipNuitka) {
             exit 1
         }
     }
-    npm.cmd run build:dieline-sidecar
+    & $script:PrynXNodePath $script:PrynXNpmCliPath run build:dieline-sidecar
     $dielineBundleExit = $LASTEXITCODE
     Pop-Location
     if ($dielineBundleExit -ne 0) {
@@ -707,8 +1185,18 @@ if (-not $SkipNuitka) {
     # BUILD (audit 2026-08-10 PPE.REAUDIT.7): pin identity for exactly this
     # native build. The staged module must echo these values via capabilities;
     # a stale wheel with the same crate version is rejected below.
-    $nativeCommitOutput = @(& git -C $ROOT rev-parse HEAD 2>$null)
-    $nativeCommitExit = $LASTEXITCODE
+    if ($Release) {
+        Assert-PrynXGitRepositoryAuthority `
+            -GitPath $script:PrynXGitPath `
+            -ExpectedRoot $ROOT
+    }
+    $nativeCommitResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGitPath `
+        -ExpectedRoot $ROOT `
+        -Command 'rev-parse' `
+        -Arguments @('HEAD')
+    $nativeCommitOutput = @($nativeCommitResult.Output)
+    $nativeCommitExit = $nativeCommitResult.ExitCode
     if ($nativeCommitExit -ne 0 -or $nativeCommitOutput.Count -ne 1) {
         throw "Cannot resolve native source revision."
     }
@@ -719,8 +1207,13 @@ if (-not $SkipNuitka) {
     if ($Release -and $script:PpeNativeSourceRevision -ne $script:ReleaseSourceCommit) {
         throw "Native source revision no longer matches the captured release commit."
     }
-    $nativeDirtyOutput = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
-    $nativeDirtyExit = $LASTEXITCODE
+    $nativeDirtyResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGitPath `
+        -ExpectedRoot $ROOT `
+        -Command 'status' `
+        -Arguments @('--porcelain=v1', '--untracked-files=all')
+    $nativeDirtyOutput = @($nativeDirtyResult.Output)
+    $nativeDirtyExit = $nativeDirtyResult.ExitCode
     if ($nativeDirtyExit -ne 0) { throw "Cannot resolve native source dirty state." }
     $script:PpeNativeSourceDirty = $nativeDirtyOutput.Count -gt 0
     if ($Release -and $script:PpeNativeSourceDirty) {
@@ -734,9 +1227,22 @@ if (-not $SkipNuitka) {
     $env:CARGO_PROFILE_RELEASE_LTO = "thin"
     $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
     $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
+    Assert-PrynXRustToolEnvironment `
+        -CargoPath $script:PrynXCargoPath `
+        -RustcPath $script:PrynXRustcPath `
+        -RustdocPath $script:PrynXRustdocPath `
+        -CargoHome $script:PrynXCargoHome
+    Assert-PrynXCargoConfigurationAuthority `
+        -CargoHome $script:PrynXCargoHome `
+        -WorkingDirectories @("$ROOT\native")
+    Assert-PrynXRustToolchainExactSet -Lease $script:RustToolchainLease
     & $VENV_PYTHON -m maturin build --release --interpreter $VENV_PYTHON `
         --manifest-path "$ROOT\native\Cargo.toml" --out $nativeWheelDir
     $nativeExit = $LASTEXITCODE
+    Assert-PrynXRustToolchainExactSet -Lease $script:RustToolchainLease
+    Assert-PrynXCargoConfigurationAuthority `
+        -CargoHome $script:PrynXCargoHome `
+        -WorkingDirectories @("$ROOT\native")
     if ($nativeExit -eq 0) {
         $nativeWheel = Get-ChildItem -LiteralPath $nativeWheelDir -Filter *.whl -File |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -1030,8 +1536,35 @@ if (-not $SkipNuitka) {
         }
     }
 
-    New-Item -ItemType Directory -Force -Path $SIDECAR_DIR | Out-Null
-
+    # SEC (audit 2026-09-03 §SEC.23): chỉ làm mới artifact do build sinh.
+    $generatedStagingRootFiles = @(
+        "$SIDECAR_NAME.exe",
+        "$SIDECAR_NAME-$TARGET_TRIPLE.exe",
+        "payload-manifest.json"
+    )
+    if (Test-Path -LiteralPath $SIDECAR_DIR) {
+        $safeStagingRoot = Assert-StagingSafeToRecreate `
+            -StagingRoot $SIDECAR_DIR `
+            -AllowedRootFiles $generatedStagingRootFiles
+        foreach ($generatedRelativePath in @('tesseract') + $generatedStagingRootFiles) {
+            $generatedPath = [System.IO.Path]::GetFullPath((Join-Path `
+                    $safeStagingRoot `
+                    $generatedRelativePath))
+            if (-not $generatedPath.StartsWith(
+                    $safeStagingRoot.TrimEnd('\') + '\',
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "SEC: Generated staging path escaped binaries: $generatedPath"
+            }
+            if (Test-Path -LiteralPath $generatedPath) {
+                Remove-Item -LiteralPath $generatedPath -Recurse -Force -ErrorAction Stop
+            }
+        }
+        Write-Host "  Cleaned stale generated staging." -ForegroundColor DarkGray
+    } else {
+        New-Item -ItemType Directory -Path $SIDECAR_DIR -ErrorAction Stop | Out-Null
+    }
+    $null = Assert-NoReparsePointInPathComponents -Path $SIDECAR_DIR
     Push-Location "$ROOT\backend"
 
     # --- Locate pdfium.dll for pdfcompare_native (Rust PyO3 module) ---
@@ -1190,15 +1723,12 @@ if (-not $SkipNuitka) {
         "$ROOT\desktop\src-tauri\THIRD_PARTY_NOTICES.md"
     $preQaTesseractSource = "C:\Program Files\Tesseract-OCR"
     $preQaTesseractDest = "$SIDECAR_DIR\tesseract"
-    if (-not (Test-Path -LiteralPath $preQaTesseractSource -PathType Container)) {
-        throw "Tesseract not found at $preQaTesseractSource."
-    }
-    New-Item -ItemType Directory -Force -Path $preQaTesseractDest | Out-Null
-    Copy-DirectoryWithRetry -SourcePattern "$preQaTesseractSource\*" `
-        -Destination $preQaTesseractDest
-    Get-ChildItem -Path $preQaTesseractDest -Filter *.exe -File `
-        -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "tesseract.exe" } | `
-        Remove-Item -Force -ErrorAction SilentlyContinue
+    # SEC (audit 2026-09-03 §SEC.23): copy dung allowlist/hash trong lock,
+    # khong copy rong roi prune va khong tin inventory co san tren may build.
+    $null = Copy-PrynXTesseractPayload `
+        -Lock $script:TesseractPayloadLock `
+        -SourceRoot $preQaTesseractSource `
+        -DestinationRoot $preQaTesseractDest
 
     if (-not $SkipPreflightQA) {
         # BUILD (audit 2026-08-03 REL.09): PYTHONPATH already points at the wheel
@@ -1215,7 +1745,7 @@ if (-not $SkipNuitka) {
         try {
             # BUILD (audit 2026-08-21 §NGS.1/3): release QA chi con mot duong
             # xac dinh tren wheel staged; corpus audit va artifact rieng da bi loai bo.
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            & $script:PrynXPowerShellPath -NoProfile -ExecutionPolicy Bypass `
                 -File "$ROOT\scripts\run_release_qa.ps1"
             $releaseQaExit = $LASTEXITCODE
         } finally {
@@ -1242,12 +1772,16 @@ if (-not $SkipNuitka) {
     # khong phai C warning; /wd9025 chi sinh them D9014 tren moi C file.
     $previousClAppend = $env:_CL_
     $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else { "$previousClAppend /O1" }
+    # SEC (audit 2026-09-02 SEC.18): khong tai dung payload user-writable.
+    # Nuitka cache tinh chi dung CRC32 de quyet dinh cache hit; path dong buoc
+    # giai nen tu outer executable moi luot va bootstrap tu xoa khi thoat.
     & $VENV_PYTHON -m nuitka `
         --standalone `
         --jobs=$NuitkaJobs `
         --no-prefer-source-code `
         --onefile `
-        --onefile-tempdir-spec="{CACHE_DIR}\PrynX\sidecar-{VERSION}" `
+        --onefile-cache-mode=temporary `
+        --onefile-tempdir-spec="{TEMP}\PrynX\sidecar-{PID}-{TIME_US}-{RANDOM}" `
         --output-filename="$SIDECAR_NAME.exe" `
         --output-dir="$SIDECAR_DIR" `
         --include-package=app `
@@ -1355,7 +1889,6 @@ if ($NuitkaOnly) {
 Write-Host "`n[2/5] Preparing sidecar binary and external dependencies..." -ForegroundColor Yellow
 
 $SIDECAR_SRC = "$SIDECAR_DIR\$SIDECAR_NAME.exe"
-$TARGET_TRIPLE = "x86_64-pc-windows-msvc"
 $SIDECAR_FINAL = "$SIDECAR_DIR\$SIDECAR_NAME-$TARGET_TRIPLE.exe"
 
 if (Test-Path $SIDECAR_SRC) {
@@ -1384,24 +1917,13 @@ if ((Test-Path -LiteralPath $legacyGhostscriptDir) -or $forbiddenGhostscriptPayl
 }
 Write-Host "  Ghostscript payload absent (PPE-only release contract)." -ForegroundColor Green
 
-# Copy Tesseract
-$TESS_SRC = "C:\Program Files\Tesseract-OCR"
+# Tesseract da duoc stage mot lan tu lock truoc release QA. Khong copy lai o day:
+# lan copy thu hai se mo lai trust boundary sau khi QA da chay.
 $TESS_DEST = "$SIDECAR_DIR\tesseract"
-if (Test-Path $TESS_SRC) {
-    Write-Host "  Copying Tesseract-OCR..." -ForegroundColor DarkGray
-    New-Item -ItemType Directory -Force -Path $TESS_DEST | Out-Null
-    Copy-DirectoryWithRetry -SourcePattern "$TESS_SRC\*" -Destination $TESS_DEST
-    # Prune training/utility tools: app chi CHAY OCR (tesseract.exe), khong huan luyen.
-    # Xoa ~42MB exe training (lstmtraining, text2image, mftraining...) + uninstaller.
-    # GIU tesseract.exe + moi DLL (libtesseract, leptonica, icu) + tessdata/.
-    $tessKeepExe = "tesseract.exe"
-    Get-ChildItem -Path $TESS_DEST -Filter *.exe -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $tessKeepExe } | Remove-Item -Force -ErrorAction SilentlyContinue
-    Write-Host "  Tesseract bundled (pruned training tools)." -ForegroundColor Green
-} else {
-    Write-Host "ERROR: Tesseract not found at $TESS_SRC." -ForegroundColor Red
-    Write-Host "  Build aborted to avoid shipping a broken OCR feature." -ForegroundColor Red
-    exit 1
-}
+Assert-PrynXPayloadRootExactSet `
+    -Root $TESS_DEST `
+    -Entries $script:TesseractPayloadLock.Entries
+Write-Host "  Tesseract pinned payload ready ($(@($script:TesseractPayloadLock.Entries).Count) files)." -ForegroundColor Green
 
 # ---- Third-party notices ----
 # BUILD (audit 2026-08-14 REL.PROVENANCE): build chi KIEM TRA NOTICE da commit,
@@ -1439,6 +1961,52 @@ foreach ($requiredFile in $requiredBundleFiles) {
 }
 Write-Host "  Required Tauri resources verified." -ForegroundColor Green
 
+# SEC (audit 2026-09-03 §SEC.23): tạo SHA-256 payload manifest và exact-set check.
+# Manifest đóng Tesseract; sidecar là exclusion có tên chính xác.
+Write-Host "  Generating payload manifest..." -ForegroundColor DarkGray
+$null = Assert-NoReparsePointInPathComponents -Path $SIDECAR_DIR
+$externalSidecarPaths = @(
+    "$SIDECAR_NAME.exe",
+    "$SIDECAR_NAME-$TARGET_TRIPLE.exe"
+)
+$payloadManifestExcludedPaths = @($externalSidecarPaths | Sort-Object -Unique)
+$manifestEntries = @($script:TesseractPayloadLock.Entries | ForEach-Object {
+    [ordered]@{
+        path = 'tesseract/' + [string]$_.Path
+        sha256 = [string]$_.Hash
+        size = [long]$_.Size
+    }
+})
+$manifestObj = @{
+    version = 2
+    component_id = 'tesseract'
+    component_version = [string]$script:TesseractPayloadLock.Version
+    source_lock_sha256 = [string]$script:TesseractPayloadLock.LockSha256
+    generated_at = (Get-Date -Format 'o')
+    file_count = $manifestEntries.Count
+    files = ($manifestEntries | Sort-Object { $_.path })
+}
+$manifestJson = $manifestObj | ConvertTo-Json -Depth 5 -Compress:$false
+$manifestPath = Join-Path $SIDECAR_DIR "payload-manifest.json"
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.UTF8Encoding]::new($false))
+$manifestCaptureLease = Open-PrynXPayloadFileLease `
+    -Path $manifestPath `
+    -Purpose 'generated payload manifest'
+try {
+    $script:PayloadManifestSha256 = [string]$manifestCaptureLease.Sha256
+} finally {
+    Close-PrynXPayloadLease -Lease $manifestCaptureLease
+}
+Write-Host "  Payload manifest: $($manifestEntries.Count) files catalogued." -ForegroundColor Green
+
+# Exact-set sanity: quét lại cây thật sau khi ghi; manifest không tự băm chính nó.
+Assert-PayloadManifestMatchesStaging `
+    -StagingRoot $SIDECAR_DIR `
+    -PayloadManifestPath $manifestPath `
+    -ExcludedRelativePaths $payloadManifestExcludedPaths `
+    -TrustedTesseractLock $script:TesseractPayloadLock
+Write-Host "  Exact-set verification passed." -ForegroundColor Green
+
 # ---- Step 3: Compute SHA-256 hash for integrity verification ----
 Write-Host "`n[3/5] Computing sidecar integrity hash..." -ForegroundColor Yellow
 
@@ -1448,6 +2016,25 @@ Write-Host "  PRYNX_SIDECAR_HASH = $HASH" -ForegroundColor Green
 # ---- Step 4: Build Tauri installer ----
 if (-not $SkipTauri) {
     Write-Host "`n[4/5] Building frontend + computing integrity hash..." -ForegroundColor Yellow
+
+    $tauriConfig = if ($Release) { "src-tauri/tauri.release.conf.json" } else { "src-tauri/tauri.prod.conf.json" }
+    $tauriOverlayPath = [System.IO.Path]::GetFullPath((Join-Path "$ROOT\desktop" $tauriConfig))
+    $tauriConfigRoot = Split-Path -Parent $TAURI_CONF
+
+    # SEC (audit 2026-09-04 §SEC.20/23): ghim identity ancestor/src-tauri khoi
+    # rename nhung van cho Cargo ghi target/. File leases ben duoi dam bao byte
+    # da validate chinh la byte ma Tauri se doc. Directory share-mode khong cam
+    # tao child; platform-config absence duoc recheck ngay sat va sau Tauri.
+    $script:TauriConfigDirectoryLease = Open-PrynXPayloadDirectoryBoundaryLease `
+        -Root $tauriConfigRoot `
+        -Purpose 'Tauri config directory'
+    Assert-PrynXNoTauriPlatformConfig -ConfigRoot $tauriConfigRoot
+    $script:TauriBaseConfigLease = Open-PrynXPayloadFileLease `
+        -Path $TAURI_CONF `
+        -Purpose 'base Tauri config'
+    $script:TauriOverlayConfigLease = Open-PrynXPayloadFileLease `
+        -Path $tauriOverlayPath `
+        -Purpose 'production Tauri config overlay'
 
     # BUILD (audit 2026-08-04 BLD.02): manifest khong duoc tu khai gate=enabled
     # neu process thuc te da bi mot script/agent khac doi co truoc luc Vite bundle.
@@ -1461,14 +2048,14 @@ if (-not $SkipTauri) {
     }
 
     Push-Location "$ROOT\desktop"
-    npm.cmd run build
+    & $script:PrynXNodePath $script:PrynXNpmCliPath run build
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Frontend build failed!" -ForegroundColor Red
         Pop-Location
         exit 1
     }
 
-    npm.cmd run check:dieline-webview
+    & $script:PrynXNodePath $script:PrynXNpmCliPath run check:dieline-webview
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Protected dieline engine leaked into frontend bundle!" -ForegroundColor Red
         Pop-Location
@@ -1497,6 +2084,159 @@ if (-not $SkipTauri) {
     }
     Pop-Location
 
+    # SEC (audit 2026-09-04 SEC.20-S2): scan the exact payload inputs consumed
+    # by the audited Tauri configs. Config drift fails closed so a newly added
+    # resource cannot silently bypass this gate. The shared scanner has no file
+    # size/extension skip and checks directory names, ADS, reparse points and
+    # ZIP/JAR entries before the public bundle starts.
+    $tauriBaseDocument = Read-PrynXJsonDocumentFromLease `
+        -Lease $script:TauriBaseConfigLease `
+        -Purpose 'base Tauri config'
+    $tauriOverlayDocument = Read-PrynXJsonDocumentFromLease `
+        -Lease $script:TauriOverlayConfigLease `
+        -Purpose 'production Tauri config overlay'
+
+    # Khoa exact key-set tai moi node co the mo rong input bundle. Overlay chi
+    # duoc phep ghi de len hai node nay, nen hop cua base + overlay cung la
+    # allowlist cua effective config ma Tauri nhan.
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriBaseDocument.build `
+        -Keys @('frontendDist', 'devUrl', 'beforeDevCommand', 'beforeBuildCommand') `
+        -Purpose 'base Tauri build'
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriBaseDocument.bundle `
+        -Keys @('active', 'targets', 'resources', 'icon', 'fileAssociations', 'windows') `
+        -Purpose 'base Tauri bundle'
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriBaseDocument.bundle.windows `
+        -Keys @('nsis') `
+        -Purpose 'base Tauri bundle.windows'
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriBaseDocument.bundle.windows.nsis `
+        -Keys @('installerIcon', 'installerHooks') `
+        -Purpose 'base Tauri bundle.windows.nsis'
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriOverlayDocument `
+        -Keys @('build', 'bundle') `
+        -Purpose 'Tauri overlay root'
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriOverlayDocument.build `
+        -Keys @('beforeBuildCommand') `
+        -Purpose 'Tauri overlay build'
+    $expectedOverlayBundleKeys = @('externalBin')
+    if ($Release) {
+        $expectedOverlayBundleKeys += 'createUpdaterArtifacts'
+    }
+    Assert-PrynXJsonObjectExactKeys `
+        -Object $tauriOverlayDocument.bundle `
+        -Keys $expectedOverlayBundleKeys `
+        -Purpose 'Tauri overlay bundle'
+    if ($tauriOverlayDocument.build.beforeBuildCommand -isnot [string] -or
+        [string]$tauriOverlayDocument.build.beforeBuildCommand -cne '') {
+        throw 'SEC: Tauri overlay beforeBuildCommand must be the empty string.'
+    }
+    if ($Release -and
+        [bool]$tauriOverlayDocument.bundle.createUpdaterArtifacts -ne $false) {
+        throw 'SEC: Release overlay must keep createUpdaterArtifacts=false.'
+    }
+    $expectedTauriResources = @(
+        'binaries/tesseract/**/*',
+        'binaries/payload-manifest.json',
+        'bin/pdfium.dll',
+        'icons/file-pdf.ico',
+        'THIRD_PARTY_NOTICES.md'
+    )
+    $actualTauriResources = @($tauriBaseDocument.bundle.resources | ForEach-Object {
+        ([string]$_).Replace('\', '/')
+    })
+    if (@(Compare-Object `
+            -ReferenceObject $expectedTauriResources `
+            -DifferenceObject $actualTauriResources `
+            -CaseSensitive).Count -ne 0) {
+        throw 'SEC: Tauri resource config drifted; update the exact release secret scan contract.'
+    }
+    $expectedTauriIcons = @(
+        'icons/32x32.png',
+        'icons/128x128.png',
+        'icons/128x128@2x.png',
+        'icons/icon.icns',
+        'icons/icon.ico'
+    )
+    $actualTauriIcons = @($tauriBaseDocument.bundle.icon | ForEach-Object {
+        ([string]$_).Replace('\', '/')
+    })
+    if (@(Compare-Object `
+            -ReferenceObject $expectedTauriIcons `
+            -DifferenceObject $actualTauriIcons `
+            -CaseSensitive).Count -ne 0) {
+        throw 'SEC: Tauri icon config drifted; update the exact release secret scan contract.'
+    }
+    $tauriTargets = @($tauriBaseDocument.bundle.targets | ForEach-Object { [string]$_ })
+    if ([bool]$tauriBaseDocument.bundle.active -ne $true -or
+        $tauriTargets.Count -ne 1 -or [string]$tauriTargets[0] -cne 'nsis' -or
+        [string]$tauriBaseDocument.build.frontendDist -cne '../dist' -or
+        [string]$tauriBaseDocument.bundle.windows.nsis.installerIcon -cne 'icons/icon.ico' -or
+        [string]$tauriBaseDocument.bundle.windows.nsis.installerHooks -cne 'installer-hooks.nsh') {
+        throw 'SEC: Tauri frontend/NSIS config drifted from the release secret scan contract.'
+    }
+    $externalBins = @($tauriOverlayDocument.bundle.externalBin | ForEach-Object {
+        ([string]$_).Replace('\', '/')
+    })
+    if ($externalBins.Count -ne 1 -or
+        [string]$externalBins[0] -cne 'binaries/pdf-inspector-backend') {
+        throw 'SEC: Tauri externalBin config drifted from the release secret scan contract.'
+    }
+
+    $configuredDistRoot = [System.IO.Path]::GetFullPath((Join-Path `
+            $tauriConfigRoot `
+            ([string]$tauriBaseDocument.build.frontendDist)))
+    if (-not [string]::Equals(
+        $configuredDistRoot,
+        [System.IO.Path]::GetFullPath($DIST_DIR),
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'SEC: Resolved Tauri frontendDist does not match the built dist tree.'
+    }
+    $configuredExternalBin = [System.IO.Path]::GetFullPath((Join-Path `
+            $tauriConfigRoot `
+            (([string]$externalBins[0]).Replace('/', '\') + "-$TARGET_TRIPLE.exe")))
+    if (-not [string]::Equals(
+        $configuredExternalBin,
+        [System.IO.Path]::GetFullPath($SIDECAR_FINAL),
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'SEC: Resolved Tauri externalBin does not match the staged sidecar.'
+    }
+
+    $tauriSecretScanFiles = @($SIDECAR_FINAL, $TAURI_CONF, $tauriOverlayPath)
+    foreach ($resourcePath in @($expectedTauriResources | Where-Object {
+                $_ -notmatch '[*?]'
+            })) {
+        $tauriSecretScanFiles += [System.IO.Path]::GetFullPath((Join-Path `
+                $tauriConfigRoot `
+                $resourcePath.Replace('/', '\')))
+    }
+    foreach ($iconPath in $expectedTauriIcons) {
+        $tauriSecretScanFiles += [System.IO.Path]::GetFullPath((Join-Path `
+                $tauriConfigRoot `
+                $iconPath.Replace('/', '\')))
+    }
+    $tauriSecretScanFiles += [System.IO.Path]::GetFullPath((Join-Path `
+            $tauriConfigRoot `
+            ([string]$tauriBaseDocument.bundle.windows.nsis.installerIcon)))
+    $tauriSecretScanFiles += [System.IO.Path]::GetFullPath((Join-Path `
+            $tauriConfigRoot `
+            ([string]$tauriBaseDocument.bundle.windows.nsis.installerHooks)))
+    $tauriSecretScan = Assert-PrynXReleasePayloadSecretFree `
+        -TreeRoots @($configuredDistRoot, $TESS_DEST) `
+        -Files $tauriSecretScanFiles `
+        -Purpose 'tauri-bundle-input'
+    Write-Host ("  Release secret scan passed: {0} files / {1} raw bytes / {2} archives." -f @(
+            [long]$tauriSecretScan.FileCount,
+            [long]$tauriSecretScan.RawBytes,
+            [long]$tauriSecretScan.ArchiveCount
+        )) -ForegroundColor Green
+
     Write-Host "`n[5/5] Building Tauri installer..." -ForegroundColor Yellow
 
     $env:PRYNX_SIDECAR_HASH = $HASH
@@ -1504,10 +2244,30 @@ if (-not $SkipTauri) {
 
     # Re-check after generators/tests and immediately before the public bundle.
     Assert-ReleaseSourceState
-    # -Release: tao installer truoc, sau do ky updater bang signer rieng de ho tro
-    # khoa co mat khau rong ma khong de Tauri build dung cho prompt tuong tac.
+    # SEC (audit 2026-09-03 §SEC.23): frontend build có thể kéo dài; kiểm lại
+    # live filesystem + hash ngay sát lệnh Tauri để không tin snapshot cũ.
+    Assert-PayloadManifestMatchesStaging `
+        -StagingRoot $SIDECAR_DIR `
+        -PayloadManifestPath $manifestPath `
+        -ExcludedRelativePaths $payloadManifestExcludedPaths `
+        -TrustedTesseractLock $script:TesseractPayloadLock
+    # SEC (audit 2026-09-03 §SEC.23): hash qua handle va giu FileShare.Read
+    # xuyen suot Tauri. Writer/delete/replace khong duoc chen vao sau gate.
+    $script:TauriTesseractLease = Open-PrynXPayloadLeaseSet `
+        -Root $TESS_DEST `
+        -Entries $script:TesseractPayloadLock.Entries `
+        -Purpose 'Tesseract bundle'
+    $script:TauriPayloadManifestLease = Open-PrynXPayloadFileLease `
+        -Path $manifestPath `
+        -ExpectedSha256 $script:PayloadManifestSha256 `
+        -Purpose 'payload manifest before Tauri'
+    $script:TauriSidecarLease = Open-PrynXPayloadFileLease `
+        -Path $SIDECAR_FINAL `
+        -ExpectedSha256 $HASH `
+        -Purpose 'sidecar before Tauri'
+    # -Release: tao installer truoc, sau do ky updater bang signer rieng de
+    # passphrase chi xuat hien trong environment cua dung process signer.
     # Default: externalBin-only config (manual installer, no signing required).
-    $tauriConfig = if ($Release) { "src-tauri/tauri.release.conf.json" } else { "src-tauri/tauri.prod.conf.json" }
     $nsisDir = "$ROOT\desktop\src-tauri\target\release\bundle\nsis"
     $installerNamePattern = '^.+_' + [regex]::Escape($APP_VERSION) + '_.*-setup\.exe$'
     $installersBeforeBuild = @{}
@@ -1541,15 +2301,54 @@ if (-not $SkipTauri) {
     $env:CARGO_PROFILE_RELEASE_LTO = "thin"
     $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
     $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
+    $tauriCliLease = Open-PrynXTauriCliRuntimeLease
+    $tauriCliPath = [string]$tauriCliLease.Files['cli\tauri.js'].Path
+    $tauriNativePath = [string]$tauriCliLease.Files[
+        'cli-win32-x64-msvc\cli.win32-x64-msvc.node'
+    ].Path
+    # SEC (audit 2026-09-04 §SEC.24-R3): index.js chi duoc nap native binding
+    # exact-path dang giu lease; ambient NAPI_RS_NATIVE_LIBRARY_PATH da bi xoa/reject.
+    $env:NAPI_RS_NATIVE_LIBRARY_PATH = $tauriNativePath
     $tauriLocationPushed = $false
     $tauriExit = $null
     try {
         Push-Location "$ROOT\desktop"
         $tauriLocationPushed = $true
-        npx @tauri-apps/cli build --config $tauriConfig
+        Assert-PrynXNoAmbientTauriConfig
+        Assert-PrynXNoTauriPlatformConfig -ConfigRoot $tauriConfigRoot
+        Assert-PrynXRustToolEnvironment `
+            -CargoPath $script:PrynXCargoPath `
+            -RustcPath $script:PrynXRustcPath `
+            -RustdocPath $script:PrynXRustdocPath `
+            -CargoHome $script:PrynXCargoHome
+        Assert-PrynXCargoConfigurationAuthority `
+            -CargoHome $script:PrynXCargoHome `
+            -WorkingDirectories @("$ROOT\desktop", "$ROOT\desktop\src-tauri")
+        Assert-PrynXRustToolchainExactSet -Lease $script:RustToolchainLease
+        & $script:PrynXNodePath $tauriCliPath build --config $tauriConfig
         $tauriExit = $LASTEXITCODE
+        Assert-PrynXRustToolchainExactSet -Lease $script:RustToolchainLease
+        Assert-PrynXCargoConfigurationAuthority `
+            -CargoHome $script:PrynXCargoHome `
+            -WorkingDirectories @("$ROOT\desktop", "$ROOT\desktop\src-tauri")
+        Assert-PrynXNoTauriPlatformConfig -ConfigRoot $tauriConfigRoot
+        Assert-PrynXPayloadRootExactSet `
+            -Root $TESS_DEST `
+            -Entries $script:TesseractPayloadLock.Entries
     } finally {
         if ($tauriLocationPushed) { Pop-Location }
+        Close-PrynXPayloadLease -Lease $script:TauriSidecarLease
+        Close-PrynXPayloadLease -Lease $script:TauriPayloadManifestLease
+        Close-PrynXPayloadLease -Lease $script:TauriTesseractLease
+        Close-PrynXPayloadLease -Lease $script:TauriOverlayConfigLease
+        Close-PrynXPayloadLease -Lease $script:TauriBaseConfigLease
+        Close-PrynXPayloadLease -Lease $script:TauriConfigDirectoryLease
+        $script:TauriSidecarLease = $null
+        $script:TauriPayloadManifestLease = $null
+        $script:TauriTesseractLease = $null
+        $script:TauriOverlayConfigLease = $null
+        $script:TauriBaseConfigLease = $null
+        $script:TauriConfigDirectoryLease = $null
         if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
         else { $env:RUSTFLAGS = $previousRustFlags }
         if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
@@ -1585,43 +2384,45 @@ if (-not $SkipTauri) {
     }
 
     if ($Release) {
-        # SEC (audit 2026-08-06 REL.SIGN.EMPTY): chi signer duoc nhan khoa. Dung
-        # --password= khi khoa co mat khau rong de khong treo o prompt tuong tac.
+        # SEC (audit 2026-09-02 §SEC.17): chi signer duoc nhan khoa va passphrase;
+        # khoa khong mat khau da bi preflight tu choi truoc moi buoc build ton thoi gian.
         $signaturePath = "$($installer.FullName).sig"
         if (Test-Path -LiteralPath $signaturePath -PathType Leaf) {
             Remove-Item -LiteralPath $signaturePath -Force
         }
-        $tauriSignerArgs = @("@tauri-apps/cli", "signer", "sign")
-        $tauriSigningPrivateKey = [string]$script:CapturedTauriSigningPrivateKey
+        $tauriSignerArgs = @("signer", "sign")
         $signerLocationPushed = $false
         $signerExit = $null
         try {
-            if ([string]::IsNullOrWhiteSpace($tauriSigningPrivateKey)) {
-                if (-not (Test-Path -LiteralPath $script:CapturedTauriSigningKeyFile -PathType Leaf)) {
-                    throw "Khong thay khoa ky updater: $($script:CapturedTauriSigningKeyFile)"
-                }
-                $tauriSignerArgs += @("-f", $script:CapturedTauriSigningKeyFile)
-            } else {
-                $env:TAURI_SIGNING_PRIVATE_KEY = $tauriSigningPrivateKey
+            # SEC (audit 2026-09-03 §SEC.17-D1.1): build co the chay hang chuc
+            # phut. Mo lai handle sau cung va giu FileShare.Read xuyen dung lenh
+            # signer de process cung user khong the swap/write/delete khoa.
+            Assert-ReleaseSigningAuthority -AcquireLease
+            if ($null -eq $script:TauriSigningKeyLease) {
+                throw "Khong mo duoc identity lease cho khoa ky updater."
             }
+            $tauriSignerArgs += @("-f", [string]$script:TauriSigningKeyLease.Path)
             if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
-                $tauriSignerArgs += "--password="
-            } else {
-                $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
+                throw "Release tu choi khoa ky updater khong co passphrase."
             }
+            $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
             $tauriSignerArgs += $installer.FullName
             Push-Location "$ROOT\desktop"
             $signerLocationPushed = $true
-            npx @tauriSignerArgs
+            # Chi process Node da ky + bo Tauri CLI exact-path dang lease moi
+            # nhan passphrase. Khong qua npx/npm shim hay PATH.
+            & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs
             $signerExit = $LASTEXITCODE
         } finally {
-            if ($signerLocationPushed) { Pop-Location }
+            Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease
+            $script:TauriSigningKeyLease = $null
             Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
             Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
-            $tauriSigningPrivateKey = $null
             $script:CapturedTauriSigningPrivateKey = $null
             $script:CapturedTauriSigningKeyFile = $null
             $script:CapturedTauriSigningPrivateKeyPassword = $null
+            if ($signerLocationPushed) { Pop-Location }
         }
         if ($signerExit -ne 0) {
             throw "Tauri signer that bai voi exit code $signerExit."
@@ -1683,7 +2484,15 @@ if (-not $SkipTauri) {
         $manifestGitOutput = if ($Release) {
             @($script:ReleaseSourceCommit)
         } else {
-            @(& git -C $ROOT rev-parse HEAD 2>$null)
+            $manifestGitResult = Invoke-PrynXGitReadOnlyCommand `
+                -GitPath $script:PrynXGitPath `
+                -ExpectedRoot $ROOT `
+                -Command 'rev-parse' `
+                -Arguments @('HEAD')
+            if ($manifestGitResult.ExitCode -ne 0) {
+                throw "Cannot resolve source commit for release manifest."
+            }
+            @($manifestGitResult.Output)
         }
         if ($manifestGitOutput.Count -ne 1) {
             throw "Cannot resolve exactly one source commit for release manifest."
@@ -1697,10 +2506,15 @@ if (-not $SkipTauri) {
         $manifestDirtyOutput = if ($Release) {
             @()
         } else {
-            @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
-        }
-        if (-not $Release -and $LASTEXITCODE -ne 0) {
-            throw "Cannot resolve source dirty state for release manifest."
+            $manifestDirtyResult = Invoke-PrynXGitReadOnlyCommand `
+                -GitPath $script:PrynXGitPath `
+                -ExpectedRoot $ROOT `
+                -Command 'status' `
+                -Arguments @('--porcelain=v1', '--untracked-files=all')
+            if ($manifestDirtyResult.ExitCode -ne 0) {
+                throw "Cannot resolve source dirty state for release manifest."
+            }
+            @($manifestDirtyResult.Output)
         }
         $manifestGitDirty = if ($Release) {
             "no"
@@ -1752,6 +2566,12 @@ if (-not $SkipTauri) {
             "EXE_SHA256     = NOT_VERIFIED_INSTALL_PAYLOAD",
             "BUILD_EXE_SHA256 = $buildExeHash",
             "SIDECAR_SHA256 = $HASH",
+            "TESSERACT_LOCK_SHA256 = $($script:TesseractPayloadLock.LockSha256)",
+            "PAYLOAD_MANIFEST_SHA256 = $($script:PayloadManifestSha256)",
+            "RUST_TOOLCHAIN_ID = $($script:RustToolchainLease.ToolchainId)",
+            "RUST_TOOLCHAIN_LOCK_SHA256 = $($script:RustToolchainLease.LockSha256)",
+            "RUSTC_COMMIT    = $($script:RustToolchainLease.RustcCommit)",
+            "CARGO_COMMIT    = $($script:RustToolchainLease.CargoCommit)",
             "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
             "CODE_SIGNED    = no (Windows Authenticode not configured; updater .sig is separate)",
             "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })",
@@ -1779,5 +2599,31 @@ if (-not $SkipTauri) {
 
 Write-Host ""
 } finally {
+    Close-PrynXPayloadLease -Lease $script:TauriSidecarLease
+    Close-PrynXPayloadLease -Lease $script:TauriPayloadManifestLease
+    Close-PrynXPayloadLease -Lease $script:TauriTesseractLease
+    Close-PrynXPayloadLease -Lease $script:TauriOverlayConfigLease
+    Close-PrynXPayloadLease -Lease $script:TauriBaseConfigLease
+    Close-PrynXPayloadLease -Lease $script:TauriConfigDirectoryLease
+    Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease
+    Close-PrynXReleaseExecutableLease -Lease $script:TauriCliRuntimeLease
+    $script:TauriCliRuntimeLease = $null
+    foreach ($toolLease in $script:ReleaseToolLeases) {
+        Close-PrynXReleaseExecutableLease -Lease $toolLease
+    }
+    $script:ReleaseToolLeases.Clear()
+    $script:TauriSigningKeyLease = $null
+    if ($null -ne $script:TesseractPayloadLock) {
+        Close-PrynXPayloadLease -Lease $script:TesseractPayloadLock.LockLease
+    }
+    Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:TAURI_CONFIG -ErrorAction SilentlyContinue
+    Remove-Item Env:NAPI_RS_NATIVE_LIBRARY_PATH -ErrorAction SilentlyContinue
+    $script:CapturedTauriSigningPrivateKey = $null
+    $script:CapturedTauriSigningKeyFile = $null
+    $script:CapturedTauriSigningPrivateKeyPassword = $null
+    $script:AmbientTauriConfigWasPresent = $false
     Restore-BuildOwnedEnvironment
 }

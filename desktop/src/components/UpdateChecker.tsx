@@ -52,13 +52,10 @@ export default function UpdateChecker() {
                 }
             });
             setStatus('done');
-            try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                await invoke('prepare_for_update');
-            } catch (cleanupError) {
-                // Dọn thất bại vẫn cài tiếp: hook NSIS còn một lớp diệt tiến trình nữa.
-                console.warn('[Updater] prepare_for_update failed:', cleanupError);
-            }
+            // SEC (audit 2026-09-04 §SEC.18/§SEC.22): cleanup là điều kiện bắt
+            // buộc. Lỗi sẽ đi vào catch ngoài và tuyệt đối không gọi install().
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('prepare_for_update');
             // install() ShellExecute trình cài rồi gọi process::exit(0) — không có code nào
             // sau đây chạy được, kể cả relaunch(). Trình cài tự mở lại app bằng cờ /R.
             await update.install();

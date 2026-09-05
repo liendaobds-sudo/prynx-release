@@ -2628,14 +2628,11 @@ export default function GridPreview(props: GridPreviewProps) {
               }
               return;
             }
-            console.error(
-              "Preview layout API error:",
-              res.status,
-              "Payload:",
-              JSON.stringify(body, null, 2),
-              "Response:",
-              errText,
-            );
+            // SEC (audit 2026-09 §LOG.01): request chứa đường dẫn PDF và hình học;
+            // response có thể chứa chi tiết engine. Dev chỉ cần mã HTTP để truy vết.
+            if (import.meta.env.DEV) {
+              console.error("[GridPreview] Preview layout API failed:", { status: res.status });
+            }
             void previewPerfLog("preview-layout FAIL", {
               trace_id: diagnosticTraceId,
               request_id: requestId,

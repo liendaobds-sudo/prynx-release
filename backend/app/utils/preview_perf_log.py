@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from app.core.development_diagnostics import development_diagnostic_enabled
+
 _lock = threading.Lock()
 _enabled: Optional[bool] = None
 _session_id = f"S{int(time.time())}"
@@ -23,10 +25,9 @@ _DIAGNOSTIC_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 def _is_enabled() -> bool:
     global _enabled
     if _enabled is None:
-        # PERF (audit 2026-08-05 §PERF.3): trước đây mặc định bật và dùng cờ
-        # riêng, khiến release luôn ghi I/O. Chỉ PRYNX_PERF opt-in mới được bật.
-        v = (os.environ.get("PRYNX_PERF") or "").strip().lower()
-        _enabled = v in ("1", "true", "yes", "on")
+        # SEC (audit 2026-09-05 §LOG.01): PRYNX_PERF chỉ có hiệu lực trong
+        # runtime dev thông dịch; binary release luôn fail-closed.
+        _enabled = development_diagnostic_enabled("PRYNX_PERF")
     return _enabled
 
 

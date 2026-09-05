@@ -21,11 +21,13 @@ import threading
 import time
 from typing import Optional
 
+from app.core.development_diagnostics import development_diagnostic_enabled
+
 
 def perf_enabled() -> bool:
-    """True when perf sampling should run. Mirrors the Rust-side gate."""
-    val = os.environ.get("PRYNX_PERF", "")
-    return val == "1" or val.lower() == "true"
+    """Chỉ đo khi runtime dev đã opt-in; binary release luôn tắt."""
+
+    return development_diagnostic_enabled("PRYNX_PERF")
 
 
 def _proc_rss_mb(pid: int) -> Optional[float]:

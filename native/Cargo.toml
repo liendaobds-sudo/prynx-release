@@ -38,3 +38,12 @@ png = "0.18"
 # PrynX Print Engine — lõi prepress ink-space thay Ghostscript.
 print_engine = { path = "../print_engine" }
 
+# SEC (audit 2026-09-04 §SEC.16-A1): authority PyO3 tự mở khóa thiết bị
+# trong Microsoft Platform Crypto Provider; token v3 chép sang máy khác
+# không thể mở engine chỉ bằng cách giả header HWID.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+] }
+

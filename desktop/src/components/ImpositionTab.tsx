@@ -3508,22 +3508,41 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             if ((window as RuntimeWindow).__TAURI_INTERNALS__) {
                 const { save } = await import('@tauri-apps/plugin-dialog');
                 const { invoke } = await import('@tauri-apps/api/core');
+                type SaveSelection = { path: string; grant: string | null };
+                const isDocumentChild = documentWindow?.saveAsOnly === true;
+                // SEC (audit 2026-09-04 §SEC.15): child không gọi plugin dialog trực
+                // tiếp. Native chọn đích, kiểm lineage và trả capability one-shot gắn
+                // đúng window label + canonical target; main giữ nguyên luồng cũ.
+                const chooseSaveTarget = async (title: string): Promise<SaveSelection | null> => {
+                    if (isDocumentChild) {
+                        return invoke<SaveSelection | null>('request_document_save_grant', {
+                            request: {
+                                suggestedName: targetName,
+                                title,
+                            },
+                        });
+                    }
+                    const selectedPath = await save({
+                        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+                        defaultPath: targetName,
+                        title,
+                    });
+                    return selectedPath ? { path: selectedPath, grant: null } : null;
+                };
                 // GHI NGUYÊN TỬ qua lệnh Rust (ghi temp cùng thư mục rồi rename = thay-thế
                 // nguyên tử) → KHÔNG để file gốc dở-dang/hỏng nếu crash giữa lúc ghi đè
                 // (audit an toàn dữ liệu). Bytes truyền dạng Uint8Array (Tauri v2 raw IPC).
-                const atomicWrite = (p: string, data: Uint8Array) =>
-                    invoke('write_file_atomic', { path: p, contents: data });
+                const atomicWrite = (p: string, data: Uint8Array, saveGrant: string | null) =>
+                    invoke('write_file_atomic', saveGrant
+                        ? { path: p, contents: data, saveGrant }
+                        : { path: p, contents: data });
                 
-                let path: string | null = savePlan.overwritePath;
-                if (!path) {
-                    path = await save({
-                        filters: [{ name: 'PDF', extensions: ['pdf'] }],
-                        defaultPath: targetName,
-                        title: 'Save PDF File'
-                    });
-                }
+                const selection: SaveSelection | null = savePlan.overwritePath && !isDocumentChild
+                    ? { path: savePlan.overwritePath, grant: null }
+                    : await chooseSaveTarget('Save PDF File');
 
-                if (path) {
+                if (selection) {
+                    const { path, grant: saveGrant } = selection;
                     // FILEIO (audit 2026-08-26 §FILE.A4): mọi quyết định của bước ghi nằm
                     // trong MỘT hàm thuần `planWorkspaceSaveWrite`, thứ tự cố định: reuse
                     // source sạch → từ chối đích artifact tạm → copy đĩa→đĩa → ghi bytes.
@@ -3533,7 +3552,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     // luồng lưu gắn identity "nguồn sạch" lên nó — provenance bị rửa trắng,
                     // vé thuê artifact bị tước, vòng dọn được phép xoá đúng file người dùng
                     // vừa tưởng là đã lưu.
-                    const runSaveWrite = (destPath: string) => executeWorkspaceSaveWrite(
+                    const runSaveWrite = (destPath: string, grant: string | null) => executeWorkspaceSaveWrite(
                         planWorkspaceSaveWrite({
                             file: curFile,
                             destPath,
@@ -3547,10 +3566,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             // write_file_atomic → "RangeError: Invalid array length" khi
                             // serialize khối khổng lồ (vd booklet 338MB).
                             copyOnDisk: async (source, dest) => {
-                                await invoke('copy_file_atomic', { source, path: dest });
+                                await invoke('copy_file_atomic', grant
+                                    ? { source, path: dest, saveGrant: grant }
+                                    : { source, path: dest });
                             },
                             writeBytes: async (dest, bytes) => {
-                                await atomicWrite(dest, bytes);
+                                await atomicWrite(dest, bytes, grant);
                             },
                             // Cổng lười: chỉ nhánh ghi bytes mới gọi, nên nhánh từ chối không
                             // bao giờ nạp file lớn vào WebView chỉ để rồi bỏ đi.
@@ -3591,22 +3612,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         return true;
                     };
                     try {
-                        return applySaveOutcome(await runSaveWrite(path), path);
+                        return applySaveOutcome(await runSaveWrite(path, saveGrant), path);
                     } catch (writeErr: unknown) {
                         // Lỗi phạm vi ghi vẫn từ Rust dưới dạng chuỗi: giữ NGUYÊN nhánh mở
                         // lại hộp thoại chọn vị trí (Requirement 1.5). Nhánh từ chối artifact
                         // không đi qua đây nên không thể kích hoạt hộp thoại này.
                         const writeErrorText = errorMessage(writeErr);
                         if (writeErrorText.includes('forbidden path') || writeErrorText.includes('not allowed')) {
-                            const fallbackPath = await save({
-                                filters: [{ name: 'PDF', extensions: ['pdf'] }],
-                                defaultPath: targetName,
-                                title: 'Select save location (Original path restricted)'
-                            });
-                            if (fallbackPath) {
+                            const fallbackSelection = await chooseSaveTarget(
+                                'Select save location (Original path restricted)',
+                            );
+                            if (fallbackSelection) {
                                 // Lượt fallback cũng đi qua plan: đích chọn lại vẫn có thể
                                 // trùng artifact tạm và vẫn phải bị chặn.
-                                return applySaveOutcome(await runSaveWrite(fallbackPath), fallbackPath);
+                                return applySaveOutcome(
+                                    await runSaveWrite(fallbackSelection.path, fallbackSelection.grant),
+                                    fallbackSelection.path,
+                                );
                             }
                             return false; // user huỷ fallback
                         } else {

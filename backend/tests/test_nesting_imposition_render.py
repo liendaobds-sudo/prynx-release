@@ -912,6 +912,10 @@ def test_telemetry_writer_true_shape_gom_phase_khong_doi_artifact(
 ) -> None:
     """PERF-NEST-06: phase tổng inclusive và counter success có nghĩa nhất quán."""
 
+    from app.config import settings as app_settings
+
+    # SEC (audit 2026-09-05 §LOG.01): telemetry chỉ có authority trong dev.
+    monkeypatch.setattr(app_settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_PERF", "1")
     source = workdir / "nguon-telemetry.pdf"
     _make_full_ink_source(source, page_count=2)
@@ -973,8 +977,10 @@ def test_telemetry_report_loi_chi_dem_attempt_khong_dem_success(
 ) -> None:
     """Counter attempt/success không được gọi lượt save lỗi là một pass thành công."""
 
+    from app.config import settings as app_settings
     from app.workers import nup_report
 
+    monkeypatch.setattr(app_settings, "DEV_MODE", True)
     monkeypatch.setenv("PRYNX_PERF", "1")
     monkeypatch.setattr(nup_report, "stamp_reports_on_pdf", lambda *_args, **_kwargs: False)
     source = workdir / "nguon-telemetry-report-loi.pdf"

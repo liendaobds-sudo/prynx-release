@@ -17,7 +17,9 @@ def test_native_gate_invalidates_stale_pyo3_python_linkage():
     pin = source.index(
         '$env:PYO3_ENVIRONMENT_SIGNATURE = $PYTHON + "|" + $nativePythonVersion'
     )
-    native_test = source.index('Invoke-Checked "Native PDF tests"')
+    native_test = source.index(
+        'Invoke-CheckedCargo "Native PDF tests" @(\'test\', \'--locked\')'
+    )
     restore = source.index(
         "$env:PYO3_ENVIRONMENT_SIGNATURE = $previousPyo3EnvironmentSignature"
     )

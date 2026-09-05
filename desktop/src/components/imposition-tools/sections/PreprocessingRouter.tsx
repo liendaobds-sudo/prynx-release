@@ -313,7 +313,11 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'bgremover' && (
-                <BgRemoverTool tabId={tabId} pdfFile={pdfFile} />
+                <BgRemoverTool
+                    tabId={tabId}
+                    pdfFile={pdfFile}
+                    sourceImageFile={sourceImageFile}
+                />
             )}
 
             {activeTool === 'document_cleanup' && (

@@ -8,14 +8,14 @@ Gọi get_logger() ở mọi nơi cần log audit để bảo đảm cùng đíc
 import logging
 import os
 
+from app.core.development_diagnostics import development_diagnostic_enabled
+
 _LOG_NAME = "rot_audit"
 _LOG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "rot_audit.log",
 )
-_ROT_AUDIT_ENABLED = os.getenv("PRYNX_ROT_AUDIT", "").strip().lower() in {
-    "1", "true", "yes", "on",
-}
+_ROT_AUDIT_ENABLED = development_diagnostic_enabled("PRYNX_ROT_AUDIT")
 
 
 

@@ -253,11 +253,16 @@ function TitleBar({ onOpenSettings }: { onOpenSettings?: () => void }) {
 
 /** Minimum time to keep brand intro visible (~light animation + short hold). */
 const SPLASH_MIN_MS = 3000;
+// SEC (audit 2026-09-05 startup): xác minh license vẫn fail-closed, nhưng một IPC/
+// request bị treo không được giữ người dùng ở splash vô hạn. Sau hạn này UI hiện
+// màn kích hoạt/khóa; chỉ `licenseValid=true` mới mở quyền như trước.
+const SPLASH_AUTH_DEADLINE_MS = 15_000;
 
 export default function App({ documentWindowBootstrap }: AppProps) {
   const isDocumentWindow = Boolean(documentWindowBootstrap);
   const { licenseKey, licenseValid, isChecking, checkSession, setUser } = useAuthStore();
   const [splashMinElapsed, setSplashMinElapsed] = useState(isDocumentWindow);
+  const [splashAuthDeadlineElapsed, setSplashAuthDeadlineElapsed] = useState(isDocumentWindow);
   const [splashExiting, setSplashExiting] = useState(isDocumentWindow);
   const [splashDone, setSplashDone] = useState(isDocumentWindow);
 
@@ -266,6 +271,15 @@ export default function App({ documentWindowBootstrap }: AppProps) {
     appPerf.mark('app-mounted');
     const t = window.setTimeout(() => setSplashMinElapsed(true), SPLASH_MIN_MS);
     return () => window.clearTimeout(t);
+  }, [isDocumentWindow]);
+
+  useEffect(() => {
+    if (isDocumentWindow) return;
+    const timeout = window.setTimeout(
+      () => setSplashAuthDeadlineElapsed(true),
+      SPLASH_AUTH_DEADLINE_MS,
+    );
+    return () => window.clearTimeout(timeout);
   }, [isDocumentWindow]);
 
   useEffect(() => {
@@ -290,12 +304,15 @@ export default function App({ documentWindowBootstrap }: AppProps) {
 
   // When session is ready and min intro time elapsed → play exit cinematic.
   useEffect(() => {
-    if (!isChecking && splashMinElapsed && !splashExiting && !splashDone) {
+    if ((!isChecking || splashAuthDeadlineElapsed)
+      && splashMinElapsed
+      && !splashExiting
+      && !splashDone) {
       // Chuyển sang pha exit là đồng bộ state với điều kiện sẵn sàng; giữ trigger để animation chạy đúng một lần.
       // eslint-disable-next-line react-hooks/set-state-in-effect -- state machine splash có chủ đích.
       setSplashExiting(true);
     }
-  }, [isChecking, splashMinElapsed, splashExiting, splashDone]);
+  }, [isChecking, splashAuthDeadlineElapsed, splashMinElapsed, splashExiting, splashDone]);
 
   const handleSplashExitComplete = useCallback(() => {
     appPerf.mark('splash-complete');

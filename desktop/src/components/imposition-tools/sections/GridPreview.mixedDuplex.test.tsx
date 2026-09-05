@@ -587,6 +587,34 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("không ghi request PDF/hình học hoặc raw response khi preview API lỗi", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const rawEngineResponse = JSON.stringify({
+      detail: "Không thể tính preview thử nghiệm.",
+      internal: "engine-private-detail",
+    });
+    authenticatedFetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => rawEngineResponse,
+    });
+
+    renderMixedPreview();
+    await waitFor(() => {
+      expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Không thể tính preview thử nghiệm.")).toBeTruthy();
+    }, { timeout: 3_000 });
+
+    expect(errorLog).toHaveBeenCalledWith(
+      "[GridPreview] Preview layout API failed:",
+      { status: 500 },
+    );
+    const serializedLogs = JSON.stringify(errorLog.mock.calls);
+    expect(serializedLogs).not.toContain("mixed-materialized.pdf");
+    expect(serializedLogs).not.toContain("engine-private-detail");
+    errorLog.mockRestore();
+  });
+
   it("CNC chuyển được qua mọi tờ mẫu backend trả về", async () => {
     authenticatedFetchMock.mockResolvedValueOnce({
       ok: true,

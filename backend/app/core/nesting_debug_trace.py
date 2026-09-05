@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from app.core.development_diagnostics import development_diagnostic_enabled
+
 logger = logging.getLogger(__name__)
 
 TRACE_PATH_ENV = "PRYNX_NESTING_TRACE_PATH"
@@ -55,24 +57,18 @@ def sanitize_trace_id(value: Any, *, limit: int = 96) -> str | None:
 
 
 def nesting_trace_enabled() -> bool:
-    """Tự bật khi chạy dev; release tắt trừ khi operator opt-in.
+    """Tự bật khi chạy dev; binary release luôn tắt.
 
     Lô chẩn đoán này cần người dùng chỉ restart ``run_dev`` và bấm
-    Bình, không phải cấu hình shell. Release không được ghi telemetry cục bộ
-    thường trực; muốn chẩn đoán installer thì bật env tường minh.
+    Bình, không phải cấu hình shell. SEC (audit 2026-09-05 §LOG.03): cờ môi
+    trường chỉ có hiệu lực trong runtime phát triển thông dịch; không có đường
+    bật trace trên bản cài đã đóng gói.
     """
 
-    explicit = os.environ.get(TRACE_ENABLED_ENV)
-    if explicit is not None:
-        return str(explicit).strip().lower() in {"1", "true", "on", "yes"}
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    try:
-        from app.config import settings
-
-        return bool(settings.DEV_MODE)
-    except Exception:
-        return False
+        # Test có thể bật tường minh để kiểm writer; mặc định không làm bẩn disk.
+        return development_diagnostic_enabled(TRACE_ENABLED_ENV)
+    return development_diagnostic_enabled(TRACE_ENABLED_ENV, default_in_dev=True)
 
 
 def _json_default(value: Any) -> str:

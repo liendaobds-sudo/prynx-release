@@ -1,0 +1,716 @@
+{
+  "schema_version": 1,
+  "component_id": "tesseract",
+  "component_version": "5.4.0.20240606",
+  "payload_contract": "Installer tree excluding $PLUGINSDIR, tesseract-uninstall.exe and every root utility EXE except tesseract.exe; add pinned vie.traineddata.",
+  "provenance": {
+    "installer": {
+      "package_id": "UB-Mannheim.TesseractOCR",
+      "url": "https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe",
+      "sha256": "c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9",
+      "verified_by": "WinGet manifest"
+    },
+    "supplements": [
+      {
+        "path": "tessdata/vie.traineddata",
+        "repository": "https://github.com/tesseract-ocr/tessdata",
+        "commit": "fb1266d52b0a93ef27dbff54ecd422809c9c4f68",
+        "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata/fb1266d52b0a93ef27dbff54ecd422809c9c4f68/vie.traineddata",
+        "sha256": "164d9bed7e5a6444586d39434cc1adf4df976cfe23cffd6468e444c94703640a"
+      }
+    ]
+  },
+  "file_count": 115,
+  "files": [
+    {
+      "path": "ambiguous_words.1.html",
+      "size": 17823,
+      "sha256": "7361d4c477bd35d5fc66ce8a9bfb5c2b4ae9eab91e42148bed6873067d98997f",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "classifier_tester.1.html",
+      "size": 19529,
+      "sha256": "5454792d8f7813aad67795ffb48b6ba3742fbcad5ad7e95b3aa4e73accc032c6",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "cntraining.1.html",
+      "size": 18156,
+      "sha256": "73423b3fad7c547e8917b08329dbd603db794eff52a4eeee230e88a5b1d15f0f",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "combine_lang_model.1.html",
+      "size": 21055,
+      "sha256": "0424fbe925abedf763b38cdf36153b9269f11f412ff6d164a922652ecebb602f",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "combine_tessdata.1.html",
+      "size": 27130,
+      "sha256": "07e53161165d55789060cacac9e9e83ba274eeed1d4e6e9ecb486fb1ee982013",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "dawg2wordlist.1.html",
+      "size": 18336,
+      "sha256": "6541fccd5fdfc938175fd555eec2101bd78e673a3390521f5a7f04ad5fee4fd7",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "doc/AUTHORS",
+      "size": 787,
+      "sha256": "720862b7253993b348fe15f37ed6e0d4feb0fc8df8324284d75975d54dd29923",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "doc/LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "doc/README.md",
+      "size": 8485,
+      "sha256": "099fb244ec3e34962afc4861a6c8c42d2727c2f834f23071070c6f2d557b164c",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libarchive-13.dll",
+      "size": 769154,
+      "sha256": "98b9b7e9259f23eab6749ee25cca2c0643f09df6b23c58229fd43bf6249195e9",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libb2-1.dll",
+      "size": 34372,
+      "sha256": "7fb8418a1172042dab5227fcd466b1bf293737f5b5cf35359e851516227f109c",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libbrotlicommon.dll",
+      "size": 143397,
+      "sha256": "62f363f6aac0d54ce7b115c0412b19e0fe5480f4e6fc1254f663b0ab6868e46f",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libbrotlidec.dll",
+      "size": 60412,
+      "sha256": "7d6c0f954b6f2db1c1c5fd5904886ae055859a02ca31b6dde5f96f6b0259d23f",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libbz2-1.dll",
+      "size": 100964,
+      "sha256": "b79cd3a7102e359ef6324e98966a67939e58ec2b651ae2847cae84a4dfa453f7",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libcairo-2.dll",
+      "size": 1213715,
+      "sha256": "c531e50be733f641e39419bf62cb799698b20086afb958d73f56677ea0c3f9da",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libcrypto-3-x64.dll",
+      "size": 5130880,
+      "sha256": "c0674a225d30f1642ca1da45ac040a9c1885d8f23883532b42987bae458edc4d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libdatrie-1.dll",
+      "size": 34386,
+      "sha256": "f760aef8a31b7c3670484ca4eabab1ab8e95c14052167e191463f6371c3f0850",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libdeflate.dll",
+      "size": 91035,
+      "sha256": "b6ee7b31a23605d8e8b9be5eae782a3ddf7adf2b7ca2c8e0041bdfd4fe4659ee",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libexpat-1.dll",
+      "size": 188909,
+      "sha256": "d9ea333175b1e995bbe6a062567f38ff362f1b2f369fa8ebdb0eeed21813bdc6",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libffi-8.dll",
+      "size": 33708,
+      "sha256": "f1ed51652b3746c1b4bce497b7041e677e5d80c5ab8198efebb8fc6f75329ae8",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libfontconfig-1.dll",
+      "size": 350185,
+      "sha256": "d6c70b7e205f24ff96b29a80849b59c84f8701b311434f64f2bf93bd36bdb163",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libfreetype-6.dll",
+      "size": 776690,
+      "sha256": "5297f754dfca04abdb0d21705d5afc3c4122aa25c7afbdd87900313cb780c868",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libfribidi-0.dll",
+      "size": 144627,
+      "sha256": "449085380e54089871ccc9f32b715f65a2e53eb9f5125793fed900461d29a420",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libgcc_s_seh-1.dll",
+      "size": 150707,
+      "sha256": "b22b954397a52703579d92db64b57812af70f2afcafe2e742a009c1640b9ec1a",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libgif-7.dll",
+      "size": 41367,
+      "sha256": "a1a179853ae6fad8eb045b8e9f12c55e6fc99929446b02fa345512354cf5e582",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libgio-2.0-0.dll",
+      "size": 1814226,
+      "sha256": "07bda2471ca0490598d1e6fbdfc8958cd91926d68effc90d9eda0ea2f9279c7c",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libglib-2.0-0.dll",
+      "size": 1456928,
+      "sha256": "12b2f4d609a5d3cf714a8c502074409d32f21082a682373f4e1bca36821f08bc",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libgmodule-2.0-0.dll",
+      "size": 26783,
+      "sha256": "8cf9bb9be24c88a66ad478214a55357a9d44702636789dfa436ca509457d781c",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libgobject-2.0-0.dll",
+      "size": 359001,
+      "sha256": "4fcf4fb2d5ef234e717b389f3b637f05ee6ff111b698ef59664394f10622aef6",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libgraphite2.dll",
+      "size": 152538,
+      "sha256": "f927efecd958f0e54a24ae297f86cd6aed05e7fc20e5da0882050ab9ec464395",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libharfbuzz-0.dll",
+      "size": 1329363,
+      "sha256": "c1fa05f089041e348c9fcf18ae115942c989ac5259069d0ae83aa63e9a7c66ea",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libiconv-2.dll",
+      "size": 1118202,
+      "sha256": "967189adfbc889fde89aafc867f7a1f02731f8592cf6fd5a4ace1929213e2e13",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libicudt75.dll",
+      "size": 30743046,
+      "sha256": "6a60829e1c13fd73043af6f475f85971a42eb5553e88c92f26b8802bde92c2f4",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libicuin75.dll",
+      "size": 3381215,
+      "sha256": "9fad2353a168134305e67a62fedff21cd43293055b7f4b9c39ff30cc78f30be0",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libicuuc75.dll",
+      "size": 1932464,
+      "sha256": "60e6f91536efd0a8e408b060edb76a2148a7a397399b76ee39e4ed61de0774b0",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libintl-8.dll",
+      "size": 188681,
+      "sha256": "42a63cb4c3c28a683d9f6c3510de5ec17849eb18c097fa02cd78aeb800bff202",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libjbig-0.dll",
+      "size": 62083,
+      "sha256": "275a827ba6839d47cfdbe059db1b1b403a92ff26e2b76a29362915487868bef2",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libjpeg-8.dll",
+      "size": 912746,
+      "sha256": "e44514c4e7753635e79bdb668f1e10315c1a93287f8d044ae74594ed57de619d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libleptonica-6.dll",
+      "size": 2721006,
+      "sha256": "26861baff4d25446a03ed1f6064d2eae7435eddf51bb36af4e634c0eb4eb3af0",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libLerc.dll",
+      "size": 761261,
+      "sha256": "4ab688c7c5c4afdfee0f519f942759137067a7876a1c1bb825ee575b0a5760b1",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "liblz4.dll",
+      "size": 147105,
+      "sha256": "1b64d6429ae4aacf9eb35b8158d98556859a5c5e8ee817e155da343e194dd8e3",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "liblzma-5.dll",
+      "size": 184667,
+      "sha256": "3a599d97ea4dd002166ee7ffdc527c129d2cf8b05e9152ca7cae006c4187977e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libopenjp2-7.dll",
+      "size": 462194,
+      "sha256": "5ff762ff6d672a06ee502819daf1494aa3aa3acf408805f0429303e026705011",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpango-1.0-0.dll",
+      "size": 401912,
+      "sha256": "834caf40403a447634b0e80ff4ea290f1ee361364cf24ffc8bb55b048f9254a9",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpangocairo-1.0-0.dll",
+      "size": 74540,
+      "sha256": "ee706c4561af24de6cbe7ad10b46852fc8b0f328534ea2beb5f1147696e87b55",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpangoft2-1.0-0.dll",
+      "size": 102261,
+      "sha256": "7c80bc1949255a8bc62fe05ab003b777aa844ac8f6c5da1ebc4c49ee35f3b9b8",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpangowin32-1.0-0.dll",
+      "size": 114044,
+      "sha256": "d940a831f2a9be33dd36ff3d8b97488a068b1699fb6b2e874633d4d5564f301c",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpcre2-8-0.dll",
+      "size": 399737,
+      "sha256": "5ffa31709c275120a745f9f714974db1e86c8fd54f8ca6889617530dffbff95b",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpixman-1-0.dll",
+      "size": 714812,
+      "sha256": "8f8b8f09ec8fe9945ba76fadf8a04183056afd2c35aa7be1808e1a1301d87757",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libpng16-16.dll",
+      "size": 247380,
+      "sha256": "f1b0a9d6cf3b8809c22fa0e27b5b82d9357e5bca43ab0ce8762f55fb303ed23f",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libsharpyuv-0.dll",
+      "size": 57852,
+      "sha256": "60bcc87ac64a834e967e9ec9461be37395dbc090c579f3e23497ef69a5d8323e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libstdc++-6.dll",
+      "size": 2409896,
+      "sha256": "0d9c01ab1771df439c75f144b2d855b4ac400243f006d14d9a043493de628f0d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libtesseract-5.dll",
+      "size": 101471336,
+      "sha256": "279488c41bd341edaa03dcd097faa33604ba330e6254ac97bcaf2229d8d7ac1a",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libthai-0.dll",
+      "size": 69739,
+      "sha256": "420e08cedaf9daaabcf8f6c92349d9dadb7b5ad9e4e79d1126bb2a55a7cdbe09",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libtiff-6.dll",
+      "size": 576887,
+      "sha256": "e000306d3de299b05ebef443e48c1486d9fa291b0244f6ca6225843b75fdf581",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libwebp-7.dll",
+      "size": 743580,
+      "sha256": "687b8859e1f739dad5800fdc293a6ee1fd0dd4b33380ab283681a5a12eb3d4fa",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libwebpmux-3.dll",
+      "size": 78730,
+      "sha256": "ad10bacecd37b44c7c2c813da098a8bf6a42a3bf0152f7f33726d216815558f9",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libwinpthread-1.dll",
+      "size": 60798,
+      "sha256": "bbcbe5eb8e806f3537585d4c9832b4ee15f86617328a566695d7d3728aa370ee",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "libzstd.dll",
+      "size": 1179848,
+      "sha256": "f216ea8efb5b3bb9ad3d938fb9ac07e3b8f78c2c92faab03d2c468d0b6798a5a",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "lstmeval.1.html",
+      "size": 19519,
+      "sha256": "0e6fe86891af3f96e84fd8ee77d2eeba248d837b6187108b2fbff9b5863a249d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "lstmtraining.1.html",
+      "size": 22643,
+      "sha256": "5fecf0b238bf913e5979192140885f71a171a0f47056f6597be0cafa9afaba22",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "merge_unicharsets.1.html",
+      "size": 18944,
+      "sha256": "e8e565350d465ac83d14fa50bd5d35cac18c835fb5c46ebcb8e1f61574956466",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "mftraining.1.html",
+      "size": 19427,
+      "sha256": "16ac43815d3c5d6ed81a2df55add8466d13e4c918e1aaf0bbaf3758ed0a968c5",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "set_unicharset_properties.1.html",
+      "size": 19109,
+      "sha256": "e5848c9eb844d9f4002b1bde9da6a373320e6ef31757e486103aeca64c26c5c1",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "shapeclustering.1.html",
+      "size": 19448,
+      "sha256": "95391fb8bac0f788eeab08038c3cefd17a591c43555356a16a6350add59f48b2",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/alto",
+      "size": 23,
+      "sha256": "23a038ff290c7471a1a8aa4b5d23e310b0bf49f718480dad6b619a7d06eca330",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/ambigs.train",
+      "size": 146,
+      "sha256": "717e534fd4330ed3f9bdb006f0465aa2633cca866786a8f8d469dbd4b01c10c2",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/api_config",
+      "size": 26,
+      "sha256": "2929bc0f1d2ba77f28cfc230f7b835b2b54038c0f9d2e8e4c5ada43803c999fd",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/bigram",
+      "size": 129,
+      "sha256": "65e6583abc617a34d4091285181f2493d312c296a85629ac3c092d3b93b6e554",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/box.train",
+      "size": 311,
+      "sha256": "a421355e3488bf3fdfc14a1bdcca08c6f6414ec92c53f0eea22317c868c1a623",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/box.train.stderr",
+      "size": 311,
+      "sha256": "3e62cd37d2383abf0c6dfa5ba39fd1187fcff6856c4f4f27ea1554cb4c1874d2",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/digits",
+      "size": 37,
+      "sha256": "e757d95bb1e51444860ea10d7f2c8bb8a0c9c4ccc58a0e8c67e8dc2933a56e2e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/get.images",
+      "size": 24,
+      "sha256": "28c774c157a2f48d835a1d58f5a35dd70106c136e176572ee43bbf46f3d65c92",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/hocr",
+      "size": 40,
+      "sha256": "d6a7ec7c5143317a59fce2393054f6b7a8261824b934e7426fdd24febc929ad6",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/inter",
+      "size": 59,
+      "sha256": "46303bf83668e446f4966d1ebf7418ad9f0c5e08836bc59d98cae3bbfc3aee9d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/kannada",
+      "size": 101,
+      "sha256": "7d34fec99283142a3a22d157dc5cc8824b93ee923e576e6bfd1b026039c2e8f0",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/linebox",
+      "size": 70,
+      "sha256": "eb0279527b009a53432a9e1dde85bf42814901393546bc365bb61837f83355c9",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/logfile",
+      "size": 25,
+      "sha256": "5eed5e41e5fbbf0862836c0e4cda7821f8e08441645858ec6821ab41d926e195",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/lstm.train",
+      "size": 282,
+      "sha256": "3d1f8e5ab4e41467fdd938dc4d266eea081b477f8d74ab6b198dd1d854b5301c",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/lstmbox",
+      "size": 26,
+      "sha256": "61255d1b7c9df76b673ff43d2d91cda7f4c3c2e7d7f0643a71b212739833017e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/lstmdebug",
+      "size": 98,
+      "sha256": "62d40d7a7d80315e10cdca2561d2ddf2981f53dfdbd567513b04d36f3add7f4e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/makebox",
+      "size": 26,
+      "sha256": "a8fe20a2bc9ff1e9e8ed06d56845336c978627b8e965600abd63f1f412c18ffe",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/page",
+      "size": 67,
+      "sha256": "6e4b43f27a77124e66c87fce8de518ff81e918d3cc36fe71a3d01179c1856a07",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/pdf",
+      "size": 22,
+      "sha256": "54d56e81dfefe289b0d2e4c7bc9bbe662711f5b8255c128b73bcd66efb6bba1a",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/quiet",
+      "size": 21,
+      "sha256": "8a93fad8251f61b5f17b8628203a0e068c71e0907cd63012ab22afb7b560fce3",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/rebox",
+      "size": 65,
+      "sha256": "73ca35d7d71084fb88e2eb9a5c53ad91682754b3aecb918dece7591ec22a0b26",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/strokewidth",
+      "size": 377,
+      "sha256": "ffb140aadd3e26d0d9b3b355d592b50cff8b2c3ce0394b4a6de4fabc1c0942c9",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/tsv",
+      "size": 22,
+      "sha256": "59d079bb75d8b3d7c839a3564580cb559e362c93a9d70f234e421c0c3e767e04",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/txt",
+      "size": 166,
+      "sha256": "9bcbdbe285fd3a024be563cb237751ceb3435d86610e231f08894023321af5d7",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/unlv",
+      "size": 45,
+      "sha256": "1b02e7801de71f0757a26ba6d749e9182a0d9971929966bebb67f99db8733f40",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/configs/wordstrbox",
+      "size": 29,
+      "sha256": "9d1787cdce085ad36dc9d6ba6b2702ac262beaf06a0bb4a0b84355f6458261e5",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/eng.traineddata",
+      "size": 4113088,
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/eng.user-patterns",
+      "size": 33,
+      "sha256": "1970d87625c9c7c0924f97181a7f349ff4935178e3bdb5bb6305c28a3af9824b",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/eng.user-words",
+      "size": 27,
+      "sha256": "63008cdace728eb209dd926a35afe012469c88c8621a57ed9902034396ca4e2b",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/jaxb-api-2.3.1.jar",
+      "size": 128076,
+      "sha256": "88b955a0df57880a26a74708bc34f74dcaf8ebf4e78843a28b50eae945732b06",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/osd.traineddata",
+      "size": 10562727,
+      "sha256": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/pdf.ttf",
+      "size": 572,
+      "sha256": "c7845420925a23d88ed830a63957b8af85a66a8daf8d9fc90e843673b2ef1a59",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/piccolo2d-core-3.0.1.jar",
+      "size": 125187,
+      "sha256": "9acad723136ddb996e96f5d488b9b046753a1d4c60ea639d5e3f9701deaf60ad",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/piccolo2d-extras-3.0.1.jar",
+      "size": 149558,
+      "sha256": "ba45f343e9ebc06c9b4ce165c8bb539b11cbf59e93d1df48489ab173f74375a8",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/ScrollView.jar",
+      "size": 26376,
+      "sha256": "9d391f419dc1bbe16d81d9317ccf72bbb98321b23336fa6b045447fd2a16999e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/tessconfigs/batch",
+      "size": 49,
+      "sha256": "d91107c3a8c1c311b00c64aee56cbce4d48894c6e5762165f1ec7871c7b7bf4e",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/tessconfigs/batch.nochop",
+      "size": 37,
+      "sha256": "5acabb534cfd4fd8fe111c854955e1ffa9390619ef43775b1a5fbaf5283f68bb",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/tessconfigs/matdemo",
+      "size": 243,
+      "sha256": "d098cdf6ffe691ccc9dfa4490603f6ae33cdd313010cedfa50007ebde3ddd2d0",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/tessconfigs/msdemo",
+      "size": 368,
+      "sha256": "0ed753a05ea60766f4269d81873b6390e937ea2df1758de91c57db7e92429555",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/tessconfigs/nobatch",
+      "size": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/tessconfigs/segdemo",
+      "size": 295,
+      "sha256": "7ec19f77f8c76b4dfb33ec8b13e11d7685ae5c9cf6eca4e7333cce0513ddac56",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tessdata/vie.traineddata",
+      "size": 7763728,
+      "sha256": "164d9bed7e5a6444586d39434cc1adf4df976cfe23cffd6468e444c94703640a",
+      "origin": "tesseract-tessdata-commit"
+    },
+    {
+      "path": "tesseract.1.html",
+      "size": 42221,
+      "sha256": "4a6a5ee5ca3ad44a711890071837febbff27621745896cd73e4333038c479382",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "tesseract.exe",
+      "size": 1585024,
+      "sha256": "babb405f4366b480d02cd8ff2bac8d497170f6c1711ce6f3d5d8bf0fb7fa6ed9",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "text2image.1.html",
+      "size": 25663,
+      "sha256": "65dd8b72ee345e7ea95aa24c932fd1534d83e764b74f1ab459475f5898876c1a",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "unicharambigs.5.html",
+      "size": 21249,
+      "sha256": "0353dbd91477b479dbe4a38994c0c488d48b86a581dd64cb7804fe131565446d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "unicharset_extractor.1.html",
+      "size": 18811,
+      "sha256": "ad8140c54167f8d46ddc7b42f47963a3a46869ffda3c43fbec2f88124e92ef00",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "unicharset.5.html",
+      "size": 23829,
+      "sha256": "b2df74b3abfad11c529ba7e167cc573ec345c66b285f1a688739df95cb2bfbff",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "wordlist2dawg.1.html",
+      "size": 19492,
+      "sha256": "1b9931074dd228953f385a6b703f334fe9ecf8fdbbca8b2f7f957f882c28529d",
+      "origin": "ub-mannheim-installer"
+    },
+    {
+      "path": "zlib1.dll",
+      "size": 120814,
+      "sha256": "cb7ab3788d10940df874acd97b1821bbb5ee4a91f3eec11982bb5bf7a3c96443",
+      "origin": "ub-mannheim-installer"
+    }
+  ]
+}

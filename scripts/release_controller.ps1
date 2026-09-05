@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
+. (Join-Path $PSScriptRoot "release_executable_guard.ps1")
 $mutexName = ""
 $mutex = $null
 $ownsMutex = $false
@@ -24,6 +25,8 @@ $logPath = $null
 $childProcess = $null
 $logWriter = $null
 $signingPassword = ""
+$powerShellLease = $null
+$script:PrynXControllerPowerShellPath = ""
 $startedAtUtc = [DateTime]::UtcNow
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 
@@ -121,7 +124,10 @@ function Start-PowerShellChild {
 
     # ProcessStartInfo giữ được exit code thật ngay cả khi stdout/stderr được redirect.
     $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = "powershell.exe"
+    if ([string]::IsNullOrWhiteSpace($script:PrynXControllerPowerShellPath)) {
+        throw "Chưa khóa executable Windows PowerShell tin cậy."
+    }
+    $startInfo.FileName = $script:PrynXControllerPowerShellPath
     $startInfo.Arguments = (@($Arguments | ForEach-Object {
         Quote-ProcessArgument ([string]$_)
     }) -join ' ')
@@ -254,6 +260,11 @@ try {
     $statusPath = Join-Path $runDirectory "status.json"
     $logPath = Join-Path $runDirectory "build.log"
     Write-RunStatus -State "starting" -Stage "Khởi động" -Message "Đang chuẩn bị tiến trình build nền."
+
+    # SEC (audit 2026-09-04 SEC.24-R2): resolve + lease truoc khi doc mat khau
+    # ky; child khong bao gio duoc tim PowerShell qua PATH.
+    $powerShellLease = Open-PrynXTrustedReleaseExecutableLease -Kind "WindowsPowerShell"
+    $script:PrynXControllerPowerShellPath = $powerShellLease.Path
 
     if ([string]::IsNullOrWhiteSpace($CommandPath)) {
         if ($Mode -eq "internal") {
@@ -409,6 +420,8 @@ finally {
     if ($childProcess) {
         $childProcess.Dispose()
     }
+    Close-PrynXReleaseExecutableLease -Lease $powerShellLease
+    $script:PrynXControllerPowerShellPath = ""
     $signingPassword = $null
     if ($ownsMutex -and $mutex) { $mutex.ReleaseMutex() }
     if ($mutex) { $mutex.Dispose() }

@@ -59,6 +59,9 @@ void refineAppearanceForHardware();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
+  // SEC (audit 2026-09-05 §LOG.05): stack/source map và breadcrumb có thể lộ
+  // cấu trúc engine. Telemetry chi tiết chỉ dùng trong vòng dev cục bộ.
+  enabled: import.meta.env.DEV,
   release: `prynx@${APP_VERSION}`,
   // F8 FIX: KHÔNG gửi PII mặc định (IP, dữ liệu request...) lên Sentry — riêng tư khách hàng.
   sendDefaultPii: false,

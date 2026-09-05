@@ -9,11 +9,13 @@ describe('PreprocessingRouter — resolver Working PDF', () => {
             'utf8',
         );
         const resizeBlock = source.match(/<PageResizerTool[\s\S]*?\/>/)?.[0] || '';
+        const bgRemoverBlock = source.match(/<BgRemoverTool[\s\S]*?\/>/)?.[0] || '';
         const cleanupBlock = source.match(/<DocumentCleanupTool[\s\S]*?\/>/)?.[0] || '';
         const upscaleBlock = source.match(/<UpscaleTool[\s\S]*?\/>/)?.[0] || '';
 
         expect(resizeBlock).toContain('getWorkingFile={getWorkingFile}');
         expect(resizeBlock).not.toContain('getPreparedWorkingFile');
+        expect(bgRemoverBlock).toContain('sourceImageFile={sourceImageFile}');
         expect(cleanupBlock).toContain('getWorkingFile={getPreparedWorkingFile}');
         expect(upscaleBlock).toContain('getWorkingFile={getPreparedWorkingFile}');
         expect(upscaleBlock).not.toContain('getWorkingFile={getWorkingFile}');

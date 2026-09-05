@@ -8,6 +8,69 @@ $script:PrynXReleaseSecretSchema = 1
 $script:PrynXReleaseProjectRef = "ryvyuxjgdcvoxujqmggm"
 $script:PrynXReleaseSupabaseUrl = "https://ryvyuxjgdcvoxujqmggm.supabase.co"
 
+function Assert-PrynXReleasePrivateStorePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $resolved = [System.IO.Path]::GetFullPath($Path)
+    $policyPath = $resolved.Replace('/', '\')
+    if ($policyPath.StartsWith(
+            '\\',
+            [System.StringComparison]::Ordinal
+        ) -or $policyPath.StartsWith(
+            '\??\',
+            [System.StringComparison]::Ordinal
+        )) {
+        # Đường dẫn verbatim/device có thể trỏ vào repo nhưng né phép so sánh
+        # chuỗi bên dưới; UNC cũng không phù hợp cho kho DPAPI của máy build.
+        throw "Kho phat hanh khong chap nhan duong dan UNC/device: $resolved"
+    }
+    $repoRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot "..")
+    ).Replace('/', '\').TrimEnd([char[]]@('\', '/'))
+    $repoPrefix = $repoRoot + [System.IO.Path]::DirectorySeparatorChar
+    if ([string]::Equals(
+            $policyPath,
+            $repoRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or $policyPath.StartsWith(
+            $repoPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "Kho phat hanh khong duoc nam trong repo/staging/output: $resolved"
+    }
+
+    # SEC (audit 2026-09-03 §SEC.20-S1): GetFullPath chi chuan hoa chuoi,
+    # khong giai quyet junction/symlink. Kiem tung thanh phan dang ton tai de
+    # mot duong dan ben ngoai khong the vong nguoc vao repo/output qua reparse.
+    # Thanh phan chua ton tai se duoc kiem lai ngay sau khi Save tao thu muc cha.
+    $pathRoot = [System.IO.Path]::GetPathRoot($resolved)
+    if ([string]::IsNullOrWhiteSpace($pathRoot)) {
+        throw "Duong dan kho phat hanh khong co volume/root hop le: $resolved"
+    }
+    $current = $pathRoot
+    if (-not (Test-Path -LiteralPath $current -PathType Container -ErrorAction Stop)) {
+        throw "Volume/root cua kho phat hanh khong ton tai: $current"
+    }
+    $rootItem = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Duong dan kho phat hanh chua reparse point: $current"
+    }
+    foreach ($component in @($resolved.Substring($pathRoot.Length).Split(
+                [char[]]@('\', '/'),
+                [System.StringSplitOptions]::RemoveEmptyEntries
+            ))) {
+        $current = Join-Path $current $component
+        if (-not (Test-Path -LiteralPath $current -ErrorAction Stop)) {
+            break
+        }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Duong dan kho phat hanh chua reparse point: $current"
+        }
+    }
+    return $resolved
+}
+
 function Resolve-PrynXReleaseSecretStorePath {
     param([string]$StorePath = "")
 
@@ -17,7 +80,9 @@ function Resolve-PrynXReleaseSecretStorePath {
         }
         $StorePath = Join-Path $env:LOCALAPPDATA "PrynX\ReleaseSecrets\secrets.clixml"
     }
-    return [System.IO.Path]::GetFullPath($StorePath)
+    # Cam TOAN BO repo, khong chi cac thu muc resource/output da biet. Mot file
+    # secret dat o docs/ hay repo root van co the bi git-add/copy nham ve sau.
+    return Assert-PrynXReleasePrivateStorePath -Path $StorePath
 }
 
 function Set-PrynXPrivatePathAcl {
@@ -87,6 +152,9 @@ function Save-PrynXReleaseSecrets {
     $resolvedPath = Resolve-PrynXReleaseSecretStorePath -StorePath $StorePath
     $parent = Split-Path -Parent $resolvedPath
     [void](New-Item -ItemType Directory -Path $parent -Force)
+    # Thu muc co the chua ton tai o lan resolve dau. Kiem lai sau khi tao de moi
+    # thanh phan thuc te deu phai la directory/file thuong, khong phai reparse.
+    $resolvedPath = Assert-PrynXReleasePrivateStorePath -Path $resolvedPath
     Set-PrynXPrivatePathAcl -Path $parent -IsDirectory $true
 
     $payload = [pscustomobject]@{
@@ -99,6 +167,7 @@ function Save-PrynXReleaseSecrets {
     try {
         $payload | Export-Clixml -LiteralPath $tempPath -Depth 3 -Force
         Move-Item -LiteralPath $tempPath -Destination $resolvedPath -Force
+        $resolvedPath = Assert-PrynXReleasePrivateStorePath -Path $resolvedPath
         Set-PrynXPrivatePathAcl -Path $resolvedPath -IsDirectory $false
     } finally {
         if (Test-Path -LiteralPath $tempPath) {
@@ -184,7 +253,8 @@ function Resolve-PrynXReleaseProbeStorePath {
         }
         $StorePath = Join-Path $env:LOCALAPPDATA "PrynX\ReleaseSecrets\probe.clixml"
     }
-    return [System.IO.Path]::GetFullPath($StorePath)
+    # License TEST dung cung mot trust boundary voi secret Supabase.
+    return Assert-PrynXReleasePrivateStorePath -Path $StorePath
 }
 
 function Test-PrynXReleaseProbeLicenseShape {
@@ -217,6 +287,7 @@ function Save-PrynXReleaseProbeLicense {
     $resolvedPath = Resolve-PrynXReleaseProbeStorePath -StorePath $StorePath
     $parent = Split-Path -Parent $resolvedPath
     [void](New-Item -ItemType Directory -Path $parent -Force)
+    $resolvedPath = Assert-PrynXReleasePrivateStorePath -Path $resolvedPath
     Set-PrynXPrivatePathAcl -Path $parent -IsDirectory $true
 
     $payload = [pscustomobject]@{
@@ -229,6 +300,7 @@ function Save-PrynXReleaseProbeLicense {
     try {
         $payload | Export-Clixml -LiteralPath $tempPath -Depth 3 -Force
         Move-Item -LiteralPath $tempPath -Destination $resolvedPath -Force
+        $resolvedPath = Assert-PrynXReleasePrivateStorePath -Path $resolvedPath
         Set-PrynXPrivatePathAcl -Path $resolvedPath -IsDirectory $false
     } finally {
         if (Test-Path -LiteralPath $tempPath) {

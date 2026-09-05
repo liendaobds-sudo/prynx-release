@@ -193,6 +193,7 @@ def test_tiled_highlight_png_matches_full_frame_pixels(tmp_path, monkeypatch):
         "job-tile",
         1,
         stripe_height=31,
+        sign_url=False,
     )
 
     tiled = cv2.imread(
@@ -275,6 +276,7 @@ def test_tiled_cmyk_reads_only_final_rois_and_matches_full_frame(tmp_path, monke
         "job-cmyk-tile",
         1,
         stripe_height=31,
+        sign_url=False,
     )
     artifact = cv2.imread(
         str(tmp_path / "job-cmyk-tile" / "page_1_diff.png"),
@@ -353,6 +355,7 @@ def test_tiled_different_sizes_match_full_frame_mask_regions_and_artifact(
             f"job-{strategy}-tile",
             1,
             stripe_height=31,
+            sign_url=False,
         )
         artifact = cv2.imread(
             str(tmp_path / f"job-{strategy}-tile" / "page_1_diff.png"),
@@ -424,6 +427,7 @@ def test_tiled_highlight_cancel_removes_partial_file(tmp_path, monkeypatch):
             1,
             stripe_height=31,
             cancel_check=lambda: True,
+            sign_url=False,
         )
 
     output_dir = tmp_path / "cancel-job"

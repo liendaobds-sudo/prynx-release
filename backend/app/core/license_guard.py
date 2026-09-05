@@ -10,9 +10,9 @@ Security model:
    - X-License-Key: The user's license key (for watermarking/audit trail).
    - X-Hardware-Id: The machine's HWID (for watermarking/audit trail).
 
-2. The shared token is generated at app startup by the Tauri host and passed
-   to the sidecar through its stdin pipe.
-   External callers cannot know this token.
+2. The Tauri host generates one master at app startup. It passes master + process
+   generation through stdin protocol v2; both sides derive a generation-bound
+   session key. External callers cannot know either authority.
 
 3. For an extra layer, we can optionally verify the license key against
    Supabase RPC on first use, then cache the result for the session.
@@ -26,9 +26,11 @@ import threading
 import time
 import json
 import base64
+import stat as stat_mod
 from typing import Optional
 from app.core.feature_entitlements import assert_feature
 from fastapi import Request, HTTPException, Depends
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +75,68 @@ def _security_log_to_file(msg: str) -> None:
     except Exception:
         pass
 
-# ── Shared sidecar token ──
-# VECTOR #1 FIX: Token is loaded from a temp file (not env var).
-# The Tauri host writes the token to a file in AppData, passes the path
-# via PRYNX_TOKEN_FILE env var. We read it once and delete immediately.
-# This prevents other processes from reading the token via env var inspection.
+# ── Shared sidecar authority ──
+# `_SIDECAR_TOKEN` là khóa PHIÊN đang dùng cho request/startup/upscale/shutdown.
+# `_SIDECAR_MASTER_TOKEN` ổn định qua respawn và chỉ được dùng cho URL kết quả,
+# để link đã phát trước khi sidecar chết vẫn còn hợp lệ sau khi sidecar mới lên.
 _SIDECAR_TOKEN: Optional[str] = None
+_SIDECAR_MASTER_TOKEN: Optional[str] = None
+_SIDECAR_SESSION_DERIVATION_DOMAIN = b"prynx-sidecar-session-v1\0"
+
+
+def _derive_sidecar_session_token(master_token: str, generation: int) -> str:
+    """Derive canonical session key shared with the Rust host."""
+    if (
+        not isinstance(master_token, str)
+        or len(master_token) != 64
+        or any(char not in "0123456789abcdefABCDEF" for char in master_token)
+    ):
+        raise ValueError("Invalid sidecar master token")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or not 0 < generation < 1 << 64
+    ):
+        raise ValueError("Invalid sidecar generation")
+    master_bytes = bytes.fromhex(master_token)
+    payload = _SIDECAR_SESSION_DERIVATION_DOMAIN + generation.to_bytes(8, "big")
+    return hmac_mod.new(master_bytes, payload, hashlib.sha256).hexdigest()
+
+
+def _parse_sidecar_protocol_v2(raw_line: str) -> tuple[str, int, str]:
+    """Parse exactly one versioned bootstrap record; reject ambiguous canonical forms."""
+    if not isinstance(raw_line, str) or not raw_line:
+        raise ValueError("Missing sidecar bootstrap record")
+    line = raw_line
+    if line.endswith("\n"):
+        line = line[:-1]
+        if line.endswith("\r"):
+            line = line[:-1]
+    if not line or line != line.strip() or "\r" in line or "\n" in line:
+        raise ValueError("Invalid sidecar bootstrap framing")
+    parts = line.split(":")
+    if len(parts) != 3 or parts[0] != "PRYNX-SIDECAR-V2":
+        raise ValueError("Unsupported sidecar bootstrap protocol")
+    master_token, generation_raw = parts[1], parts[2]
+    if not generation_raw or any(char not in "0123456789" for char in generation_raw):
+        raise ValueError("Invalid sidecar generation")
+    generation = int(generation_raw)
+    if str(generation) != generation_raw:
+        raise ValueError("Non-canonical sidecar generation")
+    session_token = _derive_sidecar_session_token(master_token, generation)
+    return master_token.lower(), generation, session_token
+
+
+def _is_compiled_runtime() -> bool:
+    """Nhận diện sidecar đã đóng gói (Nuitka/PyInstaller).
+
+    `DEV_MODE` là cờ vận hành, còn compiled-state là thuộc tính của artifact.
+    Tách hai khái niệm để một binary release không thể bật lại đường token/env
+    legacy chỉ bằng cách truyền `DEV_MODE=true`.
+    """
+    import sys
+    return "__compiled__" in globals() or bool(getattr(sys, "frozen", False))
+
 
 def _is_dev_mode() -> bool:
     """Check DEV_MODE lazily — ensures .env has been loaded by pydantic.
@@ -90,8 +148,7 @@ def _is_dev_mode() -> bool:
     Cờ '__compiled__' do Nuitka chèn vào mọi module đã compile, không thể gỡ.
     Dev (chạy Python thông dịch) không có cờ này → vẫn đọc DEV_MODE từ .env như cũ.
     """
-    import sys
-    if "__compiled__" in globals() or getattr(sys, "frozen", False):
+    if _is_compiled_runtime():
         return False
     try:
         from app.config import settings
@@ -99,25 +156,58 @@ def _is_dev_mode() -> bool:
     except Exception:
         return os.environ.get("DEV_MODE", "false").lower() in ("true", "1", "yes")
 
+
 def _load_token_from_file():
-    """Load sidecar token from stdin pipe or temp file, then clean up."""
-    global _SIDECAR_TOKEN
-    
-    # Method 1: stdin pipe (VECTOR #6 FIX — token never on disk)
+    """Load the versioned sidecar bootstrap record, with explicit dev legacy paths."""
+    global _SIDECAR_TOKEN, _SIDECAR_MASTER_TOKEN
+    _SIDECAR_TOKEN = None
+    _SIDECAR_MASTER_TOKEN = None
+    compiled_runtime = _is_compiled_runtime()
+
+    # Production protocol v2: master + generation travel only through the stdin pipe.
     token_source = os.environ.get("PRYNX_TOKEN_SOURCE", "")
     if token_source == "stdin":
         try:
             import sys
             if sys.stdin and not sys.stdin.isatty():
-                line = sys.stdin.readline().strip()
-                if line.startswith("TOKEN:"):
-                    _SIDECAR_TOKEN = line[6:]
-                    logger.info("[LICENSE_GUARD] Sidecar token loaded from stdin pipe")
+                raw_line = sys.stdin.readline()
+                try:
+                    master_token, _generation, session_token = _parse_sidecar_protocol_v2(
+                        raw_line
+                    )
+                    _SIDECAR_MASTER_TOKEN = master_token
+                    _SIDECAR_TOKEN = session_token
+                    logger.debug("[LICENSE_GUARD] Sidecar session loaded")
                     return
+                except ValueError:
+                    # Compatibility chỉ dành cho Python thông dịch/dev fixture. Binary
+                    # compiled tuyệt đối không nhận protocol TOKEN: cũ.
+                    if not compiled_runtime:
+                        legacy_line = raw_line.strip()
+                        if legacy_line.startswith("TOKEN:") and legacy_line[6:]:
+                            _SIDECAR_TOKEN = legacy_line[6:]
+                            logger.info(
+                                "[LICENSE_GUARD] Legacy sidecar token loaded (dev-only)"
+                            )
+                            return
+                    logger.error("[LICENSE_GUARD] Invalid sidecar bootstrap record")
         except Exception as e:
-            logger.error(f"[LICENSE_GUARD] Failed to read token from stdin: {e}")
-    
-    # Method 2: Try file-based token (legacy / fallback)
+            logger.error(
+                "[LICENSE_GUARD] Failed to read sidecar bootstrap from stdin: %s",
+                type(e).__name__,
+            )
+        if compiled_runtime:
+            return
+
+    # File token là compatibility cho dev/fixture cũ; release compiled không được
+    # fallback sang nguồn có thể do tiến trình ngoài tự chỉ định.
+    if compiled_runtime:
+        if token_source != "stdin":
+            logger.error("[LICENSE_GUARD] Compiled runtime requires stdin protocol v2")
+        if os.environ.get("PRYNX_SIDECAR_TOKEN"):
+            logger.warning("[LICENSE_GUARD] Ignoring PRYNX_SIDECAR_TOKEN in compiled production")
+        return
+
     token_file = os.environ.get("PRYNX_TOKEN_FILE", "")
     if token_file and os.path.isfile(token_file):
         try:
@@ -127,13 +217,21 @@ def _load_token_from_file():
             os.remove(token_file)
             logger.info("[LICENSE_GUARD] Sidecar token loaded from file and file deleted")
             return
-        except Exception as e:
-            logger.error(f"[LICENSE_GUARD] Failed to read token file: {e}")
+        except Exception as error:
+            logger.error(
+                "[LICENSE_GUARD] Failed to read development token file (type=%s)",
+                type(error).__name__,
+            )
     
-    # Method 3: Fallback env var (legacy / dev mode)
-    _SIDECAR_TOKEN = os.environ.get("PRYNX_SIDECAR_TOKEN")
-    if _SIDECAR_TOKEN:
-        logger.info("[LICENSE_GUARD] Sidecar token loaded from env var (legacy mode)")
+    # Env fallback chỉ dành cho Python dev. Binary production phải nhận protocol
+    # v2 qua stdin do Tauri host cấp; nếu cho đọc env ở đây,
+    # người chạy sidecar tách rời có thể tự đặt secret tùy ý.
+    if _is_dev_mode():
+        _SIDECAR_TOKEN = os.environ.get("PRYNX_SIDECAR_TOKEN")
+        if _SIDECAR_TOKEN:
+            logger.info("[LICENSE_GUARD] Sidecar token loaded from env var (dev mode)")
+    else:
+        _SIDECAR_TOKEN = None
 
 # Load token at import time
 _load_token_from_file()
@@ -182,6 +280,176 @@ _NONCE_RETENTION_SECONDS = _SIGNATURE_WINDOW_SECONDS * 2 + 5  # dư cho lệch �
 _seen_nonces: dict[str, float] = {}
 _nonce_lock = threading.Lock()
 
+_BODY_COMMITMENT_CHUNK_BYTES = 1024 * 1024
+_CHUNK_LEAF_DOMAIN = b"prynx-body-chunk-leaf-v1\0"
+_CHUNK_ROOT_DOMAIN = b"prynx-body-chunk-root-v1\0"
+_BODY_NONE_DOMAIN = b"prynx-body-none-v1\0"
+_FORM_TEXT_DOMAIN = b"prynx-body-form-text-v1\0"
+_FORM_FILE_PART_DOMAIN = b"prynx-body-form-file-part-v1\0"
+_FORM_ROOT_DOMAIN = b"prynx-body-form-root-v1\0"
+_BODY_NONE_COMMITMENT = hashlib.sha256(_BODY_NONE_DOMAIN).hexdigest()
+
+
+def _u64(value: int) -> bytes:
+    if value < 0 or value >= 1 << 64:
+        raise ValueError("Kích thước body không hợp lệ")
+    return value.to_bytes(8, "big")
+
+
+def _framed(value: bytes) -> bytes:
+    return _u64(len(value)) + value
+
+
+class _ChunkCommitment:
+    """Cây SHA-256 theo chunk cố định; RAM không tăng theo kích thước PDF."""
+
+    def __init__(self, source_domain: str):
+        self._domain = source_domain.encode("utf-8")
+        self._pending = bytearray()
+        self._leaves: list[bytes] = []
+        self.total = 0
+        self._finished = False
+
+    def _add_leaf(self, chunk) -> None:
+        digest = hashlib.sha256()
+        digest.update(_CHUNK_LEAF_DOMAIN)
+        digest.update(_framed(self._domain))
+        digest.update(_u64(len(self._leaves)))
+        digest.update(_u64(len(chunk)))
+        digest.update(chunk)
+        self._leaves.append(digest.digest())
+
+    def update(self, data: bytes) -> None:
+        if self._finished:
+            raise RuntimeError("Body commitment đã hoàn tất")
+        if not data:
+            return
+        self.total += len(data)
+        view = memoryview(data)
+        offset = 0
+        if self._pending:
+            take = min(_BODY_COMMITMENT_CHUNK_BYTES - len(self._pending), len(view))
+            self._pending.extend(view[:take])
+            offset += take
+            if len(self._pending) == _BODY_COMMITMENT_CHUNK_BYTES:
+                self._add_leaf(self._pending)
+                self._pending.clear()
+        while len(view) - offset >= _BODY_COMMITMENT_CHUNK_BYTES:
+            end = offset + _BODY_COMMITMENT_CHUNK_BYTES
+            self._add_leaf(view[offset:end])
+            offset = end
+        if offset < len(view):
+            self._pending.extend(view[offset:])
+
+    def digest(self) -> bytes:
+        if not self._finished:
+            if self._pending:
+                self._add_leaf(self._pending)
+                self._pending.clear()
+            self._finished = True
+        digest = hashlib.sha256()
+        digest.update(_CHUNK_ROOT_DOMAIN)
+        digest.update(_framed(self._domain))
+        digest.update(_u64(self.total))
+        digest.update(_u64(len(self._leaves)))
+        for leaf in self._leaves:
+            digest.update(leaf)
+        return digest.digest()
+
+    def hexdigest(self) -> str:
+        return self.digest().hex()
+
+
+def _raw_body_commitment(body: bytes) -> str:
+    commitment = _ChunkCommitment("http-body")
+    commitment.update(body)
+    return commitment.hexdigest()
+
+
+def _normalize_form_text(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
+def _validate_form_metadata(value: str) -> None:
+    if "\r" in value or "\n" in value:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid multipart field metadata",
+        )
+
+
+async def _form_body_commitment(request: Request) -> str:
+    form = await request.form()
+    part_digests: list[bytes] = []
+    for name, value in form.multi_items():
+        _validate_form_metadata(name)
+        name_bytes = name.encode("utf-8")
+        if isinstance(value, StarletteUploadFile):
+            filename = value.filename or "blob"
+            _validate_form_metadata(filename)
+            content_type = value.content_type or "application/octet-stream"
+            file_commitment = _ChunkCommitment("form-file")
+            try:
+                await value.seek(0)
+                while True:
+                    chunk = await value.read(_BODY_COMMITMENT_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    file_commitment.update(chunk)
+            finally:
+                # Endpoint phải tiếp tục đọc đúng file từ đầu sau bước xác thực.
+                await value.seek(0)
+            part = hashlib.sha256()
+            part.update(_FORM_FILE_PART_DOMAIN)
+            part.update(_framed(name_bytes))
+            part.update(_framed(filename.encode("utf-8")))
+            part.update(_framed(content_type.encode("utf-8")))
+            part.update(_u64(file_commitment.total))
+            part.update(_framed(file_commitment.digest()))
+            part_digests.append(part.digest())
+        else:
+            part = hashlib.sha256()
+            part.update(_FORM_TEXT_DOMAIN)
+            part.update(_framed(name_bytes))
+            part.update(_framed(_normalize_form_text(str(value)).encode("utf-8")))
+            part_digests.append(part.digest())
+
+    digest = hashlib.sha256()
+    digest.update(_FORM_ROOT_DOMAIN)
+    digest.update(_u64(len(part_digests)))
+    for part_digest in part_digests:
+        digest.update(part_digest)
+    return digest.hexdigest()
+
+
+def _request_signature_payload_v2(
+    ts: str,
+    nonce: str,
+    method: str,
+    url_path: str,
+    license_key: str,
+    hwid: str,
+    token_hash: str,
+    body_mode: str,
+    body_commitment: str,
+    content_type: str,
+) -> bytes:
+    payload = bytearray(b"prynx-request-v2\0")
+    for value in (
+        ts,
+        nonce,
+        method,
+        url_path,
+        license_key,
+        hwid,
+        token_hash,
+        body_mode,
+        body_commitment,
+        content_type,
+    ):
+        payload.extend(_framed(value.encode("utf-8")))
+    return bytes(payload)
+
 
 def _consume_nonce(nonce: str) -> bool:
     """Ghi nhận nonce; trả False nếu nonce ĐÃ dùng (replay).
@@ -210,14 +478,18 @@ def verify_sidecar_signature(
     license_token: str,
     nonce: str = "",
     method: str = "GET",
+    signature_version: str = "1",
+    body_mode: str = "",
+    body_commitment: str = "",
+    content_type: str = "",
 ) -> tuple[bool, str]:
     """
     Nguồn chân lý duy nhất để xác thực một request đến từ Tauri host (không phải caller ngoài).
     Dùng chung cho HTTP (require_license) lẫn WebSocket (ws.py).
 
-    Kiểm tra chữ ký HMAC-SHA256 trên timestamp, nonce, path và hash của bộ credentials
-    đã được Rust xác minh (cửa sổ 30s + nonce dùng-một-lần). Shared secret chỉ tồn tại
-    trong Rust host và Python sidecar; WebView không bao giờ nhận secret.
+    V1 giữ cho WebSocket bodyless. V2 của HTTP dùng canonical length-prefixed và bind
+    thêm body commitment + Content-Type. Shared secret chỉ tồn tại trong Rust host và
+    Python sidecar; WebView không bao giờ nhận secret.
     Trả về (ok, reason). Bỏ qua hoàn toàn ở dev mode.
     """
     # Dev mode: không ép token/chữ ký (chạy backend thủ công khi phát triển).
@@ -248,12 +520,37 @@ def verify_sidecar_signature(
     normalized_method = (method or "").strip().upper()
     if not normalized_method:
         return False, "Missing request method"
-    sign_payload = (
-        f"{ts}:{nonce}:{normalized_method}:{url_path}:"
-        f"{license_key}:{hwid}:{token_hash}"
-    )
+    if signature_version == "2":
+        if body_mode not in {"none", "raw-v1", "form-v1"}:
+            return False, "Invalid request body mode"
+        if len(body_commitment) != 64 or any(
+            char not in "0123456789abcdef" for char in body_commitment
+        ):
+            return False, "Invalid request body commitment"
+        if len(content_type) > 2048 or "\r" in content_type or "\n" in content_type:
+            return False, "Invalid request content type"
+        sign_payload = _request_signature_payload_v2(
+            ts,
+            nonce,
+            normalized_method,
+            url_path,
+            license_key,
+            hwid,
+            token_hash,
+            body_mode,
+            body_commitment,
+            content_type,
+        )
+    elif signature_version in {"", "1"}:
+        # Giữ riêng canonical v1 cho WebSocket và compatibility trong Lô E1.
+        sign_payload = (
+            f"{ts}:{nonce}:{normalized_method}:{url_path}:"
+            f"{license_key}:{hwid}:{token_hash}"
+        ).encode()
+    else:
+        return False, "Unsupported request signature version"
     expected_hex = hmac_mod.new(
-        _SIDECAR_TOKEN.encode(), sign_payload.encode(), hashlib.sha256
+        _SIDECAR_TOKEN.encode(), sign_payload, hashlib.sha256
     ).hexdigest()
 
     if not hmac_mod.compare_digest(sig, expected_hex):
@@ -268,28 +565,39 @@ def verify_sidecar_signature(
 
 
 # ── Server-signed license token (VECTOR: bỏ tin client) ──────────────────────
+def _result_access_secret() -> Optional[str]:
+    """URL kết quả dùng master ổn định; fixture thông dịch được phép dùng token cũ."""
+    if _SIDECAR_MASTER_TOKEN:
+        return _SIDECAR_MASTER_TOKEN
+    if not _is_compiled_runtime():
+        return _SIDECAR_TOKEN
+    return None
+
+
 def result_access_url(path: str) -> str:
     """Return a path-scoped signed URL for a generated result artifact."""
     if not path.startswith("/results/") or "?" in path or "#" in path:
         raise ValueError("Invalid result path")
-    if not _SIDECAR_TOKEN:
+    result_secret = _result_access_secret()
+    if not result_secret:
         if not _enforce_license_token():
             return path
         raise RuntimeError("Missing sidecar token for protected result URL")
     signature = hmac_mod.new(
-        _SIDECAR_TOKEN.encode(), f"result:{path}".encode(), hashlib.sha256
+        result_secret.encode(), f"result:{path}".encode(), hashlib.sha256
     ).hexdigest()
     return f"{path}?access={signature}"
 
 
 def verify_result_access(path: str, signature: str) -> bool:
     """Verify a path-scoped result URL signature without exposing the sidecar secret."""
-    if not _SIDECAR_TOKEN:
+    result_secret = _result_access_secret()
+    if not result_secret:
         return not _enforce_license_token()
     if not path.startswith("/results/") or len(signature or "") != 64:
         return False
     expected = hmac_mod.new(
-        _SIDECAR_TOKEN.encode(), f"result:{path}".encode(), hashlib.sha256
+        result_secret.encode(), f"result:{path}".encode(), hashlib.sha256
     ).hexdigest()
     return hmac_mod.compare_digest(signature, expected)
 
@@ -324,7 +632,7 @@ def _enforce_license_token() -> bool:
     return os.environ.get("PRYNX_ENFORCE_LICENSE_TOKEN", "false").lower() in ("true", "1", "yes")
 
 
-# ── V2: chống lùi đồng hồ (anti-clockback) phía sidecar ──────────────────────
+# ── V2→V4: chống lùi đồng hồ (anti-clockback) phía sidecar ───────────────────
 _CLOCK_SKEW_SECONDS = 300  # dung sai NTP 5 phút
 
 # V3 (deletion-proof): cận trên tuổi thọ token. Token do edge function ký có TTL 72h
@@ -349,61 +657,716 @@ if _is_dev_mode():
 else:
     _MAX_TOKEN_LIFETIME_SECONDS = _MAX_TOKEN_LIFETIME_DEFAULT
 
+# SEC (audit 2026-09-03 §SEC.19): token v2 nối proof server với một challenge
+# native dùng-một-lần. Giữ đúng kích thước 32 byte/64 ký tự hex với Rust + Edge.
+_LICENSE_TOKEN_V2 = 2
+_LICENSE_TOKEN_V3 = 3
+_LICENSE_TOKEN_V3_MAX_TTL_SECONDS = 15 * 60
+_LICENSE_CHALLENGE_HEX_LENGTH = 64
+_LICENSE_CLOCK_SKEW_SECONDS = _CLOCK_SKEW_SECONDS
+# Clock-state repair is a recovery path, not an offline grace path.  The token
+# must have been issued shortly before this request so a captured, still-valid
+# token cannot be used to recreate a deleted anchor days later.
+_CLOCK_RECOVERY_MAX_AGE_SECONDS = 15 * 60
 
-def _clock_guard_path() -> str:
-    override = os.environ.get("PRYNX_CLOCK_GUARD_FILE", "")
-    if override:
-        return override
-    base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
-    return os.path.join(base, "PrynX", ".clkguard")
+
+def _normalize_license_challenge(value: object) -> Optional[str]:
+    if not isinstance(value, str) or len(value) != _LICENSE_CHALLENGE_HEX_LENGTH:
+        return None
+    if any(char not in "0123456789abcdefABCDEF" for char in value):
+        return None
+    return value.lower()
 
 
-def _clk_read(path: str) -> Optional[int]:
-    """Đọc mốc thời gian lớn nhất đã thấy (ký HMAC bằng sidecar token).
-    Trả None nếu thiếu/không đọc được/CHỮ KÝ SAI (tamper) → coi như chưa có mốc."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = f.read().strip()
-        ts_str, sig = raw.split(":", 1)
-        if not _SIDECAR_TOKEN:
+def _normalize_device_key_id(value: object) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("d3_") or len(value) != 46:
+        return None
+    thumbprint = value[3:]
+    if any(not (char.isascii() and (char.isalnum() or char in "-_")) for char in thumbprint):
+        return None
+    return value
+
+
+def _normalize_challenge_id(value: object) -> Optional[str]:
+    if not isinstance(value, str) or len(value) != 36:
+        return None
+    for index, char in enumerate(value):
+        if index in (8, 13, 18, 23):
+            if char != "-":
+                return None
+        elif char not in "0123456789abcdef":
             return None
-        expected = hmac_mod.new(_SIDECAR_TOKEN.encode(), ts_str.encode(), hashlib.sha256).hexdigest()
-        if not hmac_mod.compare_digest(sig, expected):
-            return None  # tamper: không cho dùng giá trị → reset (không brick)
-        return int(ts_str)
+    return value
+
+# V4 (§SEC.19 — clock anchor ổn định qua restart): format v2 dùng HMAC key cố định
+# theo cài đặt (installation key) thay vì _SIDECAR_TOKEN ngắn hạn. Key lưu DPAPI
+# (Windows) hoặc file quyền 600 (Linux/dev). Restart app → key KHÔNG ĐỔI → chữ ký
+# .clkguard vẫn hợp lệ → mốc sống sót. Trước đây sidecar token CSPRNG mới mỗi phiên
+# → mốc chết mỗi restart → kẻ gian chỉ cần restart + lùi đồng hồ.
+_CLK_KEY_FILE = ".clkkey"
+_CLK_FORMAT_V2_PREFIX = "v2:"
+# SEC (audit 2026-09-03 §SEC.19): marker tách lần khởi tạo đầu tiên khỏi trạng
+# thái đã thiết lập. Nếu key/guard đã từng được tạo mà một file bị xoá/hỏng,
+# guard phải khóa (không tự sinh lại neo mới). Marker được ký bằng installation
+# key và ghi cùng thư mục với key để không phụ thuộc state do renderer cung cấp.
+_CLK_STATE_FILE = ".clkstate"
+_CLK_STATE_PREFIX = "v1:"
+_CLK_STATE_PAYLOAD = b"prynx-clock-state-initialized-v1"
+
+# Cache key trong process để không gọi DPAPI lặp lại. Kèm fingerprint file để
+# việc xoá/thay key trong cùng một process không bị cache che khuất.
+_cached_installation_clk_key: Optional[bytes] = None
+_cached_installation_clk_key_stat: Optional[tuple[int, int, int]] = None
+
+# Serialize read/check/write của clock state trong một process. Đây không thay
+# thế được bảo vệ hệ điều hành giữa các process, nhưng loại race read→write nội
+# bộ và bảo đảm một lần bootstrap duy nhất.
+_clock_state_lock = threading.RLock()
+
+
+def _clk_key_path() -> str:
+    """Đường dẫn file chứa installation clock key (DPAPI)."""
+    # SEC (audit 2026-09-03 §SEC.19): đường dẫn state là một phần của trust
+    # boundary.  Chỉ bản dev được phép đổi để dựng fixture; sidecar production
+    # phải luôn dùng thư mục cài đặt chuẩn. Nếu tôn trọng env ở release, người
+    # chạy sidecar tách rời có thể trỏ sang thư mục mới rồi bootstrap lại neo.
+    if _is_dev_mode():
+        override = os.environ.get("PRYNX_CLK_KEY_FILE", "").strip()
+        if override:
+            return override
+    base = _clock_state_base_dir()
+    return os.path.join(base, "PrynX", _CLK_KEY_FILE)
+
+
+def _clock_state_base_dir() -> str:
+    """Lấy thư mục authority của clock state.
+
+    Release sidecar phải chạy dưới Tauri, nơi `APPDATA` luôn được xác định bởi
+    Windows. Không fallback sang `HOME`/cwd: một sidecar bị tách riêng không được
+    tự tạo installation state ở thư mục do caller chọn. Dev vẫn cho phép fallback
+    để fixture/Linux chạy được.
+    """
+    if _is_dev_mode():
+        base = (
+            os.environ.get("APPDATA", "").strip()
+            or os.environ.get("HOME", "").strip()
+            or os.path.expanduser("~")
+        )
+    else:
+        base = os.environ.get("APPDATA", "").strip()
+        if not base:
+            raise RuntimeError("APPDATA is required for production clock state")
+    if not base or not os.path.isabs(base):
+        raise RuntimeError("APPDATA clock state path must be absolute")
+    return base
+
+
+def _clk_state_path() -> str:
+    """Đường dẫn marker cho biết installation clock state đã được thiết lập."""
+    key_path = _clk_key_path()
+    return os.path.join(os.path.dirname(key_path) or ".", _CLK_STATE_FILE)
+
+
+def _read_installation_clk_key_state(path: str) -> tuple[Optional[bytes], str]:
+    """Đọc key kèm trạng thái ``missing``/``corrupt``/``tampered``/``unavailable``.
+
+    Không gộp file hỏng vào ``missing``: đó là khác biệt bảo mật cốt lõi của
+    §SEC.19. ``missing`` chỉ được phép bootstrap khi toàn bộ state chưa từng
+    được thiết lập.
+    """
+    try:
+        state = _state_file_status(path)
     except Exception:
+        return None, "unavailable"
+    if state != "present":
+        return None, state
+    try:
+        key = _read_clk_key_from_disk(path)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unavailable"
+    except Exception as exc:
+        # `subprocess.TimeoutExpired`/other launcher failures are availability
+        # faults, not evidence that the installation key was intentionally
+        # replaced. Keep them fail-closed without relabelling as repairable data.
+        try:
+            import subprocess
+            if isinstance(exc, (subprocess.TimeoutExpired, subprocess.SubprocessError)):
+                return None, "unavailable"
+        except Exception:
+            pass
+        return None, "corrupt"
+    if key is None:
+        # DPAPI decryption failure means the blob cannot be trusted. There is no
+        # self-authenticator in a raw 32-byte dev key, so classify malformed/
+        # undecryptable data conservatively and never regenerate it.
+        return None, "tampered"
+    if not isinstance(key, (bytes, bytearray)) or len(key) != 32:
+        return None, "corrupt"
+    return bytes(key), "valid"
+
+
+def _state_file_status(path: str) -> str:
+    """Phân biệt file vắng, file không đọc được và file sai loại."""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, ValueError):
+        return "unavailable"
+    if not stat_mod.S_ISREG(info.st_mode):
+        return "corrupt"
+    return "present"
+
+
+def _clk_key_fingerprint(path: str) -> Optional[tuple[int, int, int]]:
+    """Fingerprint nhẹ để tránh gọi DPAPI lặp lại trong mỗi request."""
+    try:
+        st = os.stat(path)
+        return (st.st_size, st.st_mtime_ns, getattr(st, "st_ino", 0))
+    except OSError:
         return None
 
 
-def _clk_write(path: str, ts: int) -> None:
+def _installation_clk_key_state(*, create: bool = False) -> tuple[Optional[bytes], str]:
+    """Đọc key + trạng thái, dùng cache khi file không đổi."""
+    global _cached_installation_clk_key, _cached_installation_clk_key_stat
+
+    try:
+        key_path = _clk_key_path()
+    except (OSError, RuntimeError, ValueError):
+        _cached_installation_clk_key = None
+        _cached_installation_clk_key_stat = None
+        return None, "unavailable"
+    with _clock_state_lock:
+        current = _clk_key_fingerprint(key_path)
+        if (
+            _cached_installation_clk_key is not None
+            and _cached_installation_clk_key_stat is not None
+            and current == _cached_installation_clk_key_stat
+        ):
+            return _cached_installation_clk_key, "valid"
+
+        # File bị xoá/thay thế hoặc cache thuộc path khác.
+        _cached_installation_clk_key = None
+        _cached_installation_clk_key_stat = None
+        key, state = _read_installation_clk_key_state(key_path)
+        if state == "valid" and key is not None:
+            _cached_installation_clk_key = key
+            _cached_installation_clk_key_stat = _clk_key_fingerprint(key_path)
+            return key, state
+
+        # File hiện hữu nhưng hỏng là dấu hiệu tamper/corruption; TUYỆT ĐỐI
+        # không regen key mới. Chỉ cho tạo khi file thật sự chưa tồn tại và
+        # caller explicitly cho phép bootstrap.
+        if state != "missing" or not create:
+            return None, state
+
+        import secrets
+        new_key = secrets.token_bytes(32)
+        if not _write_clk_key_to_disk(key_path, new_key):
+            return None, "unavailable"
+        _cached_installation_clk_key = new_key
+        _cached_installation_clk_key_stat = _clk_key_fingerprint(key_path)
+        return new_key, "valid"
+
+
+def _installation_clk_key(*, create: bool = True) -> Optional[bytes]:
+    """Đọc hoặc tạo khóa HMAC 32-byte cố định theo cài đặt.
+
+    SEC (audit 2026-09-03 §SEC.19): khóa này KHÔNG ĐỔI giữa các lần restart app,
+    nên chữ ký .clkguard sống sót qua phiên. Lưu bằng DPAPI (Windows) để user khác
+    trên cùng máy không đọc được. Dev/Linux dùng file quyền 600.
+
+    Residual risk: chính user Ring-3 có thể tạo DPAPI blob cho key tùy ý. Đây là
+    accepted risk — chỉ chống thay đổi rẻ, không tuyệt đối.
+    """
+    key, _state = _installation_clk_key_state(create=create)
+    return key
+
+
+def _read_clk_key_from_disk(path: str) -> Optional[bytes]:
+    """Đọc installation clock key từ đĩa. Windows: DPAPI. Dev/Linux: file thuần."""
+    import platform
+    if platform.system() == "Windows" and not _is_dev_mode():
+        return _dpapi_decrypt_bytes(path)
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _write_clk_key_to_disk(path: str, key: bytes) -> bool:
+    """Ghi installation clock key nguyên tử. Windows: DPAPI; dev/Linux: quyền 600."""
+    import tempfile
+
+    tmp_path: Optional[str] = None
     try:
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
-        if not _SIDECAR_TOKEN:
-            return
-        sig = hmac_mod.new(_SIDECAR_TOKEN.encode(), str(ts).encode(), hashlib.sha256).hexdigest()
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(f"{ts}:{sig}")
+        # Tạo file tạm cùng thư mục để os.replace là atomic trên cùng volume.
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=d or "."
+        )
+        os.close(fd)
+        import platform
+        if platform.system() == "Windows" and not _is_dev_mode():
+            if not _dpapi_encrypt_bytes(tmp_path, key):
+                return False
+        else:
+            with open(tmp_path, "wb") as f:
+                f.write(key)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+        os.replace(tmp_path, path)
+        tmp_path = None
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return True
     except Exception:
-        pass
+        return False
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _dpapi_encrypt_bytes(path: str, data: bytes) -> bool:
+    """Mã hóa bytes bằng DPAPI CurrentUser và ghi ra file."""
+    import subprocess
+    import base64
+    b64 = base64.b64encode(data).decode()
+    ps_path = path.replace("'", "''")
+    ps_script = (
+        "Add-Type -AssemblyName System.Security; "
+        "$bytes = [Convert]::FromBase64String($env:PRYNX_DPAPI_IN); "
+        "$enc = [System.Security.Cryptography.ProtectedData]::Protect("
+        "$bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser); "
+        f"[System.IO.File]::WriteAllBytes('{ps_path}', $enc)"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NoLogo", "-Command", ps_script],
+        env={**os.environ, "PRYNX_DPAPI_IN": b64},
+        capture_output=True, timeout=15,
+        creationflags=0x08000000 if hasattr(subprocess, "CREATE_NO_WINDOW") or True else 0,
+    )
+    return result.returncode == 0
+
+
+def _dpapi_decrypt_bytes(path: str) -> Optional[bytes]:
+    """Giải mã file DPAPI CurrentUser thành bytes."""
+    import subprocess
+    import base64
+    ps_path = path.replace("'", "''")
+    ps_script = (
+        "Add-Type -AssemblyName System.Security; "
+        f"$enc = [System.IO.File]::ReadAllBytes('{ps_path}'); "
+        "$dec = [System.Security.Cryptography.ProtectedData]::Unprotect("
+        "$enc, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser); "
+        "[Convert]::ToBase64String($dec)"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NoLogo", "-Command", ps_script],
+        capture_output=True, timeout=15,
+        creationflags=0x08000000 if hasattr(subprocess, "CREATE_NO_WINDOW") or True else 0,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return base64.b64decode(result.stdout.decode().strip())
+    except Exception:
+        return None
+
+
+def _clock_guard_path() -> str:
+    # SEC (audit 2026-09-03 §SEC.19): giống installation key, override chỉ có
+    # hiệu lực ở dev/test. Production không được nhận state path từ môi trường
+    # của tiến trình (có thể do người dùng khởi chạy sidecar trực tiếp đặt).
+    if _is_dev_mode():
+        override = os.environ.get("PRYNX_CLOCK_GUARD_FILE", "").strip()
+        if override:
+            return override
+    base = _clock_state_base_dir()
+    return os.path.join(base, "PrynX", ".clkguard")
+
+
+def _read_clk_record(path: str, key: Optional[bytes]) -> tuple[Optional[int], str]:
+    """Đọc record clock và phân biệt trạng thái để guard fail-closed.
+
+    ``legacy`` chỉ dành cho format v1 của bản cũ, được phép bootstrap đúng một
+    lần khi installation chưa có V4 key/marker. ``corrupt`` là lỗi format có thể
+    repair sau proof online; ``tampered`` là HMAC mismatch và tuyệt đối không
+    được xoá dấu vết; ``unavailable`` là lỗi I/O/quyền và phải fail-closed.
+    """
+    try:
+        path_state = _state_file_status(path)
+    except Exception:
+        return None, "unavailable"
+    if path_state != "present":
+        return None, path_state
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+    except FileNotFoundError:
+        return None, "missing"
+    except UnicodeError:
+        return None, "corrupt"
+    except OSError:
+        return None, "unavailable"
+
+    if not raw:
+        return None, "corrupt"
+    if not raw.startswith(_CLK_FORMAT_V2_PREFIX):
+        # Giữ đường nâng cấp từ V1: format cũ không thể xác minh bằng key V4.
+        # Chỉ nhận dạng legacy khi có dạng ``<timestamp>:<signature>``; dữ liệu
+        # khác là corrupt và vẫn chỉ được repair sau proof online.
+        legacy_parts = raw.split(":", 1)
+        if (
+            len(legacy_parts) == 2
+            and legacy_parts[0].isascii()
+            and legacy_parts[0].isdigit()
+        ):
+            return None, "legacy"
+        return None, "corrupt"
+    rest = raw[len(_CLK_FORMAT_V2_PREFIX):]
+    parts = rest.split(":")
+    if len(parts) != 2:
+        return None, "corrupt"
+    ts_str, sig = parts
+    if not ts_str.isascii() or not ts_str.isdigit() or not sig.isascii():
+        return None, "corrupt"
+    if len(sig) != hashlib.sha256().digest_size * 2:
+        return None, "corrupt"
+    if any(char not in "0123456789abcdef" for char in sig):
+        return None, "corrupt"
+    if key is None:
+        return None, "unavailable"
+    expected = hmac_mod.new(key, ts_str.encode(), hashlib.sha256).hexdigest()
+    if not hmac_mod.compare_digest(sig, expected):
+        return None, "tampered"
+    try:
+        ts = int(ts_str)
+    except (TypeError, ValueError, OverflowError):
+        return None, "corrupt"
+    if ts < 0:
+        return None, "corrupt"
+    return ts, "valid"
+
+
+def _clk_read(path: str) -> Optional[int]:
+    """Đọc mốc hợp lệ; không tự tạo installation key khi state thiếu/hỏng."""
+    key = _installation_clk_key(create=False)
+    stored, state = _read_clk_record(path, key)
+    return stored if state == "valid" else None
+
+
+def _atomic_write_text(path: str, text: str) -> bool:
+    """Ghi text qua file tạm + flush/fsync + replace nguyên tử."""
+    import tempfile
+
+    tmp_path: Optional[str] = None
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=d or "."
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_path, path)
+        tmp_path = None
+        return True
+    except Exception:
+        return False
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _clk_write(path: str, ts: int, *, allow_bootstrap: bool = True) -> bool:
+    """Ghi mốc thời gian format v2 bằng installation key, nguyên tử.
+
+    ``allow_bootstrap`` chỉ để giữ helper test/di chuyển tương thích; đường
+    production `_clock_guard` luôn truyền False sau khi đã phân loại state.
+    """
+    try:
+        key = _installation_clk_key(create=allow_bootstrap)
+        if not key:
+            return False
+        sig = hmac_mod.new(key, str(ts).encode(), hashlib.sha256).hexdigest()
+        return _atomic_write_text(path, f"{_CLK_FORMAT_V2_PREFIX}{ts}:{sig}")
+    except Exception:
+        return False
+
+
+def _read_clk_marker(path: str, key: Optional[bytes]) -> str:
+    """Đọc marker đã khởi tạo và phân biệt lỗi format/tamper/I/O."""
+    try:
+        path_state = _state_file_status(path)
+    except Exception:
+        return "unavailable"
+    if path_state != "present":
+        return path_state
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+    except FileNotFoundError:
+        return "missing"
+    except UnicodeError:
+        return "corrupt"
+    except OSError:
+        return "unavailable"
+
+    if not raw.startswith(_CLK_STATE_PREFIX):
+        return "corrupt"
+    sig = raw[len(_CLK_STATE_PREFIX):]
+    if not sig.isascii() or len(sig) != hashlib.sha256().digest_size * 2:
+        return "corrupt"
+    if any(char not in "0123456789abcdef" for char in sig):
+        return "corrupt"
+    if key is None:
+        return "unavailable"
+    expected = hmac_mod.new(key, _CLK_STATE_PAYLOAD, hashlib.sha256).hexdigest()
+    return "valid" if hmac_mod.compare_digest(sig, expected) else "tampered"
+
+
+def _write_clk_marker(path: str, key: bytes) -> bool:
+    sig = hmac_mod.new(key, _CLK_STATE_PAYLOAD, hashlib.sha256).hexdigest()
+    return _atomic_write_text(path, f"{_CLK_STATE_PREFIX}{sig}")
+
+
+_CLOCK_RECOVERY_REASONS = frozenset(
+    {
+        "Clock state marker missing",
+        "Clock state marker corrupt",
+        "Clock anchor missing",
+        "Clock anchor corrupt",
+    }
+)
+
+
+def _clock_recovery_required(reason: str) -> bool:
+    """Cho biết lỗi state có thể khôi phục bằng proof online v2.
+
+    SEC (audit 2026-09-03 §SEC.19): chỉ cho phép sửa lại marker/anchor đã mất
+    hoặc hỏng khi token v2 đã được server ký và lượt kiểm tra online thành công.
+    Mất/hỏng installation key, rollback hoặc lỗi ghi đĩa vẫn fail-closed; không
+    được biến các lỗi đó thành đường bootstrap mới.
+    """
+
+    return reason in _CLOCK_RECOVERY_REASONS
+
+
+def _token_v2_issued_at_seconds(token: str) -> Optional[int]:
+    """Đọc ``iat`` của token online v2/v3 sau khi đã verify chữ ký/claim.
+
+    Hàm này chỉ là helper tách claim đã xác minh để dựng lại mốc thời gian; nó
+    không được gọi như một verifier độc lập.
+    """
+
+    try:
+        payload_b64 = token.split(".", 1)[0]
+        payload = json.loads(_b64url_decode(payload_b64))
+        if not isinstance(payload, dict):
+            return None
+        raw_version = payload.get("v")
+        if isinstance(raw_version, bool) or raw_version not in (
+            _LICENSE_TOKEN_V2,
+            _LICENSE_TOKEN_V3,
+        ):
+            return None
+        issued_at = payload.get("iat")
+        if isinstance(issued_at, bool) or not isinstance(issued_at, int) or issued_at <= 0:
+            return None
+        return issued_at
+    except Exception:
+        return None
+
+
+def _recover_clock_state_from_online_token(
+    token: str,
+    license_key: str,
+    hwid: str,
+) -> tuple[bool, str]:
+    """Khôi phục marker/anchor sau khi có proof online v2 hợp lệ.
+
+    Đường này chỉ được gọi sau khi ``_verify_with_supabase`` đã trả VALID.  Token
+    được verify lại bằng verifier chỉ chấp nhận v2 để tránh token v1/claim tự dựng
+    trở thành nguồn bootstrap. Installation key phải còn nguyên và hợp lệ; nếu key mất,
+    không có cách chứng minh đây là cùng một installation nên tiếp tục khóa.
+    """
+
+    if _is_dev_mode():
+        return True, ""
+
+    token_ok, token_reason = verify_license_token(
+        token,
+        hwid,
+        license_key,
+    )
+    if not token_ok:
+        return False, f"Clock recovery proof rejected: {token_reason}"
+    issued_at = _token_v2_issued_at_seconds(token)
+    if issued_at is None:
+        return False, "Clock recovery proof requires token v2 with valid issued-at"
+
+    now = int(time.time())
+    if issued_at < now - _CLOCK_RECOVERY_MAX_AGE_SECONDS:
+        return False, "Clock recovery proof is stale"
+    try:
+        path = _clock_guard_path()
+        marker_path = _clk_state_path()
+    except (OSError, RuntimeError, ValueError):
+        return False, "Clock state path unavailable"
+
+    with _clock_state_lock:
+        key, key_state = _installation_clk_key_state(create=False)
+        if key_state != "valid" or key is None:
+            return False, f"Clock installation key {key_state}"
+
+        marker_state = _read_clk_marker(marker_path, key)
+        stored, record_state = _read_clk_record(path, key)
+
+        # A malformed marker may be repaired after online proof. A valid HMAC
+        # mismatch, however, is evidence that the installation state was
+        # replaced; never overwrite that evidence through recovery.
+        if marker_state == "tampered":
+            return False, "Clock state marker tampered; manual recovery required"
+        if marker_state == "unavailable":
+            return False, "Clock state marker unavailable"
+        if marker_state not in ("valid", "missing", "corrupt"):
+            return False, "Clock state marker unavailable"
+
+        # A valid future anchor is evidence of rollback; never overwrite it just
+        # because a recovery token arrived.  The normal guard will report the
+        # same condition, but checking here closes the repair path explicitly.
+        if record_state == "valid" and stored is not None:
+            if now + _CLOCK_SKEW_SECONDS < stored:
+                return False, "Clock rollback detected"
+            # Backend `.clkguard` stores Unix seconds (native anchor uses ms).
+            target = max(stored, now, issued_at)
+        elif record_state in ("missing", "corrupt"):
+            target = max(now, issued_at)
+        elif record_state == "legacy":
+            # Legacy format is accepted only by the first-install migration
+            # branch. Once a V4 key/marker exists, seeing it again is a
+            # downgrade/tamper signal and must not be silently repaired.
+            return False, "Clock anchor legacy; manual recovery required"
+        elif record_state == "tampered":
+            # A valid HMAC mismatch is a high-signal tamper event, not an
+            # indistinguishable partial write. Do not erase that evidence via
+            # the recovery path; support/reinstall must handle it explicitly.
+            return False, "Clock anchor tampered; manual recovery required"
+        elif record_state == "unavailable":
+            return False, "Clock anchor unavailable"
+        else:
+            return False, "Clock anchor state unavailable"
+
+        # Marker/anchor are published independently and atomically.  A crash
+        # between the two writes leaves a recoverable state and never creates a
+        # new installation key.
+        if not _clk_write(path, target, allow_bootstrap=False):
+            return False, "Clock state persistence failed"
+        if marker_state != "valid" and not _write_clk_marker(marker_path, key):
+            return False, "Clock state marker persistence failed"
+
+        ok, reason = _clock_guard()
+        return (True, "") if ok else (False, reason)
 
 
 def _clock_guard() -> tuple[bool, str]:
-    """Monotonic clock guard: từ chối nếu đồng hồ bị LÙI quá xa so với mốc lớn nhất
-    đã thấy (chống replay token hết hạn bằng cách quay ngược giờ). Mốc ký HMAC bằng
-    sidecar token nên kẻ gian KHÔNG sửa được xuống giá trị thấp. Bỏ qua ở dev.
-    Thiếu/tamper file → reset (không brick), vẫn cập nhật mốc hiện tại.
+    """Monotonic clock guard với state machine fail-closed.
+
+    SEC (audit 2026-09-03 §SEC.19): chỉ bootstrap khi chưa từng có V4 state
+    (key + guard + marker đều vắng, hoặc guard V1 trong lần nâng cấp đầu tiên).
+    Sau khi đã thiết lập, thiếu/hỏng bất kỳ thành phần nào đều buộc revalidation
+    online thay vì tự regen key/neo. Ghi state được serialize và atomic.
     """
     if _is_dev_mode():
         return True, ""
-    path = _clock_guard_path()
+    try:
+        path = _clock_guard_path()
+        marker_path = _clk_state_path()
+    except (OSError, RuntimeError, ValueError):
+        return False, "Clock state path unavailable"
     now = int(time.time())
-    stored = _clk_read(path)
-    if stored is not None and now + _CLOCK_SKEW_SECONDS < stored:
-        return False, "Clock rollback detected"
-    _clk_write(path, max(stored or 0, now))
-    return True, ""
+
+    with _clock_state_lock:
+        key, key_state = _installation_clk_key_state(create=False)
+
+        marker_state = _read_clk_marker(marker_path, key)
+        stored, record_state = _read_clk_record(path, key)
+
+        # First install / V1 migration: chưa có key và marker, guard cũ (nếu có)
+        # chỉ là dữ liệu legacy. Tạo toàn bộ V4 state rồi mới cho qua.
+        bootstrap = (
+            marker_state == "missing"
+            and key_state == "missing"
+            and record_state in ("missing", "legacy")
+        )
+        if bootstrap:
+            key = _installation_clk_key(create=True)
+            if key is None:
+                return False, "Clock state initialization failed"
+            if not _clk_write(path, now, allow_bootstrap=False):
+                return False, "Clock state persistence failed"
+            if not _write_clk_marker(marker_path, key):
+                return False, "Clock state marker persistence failed"
+            return True, ""
+
+        if key_state != "valid" or key is None:
+            return False, f"Clock installation key {key_state}"
+        # Sau lần bootstrap/migration đầu tiên, marker là một phần bắt buộc của
+        # installation state. Không coi marker bị xoá là "bản V4 chuyển tiếp":
+        # nhánh đó cho phép xoá riêng marker rồi tiếp tục dùng token offline.
+        if marker_state == "missing":
+            return False, "Clock state marker missing"
+        if marker_state == "corrupt":
+            return False, "Clock state marker corrupt"
+        if marker_state == "tampered":
+            return False, "Clock state marker tampered"
+        if marker_state == "unavailable":
+            return False, "Clock state marker unavailable"
+        if marker_state != "valid":
+            return False, "Clock state marker unavailable"
+        if record_state == "missing":
+            return False, "Clock anchor missing"
+        if record_state == "legacy":
+            return False, "Clock anchor legacy"
+        if record_state == "corrupt":
+            return False, "Clock anchor corrupt"
+        if record_state == "tampered":
+            return False, "Clock anchor tampered"
+        if record_state == "unavailable":
+            return False, "Clock anchor unavailable"
+        if record_state != "valid" or stored is None:
+            return False, "Clock anchor unavailable"
+        if now + _CLOCK_SKEW_SECONDS < stored:
+            return False, "Clock rollback detected"
+
+        if not _clk_write(path, max(stored, now), allow_bootstrap=False):
+            return False, "Clock state persistence failed"
+        return True, ""
 
 
 def _b64url_decode(s: str) -> bytes:
@@ -411,11 +1374,18 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 
-def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> tuple[bool, str]:
+def verify_license_token(
+    token: str,
+    hwid: str = "",
+    license_key: str = "",
+    expected_challenge: str | None = None,
+) -> tuple[bool, str]:
     """Xác minh token license do server ký (Ed25519).
 
     Token định dạng: "<payload_b64url>.<sig_b64url>" — chữ ký ký trên CHUỖI payload_b64url.
-    payload JSON: {"k": sha256(license_key)[:16], "m": machine_id, "p": product_id, "exp": unix}
+    payload JSON v1 legacy: {"k", "m", "p", "exp"} (có thể có ``v: 1``).
+    payload JSON v2: {"v": 2, "iat": unix, "challenge": hex-32-byte,
+    "k": sha256(license_key)[:16], "m": machine_id, "p": product_id, "exp": unix}.
     Trả (ok, reason).
     """
     if not token or "." not in token:
@@ -428,11 +1398,31 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
         payload = json.loads(_b64url_decode(payload_b64))
     except Exception:
         return False, "Invalid license token signature"
+    if not isinstance(payload, dict):
+        return False, "Invalid license token payload"
+
+    # SEC (audit 2026-09-04 §SEC.16-DS1): dual-stack có giới hạn để rollout
+    # không làm brick client đang giữ token v1. Chỉ thiếu field ``v`` hoặc số
+    # nguyên 1 mới là v1; null/bool/string/version lạ đều fail-closed.
+    if "v" not in payload:
+        version = 1
+    else:
+        raw_version = payload["v"]
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+            return False, "License token has invalid version"
+        version = raw_version
+        if version not in (1, _LICENSE_TOKEN_V2, _LICENSE_TOKEN_V3):
+            return False, "Unsupported license token version"
 
     try:
-        if int(payload.get("exp", 0)) < int(time.time()):
+        exp_value = payload.get("exp")
+        if isinstance(exp_value, bool) or not isinstance(exp_value, int) or exp_value <= 0:
+            return False, "License token has invalid exp"
+        exp = exp_value
+        now = int(time.time())
+        if exp < now:
             return False, "License token expired"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False, "License token has invalid exp"
 
     # V3 (deletion-proof anti-rollback): token KHÔNG được "tươi" quá tuổi thọ tối đa.
@@ -441,26 +1431,87 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
     # bằng cách xoá `.clkguard`. Bỏ qua ở dev (đồng hồ/clock test không ràng buộc).
     if not _is_dev_mode():
         try:
-            exp_val = int(payload.get("exp", 0))
-            if exp_val - int(time.time()) > _MAX_TOKEN_LIFETIME_SECONDS + _CLOCK_SKEW_SECONDS:
+            exp_val = exp
+            if exp_val - now > _MAX_TOKEN_LIFETIME_SECONDS + _CLOCK_SKEW_SECONDS:
                 return False, "License token lifetime implausible (clock rollback?)"
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False, "License token has invalid exp"
+
+    if version == 1:
+        # Không cho token tự nhận là v1 nhưng mang claim v2: đây là protocol
+        # hybrid không có semantics ổn định. V1 cũng không bao giờ được dùng cho
+        # một lượt challenge online/khôi phục state.
+        if any(field in payload for field in ("iat", "challenge", "cid", "d", "cnf", "min_v")):
+            return False, "License token v1 has incompatible v2 claims"
+        if expected_challenge is not None:
+            return False, "License token v2 required for online challenge"
+    elif version == _LICENSE_TOKEN_V2:
+        if any(field in payload for field in ("cid", "d", "cnf", "min_v")):
+            return False, "License token v2 has incompatible v3 claims"
+        raw_iat = payload.get("iat")
+        if isinstance(raw_iat, bool) or not isinstance(raw_iat, int) or raw_iat <= 0:
+            return False, "License token v2 has invalid iat"
+        issued_at = raw_iat
+        if issued_at > now + _LICENSE_CLOCK_SKEW_SECONDS:
+            return False, "License token issued-at is in the future"
+        if exp < issued_at or exp - issued_at > _MAX_TOKEN_LIFETIME_SECONDS:
+            return False, "License token v2 lifetime is invalid"
+        token_challenge = _normalize_license_challenge(payload.get("challenge"))
+        if token_challenge is None:
+            return False, "License token v2 has invalid challenge"
+
+        if expected_challenge is not None:
+            expected = _normalize_license_challenge(expected_challenge)
+            if expected is None:
+                return False, "Expected license challenge is invalid"
+            if not hmac_mod.compare_digest(token_challenge, expected):
+                return False, "License token challenge mismatch"
+    else:
+        if "challenge" in payload:
+            return False, "License token v3 must not contain raw challenge"
+        raw_iat = payload.get("iat")
+        if isinstance(raw_iat, bool) or not isinstance(raw_iat, int) or raw_iat <= 0:
+            return False, "License token v3 has invalid iat"
+        issued_at = raw_iat
+        if issued_at > now + _LICENSE_CLOCK_SKEW_SECONDS:
+            return False, "License token issued-at is in the future"
+        if exp < issued_at or exp - issued_at > _LICENSE_TOKEN_V3_MAX_TTL_SECONDS:
+            return False, "License token v3 lifetime is invalid"
+        if payload.get("min_v") != _LICENSE_TOKEN_V3:
+            return False, "License token v3 protocol floor is invalid"
+        device_key_id = _normalize_device_key_id(payload.get("d"))
+        if device_key_id is None:
+            return False, "License token v3 device key id is invalid"
+        confirmation = payload.get("cnf")
+        thumbprint = device_key_id[3:]
+        if (
+            not isinstance(confirmation, dict)
+            or set(confirmation) != {"jkt"}
+            or confirmation.get("jkt") != thumbprint
+        ):
+            return False, "License token v3 confirmation mismatch"
+        if _normalize_challenge_id(payload.get("cid")) is None:
+            return False, "License token v3 challenge id is invalid"
+        if expected_challenge is not None:
+            return False, "Raw challenge matching is not valid for license token v3"
 
     # Ràng buộc theo máy — field "m" phải có trong token (không optional).
     token_hwid = payload.get("m")
-    if not token_hwid:
+    if not isinstance(token_hwid, str) or not token_hwid:
         return False, "License token missing required field: machine id"
-    if hwid and not hmac_mod.compare_digest(str(token_hwid), hwid):
+    if version == _LICENSE_TOKEN_V3:
+        if not hmac_mod.compare_digest(token_hwid, str(payload.get("d") or "")):
+            return False, "License token v3 machine/device mismatch"
+    if hwid and not hmac_mod.compare_digest(token_hwid, hwid):
         return False, "License token machine mismatch"
 
     # Ràng buộc theo license key — field "k" phải có trong token (không optional).
     token_key_hash = payload.get("k")
-    if not token_key_hash:
+    if not isinstance(token_key_hash, str) or not token_key_hash:
         return False, "License token missing required field: key hash"
     if license_key:
         kh = hashlib.sha256(license_key.encode()).hexdigest()[:16]
-        if not hmac_mod.compare_digest(str(token_key_hash), kh):
+        if not hmac_mod.compare_digest(token_key_hash, kh):
             return False, "License token key mismatch"
 
     # Product is a mandatory audience boundary, not informational metadata.
@@ -475,14 +1526,143 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
 
 
 def request_signature_path(request: Request) -> str:
-    """Return the exact percent-encoded ASGI path used by the native signer."""
+    """Return path + raw query exactly as serialized for the native signer.
+
+    ASGI keeps ``raw_path`` and ``query_string`` in separate fields.  Dropping
+    ``query_string`` made a valid proof portable between otherwise different
+    query variants (SEC §SEC.21).  Only ASCII percent-encoded bytes are
+    accepted here; malformed raw bytes return a sentinel that cannot match a
+    browser URL, so the request fails closed at HMAC verification.
+    """
     raw_path = request.scope.get("raw_path")
     if isinstance(raw_path, bytes):
         try:
-            return raw_path.split(b"?", 1)[0].decode("ascii")
+            path = raw_path.decode("ascii")
         except UnicodeDecodeError:
-            pass
-    return request.url.path
+            return "\x00invalid-request-path"
+    else:
+        path = request.url.path
+
+    # Some ASGI adapters may already include the query in raw_path.  Do not
+    # append it twice; normal Uvicorn/Starlette keeps it in query_string.
+    if "?" in path:
+        return path
+    raw_query = request.scope.get("query_string")
+    if isinstance(raw_query, bytes) and raw_query:
+        try:
+            return f"{path}?{raw_query.decode('ascii')}"
+        except UnicodeDecodeError:
+            return "\x00invalid-request-path"
+    return path
+
+
+def _is_form_content_type(content_type: str) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return media_type in {
+        "multipart/form-data",
+        "application/x-www-form-urlencoded",
+    }
+
+
+def _install_stream_body_commitment_guard(
+    request: Request,
+    expected_commitment: str,
+) -> None:
+    """So body raw khi endpoint đọc tới EOF, không buffer lại body lớn."""
+    original_receive = request._receive
+    commitment = _ChunkCommitment("http-body")
+    finished = False
+
+    async def guarded_receive():
+        nonlocal finished
+        message = await original_receive()
+        if message.get("type") == "http.request" and not finished:
+            chunk = message.get("body", b"")
+            if chunk:
+                commitment.update(chunk)
+            if not message.get("more_body", False):
+                finished = True
+                if not hmac_mod.compare_digest(
+                    commitment.hexdigest(), expected_commitment
+                ):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Request body commitment mismatch",
+                    )
+        return message
+
+    # Starlette giữ receive trên chính Request mà dependency và endpoint dùng chung.
+    # Bọc tại đây giúp mixed-nesting vẫn giữ byte budget/streaming hiện có.
+    request._receive = guarded_receive
+
+
+async def _consume_and_verify_empty_body(request: Request) -> None:
+    """Chứng minh stream thật sự rỗng mà không giữ body attacker trong RAM."""
+    while True:
+        message = await request._receive()
+        if message.get("type") == "http.disconnect":
+            raise HTTPException(status_code=400, detail="Request disconnected")
+        if message.get("type") != "http.request":
+            continue
+        if message.get("body", b""):
+            raise HTTPException(status_code=403, detail="Unexpected request body")
+        if not message.get("more_body", False):
+            # Starlette/FastAPI phía sau vẫn có thể gọi body()/stream() và nhận EOF.
+            request._body = b""
+            return
+
+
+async def _verify_http_body_commitment(
+    request: Request,
+    body_mode: str,
+    expected_commitment: str,
+    content_type: str,
+) -> None:
+    """Đối chiếu body thật sau khi HMAC v2 đã xác thực commitment khai báo."""
+    if body_mode == "none":
+        if not hmac_mod.compare_digest(expected_commitment, _BODY_NONE_COMMITMENT):
+            raise HTTPException(status_code=403, detail="Invalid empty body commitment")
+        cached_body = getattr(request, "_body", None)
+        cached_form = getattr(request, "_form", None)
+        if cached_body or (cached_form is not None and len(cached_form) > 0):
+            raise HTTPException(status_code=403, detail="Unexpected request body")
+        declared = request.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) != 0:
+                    raise HTTPException(status_code=403, detail="Unexpected request body")
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=403, detail="Invalid Content-Length"
+                ) from exc
+        if cached_body is None and cached_form is None:
+            # SEC (audit 2026-09-03 §SEC.21 E2): Content-Length có thể vắng khi
+            # Transfer-Encoding: chunked. Đọc/so rỗng trực tiếp từng ASGI frame,
+            # reject ngay byte đầu tiên và không buffer/hard-cap body attacker.
+            await _consume_and_verify_empty_body(request)
+        return
+
+    if body_mode == "form-v1":
+        if not _is_form_content_type(content_type):
+            raise HTTPException(status_code=403, detail="Body mode/content type mismatch")
+        actual = await _form_body_commitment(request)
+        if not hmac_mod.compare_digest(actual, expected_commitment):
+            raise HTTPException(status_code=403, detail="Request body commitment mismatch")
+        return
+
+    if body_mode != "raw-v1" or _is_form_content_type(content_type):
+        raise HTTPException(status_code=403, detail="Body mode/content type mismatch")
+
+    cached_body = getattr(request, "_body", None)
+    if cached_body is not None:
+        actual = _raw_body_commitment(cached_body)
+        if not hmac_mod.compare_digest(actual, expected_commitment):
+            raise HTTPException(status_code=403, detail="Request body commitment mismatch")
+        return
+
+    # Endpoint raw duy nhất hiện tại đọc hết stream trước khi parse/submit. Guard so
+    # commitment ngay ở EOF nên không cần giữ một bản sao body trong RAM.
+    _install_stream_body_commitment_guard(request, expected_commitment)
 
 
 def _read_verified_entitlements(token: str) -> dict:
@@ -532,6 +1712,18 @@ async def require_license(request: Request) -> dict:
     license_key = request.headers.get("X-License-Key", "").strip()
     hwid = request.headers.get("X-Hardware-Id", "").strip()
     lic_token = request.headers.get("X-License-Token", "").strip()
+    signature_version = request.headers.get("X-PrynX-Signature-Version", "").strip()
+    body_mode = request.headers.get("X-PrynX-Body-Mode", "").strip()
+    body_commitment = request.headers.get("X-PrynX-Body-Commitment", "").strip()
+    content_type = request.headers.get("content-type", "").strip()
+    # SEC (audit 2026-09-03 §SEC.21 E2): HTTP production chỉ nhận canonical v2.
+    # `verify_sidecar_signature` vẫn giữ v1 vì WebSocket gọi trực tiếp hàm đó và
+    # không đi qua dependency HTTP này. Dev thông dịch vẫn được bypass như trước.
+    if not _is_dev_mode() and signature_version != "2":
+        raise HTTPException(
+            status_code=403,
+            detail="HTTP request signature v2 required",
+        )
     # ── Step 1: Verify credential-bound HMAC signature (skipped in dev mode) ──
     # VECTOR #1/#4 FIX: dùng nguồn chân lý duy nhất verify_sidecar_signature().
     ok, reason = verify_sidecar_signature(
@@ -543,16 +1735,40 @@ async def require_license(request: Request) -> dict:
         lic_token,
         request.headers.get("X-PrynX-Nonce", ""),
         request.method,
+        signature_version,
+        body_mode,
+        body_commitment,
+        content_type,
     )
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
 
+    # E2 bắt buộc v2 ở production phía trên; nhánh điều kiện giữ dev-mode cũ có
+    # thể gửi request không ký mà không bị buộc materialize/hash body.
+    if signature_version == "2":
+        await _verify_http_body_commitment(
+            request,
+            body_mode,
+            body_commitment,
+            content_type,
+        )
+
     # ── Step 1b: V2 anti-clockback — chống lùi đồng hồ để replay token hết hạn (skip ở dev) ──
+    # State marker/anchor bị mất hoặc hỏng có thể là lỗi đĩa/antivirus hợp pháp. Giữ
+    # request ở trạng thái chờ proof, rồi chỉ khôi phục sau khi token v2 + kiểm tra
+    # online thành công ở bên dưới. Rollback, mất installation key và lỗi persistence
+    # vẫn bị từ chối ngay; không được biến chúng thành đường bootstrap mới.
     clk_ok, clk_reason = _clock_guard()
+    clock_recovery_needed = False
     if not clk_ok:
-        logger.warning("[LICENSE_GUARD] %s | path=%s", clk_reason, request.url.path)
-        _security_log_to_file(f"CLOCK_ROLLBACK reason={clk_reason!r} path={request.url.path}")
-        raise HTTPException(status_code=403, detail="Clock manipulation detected")
+        if _clock_recovery_required(clk_reason):
+            clock_recovery_needed = True
+            logger.warning("[LICENSE_GUARD] %s; awaiting online recovery | path=%s", clk_reason, request.url.path)
+            _security_log_to_file(f"CLOCK_STATE_RECOVERY_REQUIRED reason={clk_reason!r} path={request.url.path}")
+        else:
+            logger.warning("[LICENSE_GUARD] %s | path=%s", clk_reason, request.url.path)
+            _security_log_to_file(f"CLOCK_ROLLBACK reason={clk_reason!r} path={request.url.path}")
+            raise HTTPException(status_code=403, detail="Clock manipulation detected")
     
     # ── Step 2: Extract license credentials ──
     if not license_key or not hwid:
@@ -566,6 +1782,7 @@ async def require_license(request: Request) -> dict:
     # Token do edge function Supabase ký; sidecar verify bằng public key nhúng sẵn.
     # Rollout an toàn: nếu CHƯA bật cưỡng chế thì chỉ verify-nếu-có (log), không chặn.
     token_entitlements = {"plan": "free", "features": None}
+    token_verified = False
     if _enforce_license_token():
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
         if not tok_ok:
@@ -580,18 +1797,29 @@ async def require_license(request: Request) -> dict:
                 )
             )
             raise HTTPException(status_code=403, detail=f"License token rejected: {tok_reason}")
+        token_verified = True
         token_entitlements = _read_verified_entitlements(lic_token)
     elif lic_token:
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
         if not tok_ok:
             logger.warning(f"[LICENSE_GUARD] License token present but invalid (not enforced yet): {tok_reason}")
         else:
+            token_verified = True
             token_entitlements = _read_verified_entitlements(lic_token)
+
+    if clock_recovery_needed and not token_verified:
+        # Production normally reaches this only when a non-enforcing development
+        # configuration is accidentally mixed with release state. Keep recovery
+        # fail-closed rather than allowing an unsigned/token-v1 request to recreate
+        # the clock state.
+        raise HTTPException(status_code=403, detail="Clock state recovery requires a verified license token")
     
     # ── Step 3: Check cache ──
     cache_key = _hash_credentials(license_key, hwid)
     cached = _license_cache.get(cache_key)
-    if cached:
+    # A missing/corrupt state must force a fresh server check. A cached boolean is
+    # not sufficient proof for repairing the durable clock marker/anchor.
+    if cached and not clock_recovery_needed:
         is_valid, expire_at = cached
         if time.time() < expire_at:
             if is_valid:
@@ -600,30 +1828,69 @@ async def require_license(request: Request) -> dict:
                 raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     
     # ── Step 4: Verify with Supabase (optional, for online validation) ──
+    verified_online = False
     try:
         verified = await _verify_with_supabase(license_key, hwid)
+        verified_online = bool(verified)
         _license_cache[cache_key] = (verified, time.time() + _CACHE_TTL_SECONDS)
         if not verified:
             raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     except HTTPException:
         raise
-    except RuntimeError as e:
+    except RuntimeError as error:
         # DNS manipulation detected — hard fail, no grace
-        logger.error(f"[LICENSE_GUARD] Security violation (DNS/integrity): {e}")
-        _security_log_to_file(f"SECURITY_VIOLATION reason={e}")
+        logger.error(
+            "[LICENSE_GUARD] Security/integrity check failed (type=%s)",
+            type(error).__name__,
+        )
+        _security_log_to_file(
+            f"SECURITY_VIOLATION type={type(error).__name__}"
+        )
         raise HTTPException(status_code=403, detail="Security violation")
-    except Exception as e:
+    except Exception as error:
         import httpx as _httpx
-        if isinstance(e, (_httpx.TimeoutException, _httpx.ConnectError, _httpx.RemoteProtocolError)):
+        if isinstance(error, (_httpx.TimeoutException, _httpx.ConnectError, _httpx.RemoteProtocolError)):
             # Genuine network unavailability — offline grace 5 phút
-            logger.warning(f"[LICENSE_GUARD] Supabase unreachable (offline grace): {e}")
-            _security_log_to_file(f"OFFLINE_GRACE reason={type(e).__name__}")
+            logger.warning(
+                "[LICENSE_GUARD] Supabase unreachable; using offline grace (type=%s)",
+                type(error).__name__,
+            )
+            _security_log_to_file(
+                f"OFFLINE_GRACE type={type(error).__name__}"
+            )
             _license_cache[cache_key] = (True, time.time() + 300)
         else:
             # Lỗi không xác định — fail closed
-            logger.error(f"[LICENSE_GUARD] Unexpected error during license check: {e}")
-            _security_log_to_file(f"LICENSE_CHECK_ERROR reason={type(e).__name__}")
+            logger.error(
+                "[LICENSE_GUARD] Unexpected license-check error (type=%s)",
+                type(error).__name__,
+            )
+            _security_log_to_file(
+                f"LICENSE_CHECK_ERROR type={type(error).__name__}"
+            )
             raise HTTPException(status_code=403, detail="License check unavailable")
+
+    if clock_recovery_needed:
+        # Recovery is deliberately after the fresh server check and before the
+        # protected handler runs. The helper re-verifies v2/iat/challenge and never
+        # regenerates a missing installation key.
+        if not verified_online:
+            raise HTTPException(status_code=403, detail="Clock state recovery requires online validation")
+        recovered, recovery_reason = _recover_clock_state_from_online_token(
+            lic_token,
+            license_key,
+            hwid,
+        )
+        if not recovered:
+            logger.warning(
+                "[LICENSE_GUARD] Clock state recovery failed: %s | path=%s",
+                recovery_reason,
+                request.url.path,
+            )
+            _security_log_to_file(
+                f"CLOCK_STATE_RECOVERY_FAILED reason={recovery_reason!r} path={request.url.path}"
+            )
+            raise HTTPException(status_code=403, detail="Clock state recovery failed")
 
     return _license_context(license_key, hwid, True, token_entitlements, lic_token)
 
@@ -672,11 +1939,14 @@ async def _verify_with_supabase(license_key: str, hwid: str) -> bool:
             import ipaddress
             ip = ipaddress.ip_address(resolved)
             if ip.is_loopback or ip.is_private or ip.is_reserved:
-                logger.error(f"[LICENSE_GUARD] DNS manipulation detected: {host} → {resolved}")
-                raise RuntimeError(f"DNS manipulation: Supabase resolved to {resolved}")
+                logger.error("[LICENSE_GUARD] DNS integrity check rejected configured host")
+                raise RuntimeError("DNS integrity check failed")
     except (socket.gaierror, ValueError) as dns_err:
-        logger.warning(f"[LICENSE_GUARD] DNS resolution failed for Supabase: {dns_err}")
-        raise RuntimeError(f"DNS resolution error: {dns_err}")
+        logger.warning(
+            "[LICENSE_GUARD] DNS resolution failed (type=%s)",
+            type(dns_err).__name__,
+        )
+        raise RuntimeError("DNS resolution failed") from dns_err
     
     try:
         import httpx
@@ -701,5 +1971,5 @@ async def _verify_with_supabase(license_key: str, hwid: str) -> bool:
         else:
             logger.warning(f"[LICENSE_GUARD] Supabase returned {resp.status_code}")
             return False
-    except Exception as e:
-        raise RuntimeError(f"Supabase verification error: {e}")
+    except Exception as error:
+        raise RuntimeError("Supabase verification failed") from error

@@ -93,8 +93,8 @@ reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" --prynx-action=combine \"%%1\"" /f >nul
 
-:: ─── Convert to PDF (CHI anh: 1 anh -> 1 PDF). Co --prynx-action=convert de
-::     App.tsx dinh tuyen 1 file vao tab Ghep (xuat PDF) thay vi Binh bai. ───
+:: ─── Convert to PDF (CHI anh). Co --prynx-action=convert de 1 anh mo thang
+::     Viewer sau khi doi sang PDF; nhieu anh vao tab Ghep de kiem tra thu tu. ───
 set "CONVERB=pdf-inspector-convert"
 for %%E in (.jpg .jpeg .png) do (
     reg add "%REG_BASE%\%%E\shell\%CONVERB%" /ve /d "Convert to PDF in PrynX" /f >nul
@@ -188,7 +188,8 @@ echo - Khoi dong Backend (FastAPI - Port 8321)
 start "PDF Inspector - Backend" cmd /k "cd backend && venv\Scripts\python.exe -m uvicorn app.main:app --port 8321 --reload --reload-dir app"
 
 echo - Khoi dong Giao dien Desktop (Tauri)
-start "PDF Inspector - Frontend" cmd /k "cd desktop && set PATH=%USERPROFILE%\.cargo\bin;%PATH% && npx @tauri-apps/cli dev"
+REM BUILD (audit 2026-09-04): dev khong doc payload-manifest chi do pipeline release sinh.
+start "PDF Inspector - Frontend" cmd /k "cd desktop && set PATH=%USERPROFILE%\.cargo\bin;%PATH% && npx @tauri-apps/cli dev --config src-tauri/tauri.dev.conf.json"
 
 echo.
 echo ==================================================

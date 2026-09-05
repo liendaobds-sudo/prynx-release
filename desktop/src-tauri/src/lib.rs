@@ -5,8 +5,8 @@ use tauri::Manager;
 use image::ImageEncoder;
 use pdfium_render::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
-#[cfg(not(debug_assertions))]
-use std::sync::atomic::AtomicU32;
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
@@ -17,6 +17,7 @@ use tauri_plugin_fs::FsExt;
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 use std::os::windows::process::CommandExt;
 
+mod device_identity;
 mod document_window_registry;
 mod external_app;
 mod pdf_color_risk;
@@ -267,29 +268,618 @@ mod viewer_metadata_benchmark_tests {
 static APP_STARTUP_READY: AtomicBool = AtomicBool::new(false);
 static FRONTEND_INTERACTIVE_RECORDED: AtomicBool = AtomicBool::new(false);
 
-// PID tiến trình sidecar Python — để KILL khi thoát app. Nếu không kill,
-// pdf-inspector-backend.exe treo ngầm sau khi đóng app → lần UPDATE, NSIS không
-// ghi đè được file đang chạy ("Error opening file for writing"). Chỉ dùng ở release
-// (dev không spawn sidecar). Nuitka --onefile spawn tiến trình con nên phải taskkill
-// /T (cả cây) theo PID, không thể chỉ child.kill() (chỉ diệt bootstrap, python treo).
-#[cfg(not(debug_assertions))]
-static SIDECAR_PID: AtomicU32 = AtomicU32::new(0);
+// SEC (audit 2026-09-02 §SEC.18): PID trần không đủ định danh tiến trình vì Windows
+// có thể tái sử dụng PID. Mỗi thế hệ sidecar được bind với FILETIME tạo process và
+// một handle giữ sống process object; event cũ chỉ được clear đúng identity của nó.
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SidecarProcessIdentity {
+    generation: u64,
+    pid: u32,
+    creation_filetime: u64,
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_generation_matches(
+    current: Option<SidecarProcessIdentity>,
+    expected: SidecarProcessIdentity,
+) -> bool {
+    current == Some(expected)
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_creation_matches(identity: SidecarProcessIdentity, observed: Option<u64>) -> bool {
+    observed == Some(identity.creation_filetime)
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+struct OwnedSidecarProcessHandle(usize);
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+impl OwnedSidecarProcessHandle {
+    fn raw(&self) -> windows::Win32::Foundation::HANDLE {
+        windows::Win32::Foundation::HANDLE(self.0 as *mut core::ffi::c_void)
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+impl Drop for OwnedSidecarProcessHandle {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.raw()) };
+            self.0 = 0;
+        }
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+struct RegisteredSidecarProcess {
+    identity: SidecarProcessIdentity,
+    // Handle này là ownership pin: chừng nào generation còn được đăng ký, PID của
+    // process object ấy không thể được Windows cấp lại cho tiến trình khác.
+    process: OwnedSidecarProcessHandle,
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+static SIDECAR_PROCESS: OnceLock<Mutex<Option<RegisteredSidecarProcess>>> = OnceLock::new();
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+static SIDECAR_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 static SIDECAR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+// SEC (audit 2026-09-04 §SEC.18/§SEC.22): phân biệt cleanup do RunEvent::Exit
+// với hook `cleanup_before_exit()` của updater. Updater 2.10.1 không phát
+// RunEvent::Exit trước khi mở installer.
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
-fn kill_sidecar() {
-    let pid = SIDECAR_PID.swap(0, Ordering::AcqRel);
-    if pid != 0 {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags(0x08000000)
-            .output();
+static RUN_EVENT_EXIT_SEEN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+static SIDECAR_MASTER_TOKEN: OnceLock<String> = OnceLock::new();
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+static SIDECAR_LIFECYCLE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn sidecar_lifecycle_guard() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR_LIFECYCLE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn sidecar_process_guard() -> std::sync::MutexGuard<'static, Option<RegisteredSidecarProcess>> {
+    SIDECAR_PROCESS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn filetime_ticks(value: windows::Win32::Foundation::FILETIME) -> u64 {
+    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn query_process_creation_filetime(process: &OwnedSidecarProcessHandle) -> Result<u64, String> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::GetProcessTimes;
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe {
+        GetProcessTimes(
+            process.raw(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .map_err(|error| format!("GetProcessTimes thất bại: {error}"))?;
+    let ticks = filetime_ticks(creation);
+    if ticks == 0 {
+        Err("GetProcessTimes trả creation FILETIME bằng 0".to_string())
+    } else {
+        Ok(ticks)
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn pinned_process_is_running(process: &OwnedSidecarProcessHandle) -> Result<bool, String> {
+    use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+
+    match unsafe { WaitForSingleObject(process.raw(), 0) } {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        other => Err(format!(
+            "WaitForSingleObject trả mã không hợp lệ: {}",
+            other.0
+        )),
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn capture_sidecar_process(pid: u32) -> Result<RegisteredSidecarProcess, String> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+
+    if pid == 0 {
+        return Err("PID sidecar bằng 0".to_string());
+    }
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        )
+    }
+    .map_err(|error| format!("Không mở được process sidecar PID={pid}: {error}"))?;
+    // Chuyển ownership của HANDLE sang RAII ngay lập tức; mọi nhánh lỗi phía dưới
+    // đều drop và CloseHandle đúng một lần.
+    let process = OwnedSidecarProcessHandle(handle.0 as usize);
+    let creation_filetime = query_process_creation_filetime(&process)?;
+    if !pinned_process_is_running(&process)? {
+        return Err(format!("Sidecar PID={pid} đã thoát ngay sau spawn"));
+    }
+    let generation = SIDECAR_GENERATION.fetch_add(1, Ordering::Relaxed);
+    if generation == 0 {
+        return Err("Bộ đếm thế hệ sidecar đã tràn".to_string());
+    }
+    Ok(RegisteredSidecarProcess {
+        identity: SidecarProcessIdentity {
+            generation,
+            pid,
+            creation_filetime,
+        },
+        process,
+    })
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn publish_sidecar_process(
+    registered: RegisteredSidecarProcess,
+) -> Result<SidecarProcessIdentity, String> {
+    let identity = registered.identity;
+    let mut current = sidecar_process_guard();
+    if let Some(existing) = current.as_ref() {
+        return Err(format!(
+            "Không thể đăng ký generation={} PID={}: generation={} PID={} vẫn còn",
+            identity.generation, identity.pid, existing.identity.generation, existing.identity.pid
+        ));
+    }
+    *current = Some(registered);
+    Ok(identity)
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn register_spawned_sidecar(pid: u32) -> Result<SidecarProcessIdentity, String> {
+    // SEC (audit 2026-09-04 §SEC.22): gán Job là thao tác đầu tiên sau child.pid()
+    // để thu hẹp cửa sổ tiến trình con kịp sinh cháu ngoài Job. Lỗi phải fail-closed;
+    // caller sẽ kill CommandChild vừa spawn và không publish generation.
+    process_guard::adopt_child_process(pid)
+        .map_err(|error| format!("Không bảo vệ được sidecar bằng Job Object: {error}"))?;
+    // Capture HANDLE + FILETIME pin process object trong cả vòng đời generation.
+    let captured = capture_sidecar_process(pid)?;
+    publish_sidecar_process(captured)
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn sidecar_bootstrap_protocol_v2(
+    master_token: &str,
+    identity: SidecarProcessIdentity,
+) -> Result<(String, String), String> {
+    let session_token = security::derive_sidecar_session_token(master_token, identity.generation)?;
+    let record = format!(
+        "PRYNX-SIDECAR-V2:{}:{}\n",
+        master_token, identity.generation
+    );
+    Ok((record, session_token))
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn publish_verified_sidecar_session(
+    identity: SidecarProcessIdentity,
+    session_token: &str,
+    sidecar_exited: &AtomicBool,
+) -> Result<(), String> {
+    // Giữ lifecycle + process lock xuyên suốt compare-and-publish. Event muộn của
+    // generation cũ hoặc shutdown không thể chen vào rồi để lại signer mồ côi.
+    let _lifecycle_guard = sidecar_lifecycle_guard();
+    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+        return Err("Ứng dụng đang shutdown".to_string());
+    }
+    if sidecar_exited.load(Ordering::Acquire) {
+        return Err("Sidecar đã thoát trước khi publish khóa phiên".to_string());
+    }
+    let current = sidecar_process_guard();
+    if !sidecar_generation_matches(
+        current.as_ref().map(|registered| registered.identity),
+        identity,
+    ) {
+        return Err("Identity sidecar đã đổi trước khi publish khóa phiên".to_string());
+    }
+    security::publish_sidecar_session_token(identity.generation, session_token)
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn current_sidecar_identity() -> Option<SidecarProcessIdentity> {
+    sidecar_process_guard()
+        .as_ref()
+        .map(|registered| registered.identity)
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn take_sidecar_generation(expected: SidecarProcessIdentity) -> Option<RegisteredSidecarProcess> {
+    let mut current = sidecar_process_guard();
+    if !sidecar_generation_matches(
+        current.as_ref().map(|registered| registered.identity),
+        expected,
+    ) {
+        return None;
+    }
+    // Giữ process lock tới sau compare-and-clear session. Generation mới không thể
+    // được register xen giữa lúc gỡ identity cũ và lúc vô hiệu signer cũ.
+    security::clear_sidecar_session_token(expected.generation);
+    current.take()
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn clear_sidecar_generation(expected: SidecarProcessIdentity) -> bool {
+    // Compare-and-clear toàn bộ identity; event generation cũ không thể đóng handle
+    // hoặc xóa state của generation mới dù Windows cấp lại cùng numeric PID.
+    if take_sidecar_generation(expected).is_none() {
+        return false;
+    }
+    true
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn validate_registered_sidecar(registered: &RegisteredSidecarProcess) -> Result<(), String> {
+    let observed = query_process_creation_filetime(&registered.process)?;
+    if !sidecar_creation_matches(registered.identity, Some(observed)) {
+        return Err(format!(
+            "creation FILETIME không khớp generation={} PID={}",
+            registered.identity.generation, registered.identity.pid
+        ));
+    }
+    if !pinned_process_is_running(&registered.process)? {
+        return Err(format!(
+            "generation={} PID={} đã thoát",
+            registered.identity.generation, registered.identity.pid
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+const NUITKA_ONEFILE_STATE_ENV_KEYS: [&str; 5] = [
+    "NUITKA_ONEFILE_PARENT",
+    "NUITKA_ONEFILE_START",
+    "NUITKA_ONEFILE_TIME_US",
+    "NUITKA_ONEFILE_RANDOM",
+    "NUITKA_ONEFILE_DIRECTORY",
+];
+
+// SEC (audit 2026-09-03 §SEC.19): các biến dưới đây có thể đổi trust anchor,
+// bật dev/fail-open hoặc làm lộ secret nếu được kế thừa từ môi trường của tiến
+// trình cha. Sidecar release được dựng bằng `env_clear()` rồi chỉ nhận giá trị
+// an toàn do host đặt tường minh bên dưới; không truyền nguyên các override này.
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+const SIDECAR_SECURITY_ENV_KEYS: [&str; 21] = [
+    "DEV_MODE",
+    "PRYNX_CLK_KEY_FILE",
+    "PRYNX_CLOCK_GUARD_FILE",
+    "PRYNX_ENFORCE_CLOCK_ANCHOR",
+    "PRYNX_ENFORCE_LICENSE_TOKEN",
+    "PRYNX_LICENSE_PUBLIC_KEY",
+    "PRYNX_MAX_TOKEN_LIFETIME_SECONDS",
+    "PRYNX_SIDECAR_TOKEN",
+    "PRYNX_TOKEN_FILE",
+    "PRYNX_TOKEN_SOURCE",
+    "PRYNX_DPAPI_IN",
+    // SEC (audit 2026-09-05 §LOG.01/§LOG.03): binary release không kế thừa
+    // cờ diagnostic từ môi trường máy khách. Host sẽ đặt PRYNX_PERF=0 rõ ràng;
+    // các cờ còn lại không cần tồn tại trong sidecar production.
+    "PRYNX_PERF",
+    "PRYNX_PERF_DIR",
+    "PRYNX_ROT_AUDIT",
+    "PRYNX_NESTING_TRACE_ENABLED",
+    "PRYNX_NESTING_TRACE_PATH",
+    "PRYNX_EDIT_BUG_LOG",
+    "PRYNX_EDIT_BUG_LOG_PATH",
+    "PRYNX_EDIT_TEXT_MOVE_LOG",
+    "PRYNX_EDIT_TEXT_MOVE_LOG_PATH",
+    "STICKER_DEBUG",
+];
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn filter_sidecar_environment<I>(environment: I) -> Vec<(std::ffi::OsString, std::ffi::OsString)>
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+{
+    environment
+        .into_iter()
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            !NUITKA_ONEFILE_STATE_ENV_KEYS
+                .iter()
+                .any(|blocked| name.eq_ignore_ascii_case(blocked))
+                && !SIDECAR_SECURITY_ENV_KEYS
+                    .iter()
+                    .any(|blocked| name.eq_ignore_ascii_case(blocked))
+        })
+        .collect()
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn filtered_sidecar_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    filter_sidecar_environment(std::env::vars_os())
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_shutdown_proof(secret: &str, timestamp: &str, nonce: &str) -> Result<String, String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .map_err(|_| "Không khởi tạo được shutdown proof".to_string())?;
+    mac.update(format!("shutdown:{timestamp}:{nonce}").as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_shutdown_request(secret: &str, timestamp: &str, nonce: &str) -> Result<String, String> {
+    let proof = sidecar_shutdown_proof(secret, timestamp, nonce)?;
+    Ok(format!(
+        "POST /__prynx/shutdown HTTP/1.1\r\nHost: 127.0.0.1:8321\r\nConnection: close\r\nContent-Length: 0\r\nX-PrynX-Shutdown-Timestamp: {timestamp}\r\nX-PrynX-Shutdown-Nonce: {nonce}\r\nX-PrynX-Shutdown-Proof: {proof}\r\n\r\n"
+    ))
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn request_sidecar_shutdown(secret: &str) -> Result<(), String> {
+    use rand::RngCore;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Đồng hồ hệ thống không hợp lệ".to_string())?
+        .as_secs()
+        .to_string();
+    let mut nonce_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = hex::encode(nonce_bytes);
+    let request = sidecar_shutdown_request(secret, &timestamp, &nonce)?;
+    let address: SocketAddr = "127.0.0.1:8321"
+        .parse()
+        .map_err(|error| format!("Địa chỉ shutdown không hợp lệ: {error}"))?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .map_err(|error| format!("Không kết nối được endpoint shutdown: {error}"))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("Không gửi được lệnh shutdown: {error}"))?;
+
+    let mut response = Vec::with_capacity(512);
+    let mut chunk = [0u8; 512];
+    while !response.windows(4).any(|window| window == b"\r\n\r\n") {
+        let size = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("Không đọc được phản hồi shutdown: {error}"))?;
+        if size == 0 {
+            break;
+        }
+        if response.len() + size > 8 * 1024 {
+            return Err("Phản hồi shutdown vượt giới hạn 8 KiB".to_string());
+        }
+        response.extend_from_slice(&chunk[..size]);
+    }
+    let status = std::str::from_utf8(&response)
+        .map_err(|_| "Phản hồi shutdown không phải UTF-8".to_string())?;
+    if status.starts_with("HTTP/1.1 202 ") || status.starts_with("HTTP/1.0 202 ") {
+        Ok(())
+    } else {
+        Err("Sidecar từ chối lệnh shutdown có xác thực".to_string())
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn force_kill_registered_sidecar(registered: &RegisteredSidecarProcess) -> bool {
+    // Handle được OpenProcess ngay sau spawn và giữ mở trong state tới đây, nên process
+    // object/PID không thể bị tái sử dụng. Vẫn query FILETIME ngay trước taskkill như
+    // defense-in-depth; mọi lỗi/mismatch đều fail-safe về Job Object, không kill PID trần.
+    if let Err(error) = validate_registered_sidecar(registered) {
         log::warn!(
-            "[SIDECAR] Đã dừng cây tiến trình PID={} bằng taskkill /T /F",
-            pid
+            "[SIDECAR] Bỏ qua taskkill generation={} PID={}: {error}; dựa vào Job Object",
+            registered.identity.generation,
+            registered.identity.pid
         );
+        startup_breadcrumb("sidecar force-kill: identity unavailable; relying on job object");
+        return false;
+    }
+
+    let pid = registered.identity.pid;
+    let taskkill = match process_guard::system_taskkill_path() {
+        Ok(path) => path,
+        Err(error) => {
+            log::warn!(
+                "[SIDECAR] Không tìm được taskkill hệ thống cho generation={} PID={}: {error}; dựa vào Job Object",
+                registered.identity.generation,
+                pid
+            );
+            startup_breadcrumb(
+                "sidecar force-kill: trusted taskkill unavailable; relying on job object",
+            );
+            return false;
+        }
+    };
+    match std::process::Command::new(taskkill)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            log::warn!(
+                "[SIDECAR] Đã dừng cây generation={} PID={} bằng taskkill /T /F",
+                registered.identity.generation,
+                pid
+            );
+            true
+        }
+        Ok(output) => {
+            log::warn!(
+                "[SIDECAR] taskkill generation={} PID={} trả mã {:?}; Job Object vẫn là lưới cuối",
+                registered.identity.generation,
+                pid,
+                output.status.code()
+            );
+            false
+        }
+        Err(error) => {
+            log::warn!(
+                "[SIDECAR] Không chạy được taskkill generation={} PID={}: {error}; dựa vào Job Object",
+                registered.identity.generation,
+                pid
+            );
+            false
+        }
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn kill_sidecar(expected: SidecarProcessIdentity) {
+    if let Some(registered) = take_sidecar_generation(expected) {
+        let _ = force_kill_registered_sidecar(&registered);
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn shutdown_sidecar_gracefully_locked() -> Result<(), String> {
+    use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+
+    // Đồng bộ với supervisor để không có thế hệ mới được spawn giữa lúc ta claim PID
+    // và gửi lệnh shutdown. Guard chỉ giữ trong lifecycle transition; supervisor không
+    // giữ nó trong lúc chờ health nên không chặn cold-start dài.
+    let Some(identity) = current_sidecar_identity() else {
+        return Ok(());
+    };
+    let shutdown_secret = security::sidecar_session_token_for_generation(identity.generation);
+    let Some(registered) = take_sidecar_generation(identity) else {
+        return Err("Identity sidecar đổi trong lúc chuẩn bị shutdown".to_string());
+    };
+    // `take_sidecar_generation` đã vô hiệu signer atomically. Local copy chỉ sống
+    // đủ lâu để gửi đúng một shutdown request cho generation vừa claim.
+    if let Err(error) = validate_registered_sidecar(&registered) {
+        log::warn!(
+            "[SIDECAR] Không xác minh được generation={} PID={} trước shutdown: {error}; dựa vào Job Object",
+            identity.generation,
+            identity.pid
+        );
+        startup_breadcrumb("sidecar shutdown: identity unavailable; relying on job object");
+        return Err(format!(
+            "Không xác minh được sidecar trước shutdown: {error}"
+        ));
+    }
+
+    let request_result = shutdown_secret.and_then(|secret| request_sidecar_shutdown(&secret));
+    let wait_result = if request_result.is_ok() {
+        // Uvicorn có graceful deadline 12 giây; phần còn lại dành cho bootstrap Nuitka
+        // dọn payload temporary trước khi app/installer đóng Job Object.
+        Some(unsafe { WaitForSingleObject(registered.process.raw(), 20_000) })
+    } else {
+        None
+    };
+
+    if wait_result == Some(WAIT_OBJECT_0) {
+        log::info!(
+            "[SIDECAR] generation={} PID={} đã shutdown êm và bootstrap Nuitka đã thoát",
+            identity.generation,
+            identity.pid
+        );
+        startup_breadcrumb("sidecar shutdown: graceful");
+        return Ok(());
+    }
+
+    match (&request_result, wait_result) {
+        (Err(error), _) => log::warn!("[SIDECAR] Shutdown êm thất bại: {error}"),
+        (Ok(()), Some(WAIT_TIMEOUT)) => {
+            log::warn!("[SIDECAR] Shutdown êm PID={} quá hạn 20 giây", identity.pid)
+        }
+        (Ok(()), Some(other)) => {
+            log::warn!(
+                "[SIDECAR] WaitForSingleObject PID={} trả mã {}",
+                identity.pid,
+                other.0
+            )
+        }
+        _ => {}
+    }
+    let forced = force_kill_registered_sidecar(&registered);
+    if forced {
+        startup_breadcrumb("sidecar shutdown: forced fallback");
+    }
+    Err(if forced {
+        "Sidecar không shutdown êm; đã dùng dừng cưỡng bức nên từ chối mở installer".to_string()
+    } else {
+        "Sidecar không shutdown êm và dừng cưỡng bức cũng thất bại".to_string()
+    })
+}
+
+/// SEC (audit 2026-09-04 §SEC.18/§SEC.22): một đường cleanup idempotent dùng
+/// chung cho command UI và hook native ngay trước khi updater mở installer.
+fn cleanup_children_before_installer() -> Result<(), String> {
+    #[cfg(all(not(debug_assertions), target_os = "windows"))]
+    let sidecar_result = {
+        let _lifecycle_guard = sidecar_lifecycle_guard();
+        SIDECAR_SHUTDOWN.store(true, Ordering::Release);
+        shutdown_sidecar_gracefully_locked()
+    };
+
+    // Luôn dọn display worker kể cả khi sidecar không shutdown êm; caller vẫn
+    // nhận lỗi ở dưới và không được phép tiếp tục mở installer.
+    pdf_engine::render_worker::shutdown_render_worker();
+
+    #[cfg(all(not(debug_assertions), target_os = "windows"))]
+    sidecar_result?;
+
+    log::warn!("[UPDATE] Đã dọn sidecar và display worker trước khi cài bản mới");
+    startup_breadcrumb("update: cleaned child processes before installer");
+    Ok(())
+}
+
+/// Updater 2.10.1 gọi `AppHandle::cleanup_before_exit()` ngay trước ShellExecute
+/// nhưng plugin-level Builder không cho gắn callback riêng. Resource này nằm ở
+/// app resource table nên bị drop đúng trong hook đó. Nếu caller React bị bỏ sót
+/// hoặc hồi quy, chốt native vẫn cleanup; lỗi làm tiến trình thoát trước installer.
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+struct UpdateExitCleanupResource;
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+impl tauri::Resource for UpdateExitCleanupResource {}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+impl Drop for UpdateExitCleanupResource {
+    fn drop(&mut self) {
+        if RUN_EVENT_EXIT_SEEN.load(Ordering::Acquire) {
+            return;
+        }
+        if let Err(error) = cleanup_children_before_installer() {
+            log::error!("[UPDATE] Cleanup native trước installer thất bại: {error}");
+            startup_breadcrumb("update: native cleanup failed; installer blocked");
+            // Callback updater không có kiểu Result. Thoát tại đây là cách fail-closed
+            // duy nhất để không quay lại plugin và chạy ShellExecute với file còn khóa.
+            std::process::exit(1);
+        }
     }
 }
 
@@ -352,14 +942,16 @@ fn spawn_sidecar_process<R: tauri::Runtime>(
         .sidecar("pdf-inspector-backend")
         .map_err(|error| format!("Không tìm thấy binary sidecar: {error}"))?;
     sidecar
+        .env_clear()
+        .envs(filtered_sidecar_environment())
         .current_dir(&storage.working_dir)
         .env("UPLOAD_DIR", &storage.upload_dir)
         .env("RESULTS_DIR", &storage.results_dir)
         .args(["--port", "8321"])
         .envs([
             ("DEV_MODE", "false"),
-            // SEC (audit 2026-08-15 §SIG.02): mọi thế hệ sidecar dùng cùng
-            // secret trong Rust và phải qua startup proof trước khi nhận request.
+            // SEC (audit 2026-09-03 §SEC.19-R1): mỗi thế hệ nhận bootstrap v2 và
+            // derive khóa phiên riêng; signer chỉ publish sau startup proof.
             ("PRYNX_TOKEN_SOURCE", "stdin"),
             ("PRYNX_PERF", if preview_perf_enabled() { "1" } else { "0" }),
             ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
@@ -607,7 +1199,7 @@ fn replace_sidecar_generation_exit_flag(current: &mut Arc<AtomicBool>) -> Arc<At
 fn start_sidecar_event_reader(
     mut rx: tauri::async_runtime::Receiver<tauri_plugin_shell::process::CommandEvent>,
     sidecar_exited: Arc<AtomicBool>,
-    pid: u32,
+    identity: SidecarProcessIdentity,
 ) {
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_shell::process::CommandEvent;
@@ -615,46 +1207,82 @@ fn start_sidecar_event_reader(
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(bytes) => {
-                    log::info!(
-                        "[SIDECAR-OUT] {}",
-                        String::from_utf8_lossy(&bytes).trim_end()
-                    );
+                    if let Some(notice) = sidecar_stream_notice("stdout", &bytes) {
+                        log::debug!("{notice}");
+                    }
                 }
                 CommandEvent::Stderr(bytes) => {
-                    log::warn!(
-                        "[SIDECAR-ERR] {}",
-                        String::from_utf8_lossy(&bytes).trim_end()
-                    );
+                    if let Some(notice) = sidecar_stream_notice("stderr", &bytes) {
+                        // SEC (audit 2026-09-05 §LOG.04): Python logging/traceback có
+                        // thể mang path, payload và tên engine. Release chỉ ghi việc
+                        // sidecar có phát diagnostic ở DEBUG, không chép nội dung và
+                        // không để stderr INFO của Python làm ngập file log release.
+                        log::debug!("{notice}");
+                    }
                 }
                 CommandEvent::Terminated(payload) => {
                     sidecar_exited.store(true, Ordering::Release);
-                    if SIDECAR_PID.load(Ordering::Acquire) == pid {
-                        SIDECAR_PID.store(0, Ordering::Release);
+                    let _ = clear_sidecar_generation(identity);
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        log::info!(
+                            "[SIDECAR] Terminated theo shutdown code={:?} signal={:?}",
+                            payload.code,
+                            payload.signal
+                        );
+                    } else {
+                        log::error!(
+                            "[SIDECAR] Terminated code={:?} signal={:?}",
+                            payload.code,
+                            payload.signal
+                        );
                     }
-                    log::error!(
-                        "[SIDECAR] Terminated code={:?} signal={:?}",
-                        payload.code,
-                        payload.signal
-                    );
                 }
-                CommandEvent::Error(error) => {
+                CommandEvent::Error(_error) => {
                     sidecar_exited.store(true, Ordering::Release);
-                    log::error!("[SIDECAR] Error: {}", error);
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        log::info!("[SIDECAR] Event stream đóng khi shutdown");
+                    } else {
+                        log::error!("[SIDECAR] Event stream gặp lỗi; chi tiết đã được ẩn");
+                    }
                 }
                 _ => {}
             }
         }
 
         sidecar_exited.store(true, Ordering::Release);
-        log::error!("[SIDECAR] Event stream closed for PID={pid}");
+        if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+            log::info!(
+                "[SIDECAR] Event stream đã đóng theo shutdown cho generation={} PID={}",
+                identity.generation,
+                identity.pid
+            );
+        } else {
+            log::error!(
+                "[SIDECAR] Event stream closed for generation={} PID={}",
+                identity.generation,
+                identity.pid
+            );
+        }
     });
+}
+
+#[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
+fn sidecar_stream_notice(kind: &str, bytes: &[u8]) -> Option<String> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    let safe_kind = if kind == "stderr" { "stderr" } else { "stdout" };
+    Some(format!(
+        "[SIDECAR] nội dung {safe_kind} đã được ẩn trong bản release ({} byte)",
+        bytes.len()
+    ))
 }
 
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 fn start_sidecar_supervisor<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     storage: SidecarStoragePaths,
-    sidecar_token: String,
+    sidecar_master_token: String,
     sidecar_exited: Arc<AtomicBool>,
 ) {
     if let Err(error) = std::thread::Builder::new()
@@ -676,8 +1304,15 @@ fn start_sidecar_supervisor<R: tauri::Runtime>(
                 // Pipe reader có thể lỗi trong khi listener vẫn đúng instance.
                 // Probe proof trước để tránh spawn trùng hoặc đụng listener lạ.
                 let port_is_free = sidecar_port_is_free();
-                let identity_is_ready =
-                    !port_is_free && sidecar_identity_is_ready(&sidecar_token);
+                let identity_is_ready = if port_is_free {
+                    false
+                } else if let Some(identity) = current_sidecar_identity() {
+                    security::sidecar_session_token_for_generation(identity.generation)
+                        .map(|token| sidecar_identity_is_ready(&token))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
                 match sidecar_recovery_action(
                     port_is_free,
                     identity_is_ready,
@@ -706,56 +1341,106 @@ fn start_sidecar_supervisor<R: tauri::Runtime>(
                         log::error!(
                             "[SIDECAR] Dừng recovery sau 3 lần thất bại hoặc gặp listener không xác thực; cần mở lại ứng dụng"
                         );
+                        // SEC (audit 2026-09-03 §SEC.19-R1): dừng supervisor phải
+                        // đồng nghĩa thu hồi signer. Nếu event pipe đã mất nhưng một
+                        // listener lạ vẫn chiếm cổng, giữ generation cũ trong RAM sẽ
+                        // để Rust tiếp tục ký bằng một authority không còn được giám sát.
+                        let _lifecycle_guard = sidecar_lifecycle_guard();
+                        if let Some(identity) = current_sidecar_identity() {
+                            kill_sidecar(identity);
+                        }
                         return;
                     }
                     SidecarRecoveryAction::Restart => {}
                 }
 
-                if SIDECAR_PID.load(Ordering::Acquire) != 0 {
-                    // Event reader lỗi nhưng listener đã biến mất: dọn đúng PID đã spawn
-                    // trước khi thay thế, tránh để bootstrap Nuitka treo không giữ port.
-                    kill_sidecar();
+                {
+                    let _lifecycle_guard = sidecar_lifecycle_guard();
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if let Some(identity) = current_sidecar_identity() {
+                        // Event reader lỗi nhưng listener đã biến mất: dọn đúng PID đã spawn
+                        // trước khi thay thế, tránh để bootstrap Nuitka treo không giữ port.
+                        kill_sidecar(identity);
+                    }
                 }
                 failed_restarts = failed_restarts.saturating_add(1);
                 std::thread::sleep(sidecar_restart_delay(failed_restarts));
-                if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
-                    return;
-                }
+                let (identity, generation_exited, session_token) = {
+                    // Cùng khóa với shutdown: nếu exit thấy PID=0 và trả về thì supervisor
+                    // không được spawn một bootstrap mới ngay sau đó.
+                    let _lifecycle_guard = sidecar_lifecycle_guard();
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let (rx, mut child) = match spawn_sidecar_process(&app, &storage) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            log::error!("[SIDECAR] Restart thất bại: {error}");
+                            continue;
+                        }
+                    };
+                    let pid = child.pid();
+                    let identity = match register_spawned_sidecar(pid) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            log::error!(
+                                "[SIDECAR] Không bind được identity khi restart PID={pid}: {error}"
+                            );
+                            let _ = child.kill();
+                            continue;
+                        }
+                    };
+                    let (bootstrap_record, session_token) =
+                        match sidecar_bootstrap_protocol_v2(&sidecar_master_token, identity) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                log::error!(
+                                    "[SIDECAR] Không derive được khóa phiên khi restart: {error}"
+                                );
+                                kill_sidecar(identity);
+                                continue;
+                            }
+                        };
+                    let generation_exited =
+                        replace_sidecar_generation_exit_flag(&mut current_sidecar_exited);
+                    start_sidecar_event_reader(
+                        rx,
+                        Arc::clone(&generation_exited),
+                        identity,
+                    );
 
-                let (rx, mut child) = match spawn_sidecar_process(&app, &storage) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        log::error!("[SIDECAR] Restart thất bại: {error}");
+                    if let Err(error) = child.write(bootstrap_record.as_bytes()) {
+                        log::error!("[SIDECAR] Ghi token khi restart thất bại: {error}");
+                        generation_exited.store(true, Ordering::Release);
+                        kill_sidecar(identity);
                         continue;
                     }
+                    (identity, generation_exited, session_token)
                 };
-                let pid = child.pid();
-                let generation_exited =
-                    replace_sidecar_generation_exit_flag(&mut current_sidecar_exited);
-                SIDECAR_PID.store(pid, Ordering::Release);
-                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Thế hệ sidecar do supervisor dựng
-                // lại cũng phải vào job; nếu quên, mỗi lần recovery lại sinh một tiến trình
-                // không được OS bảo kê.
-                process_guard::adopt_child_process(pid);
                 if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
-                    kill_sidecar();
                     return;
                 }
-                start_sidecar_event_reader(rx, Arc::clone(&generation_exited), pid);
-
-                let token_line = format!("TOKEN:{}\n", sidecar_token);
-                if let Err(error) = child.write(token_line.as_bytes()) {
-                    log::error!("[SIDECAR] Ghi token khi restart thất bại: {error}");
-                    generation_exited.store(true, Ordering::Release);
-                    kill_sidecar();
-                    continue;
-                }
                 startup_breadcrumb("sidecar recovery: waiting for startup proof");
-                if let Err(error) = verify_sidecar_startup(&sidecar_token, &generation_exited) {
+                if let Err(error) = verify_sidecar_startup(&session_token, &generation_exited) {
                     log::error!("[SIDECAR] Startup proof sau restart thất bại: {error}");
                     startup_breadcrumb(&format!("sidecar recovery: FAIL {error}"));
                     generation_exited.store(true, Ordering::Release);
-                    kill_sidecar();
+                    kill_sidecar(identity);
+                    continue;
+                }
+                if let Err(error) = publish_verified_sidecar_session(
+                    identity,
+                    &session_token,
+                    &generation_exited,
+                ) {
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        return;
+                    }
+                    log::error!("[SIDECAR] Không publish được khóa phiên mới: {error}");
+                    generation_exited.store(true, Ordering::Release);
+                    kill_sidecar(identity);
                     continue;
                 }
 
@@ -763,6 +1448,7 @@ fn start_sidecar_supervisor<R: tauri::Runtime>(
                 monitoring_without_events = false;
                 log::warn!("[SIDECAR] Đã khởi động lại và xác thực thành công trên port 8321");
                 startup_breadcrumb("sidecar recovery: ready (startup proof OK)");
+                start_sidecar_cache_cleanup(identity.pid);
             }
         })
     {
@@ -773,10 +1459,15 @@ fn start_sidecar_supervisor<R: tauri::Runtime>(
 #[cfg(test)]
 mod sidecar_startup_tests {
     use super::{
-        prepare_sidecar_storage, replace_sidecar_generation_exit_flag, sidecar_recovery_action,
-        sidecar_restart_delay, sidecar_startup_timeout_error, startup_retry_delay,
-        verify_startup_proof, SidecarRecoveryAction, SIDECAR_STARTUP_TIMEOUT,
+        filter_sidecar_environment, nuitka_temp_extraction_pid, prepare_sidecar_storage,
+        prune_stale_nuitka_extractions, replace_sidecar_generation_exit_flag,
+        sidecar_creation_matches, sidecar_generation_matches, sidecar_recovery_action,
+        sidecar_restart_delay, sidecar_shutdown_proof, sidecar_shutdown_request,
+        sidecar_startup_timeout_error, sidecar_stream_notice, startup_retry_delay,
+        verify_startup_proof, SidecarProcessIdentity, SidecarRecoveryAction,
+        SIDECAR_SECURITY_ENV_KEYS, SIDECAR_STARTUP_TIMEOUT,
     };
+    use std::ffi::OsString;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -842,6 +1533,157 @@ mod sidecar_startup_tests {
     }
 
     #[test]
+    fn shutdown_proof_khop_backend_va_request_khong_co_body() {
+        let nonce = "0000000000000000000000000000000000000000000000000000000000000000";
+        let proof = sidecar_shutdown_proof("test-secret", "1700000000", nonce).unwrap();
+        assert_eq!(
+            proof,
+            "588aaddf45d655203bc8a4322d2ba0d04fd40863ca2cf8e203d42cb61106c5b2"
+        );
+
+        let request = sidecar_shutdown_request("test-secret", "1700000000", nonce).unwrap();
+        assert!(request.starts_with("POST /__prynx/shutdown HTTP/1.1\r\n"));
+        assert!(request.contains("Content-Length: 0\r\n"));
+        assert!(request.contains(&format!("X-PrynX-Shutdown-Proof: {proof}\r\n")));
+        assert!(request.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn moi_truong_sidecar_loai_state_nuitka_khong_phan_biet_hoa_thuong() {
+        let filtered = filter_sidecar_environment(vec![
+            (OsString::from("Path"), OsString::from("C:\\Windows")),
+            (
+                OsString::from("nuitka_onefile_parent"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("Nuitka_Onefile_Start"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("NUITKA_ONEFILE_TIME_US"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("nUiTkA_oNeFiLe_RaNdOm"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("NUITKA_ONEFILE_DIRECTORY"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("NUITKA_ONEFILE_RANDOM_EXTRA"),
+                OsString::from("allowed"),
+            ),
+            (OsString::from("PRYNX_PERF"), OsString::from("1")),
+            (OsString::from("prynx_rot_audit"), OsString::from("1")),
+            (
+                OsString::from("PRYNX_NESTING_TRACE_PATH"),
+                OsString::from("C:\\du-lieu-khach.jsonl"),
+            ),
+            (OsString::from("STICKER_DEBUG"), OsString::from("true")),
+            (
+                OsString::from("PRYNX_CLK_KEY_FILE"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("prynx_clock_guard_file"),
+                OsString::from("attacker"),
+            ),
+            (
+                OsString::from("PRYNX_MAX_TOKEN_LIFETIME_SECONDS"),
+                OsString::from("999999999"),
+            ),
+            (
+                OsString::from("PRYNX_ENFORCE_CLOCK_ANCHOR"),
+                OsString::from("0"),
+            ),
+            (
+                OsString::from("PRYNX_LICENSE_PUBLIC_KEY"),
+                OsString::from("attacker"),
+            ),
+            (OsString::from("DEV_MODE"), OsString::from("true")),
+        ]);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|(name, _)| name == "Path"));
+        assert!(filtered
+            .iter()
+            .any(|(name, _)| name == "NUITKA_ONEFILE_RANDOM_EXTRA"));
+        assert!(filtered.iter().all(|(name, _)| {
+            !SIDECAR_SECURITY_ENV_KEYS
+                .iter()
+                .any(|blocked| name.eq_ignore_ascii_case(blocked))
+        }));
+    }
+
+    #[test]
+    fn log_stream_sidecar_release_khong_chep_noi_dung_nhay_cam() {
+        let sentinel = br#"Traceback C:\\KhachHang\\don-hang.pdf ENGINE_SECRET"#;
+        let notice = sidecar_stream_notice("stderr", sentinel).unwrap();
+
+        assert!(notice.contains("stderr"));
+        assert!(notice.contains(&sentinel.len().to_string()));
+        assert!(!notice.contains("KhachHang"));
+        assert!(!notice.contains("ENGINE_SECRET"));
+        assert!(sidecar_stream_notice("stdout", b" \r\n\t").is_none());
+    }
+
+    #[test]
+    fn parser_va_prune_extraction_tam_chi_nhan_ten_chuan() {
+        assert_eq!(
+            nuitka_temp_extraction_pid("sidecar-42-123456-Abcd_123-xy"),
+            Some(42)
+        );
+        for invalid in [
+            "sidecar-0-123456-Abcd_123-xy",
+            "sidecar-042-123456-Abcd_123-xy",
+            "sidecar-42-12345-Abcd_123-xy",
+            "sidecar-42-123456-Abcd_123-x",
+            "sidecar-42-123456-Abcd.123-xy",
+        ] {
+            assert_eq!(nuitka_temp_extraction_pid(invalid), None, "{invalid}");
+        }
+
+        let test_root = std::env::temp_dir().join(format!(
+            "prynx_nuitka_prune_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = test_root.join("PrynX");
+        let current = base.join("sidecar-42-123456-Abcd_123-xy");
+        let active_next = base.join("sidecar-43-222222-Live_456-uv");
+        let stale = base.join("sidecar-41-654321-Zyxw_987-qp");
+        let invalid = base.join("sidecar-40-65432-Zyxw_987-qp");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&active_next).unwrap();
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::create_dir_all(&invalid).unwrap();
+        std::fs::write(stale.join("payload.bin"), b"stale").unwrap();
+
+        // Mô phỏng cleanup thread của PID 42 chạy muộn sau khi supervisor đã dựng PID 43.
+        let (removed, failed) = prune_stale_nuitka_extractions(&base, 42, || 43).unwrap();
+
+        assert_eq!(removed, vec!["sidecar-41-654321-Zyxw_987-qp"]);
+        assert!(failed.is_empty());
+        assert!(current.is_dir());
+        assert!(active_next.is_dir());
+        assert!(invalid.is_dir());
+        assert!(!stale.exists());
+
+        let another_stale = base.join("sidecar-44-333333-Zero_321-ab");
+        std::fs::create_dir_all(&another_stale).unwrap();
+        let (removed_without_live_pid, _) =
+            prune_stale_nuitka_extractions(&base, 999, || 0).unwrap();
+        assert!(removed_without_live_pid.is_empty());
+        assert!(another_stale.is_dir());
+        std::fs::remove_dir_all(test_root).unwrap();
+    }
+
+    #[test]
     fn supervisor_chi_restart_khi_port_ranh_va_khong_kill_listener_la() {
         assert_eq!(
             sidecar_recovery_action(true, false, 0),
@@ -871,6 +1713,15 @@ mod sidecar_startup_tests {
         assert_eq!(sidecar_restart_delay(2), Duration::from_secs(1));
         assert_eq!(sidecar_restart_delay(3), Duration::from_secs(3));
         assert_eq!(sidecar_restart_delay(99), Duration::from_secs(3));
+
+        // Nhánh release-only khó chạy trực tiếp trong unit test debug; khóa lại
+        // invariant cấu trúc quan trọng: Stop phải thu hồi generation/signer trước return.
+        let source = include_str!("lib.rs");
+        let stop_branch = source
+            .split_once("SidecarRecoveryAction::Stop => {")
+            .and_then(|(_, rest)| rest.split_once("return;").map(|(branch, _)| branch))
+            .expect("phải tìm thấy nhánh Stop của supervisor");
+        assert!(stop_branch.contains("kill_sidecar(identity)"));
     }
 
     #[test]
@@ -884,6 +1735,53 @@ mod sidecar_startup_tests {
         assert!(previous_reader_flag.load(Ordering::Acquire));
         assert!(!current.load(Ordering::Acquire));
         assert!(Arc::ptr_eq(&current, &next_reader_flag));
+    }
+
+    #[test]
+    fn identity_sidecar_chan_event_cu_va_pid_tai_su_dung() {
+        let current = SidecarProcessIdentity {
+            generation: 12,
+            pid: 4242,
+            creation_filetime: 900_000,
+        };
+        let old_generation_same_process_fields = SidecarProcessIdentity {
+            generation: 11,
+            ..current
+        };
+        let reused_pid = SidecarProcessIdentity {
+            generation: 11,
+            pid: current.pid,
+            creation_filetime: current.creation_filetime - 1,
+        };
+
+        assert!(sidecar_generation_matches(Some(current), current));
+        assert!(!sidecar_generation_matches(
+            Some(current),
+            old_generation_same_process_fields
+        ));
+        assert!(!sidecar_generation_matches(Some(current), reused_pid));
+        assert!(sidecar_creation_matches(current, Some(900_000)));
+        assert!(!sidecar_creation_matches(current, Some(899_999)));
+        assert!(!sidecar_creation_matches(current, None));
+    }
+
+    #[test]
+    fn hai_duong_spawn_deu_capture_identity_va_raw_taskkill_chi_co_mot_cong() {
+        let source = include_str!("lib.rs");
+        let register_call = ["register_spawned_", "sidecar("].concat();
+        let legacy_pid_state = ["SIDECAR_", "PID"].concat();
+        let raw_taskkill = [".args([\"/", "PID\""].concat();
+
+        // Một definition + đúng hai call site: initial spawn và supervisor restart.
+        assert_eq!(source.matches(&register_call).count(), 3);
+        assert!(!source.contains(&legacy_pid_state));
+        // Cổng taskkill duy nhất nằm sau validate FILETIME trên pinned HANDLE.
+        assert_eq!(source.matches(&raw_taskkill).count(), 1);
+        assert!(source.contains("validate_registered_sidecar(registered)"));
+        assert!(source.contains("clear_sidecar_generation(identity)"));
+        // SEC (§SEC.22): startup không được quay lại kill theo image name.
+        assert!(!source.contains("[\"/IM\", \"pdf-inspector-backend.exe\", \"/F\"]"));
+        assert!(source.contains("không được tự ý `taskkill /IM` theo tên"));
     }
 
     #[test]
@@ -1379,20 +2277,25 @@ pub fn run_render_worker_stdio() -> i32 {
 
 /// Breadcrumb khởi động → %APPDATA%\PrynX\logs\startup_debug.log
 fn startup_breadcrumb(msg: &str) {
-    log::info!("[STARTUP] {}", msg);
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("startup_debug.log"))
-        {
-            use std::io::Write;
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let _ = writeln!(f, "[{}] {}", now, msg);
+    #[cfg(debug_assertions)]
+    {
+        log::info!("[STARTUP] {}", msg);
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("startup_debug.log"))
+            {
+                use std::io::Write;
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let _ = writeln!(f, "[{}] {}", now, msg);
+            }
         }
     }
+    #[cfg(not(debug_assertions))]
+    let _ = msg;
 }
 
 fn reveal_main_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -1435,10 +2338,10 @@ fn mark_frontend_interactive() {
 // tauri-plugin-single-instance 2.4.2 có một lỗ: khi mutex của nó ĐÃ tồn tại nhưng
 // `FindWindowW` không thấy cửa sổ ẩn của instance kia (instance đó đang treo, hoặc cửa sổ
 // đã bị hủy), plugin **đi tiếp** — và đi tiếp mà KHÔNG giữ mutex, KHÔNG tạo cửa sổ đích.
-// Từ đó nhiều instance đầy đủ cùng chạy. Hậu quả cụ thể trong PrynX: mỗi cold-start đều
-// `taskkill /IM pdf-inspector-backend.exe /F` để dọn zombie, nên instance mới GIẾT SIDECAR
-// của instance đang dùng; supervisor bên kia thấy listener lạ rồi `Stop` — backend chết hẳn
-// trong phiên đó.
+// Từ đó nhiều instance đầy đủ cùng chạy. Hậu quả cụ thể trong PrynX trước đây là mỗi
+// cold-start đều cố `taskkill /IM pdf-inspector-backend.exe /F` để dọn zombie, nên instance
+// mới có thể GIẾT SIDECAR của instance đang dùng; supervisor bên kia thấy listener lạ rồi
+// `Stop` — backend chết hẳn trong phiên đó.
 //
 // Ta không vá được crate vendor, nhưng chặn được phần phá hoại: giữ một mutex RIÊNG (tên
 // khác hẳn của plugin — trùng tên là làm sập luôn cơ chế của plugin ở instance đầu tiên) chỉ
@@ -1500,7 +2403,12 @@ fn build_startup_error_command(paragraphs: &[&str]) -> String {
 
 #[cfg(not(debug_assertions))]
 fn show_startup_error_dialog(paragraphs: &[&str]) {
-    let _ = std::process::Command::new("powershell")
+    // SEC (audit 2026-09-04 §SEC.24-R1): mọi dialog release dùng đúng binary
+    // Windows do System32 trả về; không cho môi trường cha thay bằng PATH giả.
+    let Ok(powershell) = security::system_powershell_path() else {
+        return;
+    };
+    let _ = std::process::Command::new(powershell)
         .args([
             "-NoProfile",
             "-Command",
@@ -1548,7 +2456,7 @@ mod startup_dialog_tests {
 /// Thứ tự trong hàm là có chủ ý: bật cờ shutdown trước để supervisor không respawn, diệt
 /// sidecar (việc quan trọng nhất cho trình cài) rồi mới dọn display worker.
 #[tauri::command]
-fn prepare_for_update(window: tauri::WebviewWindow) {
+fn prepare_for_update(window: tauri::WebviewWindow) -> Result<(), String> {
     // SEC (pentest 2026-08-28 §ATK.11): chỉ cửa sổ "main" — nơi UI updater
     // (UpdateChecker/AboutModal) thật sự sống — được kích lệnh này. Cửa sổ tài liệu PDF
     // nhân bản (label "document-*") và mọi webview phụ KHÔNG được diệt sidecar + chặn
@@ -1562,16 +2470,9 @@ fn prepare_for_update(window: tauri::WebviewWindow) {
             "[UPDATE][§ATK.11] Bỏ qua prepare_for_update từ cửa sổ không phải main: {}",
             window.label()
         );
-        return;
+        return Err("Chỉ cửa sổ chính được phép chuẩn bị cập nhật".to_string());
     }
-    #[cfg(all(not(debug_assertions), target_os = "windows"))]
-    {
-        SIDECAR_SHUTDOWN.store(true, Ordering::Release);
-        kill_sidecar();
-    }
-    pdf_engine::render_worker::shutdown_render_worker();
-    log::warn!("[UPDATE] Đã dọn sidecar và display worker trước khi cài bản mới");
-    startup_breadcrumb("update: cleaned child processes before installer");
+    cleanup_children_before_installer()
 }
 
 // Cache LRU tile trong RAM. Dung lượng JPEG thay đổi rất rộng theo kích thước/nội dung,
@@ -1674,7 +2575,7 @@ fn tile_cache() -> &'static Mutex<TileCache> {
             .map(|bytes| format!("{} MiB", bytes / MIB))
             .unwrap_or_else(|| "unbounded".to_string());
         log::info!("[TILE_CACHE] policy={policy}");
-        // Release chỉ lưu log info khi QA bật PRYNX_PERF=1; mặc định không thêm I/O.
+        // Chỉ binary dev có PRYNX_PERF=1 mới ghi; release không có đường bật lại.
         perf_log(&format!("TILE_CACHE_POLICY budget={policy}"));
         Mutex::new(TileCache::new(budget))
     })
@@ -2098,10 +2999,8 @@ mod system_files_inbox_tests {
 
     #[test]
     fn startup_chi_duoc_lay_mot_lan_ke_ca_sau_reload_frontend() {
-        let state = SystemFilesState::new(vec![
-            "PrynX.exe".to_string(),
-            "D:\\viec\\b.pdf".to_string(),
-        ]);
+        let state =
+            SystemFilesState::new(vec!["PrynX.exe".to_string(), "D:\\viec\\b.pdf".to_string()]);
 
         let first = state.take_startup().expect("phải có batch startup");
         assert_eq!(first.batch_id, "startup-1");
@@ -2145,22 +3044,31 @@ fn perf_env_value_enabled(value: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn preview_perf_enabled_for_build(debug_build: bool, value: Option<&str>) -> bool {
+    // SEC (audit 2026-09-05 §LOG.01): cờ môi trường chỉ có hiệu lực trong
+    // binary dev. Người dùng máy khách không thể bật lại trace trên release.
+    debug_build && perf_env_value_enabled(value)
+}
+
 fn preview_perf_enabled() -> bool {
-    perf_env_value_enabled(std::env::var("PRYNX_PERF").ok().as_deref())
+    preview_perf_enabled_for_build(
+        cfg!(debug_assertions),
+        std::env::var("PRYNX_PERF").ok().as_deref(),
+    )
 }
 
 #[tauri::command]
 fn preview_perf_logging_enabled() -> bool {
     // PERF (audit 2026-08-05 §PERF.3): FE hỏi đúng một lần rồi cache kết quả;
-    // release mặc định không ghi Desktop và không gửi beacon.
+    // SEC (audit 2026-09-05 §LOG.01): release luôn trả false.
     preview_perf_enabled()
 }
 
 // ── Đo hiệu năng render (đo thật, không đoán) ────────────────────────────────
 // Đường log riêng cho render/thumbnail, set 1 lần trong setup(). KHÔNG dùng
 // chrono::Local::now() (đã PANIC ở release trong render_tile_png_in_process — xem note ~:609)
-// → dùng epoch millis từ SystemTime (không timezone, không panic). Bật khi:
-//   - env PRYNX_PERF=1 (opt-in khi cần chẩn đoán; Dev và release đều mặc định tắt).
+// → dùng epoch millis từ SystemTime (không timezone, không panic). Chỉ bật khi
+// binary dev đồng thời có env PRYNX_PERF=1; release bị khóa ở compile policy.
 static PERF_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 fn perf_enabled() -> bool {
@@ -2192,9 +3100,9 @@ fn write_perf_log(msg: &str) {
 }
 
 fn shadow_perf_log(msg: &str) {
-    // COLOR/PERF (audit 2026-08-10 §L7A): cờ shadow tự nó đã là opt-in rõ
-    // ràng. Không bắt khách bật thêm PRYNX_PERF, nhưng vẫn dùng chung một file
-    // log và tuyệt đối không ghi path/nội dung PDF.
+    // COLOR/PERF (audit 2026-08-10 §L7A; hardening 2026-09-05 §LOG.01):
+    // cờ shadow chỉ có hiệu lực trong binary dev, dùng chung một file log và
+    // tuyệt đối không ghi path/nội dung PDF.
     if pdf_engine::render_worker::viewer_shadow_render_enabled() {
         write_perf_log(msg);
     }
@@ -2202,7 +3110,7 @@ fn shadow_perf_log(msg: &str) {
 
 // Cho FE đẩy dòng đo (TilePerf / ViewerPreview) vào CÙNG file PrynX_RenderPerf.log
 // → user chỉ cần gửi 1 file thay vì mở devtools copy console. Chỉ ghi khi
-// perf_enabled() (PRYNX_PERF=1). Gắn prefix "FE " để phân biệt
+// perf_enabled() (binary dev + PRYNX_PERF=1). Gắn prefix "FE " để phân biệt
 // dòng Rust (render/encode thuần) với dòng FE (tổng thời gian chờ invoke).
 #[tauri::command]
 fn append_render_perf(msg: String) {
@@ -2231,49 +3139,76 @@ fn sidecar_cache_version(name: &str) -> Option<[u64; 8]> {
     ])
 }
 
-fn windows_resource_revision(prerelease: Option<&str>) -> Option<u64> {
-    let Some(value) = prerelease else {
-        return Some(0);
-    };
-    let numeric_parts = value
-        .split('.')
-        .filter(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-        .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    if numeric_parts.len() > 2 {
+fn nuitka_temp_extraction_pid(name: &str) -> Option<u32> {
+    let raw = name.strip_prefix("sidecar-")?;
+    let (pid_raw, remainder) = raw.split_once('-')?;
+    let (time_raw, random_raw) = remainder.split_once('-')?;
+    if pid_raw.is_empty()
+        || pid_raw.len() > 10
+        || pid_raw.starts_with('0')
+        || !pid_raw.bytes().all(|byte| byte.is_ascii_digit())
+        || time_raw.len() != 6
+        || !time_raw.bytes().all(|byte| byte.is_ascii_digit())
+        || random_raw.len() != 11
+        || !random_raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
         return None;
     }
-    let sequence = numeric_parts.first().copied().unwrap_or(0);
-    let hotfix = numeric_parts.get(1).copied().unwrap_or(0);
-    if hotfix > 99 {
-        return None;
-    }
-    let revision = sequence.checked_mul(100)?.checked_add(hotfix)?;
-    (revision <= u16::MAX as u64).then_some(revision)
+    pid_raw.parse::<u32>().ok().filter(|pid| *pid != 0)
 }
 
-fn nuitka_cache_name_for_app_version(version: &str) -> Option<String> {
-    let (core, prerelease) = version
-        .split_once('-')
-        .map(|(core, prerelease)| (core, Some(prerelease)))
-        .unwrap_or((version, None));
-    let core_parts = core
-        .split('.')
-        .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    if core_parts.len() != 3 {
-        return None;
+fn metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     }
-    let revision = windows_resource_revision(prerelease)?;
-    let numeric = format!(
-        "{}.{}.{}.{}",
-        core_parts[0], core_parts[1], core_parts[2], revision
-    );
-    // Nuitka ghép PRODUCT_VERSION-FILE_VERSION khi build truyền cả hai cờ;
-    // build_production.ps1 luôn truyền cùng NUMERIC_VERSION cho hai cờ này.
-    Some(format!("sidecar-{numeric}-{numeric}"))
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn path_has_reparse_component(path: &std::path::Path) -> Result<bool, String> {
+    let mut current = std::path::PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata_is_reparse_point(&metadata) => return Ok(true),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Không kiểm tra được reparse point tại {}: {error}",
+                    current.display()
+                ))
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn tree_has_reparse_point(root: &std::path::Path) -> Result<bool, String> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .map_err(|error| format!("Không đọc được {}: {error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("Không đọc được entry: {error}"))?;
+            let metadata = std::fs::symlink_metadata(entry.path())
+                .map_err(|error| format!("Không đọc được metadata: {error}"))?;
+            if metadata_is_reparse_point(&metadata) {
+                return Ok(true);
+            }
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn remove_sidecar_cache_with_retry(path: &std::path::Path) -> std::io::Result<()> {
@@ -2295,8 +3230,18 @@ fn prune_sidecar_caches(
     base_dir: &std::path::Path,
     current_name: Option<&str>,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    if !base_dir.is_dir() {
-        return Ok((Vec::new(), Vec::new()));
+    let base_metadata = match std::fs::symlink_metadata(base_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Vec::new()))
+        }
+        Err(error) => return Err(format!("Không đọc được thư mục cache: {error}")),
+    };
+    if !base_metadata.is_dir()
+        || metadata_is_reparse_point(&base_metadata)
+        || path_has_reparse_component(base_dir)?
+    {
+        return Err("Bỏ qua thư mục cache không an toàn hoặc là reparse point".to_string());
     }
     let canonical_base = std::fs::canonicalize(base_dir)
         .map_err(|error| format!("Không chuẩn hóa được thư mục cache: {error}"))?;
@@ -2316,7 +3261,7 @@ fn prune_sidecar_caches(
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !metadata.is_dir() || metadata_is_reparse_point(&metadata) {
             continue;
         }
         let canonical_path = match std::fs::canonicalize(entry.path()) {
@@ -2338,11 +3283,13 @@ fn prune_sidecar_caches(
             keep.insert(current.to_string());
         }
     }
-    for (_, name, _) in &entries {
-        if keep.len() >= 2 {
-            break;
+    if current_name.is_some() {
+        for (_, name, _) in &entries {
+            if keep.len() >= 2 {
+                break;
+            }
+            keep.insert(name.clone());
         }
-        keep.insert(name.clone());
     }
 
     let mut removed = Vec::new();
@@ -2351,12 +3298,147 @@ fn prune_sidecar_caches(
         if keep.contains(&name) {
             continue;
         }
+        match tree_has_reparse_point(&path) {
+            Ok(false) => {}
+            Ok(true) => {
+                failed.push(format!("{name}: chứa reparse point; không xóa"));
+                continue;
+            }
+            Err(error) => {
+                failed.push(format!("{name}: {error}"));
+                continue;
+            }
+        }
         match remove_sidecar_cache_with_retry(&path) {
             Ok(()) => removed.push(name),
             Err(error) => failed.push(format!("{name}: {error}")),
         }
     }
     Ok((removed, failed))
+}
+
+fn prune_stale_nuitka_extractions<F>(
+    base_dir: &std::path::Path,
+    current_pid: u32,
+    active_pid: F,
+) -> Result<(Vec<String>, Vec<String>), String>
+where
+    F: Fn() -> u32,
+{
+    let metadata = match std::fs::symlink_metadata(base_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Vec::new()))
+        }
+        Err(error) => return Err(format!("Không đọc được thư mục extraction: {error}")),
+    };
+    if !metadata.is_dir()
+        || metadata_is_reparse_point(&metadata)
+        || path_has_reparse_component(base_dir)?
+    {
+        return Err("Bỏ qua thư mục extraction không an toàn hoặc là reparse point".to_string());
+    }
+    let canonical_base = std::fs::canonicalize(base_dir)
+        .map_err(|error| format!("Không chuẩn hóa được thư mục extraction: {error}"))?;
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for entry in std::fs::read_dir(&canonical_base)
+        .map_err(|error| format!("Không đọc được thư mục extraction: {error}"))?
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failed.push(format!("entry: {error}"));
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(pid) = nuitka_temp_extraction_pid(&name) else {
+            continue;
+        };
+        let live_pid = active_pid();
+        if live_pid == 0 || pid == current_pid || pid == live_pid {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                failed.push(format!("{name}: {error}"));
+                continue;
+            }
+        };
+        if !metadata.is_dir() || metadata_is_reparse_point(&metadata) {
+            continue;
+        }
+        let canonical_path = match std::fs::canonicalize(entry.path()) {
+            Ok(path) if path.parent() == Some(canonical_base.as_path()) => path,
+            _ => continue,
+        };
+        match tree_has_reparse_point(&canonical_path) {
+            Ok(false) => {}
+            Ok(true) => {
+                failed.push(format!("{name}: chứa reparse point; không xóa"));
+                continue;
+            }
+            Err(error) => {
+                failed.push(format!("{name}: {error}"));
+                continue;
+            }
+        }
+        let live_pid = active_pid();
+        if live_pid == 0 || pid == current_pid || pid == live_pid {
+            continue;
+        }
+        match remove_sidecar_cache_with_retry(&canonical_path) {
+            Ok(()) => removed.push(name),
+            Err(error) => failed.push(format!("{name}: {error}")),
+        }
+    }
+    Ok((removed, failed))
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn start_sidecar_cache_cleanup(current_pid: u32) {
+    let persistent_base = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|path| path.join("PrynX"));
+    let temporary_base = std::env::temp_dir().join("PrynX");
+    std::thread::spawn(move || {
+        if let Some(base) = persistent_base {
+            match prune_sidecar_caches(&base, None) {
+                Ok((removed, failed)) => {
+                    if !removed.is_empty() {
+                        log::info!(
+                            "[SIDECAR-CACHE] Đã xóa cache persistent cũ: {}",
+                            removed.join(", ")
+                        );
+                    }
+                    for error in failed {
+                        log::warn!("[SIDECAR-CACHE] Bỏ qua cache persistent: {error}");
+                    }
+                }
+                Err(error) => {
+                    log::warn!("[SIDECAR-CACHE] Không thể prune cache persistent: {error}")
+                }
+            }
+        }
+        match prune_stale_nuitka_extractions(&temporary_base, current_pid, || {
+            current_sidecar_identity().map_or(0, |identity| identity.pid)
+        }) {
+            Ok((removed, failed)) => {
+                if !removed.is_empty() {
+                    log::info!(
+                        "[SIDECAR-CACHE] Đã xóa extraction tạm cũ: {}",
+                        removed.join(", ")
+                    );
+                }
+                for error in failed {
+                    log::warn!("[SIDECAR-CACHE] Bỏ qua extraction tạm: {error}");
+                }
+            }
+            Err(error) => log::warn!("[SIDECAR-CACHE] Không thể prune extraction tạm: {error}"),
+        }
+    });
 }
 
 fn compact_log_field(value: String, max_chars: usize) -> String {
@@ -2375,14 +3457,25 @@ fn log_frontend_error(
     message: String,
     component_stack: Option<String>,
 ) {
-    log::error!(
-        "[FRONTEND_UI] area={} error_id={} version={} message={} component_stack={}",
-        compact_log_field(area, 80),
-        compact_log_field(error_id, 80),
-        compact_log_field(app_version, 40),
-        compact_log_field(message, 800),
-        compact_log_field(component_stack.unwrap_or_default(), 5000),
-    );
+    if cfg!(debug_assertions) {
+        log::error!(
+            "[FRONTEND_UI] area={} error_id={} version={} message={} component_stack={}",
+            compact_log_field(area, 80),
+            compact_log_field(error_id, 80),
+            compact_log_field(app_version, 40),
+            compact_log_field(message, 800),
+            compact_log_field(component_stack.unwrap_or_default(), 5000),
+        );
+    } else {
+        // Native là authority cuối: renderer bị sửa cũng không thể nhét stack,
+        // path hoặc payload vào PrynX.log production.
+        log::error!(
+            "[FRONTEND_UI] area={} error_id={} version={}",
+            compact_log_field(area, 80),
+            compact_log_field(error_id, 80),
+            compact_log_field(app_version, 40),
+        );
+    }
 }
 
 #[derive(Default)]
@@ -3646,7 +4739,10 @@ fn take_startup_system_file_batch(
 #[tauri::command]
 fn get_startup_args(state: tauri::State<SystemFilesState>) -> Vec<String> {
     // Tương thích frontend cũ; command mới và cũ cùng consume một inbox.
-    state.take_startup().map(|batch| batch.args).unwrap_or_default()
+    state
+        .take_startup()
+        .map(|batch| batch.args)
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -3891,7 +4987,7 @@ fn grant_upscale_file_path(
 /// so LẠI trên dạng canonical, đối xứng với `is_sensitive_path`.
 /// Bổ sung Startup per-user: `fs:allow-write-file`/`fs:allow-mkdir` deny thư mục này
 /// nhưng lệnh Rust không vướng ACL plugin-fs ⇒ trước đây ghi được, lệch với capability.
-fn is_sensitive_write_path(path: &str) -> bool {
+pub(crate) fn is_sensitive_write_path(path: &str) -> bool {
     if is_sensitive_path(path) {
         return true;
     }
@@ -4090,8 +5186,17 @@ fn batch_temp_path(output_dir: &std::path::Path) -> std::path::PathBuf {
     output_dir.join(format!(".prynx_batch_{}_{}.tmp", std::process::id(), nanos))
 }
 
-#[tauri::command]
-fn write_batch_pdf(
+fn ensure_batch_sink_allowed(window_label: &str) -> Result<(), String> {
+    if document_window_registry::is_document_window_label(window_label) {
+        return Err(
+            "Cửa sổ tài liệu không được dùng lệnh xuất hàng loạt; hãy Lưu thành PDF mới."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn write_batch_pdf_impl(
     output_dir: String,
     preferred_name: String,
     contents: Vec<u8>,
@@ -4112,8 +5217,29 @@ fn write_batch_pdf(
     result
 }
 
+fn write_batch_pdf_for_window(
+    window_label: &str,
+    output_dir: String,
+    preferred_name: String,
+    contents: Vec<u8>,
+) -> Result<String, String> {
+    ensure_batch_sink_allowed(window_label)?;
+    write_batch_pdf_impl(output_dir, preferred_name, contents)
+}
+
 #[tauri::command]
-fn copy_batch_pdf(
+fn write_batch_pdf(
+    window: tauri::WebviewWindow,
+    output_dir: String,
+    preferred_name: String,
+    contents: Vec<u8>,
+) -> Result<String, String> {
+    // SEC (audit 2026-09-04 §SEC.15): child V1 không có UX batch hợp lệ. Chặn
+    // theo caller native trước khi tạo bất kỳ `.prynx_batch_*.tmp` nào.
+    write_batch_pdf_for_window(window.label(), output_dir, preferred_name, contents)
+}
+
+fn copy_batch_pdf_impl(
     source: String,
     output_dir: String,
     preferred_name: String,
@@ -4139,6 +5265,26 @@ fn copy_batch_pdf(
         let _ = std::fs::remove_file(&temp);
     }
     result
+}
+
+fn copy_batch_pdf_for_window(
+    window_label: &str,
+    source: String,
+    output_dir: String,
+    preferred_name: String,
+) -> Result<String, String> {
+    ensure_batch_sink_allowed(window_label)?;
+    copy_batch_pdf_impl(source, output_dir, preferred_name)
+}
+
+#[tauri::command]
+fn copy_batch_pdf(
+    window: tauri::WebviewWindow,
+    source: String,
+    output_dir: String,
+    preferred_name: String,
+) -> Result<String, String> {
+    copy_batch_pdf_for_window(window.label(), source, output_dir, preferred_name)
 }
 #[tauri::command]
 fn read_system_file(path: String) -> Result<Response, String> {
@@ -4293,12 +5439,160 @@ fn delete_file_scoped(path: String) -> Result<(), String> {
     std::fs::remove_file(target).map_err(|e| format!("Lỗi xóa file: {}", e))
 }
 
+fn create_atomic_save_temp(
+    directory: &std::path::Path,
+) -> Result<(std::path::PathBuf, std::fs::File), String> {
+    use rand::RngCore;
+
+    for _ in 0..32 {
+        let mut nonce = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut nonce);
+        let path = directory.join(format!(".prynx_save_{}.tmp", hex::encode(nonce)));
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows::Win32::Storage::FileSystem::{
+                DELETE, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+            };
+
+            // SEC (audit 2026-09-04 §SEC.15-R2): handle vừa ghi vừa sở hữu
+            // DELETE để tự publish, nhưng chỉ share READ. Process khác không thể
+            // mở quyền ghi/delete hoặc rename path rồi tráo bytes trước publish.
+            options
+                .access_mode(FILE_GENERIC_WRITE.0 | DELETE.0)
+                .share_mode(FILE_SHARE_READ.0);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Không tạo được file tạm độc quyền: {error}")),
+        }
+    }
+    Err("Không cấp được tên file tạm ngẫu nhiên sau nhiều lần thử.".to_string())
+}
+
+struct PublishedAtomicSave {
+    // Trên Windows, giữ handle đã publish (không share WRITE/DELETE) cho tới khi
+    // lineage/staging grant đã ghi xong; tránh một race mới ngay sau rename.
+    #[cfg(windows)]
+    _handle: std::fs::File,
+}
+
+#[cfg(windows)]
+fn publish_atomic_save_temp(
+    temp_path: &std::path::Path,
+    temp_file: std::fs::File,
+    target: &std::path::Path,
+) -> Result<PublishedAtomicSave, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    };
+
+    let temp_identity = windows_file_identity_from_handle(&temp_file)
+        .ok_or_else(|| "Không đọc được định danh handle file tạm trước khi publish.".to_string())?;
+    if windows_file_identity(temp_path) != Some(temp_identity) {
+        return Err("Tên file tạm không còn trỏ đúng handle đang ghi.".to_string());
+    }
+
+    // FILE_RENAME_INFO với RootDirectory rỗng đòi tên đầy đủ. Resolve đúng parent
+    // đang tồn tại rồi giữ nguyên basename để cả path tương đối của main window vẫn
+    // có hành vi như std::fs::rename trước đây.
+    let target_parent = target
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let canonical_parent = std::fs::canonicalize(target_parent)
+        .map_err(|error| format!("Không chuẩn hóa được thư mục publish: {error}"))?;
+    let target_name = target
+        .file_name()
+        .ok_or_else(|| "Đích publish không có tên file.".to_string())?;
+    let absolute_target = canonical_parent.join(target_name);
+    let target_wide = absolute_target
+        .as_os_str()
+        .encode_wide()
+        .collect::<Vec<_>>();
+    let filename_bytes = target_wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or_else(|| "Đường dẫn publish vượt giới hạn Win32.".to_string())?;
+    let filename_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let buffer_bytes = filename_offset
+        .checked_add(filename_bytes as usize)
+        .ok_or_else(|| "Kích thước cấu trúc publish không hợp lệ.".to_string())?;
+    let word_size = std::mem::size_of::<usize>();
+    let word_count = buffer_bytes
+        .checked_add(word_size - 1)
+        .map(|size| size / word_size)
+        .ok_or_else(|| "Kích thước cấu trúc publish không hợp lệ.".to_string())?;
+    let mut storage = vec![0usize; word_count];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+
+    // SAFETY:
+    // - `storage` được cấp theo `usize`, đủ alignment cho FILE_RENAME_INFO và đủ
+    //   `buffer_bytes` sau khi làm tròn; `target_wide` được copy đúng số byte đã khai;
+    // - `temp_file` còn sống, được mở với quyền DELETE và không share DELETE/WRITE;
+    // - API không giữ con trỏ sau lời gọi. Rename chạy trên chính handle này, không
+    //   resolve lại `temp_path`, nên không còn cửa sổ path-swap của std::fs::rename.
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).RootDirectory = HANDLE::default();
+        (*info).FileNameLength = filename_bytes;
+        std::ptr::copy_nonoverlapping(
+            target_wide.as_ptr(),
+            storage
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(filename_offset)
+                .cast::<u16>(),
+            target_wide.len(),
+        );
+        SetFileInformationByHandle(
+            HANDLE(temp_file.as_raw_handle() as _),
+            FileRenameInfo,
+            info.cast::<std::ffi::c_void>(),
+            u32::try_from(buffer_bytes)
+                .map_err(|_| "Kích thước cấu trúc publish vượt giới hạn Win32.".to_string())?,
+        )
+        .map_err(|error| format!("Win32 từ chối publish handle file tạm: {error}"))?;
+    }
+
+    if windows_file_identity_from_handle(&temp_file) != Some(temp_identity) {
+        return Err("Handle file tạm đổi định danh trong lúc publish.".to_string());
+    }
+    Ok(PublishedAtomicSave { _handle: temp_file })
+}
+
+#[cfg(not(windows))]
+fn publish_atomic_save_temp(
+    temp_path: &std::path::Path,
+    temp_file: std::fs::File,
+    target: &std::path::Path,
+) -> Result<PublishedAtomicSave, String> {
+    // PrynX phát hành trên Windows; nhánh portable giữ nguyên semantics rename cũ.
+    drop(temp_file);
+    std::fs::rename(temp_path, target)
+        .map(|_| PublishedAtomicSave {})
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
-fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
+fn write_file_atomic(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+    contents: Vec<u8>,
+    save_grant: Option<String>,
+) -> Result<(), String> {
     // GHI FILE NGUYÊN TỬ (chống hỏng/mất file gốc khi crash giữa lúc ghi đè).
-    // Ghi ra file TẠM cùng thư mục rồi std::fs::rename (= MoveFileEx REPLACE_EXISTING
-    // trên Windows, rename(2) trên Unix → thay thế NGUYÊN TỬ trên cùng volume). Lệnh
-    // Rust nên KHÔNG vướng scope plugin-fs → dùng được cho path tùy ý user chọn.
+    // Ghi ra file TẠM cùng thư mục; Windows publish bằng
+    // SetFileInformationByHandle trên chính handle đang khóa, nền tảng khác giữ
+    // rename(2). Lệnh Rust không vướng scope plugin-fs.
     let ext = std::path::Path::new(&path)
         .extension()
         .and_then(|e| e.to_str())
@@ -4313,26 +5607,60 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
     if is_sensitive_write_path(&path) {
         return Err("Access to this location is not allowed".to_string());
     }
-    let target = std::path::Path::new(&path);
+    let requested_target = std::path::Path::new(&path);
+    // SEC (audit 2026-09-04 §SEC.15): main giữ nguyên hành vi; riêng document-*
+    // phải tiêu vé native one-shot bind caller + canonical target trước khi ghi temp.
+    let save_target_lease = document_window_registry::consume_document_save_grant(
+        &app,
+        window.label(),
+        requested_target,
+        save_grant.as_deref(),
+    )?;
+    // Child ghi thẳng vào canonical target mà native đã cấp; không đi lại qua
+    // junction cha do renderer giữ để tránh TOCTOU sau lúc consume grant.
+    let target = save_target_lease
+        .as_ref()
+        .map(document_window_registry::SaveTargetLease::target)
+        .unwrap_or(requested_target);
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => std::path::PathBuf::from("."),
     };
-    let fname = target.file_name().and_then(|n| n.to_str()).unwrap_or("out");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = dir.join(format!(".{}.{}.{}.tmp", fname, std::process::id(), nanos));
-
-    if let Err(e) = std::fs::write(&tmp, &contents) {
+    let (tmp, mut temp_file) = create_atomic_save_temp(&dir)?;
+    if let Err(e) = std::io::Write::write_all(&mut temp_file, &contents) {
+        drop(temp_file);
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("Lỗi ghi file tạm: {}", e));
     }
-    if let Err(e) = std::fs::rename(&tmp, target) {
+    if let Err(e) = std::io::Write::flush(&mut temp_file) {
+        drop(temp_file);
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("Lỗi thay thế file đích: {}", e));
+        return Err(format!("Lỗi hoàn tất file tạm: {}", e));
     }
+    if let Some(lease) = &save_target_lease {
+        if let Err(error) = lease.verify() {
+            drop(temp_file);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+    }
+    let published_temp = match publish_atomic_save_temp(&tmp, temp_file, target) {
+        Ok(published) => published,
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("Lỗi thay thế file đích: {error}"));
+        }
+    };
+    if save_target_lease.is_some() {
+        if let Err(error) =
+            document_window_registry::record_document_saved_target(&app, window.label(), target)
+        {
+            // File đã publish nguyên tử; nếu window vừa destroy thì không còn consumer
+            // để mở child tiếp. Không báo lưu thất bại giả sau khi bytes đã an toàn.
+            log::warn!("[DOCUMENT-WINDOW] Không ghi được lineage file vừa lưu: {error}");
+        }
+    }
+    drop(published_temp);
     Ok(())
 }
 
@@ -4341,7 +5669,7 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
 /// Resolve phần đã tồn tại thật trước (đi qua junction/symlink/tên 8.3) rồi mới hạ
 /// hoa/thường, vì NTFS không phân biệt hoa/thường và nhận cả hai dấu phân cách — so
 /// chuỗi thô bỏ sót ca hai path khác mặt nhưng cùng một file.
-fn disk_compare_key(path: &std::path::Path) -> String {
+pub(crate) fn disk_compare_key(path: &std::path::Path) -> String {
     let resolved = std::fs::canonicalize(path).ok().or_else(|| {
         // Đích chưa tồn tại: resolve thư mục cha rồi ghép lại tên file.
         let parent = std::fs::canonicalize(path.parent()?).ok()?;
@@ -4367,47 +5695,29 @@ fn disk_compare_key(path: &std::path::Path) -> String {
 /// độc quyền, path không hợp lệ) — tuyệt đối KHÔNG phải "hai file khác nhau". Người gọi
 /// phải xử lý `None` theo hướng fail-closed.
 ///
-/// Vì sao mở handle bằng `std::fs::OpenOptions` chứ không gọi `CreateFileW` trực tiếp:
-/// `CreateFileW` của crate `windows` bị gate sau feature `Win32_Security` (chưa bật trong
-/// cây build, và lô này không được thêm feature Cargo); ngoài ra `File` đóng handle qua
-/// `Drop`, nên handle chắc chắn được đóng trên MỌI đường ra — kể cả khi
-/// `GetFileInformationByHandle` thất bại — không phụ thuộc vào việc nhớ gọi `CloseHandle`.
+/// Handle được sở hữu bằng `std::fs::File` để `Drop` đóng chắc chắn trên mọi đường ra;
+/// helper nhận `&File` để cùng một identity có thể được kiểm lại mà không resolve path.
+pub(crate) type WindowsFileIdentity = (u32, u32, u32);
+
 #[cfg(windows)]
-fn windows_file_identity(path: &std::path::Path) -> Option<(u32, u32, u32)> {
-    use std::os::windows::fs::OpenOptionsExt;
+pub(crate) fn windows_file_identity_from_handle(
+    file: &std::fs::File,
+) -> Option<WindowsFileIdentity> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
-
-    // `FILE_READ_ATTRIBUTES`: quyền nhỏ nhất đủ để truy vấn metadata — handle chỉ-đọc,
-    // không xin quyền đọc bytes nên không đòi DACL rộng hơn mức cần.
-    // Share mode ĐẦY ĐỦ (read | write | delete): chốt chặn Save As không được phép khoá
-    // file mà người dùng đang mở ở Illustrator hay CorelDRAW.
-    // `FILE_FLAG_BACKUP_SEMANTICS`: cần để mở được cả handle THƯ MỤC, vì path đi vào đây
-    // có thể là junction hoặc thư mục chứ không chỉ file.
-    // Không đặt `FILE_FLAG_OPEN_REPARSE_POINT` là cố ý: phải đi THEO reparse point để lấy
-    // định danh của file thật ở cuối chuỗi link.
-    let file = std::fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES.0)
-        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
-        .open(path)
-        .ok()?;
 
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: tiền điều kiện của lời gọi Win32 này:
-    // - handle hợp lệ: `file` mở thành công ở trên và còn sống suốt phạm vi block (chưa
-    //   drop), nên raw handle chưa bị đóng;
+    // - caller giữ `file` sống suốt borrow này, nên raw handle chưa bị đóng;
     // - `info` là struct `#[repr(C)]` do chính crate `windows` khai báo, đã zero-init qua
     //   `Default` nên API ghi vào vùng nhớ có kích thước và layout đúng;
     // - không giữ lại con trỏ nào sau lời gọi: `&mut info` chỉ sống trong đúng lời gọi,
-    //   và không có tham chiếu nào tới raw handle tồn tại sau khi `file` bị drop.
+    //   và không có tham chiếu nào tới raw handle tồn tại sau lời gọi.
     let queried =
         unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle() as _), &mut info).is_ok() };
-    // `file` drop ở cuối hàm → `CloseHandle` chạy trên cả đường thành công lẫn đường lỗi.
     if !queried {
         return None;
     }
@@ -4418,11 +5728,44 @@ fn windows_file_identity(path: &std::path::Path) -> Option<(u32, u32, u32)> {
     ))
 }
 
+#[cfg(windows)]
+pub(crate) fn windows_file_identity(path: &std::path::Path) -> Option<WindowsFileIdentity> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    // `FILE_READ_ATTRIBUTES`: quyền nhỏ nhất đủ để truy vấn metadata — handle chỉ-đọc,
+    // không xin quyền đọc bytes nên không đòi DACL rộng hơn mức cần.
+    // Share mode ĐẦY ĐỦ (read | write | delete): oracle thông thường không được khóa
+    // file mà người dùng đang mở ở Illustrator hay CorelDRAW. §SEC.15-R2 mở một
+    // handle riêng với share mode khắt khe ở đúng vòng đời grant/publish.
+    // `FILE_FLAG_BACKUP_SEMANTICS`: cần để mở được cả handle THƯ MỤC, vì path đi vào đây
+    // có thể là junction hoặc thư mục chứ không chỉ file.
+    // Không đặt `FILE_FLAG_OPEN_REPARSE_POINT` là cố ý: phải đi THEO reparse point để lấy
+    // định danh của file thật ở cuối chuỗi link.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(path)
+        .ok()?;
+    windows_file_identity_from_handle(&file)
+}
+
 /// Nền tảng không phải Windows không có bộ ba volume serial + file index; trả `None` để
 /// `resolves_to_same_disk_file` rơi về `disk_compare_key`. PrynX chỉ phát hành cho
 /// Windows, nhánh này tồn tại để cây mã còn compile được ở môi trường khác.
 #[cfg(not(windows))]
-fn windows_file_identity(_path: &std::path::Path) -> Option<(u32, u32, u32)> {
+pub(crate) fn windows_file_identity(_path: &std::path::Path) -> Option<WindowsFileIdentity> {
+    None
+}
+
+#[cfg(not(windows))]
+pub(crate) fn windows_file_identity_from_handle(
+    _file: &std::fs::File,
+) -> Option<WindowsFileIdentity> {
     None
 }
 
@@ -4439,7 +5782,10 @@ fn windows_file_identity(_path: &std::path::Path) -> Option<(u32, u32, u32)> {
 /// 3. Bất kỳ phía nào trả `None` thì KHÔNG kết luận "khác nhau" mà rơi về `disk_compare_key`.
 ///    Resolve thất bại không được biến thành giấy phép ghi đè lên artifact tạm — đây là
 ///    bất biến fail-closed, không phải chi tiết cài đặt.
-fn resolves_to_same_disk_file(source: &std::path::Path, target: &std::path::Path) -> bool {
+pub(crate) fn resolves_to_same_disk_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> bool {
     // Dùng `symlink_metadata` chứ không `exists()`: nó không đi theo link, nên một symlink
     // treo vẫn được tính là "đích đã tồn tại" và đi tiếp vào so định danh, thay vì rơi ra
     // `false` (hướng cho phép ghi) chỉ vì đích của link không resolve được.
@@ -4498,15 +5844,22 @@ fn validate_disk_copy_request(source: &str, path: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Result<(), String> {
+fn copy_file_atomic(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    source: String,
+    path: String,
+    save_grant: Option<String>,
+) -> Result<(), String> {
     // COPY file đĩa→đĩa NGUYÊN TỬ, không đọc bytes vào JS. Vì sao: kết quả bình
     // sách/VDP là file lớn (hàng trăm MB) đã nằm trên đĩa; đường cũ đọc toàn bộ vào
     // JS rồi truyền Uint8Array qua IPC cho write_file_atomic → "RangeError: Invalid
     // array length" khi serialize khối bytes khổng lồ. Copy thẳng path→path tránh
-    // hẳn round-trip đó. Ghi temp cùng thư mục đích rồi rename (nguyên tử, cùng volume).
-    validate_disk_copy_request(&source, &path)?;
+    // hẳn round-trip đó. Ghi temp cùng thư mục đích rồi publish handle-nguyên-tử.
     let source_path = std::path::Path::new(&source);
-    let target = std::path::Path::new(&path);
+    let requested_target = std::path::Path::new(&path);
+    let canonical_staging_target =
+        document_window_registry::validate_document_window_staging_target(requested_target)?;
 
     // SEC (audit 2026-08-28 §SEC.07): đích có tên staging của New Window sẽ được
     // `register_document_window_staging` cấp quyền MỘT LẦN để `create_document_window`
@@ -4518,44 +5871,81 @@ fn copy_file_atomic(app: tauri::AppHandle, source: String, path: String) -> Resu
     // Chỉ siết ĐÚNG đường đặc quyền này; Save As bình thường vẫn ghi được ra vị trí
     // người dùng chọn mà không đòi scope (nếu đòi, luồng lưu kết quả sẽ vỡ).
     // Kiểm TRƯỚC khi copy để không để lại file rác ở `%TEMP%`.
-    if document_window_registry::is_document_window_staging_path(target) {
-        let canonical_source = std::fs::canonicalize(source_path)
-            .map_err(|_| "Không chuẩn hóa được đường dẫn PDF nguồn".to_string())?;
-        if !app.fs_scope().is_allowed(&canonical_source) {
-            return Err(
-                "PDF nguồn chưa được người dùng cấp quyền cho cửa sổ mới (chọn qua hộp thoại \
-                 hoặc kéo-thả)."
-                    .to_string(),
-            );
-        }
-    }
+    let save_target_lease = if canonical_staging_target.is_some() {
+        document_window_registry::validate_document_window_staging_source(
+            &app,
+            window.label(),
+            source_path,
+        )?;
+        None
+    } else {
+        document_window_registry::consume_document_save_grant(
+            &app,
+            window.label(),
+            requested_target,
+            save_grant.as_deref(),
+        )?
+    };
+    let target = canonical_staging_target
+        .as_deref()
+        .or_else(|| {
+            save_target_lease
+                .as_ref()
+                .map(document_window_registry::SaveTargetLease::target)
+        })
+        .unwrap_or(requested_target);
+    validate_disk_copy_request(&source, &target.to_string_lossy())?;
 
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => std::path::PathBuf::from("."),
     };
-    let fname = target.file_name().and_then(|n| n.to_str()).unwrap_or("out");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = dir.join(format!(".{}.{}.{}.tmp", fname, std::process::id(), nanos));
-
-    if let Err(e) = std::fs::copy(source_path, &tmp) {
+    let mut source_file =
+        std::fs::File::open(source_path).map_err(|e| format!("Lỗi mở file nguồn để copy: {e}"))?;
+    let (tmp, mut temp_file) = create_atomic_save_temp(&dir)?;
+    if let Err(e) = std::io::copy(&mut source_file, &mut temp_file) {
+        drop(temp_file);
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("Lỗi copy file: {}", e));
     }
-    if let Err(e) = std::fs::rename(&tmp, target) {
+    if let Err(e) = std::io::Write::flush(&mut temp_file) {
+        drop(temp_file);
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("Lỗi thay thế file đích: {}", e));
+        return Err(format!("Lỗi hoàn tất file tạm: {}", e));
     }
-    if document_window_registry::is_document_window_staging_path(target) {
-        if let Err(error) = document_window_registry::register_document_window_staging(&app, target)
-        {
-            let _ = std::fs::remove_file(target);
+    if let Some(lease) = &save_target_lease {
+        if let Err(error) = lease.verify() {
+            drop(temp_file);
+            let _ = std::fs::remove_file(&tmp);
             return Err(error);
         }
     }
+    let published_temp = match publish_atomic_save_temp(&tmp, temp_file, target) {
+        Ok(published) => published,
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("Lỗi thay thế file đích: {error}"));
+        }
+    };
+    if canonical_staging_target.is_some() {
+        if let Err(error) = document_window_registry::register_document_window_staging(
+            &app,
+            window.label(),
+            source_path,
+            target,
+        ) {
+            drop(published_temp);
+            let _ = std::fs::remove_file(target);
+            return Err(error);
+        }
+    } else if save_target_lease.is_some() {
+        if let Err(error) =
+            document_window_registry::record_document_saved_target(&app, window.label(), target)
+        {
+            log::warn!("[DOCUMENT-WINDOW] Không ghi được lineage file vừa copy: {error}");
+        }
+    }
+    drop(published_temp);
     Ok(())
 }
 
@@ -4572,6 +5962,84 @@ mod disk_copy_request_tests {
             std::env::temp_dir().join(format!("prynx_{}_{}_{}", label, std::process::id(), stamp));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn atomic_save_temp_dung_nonce_128_bit_va_file_doc_quyen() {
+        // SEC (audit 2026-09-04 §SEC.15): hai lần cấp phải tạo hai inode/path mới
+        // ngay bằng create_new; không được chỉ tính tên PID + timestamp rồi mở lại.
+        let dir = test_dir("atomic_temp_nonce");
+        let (first_path, first_file) = create_atomic_save_temp(&dir).unwrap();
+        let (second_path, second_file) = create_atomic_save_temp(&dir).unwrap();
+        assert_ne!(first_path, second_path);
+        for path in [&first_path, &second_path] {
+            let name = path.file_name().unwrap().to_string_lossy();
+            let nonce = name
+                .strip_prefix(".prynx_save_")
+                .and_then(|value| value.strip_suffix(".tmp"))
+                .expect("tên temp phải có prefix/suffix cố định");
+            assert_eq!(nonce.len(), 32, "nonce phải đủ 128-bit dạng hex");
+            assert!(nonce.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert!(path.is_file(), "create_new phải tạo file ngay khi cấp tên");
+        }
+        drop(first_file);
+        drop(second_file);
+        std::fs::remove_file(first_path).unwrap();
+        std::fs::remove_file(second_path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_save_temp_chan_ghi_rename_va_publish_bang_chinh_handle() {
+        // SEC (audit 2026-09-04 §SEC.15-R2): reproducer cũ có thể mở lại path
+        // temp để ghi bytes hoặc rename/tráo entry sau khi sink đã flush rồi trước
+        // std::fs::rename. Handle mới giữ sharing contract xuyên qua publish.
+        let dir = test_dir("atomic_temp_handle_publish");
+        let target = dir.join("BanLuu.pdf");
+        let renamed_temp = dir.join("temp_da_bi_trao.tmp");
+        std::fs::write(&target, b"%PDF-old").unwrap();
+
+        let (temp_path, mut temp_file) = create_atomic_save_temp(&dir).unwrap();
+        std::io::Write::write_all(&mut temp_file, b"%PDF-new").unwrap();
+        std::io::Write::flush(&mut temp_file).unwrap();
+
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&temp_path)
+                .is_err(),
+            "process khác không được mở quyền ghi lên temp đang giữ handle"
+        );
+        assert!(
+            std::fs::rename(&temp_path, &renamed_temp).is_err(),
+            "process khác không được rename/delete temp đang giữ handle"
+        );
+
+        let published = publish_atomic_save_temp(&temp_path, temp_file, &target)
+            .expect("SetFileInformationByHandle phải thay thế target hiện có");
+        assert!(
+            !temp_path.exists(),
+            "entry temp phải được chuyển đi sau publish"
+        );
+        assert!(
+            !renamed_temp.exists(),
+            "không được publish qua path attacker"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"%PDF-new");
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
+                .is_err(),
+            "handle đã publish phải tiếp tục khóa bytes cho tới lúc ghi lineage"
+        );
+        assert!(
+            std::fs::rename(&target, dir.join("sau_publish.pdf")).is_err(),
+            "handle đã publish phải khóa entry đích cho tới lúc ghi lineage"
+        );
+        drop(published);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -5070,9 +6538,7 @@ fn read_dir_json(app: tauri::AppHandle, dir: String) -> Result<Vec<String>, Stri
 }
 
 #[tauri::command]
-fn take_pending_system_file_batches(
-    state: tauri::State<SystemFilesState>,
-) -> Vec<SystemFileBatch> {
+fn take_pending_system_file_batches(state: tauri::State<SystemFilesState>) -> Vec<SystemFileBatch> {
     // FILEIO (audit 2026-08-26 §FILE.A2): giữ ranh giới argv từng process để
     // action của một lần Explorer launch không áp nhầm sang batch kế bên.
     state.drain_pending()
@@ -5868,9 +7334,13 @@ mod batch_folder_tests {
         )));
 
         // 5. Admin share trỏ về ổ cục bộ.
-        assert!(is_sensitive_path("\\\\localhost\\C$\\Users\\bob\\.aws\\x.json"));
+        assert!(is_sensitive_path(
+            "\\\\localhost\\C$\\Users\\bob\\.aws\\x.json"
+        ));
         assert!(is_sensitive_path("\\\\127.0.0.1\\ADMIN$\\y"));
-        assert!(is_sensitive_path("\\\\?\\UNC\\localhost\\C$\\Users\\bob\\.aws\\x.json"));
+        assert!(is_sensitive_path(
+            "\\\\?\\UNC\\localhost\\C$\\Users\\bob\\.aws\\x.json"
+        ));
         // 6. Device namespace.
         assert!(is_sensitive_path("\\\\.\\PhysicalDrive0"));
 
@@ -5930,7 +7400,8 @@ mod batch_folder_tests {
         let dir = test_dir("write");
         std::fs::write(dir.join("report.pdf"), b"%PDF-original").unwrap();
 
-        let output = write_batch_pdf(
+        let output = write_batch_pdf_for_window(
+            "main",
             dir.to_string_lossy().to_string(),
             "report.pdf".to_string(),
             b"%PDF-new".to_vec(),
@@ -5943,6 +7414,36 @@ mod batch_folder_tests {
         );
         assert!(output.ends_with("report_2.pdf"));
         assert_eq!(std::fs::read(output).unwrap(), b"%PDF-new");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn document_child_bi_chan_batch_truoc_khi_tao_file_tam() {
+        // SEC (audit 2026-09-04 §SEC.15): gọi đúng helper mà command dùng để
+        // chứng minh fail trước `write_batch_pdf_impl` và không rơi `.tmp`.
+        let dir = test_dir("child_batch_block");
+        let before = std::fs::read_dir(&dir).unwrap().count();
+        let error = write_batch_pdf_for_window(
+            "document-deadbeef",
+            dir.to_string_lossy().to_string(),
+            "report.pdf".to_string(),
+            b"%PDF-new".to_vec(),
+        )
+        .expect_err("document-* phải bị chặn khỏi batch sink");
+        assert!(error.contains("không được dùng lệnh xuất hàng loạt"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), before);
+
+        let source = dir.join("source.pdf");
+        std::fs::write(&source, b"%PDF-source").unwrap();
+        let before_copy = std::fs::read_dir(&dir).unwrap().count();
+        assert!(copy_batch_pdf_for_window(
+            "document-deadbeef",
+            source.to_string_lossy().to_string(),
+            dir.to_string_lossy().to_string(),
+            "copy.pdf".to_string(),
+        )
+        .is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), before_copy);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
@@ -6023,32 +7524,14 @@ mod perf_and_sidecar_cache_tests {
     fn preview_perf_chi_bat_khi_opt_in_ro_rang() {
         for value in [Some("1"), Some("true"), Some("YES"), Some("on")] {
             assert!(perf_env_value_enabled(value));
+            assert!(preview_perf_enabled_for_build(true, value));
+            assert!(!preview_perf_enabled_for_build(false, value));
         }
         for value in [None, Some(""), Some("0"), Some("false"), Some("off")] {
             assert!(!perf_env_value_enabled(value));
+            assert!(!preview_perf_enabled_for_build(true, value));
+            assert!(!preview_perf_enabled_for_build(false, value));
         }
-    }
-
-    #[test]
-    fn version_tauri_khop_ten_cache_nuitka() {
-        assert_eq!(
-            nuitka_cache_name_for_app_version("1.0.0-rc.3").as_deref(),
-            Some("sidecar-1.0.0.300-1.0.0.300")
-        );
-        assert_eq!(
-            nuitka_cache_name_for_app_version("1.0.0-rc.8.1").as_deref(),
-            Some("sidecar-1.0.0.801-1.0.0.801")
-        );
-        assert_eq!(
-            nuitka_cache_name_for_app_version("1.0.0-rc.9").as_deref(),
-            Some("sidecar-1.0.0.900-1.0.0.900")
-        );
-        assert_eq!(
-            nuitka_cache_name_for_app_version("2.4.1").as_deref(),
-            Some("sidecar-2.4.1.0-2.4.1.0")
-        );
-        assert!(windows_resource_revision(Some("rc.8.100")).is_none());
-        assert!(nuitka_cache_name_for_app_version("khong-hop-le").is_none());
     }
 
     #[test]
@@ -6082,7 +7565,7 @@ mod perf_and_sidecar_cache_tests {
     }
 
     #[test]
-    fn khong_xac_dinh_duoc_current_thi_giu_hai_cache_moi_nhat() {
+    fn temporary_mode_xoa_toan_bo_cache_persistent_cu() {
         let root = test_root("unknown_current");
         let base = root.join("PrynX");
         for name in [
@@ -6093,21 +7576,27 @@ mod perf_and_sidecar_cache_tests {
             std::fs::create_dir_all(base.join(name)).unwrap();
         }
 
-        let (removed, failed) =
-            prune_sidecar_caches(&base, Some("sidecar-1.0.0.9-1.0.0.9")).unwrap();
+        let (removed, failed) = prune_sidecar_caches(&base, None).unwrap();
 
-        assert_eq!(removed, vec!["sidecar-1.0.0.1-1.0.0.1"]);
+        assert_eq!(
+            removed,
+            vec![
+                "sidecar-1.0.0.3-1.0.0.3",
+                "sidecar-1.0.0.2-1.0.0.2",
+                "sidecar-1.0.0.1-1.0.0.1"
+            ]
+        );
         assert!(failed.is_empty());
-        assert!(base.join("sidecar-1.0.0.3-1.0.0.3").is_dir());
-        assert!(base.join("sidecar-1.0.0.2-1.0.0.2").is_dir());
+        assert!(!base.join("sidecar-1.0.0.3-1.0.0.3").exists());
+        assert!(!base.join("sidecar-1.0.0.2-1.0.0.2").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Panic hook: ghi mọi panic (message + vị trí) ra %APPDATA%\PrynX\logs\rust_panic.log
-    // để chẩn đoán sự cố ở bản release (nơi không có stdout/console).
+    // Panic hook: release chỉ ghi marker tổng quát. Message/vị trí có thể lộ
+    // tên engine, path hoặc dữ liệu exception (SEC audit 2026-09-05 §LOG.04).
     std::panic::set_hook(Box::new(|info| {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
@@ -6119,7 +7608,11 @@ pub fn run() {
             {
                 use std::io::Write;
                 let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                let _ = writeln!(f, "[{}] PANIC: {} | at {:?}", now, info, info.location());
+                if cfg!(debug_assertions) {
+                    let _ = writeln!(f, "[{}] PANIC: {} | at {:?}", now, info, info.location());
+                } else {
+                    let _ = writeln!(f, "[{}] PANIC: lỗi nội bộ; chi tiết đã được ẩn", now);
+                }
             }
         }
     }));
@@ -6158,7 +7651,7 @@ pub fn run() {
         .manage(Mutex::new(document_window_registry::DocumentWindowRegistry::default()))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, document_window_registry::request_document_save_grant, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, device_identity::get_device_public_identity, device_identity::sign_device_license_challenge, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::begin_license_validation, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::load_clock_anchor, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 state.enqueue(args);
@@ -6263,8 +7756,8 @@ pub fn run() {
                 app.handle().plugin(builder.build())?;
             }
 
-            // Đường log đo render (perf_log). Chỉ ghi khi PRYNX_PERF=1; việc
-            // đăng ký đường dẫn không tạo file nếu cờ đang tắt.
+            // Đường log đo render chỉ mở ở binary dev + PRYNX_PERF=1; việc đăng
+            // ký đường dẫn không tạo file và release không có đường bật lại.
             if let Ok(desktop_dir) = app.handle().path().desktop_dir() {
                 let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
             }
@@ -6366,41 +7859,45 @@ pub fn run() {
                     // sha256_directory: "Cannot open {path}: {e}") mà kẻ nghịch dist/ đặt tên
                     // chứa dấu nháy để thoát khỏi chuỗi PS single-quote → chèn lệnh. Escape
                     // như 2 dialog sidecar bên dưới.
-                    let _ = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-Command", &format!(
-                            "[System.Windows.MessageBox]::Show('{}', 'PrynX Security', 'OK', 'Error')",
-                            e.replace('\'', "''")
-                        )])
-                        .creation_flags(0x08000000)
-                        .output();
+                    show_startup_error_dialog(&[e.as_str()]);
                     std::process::exit(1);
                     }
                 }
             }
 
-            // SECURITY: Generate a CSPRNG sidecar token for API authentication.
-            // Uses OS-level cryptographic random (Windows CryptGenRandom / BCryptGenRandom).
-            let generate_sidecar_token = || {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                let bytes: [u8; 32] = rng.gen();
-                bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>()
+            // SEC (audit 2026-09-03 §SEC.19-R1): master CSPRNG sống suốt vòng đời
+            // Tauri nhưng không ký API trực tiếp. Mỗi generation derive một session key.
+            let generate_sidecar_master_token = || {
+                use rand::RngCore;
+                let mut bytes = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut bytes);
+                hex::encode(bytes)
             };
             #[cfg(debug_assertions)]
-            let sidecar_token: String = std::env::var("PRYNX_SIDECAR_TOKEN")
+            let sidecar_master_token: String = std::env::var("PRYNX_SIDECAR_TOKEN")
                 .ok()
                 .filter(|token| token.len() >= 32)
-                .unwrap_or_else(generate_sidecar_token);
+                .unwrap_or_else(generate_sidecar_master_token);
             #[cfg(not(debug_assertions))]
-            let sidecar_token: String = generate_sidecar_token();
+            let sidecar_master_token: String = generate_sidecar_master_token();
 
-            // VECTOR #5 FIX: Store token in Rust memory ONLY (not in JS).
-            // Frontend will call invoke('sign_api_request') to get signed headers.
-            security::set_sidecar_token(&sidecar_token);
+            #[cfg(all(not(debug_assertions), target_os = "windows"))]
+            if SIDECAR_MASTER_TOKEN
+                .set(sidecar_master_token.clone())
+                .is_err()
+            {
+                log::error!("[SIDECAR] Master authority đã được khởi tạo ngoài dự kiến");
+                std::process::exit(1);
+            }
+
+            // Dev/fixture chạy backend riêng vẫn dùng protocol token đơn. Release Windows
+            // chỉ publish session sau startup proof nên request trong lúc restart fail-closed.
+            #[cfg(not(all(not(debug_assertions), target_os = "windows")))]
+            security::set_sidecar_token(&sidecar_master_token);
 
             // ══════════════════════════════════════════════════════════════
-            // VECTOR #6 FIX: Pass token via stdin pipe (NOT file).
-            // Token NEVER touches disk — zero race condition window.
+            // VECTOR #6 FIX: Pass bootstrap authority via stdin pipe (NOT file).
+            // Secret NEVER touches disk — zero race condition window.
             // Old method (temp file) could be intercepted by Process Monitor.
             // ══════════════════════════════════════════════════════════════
             #[cfg(not(debug_assertions))]
@@ -6454,13 +7951,11 @@ pub fn run() {
                     Ok(p) => p,
                     Err(e) => {
                         log::error!("[SECURITY] {}", e);
-                        let _ = std::process::Command::new("powershell")
-                            .args(["-NoProfile", "-Command", &format!(
-                                "[System.Windows.MessageBox]::Show('Khong xac dinh duoc duong dan ung dung ({}). Vui long cai dat lai.', 'PrynX Security', 'OK', 'Error')",
-                                e.replace('\'', "''")
-                            )])
-                            .creation_flags(0x08000000)
-                            .output();
+                        let message = format!(
+                            "Khong xac dinh duoc duong dan ung dung ({}). Vui long cai dat lai.",
+                            e
+                        );
+                        show_startup_error_dialog(&[message.as_str()]);
                         std::process::exit(1);
                     }
                 };
@@ -6491,11 +7986,9 @@ pub fn run() {
                     Err(e) => {
                         log::error!("[SIDECAR] Khong tim thay binary sidecar: {}", e);
                         startup_breadcrumb(&format!("sidecar binary: MISSING {e}"));
-                        let _ = std::process::Command::new("powershell")
-                            .args(["-NoProfile", "-Command",
-                                "[System.Windows.MessageBox]::Show('Khong tim thay tien trinh nen (pdf-inspector-backend.exe). Co the bi phan mem diet virus cach ly hoac thieu file. Vui long khoi phuc/loai tru file roi mo lai ung dung.', 'PrynX', 'OK', 'Error')"])
-                            .creation_flags(0x08000000)
-                            .output();
+                        show_startup_error_dialog(&[
+                            "Khong tim thay tien trinh nen (pdf-inspector-backend.exe). Co the bi phan mem diet virus cach ly hoac thieu file. Vui long khoi phuc/loai tru file roi mo lai ung dung.",
+                        ]);
                         std::process::exit(1);
                     }
                 };
@@ -6509,13 +8002,7 @@ pub fn run() {
                     Err(error) => {
                         log::error!("[SIDECAR] {}", error);
                         startup_breadcrumb(&format!("sidecar storage: FAIL {error}"));
-                        let _ = std::process::Command::new("powershell")
-                            .args(["-NoProfile", "-Command", &format!(
-                                "[System.Windows.MessageBox]::Show('{}', 'PrynX', 'OK', 'Error')",
-                                error.replace('\'', "''")
-                            )])
-                            .creation_flags(0x08000000)
-                            .output();
+                        show_startup_error_dialog(&[error.as_str()]);
                         std::process::exit(1);
                     }
                 };
@@ -6523,23 +8010,13 @@ pub fn run() {
                     "sidecar storage: {}",
                     sidecar_storage.working_dir.display()
                 ));
-                // ══════════════════════════════════════════════════════════════
-                // ZOMBIE FIX: Giành lại port 8321 TRƯỚC khi spawn sidecar mới.
-                // Nếu phiên trước app chết BẨN (OOM khi Optimize file lớn, End Task,
-                // crash) thì kill_sidecar() (chỉ chạy ở RunEvent::Exit) KHÔNG chạy →
-                // pdf-inspector-backend.exe sống sót thành ZOMBIE, tiếp tục giữ 8321
-                // với TOKEN CŨ. Sidecar mới bind 8321 thất bại → chết câm → frontend
-                // (token mới) chạm zombie (token cũ) → "invalid sidecar token".
-                //
-                // Kill theo TÊN (rất đặc trưng, không đụng hàng): single-instance đã
-                // chặn 2 app hợp lệ, và sidecar của instance NÀY chưa spawn (dòng ngay
-                // dưới) → mọi pdf-inspector-backend.exe đang tồn tại đều là zombie.
-                // /IM quét cả cây worker Nuitka trong 1 lệnh. Exit 128 (không có
-                // process) là BÌNH THƯỜNG → nuốt. creation_flags = CREATE_NO_WINDOW.
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/IM", "pdf-inspector-backend.exe", "/F"])
-                    .creation_flags(0x08000000)
-                    .output();
+                // SEC (audit 2026-09-03 §SEC.22): không được tự ý `taskkill /IM` theo tên.
+                // Một listener cùng tên có thể là sidecar của instance khác hoặc process
+                // cục bộ do người dùng/AV khởi chạy; giết theo image name vừa gây DoS
+                // xuyên instance vừa không chứng minh được quyền sở hữu. Job Object +
+                // shutdown HMAC ở đường sống bình thường đã dọn process của chính app;
+                // sau crash, fail-closed và yêu cầu người dùng xử lý listener còn lại là
+                // lựa chọn an toàn hơn việc liên lụy tiến trình không xác thực.
                 // Chờ port free: bind test là cách kiểm tin cậy nhất ("có ai đang
                 // LISTEN?"). Bind OK → drop ngay (nhả port) → spawn.
                 //
@@ -6575,132 +8052,162 @@ pub fn run() {
                     std::process::exit(1);
                 }
 
-                let spawn_result = sidecar
-                    .current_dir(&sidecar_storage.working_dir)
-                    .env("UPLOAD_DIR", &sidecar_storage.upload_dir)
-                    .env("RESULTS_DIR", &sidecar_storage.results_dir)
-                    .args(["--port", "8321"])
-                    .envs([
-                        ("DEV_MODE", "false"),
-                        // Signal sidecar to read token from stdin instead of file
-                        ("PRYNX_TOKEN_SOURCE", "stdin"),
-                        // PERF (audit 2026-08-05 §PERF.3): frontend và sidecar dùng
-                        // cùng một cờ; mặc định release là 0 nên không có beacon/I/O.
-                        ("PRYNX_PERF", if preview_perf_enabled() { "1" } else { "0" }),
-                        // Cưỡng chế token license server-ký: backend từ chối mọi request
-                        // không kèm token Ed25519 hợp lệ (do edge function Supabase phát).
-                        // Client bị crack không giả được token → không gọi được backend.
-                        ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
-                        // Dev thường mặc định tắt; build release nung flag true và fallback
-                        // release cũng là true. Token thiếu/sai plan đã fail-closed về Free.
-                        (
-                            "PRYNX_FEATURE_GATING_ENABLED",
-                            option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or(
-                                if cfg!(debug_assertions) { "false" } else { "true" }
+                let (sidecar_identity, sidecar_exited, sidecar_session_token) = {
+                    // Đồng bộ với RunEvent::Exit/prepare_for_update để background startup
+                    // không spawn sidecar sau khi đường shutdown vừa thấy PID=0.
+                    let _lifecycle_guard = sidecar_lifecycle_guard();
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let spawn_result = sidecar
+                        .env_clear()
+                        .envs(filtered_sidecar_environment())
+                        .current_dir(&sidecar_storage.working_dir)
+                        .env("UPLOAD_DIR", &sidecar_storage.upload_dir)
+                        .env("RESULTS_DIR", &sidecar_storage.results_dir)
+                        .args(["--port", "8321"])
+                        .envs([
+                            ("DEV_MODE", "false"),
+                            // Signal sidecar to read token from stdin instead of file
+                            ("PRYNX_TOKEN_SOURCE", "stdin"),
+                            // PERF (audit 2026-08-05 §PERF.3): frontend và sidecar dùng
+                            // cùng một cờ; mặc định release là 0 nên không có beacon/I/O.
+                            ("PRYNX_PERF", if preview_perf_enabled() { "1" } else { "0" }),
+                            // Cưỡng chế token license server-ký: backend từ chối mọi request
+                            // không kèm token Ed25519 hợp lệ (do edge function Supabase phát).
+                            // Client bị crack không giả được token → không gọi được backend.
+                            ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
+                            // Dev thường mặc định tắt; build release nung flag true và fallback
+                            // release cũng là true. Token thiếu/sai plan đã fail-closed về Free.
+                            (
+                                "PRYNX_FEATURE_GATING_ENABLED",
+                                option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or(
+                                    if cfg!(debug_assertions) { "false" } else { "true" }
+                                ),
                             ),
-                        ),
-                        // LOGO-REBUILD (audit 2026-08-09 §LR3.10): nung cùng cờ
-                        // frontend vào host; host ghi đè env kế thừa khi spawn sidecar.
-                        (
-                            "PRYNX_LOGO_REBUILD_ENABLED",
-                            option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false"),
-                        ),
-                        // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp.
-                        // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
-                        // TTL server đã rút 7 ngày → 72h (audit 2026-07-25); cận GIỮ 8 ngày
-                        // (691200s) trong giai đoạn chuyển tiếp vì token 7 ngày cũ còn hạn.
-                        // Sau khi chúng hết hạn (≥7 ngày kể từ deploy), hạ xuống "345600" (4 ngày).
-                        ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
-                    ])
-                    .spawn();
-                let (rx, mut child) = match spawn_result {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("[SIDECAR] Spawn that bai: {}", e);
-                        let _ = std::process::Command::new("powershell")
-                            .args(["-NoProfile", "-Command",
-                                "[System.Windows.MessageBox]::Show('Khong khoi dong duoc tien trinh nen. Vui long mo lai ung dung; neu van loi hay lien he ho tro.', 'PrynX', 'OK', 'Error')"])
-                            .creation_flags(0x08000000)
-                            .output();
+                            // LOGO-REBUILD (audit 2026-08-09 §LR3.10): nung cùng cờ
+                            // frontend vào host; host ghi đè env kế thừa khi spawn sidecar.
+                            (
+                                "PRYNX_LOGO_REBUILD_ENABLED",
+                                option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false"),
+                            ),
+                            // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp.
+                            // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
+                            // TTL server đã rút 7 ngày → 72h (audit 2026-07-25); cận GIỮ 8 ngày
+                            // (691200s) trong giai đoạn chuyển tiếp vì token 7 ngày cũ còn hạn.
+                            // Sau khi chúng hết hạn (≥7 ngày kể từ deploy), hạ xuống "345600" (4 ngày).
+                            ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
+                        ])
+                        .spawn();
+                    let (rx, mut child) = match spawn_result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::error!("[SIDECAR] Spawn that bai: {}", e);
+                            show_startup_error_dialog(&[
+                                "Khong khoi dong duoc tien trinh nen. Vui long mo lai ung dung; neu van loi hay lien he ho tro.",
+                            ]);
+                            std::process::exit(1);
+                        }
+                    };
+
+                    // Forward stdout/stderr/kết-thúc của sidecar vào log Rust. Trước đây
+                    // _rx bị VỨT → sidecar chết câm (vd bind 8321 thất bại) không để lại
+                    // dấu vết → sự cố "invalid sidecar token" khó điều tra suốt thời gian
+                    // dài. Nay log Terminated{code} → bắt được "exit 48 = port bận" tức
+                    // thì. Đọc rx còn tránh đầy buffer pipe làm sidecar block. Fire-and-forget.
+                    let sidecar_pid = child.pid();
+                    let sidecar_identity = match register_spawned_sidecar(sidecar_pid) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            log::error!(
+                                "[SIDECAR] Không bind được identity PID={sidecar_pid}: {error}"
+                            );
+                            let _ = child.kill();
+                            std::process::exit(1);
+                        }
+                    };
+                    let (bootstrap_record, sidecar_session_token) =
+                        match sidecar_bootstrap_protocol_v2(
+                            &sidecar_master_token,
+                            sidecar_identity,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                log::error!("[SIDECAR] Không derive được khóa phiên: {error}");
+                                kill_sidecar(sidecar_identity);
+                                std::process::exit(1);
+                            }
+                        };
+                    let sidecar_exited = Arc::new(AtomicBool::new(false));
+                    start_sidecar_event_reader(
+                        rx,
+                        Arc::clone(&sidecar_exited),
+                        sidecar_identity,
+                    );
+
+                    // Lưu PID để KILL cả cây tiến trình khi thoát app (chống treo ngầm →
+                    // update NSIS không ghi đè được file). Supervisor cập nhật PID mỗi thế hệ.
+                    // Protocol v2 truyền master + generation qua stdin; backend tự derive
+                    // session. Record chỉ sống trong RAM và không được ghi vào log.
+                    if let Err(e) = child.write(bootstrap_record.as_bytes()) {
+                        log::error!("[SIDECAR] Ghi token vao stdin that bai: {}", e);
+                        kill_sidecar(sidecar_identity);
                         std::process::exit(1);
                     }
+                    (sidecar_identity, sidecar_exited, sidecar_session_token)
                 };
-
-                // Forward stdout/stderr/kết-thúc của sidecar vào log Rust. Trước đây
-                // _rx bị VỨT → sidecar chết câm (vd bind 8321 thất bại) không để lại
-                // dấu vết → sự cố "invalid sidecar token" khó điều tra suốt thời gian
-                // dài. Nay log Terminated{code} → bắt được "exit 48 = port bận" tức
-                // thì. Đọc rx còn tránh đầy buffer pipe làm sidecar block. Fire-and-forget.
-                let sidecar_exited = Arc::new(AtomicBool::new(false));
-                let sidecar_pid = child.pid();
-                SIDECAR_PID.store(sidecar_pid, Ordering::Release);
-                // [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Gán NGAY sau spawn, trước cả khi
-                // ghi token: bootstrap Nuitka bung 400 MB rồi mới spawn python thật, nên
-                // gán ở đây thì cả cây worker Python đều nằm trong job.
-                process_guard::adopt_child_process(sidecar_pid);
-                start_sidecar_event_reader(rx, Arc::clone(&sidecar_exited), sidecar_pid);
-
-                // Lưu PID để KILL cả cây tiến trình khi thoát app (chống treo ngầm →
-                // update NSIS không ghi đè được file). Supervisor cập nhật PID mỗi thế hệ.
-                // Write token via stdin pipe — no file on disk ever
-                let token_line = format!("TOKEN:{}\n", sidecar_token);
-                if let Err(e) = child.write(token_line.as_bytes()) {
-                    log::error!("[SIDECAR] Ghi token vao stdin that bai: {}", e);
-                    kill_sidecar();
-                    std::process::exit(1);
+                if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                    return;
                 }
                 startup_breadcrumb(&format!(
                     "sidecar startup proof: waiting (timeout={}s)",
                     SIDECAR_STARTUP_TIMEOUT.as_secs()
                 ));
-                if let Err(e) = verify_sidecar_startup(&sidecar_token, sidecar_exited.as_ref()) {
+                if let Err(e) =
+                    verify_sidecar_startup(&sidecar_session_token, sidecar_exited.as_ref())
+                {
                     log::error!("[SIDECAR] Startup identity check failed: {}", e);
                     startup_breadcrumb(&format!("sidecar startup proof: FAIL {e}"));
-                    kill_sidecar();
-                    let _ = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-Command",
-                            "[System.Windows.MessageBox]::Show('Tien trinh nen khong xac thuc duoc. PrynX da dung khoi dong de bao ve du lieu.', 'PrynX Security', 'OK', 'Error')"])
-                        .creation_flags(0x08000000)
-                        .output();
+                    kill_sidecar(sidecar_identity);
+                    show_startup_error_dialog(&[
+                        "Tien trinh nen khong xac thuc duoc. PrynX da dung khoi dong de bao ve du lieu.",
+                    ]);
+                    std::process::exit(1);
+                }
+                if let Err(e) = publish_verified_sidecar_session(
+                    sidecar_identity,
+                    &sidecar_session_token,
+                    sidecar_exited.as_ref(),
+                ) {
+                    if SIDECAR_SHUTDOWN.load(Ordering::Acquire) {
+                        return;
+                    }
+                    log::error!("[SIDECAR] Không publish được khóa phiên: {e}");
+                    startup_breadcrumb("sidecar startup proof: session publish failed");
+                    kill_sidecar(sidecar_identity);
                     std::process::exit(1);
                 }
 
-                log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");
+                log::info!(
+                    "Python backend sidecar started on port 8321 (session via stdin protocol v2)"
+                );
                 startup_breadcrumb("sidecar: ready (startup proof OK)");
 
-                // PERF (audit 2026-08-05 §PERF.4): chỉ prune SAU khi sidecar hiện
-                // tại đã xác thực/sẵn sàng. Chạy nền để xóa cache ~GB không kéo dài
-                // cold start; giữ current + một previous và bỏ qua path lạ/junction.
-                if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-                    let cache_base = std::path::PathBuf::from(local_app_data).join("PrynX");
-                    let current_cache = nuitka_cache_name_for_app_version(
-                        &app.package_info().version.to_string(),
-                    );
-                    std::thread::spawn(move || {
-                        match prune_sidecar_caches(&cache_base, current_cache.as_deref()) {
-                            Ok((removed, failed)) => {
-                                if !removed.is_empty() {
-                                    log::info!("[SIDECAR-CACHE] Đã xóa: {}", removed.join(", "));
-                                }
-                                for error in failed {
-                                    log::warn!("[SIDECAR-CACHE] Bỏ qua cache đang khóa: {}", error);
-                                }
-                            }
-                            Err(error) => log::warn!("[SIDECAR-CACHE] Không thể prune: {}", error),
-                        }
-                    });
-                }
+                // SEC (audit 2026-09-02 §SEC.18): chỉ dọn cache persistent cũ và
+                // extraction temporary của thế hệ đã chết SAU khi sidecar mới xác thực.
+                // PID hiện tại được giữ; path/reparse bất thường bị bỏ qua fail-safe.
+                start_sidecar_cache_cleanup(sidecar_identity.pid);
 
                 if let Err(error) = reveal_main_window(&app) {
                     log::error!("[STARTUP] {}", error);
                     startup_breadcrumb(&format!("setup complete: FAIL {error}"));
-                    kill_sidecar();
+                    kill_sidecar(sidecar_identity);
                     std::process::exit(1);
                 }
                 start_sidecar_supervisor(
                     app.clone(),
                     sidecar_storage.clone(),
-                    sidecar_token.clone(),
+                    sidecar_master_token.clone(),
                     Arc::clone(&sidecar_exited),
                 );
                     })
@@ -6766,6 +8273,12 @@ pub fn run() {
             reveal_main_window(app.handle()).map_err(|error| {
                 std::io::Error::new(std::io::ErrorKind::Other, error)
             })?;
+
+            // SEC (audit 2026-09-04 §SEC.18/§SEC.22): plugin updater sẽ clear
+            // app resource table trong on_before_exit, ngay trước ShellExecute.
+            // Giữ resource không lộ RID cho renderer để chốt native không bị đóng sớm.
+            #[cfg(all(not(debug_assertions), target_os = "windows"))]
+            let _ = app.resources_table().add(UpdateExitCleanupResource);
 
             Ok(())
         })
@@ -7038,6 +8551,8 @@ pub fn run() {
             // Kill sidecar khi app thoát (mọi lý do) → chống pdf-inspector-backend.exe
             // treo ngầm làm NSIS update báo "Error opening file for writing".
             if let tauri::RunEvent::Exit = _event {
+                #[cfg(all(not(debug_assertions), target_os = "windows"))]
+                RUN_EVENT_EXIT_SEEN.store(true, Ordering::Release);
                 // [PROC-LIFECYCLE FIX 2026-08-28 §UP.4] Sidecar bị diệt TRƯỚC display worker.
                 // Trước đây thứ tự ngược lại và `shutdown_render_worker()` không có trần thời
                 // gian, nên một worker kẹt là đủ để `kill_sidecar()` không bao giờ được gọi —
@@ -7046,8 +8561,9 @@ pub fn run() {
                 // tiến trình ngốn RAM, nên nó phải chết trước; worker giờ có deadline riêng.
                 #[cfg(all(not(debug_assertions), target_os = "windows"))]
                 {
+                    let _lifecycle_guard = sidecar_lifecycle_guard();
                     SIDECAR_SHUTDOWN.store(true, Ordering::Release);
-                    kill_sidecar();
+                    let _ = shutdown_sidecar_gracefully_locked();
                 }
                 pdf_engine::render_worker::shutdown_render_worker();
             }

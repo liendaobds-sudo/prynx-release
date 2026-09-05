@@ -19,7 +19,10 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
         && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
     useEffect(() => {
-        getSystemFonts().then(setSystemFonts).catch(console.error);
+        getSystemFonts().then(setSystemFonts).catch(() => {
+            // SEC (audit 2026-09-05 LOG.07): không đưa đường dẫn font hệ thống
+            // hoặc stack native ra DevTools của bản cài production.
+        });
     }, []);
 
     // Handle outside click

@@ -4,6 +4,12 @@ import time
 import pytest
 
 from app.core import perf_sampler
+from app.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _runtime_dev(monkeypatch):
+    monkeypatch.setattr(settings, "DEV_MODE", True)
 
 
 def test_proc_rss_reads_positive_for_current_process():

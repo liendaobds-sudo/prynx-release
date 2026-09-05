@@ -133,18 +133,47 @@ describe('useIncomingFileDispatcher', () => {
     expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [first, second] });
   });
 
-  it.each([
-    ['combine', 'mau.pdf'],
-    ['convert', 'mau.png'],
-  ])('giữ nguyên intent %s thay vì chuyển vào nguồn tem', (intent, name) => {
+  it('giữ intent Combine thay vì chuyển vào nguồn tem', () => {
     registerFeature('tem', 'sticker');
     const { onOpenApp } = renderDispatcher('tem', stickerTabs);
-    const source = file(name);
+    const source = file('mau.pdf');
 
-    act(() => emitFiles([source], intent));
+    act(() => emitFiles([source], 'combine'));
     act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
 
     expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [source] });
+  });
+
+  it('Convert một ảnh mở thẳng Viewer và không chuyển vào nguồn tem', () => {
+    registerFeature('tem', 'sticker');
+    const legacyEvent = listenForLegacyStickerSources();
+    const { onOpenApp } = renderDispatcher('tem', stickerTabs);
+    const source = file('mau.png');
+
+    act(() => emitFiles([source], 'convert'));
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+
+    expect(legacyEvent).not.toHaveBeenCalled();
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: source });
+  });
+
+  it('intent Convert không bị công cụ Upscale đang active nhận nhầm', () => {
+    const upscaleEvent = vi.fn();
+    const handleUpscaleEvent = () => upscaleEvent();
+    window.addEventListener('prynx-upscale-add-files', handleUpscaleEvent);
+    disposers.push(() => window.removeEventListener('prynx-upscale-add-files', handleUpscaleEvent));
+    registerFeature('upscale', 'upscale');
+    const { onOpenApp } = renderDispatcher('upscale', [
+      { id: 'home', type: 'home' },
+      { id: 'upscale', type: 'imposition', payload: { focusFeature: 'upscale' } },
+    ]);
+    const source = file('mau.png');
+
+    act(() => emitFiles([source], 'convert'));
+    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
+
+    expect(upscaleEvent).not.toHaveBeenCalled();
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: source });
   });
 
   it('giữ nguyên hành vi Convert đối với một PDF', () => {
@@ -256,8 +285,8 @@ describe('useIncomingFileDispatcher', () => {
     expect(onOpenApp).toHaveBeenNthCalledWith(2, 'combine_pdf', {
       files: [combineFile],
     });
-    expect(onOpenApp).toHaveBeenNthCalledWith(3, 'combine_pdf', {
-      files: [convertFile],
+    expect(onOpenApp).toHaveBeenNthCalledWith(3, 'imposition', {
+      file: convertFile,
     });
   });
 
@@ -276,14 +305,14 @@ describe('useIncomingFileDispatcher', () => {
     });
   });
 
-  it('fallback vẫn kết thúc explicit intent nếu nguồn legacy không phát poll-settled', () => {
+  it('fallback vẫn mở thẳng một ảnh Convert nếu nguồn legacy không phát poll-settled', () => {
     const { onOpenApp } = renderDispatcher();
     const image = file('anh.jpeg');
 
     act(() => emitFiles([image], 'convert'));
     act(() => vi.advanceTimersByTime(EXPLICIT_INTENT_FALLBACK_MS));
 
-    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [image] });
+    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: image });
   });
 
   it('gom startup và pending process thật qua poll trước khi mở tab Combine', async () => {
@@ -333,6 +362,43 @@ describe('useIncomingFileDispatcher', () => {
       '02-ruot.pdf',
     ]);
   });
+
+  it('Convert một ảnh từ argv cold-start mở thẳng Viewer sau khi poll đóng batch', async () => {
+    systemMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'take_startup_system_file_batch') {
+        return {
+          batchId: 'startup-convert-1',
+          args: ['pdf-inspector.exe', '--prynx-action=convert', 'D:\\viec\\anh.png'],
+        };
+      }
+      if (command === 'take_pending_system_file_batches') return [];
+      if (command === 'stat_system_file') return { status: 'available', size: 123 };
+      return null;
+    });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+
+    const { onOpenApp } = renderDispatcher();
+    render(<SystemIntegrations />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onOpenApp).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    const [appId, payload] = onOpenApp.mock.calls[0];
+    expect(appId).toBe('imposition');
+    expect(payload.file.name).toBe('anh.png');
+  });
+
   it('định tuyến oracle đủ PDF, 7 ảnh và 11 Office kể cả đuôi viết hoa', () => {
     const { onOpenApp } = renderDispatcher();
     const pdf = file('mẫu.PDF');

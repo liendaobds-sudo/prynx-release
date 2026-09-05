@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $PSScriptRoot
 $VERIFIER = Join-Path $PSScriptRoot "verify_installed_artifact.ps1"
+. (Join-Path $PSScriptRoot "release_executable_guard.ps1")
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -66,6 +67,7 @@ $securePassword = New-PrynXTemporaryPassword
 $createdUser = $null
 $createdSid = $null
 $verificationExit = $null
+$powerShellLease = $null
 $cleanupFailures = New-Object System.Collections.Generic.List[string]
 $logDir = Join-Path $ROOT "tmp\clean-user-smoke"
 [void](New-Item -ItemType Directory -Path $logDir -Force)
@@ -74,6 +76,9 @@ $stdoutPath = Join-Path $logDir ("stdout-" + $runId + ".log")
 $stderrPath = Join-Path $logDir ("stderr-" + $runId + ".log")
 
 try {
+    # SEC (audit 2026-09-04 SEC.24-R2): process chay bang credential tam phai
+    # dung binary Windows da ky va giu lease den khi verifier ket thuc.
+    $powerShellLease = Open-PrynXTrustedReleaseExecutableLease -Kind "WindowsPowerShell"
     if (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue) {
         throw "Tai khoan tam trung ten bat ngo: $userName"
     }
@@ -96,7 +101,7 @@ try {
         $arguments += @("-ExpectedVersion", $ExpectedVersion)
     }
     Write-Host "  [CLEAN USER] Dang chay verifier trong profile tam $userName ($createdSid)..." -ForegroundColor Cyan
-    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $arguments `
+    $process = Start-Process -FilePath $powerShellLease.Path -ArgumentList $arguments `
         -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru `
         -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $verificationExit = $process.ExitCode
@@ -108,6 +113,7 @@ try {
     }
     Write-Host "  [CLEAN USER] Runtime smoke dat." -ForegroundColor Green
 } finally {
+    Close-PrynXReleaseExecutableLease -Lease $powerShellLease
     $credential = $null
     if ($securePassword) { $securePassword.Dispose() }
     $securePassword = $null

@@ -78,7 +78,7 @@ def _report_dimensions_mm(
                     math.isfinite(value) and value > 0.0
                     for value in (width_mm, height_mm)
                 ):
-                    logger.warning(
+                    logger.debug(
                         "[DIM-DIE-TRACE] stage=legacy_report_dimensions "
                         "page_index=%s source=detector_trim selected_mm=(%.6f, %.6f) "
                         "legacy_bbox_pt=(%r, %r)",
@@ -93,7 +93,7 @@ def _report_dimensions_mm(
     width_mm = float(fallback_width_pt or 0.0) / MM_TO_PTS
     height_mm = float(fallback_height_pt or 0.0) / MM_TO_PTS
     if raw_by_page is not None:
-        logger.warning(
+        logger.debug(
             "[DIM-DIE-TRACE] stage=legacy_report_dimensions page_index=%s "
             "source=legacy_bbox selected_mm=(%.6f, %.6f) reason=missing_or_invalid_handoff",
             page_index,
@@ -371,7 +371,7 @@ def _run_nup_engine_impl(
     )
     # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): đây là chốt đầu tiên để
     # phân biệt runtime thật có vào writer true-shape hay vẫn chạy report lưới cũ.
-    logger.warning(
+    logger.debug(
         "[DIM-DIE-TRACE] stage=dispatch job_id=%s route=%s "
         "manual_true_shape=%s auto_true_shape=%s imposer_mode=%r "
         "is_die_cut=%s grid_strategy=%r layout_type=%r",
@@ -399,7 +399,7 @@ def _run_nup_engine_impl(
                 "[NEST] auto-route true-shape không phù hợp (%s) → lùi về engine cũ",
                 exc,
             )
-            logger.warning(
+            logger.debug(
                 "[DIM-DIE-TRACE] stage=dispatch_fallback job_id=%s "
                 "route=nup_legacy reason=%s",
                 job_id,
@@ -733,7 +733,7 @@ def _run_nup_engine_impl(
             "   [MODE-GUARD] layoutType=repeat: ignore groupingStrategy=cluster_tile"
         )
     cluster_combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
-    logger.info("   ZONE-DEBUG grouping_strategy=%r combine=%r" % (grouping_strategy, cluster_combine_mode))
+    logger.debug("   ZONE-DEBUG grouping_strategy=%r combine=%r" % (grouping_strategy, cluster_combine_mode))
     cluster_tile_w_mm = settings.get('clusterTileW', 148.0)   # mm, default A5 width
     cluster_tile_h_mm = settings.get('clusterTileH', 210.0)   # mm, default A5 height
 
@@ -2506,12 +2506,12 @@ def _run_nup_engine_impl(
                         "H\u00e3y d\u00f9ng B\u00ecnh trang ho\u1eb7c Chia c\u1ee5m theo t\u1eebng lo\u1ea1i."
                     )
 
-        logger.info(f"[NUP_ENGINE SOLVER DEBUG] usable_w={usable_w:.2f} usable_h={usable_h:.2f} "
-                    f"trim_w={trim_w:.2f} trim_h={trim_h:.2f} gap_x={gap_x:.2f} gap_y={gap_y:.2f} "
-                    f"strategy={strategy} secondary_gap={secondary_gap} "
-                    f"marginBottom={margin_bottom:.2f} marginTop={margin_top:.2f} "
-                    f"sheet_h={sheet_h:.2f} split_gap_mm={settings.get('splitGap')} "
-                    f"gripperMargin={settings.get('gripperMargin')}")
+        logger.debug(f"[NUP_ENGINE SOLVER DEBUG] usable_w={usable_w:.2f} usable_h={usable_h:.2f} "
+                     f"trim_w={trim_w:.2f} trim_h={trim_h:.2f} gap_x={gap_x:.2f} gap_y={gap_y:.2f} "
+                     f"strategy={strategy} secondary_gap={secondary_gap} "
+                     f"marginBottom={margin_bottom:.2f} marginTop={margin_top:.2f} "
+                     f"sheet_h={sheet_h:.2f} split_gap_mm={settings.get('splitGap')} "
+                     f"gripperMargin={settings.get('gripperMargin')}")
 
         _gui_cluster = (grouping_strategy == 'cluster_tile')
         if layout_type == 'mixed_guillotine':
@@ -3006,18 +3006,6 @@ def _run_nup_engine_impl(
         total_capacity=total_capacity,
         strategy_used=layout.get("strategyUsed"),
     )
-    if _diagnostic_trace_id:
-        logger.warning(
-            "[IMPOSITION-DIAG] event=export.solver.result trace=%s job=%s "
-            "capacity=%s total_capacity=%s layout=%s strategy=%s "
-            "sheet_mm=%.3fx%.3f usable_mm=%.3fx%.3f trim_pt=%.3fx%.3f "
-            "gap_mm=%.3fx%.3f bleed_mm=%.3f split_gap_mm=%s secondary_gap_pt=%s",
-            _diagnostic_trace_id, _diagnostic_job_id, capacity, total_capacity,
-            layout_type, strategy, sheet_w / MM_TO_PTS, sheet_h / MM_TO_PTS,
-            usable_w / MM_TO_PTS, usable_h / MM_TO_PTS, trim_w, trim_h,
-            gap_x / MM_TO_PTS, gap_y / MM_TO_PTS, bleed_pt / MM_TO_PTS,
-            settings.get("splitGap"), secondary_gap,
-        )
 
     # Repeat may contain resized pages with different capacities. Build the
     # sheet count from each page's own geometry; process_chunk uses the same

@@ -8,13 +8,21 @@ vi.mock('../stores/useAuthStore', () => ({
     getState: () => ({
       licenseKey: 'LICENSE-KEY',
       licenseToken: 'license-token',
+      licenseSignOutPending: false,
     }),
   },
+  getLicenseOperationEpoch: () => 0,
+  isLicenseOperationPending: () => false,
+  isNativeLicenseGateBlocked: () => false,
 }));
 
 import { pollVdpJob } from './api';
 
 const ARTIFACT_LEASE_TOKEN = 'b'.repeat(64);
+
+function requestUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
 
 describe('pollVdpJob artifact lease', () => {
   beforeEach(() => {
@@ -56,7 +64,7 @@ describe('pollVdpJob artifact lease', () => {
   it('trả cùng lease khi tải Blob kết quả về WebView', async () => {
     const downloadedBlob = new Blob(['vdp-pdf'], { type: 'application/pdf' });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = requestUrl(input);
       if (url.endsWith('/api/vdp/status/job-download')) {
         return new Response(JSON.stringify({
           status: 'completed',
@@ -82,7 +90,7 @@ describe('pollVdpJob artifact lease', () => {
     expect(result.path).toBe('D:\\results\\vdp-downloaded.pdf');
     expect(result.artifactLease).toBe(ARTIFACT_LEASE_TOKEN);
     expect(result.blob).toBe(downloadedBlob);
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+    expect(fetchMock.mock.calls.map(([input]) => requestUrl(input))).toEqual([
       'http://localhost:8321/api/vdp/status/job-download',
       'http://localhost:8321/api/vdp/download/job-download',
     ]);

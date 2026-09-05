@@ -80,7 +80,14 @@ def _py_solve_grid(usable_w: float, usable_h: float, item_w: float, item_h: floa
         rows = int((usable_h - item_h + 0.01) / step_y) + 1
     rows = max(0, rows)
 
-    logger.info(f"   [SOLVER DEBUG] _py_solve_grid: usable={usable_w:.2f}x{usable_h:.2f}, item={item_w:.2f}x{item_h:.2f}, gap={gap_x:.2f}x{gap_y:.2f} -> cols={cols}, rows={rows}")
+    # SEC (audit 2026-09-05 §LOG.06): kích thước lưới và kết quả
+    # solver là diagnostic dev, không ghi INFO trong production.
+    logger.debug(
+        "   [SOLVER DEBUG] _py_solve_grid: "
+        f"usable={usable_w:.2f}x{usable_h:.2f}, "
+        f"item={item_w:.2f}x{item_h:.2f}, "
+        f"gap={gap_x:.2f}x{gap_y:.2f} -> cols={cols}, rows={rows}"
+    )
 
     block_w = cols * item_w + (max(0, cols - 1) * gap_x)
     while cols > 0 and block_w > usable_w + 0.01:

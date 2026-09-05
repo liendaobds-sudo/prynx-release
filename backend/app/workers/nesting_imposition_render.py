@@ -481,11 +481,11 @@ def _single_mold_report_facts(
         dimension_source = "cutContour_fallback"
         dimensions = _legacy_cut_contour_dimensions_text(part.get("cutContour"))
 
-    # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): log raw bundle và chuỗi đã
-    # format, nhưng không ghi label/order để tránh đưa dữ liệu khách vào terminal.
+    # SEC (audit 2026-09-05 §LOG.06): raw bundle và kích thước đã
+    # format chỉ là diagnostic dev, không đưa lên warning production.
     import logging
 
-    logging.getLogger(__name__).warning(
+    logging.getLogger(__name__).debug(
         "[DIM-DIE-TRACE] stage=writer_dimensions part_id=%s page_index=%s "
         "source=%s die_dimensions_mm=%r formatted=%r",
         part_id,

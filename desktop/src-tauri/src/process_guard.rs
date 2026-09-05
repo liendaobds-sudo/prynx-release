@@ -20,21 +20,62 @@
 //!
 //! Từ đây `taskkill` chỉ còn là lưới phụ cho đường thoát êm, không phải cơ chế chính.
 //!
-//! Không fail-closed: mọi lỗi API chỉ ghi log rồi bỏ qua. Job Object có thể không gán được
-//! trong môi trường đặc biệt (đã nằm trong job không cho lồng, quyền bị hạn chế) và điều đó
-//! KHÔNG được phép chặn app khởi động — hành vi khi ấy đúng bằng hành vi cũ.
+//! SEC (audit 2026-09-04 §SEC.22): lỗi tạo/gán Job phải trả về caller. Sidecar và
+//! worker giữ file phát hành sẽ tự hủy rồi fail-closed thay vì chạy ngoài Job mà host
+//! vẫn tưởng cây tiến trình đã được kernel bảo vệ.
 
 /// Gán một tiến trình con vào job của app để OS tự diệt khi app chết.
 /// Gọi càng sớm sau `spawn()` càng tốt: tiến trình cháu sinh ra TRƯỚC lúc gán sẽ không
 /// thuộc job (đây là lý do lời gọi nằm ngay sau `spawn`, trước mọi handshake).
-pub fn adopt_child_process(pid: u32) {
+pub fn adopt_child_process(pid: u32) -> Result<(), String> {
     #[cfg(windows)]
-    match windows_impl::try_adopt_child_process(pid) {
-        Ok(()) => log::info!("[JOB] Đã gán PID={pid} vào job của PrynX."),
-        Err(error) => log::warn!("[JOB] Không gán được PID={pid} vào job: {error}; dựa vào taskkill."),
+    {
+        let result = windows_impl::try_adopt_child_process(pid);
+        match &result {
+            Ok(()) => log::info!("[JOB] Đã gán PID={pid} vào job của PrynX."),
+            Err(error) => log::error!("[JOB] Không gán được PID={pid} vào job: {error}"),
+        }
+        result
     }
     #[cfg(not(windows))]
-    let _ = pid;
+    {
+        let _ = pid;
+        Ok(())
+    }
+}
+
+/// SEC (audit 2026-09-04 §SEC.22): chỉ chạy `taskkill.exe` chuẩn trong System32.
+/// Không phân giải qua PATH/SystemRoot do process hoặc user có thể kiểm soát.
+#[cfg(windows)]
+pub(crate) fn system_taskkill_path() -> Result<std::path::PathBuf, String> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    // Win32 extended-length path tối đa 32.767 UTF-16 code units.
+    let mut buffer = vec![0u16; 32_768];
+    // SAFETY: buffer writable và sống hết lời gọi; wrapper nhận đúng chiều dài slice.
+    let written = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    if written == 0 || written >= buffer.len() {
+        return Err("Không xác định được Windows system directory".to_string());
+    }
+
+    let directory = std::path::PathBuf::from(OsString::from_wide(&buffer[..written]));
+    let is_system32 = directory
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("System32"));
+    if !directory.is_absolute() || !is_system32 {
+        return Err("Windows system directory không hợp lệ".to_string());
+    }
+
+    let taskkill = directory.join("taskkill.exe");
+    let metadata = std::fs::metadata(&taskkill)
+        .map_err(|error| format!("Không tìm thấy taskkill.exe hệ thống: {error}"))?;
+    if !metadata.is_file() {
+        return Err("taskkill.exe hệ thống không phải file".to_string());
+    }
+    Ok(taskkill)
 }
 
 #[cfg(windows)]
@@ -43,14 +84,14 @@ mod windows_impl {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
     /// Lưu giá trị con trỏ handle thay vì `HANDLE` để không phải `unsafe impl Send/Sync`
-    /// cho một static. `None` = không dựng được job, mọi lời gọi sau đó thành no-op.
+    /// cho một static. `None` = không dựng được job; caller sẽ fail-closed.
     static JOB_HANDLE: OnceLock<Option<usize>> = OnceLock::new();
 
     fn job_handle() -> Option<HANDLE> {
@@ -111,7 +152,7 @@ mod windows_impl {
     mod tests {
         use super::*;
         use windows::core::BOOL;
-        use windows::Win32::System::JobObjects::IsProcessInJob;
+        use windows::Win32::System::JobObjects::{IsProcessInJob, QueryInformationJobObject};
         use windows::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 
         /// Đọc tư cách thành viên job của một PID.
@@ -128,6 +169,23 @@ mod windows_impl {
                 let _ = CloseHandle(process);
                 query.map(|()| in_job.as_bool())
             }
+        }
+
+        /// Kiểm chính cờ kernel mà lifecycle dựa vào; membership đơn thuần không
+        /// chứng minh Job sẽ diệt cây khi handle của host đóng.
+        fn doc_cau_hinh_job() -> Result<JOBOBJECT_EXTENDED_LIMIT_INFORMATION, String> {
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            unsafe {
+                QueryInformationJobObject(
+                    job_handle(),
+                    JobObjectExtendedLimitInformation,
+                    &mut info as *mut _ as *mut core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                    None,
+                )
+            }
+            .map_err(|error| format!("QueryInformationJobObject: {error}"))?;
+            Ok(info)
         }
 
         /// Kiểm đúng điều dễ hỏng nhất khi nâng crate `windows` hoặc đổi feature: job dựng
@@ -153,6 +211,53 @@ mod windows_impl {
                 Ok(true),
                 "tiến trình con không nằm trong job của PrynX"
             );
+        }
+
+        #[test]
+        fn job_bat_kill_on_close() {
+            let info = doc_cau_hinh_job().expect("đọc cấu hình Job Object");
+            assert!(
+                info.BasicLimitInformation
+                    .LimitFlags
+                    .contains(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE),
+                "Job Object thiếu KILL_ON_JOB_CLOSE"
+            );
+        }
+
+        #[test]
+        fn taskkill_chi_duoc_goi_bang_duong_system32_tuyet_doi() {
+            let taskkill = crate::process_guard::system_taskkill_path()
+                .expect("phải tìm được taskkill.exe hệ thống");
+            assert!(taskkill.is_absolute());
+            assert_eq!(
+                taskkill.file_name().and_then(|value| value.to_str()),
+                Some("taskkill.exe")
+            );
+            assert_eq!(
+                taskkill
+                    .parent()
+                    .and_then(|path| path.file_name())
+                    .and_then(|value| value.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("system32")
+            );
+
+            let raw_path_lookup = ["Command::new(\"", "taskkill", "\")"].concat();
+            for source in [
+                include_str!("lib.rs"),
+                include_str!("pdf_engine/render_worker.rs"),
+                include_str!("pdf_engine/print_worker.rs"),
+            ] {
+                let compact = source
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>();
+                assert!(
+                    !compact.contains(&raw_path_lookup),
+                    "Không được phân giải taskkill qua PATH"
+                );
+            }
         }
     }
 }

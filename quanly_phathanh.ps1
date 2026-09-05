@@ -2,45 +2,184 @@
 # PrynX - Cua so quan ly phat hanh (WinForms). Luu UTF-8 BOM de hien tieng Viet dung.
 param([switch]$ShowBuildTerminal)
 
+$ErrorActionPreference = "Stop"
+
+# SEC (audit 2026-09-04 §SEC.24-R6): launcher GUI phải xóa và từ chối
+# secret/routing/transport override trước cả Add-Type lẫn dot-source. Windows PowerShell
+# 5.1 có thể sinh compiler child khi guard nạp type native; không để child sớm
+# kế thừa token hoặc authority do process cha cài vào.
+function Get-PrynXGuiForbiddenEnvironmentVariableNames {
+    $environment = [Environment]::GetEnvironmentVariables(
+        [EnvironmentVariableTarget]::Process
+    )
+    $names = New-Object System.Collections.Generic.HashSet[string] `
+        ([System.StringComparer]::OrdinalIgnoreCase)
+    $secretNames = @(
+        "PRYNX_SUPABASE_SECRET_KEY",
+        "PRYNX_SUPABASE_SERVICE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "PRYNX_TAURI_SIGNING_KEY_FILE",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+    )
+    foreach ($key in @($environment.Keys)) {
+        $name = [string]$key
+        if ($name -match '^(?i:GIT_|GH_)' -or $name -iin @(
+                "GITHUB_TOKEN",
+                "GITHUB_ENTERPRISE_TOKEN",
+                "XDG_CONFIG_HOME",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "NO_PROXY",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "CURL_CA_BUNDLE",
+                "REQUESTS_CA_BUNDLE",
+                "BROWSER"
+            ) -or $name -iin $secretNames) {
+            $null = $names.Add($name)
+        }
+    }
+    return @($names | Sort-Object)
+}
+
+function Clear-PrynXGuiForbiddenEnvironmentVariables {
+    param([Parameter(Mandatory = $true)][string[]]$Names)
+
+    foreach ($name in $Names) {
+        # Env provider xóa hẳn key cả trên Windows PowerShell 5.1 lẫn pwsh;
+        # SetEnvironmentVariable(..., $null) có runtime chỉ để lại chuỗi rỗng.
+        Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+    }
+}
+
+function Assert-PrynXGuiChildEnvironmentClean {
+    $unexpected = @(Get-PrynXGuiForbiddenEnvironmentVariableNames)
+    if ($unexpected.Count -gt 0) {
+        Clear-PrynXGuiForbiddenEnvironmentVariables -Names $unexpected
+        throw "SEC: PrynX da xoa va tu choi secret/Git/GitHub environment/transport override: $($unexpected -join ', ')."
+    }
+}
+
+Assert-PrynXGuiChildEnvironmentClean
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$CONFIG = Join-Path $ROOT "publisher.config.json"
-$KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $SECRET_STORE_SCRIPT = Join-Path $ROOT "scripts\release_secret_store.ps1"
 $SECRET_SETUP_SCRIPT = Join-Path $ROOT "scripts\setup_release_secrets.ps1"
 $RELEASE_CONTROLLER = Join-Path $ROOT "scripts\release_controller.ps1"
 $RELEASE_LOG_TERMINAL = Join-Path $ROOT "scripts\watch_release_run.ps1"
+$EXECUTABLE_GUARD = Join-Path $ROOT "scripts\release_executable_guard.ps1"
 $RELEASE_STATE_ROOT = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "PrynX\release-runs"
 . $SECRET_STORE_SCRIPT
+. $EXECUTABLE_GUARD
 
-# ---- Đọc cấu hình phát hành; GUI không sửa file tracked khi bấm build/publish ----
-$cfg = @{ Repo = "" }
-if (Test-Path $CONFIG) {
-    try { $j = Get-Content $CONFIG -Raw | ConvertFrom-Json; if ($j.Repo) { $cfg.Repo = $j.Repo } } catch {}
+$KEY_FILE = Resolve-PrynXUpdaterSigningKeyPath
+
+$script:PrynXGuiPowerShellLease = $null
+$script:PrynXGuiCmdLease = $null
+$script:PrynXGuiGitHubCliLease = $null
+$script:PrynXGuiNotepadLease = $null
+
+function Get-PrynXGuiExecutablePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("WindowsPowerShell", "Cmd", "GitHubCli", "Notepad")]
+        [string]$Kind
+    )
+
+    $lease = switch ($Kind) {
+        "WindowsPowerShell" { $script:PrynXGuiPowerShellLease }
+        "Cmd" { $script:PrynXGuiCmdLease }
+        "GitHubCli" { $script:PrynXGuiGitHubCliLease }
+        "Notepad" { $script:PrynXGuiNotepadLease }
+    }
+    if ($null -eq $lease) {
+        $lease = Open-PrynXTrustedReleaseExecutableLease -Kind $Kind
+        switch ($Kind) {
+            "WindowsPowerShell" { $script:PrynXGuiPowerShellLease = $lease }
+            "Cmd" { $script:PrynXGuiCmdLease = $lease }
+            "GitHubCli" { $script:PrynXGuiGitHubCliLease = $lease }
+            "Notepad" { $script:PrynXGuiNotepadLease = $lease }
+        }
+    }
+    return $lease.Path
 }
 
 # ---- NGUON CHAN LY DUY NHAT: suy repo phat hanh tu endpoint updater trong tauri.conf.json ----
 # Khong cho go tay (tranh phat hanh nham repo -> client khong nhan update).
 function Get-EndpointRepo {
     $confPath = Join-Path $ROOT "desktop\src-tauri\tauri.conf.json"
-    if (-not (Test-Path $confPath)) { return "" }
-    try {
-        $conf = Get-Content $confPath -Raw | ConvertFrom-Json
-        $ep = [string]$conf.plugins.updater.endpoints[0]
-        if ($ep -match 'github\.com/([^/]+/[^/]+)/releases') { return $Matches[1] }
-    } catch {}
-    return ""
+    $configFull = Assert-PrynXNoReparsePointInPathComponents -Path $confPath
+    if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
+        throw "Khong thay tauri.conf.json: $confPath"
+    }
+
+    $conf = Get-Content -LiteralPath $configFull -Raw | ConvertFrom-Json -ErrorAction Stop
+    $endpoints = @($conf.plugins.updater.endpoints)
+    if ($endpoints.Count -ne 1) {
+        throw "tauri.conf.json phai co dung mot plugins.updater.endpoints."
+    }
+    # Không Trim: khoảng trắng/delimiter dư phải bị coi là config không canonical.
+    $endpoint = [string]$endpoints[0]
+    $endpointSyntaxMatch = [regex]::Match(
+        $endpoint,
+        '^(?i:https://github\.com)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/releases/latest/download/latest\.json\z',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    if (-not $endpointSyntaxMatch.Success) {
+        throw "Endpoint updater khong dung canonical GitHub release URI: $endpoint"
+    }
+
+    $uri = $null
+    if ([string]::IsNullOrWhiteSpace($endpoint) -or
+        -not [System.Uri]::TryCreate($endpoint, [System.UriKind]::Absolute, [ref]$uri)) {
+        throw "Endpoint updater khong phai absolute URI hop le: $endpoint"
+    }
+    if (-not [string]::Equals(
+            $uri.Scheme,
+            "https",
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [string]::Equals(
+            $uri.DnsSafeHost,
+            "github.com",
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $uri.IsDefaultPort -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        throw "Endpoint updater phai dung HTTPS tren github.com va khong co authority/query/fragment phu: $endpoint"
+    }
+
+    $owner = $endpointSyntaxMatch.Groups[1].Value
+    $repo = $endpointSyntaxMatch.Groups[2].Value
+    if ($owner -in @(".", "..") -or $repo -in @(".", "..")) {
+        throw "Endpoint updater co owner/repo khong hop le: $endpoint"
+    }
+    return $owner + "/" + $repo
 }
-$DerivedRepo = Get-EndpointRepo
+try {
+    $DerivedRepo = Get-EndpointRepo
+}
+catch {
+    [System.Windows.Forms.MessageBox]::Show(
+        "Không xác minh được repo phát hành từ tauri.conf.json.`r`n$($_.Exception.Message)",
+        "Cấu hình phát hành không hợp lệ"
+    ) | Out-Null
+    throw
+}
+$script:PrynXGuiReleaseRepo = $DerivedRepo
 
 function Get-SourceVersion {
     $confPath = Join-Path $ROOT "desktop\src-tauri\tauri.conf.json"
     if (-not (Test-Path -LiteralPath $confPath -PathType Leaf)) { return "" }
     try {
         $version = [string](Get-Content -LiteralPath $confPath -Raw | ConvertFrom-Json).version
-        if ($version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
+        if ($version -match '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?\z') {
             return $version
         }
     } catch {}
@@ -75,9 +214,9 @@ $txtVer = New-Box 300 15 120; $txtVer.Text = $SourceVersion; $txtVer.ReadOnly = 
 
 New-Label "Repo phát hành (TỰ ĐỘNG từ tauri.conf.json):" 15 50 | Out-Null
 $txtRepo = New-Box 320 47 290
-# Suy tu endpoint updater -> chi doc (single source of truth). Fallback config cu neu khong doc duoc.
-if ($DerivedRepo) { $txtRepo.Text = $DerivedRepo; $txtRepo.ReadOnly = $true }
-else { $txtRepo.Text = $cfg.Repo }
+# Endpoint updater canonical là nguồn duy nhất; không fallback sang text/config có thể đổi repo.
+$txtRepo.Text = $script:PrynXGuiReleaseRepo
+$txtRepo.ReadOnly = $true
 
 New-Label "Mật khẩu khóa ký (bỏ trống nếu không đặt):" 15 82 | Out-Null
 $txtPwd = New-Box 300 79 200 $true
@@ -239,9 +378,10 @@ function Start-HiddenPowerShell {
         return '"' + ([regex]::Replace($value, '(\\*)"', '$1$1\"')) + '"'
     }
 
+    Assert-PrynXGuiChildEnvironmentClean
     # Windows PowerShell 5 Start-Process lỗi nếu môi trường có đồng thời Path/PATH.
     $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = "powershell.exe"
+    $startInfo.FileName = Get-PrynXGuiExecutablePath -Kind "WindowsPowerShell"
     $startInfo.Arguments = (@($Arguments | ForEach-Object {
         Quote-ProcessArgument ([string]$_)
     }) -join ' ')
@@ -257,6 +397,7 @@ function Start-ReleaseLogTerminal {
     if (-not (Test-Path -LiteralPath $RELEASE_LOG_TERMINAL -PathType Leaf)) {
         throw "Thiếu trình theo dõi terminal: $RELEASE_LOG_TERMINAL"
     }
+    Assert-PrynXGuiChildEnvironmentClean
 
     function Quote-ProcessArgument([string]$value) {
         if ($null -eq $value) { return '""' }
@@ -269,7 +410,7 @@ function Start-ReleaseLogTerminal {
         "-StateRoot", $RELEASE_STATE_ROOT, "-ControllerPid", [string]$ControllerPid
     )
     $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = "powershell.exe"
+    $startInfo.FileName = Get-PrynXGuiExecutablePath -Kind "WindowsPowerShell"
     $startInfo.Arguments = (@($arguments | ForEach-Object {
         Quote-ProcessArgument ([string]$_)
     }) -join ' ')
@@ -356,8 +497,153 @@ function Test-ReleaseSecretStoreReady {
     return $false
 }
 
+function Get-PrynXGuiGitHubConfigurationDirectory {
+    $appData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::ApplicationData
+    )
+    if ([string]::IsNullOrWhiteSpace($appData) -or
+        -not [System.IO.Path]::IsPathRooted($appData)) {
+        throw "Windows không trả về ApplicationData hợp lệ cho GitHub CLI."
+    }
+    $appDataFull = Assert-PrynXNoReparsePointInPathComponents -Path $appData
+    $configDirectory = Assert-PrynXNoReparsePointInPathComponents -Path (
+        Join-Path $appDataFull "GitHub CLI"
+    )
+    if (Test-Path -LiteralPath $configDirectory) {
+        if (-not (Test-Path -LiteralPath $configDirectory -PathType Container)) {
+            throw "Đường dẫn cấu hình GitHub CLI không phải thư mục: $configDirectory"
+        }
+    }
+    else {
+        $null = [System.IO.Directory]::CreateDirectory($configDirectory)
+    }
+    $configDirectory = Assert-PrynXNoReparsePointInPathComponents -Path $configDirectory
+
+    # Login là đường duy nhất được phép khởi tạo config sạch. Wrapper release
+    # sau đó lease cả hai file và không chấp nhận file thiếu/reparse/hardlink.
+    foreach ($fileName in @("config.yml", "hosts.yml")) {
+        $filePath = Join-Path $configDirectory $fileName
+        if (-not (Test-Path -LiteralPath $filePath)) {
+            $stream = $null
+            try {
+                $stream = [System.IO.File]::Open(
+                    $filePath,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+            }
+            finally {
+                if ($null -ne $stream) { $stream.Dispose() }
+            }
+        }
+    }
+    return $configDirectory
+}
+
+function Start-PrynXGitHubLogin {
+    param(
+        [Parameter(Mandatory = $true)][string]$GitHubCliPath,
+        [Parameter(Mandatory = $true)][string]$CmdPath
+    )
+
+    Assert-PrynXGuiChildEnvironmentClean
+    Assert-PrynXGitEnvironmentAuthority
+    Assert-PrynXGitHubTransportEnvironmentAuthority
+    $configDirectory = Get-PrynXGuiGitHubConfigurationDirectory
+
+    # Wrapper kiểm effective config và từ chối http_unix_socket trước khi mở
+    # phiên đăng nhập tương tác. Exit code auth status không phải lỗi ở đây vì
+    # nút này được dùng chính khi máy chưa có credential.
+    $null = Invoke-PrynXGitHubCliCommand `
+        -GitHubCliPath $GitHubCliPath `
+        -Command "auth" `
+        -Arguments @("status", "--hostname", "github.com")
+
+    $controlledNames = @(
+        "GH_CONFIG_DIR",
+        "GH_PROMPT_DISABLED",
+        "GH_NO_UPDATE_NOTIFIER",
+        "GH_NO_EXTENSION_UPDATE_NOTIFIER",
+        "GH_FORCE_TTY",
+        "GH_DEBUG",
+        "DEBUG"
+    )
+    $snapshot = @{}
+    foreach ($name in $controlledNames) {
+        $value = [Environment]::GetEnvironmentVariable(
+            $name,
+            [EnvironmentVariableTarget]::Process
+        )
+        $snapshot[$name] = @{
+            Exists = $null -ne $value
+            Value = if ($null -ne $value) { [string]$value } else { $null }
+        }
+    }
+
+    try {
+        [Environment]::SetEnvironmentVariable(
+            "GH_CONFIG_DIR",
+            $configDirectory,
+            [EnvironmentVariableTarget]::Process
+        )
+        [Environment]::SetEnvironmentVariable(
+            "GH_PROMPT_DISABLED",
+            "1",
+            [EnvironmentVariableTarget]::Process
+        )
+        foreach ($name in @(
+                "GH_NO_UPDATE_NOTIFIER",
+                "GH_NO_EXTENSION_UPDATE_NOTIFIER"
+            )) {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                "1",
+                [EnvironmentVariableTarget]::Process
+            )
+        }
+        foreach ($name in @("GH_FORCE_TTY", "GH_DEBUG", "DEBUG")) {
+            Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+        }
+
+        # /d tắt Command Processor AutoRun. GH_PROMPT_DISABLED giữ device flow
+        # phi tương tác: chỉ in URL/code, không mở browser, dò Git hay sinh khóa SSH.
+        $loginCommand = '""' + $GitHubCliPath +
+            '" auth login --hostname github.com --git-protocol https' +
+            ' --web --skip-ssh-key"'
+        return Start-Process `
+            -FilePath $CmdPath `
+            -ArgumentList @("/d", "/s", "/k", $loginCommand) `
+            -PassThru
+    }
+    finally {
+        foreach ($name in $controlledNames) {
+            $value = if ($snapshot[$name].Exists) {
+                [string]$snapshot[$name].Value
+            }
+            else {
+                $null
+            }
+            if ($snapshot[$name].Exists) {
+                [Environment]::SetEnvironmentVariable(
+                    $name,
+                    $value,
+                    [EnvironmentVariableTarget]::Process
+                )
+            }
+            else {
+                Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 # ---- Kiem tra ban dau ----
-if (-not (Test-Path $KEY_FILE)) { Log "[CANH BAO] Khong thay khoa ky: $KEY_FILE" } else { Log "[OK] Co khoa ky updater." }
+if (-not (Test-Path -LiteralPath $KEY_FILE -PathType Leaf)) {
+    Log "[CANH BAO] Khong thay tep khoa ky: $KEY_FILE"
+} else {
+    Log "[OK] Co tep khoa ky updater; build se xac minh identity va quyen truy cap."
+}
 if (Test-Path -LiteralPath (Resolve-PrynXReleaseSecretStorePath)) {
     Log "[OK] Co kho khoa Supabase ma hoa DPAPI."
 } else {
@@ -367,40 +653,99 @@ Log "Phiên bản được đọc từ mã nguồn. Hãy đồng bộ và commit
 
 # ---- Su kien ----
 $btnSecrets.Add_Click({
-    Start-Process powershell -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", ('"' + $SECRET_SETUP_SCRIPT + '"')
-    )
-    Log "Da mo cua so cau hinh khoa. Sau khi nhap xong co the build lai ngay."
+    try {
+        Assert-PrynXGuiChildEnvironmentClean
+        $powerShellPath = Get-PrynXGuiExecutablePath -Kind "WindowsPowerShell"
+        Start-Process -FilePath $powerShellPath -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", ('"' + $SECRET_SETUP_SCRIPT + '"')
+        ) | Out-Null
+        Log "Da mo cua so cau hinh khoa. Sau khi nhap xong co the build lai ngay."
+    }
+    catch { Log ("[LOI] " + $_.Exception.Message) }
 })
 
 $btnCheck.Add_Click({
     Log "Dang kiem tra GitHub CLI..."
-    $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if (-not $gh) { Log "[LOI] Chua co GitHub CLI. Cai: winget install GitHub.cli"; return }
-    Log ("gh: " + ((& gh --version 2>&1 | Select-Object -First 1) -join ""))
-    $st = (& gh auth status 2>&1 | Out-String)
-    Log $st.Trim()
+    try {
+        Assert-PrynXGuiChildEnvironmentClean
+        $ghPath = Get-PrynXGuiExecutablePath -Kind "GitHubCli"
+        $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ghPath)
+        $version = if (-not [string]::IsNullOrWhiteSpace($versionInfo.ProductVersion)) {
+            [string]$versionInfo.ProductVersion
+        }
+        else {
+            [string]$versionInfo.FileVersion
+        }
+        Log ("gh: " + $version)
+        $authResult = Invoke-PrynXGitHubCliCommand `
+            -GitHubCliPath $ghPath `
+            -Command "auth" `
+            -Arguments @("status", "--hostname", "github.com")
+        $authText = (@($authResult.Output) | ForEach-Object { [string]$_ }) -join "`r`n"
+        if ($authResult.ExitCode -ne 0) {
+            Log ("[LOI] GitHub CLI chưa xác thực cho github.com. " + $authText.Trim())
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($authText)) {
+            Log $authText.Trim()
+        }
+        else {
+            Log "[OK] GitHub CLI đã xác thực cho github.com."
+        }
+    }
+    catch { Log ("[LOI] " + $_.Exception.Message) }
 })
 
 $btnLogin.Add_Click({
-    $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if (-not $gh) { Log "[LOI] Chua co GitHub CLI. Cai: winget install GitHub.cli"; return }
-    Log "Mo cua so dang nhap GitHub (lam theo huong dan trong cua so do)..."
-    Start-Process cmd -ArgumentList "/k", "gh auth login"
+    try {
+        $ghPath = Get-PrynXGuiExecutablePath -Kind "GitHubCli"
+        $cmdPath = Get-PrynXGuiExecutablePath -Kind "Cmd"
+        Log "Mo cua so dang nhap GitHub (lam theo huong dan trong cua so do)..."
+        $process = Start-PrynXGitHubLogin `
+            -GitHubCliPath $ghPath `
+            -CmdPath $cmdPath
+        if ($null -eq $process) {
+            throw "Không mở được tiến trình đăng nhập GitHub."
+        }
+    }
+    catch { Log ("[LOI] " + $_.Exception.Message); return }
 })
 
 $btnList.Add_Click({
-    if (-not $txtRepo.Text) { Log "[!] Nhap repo truoc."; return }
-    Log ("Cac ban da phat hanh tren " + $txtRepo.Text + ":")
-    $out = (& gh release list --repo $txtRepo.Text 2>&1 | Out-String)
-    if ([string]::IsNullOrWhiteSpace($out)) { Log "(chua co ban nao / hoac chua dang nhap)" } else { Log $out.Trim() }
+    try {
+        Assert-PrynXGuiChildEnvironmentClean
+        $ghPath = Get-PrynXGuiExecutablePath -Kind "GitHubCli"
+        $repoAuthority = "github.com/$script:PrynXGuiReleaseRepo"
+        Log ("Cac ban da phat hanh tren " + $script:PrynXGuiReleaseRepo + ":")
+        $listResult = Invoke-PrynXGitHubCliCommand `
+            -GitHubCliPath $ghPath `
+            -Command "release" `
+            -Arguments @("list", "--repo", $repoAuthority)
+        $listText = (@($listResult.Output) | ForEach-Object { [string]$_ }) -join "`r`n"
+        if ($listResult.ExitCode -ne 0) {
+            Log ("[LOI] Không đọc được danh sách release. " + $listText.Trim())
+        }
+        elseif ([string]::IsNullOrWhiteSpace($listText)) {
+            Log "(chua co ban nao)"
+        }
+        else {
+            Log $listText.Trim()
+        }
+    }
+    catch { Log ("[LOI] " + $_.Exception.Message) }
 })
 
 $btnOpenLog.Add_Click({
-    if (-not [string]::IsNullOrWhiteSpace($script:LastRunLogPath) -and
-        (Test-Path -LiteralPath $script:LastRunLogPath -PathType Leaf)) {
-        Start-Process notepad.exe -ArgumentList ('"' + $script:LastRunLogPath + '"')
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($script:LastRunLogPath) -and
+            (Test-Path -LiteralPath $script:LastRunLogPath -PathType Leaf)) {
+            Assert-PrynXGuiChildEnvironmentClean
+            $notepadPath = Get-PrynXGuiExecutablePath -Kind "Notepad"
+            Start-Process `
+                -FilePath $notepadPath `
+                -ArgumentList ('"' + $script:LastRunLogPath + '"') | Out-Null
+        }
     }
+    catch { Log ("[LOI] " + $_.Exception.Message) }
 })
 
 $btnLocal.Add_Click({
@@ -434,9 +779,15 @@ $btnPublish.Add_Click({
             "Thiếu phiên bản")
         return
     }
-    if (-not $txtRepo.Text) { [System.Windows.Forms.MessageBox]::Show("Nhap repo phat hanh truoc.", "Thieu thong tin"); return }
+    if ([string]::IsNullOrWhiteSpace($script:PrynXGuiReleaseRepo)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Không xác minh được repo phát hành canonical.",
+            "Thiếu thông tin"
+        ) | Out-Null
+        return
+    }
     $ok = [System.Windows.Forms.MessageBox]::Show(
-        "Phát hành phiên bản đã commit " + $version + " lên " + $txtRepo.Text + " ?`r`nHệ thống sẽ kiểm tra GitHub trước khi build. Một lượt đầy đủ gần đây mất khoảng 60-110 phút.",
+        "Phát hành phiên bản đã commit " + $version + " lên " + $script:PrynXGuiReleaseRepo + " ?`r`nHệ thống sẽ kiểm tra GitHub trước khi build. Một lượt đầy đủ gần đây mất khoảng 60-110 phút.",
         "Xác nhận phát hành", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     if (-not (Test-ReleaseSecretStoreReady)) { return }
@@ -460,4 +811,12 @@ $form.Add_Shown({
     $form.BringToFront()
     $form.TopMost = $false
 })
-[void]$form.ShowDialog()
+try {
+    [void]$form.ShowDialog()
+}
+finally {
+    Close-PrynXReleaseExecutableLease -Lease $script:PrynXGuiNotepadLease
+    Close-PrynXReleaseExecutableLease -Lease $script:PrynXGuiGitHubCliLease
+    Close-PrynXReleaseExecutableLease -Lease $script:PrynXGuiCmdLease
+    Close-PrynXReleaseExecutableLease -Lease $script:PrynXGuiPowerShellLease
+}

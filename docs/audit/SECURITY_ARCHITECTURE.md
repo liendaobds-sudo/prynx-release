@@ -1,10 +1,11 @@
 # PrynX Security Architecture — Tài liệu tổng kết
 
-> **Phiên bản:** 3.1 — Sau re-audit & hardening 2026-06-17 (xem **Mục 9**)
-> **Cập nhật:** 2026-06-17
+> **Phiên bản:** 3.2 — Hardening hiện hành 2026-09-04 (xem **Mục 27**)
+> **Cập nhật:** 2026-09-04
 > **Mục đích:** Đọc 1 lần hiểu hết, phục vụ tham chiếu lâu dài
 >
-> ⚠️ **Đọc Mục 9 trước (mới nhất),** rồi Mục 8. Bản 2.0 mô tả thiết kế *dự kiến*; audit
+> ⚠️ **Đọc Mục 27 trước để lấy trạng thái hiện hành.** Các Mục 1–26 là chuỗi snapshot lịch sử,
+> được giữ để truy vết quyết định và có thể chứa lifecycle/test count đã bị supersede. Bản 2.0 mô tả thiết kế *dự kiến*; audit
 > 2026-06-12 (Mục 8) phát hiện nhiều lớp release-only **chưa từng chạy** + lỗ hổng server.
 > Re-audit 2026-06-17 (Mục 9) trace lại toàn bộ sau khi vá, bổ sung các hardening mới
 > (watermark phủ toàn bộ output, fs deny, token persist offline, DEV_MODE fail-closed,
@@ -51,7 +52,11 @@ graph TB
 
 ---
 
-## 2. Luồng xác thực (Authentication Flow)
+## 2. `[HISTORICAL · SUPERSEDED BY §27]` Luồng xác thực (Authentication Flow)
+
+> Sơ đồ dưới là snapshot thiết kế cũ: direct RPC, payload HMAC đơn giản và trạng thái process
+> mitigation không mô tả current source. Luồng hiện hành dùng Edge/token v2, session key theo
+> sidecar generation và body commitment; xem §27 cùng threat model trước khi dùng làm authority.
 
 ```mermaid
 sequenceDiagram
@@ -96,7 +101,9 @@ sequenceDiagram
 
 ---
 
-## 3. Bảng 15 lớp phòng thủ
+## 3. `[HISTORICAL · SUPERSEDED BY §27]` Bảng 15 lớp phòng thủ
+
+> Các dòng/path/count dưới được giữ để truy vết lịch sử, không phải inventory current-source.
 
 ### Layer 1 — Giao tiếp (Communication Security)
 
@@ -987,11 +994,13 @@ payload thật: khoá đúng mở được, thiếu khoá và khoá sai đều b
 
 ---
 
-## 26. Audit chống crack 2026-08-28 — vá 12/15 finding
+## 26. `[HISTORICAL]` Audit chống crack 2026-08-28 — vá 12/15 finding
 
 > Báo cáo: `docs/BAO_CAO_AUDIT_CHONG_CRACK_2026-08-28.md`
 > Log sửa chi tiết: `docs/CHONG_CRACK_FIXES_2026-08-28.md`
 > Bối cảnh: audit theo yêu cầu, lo ngại đối thủ dùng AI để bẻ khoá.
+> **Nhãn trạng thái:** số đếm và lifecycle trong Mục 26 là snapshot ngày 2026-08-28;
+> Mục 27 supersede trạng thái hiện hành nhưng không xóa lịch sử này.
 
 ### 26.1. Kết luận về câu hỏi "AI có bẻ được không"
 
@@ -1076,9 +1085,9 @@ thể là biện pháp tệ nhất về vận hành.
 | # | Trạng thái | Cần gì |
 |---|---|---|
 | SEC.03 | **Còn mở** | Ba migration `20260726*` mất khỏi repo; `verify_license_edge` **không có định nghĩa** trong repo. Bốn control mà §24 ghi là "đã chắc" không tái dựng được từ clean checkout. Cần `supabase db pull` (credential production). |
-| SEC.11 | **Accepted risk** | Integrity exe/frontend không cưỡng chế trên NSIS. Đường crack hiện thực nhất: patch exe → patch pubkey trong sidecar Nuitka → tự ký token `plan=pro`. Chỉ đóng được bằng Authenticode + `WinVerifyTrust`. Quyết định chi phí. |
+| SEC.11 | **Accepted risk · cách diễn đạt lịch sử đã hiệu chỉnh** | Integrity exe/frontend không cưỡng chế trên NSIS. Đường crack hiện thực nhất: patch exe → patch pubkey trong sidecar Nuitka → tự ký token `plan=pro`. Authenticode + `WinVerifyTrust` tăng publisher/artifact integrity nhưng không thể ngăn admin patch cả binary lẫn self-check ở Ring-3; xem §27.6. |
 | SEC.09 | **Accepted risk** | Cổng `rk` 3 bản/giờ, không trần tổng — đánh đổi có tài liệu. "Kẻ thu gom biết chờ" vẫn qua. |
-| SEC.15 | **Còn mở** | `save_as_only` chỉ là hint gửi renderer; thuộc spec `save-as-artifact-guard`. |
+| SEC.15 | **Còn mở tại 2026-08-28 · `[SUPERSEDED]`** | Snapshot này chỉ có `save_as_only` ở renderer; source/test hiện tại đã có native grant/lease. Xem §27.1. |
 
 ### 26.8. Bổ sung vào checklist RELEASE (§15)
 
@@ -1087,3 +1096,91 @@ thể là biện pháp tệ nhất về vận hành.
 - [ ] Máy đã từng nhớ `.exe` tuỳ chọn trong localStorage: lần mở đầu sau cập nhật phải tự hiện hộp thoại chọn lại, không báo lỗi cụt.
 - [ ] New Window + Save As vẫn hoạt động (§SEC.07 siết nguồn staging).
 - [ ] Đăng nhập license PrynX thật sau khi `db push` migration `20260828100000` (§SEC.02 có thể chặn oan nếu Edge không mang `role=service_role`).
+
+---
+
+## 27. Hardening hiện hành 2026-09-04 — source/test đã verify, release vẫn `HOLD`
+
+> Đây là lớp trạng thái mới nhất, supersede các câu trạng thái cũ ở Mục 1–26. Code/test hiện tại là
+> bằng chứng cho control trong source; tài liệu lịch sử chỉ là bản đồ. Không có kết quả nào dưới đây
+> được dùng để tuyên bố “không thể crack” hoặc thay thế kiểm chứng trên bản cài/production.
+
+### 27.0. Snapshot verify current-source
+
+- Backend token/body/route/probe: **144/144**; route policy introspection: **191/191 route**
+  (coverage inventory, không phải test count).
+- Frontend auth/license: **89/89** và typecheck đạt; Edge ratchet: **36/36**.
+- Rust Tauri: **227 passed, 5 ignored**; release-lib check và fmt đạt; Save As registry: **23/23**.
+- Release tests: **112/112 = 110 trong sandbox + 2 ca ACL/file-lock ngoài sandbox Windows**;
+  AST/bare-executable ratchet của 7 release entry script đạt.
+
+Đây là bằng chứng source/test. Nó không đổi `HOLD` thành artifact/runtime/deploy verified.
+
+### 27.1. Save As artifact authority — §SEC.15
+
+§SEC.15 đã chuyển sang **Applied → Verified (source/test)**. Native không còn tin riêng cờ
+`save_as_only` của renderer: grant one-shot bind đúng document window, canonical target và TTL; lease giữ
+source cùng các ancestor bằng handle không share `DELETE`; timer tự thu hồi grant sau 2 phút. Các đường ghi
+native tiêu grant trước khi ghi/publish và giữ identity qua cửa sổ nhạy cảm.
+
+Chưa nâng thành runtime-closed: hành vi UI trên bản cài, share NAS và filesystem không phải NTFS vẫn
+`[EXTERNAL]`.
+
+### 27.2. Sidecar generation và replay — §SEC.19 / §ATK.09
+
+Khe replay qua sidecar respawn đã **đóng ở source/test**: host và sidecar derive session key theo từng
+`sidecar generation`. Chữ ký hợp lệ của thế hệ cũ không sống lại sau respawn, kể cả khi nonce table của
+thế hệ mới còn rỗng. Control này bổ sung nonce one-shot; nó không thay thế nonce.
+
+§SEC.19 tổng thể vẫn chưa `Closed`, vì clock rollback/forward fault-injection trên Windows thật,
+packaged-runtime proof và trạng thái deploy vẫn là proof gap.
+
+### 27.3. Request signature v2 — §SEC.21
+
+Signature v2 bind toàn bộ dữ liệu quyết định semantics của request: method, raw path/query, credential
+snapshot, content type, body mode và body commitment. JSON/string/binary dùng raw bytes; FormData bind
+thứ tự, field trùng và metadata file; request streaming chỉ được chấp nhận sau khi commitment được kiểm
+tại EOF trước parse/submit.
+
+Ratchet introspection hiện phủ **191/191 route đã đăng ký**. Đây là coverage của route, **không phải số
+test** và không chứng minh packaged runtime; artifact phát hành vẫn cần smoke riêng `[EXTERNAL]`.
+
+### 27.4. Payload provenance — §SEC.23
+
+§SEC.23 đã **Applied → Verified ở source/test mục tiêu** cho các control từng còn thiếu: Tesseract được pin
+version, path, size và SHA-256; pipeline/verifier kiểm hardlink hoặc link-count bất thường, ADS, reparse
+point và giữ identity lease trước khi dùng payload. Manifest không được tự hợp pháp hóa một binary chỉ vì
+nó đã nằm sẵn trong staging.
+
+Clean checkout/build, giải nén installer, install/uninstall residue, đối chiếu provenance xuyên mọi chặng
+và fault-injection trên VM sạch vẫn `[EXTERNAL]`; vì vậy không gọi §SEC.23 là runtime/artifact-closed.
+
+### 27.5. Trusted executable authority — §SEC.24-R1/R2/R3
+
+Đợt này không tự gán severity mới; trạng thái là **Applied → Verified (source/test mục tiêu)**:
+
+- Tauri/Rust chọn Windows PowerShell từ System32 thay vì tên executable qua ambient `PATH`.
+- Pipeline release resolve, pin và giữ lease cho PowerShell, `cmd`, `gh`, Node, Git, Robocopy, Cargo và
+  Rustc; publisher giữ trusted Git lease xuyên preflight, build/recheck và publish.
+- npm và Tauri CLI chạy bằng trusted Node cùng entrypoint JS/native binding chính xác, không qua shim tùy ý.
+- Các biến ambient Node/NAPI có thể đổi code được xóa hoặc bị từ chối; ngoại lệ NAPI cho Tauri chỉ được đặt
+  tới native binding đã pin trong cửa sổ gọi tương ứng.
+
+Hostile-`PATH`/executable replacement trên artifact đã đóng gói vẫn cần runtime proof `[EXTERNAL]`.
+
+### 27.6. Chốt phát hành và residual
+
+**Release tiếp tục `HOLD`.** Các control source/test ở trên nâng chi phí đường crack rẻ nhưng không đóng các
+biên ngoài workspace sau:
+
+- production DB/Edge deploy và đối chiếu GRANT/RLS/migration thật;
+- rotate/revoke/audit signing key, updater key, service secret và release secret thật;
+- Authenticode certificate cùng verify trust trên artifact;
+- CNG device-key challenge–proof v3: ưu tiên TPM Platform KSP, fallback Software KSP non-exportable,
+  token 15 phút; không hardware attestation nên local admin/Ring-3 vẫn là residual risk;
+- clean build/install/uninstall, hostile-environment và clock/process fault-injection trên VM;
+- Save As UI trên bản cài, NAS và filesystem không phải NTFS.
+
+Kẻ có quyền admin/debugger trên chính máy mình vẫn có thể patch hoặc đọc memory của tiến trình Ring-3.
+Đây là residual accepted risk của mô hình client-side; mục tiêu kiến trúc là giữ private key/server
+authority ngoài client, ngăn bypass rẻ và làm tấn công tốn công hơn, không phải hứa chống crack tuyệt đối.

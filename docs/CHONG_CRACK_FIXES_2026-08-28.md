@@ -1,10 +1,190 @@
 # Log sửa — audit chống crack 2026-08-28
 
+## Bổ sung 2026-09-02 — Lô A0, §SEC.16 (Mitigated, chưa Closed)
+
+**Báo cáo:** `docs/BAO_CAO_AUDIT_CHONG_CRACK_BLACKBOX_WHITEBOX_2026-09-02.md`
+**File (đúng 5):** `desktop/src-tauri/src/security.rs`,
+`desktop/src/stores/useAuthStore.ts`, `desktop/src/stores/useAuthStore.dielineKeyStatus.test.ts`,
+`D:\printsolutions-main\supabase\functions\license-verify\index.ts`,
+`D:\printsolutions-main\src\securityAuditRound2.test.ts`.
+
+| Thay đổi | Kết quả bảo mật |
+|---|---|
+| Cache DPAPI v1 phải khớp một tập phần cứng vừa đo có UUID hoặc CPU+BIOS; sau đó migrate sang JSON v2 lưu enrollment | User cùng profile Windows không còn chọn HWID chỉ bằng cách tạo một DPAPI blob chứa chuỗi tùy ý |
+| Mỗi process mới đối chiếu enrollment với UUID hoặc quorum CPU+BIOS; cache tồn tại nhưng giải mã/xác thực lỗi thì không bị ghi đè | Copy cache sang máy khác và state hỏng đều fail-closed; tránh tự sinh ID mới rồi ăn thêm seat |
+| Runtime Tauri chỉ nhận native HWID 16-hex; lỗi/rỗng/sai format không rơi vào localStorage hoặc offline grace | Renderer không còn thay authority bằng `prynx_hwid_cache` |
+| Edge canonicalize một lần và dùng `normalizedMachineId` ở block lookup, activation RPC, RK ledger, token và security log | Casing/whitespace không tạo hai danh tính logic hoặc lệch block/token/log |
+
+**Verify:** `cargo test --lib` = 175 pass, 5 ignored; targeted frontend = 21 pass;
+`desktop npm run typecheck` = pass; server ratchet = 10 pass; `rustfmt --check` và
+`git diff --check` = pass. `printsolutions-main npm run typecheck` còn đỏ 21 lỗi TS7030 có sẵn
+ở các component không thuộc lô; không có lỗi trong hai file sửa.
+
+**Giới hạn kết luận:** chỉ ghi **Mitigated**. WMI vẫn là nguồn local có thể bị giả bởi attacker
+đủ khả năng patch/hook. Muốn **Closed** phải có nonce một lần, TPM key attestation được server
+xác minh, binding activation nguyên tử, token protocol v2 và hard sunset legacy; CNG software
+key hoặc proof không attestation chưa đủ chứng minh một máy vật lý.
+
+## Bổ sung 2026-09-03 — Lô D1, §SEC.17 (Contained, chưa Closed)
+
+**File (đúng 4):** `build_production.ps1`, `PHAT_HANH.bat`,
+`scripts/release_signing_key_guard.ps1`, `scripts/test_release_signing_key_guard.ps1`.
+
+| Thay đổi | Kết quả bảo mật |
+|---|---|
+| Release từ chối private key inline/environment, key trong repo và key/path qua reparse point | Giảm nguy cơ secret đi qua môi trường build rộng hoặc bị thay bằng link tới file khác |
+| File key và thư mục cha phải tắt inheritance, ACL canonical, owner/principal chỉ thuộc current user, SYSTEM hoặc Administrators | Release fail-closed khi worker/group ngoài trust boundary có quyền trên key hoặc nơi chứa key |
+| Bắt buộc password input; xóa fallback `--password=`; launcher đọc bằng `Read-Host -AsSecureString` | Không còn đường phát hành chuẩn chấp nhận password rỗng hoặc lộ password trên argv |
+| Kiểm authority ở preflight và ngay trước signer; chỉ signer nhận password rồi biến bị xóa trong `finally` | Thu hẹp cửa sổ TOCTOU và thời gian secret hiện diện trong process environment |
+
+**Verify:** test guard = pass; parse `build_production.ps1`, guard và test = pass; parse đoạn
+PowerShell nhúng trong `PHAT_HANH.bat` = pass; `git diff --check` = pass. Probe metadata trên đường
+khóa khi đó — được ghi theo cách hiển thị lịch sử `%USERPROFILE%\.tauri\prynx.key` — trả
+**BLOCKED** vì ACL còn inheritance; authority hiện hành đã chuyển sang Windows UserProfile Known
+Folder, không tin biến môi trường `USERPROFILE`. Probe không đọc nội dung key,
+không gọi signer và không tạo release.
+
+**Giới hạn kết luận:** chỉ ghi **Contained at release gate**. Việc cung cấp một password không tự
+chứng minh file key cũ đã được mã hóa, và source guard không thể thu hồi khả năng key từng bị đọc.
+Trước release tiếp theo, owner vẫn phải rà access/release history, xác nhận key đang active hay
+không, rotate/revoke theo kế hoạch tương thích client, tạo key mới thật sự có passphrase và siết ACL
+file + thư mục cha cho tới khi guard pass. Không tự sửa ACL hoặc rotate key trong lô source này.
+
+## Bổ sung 2026-09-03 — Lô C, §SEC.18 (Mitigated in source / runtime artifact validation pending)
+
+**File (đúng 5):** `build_production.ps1`, `scripts/verify_installed_artifact.ps1`,
+`desktop/src-tauri/src/lib.rs`, `backend/app/main.py`,
+`backend/tests/test_artifact_runtime_self_test.py`.
+
+| Thay đổi | Kết quả bảo mật |
+|---|---|
+| Nuitka one-file dùng temporary extraction `{TEMP}\PrynX\sidecar-{PID}-{TIME_US}-{RANDOM}` thay cache persistent theo version | Loại đường sửa payload user-writable rồi được tái sử dụng nhờ cache hit CRC32 |
+| Cả initial spawn và supervisor spawn xóa môi trường kế thừa rồi lọc case-insensitive năm biến `NUITKA_ONEFILE_*` | Process cha/worker không thể ép sidecar kế thừa state extraction cũ qua đường spawn chuẩn |
+| Endpoint shutdown ẩn dùng HMAC-SHA256 + timestamp ±30 giây + nonce chống replay; Uvicorn đi qua lifespan | Rust có thể cho Python và bootstrap Nuitka thoát êm để tự xóa payload temporary trước khi fallback cưỡng bức |
+| Sidecar generation giữ pinned Windows process handle + creation FILETIME; lifecycle mutex khóa spawn/shutdown | PID reuse hoặc event thế hệ cũ không thể làm host clear/`taskkill` nhầm process generation mới; thiếu identity thì dựa Job Object |
+| Verifier chạy hai lượt, bind extraction PID vào đúng executable + app lineage, chặn reparse, yêu cầu path khác nhau và cleanup không force-kill | `RUNTIME_VERIFIED=yes` chỉ được ghi sau khi kiểm đúng topology Nuitka outer/inner và không còn residue |
+
+Review độc lập đã bắt hai lỗi trong bản vá trước chốt: selector theo EXE path luôn fail vì outer và
+inner có thể cùng path; đường shutdown từng mở handle quá muộn nên còn race PID reuse. Cả hai đã có
+ratchet test và được hậu kiểm lại.
+
+**Verify:** backend targeted = **33 passed**, 1 warning Pydantic có sẵn; `cargo test --lib` =
+**179 passed, 5 ignored**; `cargo check --release` = pass; PowerShell parse hai script = pass;
+`git diff --check` đúng 5 file = pass. `cargo fmt --check` toàn crate vẫn báo formatting drift trong
+WIP có sẵn ở `lib.rs` và các file ngoài lô; không bulk-format để tránh sửa lan. Không build, ký hoặc
+publish production artifact.
+
+**Giới hạn kết luận:** chưa **Closed**. Cần build artifact mới và chạy verifier trên clean Windows
+VM để chứng minh hai extraction path riêng, shutdown êm, cleanup không residue/force-kill và đo
+cold-start. `{RANDOM}` của Nuitka Windows hiện dùng xorshift32 và bootstrap chấp nhận directory đã
+tồn tại, nên cần negative test pre-create; scan reparse vẫn có Ring-3 TOCTOU và crash/End Task có thể
+  để residue. Startup current-source đã loại `taskkill /IM` theo tên trong lô §SEC.22; packaged
+  lifecycle vẫn pending. User có debugger/admin vẫn có thể patch process; mục tiêu của lô này là
+  loại crack rẻ qua persistent extraction cache, không tuyên bố chống crack tuyệt đối.
+
+## Bổ sung 2026-09-03 — §SEC.19 (Partially mitigated / source-test Verified)
+
+**Báo cáo chi tiết:** `docs/BAO_CAO_AUDIT_SEC19_REAUDIT_2026-09-03.md`.
+
+| Thay đổi | Kết quả bảo mật |
+|---|---|
+| Backend phân biệt installation key/marker/record missing, corrupt, tampered và unavailable; ghi state nguyên tử | Mất/hỏng một phần state không còn âm thầm reset thành cài đặt mới để kéo dài token offline |
+| Native signer và mọi nhánh offline cùng kiểm `AnchorState`; recovery cần token v2 `iat` + challenge dùng một lần | Chặn các đường vòng clock anchor rẻ giữa renderer/native/backend |
+| Đổi key staged + serialize; lỗi kỹ thuật giữ credential nhưng khóa quyền | Không tự mở khóa sau validate fail và giảm race key/token/native binding |
+
+**Verify:** backend clock/token **89 pass**; frontend auth/license **64 pass** + typecheck;
+Edge ratchet **34 pass**; Rust overlay **191 pass, 5 ignored**.
+
+**Giới hạn kết luận:** chưa Closed vì còn reset đồng thời toàn state trước bootstrap,
+concurrency/fault test, clean-installer clock smoke và deploy Edge/production. Khe replay qua
+sidecar restart được supersede bởi control generation ngày 2026-09-04 bên dưới.
+
+## Bổ sung 2026-09-03 — §SEC.21–§SEC.23 (request, lifecycle và payload)
+
+| Finding | Source đã áp dụng | Còn mở |
+|---|---|---|
+| §SEC.21 | Signature v2 bind method, raw path/query, credential snapshot, content type, body mode và body commitment; JSON/string/binary bind raw bytes; FormData giữ order/duplicate/file metadata; streaming kiểm tại EOF | Packaged-runtime proof; ratchet 191/191 là route coverage, không phải test count |
+| §SEC.22 | Bỏ startup kill theo image name; chỉ shutdown/force-kill PID generation có HANDLE + creation time; listener lạ làm startup fail-closed | Packaged close/crash/update/second-instance/reboot smoke |
+| §SEC.23 | Fresh staging/exact-set cùng Tesseract lock version/path/size/SHA-256; root/path/ADS/reparse, hardlink/link-count và identity lease; installed exact-set chạy trước payload | Clean build/install/uninstall, artifact provenance xuyên pipeline và runtime VM sạch |
+
+**File control chính:** `desktop/src/lib/api.ts`, `backend/app/core/license_guard.py`,
+`desktop/src-tauri/src/lib.rs`, `backend/app/main.py`, `build_production.ps1`,
+`desktop/src-tauri/tauri.conf.json`, `scripts/verify_installed_artifact.ps1` cùng các test liên quan;
+các thay đổi được chia thành lô không quá 5 file.
+
+**Verify cuối:** frontend auth/license **64/64** + typecheck; backend security mục tiêu **128/128**;
+artifact harness **32/32** (gồm chặn dữ liệu lạ trước cleanup và thứ tự exact-set trước execution);
+DPAPI/ACL riêng **2/2**; PowerShell parse và `git diff --check` đạt.
+Không build, ký, publish hay gọi production.
+
+## Bổ sung 2026-09-04 — chốt source/test §SEC.15/.19/.21/.23/.24-R1–R7
+
+| Phạm vi | Trạng thái hiện hành | Control đã verify ở source/test | Còn mở |
+|---|---|---|---|
+| §SEC.15 — Save As artifact | **Applied → Verified (source/test)** | Grant one-shot bind cửa sổ, canonical target và TTL; lease khóa source + ancestor không share `DELETE`; timer thu hồi sau 2 phút | `[EXTERNAL]` UI bản cài, NAS và filesystem không phải NTFS |
+| §SEC.19 / §ATK.09 — respawn replay | **Applied → Verified (source/test)** cho khe replay theo thế hệ; §SEC.19 tổng thể vẫn Partially mitigated | Session key derive theo từng `sidecar generation`; chữ ký thế hệ cũ không sống lại sau respawn dù nonce table mới rỗng | Clock fault-injection, clean-installer runtime và deploy/secret state |
+| §SEC.21 — request binding | **Applied → Verified (source/test)** | Signature v2 bind method, raw path/query, credential snapshot, content type, body mode/commitment; raw bytes cho JSON/string/binary; FormData giữ order/duplicate/file metadata; streaming kiểm EOF trước parse/submit; route ratchet **191/191** là coverage | `[EXTERNAL]` packaged-runtime proof |
+| §SEC.23 — payload provenance | **Applied → Verified (source/test mục tiêu)** | Tesseract lock pin version/path/size/SHA-256; hardlink/link-count, ADS, reparse và identity lease | `[EXTERNAL]` clean build/install/uninstall, artifact provenance và runtime VM sạch |
+| §SEC.24-R1–R7 — tool/source/publisher authority | **Applied → Verified (source/test mục tiêu)** | R1–R3 pin/lease executable + exact npm/Tauri entrypoint; R4 Rust toolchain content-addressed/exact-set/provenance; R5 canonical GitHub updater endpoint/destination; R6 Git/GitHub metadata/config/credential + exact grammar, SemVer ASCII-only, exact raw/escaped tag route, Known Folder signing key/Notepad; R7 BAT `%__APPDIR__%` bootstrap | Trusted checkout là prerequisite cục bộ; OAuth/Credential Manager/GitHub read-only đã đạt với `gh` 2.93.0; `[EXTERNAL]` còn quyền push/release, `gh` tương lai, Authenticode artifact và packaged double-click/hostile-`PATH`; không tự gán severity mới |
+
+Chi tiết delta §SEC.24 hiện hành:
+
+- **R4:** Cargo/Rustc/Rustdoc/`rust-std` đến từ lock versioned, content-addressed; exact-set và
+  identity được kiểm quanh consumer, provenance được bind vào manifest.
+- **R5:** chỉ đúng một updater endpoint HTTPS canonical trên `github.com` được phép xác định
+  destination; host/repo không lấy từ ambient routing.
+- **R6:** Git bị bind vào `ROOT\.git`, config/index/info cùng ancestor được lease, grammar read-only
+  exact có `--absolute-git-dir`; common/split worktree, config có điểm thực thi, hidden index flag và
+  gitlink đều fail-closed. GitHub CLI dùng Known Folder config, pin `github.com`, exact config/command/
+  API route; SemVer chỉ dùng chữ số ASCII, route tag raw/escaped chỉ nhận đúng dạng publisher tạo và
+  percent-escape tổng quát bị từ chối. Updater signing key lấy từ UserProfile Known Folder và chặn
+  UNC/reparse; log mở bằng Notepad System32 đã kiểm Authenticode/lease. Device login pin HTTPS,
+  `--web --skip-ssh-key`, `GH_PROMPT_DISABLED=1`, không clipboard/browser/Git/SSH-key side effect.
+  Git for Windows 2.53 cho thấy pseudo-file `NUL` không hợp lệ với `core.excludesFile`; guard nay
+  trỏ cả attributes/excludes vào hai sentinel 0 byte đang được lease và positive clean-status test
+  ngăn availability regression.
+- **R7:** `PRYNX.bat`/`PHAT_HANH.bat` dùng `%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe`,
+  bỏ ambient `%SystemRoot%`/`PATH` khỏi bootstrap trước guard.
+
+Policy `hosts.yml` là kiểm lexical fail-closed cho credential key và YAML block-style canonical đã
+đối chiếu với GitHub CLI 2.93.0, **không phải YAML-general scanner**. Không thêm `--secure-storage`:
+secure credential store là hành vi mặc định của `gh`, còn publisher chủ động dừng trước network nếu
+phát hiện fallback plaintext/cú pháp ngoài policy.
+
+**Snapshot verify 2026-09-04:** backend token/body/route/probe **144/144**; frontend
+auth/license **89/89** + typecheck; Edge **36/36**; Rust Tauri **227 passed, 5 ignored**,
+`cargo check --release --lib` và `cargo fmt -- --check` đạt; Save As registry **23/23**. Delta release:
+`test_release_secret_store.py` từng **19 pass + 3 `[BLOCKED-ENV]` trong sandbox**, và sau bản vá
+availability R6 đã đạt **22/22 ngoài sandbox**;
+`test_artifact_runtime_self_test.py` **55 pass + 1 `[BLOCKED-ENV]`**; cả bốn ca môi trường đạt
+**4/4 ngoài sandbox**; no-Ghostscript **49/49**; native release QA **1/1**; grammar/wrapper/AST
+**3/3**. Parser Windows PowerShell 5.1 + pwsh 7 đạt cho bốn script, `py_compile` đạt hai test file;
+independent YAML/line-ending/BAT verifier sạch. **191/191** ở trên là route coverage, không phải số test.
+
+Checkout hiện tại bị guard chặn đúng thiết kế: `.git/config` có
+`extensions.worktreeConfig=true`, `.git/info/exclude` dài 335 byte/non-empty và
+`.git/info/attributes` thiếu. Không normalize trực tiếp vì checkout còn 53 tracked change, 5.679
+untracked entry, hai linked worktree và 81.753 file quarantine đang bị local exclude che. Chốt đúng
+source, commit/push rồi tạo standalone clone và chuẩn hóa metadata 0 byte tại clone đó. Đây là
+prerequisite cục bộ, không phải `[EXTERNAL]`.
+
+**Release tiếp tục `HOLD`.** Các chốt còn `[EXTERNAL]`: DB/Edge production; rotate/revoke/audit
+secret/key thật; Authenticode certificate/artifact; TPM/CNG và policy no-TPM; clean build/install/
+uninstall cùng fault-injection VM; Save As UI/NAS/non-NTFS; quyền GitHub push/release, `gh` tương lai
+và packaged double-click/hostile-`PATH`. Ba PE hiện có đều `NotSigned`, không có cert code-signing;
+TPM/CNG chỉ xác nhận được device-not-ready trong context hiện tại. Updater key fail guard do ACL kế
+thừa; `supabase/.temp/tok.json`/`resp.json` phải coi là credential-bearing, revoke trước khi xóa.
+BAT không thể tự chứng minh
+interpreter đầu tiên; file association/explicit wrapper giả cùng admin/debugger/memory patch ở
+Ring-3 là residual accepted risk, không thể bị loại bỏ tuyệt đối bằng client-only DRM.
+
 > Báo cáo gốc: `docs/BAO_CAO_AUDIT_CHONG_CRACK_2026-08-28.md`
 > Quy trình: `prynx-audit-workflow` giai đoạn 3 (sửa theo lô ≤5 file, verify sau mỗi lô).
 > Hai repo: `d:\pdfcompare` (client + sidecar), `d:\printsolutions-main` (server Supabase).
 >
-> **Đã sửa 12/15 finding.** Ba finding còn lại cần hạ tầng hoặc quyết định thương mại — xem §Còn lại.
+> **14/15 finding lịch sử đã có xử lý source/test hoặc lifecycle được chấp nhận.** §SEC.03 vẫn
+> cần bằng chứng production; §SEC.11 là accepted risk cần quyết định Authenticode. §SEC.15 đã
+> được supersede bởi addendum 2026-09-04; không dùng con số này để suy release đã sẵn sàng.
 
 ---
 
@@ -26,7 +206,7 @@
 | §SEC.12 | 🟡 P3 | **False positive → đã đóng** + gate thường trực | F |
 | §SEC.13 | 🟡 P3 | **Verified** — mọi test entitlement nay tự bật gate | A/G |
 | §SEC.14 | 🟡 P3 | **Verified** — thêm test + mở rộng phạm vi CI | G |
-| §SEC.15 | 🟡 P3 | **Còn mở** — thuộc spec `save-as-artifact-guard` | — |
+| §SEC.15 | 🟡 P3 | **Applied → Verified (source/test)** — runtime UI/NAS/non-NTFS `[EXTERNAL]` | addendum 2026-09-04 |
 
 ---
 
@@ -227,13 +407,22 @@ Ratchet lập tức bắt được `prepress.paper_library`. Đã xác minh đâ
 
 `supabase db pull` (hoặc dump định nghĩa `verify_license_edge`) rồi commit thành migration có số thứ tự, cập nhật `security-manifest.json`. Hiện tại một clean checkout **không dựng lại được** production: ba migration `20260726*` đã mất, và bốn control mà audit trước ghi là "đã chắc" (advisory lock activation, rate-limit theo IP tin cậy, khoá tài nguyên bất biến, REVOKE khỏi anon) không có bằng chứng nào trong repo. Cần credential production nên tôi không làm được.
 
-### C. §SEC.11 — quyết định thương mại
+### C. §SEC.11 — quyết định thương mại `[HISTORICAL · residual vẫn hiện hành]`
 
-Integrity của exe/frontend vẫn **không được cưỡng chế** trên bản NSIS (Tauri nhúng `dist/` vào binary nên nhánh kiểm luôn bị skip). Đường crack hiện thực nhất còn nguyên: patch `PrynX.exe` → patch public key trong sidecar Nuitka → tự ký token `plan=pro`. **Không có gì trong code sửa được** (chicken-egg: không nhúng hash của exe vào chính exe đó). Cách duy nhất là Authenticode + `WinVerifyTrust` lúc khởi động. Đây là quyết định chi phí, không phải kỹ thuật.
+Tại snapshot 2026-08-28, integrity của exe/frontend **không được cưỡng chế** trên bản NSIS
+(Tauri nhúng `dist/` vào binary nên nhánh kiểm bị skip). Authenticode + `WinVerifyTrust` là
+control artifact/publisher còn thiếu và sẽ làm đường patch rẻ khó hơn; một hash nhúng trong chính
+exe không thể tự làm trust anchor. Control này vẫn không ngăn tuyệt đối admin patch cả binary lẫn
+self-check ở Ring-3. Đây là quyết định chi phí và residual thương mại, không phải lời hứa client
+“không thể crack”.
 
-### D. §SEC.15 — thuộc spec khác
+### D. §SEC.15 — trạng thái lịch sử đã được supersede
 
-`save_as_only` chỉ là hint gửi renderer, không có cưỡng chế native. Thuộc spec `save-as-artifact-guard` đang mở; sửa liều ở đây sẽ đụng thiết kế đang dở.
+Tại snapshot 2026-08-28, `save_as_only` chỉ là hint gửi renderer và spec
+`save-as-artifact-guard` còn mở. Source hiện tại đã có grant/lease native bind cửa sổ–target–TTL,
+khóa source và ancestor không share `DELETE`, cùng timer tự thu hồi sau 2 phút; trạng thái là
+**Applied → Verified (source/test)**. UI bản cài, NAS và filesystem không phải NTFS vẫn
+`[EXTERNAL]`.
 
 ### E. §SEC.09 — giữ nguyên có chủ ý
 

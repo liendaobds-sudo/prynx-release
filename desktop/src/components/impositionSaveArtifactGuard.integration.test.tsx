@@ -45,6 +45,7 @@ import viLocale from '../i18n/locales/vi.json';
 const mocks = vi.hoisted(() => ({
     invoke: vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(),
     save: vi.fn<(options?: { title?: string; defaultPath?: string }) => Promise<string | null>>(),
+    grantSequence: 0,
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -109,6 +110,26 @@ function dialogTitles(): string[] {
 }
 
 /**
+ * Mô phỏng command chooser native của §SEC.15. `mocks.save` ở đây chỉ là driver
+ * test cho lựa chọn/cancel; component child phải gọi `request_document_save_grant`,
+ * không được gọi plugin-dialog trực tiếp.
+ */
+async function nativeGrantAwareInvoke(
+    command: string,
+    args?: Record<string, unknown>,
+): Promise<unknown> {
+    if (command !== 'request_document_save_grant') return undefined;
+    const request = args?.request as { suggestedName?: string; title?: string } | undefined;
+    const path = await mocks.save({
+        defaultPath: request?.suggestedName,
+        title: request?.title,
+    });
+    if (!path) return null;
+    mocks.grantSequence += 1;
+    return { path, grant: `0000000000000000000000000000000${mocks.grantSequence}` };
+}
+
+/**
  * Bắn đúng event mà menu Lưu / Ctrl+S dùng rồi đợi `app-save-result`.
  * `documentWindow.saveAsOnly` bật để bỏ qua cổng dirty và luôn hỏi vị trí lưu.
  */
@@ -153,13 +174,29 @@ describe('chốt chặn Save As lên artifact tạm tại call site ImpositionTa
     beforeEach(() => {
         (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
         mocks.invoke.mockReset();
-        mocks.invoke.mockResolvedValue(undefined);
         mocks.save.mockReset();
+        mocks.grantSequence = 0;
+        mocks.invoke.mockImplementation(nativeGrantAwareInvoke);
     });
 
     afterEach(() => {
         cleanup();
         delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    });
+
+    it('child hủy chooser native thì không có grant/sink ghi nào được dùng', async () => {
+        await mountTabWithArtifact();
+        mocks.save.mockResolvedValue(null);
+
+        expect(await triggerSave(1)).toBe('cancelled');
+        expect(diskWriteCalls()).toEqual([]);
+        expect(mocks.invoke).toHaveBeenCalledWith('request_document_save_grant', {
+            request: {
+                suggestedName: 'ket-qua-binh-trang.pdf',
+                title: 'Save PDF File',
+            },
+        });
+        expect(mocks.grantSequence).toBe(0);
     });
 
     it('đích trùng artifact tạm bị từ chối mà KHÔNG mở lại hộp thoại chọn vị trí', async () => {
@@ -195,7 +232,7 @@ describe('chốt chặn Save As lên artifact tạm tại call site ImpositionTa
             if (command === 'copy_file_atomic' && args?.path === CUSTOMER_PATH) {
                 throw new Error(`copy_file_atomic: forbidden path ${String(args?.path)}`);
             }
-            return undefined;
+            return nativeGrantAwareInvoke(command, args);
         });
 
         const result = await triggerSave(1);
@@ -208,6 +245,7 @@ describe('chốt chặn Save As lên artifact tạm tại call site ImpositionTa
         expect(mocks.invoke).toHaveBeenLastCalledWith('copy_file_atomic', {
             source: ARTIFACT_PATH,
             path: SECOND_CUSTOMER_PATH,
+            saveGrant: '00000000000000000000000000000002',
         });
         expect(result).toBe('saved');
         expect(onTitleChange).toHaveBeenCalledWith('Don-hang-1234-b.pdf');
@@ -228,6 +266,7 @@ describe('chốt chặn Save As lên artifact tạm tại call site ImpositionTa
         expect(mocks.invoke).toHaveBeenLastCalledWith('copy_file_atomic', {
             source: ARTIFACT_PATH,
             path: CUSTOMER_PATH,
+            saveGrant: '00000000000000000000000000000002',
         });
         expect(onTitleChange).toHaveBeenLastCalledWith('Don-hang-1234.pdf');
 

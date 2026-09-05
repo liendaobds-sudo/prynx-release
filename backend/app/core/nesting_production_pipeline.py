@@ -423,9 +423,9 @@ def _die_dimensions_mm(
             f"Mẫu {part.part_id!r}: kích thước khuôn phải là số hữu hạn dương."
         )
 
-    # DIAG (feedback 2026-09-01 §DIM-DIE-TRACE): đặt cạnh nhau ba đại lượng
-    # để thấy chính xác SSOT bị mất trước hay sau bước materialize bundle.
-    logger.warning(
+    # SEC (audit 2026-09-05 §LOG.06): payload hình học chỉ dùng khi
+    # chẩn đoán dev, không đẩy lên warning production.
+    logger.debug(
         "[DIM-DIE-TRACE] stage=pipeline_dimensions tool=%s part_id=%s "
         "page_index=%s source=%s raw=%r contour_bbox_mm=(%.6f, %.6f) "
         "selected_mm=(%.6f, %.6f)",

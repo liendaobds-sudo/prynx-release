@@ -36,14 +36,14 @@ def _remove_stored_file(file_path: str | Path) -> None:
     try:
         Path(file_path).unlink(missing_ok=True)
     except OSError:
-        logger.warning("Không thể dọn file upload lỗi: %s", file_path, exc_info=True)
+        logger.warning("Không thể dọn file upload lỗi.")
 
 
 def _rollback_quietly(db: Session) -> None:
     try:
         db.rollback()
     except Exception:
-        logger.warning("Không thể rollback bản ghi upload lỗi", exc_info=True)
+        logger.warning("Không thể rollback bản ghi upload lỗi.")
 
 
 def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
@@ -55,7 +55,10 @@ def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
         with path.open("rb") as source:
             header = source.read(1024)
     except OSError as exc:
-        logger.exception("Không thể đọc bản PDF vừa lưu: %s", path)
+        logger.error(
+            "Không thể đọc bản PDF vừa lưu (loại=%s).",
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=500,
             detail="Không thể đọc file PDF vừa lưu. Vui lòng thử lại.",
@@ -84,13 +87,13 @@ def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
         result = run_isolated(pdf_intake.inspect_pdf_for_intake, str(path))
     except IsolatedParseCrashed as exc:
         # Parser sập giữa lúc đọc: coi là file không dùng được, KHÔNG phải lỗi server.
-        logger.error("Parser sập khi đọc PDF vừa lưu %s: %s", path, exc)
+        logger.error("Parser sập khi đọc PDF vừa lưu.")
         raise HTTPException(
             status_code=400,
             detail="File PDF bị hỏng hoặc chưa tải xuống đầy đủ. Vui lòng xuất/tải lại file.",
         ) from exc
     except IsolatedParseTimeout as exc:
-        logger.warning("Đọc PDF vượt trần thời gian %s: %s", path, exc)
+        logger.warning("Đọc PDF vượt trần thời gian.")
         raise HTTPException(status_code=504, detail=str(exc)) from exc
 
     status = result.get("status")
@@ -106,7 +109,7 @@ def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
             detail="File PDF có mật khẩu hoặc bị mã hóa. Vui lòng gỡ mật khẩu rồi mở lại.",
         )
     if status == pdf_intake.STATUS_CORRUPT:
-        logger.info("Từ chối PDF bị hỏng %s: %s", path, result.get("detail"))
+        logger.info("Từ chối PDF bị hỏng.")
         raise HTTPException(
             status_code=400,
             detail="File PDF bị hỏng hoặc chưa tải xuống đầy đủ. Vui lòng xuất/tải lại file.",
@@ -117,15 +120,14 @@ def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
             detail="File PDF không có trang nào để mở.",
         )
     if status == pdf_intake.STATUS_METADATA_FAILED:
-        logger.error("Không thể đọc thông tin PDF: %s (%s)", path, result.get("detail"))
+        logger.error("Không thể đọc thông tin PDF.")
         raise HTTPException(
             status_code=500,
             detail="Không thể đọc thông tin PDF. Vui lòng thử xuất lại file hoặc mở file khác.",
         )
     if status == pdf_intake.STATUS_METADATA_MISMATCH:
         logger.error(
-            "Thông tin PDF không hợp lệ: %s (pikepdf=%s, metadata=%r)",
-            path,
+            "Thông tin PDF không hợp lệ (parser=%s, metadata=%r).",
             result.get("page_count"),
             result.get("metadata_page_count"),
         )
@@ -136,7 +138,7 @@ def _validate_pdf_and_extract_metadata(file_path: str) -> tuple[dict, int]:
     if status != pdf_intake.STATUS_OK:
         # Trạng thái lạ nghĩa là hợp đồng giữa hai module đã lệch — fail-closed, không
         # đoán bừa rồi ghi nhận một upload chưa được xác nhận.
-        logger.error("Trạng thái khám PDF không nhận diện được: %r (%s)", status, path)
+        logger.error("Trạng thái khám PDF không nhận diện được: %r", status)
         raise HTTPException(
             status_code=500,
             detail="Không thể xác nhận thông tin PDF. Vui lòng thử xuất lại file.",
@@ -174,7 +176,7 @@ def _persist_uploaded_pdf(
     except Exception as exc:
         _rollback_quietly(db)
         _remove_stored_file(file_path)
-        logger.exception("Không thể ghi nhận file PDF vào cơ sở dữ liệu")
+        logger.error("Không thể ghi nhận file PDF vào cơ sở dữ liệu.")
         raise HTTPException(
             status_code=500,
             detail="Không thể ghi nhận file PDF. Vui lòng thử lại.",
@@ -229,7 +231,7 @@ def register_local_pdf(
             shutil.copy2(source, stored_path)
     except OSError as exc:
         _remove_stored_file(stored_path)
-        logger.exception("Could not register local PDF: %s", source)
+        logger.error("Không thể ghi nhận file PDF cục bộ.")
         raise HTTPException(status_code=400, detail="Không thể đọc file PDF đã chọn") from exc
 
     try:
@@ -248,7 +250,7 @@ def register_local_pdf(
         page_count=page_count,
     )
 
-    logger.info("Registered local PDF without multipart upload: %s", source)
+    logger.debug("File PDF cục bộ đã được ghi nhận.")
     return response
 
 
@@ -271,7 +273,7 @@ async def upload_pdf(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Tải file lên thất bại: {exc}") from exc
     except Exception as exc:
-        logger.exception("Không thể lưu file PDF tải lên: %s", original_name)
+        logger.error("Không thể lưu file PDF tải lên.")
         raise HTTPException(
             status_code=500,
             detail="Không thể lưu file PDF tạm thời. Vui lòng thử lại.",
@@ -296,5 +298,5 @@ async def upload_pdf(
         page_count=page_count,
     )
 
-    logger.info("Uploaded: %s → %s", original_name, response.id)
+    logger.debug("File PDF tải lên đã được ghi nhận.")
     return response

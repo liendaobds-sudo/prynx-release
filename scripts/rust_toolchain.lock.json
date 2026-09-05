@@ -1,0 +1,495 @@
+{
+  "schema_version": 1,
+  "component_id": "prynx-rust-toolchain",
+  "toolchain_id": "1.94.0-x86_64-pc-windows-msvc",
+  "release": "1.94.0",
+  "host": "x86_64-pc-windows-msvc",
+  "dist_date": "2026-03-05",
+  "identity": {
+    "rustc": {
+      "commit_hash": "4a4ef493e3a1488c6e321570238084b38948f6db",
+      "llvm_version": "21.1.8"
+    },
+    "cargo": {
+      "release": "1.94.0",
+      "commit_hash": "85eff7c80277b57f78b11e28d14154ab12fcf643"
+    }
+  },
+  "provenance": {
+    "channel_manifest": {
+      "url": "https://static.rust-lang.org/dist/2026-03-05/channel-rust-1.94.0.toml",
+      "signature_url": "https://static.rust-lang.org/dist/2026-03-05/channel-rust-1.94.0.toml.asc",
+      "size": 845032,
+      "sha256": "aaa177def36e01d539bee6bde95295230b9ce378f81057845db8d0ebe97898ee"
+    },
+    "archives": [
+      {
+        "component": "cargo",
+        "url": "https://static.rust-lang.org/dist/2026-03-05/cargo-1.94.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "6cf7113e1d5633721739a3bd6fee7148d6394bbab748fbede941210100374741"
+      },
+      {
+        "component": "clippy",
+        "url": "https://static.rust-lang.org/dist/2026-03-05/clippy-1.94.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "e4dcc5a796857589e364064493abb3afb469e0e36e90155e7b0a2c5ce4bb7503"
+      },
+      {
+        "component": "rust-std",
+        "url": "https://static.rust-lang.org/dist/2026-03-05/rust-std-1.94.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "f8e2b43e52957e8224d97de68d6ec5da01613eb98bce4199de80071678b5fda0"
+      },
+      {
+        "component": "rustc",
+        "url": "https://static.rust-lang.org/dist/2026-03-05/rustc-1.94.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "e0f59503778b563d3ee6d4edecd52b44056779ffe456181bad1fb4dc069802e6"
+      },
+      {
+        "component": "rustfmt",
+        "url": "https://static.rust-lang.org/dist/2026-03-05/rustfmt-1.94.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "7b32d8b0dd99f9bf6ddaa4866d39b7b96e8c2db46644d8527096f7f34b4fbe26"
+      }
+    ]
+  },
+  "root_count": 4,
+  "file_count": 82,
+  "payload_roots": [
+    {
+      "path": "bin",
+      "exact_set": true,
+      "file_count": 23,
+      "files": [
+        {
+          "path": "cargo-clippy.exe",
+          "size": 1145344,
+          "sha256": "85721510d3623ad9937c2af515b2b55868466a0405a1f326abcba9223d2ec409"
+        },
+        {
+          "path": "cargo-clippy.pdb",
+          "size": 4190208,
+          "sha256": "c4eb57d5d1543657d75639094fcc723ea8030444ac315e8b21afc92de4f3b7fa"
+        },
+        {
+          "path": "cargo-fmt.exe",
+          "size": 1232896,
+          "sha256": "4fd44b58470c22e578a3a3f84b0033470ceca4eaab6ae275538b4b76b1254231"
+        },
+        {
+          "path": "cargo-fmt.pdb",
+          "size": 4927488,
+          "sha256": "82a755e87f3fd136b5d8a3053e0dabf90a9d85deecd99f485ea277cbb219bda8"
+        },
+        {
+          "path": "cargo.exe",
+          "size": 30754304,
+          "sha256": "cbfdfc04b61ba49d184c6d3996502a00391d570cb5cb71a00faeb8c0ce12a4c9"
+        },
+        {
+          "path": "cargo.pdb",
+          "size": 11169792,
+          "sha256": "2cde2feee7e2ebbdb17661c1c4d7b19df5d4c38786b372a762802567c4dfc174"
+        },
+        {
+          "path": "clippy-driver.exe",
+          "size": 11922432,
+          "sha256": "8259daa7493e79c62d542fe76230d437616e4903f2b2cc53035fd0f4abe85677"
+        },
+        {
+          "path": "clippy-driver.pdb",
+          "size": 6238208,
+          "sha256": "b73c52aabb2cf073cdffa3640e2b88a7e97d66147b828ec42377f4d4af86216f"
+        },
+        {
+          "path": "rust-gdb",
+          "size": 980,
+          "sha256": "557985ec5a31f5617d25d26bd6fe23c4b8d6f85b1498e1aae82831ca0d7f17fe"
+        },
+        {
+          "path": "rust-gdbgui",
+          "size": 2160,
+          "sha256": "bc60613775a098e59b49fa4584cea73631697fe1456c44284c337d6700340315"
+        },
+        {
+          "path": "rust-lldb",
+          "size": 1060,
+          "sha256": "142c31bb3900c03b2b71693b6bd16d6da1174971d93628506db8438050fa69d7"
+        },
+        {
+          "path": "rust-windbg.cmd",
+          "size": 265,
+          "sha256": "42607991c8f3040a5e7bbf222272007e741ea96e97499a16bc6ab2fc77ab10f5"
+        },
+        {
+          "path": "rustc_driver-eab2645d391441c2.dll",
+          "size": 183111168,
+          "sha256": "40000cce93f49d820e54c5025e1305e7019a0ff98989fc63d1259541ffa2f6c9"
+        },
+        {
+          "path": "rustc_driver-eab2645d391441c2.pdb",
+          "size": 44929024,
+          "sha256": "90c859ec824a21a9bb6f88fc19febe6ad7e8ab74d7419c1bc99c5a16735dbd3f"
+        },
+        {
+          "path": "rustc_main-89ea5d395e8898b2.pdb",
+          "size": 3690496,
+          "sha256": "9eb79402a7a79c8f2d98c622d14e0c678fbf206081bd96c660583d2088a0bded"
+        },
+        {
+          "path": "rustc.exe",
+          "size": 111104,
+          "sha256": "6a0699e427ee9c1492ef1c9ea967d035dc4660e92c7fe32f2c6a1038116700e5"
+        },
+        {
+          "path": "rustc.pdb",
+          "size": 3690496,
+          "sha256": "9eb79402a7a79c8f2d98c622d14e0c678fbf206081bd96c660583d2088a0bded"
+        },
+        {
+          "path": "rustdoc.exe",
+          "size": 11556864,
+          "sha256": "72e386894e4eae8613c305aec9b804af2a5f53ba1af33c57329c0b3d78811b91"
+        },
+        {
+          "path": "rustdoc.pdb",
+          "size": 7073792,
+          "sha256": "c5eebf0dba81aeef264523eea0b4225af37131d6163c9cd01f2846c40bac1f61"
+        },
+        {
+          "path": "rustfmt.exe",
+          "size": 4829696,
+          "sha256": "45aac101699af60aaae2f0d8686200a4f88756f29cc0c42a0a3e70256fd73372"
+        },
+        {
+          "path": "rustfmt.pdb",
+          "size": 4698112,
+          "sha256": "aad2d5a22e0b018b19a6536426570e888f93e2f94441617e9a93fbc2a245dc98"
+        },
+        {
+          "path": "std-2137bdd3874dafb5.dll",
+          "size": 852480,
+          "sha256": "d6613a5432ec4610f714266889a18b1bdccb6035b3a3add2019233a5eb554637"
+        },
+        {
+          "path": "std-2137bdd3874dafb5.pdb",
+          "size": 5926912,
+          "sha256": "4cd033d5bb9dd408203edf1b94a9f6c2b18e8de12cf3536e37d9dc136c3abcbe"
+        }
+      ]
+    },
+    {
+      "path": "lib/rustlib/x86_64-pc-windows-msvc/bin",
+      "exact_set": true,
+      "file_count": 12,
+      "files": [
+        {
+          "path": "gcc-ld/ld.lld.exe",
+          "size": 331264,
+          "sha256": "6206bb632d671cd21b9b42d0a7906516fa74989515cd15d58acc6f7161bacad9"
+        },
+        {
+          "path": "gcc-ld/ld.lld.pdb",
+          "size": 4648960,
+          "sha256": "c38d398f62c4167b589a9e204c856d54290de0dcf935adf077bb61e98329fecb"
+        },
+        {
+          "path": "gcc-ld/ld64.lld.exe",
+          "size": 331264,
+          "sha256": "6206bb632d671cd21b9b42d0a7906516fa74989515cd15d58acc6f7161bacad9"
+        },
+        {
+          "path": "gcc-ld/ld64.lld.pdb",
+          "size": 4648960,
+          "sha256": "c38d398f62c4167b589a9e204c856d54290de0dcf935adf077bb61e98329fecb"
+        },
+        {
+          "path": "gcc-ld/lld-link.exe",
+          "size": 331264,
+          "sha256": "6206bb632d671cd21b9b42d0a7906516fa74989515cd15d58acc6f7161bacad9"
+        },
+        {
+          "path": "gcc-ld/lld-link.pdb",
+          "size": 4648960,
+          "sha256": "c38d398f62c4167b589a9e204c856d54290de0dcf935adf077bb61e98329fecb"
+        },
+        {
+          "path": "gcc-ld/wasm-ld.exe",
+          "size": 331264,
+          "sha256": "6206bb632d671cd21b9b42d0a7906516fa74989515cd15d58acc6f7161bacad9"
+        },
+        {
+          "path": "gcc-ld/wasm-ld.pdb",
+          "size": 4648960,
+          "sha256": "c38d398f62c4167b589a9e204c856d54290de0dcf935adf077bb61e98329fecb"
+        },
+        {
+          "path": "rust-lld.exe",
+          "size": 102875136,
+          "sha256": "ccf2e153f8f86f17cab591e45635f7057104640502a7fa9981a2b1579e0efff6"
+        },
+        {
+          "path": "rust-objcopy.exe",
+          "size": 4455424,
+          "sha256": "0886bc395e7a49a1bddbbf6e0dca866ac8293608f4f758fd30e1b28822178cc7"
+        },
+        {
+          "path": "wasm-component-ld.exe",
+          "size": 5168128,
+          "sha256": "798367b900f4f245184589e6ea85f8befd16a04f9356006d848dcd639390d57a"
+        },
+        {
+          "path": "wasm-component-ld.pdb",
+          "size": 5951488,
+          "sha256": "7f6d33e8ff2191836c78e27bd4a35906a45c1521e28792eccf790f8d25087660"
+        }
+      ]
+    },
+    {
+      "path": "lib/rustlib/x86_64-pc-windows-msvc/lib",
+      "exact_set": true,
+      "file_count": 45,
+      "files": [
+        {
+          "path": "liballoc-9df789857261090a.rlib",
+          "size": 581294,
+          "sha256": "c4f9c5c63a4929f0d59e109151bd6a0dc22acb9bf0acecc361c1ccb52449a781"
+        },
+        {
+          "path": "liballoc-9df789857261090a.rmeta",
+          "size": 7199244,
+          "sha256": "b7a708549d79e46919deb5dd7caf3515ec6ce8cf67944836c5a835e05d94bd3a"
+        },
+        {
+          "path": "libcfg_if-2115bb4cb4db19cf.rlib",
+          "size": 3926,
+          "sha256": "6eddb4764e588bf9b5f681a2f222a34a0689e7d0e352320c0fc15e3d07ecdab5"
+        },
+        {
+          "path": "libcfg_if-2115bb4cb4db19cf.rmeta",
+          "size": 5492,
+          "sha256": "640c5fee1d8fa11cad31887ed4c20e5895e52e44ba6518c0c06b2f50042f6814"
+        },
+        {
+          "path": "libcompiler_builtins-7d3a0c55eac2cc40.rlib",
+          "size": 2968282,
+          "sha256": "35b87400b5b3b8fc5597855b3e3320e7d947019105b4eb80b5dc53b8a8c88fa5"
+        },
+        {
+          "path": "libcompiler_builtins-7d3a0c55eac2cc40.rmeta",
+          "size": 1997120,
+          "sha256": "ea7f6fdfc9d7ccdb3eb89599980ab266fe3f03d2f46d5298d89e3183970a238e"
+        },
+        {
+          "path": "libcore-2dc1efaf7a721ce5.rlib",
+          "size": 2317832,
+          "sha256": "4c3f98488956fe16d7279fd88f76fe3df21d1a8224efa04af687cb8f2257f6c7"
+        },
+        {
+          "path": "libcore-2dc1efaf7a721ce5.rmeta",
+          "size": 62818232,
+          "sha256": "a4a30778f55b9615bb6894c5720cf0435406bc540d6a511eb9fd88da065d7915"
+        },
+        {
+          "path": "libgetopts-9d9af3ed7fd27119.rlib",
+          "size": 490074,
+          "sha256": "864ac68d5e8ea7fd6df91d141402ecbd4b323e449fc619febdd8d71578cd2092"
+        },
+        {
+          "path": "libgetopts-9d9af3ed7fd27119.rmeta",
+          "size": 209643,
+          "sha256": "edafa64f13dc9e75aea44c9451537c0af123f272f15fb60fc4d003b3081c051b"
+        },
+        {
+          "path": "libhashbrown-95979db93eb3aaa1.rlib",
+          "size": 30930,
+          "sha256": "3fd4036148c780d8252a79ba36b6eaf6556892978b8b61e6c01cb7d47820c488"
+        },
+        {
+          "path": "libhashbrown-95979db93eb3aaa1.rmeta",
+          "size": 1577961,
+          "sha256": "ab145739832741509bdefcf2171115e4ab6a7bcf9c33e45288d241965ca9f320"
+        },
+        {
+          "path": "libpanic_abort-371a7211803ae05f.rlib",
+          "size": 8684,
+          "sha256": "5ddccb2d403d7031aff0b09abc2e405eb3f211c95c16bf3a1bf6b7eb5eb101c3"
+        },
+        {
+          "path": "libpanic_abort-371a7211803ae05f.rmeta",
+          "size": 2900,
+          "sha256": "2311f6061a5a98fa8de0755d02efcea6324c4a35aef6059fa9c7d5d1e4e7b2ee"
+        },
+        {
+          "path": "libpanic_unwind-44c2097187f5e9f3.rlib",
+          "size": 27944,
+          "sha256": "9a1c1fdb858b2dbb7ad47e422449e4b6287244aa29b9a02d8eac06e88b9d2b2c"
+        },
+        {
+          "path": "libpanic_unwind-44c2097187f5e9f3.rmeta",
+          "size": 19618,
+          "sha256": "7f0d86b45f2cd88466ac55b0ed00184147e7471a5da420addd75c2ab45a7c174"
+        },
+        {
+          "path": "libproc_macro-072973343d69f575.rlib",
+          "size": 2716152,
+          "sha256": "b625b31be9491c552d4109211cc16768d7aaecb1227d345f5a39a47bd3fe3e69"
+        },
+        {
+          "path": "libproc_macro-072973343d69f575.rmeta",
+          "size": 1274388,
+          "sha256": "3d40ab33b590430ba975bffdca3df764e639ca159380cb29b2f976a09da6cea2"
+        },
+        {
+          "path": "libprofiler_builtins-d2e09da55b4eda40.rlib",
+          "size": 376262,
+          "sha256": "fd7c8d76dfdb18fe8b3752aa0a69d82f5278a641f7fcfb1a27798b9ddbc235ea"
+        },
+        {
+          "path": "libprofiler_builtins-d2e09da55b4eda40.rmeta",
+          "size": 1316,
+          "sha256": "f6fbad4a28fa5be554b24a459edc3da134b90e2266476536a9ffc05df6b15b7d"
+        },
+        {
+          "path": "librustc_demangle-105b70207c8cdabe.rlib",
+          "size": 208344,
+          "sha256": "e6c5c8ae0f72eb49a7c001ade07b57f9d9199de8c97da54cc43437e1e8e6167b"
+        },
+        {
+          "path": "librustc_demangle-105b70207c8cdabe.rmeta",
+          "size": 90729,
+          "sha256": "049ee4ad8957c42bb344b77e077fdbef345d25b530bde684ea6033223389c80e"
+        },
+        {
+          "path": "librustc_literal_escaper-a17e8af298c4b16d.rlib",
+          "size": 4138,
+          "sha256": "ab45d775d7ba088690967c0cce0a6dd7b4e60c5ac60dcfedc688da91fb7ff930"
+        },
+        {
+          "path": "librustc_literal_escaper-a17e8af298c4b16d.rmeta",
+          "size": 121423,
+          "sha256": "262ea1aa6fa175f43e7b2a814c46ab78ea9f018f4f8cb48f392edc3ff3e9d74a"
+        },
+        {
+          "path": "librustc_std_workspace_alloc-bbb94ea5f6120a07.rlib",
+          "size": 4266,
+          "sha256": "de2076edcf6eefcc4fb0a1fcbed4e38cf593567868749a6b078d23c0ab8ced1e"
+        },
+        {
+          "path": "librustc_std_workspace_alloc-bbb94ea5f6120a07.rmeta",
+          "size": 2105,
+          "sha256": "4ce9bb0089746217814ba66e03d2ab4becee76d04bafa34a31b7ae7dfa7536a7"
+        },
+        {
+          "path": "librustc_std_workspace_core-5c1f1a13cd5c811f.rlib",
+          "size": 4262,
+          "sha256": "9cec154ce5352416c374a56d53becc1865916688dc72c4d1c4649b56ed1bf69c"
+        },
+        {
+          "path": "librustc_std_workspace_core-5c1f1a13cd5c811f.rmeta",
+          "size": 5732,
+          "sha256": "141a7ae47b8e007937ff08c4b53883006ca6005086517529feadc2a3a8463fe8"
+        },
+        {
+          "path": "librustc_std_workspace_std-4fa47ea23c499832.rlib",
+          "size": 4244,
+          "sha256": "b988f0cde283dd54148af5c252083d399e293ff4673b0a1670336c7a7349a89c"
+        },
+        {
+          "path": "librustc_std_workspace_std-4fa47ea23c499832.rmeta",
+          "size": 6595,
+          "sha256": "4b1ae35312c74527e69fb8c9dcd19a5d23d927becad3f125e48b2017512d6505"
+        },
+        {
+          "path": "libstd_detect-c018179ad7ae8382.rlib",
+          "size": 54200,
+          "sha256": "dd4286c3a38db2f90fb11e9438ec9f7d92f64efbc3e9cf564f8443412ef1ca6f"
+        },
+        {
+          "path": "libstd_detect-c018179ad7ae8382.rmeta",
+          "size": 577610,
+          "sha256": "6e2e052016117d8ded5c9366d63e411626ef9d2a4d3469df8520de4dbedf55d5"
+        },
+        {
+          "path": "libstd-2137bdd3874dafb5.rlib",
+          "size": 5360750,
+          "sha256": "d08093155b5ab6abb20023470aa9996f60b7b98745a2f18bbab824ba40a63025"
+        },
+        {
+          "path": "libstd-2137bdd3874dafb5.rmeta",
+          "size": 9527199,
+          "sha256": "1b3ae13012281765e80a8717b32c2920ccf28974263f4331716a1608b73a06a9"
+        },
+        {
+          "path": "libsysroot-801adebf2e080ce7.rlib",
+          "size": 4062,
+          "sha256": "bfea74dde80e1f0c6c6e2a2e9f608dedff24befe70a9ce465994a78b63284db6"
+        },
+        {
+          "path": "libsysroot-801adebf2e080ce7.rmeta",
+          "size": 1947,
+          "sha256": "dad7fb31efbf53390260818890a93ce3cf507975fcedef90f13e7f497e975792"
+        },
+        {
+          "path": "libtest-c2e49650c0c3896c.rlib",
+          "size": 4827080,
+          "sha256": "e533a1022ca4209e504914137f9b40eb223da7d472ca581a99d31c61589d9a30"
+        },
+        {
+          "path": "libtest-c2e49650c0c3896c.rmeta",
+          "size": 1004187,
+          "sha256": "81f1fe1ac9ec85daf0f70989d4dfee5d97bfc708b1c0fb8dbe791f0cd9eccd52"
+        },
+        {
+          "path": "libunwind-057148f5ceadfdcd.rlib",
+          "size": 4056,
+          "sha256": "a40850e1acaffa67853a1a3dd287651024771681db7ebb12e148f259a1b43b05"
+        },
+        {
+          "path": "libunwind-057148f5ceadfdcd.rmeta",
+          "size": 1745,
+          "sha256": "742a444e40a0346b2ee8ed341dab27fb8119c2c7e879677c613a84092f54ba37"
+        },
+        {
+          "path": "libwindows_targets-1d988f59e953aa41.rlib",
+          "size": 4172,
+          "sha256": "405beab662a48690e33ca8d0baefc0c0bc151cd6a16408f9df0efc5ddcc69ede"
+        },
+        {
+          "path": "libwindows_targets-1d988f59e953aa41.rmeta",
+          "size": 3753,
+          "sha256": "44f374ff1acdb7239704b263b2a775f2cb61caf40bb8330ea355bc09f070c360"
+        },
+        {
+          "path": "std-2137bdd3874dafb5.dll",
+          "size": 852480,
+          "sha256": "d6613a5432ec4610f714266889a18b1bdccb6035b3a3add2019233a5eb554637"
+        },
+        {
+          "path": "std-2137bdd3874dafb5.dll.lib",
+          "size": 789142,
+          "sha256": "02bf1598b5329934a406be16d20def7f5abf9b13028ae5a946d3d5527d10ced0"
+        },
+        {
+          "path": "std-2137bdd3874dafb5.pdb",
+          "size": 5926912,
+          "sha256": "4cd033d5bb9dd408203edf1b94a9f6c2b18e8de12cf3536e37d9dc136c3abcbe"
+        }
+      ]
+    },
+    {
+      "path": "libexec",
+      "exact_set": true,
+      "file_count": 2,
+      "files": [
+        {
+          "path": "rust-analyzer-proc-macro-srv.exe",
+          "size": 1374208,
+          "sha256": "fc5f9c05dc507ce27f9afc85355a4fe7e76f825b545348f62656de49cdbf2c48"
+        },
+        {
+          "path": "rust-analyzer-proc-macro-srv.pdb",
+          "size": 4288512,
+          "sha256": "dc5873e08f3611f91e42999c35a8f42fc7de32d3523c296aaeafd0f43514bef4"
+        }
+      ]
+    }
+  ]
+}

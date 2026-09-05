@@ -42,7 +42,7 @@ base64 = "0.22.1"
 tauri-plugin-updater = "2"
 tauri-plugin-deep-link = "2.4.9"
 rand = "0.8"
-tokio = { version = "1.52.3", features = ["sync"] }
+tokio = { version = "1.52.3", features = ["sync", "time"] }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
@@ -76,6 +76,9 @@ windows = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_Security",
+    # SEC (audit 2026-09-04 §SEC.16-A1): khóa định danh thiết bị nằm trong
+    # Microsoft Platform Crypto Provider (TPM), ký proof bằng CNG RSA-PSS.
+    "Win32_Security_Cryptography",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",

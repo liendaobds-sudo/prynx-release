@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type MinifyOptions, type UserConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -7,6 +7,14 @@ const ENTRY_BUNDLE_BUDGET_BYTES = 1_500_000;
 // Web Worker trước lần worker chạy đầu tiên. Prebundle ngay để lần mở tính năng
 // không phát hiện dependency muộn rồi tự reload toàn bộ trang dev.
 export const WORKER_ONLY_OPTIMIZED_DEPS = ['pako', 'diff'] as const;
+export const PRODUCTION_MINIFY_OPTIONS = {
+  compress: {
+    dropConsole: true,
+    dropDebugger: true,
+  },
+  mangle: true,
+  codegen: true,
+} satisfies MinifyOptions;
 
 function bundleBudgetPlugin() {
   return {
@@ -25,7 +33,7 @@ function bundleBudgetPlugin() {
   };
 }
 
-export default defineConfig({
+export const createViteConfig = (isProductionBuild: boolean): UserConfig => ({
   plugins: [react(), tailwindcss(), bundleBudgetPlugin()],
   resolve: {
     alias: {
@@ -49,6 +57,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
+        // SEC (audit 2026-09 §LOG.07): xóa toàn bộ console/debugger khỏi artifact;
+        // vòng dev vẫn giữ diagnostic để tái hiện lỗi cục bộ.
+        ...(isProductionBuild ? { minify: PRODUCTION_MINIFY_OPTIONS } : {}),
         manualChunks(id) {
           const normalized = id.replace(/\\/g, '/');
           if (
@@ -77,6 +88,9 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
+    rolldownOptions: {
+      output: isProductionBuild ? { minify: PRODUCTION_MINIFY_OPTIONS } : {},
+    },
   },
   optimizeDeps: {
     // KIENTRUC (audit 2026-07-29 §B.3): đã bỏ '@pdfme/common' + '@pdfme/generator'.
@@ -86,3 +100,5 @@ export default defineConfig({
     entries: ['index.html']
   }
 })
+
+export default defineConfig(({ command }) => createViteConfig(command === 'build'))

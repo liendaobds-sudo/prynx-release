@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -34,7 +35,7 @@ if __name__ == "__main__" and "--artifact-self-test" in sys.argv[1:]:
     )
     raise SystemExit(_exit_code)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import PlainTextResponse
@@ -42,20 +43,29 @@ from fastapi.responses import PlainTextResponse
 from app.config import settings
 from app.database import engine, Base
 from app.api.routes import upload, compare, results, ws, qc, logo_rebuild
+from app.core.development_diagnostics import development_runtime_enabled
 from app.core.license_guard import verify_result_access
 
 # ── Logging ──
-# stdout (dev/console) + file xoay vòng (production: stdout mất khi process die).
+# SEC (audit 2026-09-05 §LOG.04): binary release không ghi app.log và chỉ phát
+# WARNING tối thiểu ra stderr; Tauri cũng không chép raw stderr vào PrynX.log.
+# Runtime dev giữ INFO + file xoay vòng để chẩn đoán cục bộ.
 _LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
+_DEVELOPMENT_DIAGNOSTICS = development_runtime_enabled()
+logging.basicConfig(
+    level=logging.INFO if _DEVELOPMENT_DIAGNOSTICS else logging.WARNING,
+    format=_LOG_FORMAT,
+)
 
 
 def _attach_file_log() -> None:
-    """Gắn RotatingFileHandler vào %APPDATA%/PrynX/logs/app.log (best-effort).
+    """Gắn app.log chỉ cho runtime phát triển (best-effort).
 
-    Cùng thư mục với security.log để ops gom 1 chỗ. Lỗi setup KHÔNG được làm
-    chết startup → nuốt, vẫn còn stdout.
+    Binary release không tạo file này vì warning/traceback từ engine có thể mang
+    path hoặc dữ liệu khách hàng. Lỗi setup dev không được làm chết startup.
     """
+    if not _DEVELOPMENT_DIAGNOSTICS:
+        return
     try:
         base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
         log_dir = os.path.join(base, "PrynX", "logs")
@@ -397,6 +407,62 @@ def health_check(challenge: str = ""):
     return response
 
 
+_SHUTDOWN_SIGNATURE_WINDOW_SECONDS = 30
+_shutdown_nonces: set[str] = set()
+
+
+def _verify_shutdown_proof(
+    timestamp_raw: str,
+    nonce: str,
+    proof: str,
+    secret: str,
+    *,
+    now: int | None = None,
+) -> bool:
+    """Xác thực lệnh shutdown riêng, không phụ thuộc license của renderer."""
+    if not secret or not re.fullmatch(r"[0-9a-f]{64}", nonce):
+        return False
+    if not re.fullmatch(r"[0-9]{1,20}", timestamp_raw) or not re.fullmatch(
+        r"[0-9a-f]{64}", proof
+    ):
+        return False
+    timestamp = int(timestamp_raw)
+    current = int(time.time()) if now is None else int(now)
+    if abs(current - timestamp) > _SHUTDOWN_SIGNATURE_WINDOW_SECONDS:
+        return False
+    expected = hmac.new(
+        secret.encode(),
+        f"shutdown:{timestamp_raw}:{nonce}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, proof)
+
+
+@app.post("/__prynx/shutdown", status_code=202, include_in_schema=False)
+async def shutdown_sidecar(request: Request, background_tasks: BackgroundTasks):
+    """Cho Tauri host đã giữ sidecar token dừng Uvicorn theo đúng lifespan."""
+    from app.core.license_guard import _SIDECAR_TOKEN
+
+    server = getattr(app.state, "uvicorn_server", None)
+    if not _SIDECAR_TOKEN or server is None:
+        raise HTTPException(status_code=503, detail="Shutdown authority is not initialized")
+
+    timestamp = request.headers.get("X-PrynX-Shutdown-Timestamp", "")
+    nonce = request.headers.get("X-PrynX-Shutdown-Nonce", "")
+    proof = request.headers.get("X-PrynX-Shutdown-Proof", "")
+    if not _verify_shutdown_proof(timestamp, nonce, proof, _SIDECAR_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid shutdown proof")
+    if nonce in _shutdown_nonces:
+        raise HTTPException(status_code=409, detail="Shutdown proof already used")
+    _shutdown_nonces.add(nonce)
+
+    # Starlette chỉ chạy background task sau khi response đã được gửi. Không dùng timer
+    # đoán 50 ms: khi event loop bận, timer có thể bật should_exit trước khi 202 được flush,
+    # làm Rust hiểu nhầm shutdown thất bại rồi force-kill bootstrap trước lúc Nuitka dọn.
+    background_tasks.add_task(setattr, server, "should_exit", True)
+    return {"status": "accepted"}
+
+
 # ── Entry point cho bản đóng gói (Nuitka sidecar) ──
 # Dev dùng `python -m uvicorn app.main:app --port 8321` (run_dev.bat) nên không cần
 # khối này; nhưng exe Nuitka biên dịch app/main.py PHẢI tự khởi động uvicorn ở đây,
@@ -418,9 +484,10 @@ if __name__ == "__main__":
     import uvicorn
 
     # ── Lưới an toàn: port đã bị chiếm (zombie sidecar phiên trước) ──
-    # Tauri host (lib.rs) đã kill zombie theo tên + chờ port free TRƯỚC khi spawn
-    # con này. Đây là lớp phòng hờ khi kill đó thất bại (AV chặn taskkill / port
-    # chưa nhả kịp): thử bind vài lần cho zombie thêm thời gian nhả, nếu vẫn kẹt
+    # Tauri host không được kill listener theo image name: process đó có thể thuộc
+    # instance khác hoặc caller cục bộ không xác thực. Đây là lớp phòng hờ khi
+    # port chưa nhả kịp: thử bind vài lần, nếu vẫn kẹt thì fail-closed và ghi log
+    # rõ ràng thay vì tự ý đụng tiến trình lạ.
     # thì LOG RÕ + exit 48 (không crash câm như `uvicorn.run` trần trước đây —
     # bind fail raise sâu trong event loop, _rx bị vứt nên không để lại dấu vết,
     # khiến sự cố "invalid sidecar token" khó điều tra). exit 48 gợi EADDRINUSE.
@@ -452,4 +519,16 @@ if __name__ == "__main__":
         )
         _sys.exit(48)
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # SEC (audit 2026-09-02 §SEC.18): giữ Server handle để Tauri yêu cầu shutdown
+    # có xác thực. Uvicorn đi qua lifespan; bootstrap Nuitka sau đó mới tự xóa payload.
+    _config = uvicorn.Config(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info" if _DEVELOPMENT_DIAGNOSTICS else "critical",
+        access_log=_DEVELOPMENT_DIAGNOSTICS,
+        timeout_graceful_shutdown=12,
+    )
+    _server = uvicorn.Server(_config)
+    app.state.uvicorn_server = _server
+    _server.run()

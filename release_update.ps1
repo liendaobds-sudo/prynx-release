@@ -18,33 +18,76 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $CONF_PATH = "$ROOT\desktop\src-tauri\tauri.conf.json"
 
-# Secret Supabase phải nằm trong kho DPAPI và chỉ được build_production giải mã
-# đúng tại bước REST. Từ chối env để git/gh/process publisher không kế thừa key.
-if (-not [string]::IsNullOrWhiteSpace($env:PRYNX_SUPABASE_SECRET_KEY) -or
-    -not [string]::IsNullOrWhiteSpace($env:PRYNX_SUPABASE_SERVICE_KEY)) {
-    Remove-Item Env:PRYNX_SUPABASE_SECRET_KEY -ErrorAction SilentlyContinue
-    Remove-Item Env:PRYNX_SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
-    throw "Khong truyen Supabase secret qua environment cho publisher. Hay dung kho DPAPI cua PrynX."
+# SEC (audit 2026-09-04 §SEC.24-R6): bootstrap chi dung .NET thuan de chup va
+# xoa secret/cac bien dinh tuyen truoc dot-source guard co the chay Add-Type/csc.
+$ambientSupabaseSecretNames = @(
+    'PRYNX_SUPABASE_SECRET_KEY',
+    'PRYNX_SUPABASE_SERVICE_KEY'
+) | Where-Object {
+    -not [string]::IsNullOrWhiteSpace(
+        [Environment]::GetEnvironmentVariable(
+            $_,
+            [EnvironmentVariableTarget]::Process
+        )
+    )
 }
-
-# SEC (audit 2026-08-04 §REL.SIGNING): GUI có thể truyền mật khẩu qua env.
-# Chụp rồi xóa trước mọi git/gh; build_production sẽ tiếp tục cô lập khóa chỉ
-# quanh đúng tiến trình Tauri và xóa trước khi publisher chạy verifier/upload.
 $releaseSigningPassword = if (-not [string]::IsNullOrEmpty($KeyPassword)) {
     [string]$KeyPassword
 } else {
     [string]$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 }
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:PRYNX_TAURI_SIGNING_KEY_FILE -ErrorAction SilentlyContinue
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+$bootstrapEnvironment = [Environment]::GetEnvironmentVariables(
+    [EnvironmentVariableTarget]::Process
+)
+$ambientGitAuthorityOverrides = @(
+    foreach ($bootstrapKey in @($bootstrapEnvironment.Keys)) {
+        $bootstrapName = [string]$bootstrapKey
+        if ($bootstrapName -match '^(?i:GIT_|GH_)' -or $bootstrapName -iin @(
+                'GITHUB_TOKEN',
+                'GITHUB_ENTERPRISE_TOKEN',
+                'XDG_CONFIG_HOME'
+            )) {
+            $bootstrapName
+        }
+    }
+) | Sort-Object -Unique
+foreach ($bootstrapName in @(
+        'PRYNX_SUPABASE_SECRET_KEY',
+        'PRYNX_SUPABASE_SERVICE_KEY',
+        'TAURI_SIGNING_PRIVATE_KEY',
+        'PRYNX_TAURI_SIGNING_KEY_FILE',
+        'TAURI_SIGNING_PRIVATE_KEY_PASSWORD'
+    ) + @($ambientGitAuthorityOverrides)) {
+    [Environment]::SetEnvironmentVariable(
+        [string]$bootstrapName,
+        $null,
+        [EnvironmentVariableTarget]::Process
+    )
+}
+$bootstrapEnvironment = $null
 $KeyPassword = ""
 
+. "$ROOT\scripts\release_executable_guard.ps1"
+$KEY_FILE = Resolve-PrynXUpdaterSigningKeyPath
+
+# Secret Supabase phai nam trong kho DPAPI va chi duoc build_production giai ma
+# dung tai buoc REST. Tu choi env sau khi da xoa truoc moi process con.
+if ($ambientSupabaseSecretNames.Count -gt 0) {
+    throw "Khong truyen Supabase secret qua environment cho publisher. Hay dung kho DPAPI cua PrynX."
+}
+
+# SEC (audit 2026-09-04 SEC.24-R5): khong cho Git/GitHub CLI ke thua repo
+# hoac hostname do process cha chi dinh. Xoa truoc khi fail de child khong thay.
+$null = Clear-PrynXAmbientGitAuthorityOverrides
+if ($ambientGitAuthorityOverrides.Count -gt 0) {
+    throw "SEC: Publisher tu choi ambient Git/GitHub override: $($ambientGitAuthorityOverrides -join ', ')."
+}
+Assert-PrynXGitEnvironmentAuthority
+
 $Version = $Version.Trim()
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?\z') {
     throw "-Version phai la SemVer hop le (vd 1.0.0-beta.13), nhan duoc: $Version"
 }
 
@@ -55,8 +98,16 @@ if ($SkipPreflightQA) {
 function Assert-CommittedReleaseVersion {
     param([Parameter(Mandatory = $true)][string]$ExpectedVersion)
 
-    $dirty = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
-    if ($LASTEXITCODE -ne 0) { throw "Khong kiem tra duoc trang thai Git." }
+    Assert-PrynXGitRepositoryAuthority `
+        -GitPath $script:PrynXGit `
+        -ExpectedRoot $ROOT
+    $dirtyResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGit `
+        -ExpectedRoot $ROOT `
+        -Command 'status' `
+        -Arguments @('--porcelain=v1', '--untracked-files=all')
+    $dirty = @($dirtyResult.Output)
+    if ($dirtyResult.ExitCode -ne 0) { throw "Khong kiem tra duoc trang thai Git." }
     if ($dirty.Count -gt 0) {
         throw "Phat hanh chi duoc chay tu worktree sach da commit; tim thay $($dirty.Count) thay doi."
     }
@@ -94,6 +145,13 @@ function Assert-CommittedReleaseVersion {
     Write-Host "  [OK] Version $ExpectedVersion da dong bo va worktree sach." -ForegroundColor Green
 }
 
+# SEC (audit 2026-09-04 SEC.24-R2): giu Git authority lease tu truoc
+# preflight dau tien den khi publish/cleanup xong; khong resolve lai qua PATH.
+$gitLease = $null
+try {
+    $gitLease = Open-PrynXTrustedReleaseExecutableLease -Kind "Git"
+    $script:PrynXGit = $gitLease.Path
+
 Assert-CommittedReleaseVersion -ExpectedVersion $Version
 
 # ---- NGUON CHAN LY DUY NHAT cho repo phat hanh ----
@@ -102,15 +160,64 @@ Assert-CommittedReleaseVersion -ExpectedVersion $Version
 # -> client poll repo cu -> khong bao gio nhan update, ke ca ban va bao mat khan cap).
 function Get-EndpointRepo {
     param([string]$ConfPath)
-    if (-not (Test-Path $ConfPath)) { throw "Khong thay tauri.conf.json: $ConfPath" }
-    $conf = Get-Content $ConfPath -Raw | ConvertFrom-Json
-    $endpoints = $conf.plugins.updater.endpoints
-    if (-not $endpoints -or $endpoints.Count -lt 1) { throw "tauri.conf.json: thieu plugins.updater.endpoints" }
-    $ep = [string]$endpoints[0]
-    if ($ep -notmatch 'github\.com/([^/]+/[^/]+)/releases') {
-        throw "Endpoint updater khong phai GitHub releases hop le: $ep"
+    $configFull = Assert-PrynXNoReparsePointInPathComponents -Path $ConfPath
+    if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
+        throw "Khong thay tauri.conf.json: $ConfPath"
     }
-    return $Matches[1]
+    $conf = Get-Content -LiteralPath $configFull -Raw | ConvertFrom-Json
+    $endpoints = @($conf.plugins.updater.endpoints)
+    if ($endpoints.Count -ne 1) {
+        throw "tauri.conf.json phai co dung mot plugins.updater.endpoints."
+    }
+    $endpoint = [string]$endpoints[0]
+    if (-not [string]::Equals(
+            $endpoint,
+            $endpoint.Trim(),
+            [System.StringComparison]::Ordinal
+        )) {
+        throw "Endpoint updater khong duoc co whitespace bao quanh: $endpoint"
+    }
+    # SEC (audit 2026-09-04 §SEC.24-R5): gate raw syntax truoc System.Uri
+    # de delimiter rong (`@`, `:`, `?`, `#`) khong bi normalize mat.
+    $endpointSyntaxMatch = [regex]::Match(
+        $endpoint,
+        '^(?i:https://github\.com)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/releases/latest/download/latest\.json$',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    if (-not $endpointSyntaxMatch.Success) {
+        throw "Endpoint updater khong dung canonical GitHub release URI: $endpoint"
+    }
+    $uri = $null
+    if ([string]::IsNullOrWhiteSpace($endpoint) -or
+        -not [System.Uri]::TryCreate(
+            $endpoint,
+            [System.UriKind]::Absolute,
+            [ref]$uri
+        )) {
+        throw "Endpoint updater khong phai absolute URI hop le: $endpoint"
+    }
+    if (-not [string]::Equals(
+            $uri.Scheme,
+            'https',
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [string]::Equals(
+            $uri.DnsSafeHost,
+            'github.com',
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $uri.IsDefaultPort -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        throw "Endpoint updater phai dung HTTPS tren github.com va khong co authority/query/fragment phu: $endpoint"
+    }
+    $owner = $endpointSyntaxMatch.Groups[1].Value
+    $repo = $endpointSyntaxMatch.Groups[2].Value
+    if ($owner -in @('.', '..') -or $repo -in @('.', '..')) {
+        throw "Endpoint updater co owner/repo khong hop le: $endpoint"
+    }
+    return $owner + '/' + $repo
 }
 
 function Get-ReleaseManifestField {
@@ -126,9 +233,33 @@ function Get-ReleaseManifestField {
     return $hits[0].Matches[0].Groups[1].Value.Trim()
 }
 
+function Assert-ReleaseSecretScanEvidenceV2 {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SetupSha256
+    )
+
+    # SEC (audit 2026-09-04 SEC.20/23-L3): v1 chi co installed tree nen khong
+    # du de upload. V2 phai bind installer manifest, setup dang lease va hai
+    # digest rieng cua installed tree/Nuitka extraction.
+    $evidence = Get-ReleaseManifestField `
+        -Path $ManifestPath `
+        -Name 'RELEASE_SECRET_SCAN_V2'
+    $manifestInstallerSha256 = Get-ReleaseManifestField `
+        -Path $ManifestPath `
+        -Name 'INSTALLER_SHA256'
+    return Assert-PrynXReleaseSecretScanEvidenceV2 `
+        -Evidence $evidence `
+        -ManifestInstallerSha256 $manifestInstallerSha256 `
+        -SetupSha256 $SetupSha256
+}
+
 function Assert-ManifestSourceState {
     param([Parameter(Mandatory = $true)][string]$ManifestPath)
 
+    Assert-PrynXGitRepositoryAuthority `
+        -GitPath $script:PrynXGit `
+        -ExpectedRoot $ROOT
     # BUILD (audit 2026-08-04 BLD.01): uploader chi chap nhan dung commit sach
     # da duoc build chot tu dau; khong doc mot HEAD moi roi gan nham cho artifact.
     $manifestCommit = Get-ReleaseManifestField -Path $ManifestPath -Name "GIT_COMMIT"
@@ -138,12 +269,22 @@ function Assert-ManifestSourceState {
     if ((Get-ReleaseManifestField -Path $ManifestPath -Name "GIT_DIRTY") -ne "no") {
         throw "Manifest khong chung minh source sach; KHONG upload."
     }
-    $dirty = @(& git -C $ROOT status --porcelain=v1 --untracked-files=all 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $dirty.Count -gt 0) {
+    $dirtyResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGit `
+        -ExpectedRoot $ROOT `
+        -Command 'status' `
+        -Arguments @('--porcelain=v1', '--untracked-files=all')
+    $dirty = @($dirtyResult.Output)
+    if ($dirtyResult.ExitCode -ne 0 -or $dirty.Count -gt 0) {
         throw "Worktree thay doi sau build/verifier; KHONG upload."
     }
-    $head = @(& git -C $ROOT rev-parse HEAD 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $head.Count -ne 1 -or $head[0].Trim() -ne $manifestCommit) {
+    $headResult = Invoke-PrynXGitReadOnlyCommand `
+        -GitPath $script:PrynXGit `
+        -ExpectedRoot $ROOT `
+        -Command 'rev-parse' `
+        -Arguments @('HEAD')
+    $head = @($headResult.Output)
+    if ($headResult.ExitCode -ne 0 -or $head.Count -ne 1 -or $head[0].Trim() -ne $manifestCommit) {
         throw "Commit hien tai khong khop GIT_COMMIT cua artifact; KHONG upload."
     }
 }
@@ -156,8 +297,12 @@ function Assert-GitHubCommitAvailable {
 
     # BUILD (audit 2026-08-04 re-audit BLD): tag/release chi duoc tao cho commit
     # artifact da chot va commit do phai thuc su co tren repo dich.
-    $raw = @(& gh api "repos/$Repo/commits/$Commit" 2>$null)
-    if ($LASTEXITCODE -ne 0) {
+    $apiResult = Invoke-PrynXGitHubCliCommand `
+        -GitHubCliPath $script:PrynXGitHubCli `
+        -Command 'api' `
+        -Arguments @('--hostname', 'github.com', "repos/$Repo/commits/$Commit")
+    $raw = @($apiResult.Output)
+    if ($apiResult.ExitCode -ne 0) {
         throw "Commit artifact $Commit chua ton tai tren GitHub repo $Repo; KHONG upload."
     }
     try {
@@ -177,8 +322,12 @@ function Get-GitHubTagTargetCommit {
         [Parameter(Mandatory = $true)][string]$Tag
     )
 
-    $raw = @(& gh api "repos/$Repo/git/ref/tags/$Tag" 2>$null)
-    if ($LASTEXITCODE -ne 0) {
+    $apiResult = Invoke-PrynXGitHubCliCommand `
+        -GitHubCliPath $script:PrynXGitHubCli `
+        -Command 'api' `
+        -Arguments @('--hostname', 'github.com', "repos/$Repo/git/ref/tags/$Tag")
+    $raw = @($apiResult.Output)
+    if ($apiResult.ExitCode -ne 0) {
         throw "Khong resolve duoc tag $Tag tren GitHub repo $Repo; KHONG upload."
     }
     try {
@@ -202,8 +351,12 @@ function Get-GitHubTagTargetCommit {
             throw "Tag $Tag tro toi object $objectType thay vi commit; KHONG upload."
         }
 
-        $tagRaw = @(& gh api "repos/$Repo/git/tags/$objectSha" 2>$null)
-        if ($LASTEXITCODE -ne 0) {
+        $apiResult = Invoke-PrynXGitHubCliCommand `
+            -GitHubCliPath $script:PrynXGitHubCli `
+            -Command 'api' `
+            -Arguments @('--hostname', 'github.com', "repos/$Repo/git/tags/$objectSha")
+        $tagRaw = @($apiResult.Output)
+        if ($apiResult.ExitCode -ne 0) {
             throw "Khong dereference duoc annotated tag $Tag; KHONG upload."
         }
         try {
@@ -237,17 +390,13 @@ function Test-GitHubReleaseExists {
     )
 
     $encodedTag = [System.Uri]::EscapeDataString($Tag)
-    # Windows PowerShell 5 bien native stderr thanh ErrorRecord. Tam ha EAP de
-    # phan loai 404 co chu dich, roi khoi phuc ngay ca khi gh nem loi.
-    $previousEap = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $raw = @(& gh api "repos/$Repo/releases/tags/$encodedTag" 2>&1)
-        $apiExit = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousEap
-    }
+    # Wrapper ha EAP va capture stderr de phan loai 404 co chu dich.
+    $apiResult = Invoke-PrynXGitHubCliCommand `
+        -GitHubCliPath $script:PrynXGitHubCli `
+        -Command 'api' `
+        -Arguments @('--hostname', 'github.com', "repos/$Repo/releases/tags/$encodedTag")
+    $raw = @($apiResult.Output)
+    $apiExit = $apiResult.ExitCode
     if ($apiExit -eq 0) {
         try {
             $release = ($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop
@@ -276,8 +425,12 @@ function Test-GitHubTagExists {
     # matching-refs tra mang rong voi HTTP 200 khi tag chua co, nen khong can bien
     # moi loi gh thanh "khong ton tai". Loc lai exact ref de tranh trung prefix.
     $encodedTag = [System.Uri]::EscapeDataString($Tag)
-    $raw = @(& gh api "repos/$Repo/git/matching-refs/tags/$encodedTag" 2>$null)
-    if ($LASTEXITCODE -ne 0) {
+    $apiResult = Invoke-PrynXGitHubCliCommand `
+        -GitHubCliPath $script:PrynXGitHubCli `
+        -Command 'api' `
+        -Arguments @('--hostname', 'github.com', "repos/$Repo/git/matching-refs/tags/$encodedTag")
+    $raw = @($apiResult.Output)
+    if ($apiResult.ExitCode -ne 0) {
         throw "Khong kiem tra duoc tag $Tag tren GitHub repo $Repo; KHONG tiep tuc."
     }
     try {
@@ -383,17 +536,33 @@ Write-Host "  === PrynX Release v$Version -> $ReleaseRepo ===" -ForegroundColor 
 Write-Host ""
 
 # ---- 0. Kiem tra dieu kien ----
-if (-not (Test-Path $KEY_FILE)) { throw "Khong thay khoa ky updater: $KEY_FILE" }
-$gh = Get-Command gh -ErrorAction SilentlyContinue
-if (-not $gh) { throw "Chua co GitHub CLI (gh). Cai: winget install GitHub.cli  roi 'gh auth login'." }
+$githubCliLease = $null
+try {
+if (-not (Test-Path -LiteralPath $KEY_FILE -PathType Leaf)) {
+    throw "Khong thay khoa ky updater: $KEY_FILE"
+}
+$githubCliLease = Open-PrynXTrustedReleaseExecutableLease -Kind "GitHubCli"
+$script:PrynXGitHubCli = $githubCliLease.Path
 # Kiem tra gh da dang nhap
-& gh auth status *> $null
-if ($LASTEXITCODE -ne 0) { throw "gh chua dang nhap. Chay: gh auth login" }
+Assert-PrynXGitEnvironmentAuthority
+$authResult = Invoke-PrynXGitHubCliCommand `
+    -GitHubCliPath $script:PrynXGitHubCli `
+    -Command 'auth' `
+    -Arguments @('status', '--hostname', 'github.com')
+if ($authResult.ExitCode -ne 0) { throw "gh chua dang nhap. Chay: gh auth login --hostname github.com" }
 
 # BUILD (audit 2026-08-13 BR.02): nhung loi remote da biet phai dung truoc
 # Nuitka/Tauri/runtime verifier. Van kiem lai cung cac bat bien ngay truoc upload.
-$sourceHeadLines = @(& git -C $ROOT rev-parse HEAD 2>$null)
-if ($LASTEXITCODE -ne 0 -or $sourceHeadLines.Count -ne 1 -or
+Assert-PrynXGitRepositoryAuthority `
+    -GitPath $script:PrynXGit `
+    -ExpectedRoot $ROOT
+$sourceHeadResult = Invoke-PrynXGitReadOnlyCommand `
+    -GitPath $script:PrynXGit `
+    -ExpectedRoot $ROOT `
+    -Command 'rev-parse' `
+    -Arguments @('HEAD')
+$sourceHeadLines = @($sourceHeadResult.Output)
+if ($sourceHeadResult.ExitCode -ne 0 -or $sourceHeadLines.Count -ne 1 -or
     $sourceHeadLines[0].Trim() -notmatch '^[0-9a-fA-F]{40}$') {
     throw "Khong doc duoc source commit hien tai de preflight GitHub."
 }
@@ -511,31 +680,44 @@ $existingPrynXRegistryPaths = @(
 $needsCleanUserSmoke = @($existingPrynXRegistryPaths | Where-Object {
     Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue
 }).Count -gt 0
-if ($needsCleanUserSmoke) {
-    # BUILD (audit 2026-08-12 REL.CLEANUSER.AUTO): may phat hanh thuong da cai
-    # PrynX; UAC dung de smoke tren profile tam sach, khong ghi de ban dang dung.
-    Write-Host "  [..] May da cai PrynX; chuyen sang profile Windows tam sach..." -ForegroundColor Yellow
-    $cleanUserArgs = @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $cleanUserVerifier + '"'),
-        "-Installer", ('"' + $publishedSetupPath + '"'),
-        "-Manifest", ('"' + $manifestPath + '"'),
-        "-ExpectedVersion", $Version
-    )
-    $cleanUserProcess = Start-Process -FilePath "powershell.exe" -ArgumentList $cleanUserArgs `
-        -Verb RunAs -Wait -PassThru
-    if ($cleanUserProcess.ExitCode -ne 0) {
-        throw "Clean-user installed-artifact verifier that bai; KHONG upload GitHub."
+$verifierPowerShellLease = $null
+try {
+    # SEC (audit 2026-09-04 SEC.24-R2): ca nhanh UAC va nhanh hien tai deu
+    # chay dung Windows PowerShell da lease, khong resolve qua PATH.
+    $verifierPowerShellLease = Open-PrynXTrustedReleaseExecutableLease -Kind "WindowsPowerShell"
+    $verifierPowerShellPath = $verifierPowerShellLease.Path
+    if ($needsCleanUserSmoke) {
+        # BUILD (audit 2026-08-12 REL.CLEANUSER.AUTO): may phat hanh thuong da cai
+        # PrynX; UAC dung de smoke tren profile tam sach, khong ghi de ban dang dung.
+        Write-Host "  [..] May da cai PrynX; chuyen sang profile Windows tam sach..." -ForegroundColor Yellow
+        $cleanUserArgs = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $cleanUserVerifier + '"'),
+            "-Installer", ('"' + $publishedSetupPath + '"'),
+            "-Manifest", ('"' + $manifestPath + '"'),
+            "-ExpectedVersion", $Version
+        )
+        $cleanUserProcess = Start-Process -FilePath $verifierPowerShellPath -ArgumentList $cleanUserArgs `
+            -Verb RunAs -Wait -PassThru
+        if ($cleanUserProcess.ExitCode -ne 0) {
+            throw "Clean-user installed-artifact verifier that bai; KHONG upload GitHub."
+        }
+    } else {
+        & $verifierPowerShellPath -NoProfile -ExecutionPolicy Bypass -File $verifier `
+            -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version
+        if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG upload GitHub." }
     }
-} else {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
-        -Installer $stagedSetupPath -Manifest $manifestPath -ExpectedVersion $Version
-    if ($LASTEXITCODE -ne 0) { throw "Installed-artifact verifier that bai; KHONG upload GitHub." }
+}
+finally {
+    Close-PrynXReleaseExecutableLease -Lease $verifierPowerShellLease
 }
 
 $runtimeVerified = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_VERIFIED"
 $installedExeHash = Get-ReleaseManifestField -Path $manifestPath -Name "EXE_SHA256"
 $dielineLocked = Get-ReleaseManifestField -Path $manifestPath -Name "DIELINE_LOCKED"
 $runtimeFreeProGate = Get-ReleaseManifestField -Path $manifestPath -Name "RUNTIME_FREE_PRO_GATE"
+$releaseSecretScanEvidenceV2 = Assert-ReleaseSecretScanEvidenceV2 `
+    -ManifestPath $manifestPath `
+    -SetupSha256 $setupHash
 if ($runtimeVerified -ne "yes" -or $installedExeHash -eq "NOT_VERIFIED_INSTALL_PAYLOAD") {
     throw "Manifest chua co bang chung runtime day du; KHONG upload GitHub."
 }
@@ -595,10 +777,43 @@ if ($releaseExists) {
     Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
         -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
         -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
-    Assert-GitHubTagTargetsCommit -Repo $ReleaseRepo -Tag $tag -ExpectedCommit $releaseTargetCommit
-    & gh release upload $tag --repo $ReleaseRepo --clobber `
-        "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
-    if ($LASTEXITCODE -ne 0) { throw "gh release upload (clobber) that bai." }
+    $publishLease = $null
+    try {
+        $publishLease = Open-PrynXReleasePublishLeaseSet `
+            -StageRoot $releaseStageDir `
+            -SetupPath $stagedSetupPath `
+            -SetupSha256 $manifestInstallerHash `
+            -SignaturePath $stagedSigPath `
+            -SignatureSha256 $stagedSignatureHash `
+            -LatestPath $stagedLatestPath `
+            -LatestSha256 $stagedLatestHash `
+            -ManifestPath $manifestPath
+        Assert-ManifestSourceState -ManifestPath $publishLease.Manifest.Path
+        $null = Assert-ReleaseSecretScanEvidenceV2 `
+            -ManifestPath $publishLease.Manifest.Path `
+            -SetupSha256 $publishLease.Setup.Sha256
+        Assert-GitHubTagTargetsCommit `
+            -Repo $ReleaseRepo `
+            -Tag $tag `
+            -ExpectedCommit $releaseTargetCommit
+        Assert-PrynXGitEnvironmentAuthority
+        $uploadResult = Invoke-PrynXGitHubCliCommand `
+            -GitHubCliPath $script:PrynXGitHubCli `
+            -Command 'release' `
+            -Arguments @(
+                'upload',
+                $tag,
+                '--repo',
+                "github.com/$ReleaseRepo",
+                '--clobber',
+                [string]$publishLease.Setup.Path,
+                [string]$publishLease.Signature.Path,
+                [string]$publishLease.Latest.Path
+            )
+        if ($uploadResult.ExitCode -ne 0) { throw "gh release upload (clobber) that bai." }
+    } finally {
+        Close-PrynXPayloadLease -Lease $publishLease
+    }
 }
 else {
     Write-Host "  [..] Release $tag chua ton tai -> tao moi..." -ForegroundColor Yellow
@@ -606,9 +821,51 @@ else {
     Assert-StagedReleaseAssets -SetupPath $stagedSetupPath -SetupSha256 $manifestInstallerHash `
         -SignaturePath $stagedSigPath -SignatureSha256 $stagedSignatureHash `
         -LatestPath $stagedLatestPath -LatestSha256 $stagedLatestHash
-    & gh release create $tag --repo $ReleaseRepo --target $releaseTargetCommit --title "PrynX $Version" --notes $Notes `
-        "$stagedSetupPath" "$stagedSigPath" "$stagedLatestPath"
-    if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
+    $publishLease = $null
+    try {
+        $publishLease = Open-PrynXReleasePublishLeaseSet `
+            -StageRoot $releaseStageDir `
+            -SetupPath $stagedSetupPath `
+            -SetupSha256 $manifestInstallerHash `
+            -SignaturePath $stagedSigPath `
+            -SignatureSha256 $stagedSignatureHash `
+            -LatestPath $stagedLatestPath `
+            -LatestSha256 $stagedLatestHash `
+            -ManifestPath $manifestPath
+        Assert-ManifestSourceState -ManifestPath $publishLease.Manifest.Path
+        $null = Assert-ReleaseSecretScanEvidenceV2 `
+            -ManifestPath $publishLease.Manifest.Path `
+            -SetupSha256 $publishLease.Setup.Sha256
+        $releaseAppeared = Assert-GitHubReleaseTagState `
+            -Repo $ReleaseRepo `
+            -Tag $tag `
+            -ExpectedCommit $releaseTargetCommit
+        if ($releaseAppeared) {
+            throw "Release $tag appeared before create; KHONG overwrite."
+        }
+        Assert-PrynXGitEnvironmentAuthority
+        $createResult = Invoke-PrynXGitHubCliCommand `
+            -GitHubCliPath $script:PrynXGitHubCli `
+            -Command 'release' `
+            -Arguments @(
+                'create',
+                $tag,
+                '--repo',
+                "github.com/$ReleaseRepo",
+                '--target',
+                $releaseTargetCommit,
+                '--title',
+                "PrynX $Version",
+                '--notes',
+                $Notes,
+                [string]$publishLease.Setup.Path,
+                [string]$publishLease.Signature.Path,
+                [string]$publishLease.Latest.Path
+            )
+        if ($createResult.ExitCode -ne 0) { throw "gh release create that bai." }
+    } finally {
+        Close-PrynXPayloadLease -Lease $publishLease
+    }
 }
 
 Write-Host ""
@@ -624,4 +881,12 @@ Write-Host ""
         }
         Remove-Item -LiteralPath $resolvedStage -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+} finally {
+    Close-PrynXReleaseExecutableLease -Lease $githubCliLease
+    $script:PrynXGitHubCli = $null
+}
+} finally {
+    Close-PrynXReleaseExecutableLease -Lease $gitLease
+    $script:PrynXGit = $null
 }
