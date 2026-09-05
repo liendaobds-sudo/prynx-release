@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
@@ -10,7 +10,6 @@ import StickerTool from './StickerTool';
 import {
     useStickerSheetStore,
     type PrepareStickerWorkspaceSource,
-    type StickerSourceMode,
     type StickerWorkspaceSourceLease,
 } from './stickerSheetStore';
 import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
@@ -35,20 +34,12 @@ interface Props {
     ) => void | boolean | Promise<void | boolean>;
 }
 
-// UIUX (feedback 2026-08-15): gọi tên theo việc người dùng cần làm và giải thích
-// ngay trên từng chế độ; không đưa thuật ngữ AI vào tên tab.
-const MODES: Array<{ id: StickerSourceMode; label: string; description: string }> = [
-    {
-        id: 'existing',
-        label: 'PDF/PNG đã có biên',
-        description: 'Dùng khi file đã có biên tem rõ (mép trang, nền trong suốt hoặc đối tượng có thể chọn). Không cần file có sẵn CutContour; bạn vẫn bù xén và tạo đường cắt bằng giao diện cũ.',
-    },
-    {
-        id: 'ai-sheet',
-        label: 'Tách nhiều tem',
-        description: 'Dùng khi một trang chứa nhiều tem nhưng chưa có biên riêng rõ ràng. Hệ thống sẽ tách thành từng tem riêng, hiển thị đường cắt màu tím để bạn kiểm tra và chỉnh sửa trước khi xuất.',
-    },
-];
+/**
+ * UIUX (audit 2026-09-06 §UNIFIED.2): một vỏ workflow cho hai adapter cũ.
+ * Không gộp writer/state ở lượt này; nút Nhận diện tự động chỉ chuyển sang
+ * adapter session và giữ nguyên đường xuất hiện có của StickerSheetPanel.
+ */
+const UNIFIED_STICKER_WORKSPACE = true;
 
 export default function StickerCutlineTool({
     tabId,
@@ -68,7 +59,6 @@ export default function StickerCutlineTool({
     const workspaceLeaseRef = useRef<StickerWorkspaceSourceLease | null>(null);
     const workspaceLeasePromiseRef = useRef<Promise<StickerWorkspaceSourceLease> | null>(null);
     const mode = tab?.mode || 'existing';
-    const modeHelpId = useId();
     const [directProcessing, setDirectProcessing] = useState(false);
     const [completedExport, setCompletedExport] = useState<{
         filename: string;
@@ -81,6 +71,11 @@ export default function StickerCutlineTool({
         || directProcessing
     );
     const workingPageOrder = pageOrder?.map((_sourcePage, index) => index + 1);
+    const sourceFile = tab?.sourceFile || pdfFile || sourceImageFile || null;
+    const sourceLabel = sourceFile?.name || 'Chưa chọn file';
+    const outputIntent = mode === 'ai-sheet' && tab?.outputSettings.cropToSticker
+        ? 'Tách từng tem'
+        : 'Giữ nguyên tấm';
 
     const prepareWorkspaceSource = useCallback<PrepareStickerWorkspaceSource>(async () => {
         const cached = workspaceLeaseRef.current;
@@ -150,6 +145,50 @@ export default function StickerCutlineTool({
         actions.selectSource(tabId, workspaceSource, 'workspace');
     }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId]);
 
+    const handleAutoDetect = useCallback(async () => {
+        if (workflowBusy) return;
+        exportedFilenameRef.current = null;
+        setCompletedExport(null);
+        actions.setMode(tabId, 'ai-sheet');
+
+        // Ảnh rời không thuộc Working PDF vẫn đi qua adapter explicit; PDF trong
+        // Viewer đi qua lease để giữ đúng revision hiện hành.
+        const current = useStickerSheetStore.getState().getTab(tabId);
+        const source = current.sourceFile || pdfFile || sourceImageFile;
+        if (source && !current.sourceFile) {
+            actions.selectSource(
+                tabId,
+                source,
+                pdfFile ? 'workspace' : 'explicit',
+                1,
+            );
+        }
+        await actions.detectStickers(
+            tabId,
+            'auto',
+            activeWorkingPage,
+            pdfFile ? prepareWorkspaceSource : undefined,
+        );
+        const detected = useStickerSheetStore.getState().getTab(tabId);
+        const detectedPage = detected.pages[detected.activeSourcePage]
+            || detected;
+        if (
+            detectedPage.status === 'mask-review'
+            && detectedPage.manifest
+            && !detectedPage.manifest.needs_review
+        ) {
+            await actions.confirmMask(tabId, detected.activeSourcePage);
+        }
+    }, [
+        actions,
+        activeWorkingPage,
+        pdfFile,
+        prepareWorkspaceSource,
+        sourceImageFile,
+        tabId,
+        workflowBusy,
+    ]);
+
     const handleExport = async () => {
         const result = await actions.exportFile(
             tabId,
@@ -207,52 +246,48 @@ export default function StickerCutlineTool({
 
     return (
         <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 dark:border-zinc-700 dark:bg-zinc-800/60">
-                {MODES.map(option => {
-                    const tooltipId = `${modeHelpId}-${option.id}`;
-                    return (
-                        <div key={option.id} className="group/mode-help relative min-w-0">
-                            <button
-                                type="button"
-                                disabled={workflowBusy}
-                                aria-label={tv(option.label, 'preprocess.stickerSheet')}
-                                aria-pressed={mode === option.id}
-                                aria-describedby={tooltipId}
-                                onClick={() => {
-                                    if (workflowBusy || option.id === mode) return;
-                                    exportedFilenameRef.current = null;
-                                    setCompletedExport(null);
-                                    actions.setMode(tabId, option.id);
-                                }}
-                                className={`min-h-11 w-full rounded-lg px-2 text-[10px] font-bold leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                    mode === option.id
-                                        ? 'bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
-                                        : 'text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
-                                }`}
-                            >
-                                <span className="inline-flex items-center justify-center gap-1">
-                                    {tv(option.label, 'preprocess.stickerSheet')}
-                                    <span
-                                        aria-hidden="true"
-                                        className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-current text-[9px] font-extrabold opacity-70"
-                                    >
-                                        ?
-                                    </span>
-                                </span>
-                            </button>
-                            <span
-                                id={tooltipId}
-                                role="tooltip"
-                                className={`pointer-events-none invisible absolute top-full z-[120] mt-2 w-[260px] max-w-[calc(100vw-2rem)] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[11px] font-normal normal-case leading-relaxed tracking-normal text-white opacity-0 shadow-xl transition-all group-hover/mode-help:visible group-hover/mode-help:opacity-100 group-focus-within/mode-help:visible group-focus-within/mode-help:opacity-100 dark:bg-zinc-700 ${
-                                    option.id === 'existing' ? 'left-0' : 'right-0'
-                                }`}
-                            >
-                                {tv(option.description, 'preprocess.stickerSheet')}
+            {UNIFIED_STICKER_WORKSPACE && (
+                <div
+                    aria-label={tv('Bù xén và tạo đường cắt', 'preprocess.stickerSheet')}
+                    className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                            <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-100">
+                                {tv('Bù xén và tạo đường cắt', 'preprocess.stickerSheet')}
+                            </h2>
+                            <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                                {tv('Một quy trình cho tem đã có biên và ảnh nhiều tem.', 'preprocess.stickerSheet')}
+                            </p>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 dark:bg-zinc-800 dark:text-zinc-300">
+                            {mode === 'ai-sheet' ? tv('Nhận diện tự động') : tv('Bù xén trực tiếp')}
+                        </span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+                        <div className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-2 dark:bg-zinc-800/80">
+                            <span className="block font-semibold text-slate-500 dark:text-zinc-400">{tv('Nguồn')}</span>
+                            <span className="mt-0.5 block truncate font-bold text-slate-700 dark:text-zinc-200" title={sourceLabel}>
+                                {sourceLabel}
                             </span>
                         </div>
-                    );
-                })}
-            </div>
+                        <div className="rounded-lg bg-slate-50 px-2.5 py-2 dark:bg-zinc-800/80">
+                            <span className="block font-semibold text-slate-500 dark:text-zinc-400">{tv('Đầu ra')}</span>
+                            <span className="mt-0.5 block font-bold text-slate-700 dark:text-zinc-200">{tv(outputIntent)}</span>
+                        </div>
+                    </div>
+                    {mode === 'existing' && (
+                        <button
+                            type="button"
+                            disabled={workflowBusy}
+                            onClick={() => { void handleAutoDetect(); }}
+                            className="mt-3 h-10 w-full rounded-lg bg-violet-600 px-3 text-[11px] font-bold text-white shadow-sm transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {tv('Nhận diện tự động', 'preprocess.stickerSheet')}
+                        </button>
+                    )}
+                </div>
+            )}
 
             {mode === 'existing' ? (
                 <StickerTool
