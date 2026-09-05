@@ -1,0 +1,411 @@
+{
+  "audit_unit": "W2-U03-SHADOW / W2-U04-SHADOW",
+  "audit_date": "2026-09-05",
+  "head": "669b92dbb3a343633c578df6fea9872514c6ef22",
+  "scope": "Source-level production detector/canonical classic writer/document writer; no HTTP/Tauri/installed-runtime verification; production source unchanged.",
+  "inference": "One local BiRefNet-lite inference, pinned weights, DirectML; forced_ai and export reuse its cached raw alpha. No model download or external AI request.",
+  "metric_caveat": "deterministic_lost_px and lost_chroma_gt_40_px include both colored shadow and real artwork. Neither is a count/percentage of artwork loss. Pixel coordinates use the 591x594 analysis raster, top-left origin.",
+  "threshold_caveat": "32/64/96 are backend counterfactual probes. API refine/store allow 128..176; the current panel has no alpha-threshold slider, only shadow cleanup controls.",
+  "timing_caveat": "Single observation under concurrent test activity and memory pressure, not a speed benchmark.",
+  "source_hashes": {
+    "backend/app/workers/sticker_source_pipeline.py": "67BFECAD49C4EF87DA900FF5AE5731249DD626F9923A02D1868705D8C088AB63",
+    "backend/app/workers/sticker_sheet_engine.py": "D662B3D1FB9EF393E0D36907868D726FB3EB5A33CE37157E400DC980D9E93BED",
+    "backend/app/workers/sticker_sheet_export.py": "250F9608827CFF34B2E111EA5402DE8A6BF937299261361AD761204A4FB545BB",
+    "backend/app/workers/sticker_engine.py": "EA7948DC4CA651E4D07AD8A76351A01C4CDCED8A319C31F5F038891F1692C211"
+  },
+  "artifact_hashes": {
+    "single_artifact.pdf": "FC5B87539042211A92F8BAB9C6F0E82093B78B917A3066E98206872DED04678C",
+    "multi_artifact.pdf": "3E71B5118C15387E08BA6E895F7BDA8639939105663A3CB0DAF95049017482CA"
+  },
+  "source": "D:\\pdfcompare\\test\\test bu xen.pdf",
+  "source_sha256": "c601b12447ef362a7f9eae77ad18630a360e8150b8e85a5174c1a1cfbd10b08b",
+  "inspection": {
+    "source_kind": "pdf",
+    "mime_type": "application/pdf",
+    "boundary_source": "ai",
+    "strategy_confidence": 0.4,
+    "needs_review": true,
+    "page_count": 1,
+    "source_width_px": null,
+    "source_height_px": null,
+    "dpi": null,
+    "physical_width_mm": 50.0,
+    "physical_height_mm": 50.2757,
+    "preview_width_px": 296,
+    "preview_height_px": 297,
+    "has_existing_cut": false,
+    "has_vector": false,
+    "has_raster": true,
+    "has_alpha": false,
+    "cut_contour_count": 0,
+    "pages": [
+      {
+        "page_number": 1,
+        "width_mm": 50.0,
+        "height_mm": 50.2757,
+        "has_existing_cut": false,
+        "has_vector": false,
+        "has_raster": true,
+        "has_alpha": false,
+        "cut_contour_count": 0
+      }
+    ],
+    "warnings": [],
+    "color_provenance": {
+      "schema": "prynx-color-provenance-v1",
+      "source_kind": "pdf",
+      "profile_state": "rgb",
+      "has_device_cmyk": false,
+      "has_rgb": true,
+      "has_devicen": false,
+      "has_embedded_cmyk_profile": false,
+      "output_intent_count": 0,
+      "output_intent_profile_sha256": null,
+      "output_condition_identifier": null,
+      "warnings": []
+    }
+  },
+  "analysis_image": {
+    "size": [
+      591,
+      594
+    ],
+    "dpi": [
+      300.22800098408067,
+      300.09728532576685
+    ]
+  },
+  "background": {
+    "color": [
+      255,
+      255,
+      255
+    ],
+    "tolerance": 12,
+    "confidence": 1.0,
+    "is_flat": true
+  },
+  "single_preview": {
+    "boundary_source": "simple-bg",
+    "strategy_confidence": 1.0,
+    "warnings": [],
+    "needs_review": true,
+    "elapsed_seconds": 0.027229300001636147,
+    "analysis": {
+      "instances": [
+        {
+          "id": 1,
+          "x": 0,
+          "y": 0,
+          "width": 591,
+          "height": 594,
+          "area_px": 284623,
+          "confidence": 1.0,
+          "uncertain_ratio": 0.0
+        }
+      ],
+      "area_px": 284623,
+      "alpha_area_128_px": 284623,
+      "raw_alpha_area_128_px": null,
+      "shadow_exclusion_px": null,
+      "warnings": [
+        "Chỉ nhận diện được một tem trong nguồn."
+      ],
+      "model_seconds": 0.0
+    }
+  },
+  "multi_auto": {
+    "boundary_source": "ai",
+    "strategy_confidence": 0.614598,
+    "warnings": [
+      "Chỉ nhận diện được một tem trong ảnh.",
+      "simple-bg-color-ai-geometry"
+    ],
+    "needs_review": true,
+    "elapsed_seconds": 68.05048099998385,
+    "analysis": {
+      "instances": [
+        {
+          "id": 1,
+          "x": 0,
+          "y": 0,
+          "width": 576,
+          "height": 583,
+          "area_px": 254285,
+          "confidence": 0.614598,
+          "uncertain_ratio": 0.385402
+        }
+      ],
+      "area_px": 254285,
+      "alpha_area_128_px": 254286,
+      "raw_alpha_area_128_px": 254286,
+      "shadow_exclusion_px": 0,
+      "warnings": [
+        "Chỉ nhận diện được một tem trong ảnh."
+      ],
+      "model_seconds": 65.64728829998057
+    }
+  },
+  "forced_ai": {
+    "boundary_source": "ai",
+    "strategy_confidence": 0.614598,
+    "warnings": [
+      "pdf-raster-review"
+    ],
+    "needs_review": true,
+    "elapsed_seconds": 1.553169800026808,
+    "analysis": {
+      "instances": [
+        {
+          "id": 1,
+          "x": 0,
+          "y": 0,
+          "width": 576,
+          "height": 583,
+          "area_px": 254285,
+          "confidence": 0.614598,
+          "uncertain_ratio": 0.385402
+        }
+      ],
+      "area_px": 254285,
+      "alpha_area_128_px": 254286,
+      "raw_alpha_area_128_px": 254286,
+      "shadow_exclusion_px": 0,
+      "warnings": [
+        "Chỉ nhận diện được một tem trong ảnh."
+      ],
+      "model_seconds": 0.0
+    }
+  },
+  "comparison": {
+    "iou": 0.8934098790329664,
+    "deterministic_lost_px": 30338,
+    "deterministic_lost_ratio": 0.10659012096703359,
+    "lost_chroma_gt_40_px": 18862
+  },
+  "cleanup_off": {
+    "instances": [
+      {
+        "id": 1,
+        "x": 0,
+        "y": 0,
+        "width": 576,
+        "height": 583,
+        "area_px": 254285,
+        "confidence": 0.614598,
+        "uncertain_ratio": 0.385402
+      }
+    ],
+    "area_px": 254285,
+    "alpha_area_128_px": 254286,
+    "raw_alpha_area_128_px": 254286,
+    "shadow_exclusion_px": 0,
+    "warnings": [
+      "Chỉ nhận diện được một tem trong ảnh."
+    ],
+    "model_seconds": 0.0,
+    "different_labels_from_auto_px": 0
+  },
+  "threshold_32": {
+    "area_px": 256816,
+    "lost_chroma_gt_40_px": 17569
+  },
+  "threshold_64": {
+    "area_px": 255807,
+    "lost_chroma_gt_40_px": 18069
+  },
+  "threshold_96": {
+    "area_px": 254984,
+    "lost_chroma_gt_40_px": 18496
+  },
+  "threshold_128": {
+    "area_px": 254285,
+    "lost_chroma_gt_40_px": 18862
+  },
+  "threshold_192": {
+    "area_px": 252679,
+    "lost_chroma_gt_40_px": 19724
+  },
+  "pdf": {
+    "mediabox": [
+      0.0,
+      0.0,
+      141.732283,
+      142.513785
+    ],
+    "images": [
+      {
+        "name": "/Image-7098480789",
+        "width": 594,
+        "height": 594,
+        "smask": false,
+        "colorspace": "ICCBased RGB"
+      }
+    ]
+  },
+  "samples": [
+    {
+      "xy": [
+        506,
+        211
+      ],
+      "source_rgb": [
+        251,
+        254,
+        239
+      ],
+      "single_alpha": 255,
+      "ai_raw_alpha": 0
+    },
+    {
+      "xy": [
+        550,
+        210
+      ],
+      "source_rgb": [
+        44,
+        96,
+        6
+      ],
+      "single_alpha": 255,
+      "ai_raw_alpha": 0
+    },
+    {
+      "xy": [
+        295,
+        590
+      ],
+      "source_rgb": [
+        214,
+        183,
+        148
+      ],
+      "single_alpha": 255,
+      "ai_raw_alpha": 0
+    },
+    {
+      "xy": [
+        200,
+        578
+      ],
+      "source_rgb": [
+        220,
+        189,
+        160
+      ],
+      "single_alpha": 255,
+      "ai_raw_alpha": 0
+    }
+  ],
+  "exports": {
+    "single": {
+      "path": "D:\\pdfcompare\\docs\\audit\\BU_XEN_SHADOW_2026-09-05\\single_artifact.pdf",
+      "writer": "snapshot_classic_cutline_preview -> StickerEngine.process_pdf -> restore_sticker_page_canvas",
+      "sticker_count": 1,
+      "pages": 1,
+      "mediabox": [
+        0.0,
+        0.0,
+        141.732283,
+        142.513785
+      ],
+      "images": [
+        {
+          "key": "/Image-7098480789",
+          "width": 594,
+          "height": 594,
+          "smask": false
+        }
+      ],
+      "cut_contours": 1,
+      "cut_spots": [
+        "CutContour"
+      ],
+      "preview_keys": [
+        "page_number",
+        "mask_revision",
+        "preview_width_px",
+        "preview_height_px",
+        "paths",
+        "fingerprint",
+        "segment_count",
+        "quality"
+      ],
+      "settings": {
+        "offset_mm": 0.0,
+        "bleed_mm": 0.0,
+        "cut_mode": "original",
+        "corner_style": "preserve",
+        "fill_holes": true,
+        "cutline_smoothness": 50.0,
+        "cutline_fidelity": 50.0,
+        "curve_tension": 50.0,
+        "min_detail_area_mm2": 1.0,
+        "denoise": 30,
+        "crop_to_sticker": false
+      }
+    },
+    "multi": {
+      "path": "D:\\pdfcompare\\docs\\audit\\BU_XEN_SHADOW_2026-09-05\\multi_artifact.pdf",
+      "writer": "export_sticker_sheet_document",
+      "sticker_count": 1,
+      "pages": 1,
+      "mediabox": [
+        0.0,
+        0.0,
+        141.7323,
+        142.5138
+      ],
+      "images": [
+        {
+          "key": "/FormXob.4811de5b1a94501fbcc8e63c3c7778c1",
+          "width": 591,
+          "height": 594,
+          "smask": true,
+          "mask_size": [
+            591,
+            594
+          ],
+          "mask_area_128": 254285,
+          "right_body_roi": {
+            "xyxy": [
+              495,
+              198,
+              520,
+              224
+            ],
+            "mean_alpha": 0.0,
+            "positive_alpha_pixels": 0
+          }
+        }
+      ],
+      "cut_contours": 1,
+      "cut_spots": [
+        "CutContour"
+      ],
+      "preview_keys": [
+        "page_number",
+        "mask_revision",
+        "preview_width_px",
+        "preview_height_px",
+        "paths",
+        "fingerprint",
+        "segment_count",
+        "quality"
+      ],
+      "settings": {
+        "offset_mm": 0.0,
+        "bleed_mm": 0.0,
+        "cut_mode": "original",
+        "corner_style": "preserve",
+        "fill_holes": true,
+        "cutline_smoothness": 50.0,
+        "cutline_fidelity": 50.0,
+        "curve_tension": 50.0,
+        "min_detail_area_mm2": 1.0,
+        "denoise": 50,
+        "crop_to_sticker": false
+      }
+    }
+  }
+}

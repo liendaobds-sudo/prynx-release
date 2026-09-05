@@ -29,6 +29,8 @@ from app.core.sticker_background import (
 from app.core.sticker_sheet_session import StickerSheetSession
 from app.core.system_memory import read_memory_status_mb
 from app.workers.cut_export.cut_layer_extractor import extract_cut_contours
+from app.workers.sticker_artwork_guard import assess_ai_artwork_loss
+from app.workers.sticker_shadow_boundary import recover_soft_shadow_alpha
 from app.workers.sticker_sheet_engine import (
     DEFAULT_ALPHA_THRESHOLD,
     DEFAULT_MODEL,
@@ -40,6 +42,7 @@ from app.workers.sticker_sheet_engine import (
     StickerSheetAnalysis,
     StickerSheetError,
     StickerSheetModel,
+    _align_labels_to_reference,
     _build_labels,
     _component_records,
     _instance_quality,
@@ -87,6 +90,9 @@ _SIMPLE_BG_PREVIEW_ROUGHNESS_DEVIATION_P99_PX = 1.20
 _SIMPLE_BG_PREVIEW_ROUGHNESS_TURN_DEGREES = 45.0
 _SIMPLE_BG_PREVIEW_ROUGHNESS_TURN_RATIO_MIN = 0.05
 _SIMPLE_BG_AI_IOU_MIN = 0.80
+_SIMPLE_BG_AI_ARTWORK_LOSS_WARNING = "simple-bg-ai-artwork-loss-rejected"
+_SIMPLE_BG_AI_VALIDATION_FAILED_WARNING = "simple-bg-ai-validation-unavailable"
+_COLORED_SHADOW_WARNING = "simple-bg-colored-shadow-removed"
 _SIMPLE_BG_PREVIEW_DENOISE_FALLBACK_WARNING = (
     "simple-bg-preview-denoise-fallback"
 )
@@ -850,6 +856,16 @@ def build_legacy_single_page_approved_contour(
             # Alpha đó. Nếu gọi AI lại tại đây preview và file xuất sẽ lệch nhau.
             analysis = detected.analysis
             boundary_source = "simple-bg"
+        elif detected is not None and len(detected.analysis.instances) == 1:
+            # QUALITY (audit 2026-09-05 §SHADOW.2): legacy không có canonical
+            # preview cũng phải qua cùng chốt bảo vệ thân tem, không gọi AI rồi
+            # tin Alpha trực tiếp và mở lại lỗi đã chặn ở workspace.
+            resolved = _upgrade_single_simple_background_geometry(
+                replace(detected, dpi=dpi), source_image,
+                model=model, alpha_threshold=alpha_threshold,
+            )
+            analysis = resolved.analysis
+            boundary_source = resolved.boundary_source
         else:
             # QUALITY (feedback 2026-08-19 §STK.CUTJAG04): deterministic chỉ cấp
             # ngữ cảnh MÀU nền; các ca simple-bg một component vẫn giữ Alpha hình
@@ -1104,6 +1120,35 @@ def _background_detection(
             else:
                 analysis = recovered
                 recovered_white_body = True
+    # QUALITY (audit 2026-09-05 §SHADOW.1): dùng chung biên thân/bóng ở hai chế
+    # độ, chỉ sau các nhánh offset/viền trắng đã được kiểm riêng. Không thay bộ
+    # dò nền dùng chung hoặc biến RGB chưa có biên chắc chắn thành shape đoán.
+    if (
+        boundary_source == "simple-bg" and minimum_confidence > 0.0
+        and background.is_flat and not recovered_composite and not recovered_white_body
+    ):
+        try:
+            shadow_alpha = recover_soft_shadow_alpha(
+                rgb, analysis.alpha, analysis.labels, tuple(int(v) for v in background.color),
+            )
+            if shadow_alpha is not None:
+                shadow_analysis = _analysis_from_alpha(
+                    source_image, shadow_alpha, model=model, alpha_threshold=alpha_threshold,
+                )
+                if len(shadow_analysis.instances) == len(analysis.instances):
+                    # BBox/centroid đổi khi bỏ bóng không được đổi ID/thứ tự
+                    # tem. Đối chiếu overlap với labels gốc như nhánh Refine.
+                    aligned, mapping = _align_labels_to_reference(shadow_analysis.labels, analysis.labels)
+                    shadow_analysis.labels = aligned
+                    shadow_analysis.instances = sorted(
+                        (replace(item, id=mapping[item.id]) for item in shadow_analysis.instances),
+                        key=lambda item: item.id,
+                    )
+                    analysis = shadow_analysis
+                    analysis.warnings.extend((_COLORED_SHADOW_WARNING, "simple-bg-drop-shadow-removed"))
+        except (cv2.error, MemoryError, ValueError, StickerSheetError):
+            logger.warning("Không xác minh được biên bóng mềm; giữ nhận diện hiện có", exc_info=True)
+
     exact_shapes: tuple[dict[str, object], ...] = ()
     if boundary_source == "vector":
         # QUALITY (feedback 2026-08-16 §XEPTEM.ALPHA): hình chuẩn chỉ được suy ra
@@ -1120,6 +1165,8 @@ def _background_detection(
         detection_warnings.append("simple-bg-composite-recovered")
     if "simple-bg-drop-shadow-removed" in analysis.warnings:
         detection_warnings.append("simple-bg-drop-shadow-removed")
+    if _COLORED_SHADOW_WARNING in analysis.warnings:
+        detection_warnings.append(_COLORED_SHADOW_WARNING)
 
     return StickerSourceDetection(
         analysis=analysis,
@@ -1157,7 +1204,8 @@ def _simple_bg_preview_needs_geometry_upgrade(
     đồng của chế độ ``Tách nhiều tem``.
     """
     if (
-        len(analysis.instances) != 1
+        _COLORED_SHADOW_WARNING in analysis.warnings
+        or len(analysis.instances) != 1
         or not isinstance(analysis.labels, np.ndarray)
         or analysis.labels.ndim != 2
     ):
@@ -1251,6 +1299,7 @@ def _upgrade_single_simple_background_geometry(
         detected.boundary_source != "simple-bg"
         or len(detected.analysis.instances) != 1
         or "simple-bg-composite-recovered" in detected.warnings
+        or _COLORED_SHADOW_WARNING in detected.warnings
     ):
         return detected
 
@@ -1288,6 +1337,30 @@ def _upgrade_single_simple_background_geometry(
             overlap,
         )
         return detected
+
+    # QUALITY (audit 2026-09-05 §SHADOW.2): một mảng artwork bị bỏ vẫn có thể
+    # đạt IoU 0,89. So vùng mất cục bộ với RGB; từ chối thì giữ nguyên analysis
+    # simple-bg để Refine không nạp lại raw Alpha nguy hiểm từ ứng viên AI.
+    try:
+        loss = assess_ai_artwork_loss(
+            np.asarray(source_image.convert("RGB"), dtype=np.uint8),
+            deterministic_mask, ai_mask,
+        )
+    except (cv2.error, MemoryError, ValueError):
+        logger.warning("Không kiểm được phần artwork AI bỏ; giữ mask nguồn", exc_info=True)
+        return replace(
+            detected, needs_review=True,
+            warnings=tuple(dict.fromkeys((*detected.warnings, _SIMPLE_BG_AI_VALIDATION_FAILED_WARNING))),
+        )
+    if loss.rejected:
+        logger.info(
+            "Giữ simple-bg vì AI bỏ artwork: reason=%s area=%d detail_ratio=%.3f unsupported_run=%d",
+            loss.reason, loss.lost_area_px, loss.detail_ratio, loss.unsupported_run_px,
+        )
+        return replace(
+            detected, needs_review=True,
+            warnings=tuple(dict.fromkeys((*detected.warnings, _SIMPLE_BG_AI_ARTWORK_LOSS_WARNING))),
+        )
 
     logger.info(
         "[STICKER_GEOMETRY] simple-bg→ai instances=1 iou=%.3f",
