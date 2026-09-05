@@ -721,6 +721,11 @@ async def export_sticker_sheet_endpoint(
                 edits=[edit.model_dump() for edit in request.edits],
                 **common_options,
             )
+    except StickerCanonicalPreviewConflict as exc:
+        # UNIFY (audit 2026-09-06 §UNIFY.L1): đã yêu cầu đúng frame preview
+        # thì stale fingerprint/tham số là lỗi đồng bộ nghiệp vụ, không phải
+        # lỗi server 500. Không trả FileResponse và không công bố artifact dở.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except StickerSheetExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

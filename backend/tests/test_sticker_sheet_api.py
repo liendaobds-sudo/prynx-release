@@ -406,6 +406,7 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
                 "cutline_fidelity": 50,
                 "curve_tension": 50,
                 "min_detail_area_mm2": 1,
+                "cutline_denoise": 70,
             },
         )
         assert previewed.status_code == 200, previewed.text
@@ -421,6 +422,12 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
             "app.workers.sticker_sheet_export.build_alpha_cutline_geometry",
             forbidden_refit,
         )
+        # Cache miss sẽ gọi lại preview worker trước cả bước fit Alpha. Chặn
+        # luôn nhánh đó để chứng minh export dùng đúng artifact preview đã duyệt.
+        monkeypatch.setattr(
+            "app.workers.sticker_cutline_preview.build_sticker_cutline_preview",
+            forbidden_refit,
+        )
         exported = client.post(
             f"/api/sticker-sheet/{session_id}/export",
             json={
@@ -434,6 +441,8 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
                     "cutline_fidelity": 50,
                     "curve_tension": 50,
                     "min_detail_area_mm2": 1,
+                    "cutline_denoise": 70,
+                    "expected_fingerprint": previewed.json()["fingerprint"],
                 }],
                 "page_order": [1],
                 "dpi": 300,
@@ -451,6 +460,126 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
 
     assert exported.status_code == 200, exported.text
     assert exported.headers["X-Sticker-Sheet-Count"] == "1"
+
+
+def test_export_tu_choi_fingerprint_khi_cache_preview_thieu(tmp_path):
+    """Có yêu cầu frame canonical nhưng session chưa có preview thì trả 409."""
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("alpha.png", _alpha_png_bytes(), "image/png")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        session_id = inspected.json()["session_id"]
+        detected = client.post(
+            f"/api/sticker-sheet/{session_id}/detect",
+            json={"strategy": "alpha", "page_number": 1},
+        )
+        assert detected.status_code == 200, detected.text
+        assert client.post(
+            f"/api/sticker-sheet/{session_id}/confirm",
+            json={"page_number": 1},
+        ).status_code == 200
+        exported = client.post(
+            f"/api/sticker-sheet/{session_id}/export",
+            json={
+                "pages": [{
+                    "source_page": 1,
+                    "expected_revision": 1,
+                    "expected_fingerprint": "a" * 64,
+                    "edits": [],
+                    "dpi": 300,
+                    "dpi_y": 150,
+                }],
+                "page_order": [1],
+                "dpi": 300,
+                "dpi_y": 150,
+                "offset_mm": 0,
+                "bleed_mm": 0,
+                "cut_mode": "original",
+                "corner_style": "preserve",
+                "preserve_existing_cut": False,
+                "output_format": "pdf",
+            },
+        )
+
+    assert exported.status_code == 409, exported.text
+    assert "xem trước" in exported.json()["detail"].lower()
+    session = session_store.get_session(session_id)
+    assert session is not None
+    assert not list(session.directory.glob("tem_cutcontour_*.pdf"))
+
+
+def test_export_tu_choi_fingerprint_khi_denoise_da_doi(tmp_path):
+    """Đổi denoise sau preview làm cache key lệch và không công bố PDF mới."""
+    with TestClient(app) as client:
+        inspected = client.post(
+            "/api/sticker-sheet/inspect",
+            files={"file": ("alpha.png", _alpha_png_bytes(), "image/png")},
+        )
+        assert inspected.status_code == 200, inspected.text
+        session_id = inspected.json()["session_id"]
+        detected = client.post(
+            f"/api/sticker-sheet/{session_id}/detect",
+            json={"strategy": "alpha", "page_number": 1},
+        )
+        assert detected.status_code == 200, detected.text
+        previewed = client.post(
+            f"/api/sticker-sheet/{session_id}/cutline-preview",
+            json={
+                "base_revision": 1,
+                "page_number": 1,
+                "edits": [],
+                "dpi": 300,
+                "dpi_y": 150,
+                "offset_mm": 0,
+                "bleed_mm": 0,
+                "cut_mode": "original",
+                "corner_style": "preserve",
+                "fill_holes": True,
+                "cutline_smoothness": 50,
+                "cutline_fidelity": 50,
+                "curve_tension": 50,
+                "min_detail_area_mm2": 1,
+                "cutline_denoise": 70,
+            },
+        )
+        assert previewed.status_code == 200, previewed.text
+        assert client.post(
+            f"/api/sticker-sheet/{session_id}/confirm",
+            json={"page_number": 1},
+        ).status_code == 200
+        exported = client.post(
+            f"/api/sticker-sheet/{session_id}/export",
+            json={
+                "pages": [{
+                    "source_page": 1,
+                    "expected_revision": 1,
+                    "expected_fingerprint": previewed.json()["fingerprint"],
+                    "edits": [],
+                    "dpi": 300,
+                    "dpi_y": 150,
+                    "cutline_denoise": 71,
+                }],
+                "page_order": [1],
+                "dpi": 300,
+                "dpi_y": 150,
+                "offset_mm": 0,
+                "bleed_mm": 0,
+                "cut_mode": "original",
+                "corner_style": "preserve",
+                "fill_holes": True,
+                "crop_to_sticker": True,
+                "preserve_existing_cut": False,
+                "output_format": "pdf",
+            },
+        )
+
+    assert exported.status_code == 409, exported.text
+    assert "preview" in exported.json()["detail"].lower()
+    session = session_store.get_session(session_id)
+    assert session is not None
+    assert not list(session.directory.glob("tem_cutcontour_*.pdf"))
 
 
 def test_detected_session_recovers_assets_after_backend_reload():
