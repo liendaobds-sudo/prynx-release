@@ -306,3 +306,38 @@ async def test_route_202_result_409_owner_isolation_va_sync_cu_van_chay(monkeypa
         lambda *_args, **_kwargs: result,
     )
     assert route.preview_layout(req, owner_a) == result
+
+
+def test_true_shape_projection_gan_kind_ring_cho_contour_11_diem(monkeypatch):
+    from app.core import nesting_preview_capacity as preview_capacity
+
+    ring = [[float(index), float(index % 3)] for index in range(11)]
+    monkeypatch.setattr(
+        preview_capacity,
+        "_placed_rings_mm",
+        lambda *_args, **_kwargs: [ring],
+    )
+    job = SimpleNamespace(
+        sheet_height_mm=100.0,
+        parts=(SimpleNamespace(part_id="part-1", page_index=0),),
+    )
+    session = SimpleNamespace(
+        solved=SimpleNamespace(
+            production_request=SimpleNamespace(
+                render_bundle={
+                    "parts": [{"partId": "part-1"}],
+                    "sheetFrames": {"cut": [0.0, 0.0, 100.0, 100.0]},
+                },
+                render_bundle_hash="bundle-hash",
+            ),
+            manifest={
+                "placements": [{"sheetIndex": 0, "partId": "part-1"}],
+            },
+        ),
+    )
+
+    cells = preview_capacity._project_sheet_cells(job, session, sheet_index=0)
+
+    assert len(cells) == 1
+    assert len(cells[0]["diePolylines"][0]) == 11
+    assert cells[0]["diePolylineKinds"] == ["ring"]

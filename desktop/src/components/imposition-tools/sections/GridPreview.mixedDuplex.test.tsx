@@ -1013,6 +1013,31 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(openContour.getAttribute("d")?.includes(" Z")).toBe(false);
   });
 
+  it("NEST26.3: ring true-shape 11 điểm dùng metadata kín, không bị coi là Bézier hở", async () => {
+    const p = (mm: number) => pt(mm);
+    const ring = Array.from({ length: 11 }, (_unused, index) => {
+      const angle = (Math.PI * 2 * index) / 11;
+      return [p(20 + Math.cos(angle) * 10), p(20 + Math.sin(angle) * 10)];
+    });
+    nestingJobMocks.result.mockResolvedValue({
+      ...capacityResponse(1, "true_shape_nesting"),
+      cells: [{
+        ...mixedCell(10, 0),
+        diePolylines: [ring],
+        diePolylineKinds: ["ring"],
+      }],
+    });
+
+    render(<TrueShapeParityPreview />);
+
+    const contour = await waitFor(() => screen.getByTestId("true-shape-contour"), {
+      timeout: 3_000,
+    });
+    expect(contour.getAttribute("data-ring-count")).toBe("1");
+    expect(contour.getAttribute("d")?.trimEnd().endsWith("Z")).toBe(true);
+    expect(screen.queryByTestId("true-shape-open-contour")).toBeNull();
+  });
+
   it("B10-6: quality gate chọn grid thì kết quả muộn không được downgrade provisional", async () => {
     const onDiagnosticEvent = vi.fn();
     let finishNesting!: (value: unknown) => void;

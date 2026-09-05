@@ -716,6 +716,11 @@ def _project_sheet_cells(
                     ]
                     for ring in rings
                 ],
+                # NEST26.3: polygon ring của true-shape đã kín theo hợp đồng
+                # manifest, kể cả khi điểm đầu không lặp ở cuối. Metadata tùy
+                # chọn giúp frontend không đoán vòng kín bằng số điểm (11 điểm
+                # còn có thể là Bézier lấy mẫu của một đoạn hở ở lane legacy).
+                "diePolylineKinds": ["ring"] * len(rings),
             }
         )
     return cells

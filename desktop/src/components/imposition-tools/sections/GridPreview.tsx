@@ -164,6 +164,8 @@ interface BackendLayoutCell {
   pageIdx?: number;
   /** Đường bế thật theo polyline (vòng hoàn chỉnh hoặc mảnh l/c), cùng hệ tọa độ backend. */
   diePolylines?: number[][][];
+  /** Metadata true-shape tùy chọn; payload legacy không có field này. */
+  diePolylineKinds?: Array<"ring" | "open">;
 }
 interface BackendCutSegment {
   axis: "x" | "y";
@@ -397,6 +399,7 @@ type SvgPreviewCell = {
   is180: boolean;
   blockId: number;
   diePolylinesPx?: number[][][];
+  diePolylineKinds?: Array<"ring" | "open">;
   idx: number;
 };
 
@@ -1210,6 +1213,7 @@ function renderCellDiePolylines(
   diePolylinesPx: number[][][] | undefined,
   blockId: number,
   side: "front" | "back",
+  diePolylineKinds?: readonly ("ring" | "open")[],
 ) {
   type Point = [number, number];
   // Sai số rất nhỏ sau pt→mm→px; không nới rộng vì hai lỗ gần nhau vẫn phải
@@ -1222,7 +1226,7 @@ function renderCellDiePolylines(
   const withoutPrependEndpoint = (points: Point[]) => points.slice(0, -1);
 
   const polylines = (diePolylinesPx || [])
-    .map((polyline): Point[] => {
+    .map((polyline, index): { points: Point[]; kind?: "ring" | "open" } => {
       const cleaned: Point[] = [];
       for (const point of polyline) {
         if (
@@ -1245,13 +1249,30 @@ function renderCellDiePolylines(
           cleaned.push(current);
         }
       }
-      return cleaned;
+      const kind = diePolylineKinds?.[index];
+      return {
+        points: cleaned,
+        kind: kind === "ring" || kind === "open" ? kind : undefined,
+      };
     })
-    .filter((polyline) => polyline.length >= 2);
+    .filter((polyline) => polyline.points.length >= 2);
 
   const rings: Point[][] = [];
   const openCandidates: Point[][] = [];
-  for (const polyline of polylines) {
+  for (const entry of polylines) {
+    const polyline = entry.points;
+    if (entry.kind === "ring") {
+      rings.push(
+        polyline.length >= 3 && closeEnough(polyline[0], polyline[polyline.length - 1])
+          ? polyline.slice(0, -1)
+          : polyline,
+      );
+      continue;
+    }
+    if (entry.kind === "open") {
+      openCandidates.push(polyline);
+      continue;
+    }
     // re/qu đã khép vòng bằng điểm đầu lặp lại; bỏ điểm lặp để Z không tạo
     // thêm một đoạn zero-length. Vòng contour true-shape cũ không lặp điểm,
     // được giữ nguyên và khép ở bước dựng path bên dưới.
@@ -3168,6 +3189,7 @@ export default function GridPreview(props: GridPreviewProps) {
               pl.map(([xm, ym]) => [pad + xm * scale, pad + ym * scale]),
             )
           : undefined,
+        diePolylineKinds: cell.diePolylineKinds,
         idx,
       };
     });
@@ -3845,6 +3867,7 @@ export default function GridPreview(props: GridPreviewProps) {
                           c.diePolylinesPx,
                           colorIndexFor(c.blockId),
                           "front",
+                          c.diePolylineKinds,
                         ) ??
                           renderCellShape(
                             c.sx,
@@ -4120,6 +4143,7 @@ export default function GridPreview(props: GridPreviewProps) {
                               c.diePolylinesPx,
                               colorIndexFor(c.blockId),
                               "back",
+                              c.diePolylineKinds,
                             ) ??
                               renderCellShape(
                                 c.sx,
