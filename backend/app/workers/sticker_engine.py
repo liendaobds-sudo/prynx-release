@@ -4377,7 +4377,7 @@ def _alpha_override_geometry(payload):
     return geometry, paths
 
 
-def _approved_contour_override(payload, target_shape):
+def _approved_contour_override(payload, target_shape, *, require_path=True):
     """Khôi phục đồng thời Alpha và Bézier đã duyệt cho đúng một trang nguồn.
 
     QUALITY (feedback 2026-08-11 §LEGACY-AI.2): mask và path là một artifact
@@ -4388,7 +4388,7 @@ def _approved_contour_override(payload, target_shape):
         return None
     fitted = _alpha_override_geometry(payload)
     raw_alpha = payload.get("alpha")
-    if fitted is None or raw_alpha is None:
+    if (require_path and fitted is None) or raw_alpha is None:
         return None
     # QUALITY (feedback 2026-08-21 §FULLPAGE-OVERRIDE.1): `page-box` là
     # artifact hợp lệ cho ảnh phủ kín trang, vì vậy Alpha toàn 255 là có chủ
@@ -4419,6 +4419,12 @@ def _approved_contour_override(payload, target_shape):
         # ``ratio <= 1`` chung cho mọi nguồn, nếu không Alpha stale gần kín
         # trang sẽ vô tình được coi là artifact đã duyệt.
         if not np.all(foreground_mask):
+            return None
+    elif boundary_source == "manual" and payload.get("preserve_original") is True:
+        # UNIFY (audit 2026-09-06 §CUSTOM.4): tem do người dùng chọn có thể
+        # chiếm >98% trang. Artifact đã khóa revision/fingerprint không phải
+        # kết quả dò nền chưa tin cậy để áp ngưỡng diện tích của AI.
+        if not np.any(foreground_mask):
             return None
     elif not mask_tach_duoc_nen(foreground_mask):
         return None
@@ -9044,6 +9050,12 @@ class StickerEngine:
             # top-level sequential path copies catalog-level output profiles here.
             if _page_subset is None:
                 copy_output_intents(doc_in_pike, doc_out)
+            if any(payload.get("preserve_original") is True for payload in approved_contour_overrides.values()):
+                # UNIFY (audit 2026-09-06 §CUSTOM.4): page copy không mang theo
+                # trạng thái OCG ở catalog; thiếu nó sẽ làm lộ artwork đã ẩn.
+                from app.workers.sticker_pdf_preserve import copy_preserved_pdf_catalog
+
+                copy_preserved_pdf_catalog(doc_in_pike, doc_out)
             
             debug_step = "Inject Spot Color Definition"
             c, m, y, k = cut_color
@@ -9136,8 +9148,14 @@ class StickerEngine:
                         page_in.close()
                     page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
-                selection_page_mode = page_idx in selection_targets
                 approved_payload = approved_contour_overrides.get(page_idx)
+                # UNIFY (audit 2026-09-06 §CUSTOM.4): workspace tự động cũng
+                # giữ artwork PDF nguyên tấm; lựa chọn object chỉ là một nguồn
+                # của mask canonical, không còn là điều kiện giữ trang gốc.
+                selection_page_mode = page_idx in selection_targets or bool(
+                    isinstance(approved_payload, dict)
+                    and approved_payload.get("preserve_original") is True
+                )
                 alpha_path_payload = alpha_path_overrides.get(page_idx)
                 alpha_background = _approved_edge_background(alpha_path_payload)
                 if alpha_background is not None:
@@ -9249,7 +9267,38 @@ class StickerEngine:
                     has_alpha = False
                 else:
                     img_native = None
-                    if selection_page_mode:
+                    if (
+                        selection_page_mode
+                        and isinstance(approved_payload, dict)
+                        and approved_payload.get("source_rgba") is not None
+                    ):
+                        # UNIFY (audit 2026-09-06 §CUSTOM.4): màu và Alpha đã
+                        # snapshot cùng revision từ lựa chọn trên canvas. Không
+                        # render lại object rồi làm mất thao tác sửa mask đã duyệt.
+                        selected_rgba = np.asarray(approved_payload["source_rgba"])
+                        if (
+                            selected_rgba.dtype != np.uint8
+                            or selected_rgba.ndim != 3
+                            or selected_rgba.shape[2] != 4
+                            or not selected_rgba.size
+                        ):
+                            raise ValueError("Ảnh vùng tem đã duyệt không hợp lệ.")
+                        target_size = (
+                            max(1, int(math.ceil(pw_pt * self.scale))),
+                            max(1, int(math.ceil(ph_pt * self.scale))),
+                        )
+                        img = cv2.resize(
+                            selected_rgba,
+                            target_size,
+                            interpolation=(
+                                cv2.INTER_AREA
+                                if selected_rgba.shape[1] > target_size[0]
+                                else cv2.INTER_LINEAR
+                            ),
+                        )
+                        img_native = img[:, :, :3].copy()
+                        has_alpha = True
+                    elif selection_page_mode:
                         img = _render_selected_objects_rgba(
                             page_in,
                             selection_targets[page_idx],
@@ -9299,6 +9348,9 @@ class StickerEngine:
                     approved = _approved_contour_override(
                         approved_payload,
                         img.shape[:2],
+                        # Chỉ bù xén vẫn dùng đúng Alpha sửa tay; không dựng một
+                        # đường dao giả chỉ để thỏa điều kiện của adapter CUT.
+                        require_path=cut_mode != "none",
                     )
                     if approved is None:
                         raise ValueError(
