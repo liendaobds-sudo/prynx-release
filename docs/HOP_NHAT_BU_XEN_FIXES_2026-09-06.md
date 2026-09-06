@@ -250,3 +250,21 @@ tài liệu khi không còn lịch sử tem. Không sửa backend; chưa xác mi
 Bỏ nút “Lưu bộ PNG” và tiêu đề “Kết quả” trong footer công cụ; nút “Tạo PDF có đường cắt” dùng
 toàn chiều ngang. Gỡ callback PNG khỏi shell/panel, giữ API/backend PNG tương thích bên dưới.
 Verify: 46 tests panel/shell, typecheck và ESLint đạt; không sửa engine, chưa kiểm lại trong Tauri.
+
+## Hồi quy người dùng — khung bù xén bị cắt và zoom sau xuất
+
+Bằng chứng đầy đủ tại `BAO_CAO_AUDIT_BU_XEN_KHUNG_ZOOM_2026-09-06.md`.
+
+- Đã tìm PDF xuất thực của `test bu xen.pdf`: khổ vẫn 50 × 50,2757 mm như nguồn, render bị cắt mép
+  đúng ảnh người dùng. Nhánh giữ artwork gốc từng bỏ qua mở MediaBox/CropBox.
+- Khung xuất nay bao CUT/bleed thật; không scale/dịch artwork. Clip riêng phần artwork cũ theo
+  CropBox cũ để không làm lộ nội dung đã xén, rồi mới thêm bleed và CUT. Giữ TrimBox gốc.
+- Bản sao cùng mask/thông số đại diện offset 0, bleed 2, denoise 50 cho khung 54,44 × 53,85 mm.
+  Đã xem render mới đủ vành bù xén; CUT, payload ảnh/SMask và ma trận trước/sau giữ nguyên.
+- Ctrl+wheel mất tác dụng vì ref scroller bị xóa sau đổi file dù DOM còn mounted. Nút +/- có lúc
+  đổi tỷ lệ nhưng row Virtuoso không cập nhật (context thiếu zoom). Đã sửa đúng vòng đời ref và
+  presentation revision; không đổi cap zoom, chất lượng hay ngân sách phần cứng.
+- Verify frontend 426 tests / 36 file, typecheck và ESLint đạt. Backend 422 ca đạt (421 lượt tổng,
+  1 ProcessPool chạy lại ngoài sandbox); 9 regression mới kiểm khung, Rotate/UserUnit và phần đã xén.
+- Chưa nghiệm thu native Tauri. Người dùng cần nạp bản dev mới và tạo lại PDF; file đã xuất lỗi
+  trước sửa vẫn giữ khổ cũ. Không sửa đè nguồn hoặc phiên runtime, không build installer/push.
