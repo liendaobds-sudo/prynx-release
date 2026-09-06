@@ -3,7 +3,6 @@ import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { saveBlob } from '../../lib/saveBlob';
 import { toast } from '../ui/Toast';
 import { registerStickerIncomingSource } from '../../lib/stickerIncomingSources';
 import StickerSheetPanel from './StickerSheetPanel';
@@ -258,30 +257,6 @@ export default function StickerCutlineTool({
         }
     };
 
-    const handleExportPng = async () => {
-        const result = await actions.exportFile(
-            tabId,
-            'png_zip',
-            workingPageOrder,
-            prepareWorkspaceSource,
-        );
-        if (!result) return;
-        try {
-            const saved = await saveBlob(result.blob, result.filename, {
-                title: tv('Lưu bộ PNG từng tem'),
-                filterName: 'ZIP',
-                extensions: ['zip'],
-            });
-            if (saved.kind === 'saved') {
-                toast.success(`${tv('Đã lưu')} ${result.stickerCount} PNG`);
-            }
-        } catch {
-            toast.error(tv('Không lưu được bộ PNG. Hãy thử lại.'));
-        } finally {
-            actions.finishExport(tabId);
-        }
-    };
-
     return (
         <div ref={shellRef} className="flex flex-col gap-4">
             {UNIFIED_STICKER_WORKSPACE && (
@@ -330,7 +305,6 @@ export default function StickerCutlineTool({
                     <StickerSheetPanel
                         tabId={tabId}
                         onExport={handleExport}
-                        onExportPng={handleExportPng}
                         isExporting={tab?.isExporting === true}
                         pageOrder={workingPageOrder}
                         prepareWorkspaceSource={prepareWorkspaceSource}

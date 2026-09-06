@@ -244,3 +244,9 @@ Verify cuối: 505 tests / 47 file frontend đạt, typecheck và ESLint 4 file 
 nút Nhận diện tự động → mask-ready → Ctrl+Z → source-ready → Ctrl+Y/Shift+Ctrl+Z, cùng fingerprint
 và không tăng lượt detect. Kiểm input/tab nền/object/crop/VDP/dialog, nguồn đã đổi và nhường Undo
 tài liệu khi không còn lịch sử tem. Không sửa backend; chưa xác minh trực tiếp trong Tauri.
+
+## Gọn đầu ra PDF theo phản hồi
+
+Bỏ nút “Lưu bộ PNG” và tiêu đề “Kết quả” trong footer công cụ; nút “Tạo PDF có đường cắt” dùng
+toàn chiều ngang. Gỡ callback PNG khỏi shell/panel, giữ API/backend PNG tương thích bên dưới.
+Verify: 46 tests panel/shell, typecheck và ESLint đạt; không sửa engine, chưa kiểm lại trong Tauri.

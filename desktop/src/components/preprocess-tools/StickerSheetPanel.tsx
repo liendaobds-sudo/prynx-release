@@ -15,7 +15,6 @@ import { ToolNumberInput, ToolSectionLabel } from './ToolUI';
 interface Props {
     tabId: string;
     onExport?: () => void | Promise<void>;
-    onExportPng?: () => void | Promise<void>;
     isExporting?: boolean;
     pageOrder?: number[];
     prepareWorkspaceSource?: PrepareStickerWorkspaceSource;
@@ -97,7 +96,6 @@ function CutlineSlider({
 export default function StickerSheetPanel({
     tabId,
     onExport,
-    onExportPng,
     isExporting = false,
     pageOrder,
     prepareWorkspaceSource,
@@ -743,25 +741,15 @@ export default function StickerSheetPanel({
                                 </div>
 
                                 <div className="border-t border-slate-200 pt-4 dark:border-zinc-700">
-                                    <ToolSectionLabel>{tv('Kết quả')}</ToolSectionLabel>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <button
-                                            type="button"
-                                            onClick={() => { void finalizeMaskAndExport(onExportPng); }}
-                                            disabled={!onExportPng || busy || isExporting || !allPagesExportable}
-                                            className="h-11 rounded-xl border border-violet-300 bg-white text-[11px] font-bold text-violet-700 shadow-sm hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
-                                        >
-                                            {tv('Lưu bộ PNG')}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => { void finalizeMaskAndExport(onExport); }}
-                                            disabled={!onExport || busy || isExporting || !allPagesExportable}
-                                            className="h-11 rounded-xl bg-violet-600 px-2 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            {isExporting ? tv('Đang tạo file…') : tv('Tạo PDF có đường cắt')}
-                                        </button>
-                                    </div>
+                                    {/* UIUX (feedback 2026-09-06): công cụ này chỉ cần hành động xuất PDF. */}
+                                    <button
+                                        type="button"
+                                        onClick={() => { void finalizeMaskAndExport(onExport); }}
+                                        disabled={!onExport || busy || isExporting || !allPagesExportable}
+                                        className="h-11 w-full rounded-xl bg-violet-600 px-2 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {isExporting ? tv('Đang tạo file…') : tv('Tạo PDF có đường cắt')}
+                                    </button>
                                     {!allPagesExportable && (
                                         <p className="mt-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
                                             {exportPageCount - exportablePageCount} {tv('trang còn cần nhận diện trước khi xuất.')}
