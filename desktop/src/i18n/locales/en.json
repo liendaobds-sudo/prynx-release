@@ -5945,6 +5945,8 @@
   },
   "preprocess.stickerUnified": {
     "select_sticker": "Select stickers",
+    "confirm_background": "Changing background handling discards mask edits on these pages. Continue?",
+    "background_not_applicable": "Using existing boundaries or manually selected areas.",
     "apply_selection": "Use selection",
     "cancel_selection": "Cancel selection",
     "stale_selection": "The document or selection changed. Select the stickers again.",

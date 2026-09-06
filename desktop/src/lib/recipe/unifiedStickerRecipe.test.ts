@@ -34,6 +34,25 @@ beforeEach(() => {
     vi.mocked(exportStickerSheet).mockResolvedValue({ blob: new Blob(['out']), filename: 'out.pdf', outputPath: 'temp/session/out.pdf', stickerCount: 1 });
 });
 describe('recipe workspace tem', () => {
+    it('ghi và phát lựa chọn giữ nền trắng bằng cùng policy khung trang', async () => {
+        const tab = { ...useStickerSheetStore.getState().getTab('background'),
+            removeWhiteBg: false, detectionStrategy: 'auto' as const,
+            manifest: { ...detection, boundary_source: 'page-box' as const }, status: 'mask-ready' as const,
+        };
+        const params = makeUnifiedStickerRecipe(tab);
+        expect(params).toMatchObject({ removeWhiteBg: false, strategy: 'page-box' });
+        const ctx = context();
+        expect((await runUnifiedStickerRecipe(ctx, params!, null)).status).toBe('completed');
+        expect(detectStickerSourceManifest).toHaveBeenCalledWith('a'.repeat(32), expect.objectContaining({ strategy: 'page-box' }));
+        expect(makeUnifiedStickerRecipe({ ...tab, whiteBackgroundStale: true })).toBeNull();
+    });
+
+    it('biên Alpha ưu tiên hơn lựa chọn nền trắng khi phát quy trình', async () => {
+        const ctx = context();
+        await runUnifiedStickerRecipe(ctx, { cutMode: 'alpha', removeWhiteBg: false, strategy: 'page-box' }, null);
+        expect(detectStickerSourceManifest).toHaveBeenCalledWith('a'.repeat(32), expect.objectContaining({ strategy: 'alpha' }));
+    });
+
     it('dò file mới, giữ denoise/fingerprint và chỉ commit bytes trước khi đóng session', async () => {
         const ctx = context();
         const result = await runUnifiedStickerRecipe(ctx, { workflow: 'unified-v2', cutlineDenoise: 70, bleedMm: 2, cropToSticker: false }, null);

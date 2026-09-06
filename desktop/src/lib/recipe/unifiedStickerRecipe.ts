@@ -1,6 +1,7 @@
 import type { RecipeRunner } from './PlaybackRunner';
 import type { StickerSheetTabState } from '../../components/preprocess-tools/stickerSheetStore';
 import { sanitizeStickerOutputSettings } from '../../components/preprocess-tools/stickerOutputSettings';
+import { resolveStickerDetectionStrategy } from '../../components/preprocess-tools/stickerDetectionSettings';
 import {
     inspectStickerSourceManifest, detectStickerSourceManifest, previewStickerCutline,
     confirmStickerSource, exportStickerSheet, closeStickerSheetSession,
@@ -19,17 +20,19 @@ export function makeUnifiedStickerRecipe(tab: StickerSheetTabState, pageOrder?: 
     const order = pageOrder?.length ? pageOrder : Array.from({ length: count }, (_, i) => i + 1);
     if (order.length !== count || order.some((n, i) => n !== i + 1)) return null;
     const pages = order.map(n => tab.pages[n] || (n === tab.activeSourcePage ? tab : null));
-    if (pages.some(page => !page?.manifest || page.edits.length
+    if (pages.some(page => !page?.manifest || page.edits.length || page.whiteBackgroundStale
         || page.manifest.vector_geometry_ref?.kind === 'pdf-object-selection')) return null;
     const first = pages[0]!;
     const tuning = tuningOf(first);
-    const strategy = tab.detectionStrategy || (first.manifest!.boundary_source === 'page-box' ? 'page-box' : 'auto');
+    const preferred = tab.detectionStrategy || (first.manifest!.boundary_source === 'page-box' ? 'page-box' : 'auto');
+    const removeWhiteBg = tab.removeWhiteBg ?? preferred !== 'page-box';
+    const strategy = resolveStickerDetectionStrategy(tab.outputSettings.cutMode, removeWhiteBg, preferred);
     if (pages.some(page => JSON.stringify(tuningOf(page!)) !== JSON.stringify(tuning)
         || (page!.manifest!.boundary_source === 'page-box') !== (strategy === 'page-box')
         || page!.preserveExistingCut !== first.preserveExistingCut)) return null;
     return {
         workflow: 'unified-v2', productType: 'sticker', ...tab.outputSettings,
-        ...tuning, strategy, preserveExistingCut: first.preserveExistingCut,
+        ...tuning, strategy, removeWhiteBg, preserveExistingCut: first.preserveExistingCut,
         bleedColorHex: tab.outputSettings.solidBleedCmyk.join(','),
     };
 }
@@ -46,8 +49,10 @@ export const runUnifiedStickerRecipe: RecipeRunner = async (ctx, params) => {
     const tuning = { cutlineSmoothness: percent('cutlineSmoothness', 50), cutlineFidelity: percent('cutlineFidelity', 50),
         curveTension: percent('curveTension', 50), cutlineDenoise: percent('cutlineDenoise', 50), minDetailAreaMm2: percent('minDetailAreaMm2', 1, 25) };
     const settings = sanitizeStickerOutputSettings(params);
-    const strategy: StickerDetectionStrategy = ['page-box', 'alpha', 'simple-bg', 'ai'].includes(String(params.strategy))
+    const preferred: StickerDetectionStrategy = ['page-box', 'alpha', 'simple-bg', 'ai'].includes(String(params.strategy))
         ? params.strategy as StickerDetectionStrategy : 'auto';
+    const removeWhiteBg = typeof params.removeWhiteBg === 'boolean' ? params.removeWhiteBg : preferred !== 'page-box';
+    const strategy = resolveStickerDetectionStrategy(settings.cutMode, removeWhiteBg, preferred);
     ctx.setError(''); ctx.setIsProcessing(true); ctx.setProcessStatus(tv('Đang nhận diện tem và tạo đường cắt'));
     ctx.setCancelHandler?.(async () => { controller.abort(); });
     try {

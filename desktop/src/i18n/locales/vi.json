@@ -5945,6 +5945,8 @@
   },
   "preprocess.stickerUnified": {
     "select_sticker": "Chọn tem",
+    "confirm_background": "Đổi xử lý nền sẽ bỏ nét sửa trên các trang. Tiếp tục?",
+    "background_not_applicable": "Đang dùng biên có sẵn hoặc vùng tem chọn tay.",
     "apply_selection": "Dùng phần đã chọn",
     "cancel_selection": "Hủy chọn tem",
     "stale_selection": "Tài liệu hoặc lựa chọn đã đổi. Hãy chọn lại tem.",
