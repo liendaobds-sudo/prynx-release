@@ -416,3 +416,105 @@ def test_pdf_khong_profile_khong_tu_gan_srgb_khi_ghep(tmp_path):
     result = _export(session, _settings(session, cut_mode="none"), page_order=[1, 1])
     with pikepdf.Pdf.open(result.path) as document:
         assert document.Root.get("/OutputIntents") is None
+
+
+@pytest.mark.parametrize("generic", [False, True])
+@pytest.mark.parametrize("cut_mode,offset_mm,bleed_mm", [
+    ("original", 1.0, 2.0), ("none", 1.0, 3.0),
+])
+def test_keep_sheet_mo_rong_khung_de_khong_cat_mat_bleed_sat_mep(
+    tmp_path, generic, cut_mode, offset_mm, bleed_mm,
+):
+    source = tmp_path / "near-page-edge.pdf"
+    with pikepdf.Pdf.new() as document:
+        page = document.add_blank_page(page_size=(100, 100))
+        page.Contents = document.make_stream(
+            b"1 1 1 rg 0 0 100 100 re f\n"
+            b"0 0.75 0.2 rg 1 1 98 98 re f\n"
+        )
+        document.save(source)
+    session = _session(source, generic=generic)
+    settings = _settings(session, cut_mode=cut_mode, offset_mm=offset_mm, bleed_mm=bleed_mm)
+    fingerprint = _preview(session, settings)["fingerprint"] if cut_mode != "none" else None
+    result = _export(session, settings, fingerprint)
+    with pikepdf.Pdf.open(result.path) as document:
+        media = [float(value) for value in document.pages[0].MediaBox]
+        crop = [float(value) for value in document.pages[0].cropbox]
+        # BLEED (feedback 2026-09-06 §VIEW.1): giữ nguyên tấm không có nghĩa
+        # khóa khổ cũ rồi cắt mất 3 mm offset + bù xén đã sinh ngoài trang.
+        assert media[0] < -7.0 and media[1] < -7.0, media
+        assert media[2] > 107.0 and media[3] > 107.0, media
+        assert crop == pytest.approx(media)
+    pixels = _render(result.path)
+    # Render thật phải thấy được vùng màu ngoài khổ 100 pt gốc, không chỉ sửa box.
+    assert pixels.shape[0] > 228 and pixels.shape[1] > 228
+    green_difference = pixels[:16, :, 1].astype(np.int16) - pixels[:16, :, 0]
+    assert np.count_nonzero(green_difference > 30) > 100
+
+
+@pytest.mark.parametrize("rotation,user_unit", [(0, 1), (90, 2), (180, 1), (270, 2)])
+def test_noi_cropbox_khong_lo_artwork_da_xen_va_giu_dung_scale(
+    tmp_path, rotation, user_unit,
+):
+    source = tmp_path / "near-crop-edge.pdf"
+    original = (
+        b"1 1 1 rg 0 0 120 100 re f\n"
+        b"0 0.75 0.2 rg 11 11 98 78 re f\n"
+        b"0 0 0 rg 0 0 120 9 re f 0 91 120 9 re f 0 0 9 100 re f 111 0 9 100 re f\n"
+    )
+    with pikepdf.Pdf.new() as document:
+        page = document.add_blank_page(page_size=(120, 100))
+        page.CropBox = pikepdf.Array([10, 10, 110, 90])
+        page.TrimBox = pikepdf.Array([11, 11, 109, 89])
+        page.Rotate = rotation
+        page.UserUnit = user_unit
+        page.Contents = document.make_stream(original)
+        document.save(source)
+    session = _session(source)
+    settings = _settings(session, offset_mm=1.0, bleed_mm=2.0)
+    preview = _preview(session, settings)
+    result = _export(session, settings, preview["fingerprint"])
+    with pikepdf.Pdf.open(result.path) as document:
+        page = document.pages[0]
+        crop = [float(value) for value in page.cropbox]
+        media = [float(value) for value in page.mediabox]
+        crop_width = (100 if rotation % 180 == 0 else 80) * user_unit
+        crop_height = (80 if rotation % 180 == 0 else 100) * user_unit
+        # Nguồn có margin 1 UserUnit; offset và bleed luôn theo mm vật lý.
+        expected_overflow = 3.0 * 72 / 25.4 - user_unit
+        # Khung lấy theo SMask thật, gồm làm tròn/raster safety/feather ở hai
+        # mép, nên có thể lớn hơn bound lý thuyết tối đa 5 pixel render 300 DPI.
+        raster_guard_points = 5 * 72 / 300
+        assert crop[2] - crop[0] == pytest.approx(crop_width + 2 * expected_overflow, abs=raster_guard_points)
+        assert crop[3] - crop[1] == pytest.approx(crop_height + 2 * expected_overflow, abs=raster_guard_points)
+        assert media[0] <= crop[0] < crop[2] <= media[2]
+        assert media[1] <= crop[1] < crop[3] <= media[3]
+        assert original in _contents(page)
+        assert int(page.obj.get("/Rotate", 0)) == 0
+        assert float(page.obj.get("/UserUnit", 1)) == 1
+        # Khung thành phẩm vẫn là metadata gốc; không tự đổi theo vùng bleed.
+        trim = [float(value) for value in page.TrimBox]
+        assert trim[2] - trim[0] == pytest.approx((98 if rotation % 180 == 0 else 78) * user_unit)
+    pixels = _render(result.path)
+    # Dải đen có trong stream nguồn nhưng nằm ngoài CropBox cũ: nới khung chỉ
+    # được làm lộ phần bù xén xanh mới, không khôi phục nội dung đã xén đó.
+    assert not np.any(np.max(pixels[:, :, :3], axis=2) < 40)
+
+
+def test_cut_sat_mep_khong_bleed_van_giu_tron_be_rong_net_dao(tmp_path):
+    source = tmp_path / "cut-only.pdf"
+    with pikepdf.Pdf.new() as document:
+        page = document.add_blank_page(page_size=(100, 100))
+        page.Contents = document.make_stream(
+            b"1 1 1 rg 0 0 100 100 re f\n0 0.75 0.2 rg 1 1 98 98 re f\n"
+        )
+        document.save(source)
+    session = _session(source)
+    settings = _settings(session, offset_mm=1.0, bleed_mm=0.0)
+    preview = _preview(session, settings)
+    result = _export(session, settings, preview["fingerprint"])
+    with pikepdf.Pdf.open(result.path) as document:
+        crop = [float(value) for value in document.pages[0].cropbox]
+        # Nửa nét dao 1 pt cũng nằm trong khung; chỉ union tâm path là chưa đủ.
+        assert crop[0] < -2.3 and crop[1] < -2.3, crop
+        assert crop[2] > 102.3 and crop[3] > 102.3, crop

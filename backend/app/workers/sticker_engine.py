@@ -9632,8 +9632,8 @@ class StickerEngine:
                 # và làm MediaBox phình vô cớ. Offset âm co đường cắt vào trong nên cũng
                 # không cần abs(); chỉ phần thực sự nở ra ngoài mới cần pad.
                 if selection_page_mode:
-                    # Keep the original sheet dimensions. Bleed at the physical
-                    # page edge is clipped instead of expanding/cropping the A5.
+                    # Artwork copy giữ nguyên gốc tọa độ. Khung sẽ nới theo
+                    # CUT/bleed thực ở cuối trang, không đệm hay dịch nội dung.
                     max_expansion_pts = 0.0
                 elif rectangle_mode:
                     max_expansion_pts = max(0.0, bleed_pts)
@@ -11251,6 +11251,42 @@ class StickerEngine:
                     page_content_stream.append("Q")
 
                 if selection_page_mode:
+                    # BLEED (feedback 2026-09-06 §VIEW.1): workspace hợp nhất
+                    # giữ PDF gốc nhưng vẫn phải thấy phần bù xén vượt mép.
+                    # Dùng extent thật ở hệ PDF, kể cả chế độ chỉ bù xén không
+                    # có dieline_poly; không đổi canonical path hoặc scale ảnh.
+                    from app.workers.sticker_page_canvas import (
+                        expand_preserved_sticker_page_canvas,
+                    )
+
+                    selection_visible_boxes = []
+                    if (
+                        _cut_page_ok and draw_cut_contour and cut_mode != "none"
+                        and cut_poly is not None and not cut_poly.is_empty
+                    ):
+                        bx0, by0, bx1, by1 = cut_poly.bounds
+                        # Giữ đủ nửa nét dao 1 pt và dung sai lấy mẫu đường cong.
+                        selection_visible_boxes.append((
+                            crop_x0 + bx0 - 0.55,
+                            crop_y0 + page_in_height - by1 - 0.55,
+                            crop_x0 + bx1 + 0.55,
+                            crop_y0 + page_in_height - by0 + 0.55,
+                        ))
+                    if bleed_stream_data and bleed_ring is not None:
+                        bx, by, bw, bh = cv2.boundingRect(bleed_ring)
+                        if bw > 0 and bh > 0:
+                            # SMask có an toàn raster/feather thực; lấy cả phần
+                            # nội suy nửa pixel để viewer không cắt mép màu đó.
+                            sample_guard = 0.5 / self.scale
+                            selection_visible_boxes.append((
+                                shift_x + bx / self.scale - sample_guard,
+                                shift_y + (img_h - by - bh) / self.scale - sample_guard,
+                                shift_x + (bx + bw) / self.scale + sample_guard,
+                                shift_y + (img_h - by) / self.scale + sample_guard,
+                            ))
+                    expand_preserved_sticker_page_canvas(
+                        doc_out, page_out, selection_visible_boxes,
+                    )
                     if selection_bleed_content_stream:
                         bleed_content = "\n".join(selection_bleed_content_stream).encode("ascii")
                         # The copied sheet may contain a full-page white
