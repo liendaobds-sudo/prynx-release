@@ -23,6 +23,8 @@ import { getFileArrayBuffer } from '../../lib/utils';
 import {
     DEFAULT_STICKER_OUTPUT_SETTINGS,
     sanitizeStickerOutputSettings,
+    loadUnifiedStickerOutputSettings,
+    saveUnifiedStickerOutputSettings,
     type StickerOutputSettings,
 } from './stickerOutputSettings';
 
@@ -112,6 +114,9 @@ export interface StickerSheetPageState {
 }
 
 export interface StickerSheetTabState {
+    unifiedInitialized?: boolean;
+    detectionStrategy?: StickerDetectionStrategy;
+    maskEditingEnabled?: boolean;
     mode: StickerSourceMode;
     productType: StickerProductType;
     status: StickerSheetStatus;
@@ -156,6 +161,11 @@ export interface StickerSheetTabState {
 interface StickerSheetStore {
     tabs: Record<string, StickerSheetTabState>;
     initTab: (tabId: string) => void;
+    enableUnified: (tabId: string) => void;
+    setDetectionStrategy: (tabId: string, strategy: StickerDetectionStrategy) => void;
+    setMaskEditingEnabled: (tabId: string, enabled: boolean) => void;
+    restartDetection: (tabId: string) => boolean;
+    cancelDetection: (tabId: string) => void;
     getTab: (tabId: string) => StickerSheetTabState;
     setMode: (tabId: string, mode: StickerSourceMode) => void;
     setProductType: (tabId: string, productType: StickerProductType) => void;
@@ -574,6 +584,48 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         }
     },
     getTab: (tabId) => get().tabs[tabId] || defaultTabState(),
+    enableUnified: (tabId) => {
+        const current = get().tabs[tabId] || defaultTabState();
+        if (current.unifiedInitialized) return;
+        // Đã có session/thiết lập đang làm thì giữ nguyên, không di trú đè nó.
+        const outputSettings = current.sourceFile || current.mode === 'ai-sheet'
+            ? current.outputSettings : loadUnifiedStickerOutputSettings();
+        set(state => ({ tabs: { ...state.tabs, [tabId]: { ...current, outputSettings, unifiedInitialized: true } } }));
+    },
+    setDetectionStrategy: (tabId, detectionStrategy) => set(state => {
+        const tab = state.tabs[tabId];
+        if (!tab || workflowMutationLocked(tab)) return state;
+        return { tabs: { ...state.tabs, [tabId]: { ...tab, detectionStrategy } } };
+    }),
+    setMaskEditingEnabled: (tabId, maskEditingEnabled) => set(state => {
+        const tab = state.tabs[tabId];
+        if (!tab) return state;
+        return { tabs: { ...state.tabs, [tabId]: { ...tab, maskEditingEnabled } } };
+    }),
+    restartDetection: tabId => {
+        const tab = get().tabs[tabId];
+        if (!tab?.sourceFile || workflowMutationLocked(tab)) return false;
+        cancelRequests(tabId);
+        releaseAssets(tab);
+        const previousPages = Object.keys(tab.pages).length ? tab.pages : { [tab.activeSourcePage]: pageState(tab, tab.activeSourcePage) };
+        const pages = Object.fromEntries(Object.entries(previousPages).map(([id, page]) => [id, {
+            ...defaultPageState('source-ready'), cutlineDenoise: page.cutlineDenoise,
+            cutlineSmoothness: page.cutlineSmoothness, cutlineFidelity: page.cutlineFidelity,
+            curveTension: page.curveTension, minDetailAreaMm2: page.minDetailAreaMm2,
+            outputDpi: page.outputDpi, outputDpiY: page.outputDpiY,
+        }]));
+        const next = { ...tab, pages, inspection: null, maskEditingEnabled: false,
+            sourcePreviewUrl: createSourcePreviewUrl(tab.sourceFile), sourcePreviewReady: !isPdfSourceFile(tab.sourceFile) };
+        set(state => ({ tabs: { ...state.tabs, [tabId]: mirrorActivePage(next, tab.activeSourcePage, pages[tab.activeSourcePage] || defaultPageState('source-ready')) } }));
+        return true;
+    },
+    cancelDetection: tabId => {
+        const tab = get().tabs[tabId];
+        if (!tab || !['inspecting', 'detecting'].includes(tab.status)) return;
+        // Hủy request chỉ bỏ kết quả về muộn; không dừng tiến trình ứng dụng.
+        // Session có file riêng, đóng sau khi worker nhả khóa như endpoint cũ.
+        get().restartDetection(tabId);
+    },
     setMode: (tabId, mode) => set(state => {
         const tab = state.tabs[tabId] || defaultTabState();
         if (workflowMutationLocked(tab)) return state;
@@ -643,14 +695,14 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             pageNumber = tab.activeSourcePage;
             changed = true;
             shouldRefreshPreview = cutlineGeometryChanged(tab.outputSettings, outputSettings);
-            const pages = shouldRefreshPreview
+            const pages = shouldRefreshPreview || tab.unifiedInitialized
                 ? Object.fromEntries(Object.entries(tab.pages).map(([key, page]) => [
                     key,
                     {
                         ...page,
                         preserveExistingCut: false,
-                        cutlinePreview: null,
-                        isCutlinePreviewing: false,
+                        cutlinePreview: shouldRefreshPreview ? null : page.cutlinePreview,
+                        isCutlinePreviewing: shouldRefreshPreview ? false : page.isCutlinePreviewing,
                     },
                 ])) as Record<number, StickerSheetPageState>
                 : tab.pages;
@@ -663,27 +715,33 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     [tabId]: mirrorActivePage(
                         updated,
                         updated.activeSourcePage,
-                        shouldRefreshPreview
+                        shouldRefreshPreview || tab.unifiedInitialized
                             ? { ...activePage, preserveExistingCut: false }
                             : activePage,
                     ),
                 },
             };
         });
-        if (changed && shouldRefreshPreview) scheduleCurrentCutlinePreview(tabId, pageNumber);
+        const latest = get().tabs[tabId];
+        if (changed && latest?.unifiedInitialized) saveUnifiedStickerOutputSettings(latest.outputSettings);
+        if (changed && shouldRefreshPreview) {
+            const pageNumbers = latest?.unifiedInitialized
+                ? Object.keys(latest.pages).map(Number) : [pageNumber];
+            for (const n of pageNumbers) scheduleCurrentCutlinePreview(tabId, n);
+        }
     },
-    setPreserveExistingCut: (tabId, preserveExistingCut) => set(state => {
-        const tab = state.tabs[tabId] || defaultTabState();
-        if (workflowMutationLocked(tab)) return state;
-        return {
-            tabs: {
-                ...state.tabs,
-                [tabId]: updatePage(tab, tab.activeSourcePage, page => ({
-                    ...page, preserveExistingCut,
-                })),
-            },
-        };
-    }),
+    setPreserveExistingCut: (tabId, preserveExistingCut) => {
+        let pageNumber = 1;
+        set(state => {
+            const tab = state.tabs[tabId] || defaultTabState();
+            if (workflowMutationLocked(tab)) return state;
+            pageNumber = tab.activeSourcePage;
+            return { tabs: { ...state.tabs, [tabId]: updatePage(tab, pageNumber, page => ({
+                ...page, preserveExistingCut, cutlinePreview: preserveExistingCut ? null : page.cutlinePreview,
+            })) } };
+        });
+        if (!preserveExistingCut) scheduleCurrentCutlinePreview(tabId, pageNumber, 0);
+    },
     setActivePage: (tabId, pageNumber) => {
         let normalized = 1;
         let needsPreview = false;
@@ -759,6 +817,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             ...base,
             mode: previous.mode,
             productType: previous.productType,
+            unifiedInitialized: previous.unifiedInitialized,
             model: previous.model,
             outputSettings: previous.outputSettings,
             sourceFile,
@@ -779,6 +838,12 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         if (workflowMutationLocked(previous)) return;
         if (sources.length === 1) {
             get().selectSource(tabId, sources[0], sourceOrigin, 1);
+            return;
+        }
+        if (sources.some(isPdfSourceFile)) {
+            set(state => ({ tabs: { ...state.tabs, [tabId]: { ...previous,
+                error: 'Chỉ chọn một PDF hoặc nhiều ảnh. Ghép các PDF trước khi nhận diện.',
+            } } }));
             return;
         }
 
@@ -877,6 +942,14 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 const pages: Record<number, StickerSheetPageState> = {};
                 for (let pageNumber = 1; pageNumber <= payload.inspection.page_count; pageNumber += 1) {
                     const page = defaultPageState('source-ready');
+                    const old = latest.pages[pageNumber];
+                    if (old) {
+                        page.cutlineDenoise = old.cutlineDenoise;
+                        page.cutlineSmoothness = old.cutlineSmoothness;
+                        page.cutlineFidelity = old.cutlineFidelity;
+                        page.curveTension = old.curveTension;
+                        page.minDetailAreaMm2 = old.minDetailAreaMm2;
+                    }
                     if (pageNumber === 1) {
                         page.outputDpi = payload.inspection.dpi?.[0] || latest.outputDpi;
                         page.outputDpiY = payload.inspection.dpi?.[1]
@@ -1140,7 +1213,14 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             // phải dựng preview đường bế ngay sau nhận diện. Vector chuẩn có thể
             // đi exact-geometry; nguồn còn lại dùng fitter Bézier, không để viewer
             // rơi về biên mask pixel trong lúc người dùng chờ.
-            const needsGeneratedCutline = payload.manifest.boundary_source !== 'existing-cut';
+            const preservesOriginalCut = payload.manifest.boundary_source === 'existing-cut'
+                && (!current.unifiedInitialized || (
+                    current.outputSettings.cutMode === 'original'
+                    && current.outputSettings.offsetMm === 0 && current.outputSettings.bleedMm === 0
+                    && current.outputSettings.cornerStyle === 'preserve'
+                    && !current.outputSettings.cropToSticker
+                ));
+            const needsGeneratedCutline = !preservesOriginalCut;
             set(state => {
                 const latest = state.tabs[tabId];
                 if (
@@ -1165,6 +1245,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             labelsUrl,
                             uncertaintyUrl,
                             selectedInstanceId: payload.manifest.instances[0]?.id || null,
+                            preserveExistingCut: preservesOriginalCut,
                             outputDpi: payload.manifest.dpi?.[0] || page.outputDpi,
                             outputDpiY: payload.manifest.dpi?.[1]
                                 || payload.manifest.dpi?.[0]
@@ -1498,6 +1579,20 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 !item.state.manifest || item.state.status !== 'mask-ready'
             ))
         ) return null;
+        if (tab.unifiedInitialized && outputFormat === 'pdf' && tab.outputSettings.cutMode !== 'none') {
+            const pending = exportPages.filter(item => !(
+                item.state.preserveExistingCut && item.state.manifest?.boundary_source === 'existing-cut'
+            ) && (item.state.isCutlinePreviewing || !item.state.cutlinePreview));
+            if (pending.length) {
+                // Không đưa frame rỗng/cũ xuống export fallback. Chuẩn bị các
+                // trang chưa có preview; người dùng xuất lại khi đã thấy đủ.
+                for (const item of pending) scheduleCurrentCutlinePreview(tabId, item.pageNumber, 0);
+                set(state => ({ tabs: { ...state.tabs, [tabId]: { ...get().getTab(tabId),
+                    error: 'Đang cập nhật đường cắt các trang. Chờ preview hoàn tất rồi xuất lại.',
+                } } }));
+                return null;
+            }
+        }
         const sessionId = tab.inspection?.session_id
             || exportPages[0].state.manifest?.session_id;
         if (!sessionId) return null;

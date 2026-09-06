@@ -22,6 +22,7 @@ export interface StickerOutputStorage {
 }
 
 const STORAGE_PREFIX = 'ps_sticker_';
+const UNIFIED_STORAGE_KEY = 'ps_sticker_unified_v2';
 const CUT_MODES: readonly StickerCutMode[] = ['original', 'alpha', 'bleed', 'none'];
 const CORNER_STYLES: readonly StickerCornerStyle[] = ['preserve', 'round', 'miter'];
 const BLEED_COLOR_TYPES: readonly StickerBleedColorType[] = ['image', 'trajectory', 'inpaint', 'solid'];
@@ -208,4 +209,23 @@ export function saveStickerOutputSettings(
     writeLegacyValue(resolvedStorage, 'cropToSticker', settings.cropToSticker);
 
     return settings;
+}
+
+/** UNIFIED (2026-09-06): di trú một lần, không để Xén vuông góc ghi đè cấu hình tem. */
+export function loadUnifiedStickerOutputSettings(storage?: StickerOutputStorage | null): StickerOutputSettings {
+    const resolved = resolveStorage(storage);
+    try {
+        const saved = resolved?.getItem(UNIFIED_STORAGE_KEY);
+        if (saved) return sanitizeStickerOutputSettings(JSON.parse(saved));
+    } catch { /* Storage cũ/hỏng: đọc các khóa tương thích phía dưới. */ }
+    const legacy = loadStickerOutputSettings(resolved);
+    // Chưa có ý định crop được lưu: mặc định một tấm, không tự tách nhiều trang.
+    return { ...legacy, cropToSticker: resolved && readLegacyValue(resolved, 'cropToSticker') !== undefined
+        ? legacy.cropToSticker : false };
+}
+
+export function saveUnifiedStickerOutputSettings(value: unknown, storage?: StickerOutputStorage | null): void {
+    try {
+        resolveStorage(storage)?.setItem(UNIFIED_STORAGE_KEY, JSON.stringify(sanitizeStickerOutputSettings(value)));
+    } catch { /* Không làm gián đoạn công việc khi storage bị chặn. */ }
 }

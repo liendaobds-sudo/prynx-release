@@ -171,6 +171,20 @@ function prepareSuccessfulFlow(sessionId = 'a'.repeat(32), dpi: [number, number]
 }
 
 describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
+    it('workspace hợp nhất giữ thông số khi chuẩn bị nhận diện lại nguồn', () => {
+        const store = useStickerSheetStore.getState();
+        store.initTab('restart-unified');
+        store.enableUnified('restart-unified');
+        store.selectSource('restart-unified', new File(['png'], 'tem.png'), 'explicit');
+        store.setOutputSettings('restart-unified', { bleedMm: 3.25, offsetMm: -0.2 });
+        expect(store.restartDetection('restart-unified')).toBe(true);
+        const state = store.getTab('restart-unified');
+        expect(state.sourceFile?.name).toBe('tem.png');
+        expect(state.outputSettings.bleedMm).toBe(3.25);
+        expect(state.outputSettings.offsetMm).toBe(-0.2);
+        expect(state.status).toBe('source-ready');
+        expect(state.inspection).toBeNull();
+    });
     beforeEach(() => {
         useStickerSheetStore.setState({ tabs: {} });
         vi.clearAllMocks();

@@ -5,6 +5,8 @@ import {
     loadStickerOutputSettings,
     sanitizeStickerOutputSettings,
     saveStickerOutputSettings,
+    loadUnifiedStickerOutputSettings,
+    saveUnifiedStickerOutputSettings,
     type StickerOutputStorage,
 } from './stickerOutputSettings';
 
@@ -25,6 +27,16 @@ function seedJson(storage: MemoryStorage, key: string, value: unknown): void {
 }
 
 describe('stickerOutputSettings', () => {
+    it('unified di trú thông số một lần và không bị khóa rectangle ghi đè', () => {
+        const storage = new MemoryStorage();
+        seedJson(storage, 'bleedMm', 3.25);
+        const migrated = loadUnifiedStickerOutputSettings(storage);
+        expect(migrated.bleedMm).toBe(3.25);
+        expect(migrated.cropToSticker).toBe(false);
+        saveUnifiedStickerOutputSettings(migrated, storage);
+        seedJson(storage, 'bleedMm', 8);
+        expect(loadUnifiedStickerOutputSettings(storage).bleedMm).toBe(3.25);
+    });
     it('dùng mặc định an toàn tương thích StickerTool cũ', () => {
         expect(loadStickerOutputSettings(null)).toEqual({
             cutMode: 'original',
