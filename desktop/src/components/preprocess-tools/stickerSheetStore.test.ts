@@ -171,6 +171,219 @@ function prepareSuccessfulFlow(sessionId = 'a'.repeat(32), dpi: [number, number]
 }
 
 describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
+    it('khôi phục nền false vào tab unified cũ và giữ lựa chọn mới khi mở lại', () => {
+        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-migrate');
+        useStickerSheetStore.setState({ tabs: { 'background-migrate': {
+            ...store.getTab('background-migrate'), unifiedInitialized: true,
+        } } });
+        store.enableUnified('background-migrate');
+        expect(store.getTab('background-migrate').removeWhiteBg).toBe(false);
+        expect(store.setRemoveWhiteBg('background-migrate', true)).toBe(true);
+        store.enableUnified('background-migrate');
+        expect(store.getTab('background-migrate').removeWhiteBg).toBe(true);
+        expect(store.getTab('background-migrate').whiteBackgroundStale).toBe(false);
+        expect(detectStickerSource).not.toHaveBeenCalled();
+
+        store.initTab('old-page-box');
+        useStickerSheetStore.setState(state => ({ tabs: { ...state.tabs, 'old-page-box': {
+            ...store.getTab('old-page-box'), unifiedInitialized: true, detectionStrategy: 'page-box',
+        } } }));
+        store.enableUnified('old-page-box');
+        expect(store.getTab('old-page-box').removeWhiteBg).toBe(false);
+
+        // Auto có thể trả khung trang do artwork phủ kín; không suy thành lựa chọn false của user.
+        store.initTab('auto-page-box');
+        const automatic = detection().manifest;
+        useStickerSheetStore.setState(state => ({ tabs: { ...state.tabs, 'auto-page-box': {
+            ...store.getTab('auto-page-box'), unifiedInitialized: true, detectionStrategy: 'auto',
+            manifest: { ...automatic, boundary_source: 'page-box' },
+        } } }));
+        store.enableUnified('auto-page-box');
+        expect(store.getTab('auto-page-box').removeWhiteBg).toBe(true);
+    });
+
+    it('tắt bỏ nền gửi page-box, Alpha ưu tiên và lựa chọn PDF không bị đổi detector', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-policy');
+        store.enableUnified('background-policy');
+        store.setRemoveWhiteBg('background-policy', false);
+        store.selectSource('background-policy', new File(['pdf'], 'tem.pdf', { type: 'application/pdf' }));
+        await store.detectStickers('background-policy', 'ai');
+        expect(detectStickerSource).toHaveBeenLastCalledWith('a'.repeat(32), expect.objectContaining({ strategy: 'page-box' }));
+        store.setOutputSettings('background-policy', { cutMode: 'alpha' });
+        expect(store.getTab('background-policy').whiteBackgroundStale).toBe(true);
+        await store.detectStickers('background-policy', 'ai');
+        expect(detectStickerSource).toHaveBeenLastCalledWith('a'.repeat(32), expect.objectContaining({ strategy: 'alpha' }));
+        expect(store.getTab('background-policy').whiteBackgroundStale).toBe(false);
+        await store.detectStickers('background-policy', 'auto', 1, undefined, ['image-1']);
+        expect(detectStickerSource).toHaveBeenLastCalledWith('a'.repeat(32), expect.objectContaining({
+            strategy: 'auto', objectIds: ['image-1'],
+        }));
+    });
+
+    it('đổi nền đánh dấu mọi trang, chặn mọi đầu ra và nhận diện lại đúng revision', async () => {
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-pages');
+        store.enableUnified('background-pages');
+        store.selectSource('background-pages', new File(['pdf'], 'batch.pdf', { type: 'application/pdf' }));
+        vi.mocked(inspectStickerSource).mockResolvedValue(multiPageInspection());
+        vi.mocked(detectStickerSource).mockImplementation(async (_session, options) => {
+            const payload = detectionForPage(options?.pageNumber ?? 1);
+            payload.manifest.boundary_source = options?.strategy === 'page-box' ? 'page-box' : 'ai';
+            payload.manifest.mask_revision = (options?.baseRevision ?? 0) + 1;
+            return payload;
+        });
+        await store.detectAllStickers('background-pages');
+        await store.confirmMask('background-pages', 1);
+        await store.confirmMask('background-pages', 2);
+        const before = store.getTab('background-pages');
+        expect(store.setRemoveWhiteBg('background-pages', false)).toBe(true);
+        const stale = store.getTab('background-pages');
+        expect(Object.values(stale.pages).map(page => page.whiteBackgroundStale)).toEqual([true, true]);
+        expect(stale.pages[1].manifest).toBe(before.pages[1].manifest);
+        expect(stale.pages[2].manifest).toBe(before.pages[2].manifest);
+        expect(stale.whiteBackgroundStale).toBe(true);
+        store.setOutputSettings('background-pages', { cutMode: 'none' });
+        expect(await store.exportFile('background-pages', 'pdf')).toBeNull();
+        expect(await store.exportFile('background-pages', 'png_zip')).toBeNull();
+        expect(exportStickerSheet).not.toHaveBeenCalled();
+        expect(store.getTab('background-pages').error).toContain('Tùy chọn nền đã đổi');
+
+        vi.mocked(detectStickerSource).mockClear();
+        await store.detectAllStickers('background-pages');
+        expect(detectStickerSource).toHaveBeenCalledTimes(2);
+        for (const pageNumber of [1, 2]) {
+            expect(detectStickerSource).toHaveBeenCalledWith('d'.repeat(32), expect.objectContaining({
+                strategy: 'page-box', pageNumber, baseRevision: 1,
+            }));
+            await store.confirmMask('background-pages', pageNumber);
+        }
+        expect(Object.values(store.getTab('background-pages').pages).map(page => page.whiteBackgroundStale)).toEqual([false, false]);
+        vi.mocked(exportStickerSheet).mockResolvedValue({ blob: new Blob(['png']), filename: 'tem.zip', outputPath: '', stickerCount: 2 });
+        expect(await store.exportFile('background-pages', 'png_zip')).not.toBeNull();
+        expect(closeStickerSheetSession).not.toHaveBeenCalled();
+        store.finishExport('background-pages');
+    });
+
+    it('dò nền mới lỗi giữ mask/nét sửa nhưng không cho xuất artifact cũ', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-fail');
+        store.enableUnified('background-fail');
+        store.selectSource('background-fail', new File(['png'], 'tem.png'));
+        await store.detectStickers('background-fail');
+        store.addStroke('background-fail', { tool: 'restore', instanceId: 1, radius: 0.01, points: [{ x: 0.1, y: 0.1 }] });
+        await store.confirmMask('background-fail');
+        const before = store.getTab('background-fail');
+        store.setRemoveWhiteBg('background-fail', false);
+        vi.mocked(detectStickerSource).mockRejectedValueOnce(new Error('Không nhận diện được nền mới.'));
+        await store.detectStickers('background-fail');
+        const after = store.getTab('background-fail');
+        expect(after.whiteBackgroundStale).toBe(true);
+        expect(after.manifest).toBe(before.manifest);
+        expect(after.edits).toEqual(before.edits);
+        expect(after.status).toBe('mask-ready');
+        expect(await store.exportFile('background-fail', 'png_zip')).toBeNull();
+        expect(exportStickerSheet).not.toHaveBeenCalled();
+        store.restartDetection('background-fail');
+        expect(store.getTab('background-fail').whiteBackgroundStale).toBe(false);
+        expect(store.getTab('background-fail').removeWhiteBg).toBe(false);
+    });
+
+    it('hủy dò nền phục hồi stale, không cho đổi lựa chọn trong lúc đang dò', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-cancel');
+        store.enableUnified('background-cancel');
+        store.selectSource('background-cancel', new File(['png'], 'tem.png'));
+        await store.detectStickers('background-cancel');
+        store.setRemoveWhiteBg('background-cancel', false);
+        const before = store.getTab('background-cancel');
+        vi.mocked(detectStickerSource).mockImplementationOnce(async (_session, options) => new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(new DOMException('Hủy', 'AbortError')), { once: true });
+        }));
+        const pending = store.detectStickers('background-cancel');
+        await vi.waitFor(() => expect(store.getTab('background-cancel').status).toBe('detecting'));
+        expect(store.setRemoveWhiteBg('background-cancel', true)).toBe(false);
+        store.cancelDetection('background-cancel');
+        await pending;
+        expect(store.getTab('background-cancel').whiteBackgroundStale).toBe(true);
+        expect(store.getTab('background-cancel').manifest).toBe(before.manifest);
+        expect(store.getTab('background-cancel').removeWhiteBg).toBe(false);
+    });
+
+    it('không thay mask custom/dao gốc, còn đổi vào-ra Alpha bắt buộc dò lại nguồn tự động', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-custom');
+        store.enableUnified('background-custom');
+        store.selectSource('background-custom', new File(['png'], 'tem.png'));
+        const custom = detection();
+        custom.manifest.boundary_source = 'manual';
+        custom.manifest.vector_geometry_ref = { kind: 'pdf-object-selection', object_ids: ['image-1'] };
+        vi.mocked(detectStickerSource).mockResolvedValueOnce(custom);
+        await store.detectStickers('background-custom', 'auto', 1, undefined, ['image-1']);
+        store.setRemoveWhiteBg('background-custom', false);
+        expect(store.getTab('background-custom').whiteBackgroundStale).toBe(false);
+        store.setOutputSettings('background-custom', { cutMode: 'alpha' });
+        expect(store.getTab('background-custom').whiteBackgroundStale).toBe(false);
+
+        store.initTab('background-alpha');
+        store.enableUnified('background-alpha');
+        store.setOutputSettings('background-alpha', { cutMode: 'original' });
+        store.setRemoveWhiteBg('background-alpha', true);
+        store.selectSource('background-alpha', new File(['png'], 'tem.png'));
+        await store.detectStickers('background-alpha');
+        store.setOutputSettings('background-alpha', { cutMode: 'alpha' });
+        expect(store.getTab('background-alpha').whiteBackgroundStale).toBe(true);
+        await store.detectStickers('background-alpha');
+        store.setRemoveWhiteBg('background-alpha', false);
+        expect(store.getTab('background-alpha').whiteBackgroundStale).toBe(false);
+        store.setOutputSettings('background-alpha', { cutMode: 'original' });
+        expect(store.getTab('background-alpha').whiteBackgroundStale).toBe(true);
+
+        store.initTab('background-cut');
+        store.enableUnified('background-cut');
+        store.setRemoveWhiteBg('background-cut', true);
+        store.selectSource('background-cut', new File(['pdf'], 'tem.pdf', { type: 'application/pdf' }));
+        const existing = detection();
+        existing.manifest.boundary_source = 'existing-cut';
+        vi.mocked(detectStickerSource).mockResolvedValueOnce(existing);
+        await store.detectStickers('background-cut');
+        expect(store.getTab('background-cut').preserveExistingCut).toBe(true);
+        store.setRemoveWhiteBg('background-cut', false);
+        expect(store.getTab('background-cut').whiteBackgroundStale).toBe(false);
+        store.setPreserveExistingCut('background-cut', false);
+        expect(store.getTab('background-cut').whiteBackgroundStale).toBe(true);
+        store.setPreserveExistingCut('background-cut', true);
+        expect(store.getTab('background-cut').whiteBackgroundStale).toBe(false);
+    });
+
+    it('đổi vào Alpha lúc dò lại đang chạy vẫn chặn mask cũ nếu request thất bại', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('background-midflight');
+        store.enableUnified('background-midflight');
+        store.selectSource('background-midflight', new File(['png'], 'tem.png'));
+        await store.detectStickers('background-midflight');
+        await store.confirmMask('background-midflight');
+        let rejectDetection: (error: Error) => void = () => undefined;
+        vi.mocked(detectStickerSource).mockImplementationOnce(() => new Promise((_resolve, reject) => {
+            rejectDetection = reject;
+        }));
+        const pending = store.detectStickers('background-midflight');
+        await vi.waitFor(() => expect(store.getTab('background-midflight').status).toBe('detecting'));
+        store.setOutputSettings('background-midflight', { cutMode: 'alpha' });
+        rejectDetection(new Error('Không dò được.'));
+        await pending;
+        expect(store.getTab('background-midflight').whiteBackgroundStale).toBe(true);
+        expect(await store.exportFile('background-midflight', 'png_zip')).toBeNull();
+        expect(exportStickerSheet).not.toHaveBeenCalled();
+    });
+
     it('custom thay vùng đúng trang, giữ tuning và kết quả trang còn lại', async () => {
         const store = useStickerSheetStore.getState();
         store.selectSource('custom', new File(['pdf'], 'batch.pdf', { type: 'application/pdf' }));
@@ -273,6 +486,11 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
     });
     beforeEach(() => {
         useStickerSheetStore.setState({ tabs: {} });
+        const preferences = new Map<string, string>();
+        vi.stubGlobal('window', { localStorage: {
+            getItem: (key: string) => preferences.get(key) ?? null,
+            setItem: (key: string, value: string) => { preferences.set(key, value); },
+        } });
         vi.clearAllMocks();
         vi.mocked(confirmStickerSource).mockResolvedValue(true);
         vi.mocked(loadStickerSourcePreview).mockResolvedValue(new Blob(['source-preview']));

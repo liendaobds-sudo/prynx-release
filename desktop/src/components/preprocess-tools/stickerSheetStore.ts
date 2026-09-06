@@ -27,6 +27,11 @@ import {
     saveUnifiedStickerOutputSettings,
     type StickerOutputSettings,
 } from './stickerOutputSettings';
+import {
+    loadStickerRemoveWhiteBg,
+    resolveStickerDetectionStrategy,
+    saveStickerRemoveWhiteBg,
+} from './stickerDetectionSettings';
 
 
 export type StickerSourceMode = 'existing' | 'ai-sheet';
@@ -89,6 +94,7 @@ export interface StickerCutlineTuning {
 }
 
 export interface StickerSheetPageState {
+    whiteBackgroundStale?: boolean;
     detectionRetry?: { objectIds?: readonly string[]; strategy: StickerDetectionStrategy; maskRevision: number };
     status: StickerSheetStatus;
     isRefining: boolean;
@@ -115,6 +121,8 @@ export interface StickerSheetPageState {
 }
 
 export interface StickerSheetTabState {
+    removeWhiteBg?: boolean;
+    whiteBackgroundStale?: boolean;
     detectionRetry?: StickerSheetPageState['detectionRetry'];
     unifiedInitialized?: boolean;
     detectionStrategy?: StickerDetectionStrategy;
@@ -165,6 +173,7 @@ interface StickerSheetStore {
     initTab: (tabId: string) => void;
     enableUnified: (tabId: string) => void;
     setDetectionStrategy: (tabId: string, strategy: StickerDetectionStrategy) => void;
+    setRemoveWhiteBg: (tabId: string, value: boolean) => boolean;
     setMaskEditingEnabled: (tabId: string, enabled: boolean) => void;
     restartDetection: (tabId: string) => boolean;
     cancelDetection: (tabId: string) => void;
@@ -276,6 +285,7 @@ function cutlineGeometryChanged(
 
 function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPageState {
     return {
+        whiteBackgroundStale: false,
         detectionRetry: undefined,
         status,
         isRefining: false,
@@ -306,6 +316,7 @@ function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPage
 
 function defaultTabState(): StickerSheetTabState {
     return {
+        whiteBackgroundStale: false,
         mode: 'existing',
         productType: 'sticker',
         status: 'idle',
@@ -364,6 +375,7 @@ function pageState(tab: StickerSheetTabState, pageNumber: number): StickerSheetP
     if (pageNumber === tab.activeSourcePage) {
         return {
             detectionRetry: tab.detectionRetry,
+            whiteBackgroundStale: tab.whiteBackgroundStale,
             status: tab.status,
             isRefining: tab.isRefining,
             isCutlinePreviewing: tab.isCutlinePreviewing,
@@ -409,6 +421,31 @@ function updatePage(
     return tab.activeSourcePage === pageNumber
         ? mirrorActivePage(updated, pageNumber, page)
         : updated;
+}
+
+function hasCustomObjectBoundary(page: StickerSheetPageState): boolean {
+    return page.manifest?.vector_geometry_ref?.kind === 'pdf-object-selection';
+}
+
+/** Giữ artifact cũ để phục hồi khi dò lại lỗi, nhưng không cho xuất nhầm nền. */
+function markWhiteBackgroundStale(
+    tab: StickerSheetTabState,
+    preserveOriginalCut = true,
+): StickerSheetTabState {
+    const pages = Object.keys(tab.pages).length ? tab.pages
+        : { [tab.activeSourcePage]: pageState(tab, tab.activeSourcePage) };
+    const updatedPages = Object.fromEntries(Object.entries(pages).map(([key, page]) => {
+        const whiteBackgroundStale = Boolean(page.whiteBackgroundStale || (page.manifest
+            && !hasCustomObjectBoundary(page)
+            && !(preserveOriginalCut && page.preserveExistingCut
+                && page.manifest.boundary_source === 'existing-cut')));
+        return [key, { ...page, whiteBackgroundStale,
+            isCutlinePreviewing: whiteBackgroundStale ? false : page.isCutlinePreviewing }];
+    }));
+    return mirrorActivePage(
+        { ...tab, pages: updatedPages }, tab.activeSourcePage,
+        updatedPages[tab.activeSourcePage] || pageState(tab, tab.activeSourcePage),
+    );
 }
 
 function revokeUrl(url: string): void {
@@ -591,17 +628,43 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
     getTab: (tabId) => get().tabs[tabId] || defaultTabState(),
     enableUnified: (tabId) => {
         const current = get().tabs[tabId] || defaultTabState();
-        if (current.unifiedInitialized) return;
+        if (current.unifiedInitialized && typeof current.removeWhiteBg === 'boolean') return;
         // Đã có session/thiết lập đang làm thì giữ nguyên, không di trú đè nó.
-        const outputSettings = current.sourceFile || current.mode === 'ai-sheet'
+        const outputSettings = current.unifiedInitialized || current.sourceFile || current.mode === 'ai-sheet'
             ? current.outputSettings : loadUnifiedStickerOutputSettings();
-        set(state => ({ tabs: { ...state.tabs, [tabId]: { ...current, outputSettings, unifiedInitialized: true } } }));
+        const removeWhiteBg = current.removeWhiteBg ?? (
+            current.detectionStrategy === 'page-box'
+                ? false : loadStickerRemoveWhiteBg()
+        );
+        let next: StickerSheetTabState = { ...current, outputSettings, removeWhiteBg, unifiedInitialized: true };
+        // UIUX (audit 2026-09-06 §BACKGROUND.1): bản unified cũ đã mất lựa chọn
+        // false; di trú lại không được coi mask tự tách trước đó là kết quả hợp lệ.
+        if (!removeWhiteBg && outputSettings.cutMode !== 'alpha') {
+            next = markWhiteBackgroundStale(next);
+            for (const [key, page] of Object.entries(next.pages)) {
+                if (page.manifest?.boundary_source === 'page-box') {
+                    next = updatePage(next, Number(key), item => ({ ...item, whiteBackgroundStale: false }));
+                }
+            }
+        }
+        set(state => ({ tabs: { ...state.tabs, [tabId]: next } }));
     },
     setDetectionStrategy: (tabId, detectionStrategy) => set(state => {
         const tab = state.tabs[tabId];
         if (!tab || workflowMutationLocked(tab)) return state;
         return { tabs: { ...state.tabs, [tabId]: { ...tab, detectionStrategy } } };
     }),
+    setRemoveWhiteBg: (tabId, removeWhiteBg) => {
+        const tab = get().tabs[tabId];
+        if (!tab || workflowMutationLocked(tab) || tab.status === 'inspecting'
+            || tab.status === 'detecting' || Object.values(tab.pages).some(page => page.status === 'detecting')) return false;
+        if (tab.removeWhiteBg === removeWhiteBg) return true;
+        const next = { ...tab, removeWhiteBg };
+        set(state => ({ tabs: { ...state.tabs, [tabId]: tab.unifiedInitialized
+            && tab.outputSettings.cutMode !== 'alpha' ? markWhiteBackgroundStale(next) : next } }));
+        saveStickerRemoveWhiteBg(removeWhiteBg);
+        return true;
+    },
     setMaskEditingEnabled: (tabId, maskEditingEnabled) => set(state => {
         const tab = state.tabs[tabId];
         if (!tab) return state;
@@ -704,18 +767,24 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             pageNumber = tab.activeSourcePage;
             changed = true;
             shouldRefreshPreview = cutlineGeometryChanged(tab.outputSettings, outputSettings);
+            const backgroundPolicyChanged = Boolean(tab.unifiedInitialized
+                && (tab.outputSettings.cutMode === 'alpha') !== (outputSettings.cutMode === 'alpha'));
             const pages = shouldRefreshPreview || tab.unifiedInitialized
                 ? Object.fromEntries(Object.entries(tab.pages).map(([key, page]) => [
                     key,
                     {
                         ...page,
                         preserveExistingCut: false,
+                        whiteBackgroundStale: Boolean(page.whiteBackgroundStale
+                            || (tab.unifiedInitialized && tab.removeWhiteBg === false
+                                && page.preserveExistingCut && page.manifest?.boundary_source === 'existing-cut')),
                         cutlinePreview: shouldRefreshPreview ? null : page.cutlinePreview,
                         isCutlinePreviewing: shouldRefreshPreview ? false : page.isCutlinePreviewing,
                     },
                 ])) as Record<number, StickerSheetPageState>
                 : tab.pages;
-            const updated = { ...tab, outputSettings, pages };
+            const updatedBase = { ...tab, outputSettings, pages };
+            const updated = backgroundPolicyChanged ? markWhiteBackgroundStale(updatedBase, false) : updatedBase;
             const activePage = pageState(updated, updated.activeSourcePage);
             return {
                 tabs: {
@@ -747,6 +816,10 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             pageNumber = tab.activeSourcePage;
             return { tabs: { ...state.tabs, [tabId]: updatePage(tab, pageNumber, page => ({
                 ...page, preserveExistingCut, cutlinePreview: preserveExistingCut ? null : page.cutlinePreview,
+                whiteBackgroundStale: preserveExistingCut && page.manifest?.boundary_source === 'existing-cut'
+                    ? false : Boolean(page.whiteBackgroundStale
+                    || (tab.unifiedInitialized && tab.removeWhiteBg === false
+                        && page.manifest?.boundary_source === 'existing-cut')),
             })) } };
         });
         if (!preserveExistingCut) scheduleCurrentCutlinePreview(tabId, pageNumber, 0);
@@ -1161,6 +1234,16 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         // và nét sửa cũ để phục hồi nếu lựa chọn mới không nhận diện được.
         const retry = previousPage.detectionRetry;
         const resolvedObjectIds = objectIds ?? retry?.objectIds;
+        const preferredStrategy = strategy;
+        if (previous.unifiedInitialized && resolvedObjectIds === undefined) {
+            strategy = resolveStickerDetectionStrategy(
+                previous.outputSettings.cutMode, previous.removeWhiteBg ?? true, preferredStrategy,
+            );
+        }
+        const detectionSettingsChanged = (tab: StickerSheetTabState) => Boolean(tab.unifiedInitialized
+            && resolvedObjectIds === undefined && resolveStickerDetectionStrategy(
+                tab.outputSettings.cutMode, tab.removeWhiteBg ?? true, preferredStrategy,
+            ) !== strategy);
         const sameRetry = retry && strategy === retry.strategy
             && JSON.stringify(resolvedObjectIds || []) === JSON.stringify(retry.objectIds || []);
         const baseRevision = sameRetry ? undefined
@@ -1257,6 +1340,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     revokeUrl(uncertaintyUrl);
                     return state;
                 }
+                const whiteBackgroundStale = detectionSettingsChanged(latest);
                 return {
                     tabs: {
                         ...state.tabs,
@@ -1264,6 +1348,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             ...page,
                             status: 'mask-review',
                             manifest: payload.manifest,
+                            whiteBackgroundStale,
                             previewUrl,
                             labelsUrl,
                             uncertaintyUrl,
@@ -1276,7 +1361,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             alphaThreshold: payload.manifest.alpha_threshold ?? 128,
                             shadowCleanup: payload.manifest.shadow_cleanup ?? 'auto',
                             isRefining: false,
-                             isCutlinePreviewing: needsGeneratedCutline,
+                            isCutlinePreviewing: needsGeneratedCutline && !whiteBackgroundStale,
                             cutlinePreview: null,
                             error: '',
                         })),
@@ -1294,6 +1379,9 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     if (!current || current.sourceFile !== file || current.inspection?.session_id !== sessionId) return state;
                     return { tabs: { ...state.tabs, [tabId]: updatePage(current, pageNumber, () => ({
                         ...previousPage, status: previousPage.manifest ? previousPage.status : 'source-ready',
+                        whiteBackgroundStale: Boolean(previousPage.whiteBackgroundStale
+                            || (previousPage.manifest && !hasCustomObjectBoundary(previousPage)
+                                && detectionSettingsChanged(current))),
                         isRefining: false, isCutlinePreviewing: false, error: '',
                     })) } };
                 });
@@ -1325,6 +1413,9 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             isRefining: false,
                             isCutlinePreviewing: false,
                             manifest: assetFailure ? null : previousPage.manifest,
+                            whiteBackgroundStale: Boolean(previousPage.whiteBackgroundStale
+                                || (previousPage.manifest && !hasCustomObjectBoundary(previousPage)
+                                    && detectionSettingsChanged(current))),
                             cutlinePreview: previousPage.manifest && !assetFailure ? previousPage.cutlinePreview : null,
                             detectionRetry: assetFailure ? {
                                 objectIds: resolvedObjectIds, strategy, maskRevision: assetFailure.mask_revision ?? 1,
@@ -1374,8 +1465,8 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             (_unused, index) => index + 1,
         ).filter(pageNumber => {
             const page = pageState(tab!, pageNumber);
-            return !['detecting', 'mask-review', 'confirming', 'mask-ready', 'exporting']
-                .includes(page.status);
+            return !['detecting', 'confirming', 'exporting'].includes(page.status)
+                && (page.whiteBackgroundStale || !['mask-review', 'mask-ready'].includes(page.status));
         });
         const preparedLease = workspaceLease;
         const reuseWorkspaceSource = preparedLease
@@ -1614,6 +1705,12 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             pageNumber,
             state: pageState(tab, pageNumber),
         }));
+        if (exportPages.some(item => item.state.whiteBackgroundStale)) {
+            set(state => ({ tabs: { ...state.tabs, [tabId]: { ...get().getTab(tabId),
+                error: 'Tùy chọn nền đã đổi. Hãy nhận diện lại các trang trước khi xuất.',
+            } } }));
+            return null;
+        }
         if (
             exportPages.length === 0
             || exportPages.some(item => (
@@ -2173,6 +2270,7 @@ function scheduleCurrentCutlinePreview(
     if (
         !tab
         || !page?.manifest
+        || page.whiteBackgroundStale
         || page.isRefining
         || !['mask-review', 'mask-ready'].includes(page.status)
     ) return;
@@ -2226,6 +2324,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
     const beforePage = before ? pageState(before, pageNumber) : null;
     if (
         !beforePage?.manifest
+        || beforePage.whiteBackgroundStale
         || beforePage.manifest.session_id !== requested.sessionId
         || (beforePage.manifest.mask_revision ?? 1) !== requested.maskRevision
     ) return;
@@ -2257,6 +2356,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
                 || currentPage?.manifest?.session_id !== requested.sessionId
                 || (currentPage.manifest.mask_revision ?? 1) !== payload.mask_revision
                 || currentPage.isRefining
+                || currentPage.whiteBackgroundStale
             ) return state;
             if (
                 current.isExporting
