@@ -11,6 +11,7 @@ from io import BytesIO
 import logging
 import math
 from pathlib import Path
+import re
 import time
 from typing import Literal
 
@@ -419,8 +420,13 @@ def _render_pdf_page(
     source_path: str,
     page_index: int,
     physical_size_mm: tuple[float, float],
+    *,
+    object_ids: list[str] | None = None,
 ) -> tuple[Image.Image, tuple[float, float]]:
     import pypdfium2 as pdfium
+
+    if object_ids is not None:
+        from app.workers.sticker_engine import _render_selected_objects_rgba
 
     raster_scale_limit = _full_page_raster_scale_limit(source_path, page_index)
     with pdfium_guard("sticker_source_pipeline_render"):
@@ -470,24 +476,38 @@ def _render_pdf_page(
                             available_ram_mb,
                         )
                         scale = ram_scale
-                bitmap = page.render(
-                    scale=scale,
-                    rev_byteorder=True,
-                    fill_color=(255, 255, 255, 0),
-                )
-                try:
-                    # PERF (audit 2026-08-16 §BX.P01): chỉ copy MỘT lần trong vùng khóa
-                    # (bitmap chết khi ra khỏi guard). `convert("RGBA")` là việc CPU thuần
-                    # của PIL, không chạm PDFium → làm ngoài khóa để không giữ khóa toàn
-                    # process qua thêm một lần cấp phát toàn khung.
-                    raw_image = bitmap.to_pil().copy()
-                finally:
-                    bitmap.close()
+                if object_ids is not None:
+                    # UIUX (audit 2026-09-06 §CUSTOM.2): cô lập trên document dùng
+                    # một lần, cùng scale/trang xoay; không sửa PDF nguồn của session.
+                    try:
+                        selected_rgba = _render_selected_objects_rgba(page, object_ids, scale)
+                    except ValueError as exc:
+                        raise StickerSourcePipelineError(
+                            "Lựa chọn không còn khớp đối tượng PDF. Hãy chọn lại vùng tem."
+                        ) from exc
+                    raw_image = None
+                else:
+                    bitmap = page.render(
+                        scale=scale,
+                        rev_byteorder=True,
+                        fill_color=(255, 255, 255, 0),
+                    )
+                    try:
+                        # PERF (audit 2026-08-16 §BX.P01): chỉ copy MỘT lần trong vùng khóa
+                        # (bitmap chết khi ra khỏi guard). `convert("RGBA")` là việc CPU thuần
+                        # của PIL, không chạm PDFium → làm ngoài khóa để không giữ khóa toàn
+                        # process qua thêm một lần cấp phát toàn khung.
+                        raw_image = bitmap.to_pil().copy()
+                    finally:
+                        bitmap.close()
             finally:
                 page.close()
         finally:
             document.close()
-    image = raw_image if raw_image.mode == "RGBA" else raw_image.convert("RGBA")
+    if object_ids is not None:
+        image = Image.fromarray(selected_rgba, "RGBA")
+    else:
+        image = raw_image if raw_image.mode == "RGBA" else raw_image.convert("RGBA")
     dpi_x = image.width / max(physical_size_mm[0], 1e-9) * 25.4
     dpi_y = image.height / max(physical_size_mm[1], 1e-9) * 25.4
     return image, (dpi_x, dpi_y)
@@ -2605,6 +2625,7 @@ def detect_sticker_source(
     alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
     page_number: int = 1,
     preview_only: bool = False,
+    object_ids: list[str] | None = None,
 ) -> StickerSourceDetection:
     """Nhận diện một trang/ảnh từ session inspected, không ghi session.
 
@@ -2625,6 +2646,16 @@ def detect_sticker_source(
         raise StickerSourcePipelineError("Chiến lược nhận diện không được hỗ trợ.")
     if not 1 <= page_number <= session.page_count:
         raise StickerSourcePipelineError("Trang cần nhận diện không tồn tại trong file nguồn.")
+    if object_ids is not None:
+        if session.source_kind != "pdf":
+            raise StickerSourcePipelineError("Chọn đối tượng chỉ áp dụng cho tài liệu PDF.")
+        if not isinstance(object_ids, list) or not object_ids or any(
+            not isinstance(object_id, str)
+            or re.fullmatch(r"(?:text|image|vector)-(?:0|[1-9][0-9]*)", object_id) is None
+            for object_id in object_ids
+        ):
+            raise StickerSourcePipelineError("Hãy chọn ít nhất một đối tượng PDF hợp lệ.")
+        object_ids = list(dict.fromkeys(object_ids))
 
     page_index = page_number - 1
     if session.source_kind == "raster":
@@ -2745,6 +2776,37 @@ def detect_sticker_source(
     height_mm = page_manifest.get("height_mm")
     if not isinstance(width_mm, (int, float)) or not isinstance(height_mm, (int, float)):
         raise StickerSourcePipelineError("Không xác định được kích thước vật lý của trang PDF.")
+    if object_ids is not None:
+        # UIUX (audit 2026-09-06 §CUSTOM.2): người dùng xác định vùng tem;
+        # Alpha PDF giữ nguyên mép/viền trắng, không qua dò nền hoặc AI lần nữa.
+        source_image, dpi = _render_pdf_page(
+            str(session.source_path),
+            page_index,
+            (float(width_mm), float(height_mm)),
+            object_ids=object_ids,
+        )
+        analysis = _analysis_from_alpha(
+            source_image,
+            np.asarray(source_image.getchannel("A"), dtype=np.uint8),
+            model=model,
+            alpha_threshold=alpha_threshold,
+        )
+        return StickerSourceDetection(
+            analysis=analysis,
+            source_image=source_image,
+            boundary_source="manual",
+            strategy_confidence=1.0,
+            needs_review=False,
+            dpi=dpi,
+            source_page=page_number,
+            vector_geometry_ref={
+                "kind": "pdf-object-selection",
+                "source_page": page_number,
+                "object_ids": object_ids,
+                "preserve_original": True,
+            },
+            warnings=(),
+        )
     source_image, dpi = _render_pdf_page(
         str(session.source_path),
         page_index,

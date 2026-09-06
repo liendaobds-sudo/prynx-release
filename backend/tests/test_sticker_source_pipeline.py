@@ -26,6 +26,7 @@ from app.workers.sticker_cutline_preview import build_sticker_cutline_preview
 from app.workers.cut_export.cut_layer_extractor import CutContour, ExtractResult
 from app.workers.sticker_sheet_export import export_sticker_sheet
 from app.workers.sticker_source_pipeline import (
+    StickerSourcePipelineError,
     _analysis_from_alpha,
     _cut_contour_alpha,
     _recover_single_composite_background,
@@ -2520,6 +2521,141 @@ def test_pdf_soft_mask_is_used_before_simple_background(tmp_path, monkeypatch):
     assert len(detected.analysis.instances) == 1
 
 
+def _save_custom_selection_pdf(
+    path: Path, *, rotation: int = 0, user_unit: float = 1,
+    crop_box: tuple[float, float, float, float] | None = None,
+) -> None:
+    """Viền tem trắng, lõi đỏ và artwork xanh không chọn trên cùng một trang."""
+    with pikepdf.Pdf.new() as document:
+        page = document.add_blank_page(page_size=(144, 96))
+        page.obj["/Rotate"] = rotation
+        page.obj["/UserUnit"] = user_unit
+        if crop_box is not None:
+            page.obj["/CropBox"] = pikepdf.Array(crop_box)
+        page.obj["/Resources"] = pikepdf.Dictionary()
+        commands = [
+            "1 1 1 rg 0 0 144 96 re f",
+            "1 1 1 rg " + _pdf_circle_path(40.25, 55.25, 20.1) + " f",
+            "1 0 0 rg 32 47 16 16 re f",
+            "0 0 1 rg 95 20 30 20 re f",
+        ]
+        page.obj["/Contents"] = document.make_stream("\n".join(commands).encode("ascii"))
+        document.save(path)
+
+
+@pytest.mark.parametrize("rotation,user_unit", [(0, 1), (90, 2), (180, 1), (270, 2)])
+def test_custom_pdf_giu_alpha_vien_trang_va_khung_trang_xoay(
+    tmp_path, monkeypatch, rotation, user_unit,
+):
+    source = tmp_path / "custom-white-rim.pdf"
+    _save_custom_selection_pdf(source, rotation=rotation, user_unit=user_unit)
+    original_bytes = source.read_bytes()
+    session = _create_session(source)
+
+    def forbidden_detector(*_args, **_kwargs):
+        raise AssertionError("Chọn đối tượng PDF không được chạy AI hoặc dò nền")
+
+    monkeypatch.setattr("app.workers.sticker_source_pipeline.analyze_sticker_sheet", forbidden_detector)
+    monkeypatch.setattr("app.workers.sticker_source_pipeline._background_detection", forbidden_detector)
+    detected = detect_sticker_source(
+        session, strategy="ai", object_ids=["vector-1", "vector-2", "vector-1"],
+    )
+
+    assert detected.boundary_source == "manual"
+    assert detected.vector_geometry_ref == {
+        "kind": "pdf-object-selection", "source_page": 1,
+        "object_ids": ["vector-1", "vector-2"], "preserve_original": True,
+    }
+    assert detected.analysis.model_seconds == 0
+    assert len(detected.analysis.instances) == 1
+    assert detected.dpi == pytest.approx((300, 300), abs=0.6)
+    page = session.manifest["pages"][0]
+    assert detected.source_image.width / detected.dpi[0] * 25.4 == pytest.approx(page["width_mm"])
+    assert detected.source_image.height / detected.dpi[1] * 25.4 == pytest.approx(page["height_mm"])
+    alpha = np.asarray(detected.source_image.getchannel("A"))
+    assert np.any((alpha > 0) & (alpha < 255)), "Không được nhị phân hóa dải Alpha mềm"
+    assert np.array_equal(detected.analysis.alpha, alpha)
+    rgba = np.asarray(detected.source_image)
+    assert np.count_nonzero((alpha == 255) & np.all(rgba[:, :, :3] == 255, axis=2)) > 1000
+    assert np.count_nonzero((alpha > 0) & (rgba[:, :, 2] > 200) & (rgba[:, :, 0] < 100)) == 0
+    centers = {
+        0: (40.25 / 144, (96 - 55.25) / 96),
+        90: (55.25 / 96, 40.25 / 144),
+        180: ((144 - 40.25) / 144, 55.25 / 96),
+        270: ((96 - 55.25) / 96, (144 - 40.25) / 144),
+    }
+    instance = detected.analysis.instances[0]
+    assert instance.x + instance.width / 2 == pytest.approx(
+        centers[rotation][0] * detected.source_image.width, abs=2,
+    )
+    assert instance.y + instance.height / 2 == pytest.approx(
+        centers[rotation][1] * detected.source_image.height, abs=2,
+    )
+    assert source.read_bytes() == original_bytes
+    assert session.source_path.read_bytes() == original_bytes
+
+
+def test_custom_pdf_co_the_chon_nhieu_vung_va_khong_lay_artwork_khong_chon(tmp_path):
+    source = tmp_path / "custom-multi.pdf"
+    _save_custom_selection_pdf(source)
+    detected = detect_sticker_source(_create_session(source), object_ids=["vector-1", "vector-3"])
+    assert len(detected.analysis.instances) == 2
+    rgba = np.asarray(detected.source_image)
+    assert not np.any((rgba[:, :, 3] > 0) & (rgba[:, :, 0] > 200) & (rgba[:, :, 1] < 100))
+
+
+def test_custom_pdf_cropbox_lech_goc_khong_lech_mask_sau_xoay(tmp_path):
+    source = tmp_path / "crop-selection.pdf"
+    _save_custom_selection_pdf(source, rotation=90, user_unit=2, crop_box=(10, 10, 134, 90))
+    detected = detect_sticker_source(_create_session(source), object_ids=["vector-1", "vector-2"])
+    assert detected.source_image.width / detected.dpi[0] * 25.4 == pytest.approx(80 * 2 * 25.4 / 72, abs=0.001)
+    assert detected.source_image.height / detected.dpi[1] * 25.4 == pytest.approx(124 * 2 * 25.4 / 72, abs=0.001)
+    instance = detected.analysis.instances[0]
+    assert instance.x + instance.width / 2 == pytest.approx(
+        (55.25 - 10) / 80 * detected.source_image.width, abs=2,
+    )
+    assert instance.y + instance.height / 2 == pytest.approx(
+        (40.25 - 10) / 124 * detected.source_image.height, abs=2,
+    )
+
+
+def test_custom_pdf_chon_image_id_giu_alpha_smask(tmp_path, monkeypatch):
+    source = tmp_path / "image-selection.pdf"
+    _save_soft_mask_pdf(source)
+
+    def forbidden_ai(*_args, **_kwargs):
+        raise AssertionError("Đối tượng ảnh đã chọn phải dùng Alpha PDF")
+
+    monkeypatch.setattr("app.workers.sticker_source_pipeline.analyze_sticker_sheet", forbidden_ai)
+    detected = detect_sticker_source(_create_session(source), strategy="ai", object_ids=["image-0"])
+    assert detected.boundary_source == "manual"
+    assert detected.vector_geometry_ref["object_ids"] == ["image-0"]
+    assert len(detected.analysis.instances) == 1
+    assert np.array_equal(detected.analysis.alpha, np.asarray(detected.source_image.getchannel("A")))
+
+
+@pytest.mark.parametrize("object_ids", [[], [1], [None], ["vector-1", "bad-id"], "vector-1"])
+def test_custom_pdf_tu_choi_lua_chon_rong_hoac_sai_kieu(tmp_path, object_ids):
+    source = tmp_path / "invalid-selection.pdf"
+    _save_custom_selection_pdf(source)
+    with pytest.raises(StickerSourcePipelineError, match="ít nhất một đối tượng"):
+        detect_sticker_source(_create_session(source), object_ids=object_ids)
+
+
+def test_custom_pdf_tu_choi_id_khong_ton_tai_va_khong_roi_ve_toan_trang(tmp_path):
+    source = tmp_path / "missing-object.pdf"
+    _save_custom_selection_pdf(source)
+    with pytest.raises(StickerSourcePipelineError, match="không còn khớp"):
+        detect_sticker_source(_create_session(source), object_ids=["vector-99"])
+
+
+def test_custom_pdf_khong_nhan_lua_chon_doi_tuong_cho_anh(tmp_path):
+    source = tmp_path / "raster-selection.png"
+    _two_sticker_image(alpha=True).save(source)
+    with pytest.raises(StickerSourcePipelineError, match="chỉ áp dụng.*PDF"):
+        detect_sticker_source(_create_session(source), object_ids=["image-0"])
+
+
 def test_detection_reservation_is_exclusive_and_can_be_aborted(tmp_path):
     source = tmp_path / "alpha.png"
     _two_sticker_image(alpha=True).save(source, format="PNG")
@@ -2553,6 +2689,76 @@ def test_detection_reservations_are_isolated_by_source_page(tmp_path):
     page_two_directory = session.directory / "pages" / "0002"
     assert session.pages[2].directory == page_two_directory
     assert (page_two_directory / "manifest.json").is_file()
+
+
+def _promote_detected_selection(session, detected, *, detection_token=None):
+    return promote_source_session(
+        session.session_id, analysis=detected.analysis, analysis_source=detected.source_image,
+        boundary_source=detected.boundary_source, strategy_confidence=detected.strategy_confidence,
+        needs_review=detected.needs_review, dpi=detected.dpi, source_page=detected.source_page,
+        vector_geometry_ref=detected.vector_geometry_ref, detection_token=detection_token,
+    )
+
+
+def test_redetect_token_ngan_worker_cu_promote_hoac_huy_luot_moi(tmp_path):
+    source = tmp_path / "reserved.pdf"
+    _save_custom_selection_pdf(source)
+    session = _create_session(source)
+    page = session.pages[1]
+    assert begin_source_detection(session.session_id) is session
+    old_token = page.detection_token
+    detected = detect_sticker_source(session, object_ids=["vector-1"])
+    assert abort_source_detection(session.session_id, detection_token=old_token)
+    assert begin_source_detection(session.session_id) is session
+    new_token = page.detection_token
+    assert old_token != new_token
+    assert _promote_detected_selection(session, detected, detection_token=old_token) is None
+    assert not abort_source_detection(session.session_id, detection_token=old_token)
+    assert page.stage == "detecting"
+    assert page.detection_token == new_token
+    assert _promote_detected_selection(session, detected, detection_token=new_token) is session
+    assert page.manifest["mask_revision"] == 1
+    assert page.detection_token is None
+
+
+@pytest.mark.parametrize("failure_at", ["staging", "publishing", "manifest"])
+def test_redetect_loi_ghi_khoi_phuc_mask_da_duyet_va_cache(tmp_path, monkeypatch, failure_at):
+    source = tmp_path / "rollback.pdf"
+    _save_custom_selection_pdf(source)
+    session = _create_session(source)
+    detected = detect_sticker_source(session, object_ids=["vector-1", "vector-2"])
+    assert _promote_detected_selection(session, detected) is session
+    assert confirm_source_session(session.session_id) is session
+    page = session.pages[1]
+    previous_manifest = dict(page.manifest)
+    previous_files = {path.name: path.read_bytes() for path in page.directory.iterdir() if path.is_file()}
+    previous_cache = {"fingerprint": "approved-before-redetect"}
+    page.cutline_export_cache = previous_cache
+    assert begin_source_detection(session.session_id, base_revision=1) is session
+    token = page.detection_token
+    changed = detect_sticker_source(session, object_ids=["vector-3"])
+    if failure_at == "staging":
+        def fail_save(*_args, **_kwargs):
+            raise OSError("disk-full")
+        monkeypatch.setattr(session_store.np, "save", fail_save)
+    else:
+        original_replace = Path.replace
+
+        def fail_partial_publish(path, target):
+            failing_name = "manifest.json" if failure_at == "manifest" else "preview_uncertainty.png"
+            if path.parent.name.startswith(".promote-") and path.name == failing_name:
+                raise OSError("disk-full")
+            return original_replace(path, target)
+
+        monkeypatch.setattr(Path, "replace", fail_partial_publish)
+    with pytest.raises(OSError, match="disk-full"):
+        _promote_detected_selection(session, changed, detection_token=token)
+    assert abort_source_detection(session.session_id, detection_token=token)
+    assert page.stage == "mask-ready"
+    assert page.manifest == previous_manifest
+    assert page.cutline_export_cache is previous_cache
+    assert {path.name: path.read_bytes() for path in page.directory.iterdir() if path.is_file()} == previous_files
+    assert not list(page.directory.glob(".promote-*"))
 
 
 def test_concurrent_promote_and_confirm_keep_manifest_consistent(tmp_path):

@@ -91,6 +91,13 @@ class StickerSourceDetectRequest(BaseModel):
     model: StickerSheetModel = "birefnet-lite"
     alpha_threshold: int = Field(default=128, ge=1, le=254)
     page_number: int = Field(default=1, ge=1)
+    # UIUX (audit 2026-09-06 §CUSTOM.2): chỉ nhận ID đối tượng PDF cấp trang;
+    # danh sách rỗng/sai kiểu không được âm thầm chuyển thành nhận diện toàn trang.
+    object_ids: list[Annotated[str, Field(
+        strict=True, pattern=r"^(?:text|image|vector)-(?:0|[1-9][0-9]*)$",
+    )]] | None = Field(default=None, min_length=1)
+    # Lựa chọn mới thay đúng revision của trang hiện tại, không xóa các trang khác.
+    base_revision: int | None = Field(default=None, ge=1)
     # PERF (feedback 2026-08-20 §CUTPREVIEW.FAST1): preview classic được phép
     # giữ mask nền phẳng đã đủ tin cậy, không chạy bước nâng hình học AI tùy chọn.
     preview_only: bool = False

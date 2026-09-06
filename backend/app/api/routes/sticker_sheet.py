@@ -265,15 +265,37 @@ async def detect_sticker_source_endpoint(
     session = get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Phiên nguồn tem đã hết hạn. Hãy chọn lại file.")
-    session = begin_source_detection(session_id, page_number=request.page_number)
+    try:
+        session = begin_source_detection(
+            session_id, page_number=request.page_number, base_revision=request.base_revision,
+        )
+    except StickerSheetSessionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if session is None:
         # UIUX (audit 2026-08-09 §MP.9-10): backend có thể đã promote nhưng
         # WebView lỗi tải asset. Retry cùng trang chỉ phát lại manifest/URL, không
         # chạy model lần hai và không đóng session chứa kết quả của sibling.
         existing = _page_detection_response(session_id, request.page_number)
         if existing is not None:
+            # UIUX (audit 2026-09-06 §CUSTOM.2): chỉ phát lại cùng lựa chọn;
+            # bỏ object_ids cũng là yêu cầu khác nếu mask cũ thuộc custom PDF.
+            geometry_ref = existing.get("vector_geometry_ref") or {}
+            existing_object_ids = (
+                geometry_ref.get("object_ids")
+                if geometry_ref.get("kind") == "pdf-object-selection"
+                else None
+            )
+            if (
+                (existing_object_ids is None) != (request.object_ids is None)
+                or set(existing_object_ids or []) != set(request.object_ids or [])
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Lựa chọn tem đã thay đổi. Hãy nhận diện lại để cập nhật đường cắt.",
+                )
             return existing
         raise HTTPException(status_code=409, detail="Nguồn tem này đã được nhận diện hoặc đang được xử lý.")
+    detection_token = session.pages[request.page_number].detection_token
 
     def _detect_and_promote():
         # UIUX (audit 2026-08-08 §UNIFIED.8): toàn bộ nhánh deterministic/AI chỉ chạy
@@ -285,6 +307,7 @@ async def detect_sticker_source_endpoint(
             alpha_threshold=request.alpha_threshold,
             page_number=request.page_number,
             preview_only=request.preview_only,
+            object_ids=request.object_ids,
         )
         return promote_source_session(
             session_id,
@@ -299,6 +322,7 @@ async def detect_sticker_source_endpoint(
             warnings=list(detected.warnings),
             edge_background_rgb=detected.background_rgb,
             edge_background_tolerance=detected.background_tolerance,
+            detection_token=detection_token,
         )
 
     try:
@@ -306,15 +330,19 @@ async def detect_sticker_source_endpoint(
         # biên (CutContour/vector/Alpha/nền phẳng) chỉ là bước chuẩn bị preview
         # trung bình, không được chiếm hàng đợi heavy. AI/auto vẫn giữ scheduler
         # vì có thể nạp model và chạy inference nặng.
-        if request.strategy in {"existing-cut", "vector", "alpha", "simple-bg", "page-box"}:
+        if request.object_ids is not None or request.strategy in {
+            "existing-cut", "vector", "alpha", "simple-bg", "page-box",
+        }:
             promoted = await run_in_threadpool(_detect_and_promote)
         else:
             promoted = await run_heavy_in_threadpool(_detect_and_promote)
     except asyncio.CancelledError:
-        abort_source_detection(session_id, page_number=request.page_number)
+        abort_source_detection(session_id, page_number=request.page_number, detection_token=detection_token)
         raise
     except StickerSourcePipelineError as exc:
-        restored = abort_source_detection(session_id, page_number=request.page_number)
+        restored = abort_source_detection(
+            session_id, page_number=request.page_number, detection_token=detection_token,
+        )
         if not restored and get_session(session_id) is None:
             raise HTTPException(
                 status_code=409,
@@ -322,7 +350,9 @@ async def detect_sticker_source_endpoint(
             ) from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        restored = abort_source_detection(session_id, page_number=request.page_number)
+        restored = abort_source_detection(
+            session_id, page_number=request.page_number, detection_token=detection_token,
+        )
         if not restored and get_session(session_id) is None:
             raise HTTPException(
                 status_code=409,
@@ -336,7 +366,7 @@ async def detect_sticker_source_endpoint(
             detail="Không nhận diện được vùng tem. File gốc vẫn được giữ; hãy thử lại.",
         ) from exc
     if promoted is None:
-        abort_source_detection(session_id, page_number=request.page_number)
+        abort_source_detection(session_id, page_number=request.page_number, detection_token=detection_token)
         raise HTTPException(
             status_code=409,
             detail="Phiên nguồn tem đã thay đổi trong lúc nhận diện. Hãy kiểm tra kết quả hiện tại.",
