@@ -283,8 +283,7 @@ def test_legacy_khong_co_canonical_cung_bao_ve_artwork(monkeypatch, tmp_path):
 
 
 @pytest.mark.usefixtures("no_shadow_recovery")
-@pytest.mark.parametrize("crop_to_sticker", [False, True])
-def test_fallback_khong_phuc_hoi_raw_ai_sai_va_pdf_xuat_giu_roi(monkeypatch, tmp_path, crop_to_sticker):
+def test_fallback_khong_phuc_hoi_raw_ai_sai_va_pdf_xuat_giu_roi(monkeypatch, tmp_path):
     source, raw_alpha = _saved_user_case()
     session = _user_session(tmp_path, "pdf")
     _replay_ai(monkeypatch, source, raw_alpha)
@@ -311,84 +310,22 @@ def test_fallback_khong_phuc_hoi_raw_ai_sai_va_pdf_xuat_giu_roi(monkeypatch, tmp
         cutline_denoise=50, **tuning,
     )
     assert len(preview["paths"]) == 1
-    cache = page.cutline_export_cache
-    assert cache is not None and len(cache["instances"]) == 1
-    instance = cache["instances"][0]
-    left, top = instance["left"], instance["top"]
-    canonical_alpha = instance["alpha"]
-    # Guard A/B vẫn phải giữ mảng AI đã khoét, độc lập writer giữ tấm/tách tem.
-    assert np.all(canonical_alpha[198 - top:224 - top, 495 - left:520 - left] == 255)
-    assert canonical_alpha[210 - top, 550 - left] == 255
     assert sessions.confirm_source_session(session.session_id, page_number=1) is not None
     result = export_sticker_sheet_document(
-        promoted, pages=[{
-            "source_page": 1, "expected_revision": 1, "edits": [],
-            "dpi": dpi_x, "dpi_y": dpi_y,
-            "expected_fingerprint": preview["fingerprint"], "cutline_denoise": 50,
-        }],
-        page_order=[1], dpi=dpi_x, dpi_y=dpi_y, output_format="pdf", crop_to_sticker=crop_to_sticker,
-        cutline_denoise=50,
+        promoted, pages=[{"source_page": 1, "expected_revision": 1, "edits": [], "dpi": dpi_x, "dpi_y": dpi_y}],
+        page_order=[1], dpi=dpi_x, dpi_y=dpi_y, output_format="pdf", crop_to_sticker=False,
         shape_mode="contour", preserve_existing_cut=False, **tuning,
     )
     with pikepdf.Pdf.open(result.path) as pdf:
         assert len(pdf.pages) == 1
-        if crop_to_sticker:
-            # Tách tem vẫn đi cầu Alpha: giữ oracle SMask cũ trên crop đã dịch.
-            images = list(pdf.pages[0].get_images(recursive=True).values())
-            masks = [pikepdf.PdfImage(obj.SMask).as_pil_image() for obj in images if "/SMask" in obj]
-            assert len(masks) == 1
-            alpha = np.asarray(masks[0])
-            assert alpha.shape == canonical_alpha.shape
-            assert np.all(alpha[198 - top:224 - top, 495 - left:520 - left] == 255)
-            assert alpha[210 - top, 550 - left] == 255
-        else:
-            # Giữ tấm nay copy PDF gốc, không tạo SMask phủ lại artwork. Giữ
-            # bytes ảnh gốc và pixel ROI để không đổi oracle thành chỉ đếm dao.
-            source_image = pdf.pages[0].Resources.XObject.Im0
-            assert source_image.read_bytes() == np.asarray(source).tobytes()
-            pixels = np.asarray(pikepdf.PdfImage(source_image).as_pil_image())
-            assert np.array_equal(pixels[198:224, 495:520], np.asarray(source)[198:224, 495:520])
-            assert np.array_equal(pixels[210, 550], np.asarray(source)[210, 550])
+        images = list(pdf.pages[0].get_images(recursive=True).values())
+        masks = [pikepdf.PdfImage(obj.SMask).as_pil_image() for obj in images if "/SMask" in obj]
+        assert len(masks) == 1
+        alpha = np.asarray(masks[0])
+        assert alpha.shape == raw_alpha.shape
+        assert np.all(alpha[198:224, 495:520] == 255)
+        assert alpha[210, 550] == 255
         assert len(extract_cut_contours_from_pdf(pdf, config=ExtractConfig(page_frame_ratio=1.1)).contours) == 1
-        from app.workers.cutline_geometry import build_bezier_segments_path_stream
-        from app.workers.sticker_sheet_export import _translate_cutline_path_groups
-
-        groups = instance["path_groups"]
-        height_points = canonical_alpha.shape[0] * 72.0 / dpi_y
-        if not crop_to_sticker:
-            groups = _translate_cutline_path_groups(
-                groups, offset_x_points=left * 72.0 / dpi_x,
-                offset_y_points=top * 72.0 / dpi_y,
-            )
-            height_points = raw_alpha.shape[0] * 72.0 / dpi_y
-        contents = pdf.pages[0].obj["/Contents"]
-        stream = (
-            b"\n".join(item.read_bytes() for item in contents)
-            if isinstance(contents, pikepdf.Array) else contents.read_bytes()
-        )
-        for group in groups:
-            for ring in [group["exterior"], *(group.get("interiors") or [])]:
-                for command in build_bezier_segments_path_stream(ring, height_points):
-                    assert command.encode("ascii") in stream
-    if not crop_to_sticker:
-        import pypdfium2 as pdfium
-        from app.core.pdfium_lock import pdfium_guard
-
-        def rendered(path):
-            with pdfium_guard(), pdfium.PdfDocument(str(path)) as document:
-                rendered_page = document[0]
-                try:
-                    bitmap = rendered_page.render(scale=1, rev_byteorder=True)
-                    try:
-                        return np.array(bitmap.to_numpy(), copy=True)
-                    finally:
-                        bitmap.close()
-                finally:
-                    rendered_page.close()
-
-        original_pixels, result_pixels = rendered(session.source_path), rendered(result.path)
-        assert np.array_equal(original_pixels[198:224, 495:520], result_pixels[198:224, 495:520])
-        assert np.array_equal(original_pixels[210, 550], result_pixels[210, 550])
 
 
 @pytest.mark.parametrize("preview_only", [True, False])

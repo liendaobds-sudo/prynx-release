@@ -26,7 +26,6 @@ import {
   type NavigationTabLike,
 } from '../lib/tabNavigation';
 import SystemIntegrations from '../components/SystemIntegrations';
-import { registerStickerIncomingSource } from '../lib/stickerIncomingSources';
 import {
   EXPLICIT_INTENT_FALLBACK_MS,
   INCOMING_FILES_DEBOUNCE_MS,
@@ -105,27 +104,6 @@ describe('useIncomingFileDispatcher', () => {
     { id: 'pdf', type: 'imposition', payload: { file: 'working.pdf' } },
     { id: 'tem', type: 'imposition', payload: { focusFeature: 'sticker' } },
   ];
-
-  it('workspace unified đang active nhận PDF, tab nền và intent Combine không bị hút', () => {
-    const receive = vi.fn(() => true);
-    disposers.push(registerStickerIncomingSource('tem', receive));
-    const { onOpenApp, activeTabIdRef } = renderDispatcher('tem', stickerTabs);
-    const source = file('tem.pdf');
-    act(() => emitFiles([source]));
-    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
-    expect(receive).toHaveBeenCalledWith([source]);
-    expect(onOpenApp).not.toHaveBeenCalled();
-    activeTabIdRef.current = 'pdf';
-    act(() => emitFiles([source]));
-    act(() => vi.advanceTimersByTime(INCOMING_FILES_DEBOUNCE_MS));
-    expect(receive).toHaveBeenCalledTimes(1);
-    expect(onOpenApp).toHaveBeenCalledWith('imposition', { file: source });
-    activeTabIdRef.current = 'tem';
-    act(() => emitFiles([source], 'combine'));
-    act(() => window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT)));
-    expect(receive).toHaveBeenCalledTimes(1);
-    expect(onOpenApp).toHaveBeenCalledWith('combine_pdf', { files: [source] });
-  });
 
   it.each([
     ['PDF', 'mau.pdf'],

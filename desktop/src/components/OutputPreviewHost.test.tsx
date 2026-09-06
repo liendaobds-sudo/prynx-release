@@ -12,7 +12,6 @@ import {
 } from '../stores/useWorkspaceStore';
 import OutputPreviewHost from './OutputPreviewHost';
 import InkManagerTool from './preprocess-tools/InkManagerTool';
-import { stickerObjectSourceIdentity } from '../lib/stickerObjectSelection';
 
 const uploadPDF = vi.fn();
 const getWorkingFile = vi.fn();
@@ -260,45 +259,5 @@ describe('OutputPreviewHost', () => {
         ));
         expect(getWorkingFile).not.toHaveBeenCalled();
         expect(uploadPDF).not.toHaveBeenCalled();
-    });
-
-    it('Output Preview không dùng ID trang nguồn của custom cho working PDF đã reorder', async () => {
-        const store = createWorkspaceStore();
-        const source = new File(['source'], 'tem.pdf', { type: 'application/pdf' });
-        const working = new File(['reordered'], 'tem.pdf', { type: 'application/pdf' });
-        store.getState().setFile(source);
-        store.getState().setViewerPageOrder([2, 1, 1]);
-        store.getState().setViewerPageRotations([90, 0, 270]);
-        store.getState().setSelectionFileId('raw-source', stickerObjectSourceIdentity(source));
-        store.getState().setShowOutputPreview(true);
-        getWorkingFile.mockResolvedValue(working);
-        uploadPDF.mockResolvedValue({ id: 'working-preview' });
-
-        render(<WorkspaceContext.Provider value={store}><OutputPreviewHost /></WorkspaceContext.Provider>);
-        await waitFor(() => expect(uploadPDF).toHaveBeenCalledWith(
-            working, expect.objectContaining({ signal: expect.any(AbortSignal) }),
-        ));
-        await waitFor(() => expect(screen.getByTestId('output-preview').getAttribute('data-file-id'))
-            .toBe('working-preview'));
-        expect(screen.getByTestId('output-preview').getAttribute('data-total-pages')).toBe('3');
-    });
-
-    it('Ink Manager materialize working PDF khi owner trước đó chỉ phục vụ trang nguồn', async () => {
-        const store = createWorkspaceStore();
-        const source = new File(['source'], 'tem.pdf', { type: 'application/pdf' });
-        const working = new File(['reordered'], 'tem.pdf', { type: 'application/pdf' });
-        store.getState().setFile(source);
-        store.getState().setViewerPageOrder([2, 1, 1]);
-        store.getState().setViewerPageRotations([90, 0, 270]);
-        store.getState().setSelectionFileId('raw-source', stickerObjectSourceIdentity(source));
-        getWorkingFile.mockResolvedValue(working);
-        uploadPDF.mockResolvedValue({ id: 'working-inks' });
-
-        render(<WorkspaceContext.Provider value={store}><InkManagerTool pdfFile={source} /></WorkspaceContext.Provider>);
-        await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledWith(
-            'http://localhost:8321/api/preflight/inks/working-inks',
-        ));
-        expect(uploadPDF).toHaveBeenCalledWith(working);
-        expect(authenticatedFetch).not.toHaveBeenCalledWith('http://localhost:8321/api/preflight/inks/raw-source');
     });
 });

@@ -6,7 +6,6 @@ import {
   type NavigationTabLike,
 } from '../lib/tabNavigation';
 import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
-import { deliverStickerIncomingSource } from '../lib/stickerIncomingSources';
 
 export const SYSTEM_FILES_RECEIVED_EVENT = 'system-files-received';
 export const SYSTEM_FILES_POLL_SETTLED_EVENT = 'prynx-system-files-poll-settled';
@@ -67,8 +66,6 @@ export function dispatchIncomingFileBatch(
 ): void {
   if (files.length === 0) return;
   const sortedFiles = sortIncomingFiles([...files]);
-  if (!intent && tabs.some(tab => tab.id === activeTabId)
-      && deliverStickerIncomingSource(activeTabId, sortedFiles)) return;
   const incomingPlan = planIncomingFiles(sortedFiles, intent);
 
   if (incomingPlan.mode === 'combine') {

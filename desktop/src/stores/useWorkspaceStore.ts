@@ -77,12 +77,6 @@ export interface EditObjectSelectionContext {
     pageIndex: number;
     /** Stable object ids from /edit/objects for that page. */
     objectIds: string[];
-    /** UIUX (audit 2026-09-06 §CUSTOM.PDF): khóa ID vào đúng phiên tài liệu đã đọc. */
-    revision?: WorkspaceDocumentRevisionToken;
-    /** Vị trí 1-based trong working PDF; không phải số trang nguồn sau đổi thứ tự. */
-    viewerPage?: number;
-    /** Phân biệt các bản nhân đôi của cùng trang nguồn; null khi chưa có instance. */
-    pageInstanceId?: string | null;
 }
 
 export interface FontInspectionCache {
@@ -1138,8 +1132,7 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
             hiddenObjectIds: [],
             lockedObjectIds: [],
             editClipboard: null,
-            // Snapshot có fence không được chuyển ID sang bản PDF khác chưa đọc lại.
-            objectSelectionContext: id && state.objectSelectionContext && !state.objectSelectionContext.revision
+            objectSelectionContext: id && state.objectSelectionContext
                 ? { ...state.objectSelectionContext, fileId: id }
                 : null,
             // Cây/ID OCG được đọc qua backend file ID; đổi owner phải seed lại.
@@ -1153,20 +1146,12 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     }),
     setFontInspectionCache: (cache) => set({ fontInspectionCache: cache }),
     setObjectSelectionContext: (context) => set((state) => {
-        // UIUX (audit 2026-09-06 §CUSTOM.PDF): từ chối kết quả của frame/request cũ.
-        if (context?.revision && (
-            context.fileId !== state.selectionFileId
-            || !isWorkspaceDocumentRevisionCurrent(context.revision, state)
-        )) return state;
         const prev = state.objectSelectionContext;
         if (prev === context) return state;
         if (
             prev && context
             && prev.fileId === context.fileId
             && prev.pageIndex === context.pageIndex
-            && prev.revision === context.revision
-            && prev.viewerPage === context.viewerPage
-            && prev.pageInstanceId === context.pageInstanceId
             && prev.objectIds.length === context.objectIds.length
             && prev.objectIds.every((id, index) => id === context.objectIds[index])
         ) {

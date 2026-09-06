@@ -92,49 +92,6 @@ def _box_strictly_larger(
     )
 
 
-def expand_preserved_sticker_page_canvas(
-    document: pikepdf.Pdf,
-    page: pikepdf.Page,
-    visible_boxes: Iterable[tuple[float, float, float, float]],
-) -> None:
-    """Nới trang được copy nguyên vẹn theo CUT/bleed đã vẽ, không dịch artwork."""
-    source_media = _read_box(page.obj, "/MediaBox", fallback=page.mediabox)
-    source_crop = _read_box(page.obj, "/CropBox", fallback=page.cropbox)
-    source_crop = (
-        max(source_crop[0], source_media[0]),
-        max(source_crop[1], source_media[1]),
-        min(source_crop[2], source_media[2]),
-        min(source_crop[3], source_media[3]),
-    )
-    if source_crop[2] <= source_crop[0] or source_crop[3] <= source_crop[1]:
-        source_crop = source_media
-    final_crop = source_crop
-    for box in visible_boxes:
-        if (
-            len(box) != 4
-            or not all(math.isfinite(value) for value in box)
-            or box[2] <= box[0]
-            or box[3] <= box[1]
-        ):
-            raise ValueError("Khung đường cắt hoặc bù xén không hợp lệ.")
-        final_crop = _union_expand_only(final_crop, box)
-    if not _box_strictly_larger(final_crop, source_crop):
-        return
-
-    # BLEED (feedback 2026-09-06 §VIEW.1): CropBox mới không được làm lộ
-    # artwork vốn đã bị xén khỏi nguồn. Chỉ kẹp các stream cũ trước khi caller
-    # thêm bleed/CUT; giữ nguyên text, vector, lớp màu và hệ tọa độ PDF.
-    x0, y0, x1, y1 = source_crop
-    page.contents_add(pikepdf.Stream(document, (
-        f"q {x0:.6f} {y0:.6f} {x1 - x0:.6f} {y1 - y0:.6f} re W n\n"
-    ).encode("ascii")), prepend=True)
-    page.contents_add(pikepdf.Stream(document, b"\nQ\n"))
-    final_media = _union_expand_only(source_media, final_crop)
-    page.obj["/MediaBox"] = _as_array(final_media)
-    page.obj["/CropBox"] = _as_array(final_crop)
-    page.obj["/BleedBox"] = _as_array(final_crop)
-
-
 def restore_sticker_page_canvas(
     source_path: str,
     output_path: str,

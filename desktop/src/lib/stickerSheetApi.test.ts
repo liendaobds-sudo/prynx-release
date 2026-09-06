@@ -71,28 +71,6 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
         apiMocks.getApiUrl.mockReturnValue('http://127.0.0.1:8321/api');
     });
 
-    it('custom gửi đối tượng PDF và revision trang qua cùng endpoint nhận diện', async () => {
-        const manifest = detectionManifest(2, 3);
-        apiMocks.authenticatedFetch.mockResolvedValue(responseJson(manifest));
-        await detectStickerSourceManifest(manifest.session_id, {
-            pageNumber: 2, objectIds: ['vector-2', 'image-4'], baseRevision: 2,
-        });
-        const init = apiMocks.authenticatedFetch.mock.calls[0][1] as RequestInit;
-        expect(JSON.parse(String(init.body))).toMatchObject({
-            page_number: 2, object_ids: ['vector-2', 'image-4'], base_revision: 2,
-        });
-    });
-
-    it('lỗi tải ảnh sau custom mang revision đã commit để retry không dùng revision cũ', async () => {
-        const manifest = detectionManifest(1, 2);
-        apiMocks.authenticatedFetch.mockImplementation(async (url: string) => {
-            if (url.endsWith('/detect')) return responseJson(manifest);
-            return new Response(null, { status: 500 });
-        });
-        await expect(detectStickerSource(manifest.session_id, { objectIds: ['vector-2'], baseRevision: 1 }))
-            .rejects.toMatchObject({ name: 'StickerDetectAssetSyncError', manifest });
-    });
-
     it('detect gửi page_number và tải asset có định danh đúng trang', async () => {
         const manifest = detectionManifest(2);
         apiMocks.authenticatedFetch.mockImplementation(async (url: string) => {

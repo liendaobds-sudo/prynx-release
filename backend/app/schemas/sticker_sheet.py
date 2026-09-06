@@ -91,13 +91,6 @@ class StickerSourceDetectRequest(BaseModel):
     model: StickerSheetModel = "birefnet-lite"
     alpha_threshold: int = Field(default=128, ge=1, le=254)
     page_number: int = Field(default=1, ge=1)
-    # UIUX (audit 2026-09-06 §CUSTOM.2): chỉ nhận ID đối tượng PDF cấp trang;
-    # danh sách rỗng/sai kiểu không được âm thầm chuyển thành nhận diện toàn trang.
-    object_ids: list[Annotated[str, Field(
-        strict=True, pattern=r"^(?:text|image|vector)-(?:0|[1-9][0-9]*)$",
-    )]] | None = Field(default=None, min_length=1)
-    # Lựa chọn mới thay đúng revision của trang hiện tại, không xóa các trang khác.
-    base_revision: int | None = Field(default=None, ge=1)
     # PERF (feedback 2026-08-20 §CUTPREVIEW.FAST1): preview classic được phép
     # giữ mask nền phẳng đã đủ tin cậy, không chạy bước nâng hình học AI tùy chọn.
     preview_only: bool = False
@@ -230,9 +223,6 @@ class StickerSheetPageExportRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
-    # QUALITY (audit 2026-09-06 §UNIFY.L1): export phải dùng đúng mức đã xem trước.
-    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
-    expected_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class StickerCutlinePreviewRequest(BaseModel):
@@ -310,7 +300,6 @@ class StickerSheetExportRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
-    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
     offset_mm: float = Field(default=0.0, ge=-10.0, le=10.0)
     bleed_mm: float = Field(default=2.0, ge=0.0, le=10.0)
     cut_mode: StickerCutMode = "original"

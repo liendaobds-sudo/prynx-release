@@ -146,8 +146,6 @@ export interface StickerSheetPageExport {
     cutlineFidelity?: number;
     curveTension?: number;
     minDetailAreaMm2?: number;
-    cutlineDenoise?: number;
-    expectedFingerprint?: string;
 }
 
 export interface StickerCutlinePreviewPath {
@@ -258,13 +256,6 @@ export async function inspectStickerSourceManifest(
     return response.json() as Promise<StickerSourceInspection>;
 }
 
-export class StickerDetectAssetSyncError extends Error {
-    constructor(readonly manifest: StickerSourceDetection) {
-        super('Chưa tải được vùng tem mới. Bấm Thử lại.');
-        this.name = 'StickerDetectAssetSyncError';
-    }
-}
-
 export async function detectStickerSource(
     sessionId: string,
     options: {
@@ -273,27 +264,18 @@ export async function detectStickerSource(
         alphaThreshold?: number;
         pageNumber?: number;
         previewOnly?: boolean;
-        objectIds?: readonly string[];
-        baseRevision?: number;
         signal?: AbortSignal;
     } = {},
 ): Promise<StickerSourceDetectionPayload> {
     const manifest = await detectStickerSourceManifest(sessionId, options);
     // UIUX (audit 2026-08-09 §MP.10): một trang lỗi tải asset không được đóng
     // session chứa các trang sibling. Retry detect sẽ chỉ phát lại URL đã promote.
-    try {
-        const [previewBlob, labelsBlob, uncertaintyBlob] = await Promise.all([
-            fetchAsset(manifest.preview_url, options.signal),
-            fetchAsset(manifest.labels_url, options.signal),
-            fetchAsset(manifest.uncertainty_url, options.signal),
-        ]);
-        return { manifest, previewBlob, labelsBlob, uncertaintyBlob };
-    } catch (error) {
-        if (options.signal?.aborted) throw error;
-        // CUSTOM (2026-09-06): backend đã nâng revision; retry chỉ tải lại
-        // kết quả đó, không gửi base_revision cũ để nhận diện lần nữa.
-        throw new StickerDetectAssetSyncError(manifest);
-    }
+    const [previewBlob, labelsBlob, uncertaintyBlob] = await Promise.all([
+        fetchAsset(manifest.preview_url, options.signal),
+        fetchAsset(manifest.labels_url, options.signal),
+        fetchAsset(manifest.uncertainty_url, options.signal),
+    ]);
+    return { manifest, previewBlob, labelsBlob, uncertaintyBlob };
 }
 
 /** Chỉ lấy manifest detect; không tải ba PNG mà preview line-only không dùng. */
@@ -305,8 +287,6 @@ export async function detectStickerSourceManifest(
         alphaThreshold?: number;
         pageNumber?: number;
         previewOnly?: boolean;
-        objectIds?: readonly string[];
-        baseRevision?: number;
         signal?: AbortSignal;
     } = {},
 ): Promise<StickerSourceDetection> {
@@ -321,8 +301,6 @@ export async function detectStickerSourceManifest(
                 alpha_threshold: options.alphaThreshold ?? 128,
                 page_number: options.pageNumber ?? 1,
                 preview_only: options.previewOnly ?? false,
-                object_ids: options.objectIds,
-                base_revision: options.baseRevision,
             }),
             signal: options.signal,
         },
@@ -472,7 +450,6 @@ export async function exportStickerSheet(
         cutlineFidelity?: number;
         curveTension?: number;
         minDetailAreaMm2?: number;
-        cutlineDenoise?: number;
         signal?: AbortSignal;
     },
 ): Promise<StickerSheetExportPayload> {
@@ -487,8 +464,6 @@ export async function exportStickerSheet(
         cutline_fidelity: page.cutlineFidelity ?? options.cutlineFidelity ?? 50,
         curve_tension: page.curveTension ?? options.curveTension ?? 50,
         min_detail_area_mm2: page.minDetailAreaMm2 ?? options.minDetailAreaMm2 ?? 1,
-        cutline_denoise: page.cutlineDenoise ?? options.cutlineDenoise,
-        expected_fingerprint: page.expectedFingerprint,
     }));
     const response = await authenticatedFetch(
         `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/export`,
@@ -504,8 +479,7 @@ export async function exportStickerSheet(
                 cutline_smoothness: options.cutlineSmoothness ?? 50,
                 cutline_fidelity: options.cutlineFidelity ?? 50,
                 curve_tension: options.curveTension ?? 50,
-        min_detail_area_mm2: options.minDetailAreaMm2 ?? 1,
-                cutline_denoise: options.cutlineDenoise,
+                min_detail_area_mm2: options.minDetailAreaMm2 ?? 1,
                 offset_mm: options.offsetMm,
                 bleed_mm: options.bleedMm,
                 cut_mode: options.cutMode || 'original',

@@ -19,8 +19,6 @@ export interface StickerOutputSettingsPanelProps {
     onChange: (next: StickerOutputSettings) => void;
     disabled?: boolean;
     preserveNotice?: ReactNode;
-    showCropControl?: boolean;
-    backgroundControl?: ReactNode;
 }
 
 interface NumberSettingProps {
@@ -206,11 +204,8 @@ export default function StickerOutputSettingsPanel({
     onChange,
     disabled = false,
     preserveNotice,
-    showCropControl = true,
-    backgroundControl,
 }: StickerOutputSettingsPanelProps) {
     const settings = sanitizeStickerOutputSettings(value);
-    const inputId = useId();
 
     const emitPatch = (patch: Partial<StickerOutputSettings>) => {
         if (disabled) return;
@@ -255,7 +250,7 @@ export default function StickerOutputSettingsPanel({
                 </div>
 
                 <NumberSetting
-                    id={`${inputId}-offset-mm`}
+                    id="sticker-output-offset-mm"
                     label="Co giãn đường cắt"
                     value={settings.offsetMm}
                     min={-10}
@@ -304,8 +299,7 @@ export default function StickerOutputSettingsPanel({
                     >
                         {tv(settings.fillHoles ? 'Đặc ruột' : 'Giữ lỗ rỗng')}
                     </button>
-                    {backgroundControl}
-                    {showCropControl && <button
+                    <button
                         type="button"
                         aria-label={tv('Crop trang theo đường bế và phần bù xén')}
                         aria-pressed={settings.cropToSticker}
@@ -318,7 +312,7 @@ export default function StickerOutputSettingsPanel({
                         }`}
                     >
                         {tv(settings.cropToSticker ? 'Crop theo tem' : 'Giữ khổ trang')}
-                    </button>}
+                    </button>
                 </div>
             </div>
 
@@ -327,7 +321,7 @@ export default function StickerOutputSettingsPanel({
             <div>
                 <ToolSectionLabel>{tv('Bù xén')}</ToolSectionLabel>
                 <NumberSetting
-                    id={`${inputId}-bleed-mm`}
+                    id="sticker-output-bleed-mm"
                     label="Bù xén ngoài đường cắt"
                     value={settings.bleedMm}
                     min={0}

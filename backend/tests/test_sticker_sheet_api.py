@@ -376,169 +376,6 @@ def test_detect_preview_only_truyen_hop_dong_fast_path_den_pipeline(monkeypatch)
     assert len(detected.json()["instances"]) == 1
 
 
-def test_detect_custom_pdf_cung_session_khong_ai_va_retry_phai_khop_lua_chon(monkeypatch):
-    def forbidden_ai(*_args, **_kwargs):
-        raise AssertionError("Chọn đối tượng không dùng AI hoặc hàng đợi heavy")
-
-    monkeypatch.setattr(sticker_sheet_route, "run_heavy_in_threadpool", forbidden_ai)
-    monkeypatch.setattr("app.workers.sticker_source_pipeline.analyze_sticker_sheet", forbidden_ai)
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("custom.pdf", _multi_artwork_vector_pdf_bytes(), "application/pdf")},
-        )
-        assert inspected.status_code == 200, inspected.text
-        session_id = inspected.json()["session_id"]
-        endpoint = f"/api/sticker-sheet/{session_id}/detect"
-        detected = client.post(endpoint, json={"strategy": "ai", "object_ids": ["vector-1", "vector-3"]})
-        assert detected.status_code == 200, detected.text
-        payload = detected.json()
-        assert payload["session_id"] == session_id
-        assert payload["boundary_source"] == "manual"
-        assert payload["vector_geometry_ref"] == {
-            "kind": "pdf-object-selection", "source_page": 1,
-            "object_ids": ["vector-1", "vector-3"], "preserve_original": True,
-        }
-        assert len(payload["instances"]) == 2
-        for field in ("preview_url", "labels_url", "uncertainty_url"):
-            assert client.get(payload[field]).status_code == 200
-        repeated = client.post(endpoint, json={"object_ids": ["vector-3", "vector-1", "vector-1"]})
-        assert repeated.status_code == 200, repeated.text
-        assert repeated.json()["mask_revision"] == payload["mask_revision"]
-        assert client.post(endpoint, json={"object_ids": ["vector-2"]}).status_code == 409
-        assert client.post(endpoint, json={}).status_code == 409
-
-
-@pytest.mark.parametrize("object_ids", [[], [1], [None], ["vector-1", "bad-id"], "vector-1"])
-def test_detect_custom_pdf_payload_sai_khong_chay_nhan_dien(object_ids):
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("custom.pdf", _pdf_bytes(), "application/pdf")},
-        )
-        session_id = inspected.json()["session_id"]
-        detected = client.post(f"/api/sticker-sheet/{session_id}/detect", json={"object_ids": object_ids})
-        assert detected.status_code == 422, detected.text
-        assert session_store.get_session(session_id).stage == "inspected"
-
-
-def test_detect_custom_pdf_id_mat_tra422_va_cho_phep_chon_lai():
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("custom.pdf", _pdf_bytes(), "application/pdf")},
-        )
-        session_id = inspected.json()["session_id"]
-        endpoint = f"/api/sticker-sheet/{session_id}/detect"
-        missing = client.post(endpoint, json={"object_ids": ["vector-99"]})
-        assert missing.status_code == 422, missing.text
-        assert session_store.get_session(session_id).stage == "inspected"
-        assert client.post(endpoint, json={"object_ids": ["vector-0"]}).status_code == 200
-
-
-def test_detect_auto_roi_custom_khong_duoc_tra_cache_auto():
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("custom.pdf", _pdf_bytes(), "application/pdf")},
-        )
-        endpoint = f"/api/sticker-sheet/{inspected.json()['session_id']}/detect"
-        assert client.post(endpoint, json={"strategy": "vector"}).status_code == 200
-        assert client.post(endpoint, json={"object_ids": ["vector-0"]}).status_code == 409
-
-
-def test_redetect_custom_pdf_tang_revision_va_khong_thay_trang_khac():
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("two-pages.pdf", _pdf_bytes(pages=2), "application/pdf")},
-        )
-        session_id = inspected.json()["session_id"]
-        endpoint = f"/api/sticker-sheet/{session_id}/detect"
-        for page_number in (1, 2):
-            assert client.post(endpoint, json={"page_number": page_number, "strategy": "vector"}).status_code == 200
-            assert client.post(
-                f"/api/sticker-sheet/{session_id}/confirm", json={"page_number": page_number},
-            ).status_code == 200
-        session = session_store.get_session(session_id)
-        sibling, target = session.pages[1], session.pages[2]
-        sibling_manifest = dict(sibling.manifest)
-        sibling_files = {path.name: path.read_bytes() for path in sibling.directory.iterdir() if path.is_file()}
-        sibling.cutline_export_cache = {"fingerprint": "sibling-preview"}
-        target.cutline_export_cache = {"fingerprint": "old-target-preview"}
-        changed = client.post(endpoint, json={
-            "page_number": 2, "object_ids": ["vector-0"], "base_revision": 1,
-        })
-        assert changed.status_code == 200, changed.text
-        assert changed.json()["mask_revision"] == 2
-        assert changed.json()["boundary_source"] == "manual"
-        assert not target.manifest["mask_confirmed"]
-        assert target.cutline_export_cache is None
-        assert sibling.manifest == sibling_manifest
-        assert sibling.cutline_export_cache == {"fingerprint": "sibling-preview"}
-        assert {path.name: path.read_bytes() for path in sibling.directory.iterdir() if path.is_file()} == sibling_files
-        assert client.post(endpoint, json={
-            "page_number": 2, "object_ids": ["vector-0"], "base_revision": 1,
-        }).status_code == 409
-        automatic = client.post(endpoint, json={
-            "page_number": 2, "strategy": "vector", "base_revision": 2,
-        })
-        assert automatic.status_code == 200, automatic.text
-        assert automatic.json()["boundary_source"] == "vector"
-        assert automatic.json()["mask_revision"] == 3
-        assert client.get(changed.json()["preview_url"]).status_code == 409
-
-
-def test_redetect_custom_pdf_id_sai_giu_mask_artifact_da_duyet():
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("custom.pdf", _pdf_bytes(), "application/pdf")},
-        )
-        session_id = inspected.json()["session_id"]
-        endpoint = f"/api/sticker-sheet/{session_id}/detect"
-        initial = client.post(endpoint, json={"object_ids": ["vector-0"]})
-        assert initial.status_code == 200, initial.text
-        assert client.post(f"/api/sticker-sheet/{session_id}/confirm").status_code == 200
-        page = session_store.get_page_state(session_id)
-        previous_manifest = dict(page.manifest)
-        preview = client.get(initial.json()["preview_url"]).content
-        page.cutline_export_cache = {"fingerprint": "approved"}
-        failed = client.post(endpoint, json={"object_ids": ["vector-99"], "base_revision": 1})
-        assert failed.status_code == 422, failed.text
-        assert page.manifest == previous_manifest
-        assert page.stage == "mask-ready"
-        assert page.cutline_export_cache == {"fingerprint": "approved"}
-        assert client.get(initial.json()["preview_url"]).content == preview
-        assert page.detection_token is None
-
-
-def test_redetect_custom_pdf_huy_request_khoi_phuc_trang_da_duyet(monkeypatch):
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("custom.pdf", _pdf_bytes(), "application/pdf")},
-        )
-        session_id = inspected.json()["session_id"]
-        assert client.post(
-            f"/api/sticker-sheet/{session_id}/detect", json={"object_ids": ["vector-0"]},
-        ).status_code == 200
-    page = session_store.get_page_state(session_id)
-    previous_manifest = dict(page.manifest)
-
-    async def cancelled(*_args, **_kwargs):
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(sticker_sheet_route, "run_in_threadpool", cancelled)
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(detect_sticker_source_endpoint(session_id, StickerSourceDetectRequest(
-            object_ids=["vector-0"], base_revision=1,
-        )))
-    assert page.stage == "mask-review"
-    assert page.manifest == previous_manifest
-    assert page.detection_token is None
-
-
 def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
     with TestClient(app) as client:
         inspected = client.post(
@@ -569,7 +406,6 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
                 "cutline_fidelity": 50,
                 "curve_tension": 50,
                 "min_detail_area_mm2": 1,
-                "cutline_denoise": 70,
             },
         )
         assert previewed.status_code == 200, previewed.text
@@ -585,12 +421,6 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
             "app.workers.sticker_sheet_export.build_alpha_cutline_geometry",
             forbidden_refit,
         )
-        # Cache miss sẽ gọi lại preview worker trước cả bước fit Alpha. Chặn
-        # luôn nhánh đó để chứng minh export dùng đúng artifact preview đã duyệt.
-        monkeypatch.setattr(
-            "app.workers.sticker_cutline_preview.build_sticker_cutline_preview",
-            forbidden_refit,
-        )
         exported = client.post(
             f"/api/sticker-sheet/{session_id}/export",
             json={
@@ -604,8 +434,6 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
                     "cutline_fidelity": 50,
                     "curve_tension": 50,
                     "min_detail_area_mm2": 1,
-                    "cutline_denoise": 70,
-                    "expected_fingerprint": previewed.json()["fingerprint"],
                 }],
                 "page_order": [1],
                 "dpi": 300,
@@ -623,126 +451,6 @@ def test_export_theo_thumbnail_dung_cache_preview_cua_dung_trang(monkeypatch):
 
     assert exported.status_code == 200, exported.text
     assert exported.headers["X-Sticker-Sheet-Count"] == "1"
-
-
-def test_export_tu_choi_fingerprint_khi_cache_preview_thieu(tmp_path):
-    """Có yêu cầu frame canonical nhưng session chưa có preview thì trả 409."""
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("alpha.png", _alpha_png_bytes(), "image/png")},
-        )
-        assert inspected.status_code == 200, inspected.text
-        session_id = inspected.json()["session_id"]
-        detected = client.post(
-            f"/api/sticker-sheet/{session_id}/detect",
-            json={"strategy": "alpha", "page_number": 1},
-        )
-        assert detected.status_code == 200, detected.text
-        assert client.post(
-            f"/api/sticker-sheet/{session_id}/confirm",
-            json={"page_number": 1},
-        ).status_code == 200
-        exported = client.post(
-            f"/api/sticker-sheet/{session_id}/export",
-            json={
-                "pages": [{
-                    "source_page": 1,
-                    "expected_revision": 1,
-                    "expected_fingerprint": "a" * 64,
-                    "edits": [],
-                    "dpi": 300,
-                    "dpi_y": 150,
-                }],
-                "page_order": [1],
-                "dpi": 300,
-                "dpi_y": 150,
-                "offset_mm": 0,
-                "bleed_mm": 0,
-                "cut_mode": "original",
-                "corner_style": "preserve",
-                "preserve_existing_cut": False,
-                "output_format": "pdf",
-            },
-        )
-
-    assert exported.status_code == 409, exported.text
-    assert "xem trước" in exported.json()["detail"].lower()
-    session = session_store.get_session(session_id)
-    assert session is not None
-    assert not list(session.directory.glob("tem_cutcontour_*.pdf"))
-
-
-def test_export_tu_choi_fingerprint_khi_denoise_da_doi(tmp_path):
-    """Đổi denoise sau preview làm cache key lệch và không công bố PDF mới."""
-    with TestClient(app) as client:
-        inspected = client.post(
-            "/api/sticker-sheet/inspect",
-            files={"file": ("alpha.png", _alpha_png_bytes(), "image/png")},
-        )
-        assert inspected.status_code == 200, inspected.text
-        session_id = inspected.json()["session_id"]
-        detected = client.post(
-            f"/api/sticker-sheet/{session_id}/detect",
-            json={"strategy": "alpha", "page_number": 1},
-        )
-        assert detected.status_code == 200, detected.text
-        previewed = client.post(
-            f"/api/sticker-sheet/{session_id}/cutline-preview",
-            json={
-                "base_revision": 1,
-                "page_number": 1,
-                "edits": [],
-                "dpi": 300,
-                "dpi_y": 150,
-                "offset_mm": 0,
-                "bleed_mm": 0,
-                "cut_mode": "original",
-                "corner_style": "preserve",
-                "fill_holes": True,
-                "cutline_smoothness": 50,
-                "cutline_fidelity": 50,
-                "curve_tension": 50,
-                "min_detail_area_mm2": 1,
-                "cutline_denoise": 70,
-            },
-        )
-        assert previewed.status_code == 200, previewed.text
-        assert client.post(
-            f"/api/sticker-sheet/{session_id}/confirm",
-            json={"page_number": 1},
-        ).status_code == 200
-        exported = client.post(
-            f"/api/sticker-sheet/{session_id}/export",
-            json={
-                "pages": [{
-                    "source_page": 1,
-                    "expected_revision": 1,
-                    "expected_fingerprint": previewed.json()["fingerprint"],
-                    "edits": [],
-                    "dpi": 300,
-                    "dpi_y": 150,
-                    "cutline_denoise": 71,
-                }],
-                "page_order": [1],
-                "dpi": 300,
-                "dpi_y": 150,
-                "offset_mm": 0,
-                "bleed_mm": 0,
-                "cut_mode": "original",
-                "corner_style": "preserve",
-                "fill_holes": True,
-                "crop_to_sticker": True,
-                "preserve_existing_cut": False,
-                "output_format": "pdf",
-            },
-        )
-
-    assert exported.status_code == 409, exported.text
-    assert "preview" in exported.json()["detail"].lower()
-    session = session_store.get_session(session_id)
-    assert session is not None
-    assert not list(session.directory.glob("tem_cutcontour_*.pdf"))
 
 
 def test_detected_session_recovers_assets_after_backend_reload():
@@ -1747,14 +1455,12 @@ def test_multi_page_export_blocks_incomplete_or_stale_and_follows_page_order():
         assert [float(page.obj["/UserUnit"]) for page in output.pages] == [2.0, 1.0]
 
 
-def test_multi_page_export_groups_split_rasters_and_preserves_original_pdf_sheets(monkeypatch):
-    calls: list[tuple[str, int, list[int]]] = []
+def test_multi_page_raster_export_groups_compatible_pages_and_keeps_sheet_pages(monkeypatch):
+    calls: list[tuple[int, list[int]]] = []
 
     def copy_cutline_input(_engine, *, input_path: str, output_path: str, **kwargs):
-        approved = kwargs.get("approved_contour_overrides")
-        overrides = approved or kwargs.get("alpha_path_overrides") or {}
+        overrides = kwargs.get("alpha_path_overrides") or {}
         calls.append((
-            "original" if approved else "raster",
             len(overrides),
             [
                 len(payload.get("path_groups") or [])
@@ -1799,14 +1505,6 @@ def test_multi_page_export_groups_split_rasters_and_preserves_original_pdf_sheet
             f"/api/sticker-sheet/{session_id}/export",
             json={**request, "crop_to_sticker": True},
         )
-        # Giữ PDF gốc không được tự fit lại lúc xuất; dùng đúng artifact đã tạo
-        # ở cùng settings (crop chỉ đóng trang, không đổi hình học preview).
-        session = session_store.get_session(session_id)
-        assert session is not None
-        for page_config in request["pages"]:
-            page_config["expected_fingerprint"] = session.pages[
-                page_config["source_page"]
-            ].cutline_export_cache["fingerprint"]
         whole_sheets = client.post(
             f"/api/sticker-sheet/{session_id}/export",
             json={**request, "crop_to_sticker": False},
@@ -1815,9 +1513,8 @@ def test_multi_page_export_groups_split_rasters_and_preserves_original_pdf_sheet
     assert separated.status_code == 200, separated.text
     assert whole_sheets.status_code == 200, whole_sheets.text
     assert calls == [
-        ("raster", 4, [1, 1, 1, 1]),
-        ("original", 1, [2]),
-        ("original", 1, [2]),
+        (4, [1, 1, 1, 1]),
+        (2, [2, 2]),
     ]
     assert separated.headers["X-Sticker-Sheet-Count"] == "4"
     assert whole_sheets.headers["X-Sticker-Sheet-Count"] == "4"

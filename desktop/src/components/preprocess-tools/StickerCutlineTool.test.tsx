@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ComponentType, PropsWithChildren } from 'react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -15,8 +14,6 @@ import {
 } from '../../lib/stickerSheetApi';
 import StickerCutlineTool from './StickerCutlineTool';
 import { useStickerSheetStore } from './stickerSheetStore';
-import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
-import { createImposerSettingsStore, ImposerSettingsContext } from '../imposition-tools/useImposerSettingsStore';
 
 
 const workingPdfMock = vi.hoisted(() => ({
@@ -51,9 +48,6 @@ vi.mock('../../lib/stickerSheetApi', () => ({
     exportStickerSheet: vi.fn(),
     inspectStickerSource: vi.fn(),
     previewStickerCutline: vi.fn(),
-}));
-vi.mock('./StickerObjectSelectionControl', () => ({
-    default: () => <button type="button">Chọn tem</button>,
 }));
 vi.mock('../../hooks/useWorkingPdf', () => ({
     useWorkingPdf: () => workingPdfMock,
@@ -102,17 +96,7 @@ function detection(needsReview = false): StickerSourceDetectionPayload {
     };
 }
 
-describe('StickerCutlineTool — một workspace, giữ adapter tương thích', () => {
-    const renderRecognizedShell = async (tabId: string, wrapper?: ComponentType<PropsWithChildren>) => {
-        const source = new File(['pdf'], `${tabId}.pdf`, { type: 'application/pdf' });
-        const props = { tabId, pdfFile: source, isActive: true, onFileFixed: vi.fn() };
-        const view = render(<StickerCutlineTool {...props} />, { wrapper });
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
-        await waitFor(() => expect(useStickerSheetStore.getState().getTab(tabId).status).toBe('mask-ready'));
-        await waitFor(() => expect(useStickerSheetStore.getState().getTab(tabId).cutlinePreview?.fingerprint).toBe('b'.repeat(64)));
-        return { view, props };
-    };
-
+describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', () => {
     beforeEach(() => {
         window.localStorage.clear();
         useStickerSheetStore.setState({ tabs: {} });
@@ -151,7 +135,7 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
         });
     });
 
-    it('mở workspace không có thẻ tóm tắt, giữ đủ bù xén và không tự nhận diện', async () => {
+    it('mặc định trở lại PDF/PNG trực tiếp và không tự nhận diện', async () => {
         const pdf = new File(['pdf'], 'current.pdf', { type: 'application/pdf' });
         render(
             <StickerCutlineTool
@@ -163,28 +147,20 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
-        // UIUX (feedback 2026-09-06): bỏ thẻ tóm tắt, không bỏ state hay control xử lý.
-        expect(screen.queryByLabelText('Bù xén và tạo đường cắt')).toBeNull();
-        expect(screen.queryByText('Một quy trình cho tem đã có biên và ảnh nhiều tem.')).toBeNull();
-        expect(screen.queryByText('Tùy chọn PDF nâng cao')).toBeNull();
-        expect(screen.queryByText('Quay lại workspace tem')).toBeNull();
-        expect(screen.getByRole('button', { name: 'Chọn tem' })).toBeTruthy();
-        expect(screen.getByRole('group', { name: 'Mục tiêu gia công' })).toBeTruthy();
-        expect(screen.queryByRole('button', { name: 'Đổi file nguồn' })).toBeNull();
-        const state = useStickerSheetStore.getState().getTab('direct-tab');
-        expect(state.sourceFile).toBe(pdf);
-        expect(state.outputSettings.cropToSticker).toBe(false);
-        expect(screen.getByRole('button', { name: 'Nhận diện tự động' })).toBeTruthy();
-        expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Tách nhiều tem' })).toBeNull();
-        expect(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toBeTruthy();
-        expect(screen.getByRole('spinbutton', { name: 'Co giãn đường cắt (mm)' })).toBeTruthy();
-        expect(screen.queryByText('direct-engine:current.pdf')).toBeNull();
+        const existingButton = screen.getByRole('button', { name: 'PDF/PNG đã có biên' }) as HTMLButtonElement;
+        expect(existingButton.getAttribute('aria-pressed')).toBe('true');
+        expect((screen.getByRole('button', { name: 'Tách nhiều tem' }) as HTMLButtonElement).getAttribute('aria-pressed')).toBe('false');
+        const existingTooltip = document.getElementById(existingButton.getAttribute('aria-describedby') || '');
+        expect(existingTooltip?.getAttribute('role')).toBe('tooltip');
+        expect(existingTooltip?.textContent).toContain(
+            'Không cần file có sẵn CutContour; bạn vẫn bù xén và tạo đường cắt bằng giao diện cũ.',
+        );
+        await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
     });
 
-    it('mở pipeline tự động từ một hành động duy nhất', async () => {
+    it('chỉ mở pipeline AI sau khi người dùng chọn Tách nhiều tem', async () => {
         const image = new File(['image'], 'current.png', { type: 'image/png' });
         const pdf = new File(['pdf'], 'current.pdf', { type: 'application/pdf' });
         render(
@@ -197,171 +173,25 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
+        await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         expect(inspectStickerSource).not.toHaveBeenCalled();
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
+        const multiStickerButton = screen.getByRole('button', { name: 'Tách nhiều tem' });
+        fireEvent.click(multiStickerButton);
+        const multiStickerTooltip = document.getElementById(
+            multiStickerButton.getAttribute('aria-describedby') || '',
+        );
+        expect(multiStickerTooltip?.getAttribute('role')).toBe('tooltip');
+        expect(multiStickerTooltip?.textContent).toContain(
+            'Dùng khi một trang chứa nhiều tem nhưng chưa có biên riêng rõ ràng.',
+        );
+        expect(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' })).toBeTruthy();
+        expect(screen.queryByRole('group', { name: 'Thiết lập đường bế tem' })).toBeNull();
+        expect(inspectStickerSource).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
         await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(confirmStickerSource).toHaveBeenCalledTimes(1));
         expect(useStickerSheetStore.getState().getTab('ai-tab').status).toBe('mask-ready');
-        expect(screen.queryByLabelText('Bù xén và tạo đường cắt')).toBeNull();
-        expect(screen.getByRole('button', { name: 'Giữ nguyên tấm' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Tách từng tem' })).toBeTruthy();
-        expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
-    });
-
-    it('Ctrl+Z bỏ nhận diện; Ctrl+Y và Ctrl+Shift+Z khôi phục đúng kết quả mà không chạy AI lần nữa', async () => {
-        await renderRecognizedShell('detect-history');
-        const detected = useStickerSheetStore.getState().getTab('detect-history');
-
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(false);
-        const undone = useStickerSheetStore.getState().getTab('detect-history');
-        expect(undone.status).toBe('source-ready');
-        expect(undone.manifest).toBeNull();
-        expect(undone.cutlinePreview).toBeNull();
-        expect(undone.sourceFile).toBe(detected.sourceFile);
-        expect(undone.sourceRevision).toBe(detected.sourceRevision);
-        expect(undone.inspection).toBe(detected.inspection);
-        expect(undone.outputSettings).toEqual(detected.outputSettings);
-        // Không còn kết quả để hoàn tác: Viewer phải được nhận phím kế tiếp.
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-
-        // Overlay đã biến mất, nhưng shell vẫn phải nhận Làm lại.
-        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(false);
-        const redone = useStickerSheetStore.getState().getTab('detect-history');
-        expect(redone.status).toBe(detected.status);
-        expect(redone.manifest).toBe(detected.manifest);
-        expect(redone.cutlinePreview).toBe(detected.cutlinePreview);
-        expect(redone.previewUrl).toBe(detected.previewUrl);
-        expect(redone.labelsUrl).toBe(detected.labelsUrl);
-        expect(redone.uncertaintyUrl).toBe(detected.uncertaintyUrl);
-
-        fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true, shiftKey: true })).toBe(false);
-        expect(useStickerSheetStore.getState().getTab('detect-history').cutlinePreview?.fingerprint)
-            .toBe(detected.cutlinePreview?.fingerprint);
-        expect(detectStickerSource).toHaveBeenCalledTimes(1);
-        expect(inspectStickerSource).toHaveBeenCalledTimes(1);
-        expect(confirmStickerSource).toHaveBeenCalledTimes(1);
-    });
-
-    it('ưu tiên hoàn tác và làm lại nét sửa trước kết quả nhận diện', async () => {
-        await renderRecognizedShell('edit-history');
-        const manifest = useStickerSheetStore.getState().getTab('edit-history').manifest;
-        act(() => useStickerSheetStore.getState().addStroke('edit-history', {
-            tool: 'erase', points: [{ x: 10, y: 10 }], radius: 2, instanceId: 1,
-        }));
-        expect(useStickerSheetStore.getState().getTab('edit-history').edits).toHaveLength(1);
-
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(false);
-        expect(useStickerSheetStore.getState().getTab('edit-history').edits).toHaveLength(0);
-        expect(useStickerSheetStore.getState().getTab('edit-history').manifest).toBe(manifest);
-        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(false);
-        expect(useStickerSheetStore.getState().getTab('edit-history').edits).toHaveLength(1);
-        expect(useStickerSheetStore.getState().getTab('edit-history').manifest).toBe(manifest);
-    });
-
-    it('tab nền không nhận hoàn tác hoặc làm lại nhận diện', async () => {
-        const { view, props } = await renderRecognizedShell('inactive-history');
-        const detected = useStickerSheetStore.getState().getTab(props.tabId).manifest;
-        view.rerender(<StickerCutlineTool {...props} isActive={false} />);
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-        expect(useStickerSheetStore.getState().getTab(props.tabId).manifest).toBe(detected);
-
-        view.rerender(<StickerCutlineTool {...props} />);
-        fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
-        view.rerender(<StickerCutlineTool {...props} isActive={false} />);
-        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(true);
-        expect(useStickerSheetStore.getState().getTab(props.tabId).manifest).toBeNull();
-    });
-
-    it('không lấy Ctrl+Z của ô nhập liệu, dropdown hoặc nội dung đang soạn', async () => {
-        await renderRecognizedShell('input-history');
-        const detected = useStickerSheetStore.getState().getTab('input-history').manifest;
-        const fields = render(<>
-            <textarea aria-label="ghi chú" />
-            <select aria-label="chọn mục"><option>Một</option></select>
-            <div contentEditable suppressContentEditableWarning><span data-testid="editable-child">Nội dung</span></div>
-        </>);
-        for (const target of [
-            screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' }),
-            screen.getByLabelText('ghi chú'), screen.getByLabelText('chọn mục'), screen.getByTestId('editable-child'),
-        ]) {
-            expect(fireEvent.keyDown(target, { key: 'z', ctrlKey: true })).toBe(true);
-            expect(useStickerSheetStore.getState().getTab('input-history').manifest).toBe(detected);
-        }
-        fields.unmount();
-    });
-
-    it('không chiếm phím trong chọn đối tượng, xén trang, công cụ khác hoặc dialog của tab', async () => {
-        const workspace = createWorkspaceStore();
-        const settings = createImposerSettingsStore('history-guards');
-        settings.getState().setActiveDashboardTool('sticker');
-        const wrapper = ({ children }: PropsWithChildren) => (
-            <WorkspaceContext.Provider value={workspace}>
-                <ImposerSettingsContext.Provider value={settings}>
-                    <div data-prynx-tab-id="guard-history">{children}</div>
-                </ImposerSettingsContext.Provider>
-            </WorkspaceContext.Provider>
-        );
-        const { view } = await renderRecognizedShell('guard-history', wrapper);
-        const detected = useStickerSheetStore.getState().getTab('guard-history').manifest;
-        const assertNotHandled = () => {
-            expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-            expect(useStickerSheetStore.getState().getTab('guard-history').manifest).toBe(detected);
-        };
-        act(() => workspace.getState().setIsObjectEditMode(true));
-        assertNotHandled();
-        act(() => workspace.getState().setIsCropMode(true));
-        assertNotHandled();
-        act(() => workspace.getState().setIsCropMode(false));
-        act(() => settings.getState().setActiveDashboardTool('datamerge'));
-        assertNotHandled();
-        act(() => settings.getState().setActiveDashboardTool('sticker'));
-        const dialog = document.createElement('div');
-        dialog.setAttribute('role', 'dialog');
-        dialog.setAttribute('aria-modal', 'true');
-        view.container.querySelector('[data-prynx-tab-id]')!.appendChild(dialog);
-        assertNotHandled();
-        dialog.remove();
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(false);
-    });
-
-    it('revision đã đổi không được hoàn tác hoặc khôi phục nhận diện cũ', async () => {
-        await renderRecognizedShell('stale-history');
-        const detected = useStickerSheetStore.getState().getTab('stale-history').manifest;
-        workingPdfMock.isCurrent.mockReturnValue(false);
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-        expect(useStickerSheetStore.getState().getTab('stale-history').manifest).toBe(detected);
-
-        workingPdfMock.isCurrent.mockReturnValue(true);
-        fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
-        workingPdfMock.isCurrent.mockReturnValue(false);
-        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(true);
-        expect(useStickerSheetStore.getState().getTab('stale-history').manifest).toBeNull();
-    });
-
-    it('không có lịch sử nhận diện hoặc ở Xén vuông góc thì nhường phím cho Viewer', () => {
-        const pdf = new File(['pdf'], 'no-history.pdf', { type: 'application/pdf' });
-        render(<StickerCutlineTool tabId="no-history" pdfFile={pdf} isActive onFileFixed={vi.fn()} />);
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(true);
-        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-    });
-
-    it('chuyển sang Xén vuông góc không còn nhận phím của kết quả cũ', async () => {
-        await renderRecognizedShell('rectangle-history');
-        const detected = useStickerSheetStore.getState().getTab('rectangle-history').manifest;
-        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-        expect(useStickerSheetStore.getState().getTab('rectangle-history').manifest).toBe(detected);
-    });
-
-    it('đóng shell đang nhận phím phải dọn listener nhận diện', async () => {
-        const { view } = await renderRecognizedShell('closed-history');
-        const detected = useStickerSheetStore.getState().getTab('closed-history').manifest;
-        view.unmount();
-        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
-        expect(useStickerSheetStore.getState().getTab('closed-history').manifest).toBe(detected);
     });
 
     it('materialize Working PDF trước khi inspect và khóa kết quả vào đúng revision', async () => {
@@ -383,7 +213,8 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
 
         await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
         expect(workingPdfMock.prepare).toHaveBeenCalledTimes(1);
@@ -413,13 +244,13 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
         await waitFor(() => expect(
             useStickerSheetStore.getState().getTab('review-tab').status,
         ).toBe('mask-review'));
         expect(confirmStickerSource).not.toHaveBeenCalled();
         expect(screen.queryByRole('button', { name: 'Xác nhận vùng tem' })).toBeNull();
-        fireEvent.click(screen.getByRole('button', { name: 'Tinh chỉnh đường cắt và sửa vùng tem' }));
         expect(screen.getByText('Sửa nhanh vùng tem')).toBeTruthy();
     });
 
@@ -482,11 +313,10 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
         await waitFor(() => expect(screen.getByText('direct-preview-page:1')).toBeTruthy());
     });
 
-    it('workspace hợp nhất không để lộ bộ chọn mode', async () => {
+    it('hai nút nguồn dùng chung mode với workspace nhưng không tự nhận diện', async () => {
         const image = new File(['image'], 'source.png', { type: 'image/png' });
         const pdf = new File(['pdf'], 'source.pdf', { type: 'application/pdf' });
         render(
@@ -499,13 +329,17 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' })).toBeTruthy());
         expect(screen.queryByRole('button', { name: 'Chọn ảnh khác' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'source.png' })).toBeNull();
         expect(useStickerSheetStore.getState().getTab('switch-tab').mode).toBe('ai-sheet');
-        await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
-        expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Tách nhiều tem' })).toBeNull();
+        expect(inspectStickerSource).not.toHaveBeenCalled();
+        expect(detectStickerSource).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'PDF/PNG đã có biên' }));
+        await waitFor(() => expect(screen.getByText('direct-engine:source.pdf')).toBeTruthy());
+        expect(useStickerSheetStore.getState().getTab('switch-tab').mode).toBe('existing');
     });
 
     it('nguồn chọn riêng không bị tài liệu Viewer ghi đè', async () => {
@@ -584,17 +418,16 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
                 onFileFixed={vi.fn()}
             />,
         );
-        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
         await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         fireEvent.click(screen.getByRole('button', { name: 'start-direct' }));
-        const aiButton = screen.getByRole('button', { name: 'Bế tem nhãn' }) as HTMLButtonElement;
+        const aiButton = screen.getByRole('button', { name: 'Tách nhiều tem' }) as HTMLButtonElement;
         expect(aiButton.disabled).toBe(true);
         fireEvent.click(aiButton);
         expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy();
 
         fireEvent.click(screen.getByRole('button', { name: 'finish-direct' }));
         fireEvent.click(aiButton);
-        await waitFor(() => expect(useStickerSheetStore.getState().getTab('busy-tab').mode).toBe('ai-sheet'));
+        expect(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' })).toBeTruthy();
     });
 
     it('AI giữ nguyên luồng sau export và mở đúng hai công cụ bình tem', async () => {
@@ -605,7 +438,6 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             tabs: {
                 'export-tab': {
                     ...current,
-                    mode: 'ai-sheet',
                     status: 'mask-ready',
                     sourceFile: source,
                     sourceOrigin: 'explicit',
@@ -637,13 +469,14 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
                 onFileFixed={onFileFixed}
             />,
         );
+        fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
+        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);
         await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
         expect(useStickerSheetStore.getState().getTab('export-tab').status).toBe('exporting');
-        expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Tách nhiều tem' })).toBeNull();
+        expect((screen.getByRole('button', { name: 'PDF/PNG đã có biên' }) as HTMLButtonElement).disabled).toBe(true);
 
         const generatedPdf = new File(['generated'], 'tem.pdf', { type: 'application/pdf' });
         rerender(
@@ -658,12 +491,12 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
         );
         resolveCommit();
         await waitFor(() => expect(screen.getByRole('button', { name: 'Bình tem bế' })).toBeTruthy());
-        const settingsToggle = screen.getByRole('group', { name: 'Thiết lập đường bế tem' });
+        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
         const resultCard = screen.getByRole('status');
         expect(settingsToggle.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING)
             .toBeTruthy();
-        expect(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
+        await waitFor(() => expect(settingsToggle.getAttribute('aria-expanded')).toBe('false'));
+        expect(screen.queryByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeNull();
         expect(screen.getByText('Đã tạo bù xén thành công!')).toBeTruthy();
         const finished = useStickerSheetStore.getState().getTab('export-tab');
         expect(finished.mode).toBe('ai-sheet');
@@ -733,6 +566,7 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
                 onFileFixed={vi.fn()}
             />,
         );
+        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);

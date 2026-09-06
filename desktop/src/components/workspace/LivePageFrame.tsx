@@ -34,14 +34,7 @@ import {
     type ViewerColorStage,
 } from '../../hooks/viewer/useTileRenderer';
 import { globalPdfObjectCache, type CachedPdfObject } from '../../stores/pdfObjectCache';
-import {
-    captureWorkspaceDocumentRevision,
-    isWorkspaceDocumentRevisionCurrent,
-    useWorkspaceStore,
-    WorkspaceContext,
-    type WorkspaceDocumentRevisionToken,
-    type WorkspacePreflightIssue,
-} from '../../stores/useWorkspaceStore';
+import { useWorkspaceStore, type WorkspacePreflightIssue } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore'; // §R.9 (audit độ nét 2026-07-28)
 import { useShallow } from 'zustand/react/shallow';
@@ -214,7 +207,7 @@ const EDIT_ADD_TEXT_W_PT = 200;
 const EDIT_ADD_IMAGE_SIZE_PT = 150;
 
 // ═══ Edit Objects Cache (chế độ Chỉnh sửa đối tượng) ═══
-// Cache danh sách EditCanvasObj theo khóa `${selectionFileId}:${pageIndex}:${editGeneration}` để
+// Cache danh sách EditCanvasObj theo khóa `${selectionFileId}:${pageIndex}` để
 // bật/tắt chế độ KHÔNG phải fetch lại /edit/objects (hết "load lâu khi tắt/bật").
 // Clear khi pdfUrl đổi (file mới / commit working-file mới) để không dùng dữ liệu cũ.
 const _editObjectsCache = new Map<string, EditCanvasObj[]>();
@@ -1907,20 +1900,6 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const LivePageFrame = (props: any) => {
   const { t } = useTranslation();
-    const workspaceStore = React.useContext(WorkspaceContext);
-    const selectionRevisionSource = useWorkspaceStore(useShallow(state => ({
-        file: state.file,
-        viewerPageOrder: state.viewerPageOrder,
-        viewerPageInstanceIds: state.viewerPageInstanceIds,
-        viewerPageRotations: state.viewerPageRotations,
-        editGeneration: state.editGeneration,
-        hiddenOcgLayerIds: state.hiddenOcgLayerIds,
-        ocgVisibilityProvenance: state.ocgVisibilityProvenance,
-    })));
-    const selectionRevision = useMemo(
-        () => captureWorkspaceDocumentRevision(selectionRevisionSource),
-        [selectionRevisionSource],
-    );
     const tileLoadLabels = useMemo<TileLoadLabels>(() => ({
         loading: t('misc.livePageFrame:dang_dung_hinh', 'Đang dựng hình…'),
         slow: t('misc.livePageFrame:dung_hinh_cham', 'Đang dựng trang lâu hơn bình thường…'),
@@ -2365,12 +2344,6 @@ export const LivePageFrame = (props: any) => {
     // Tách biệt khỏi globalPdfObjectCache (luồng /preflight) vì khác hệ tọa độ + khác
     // id-space → tránh phá vỡ delete/hide preflight hiện có.
     const [editObjects, setEditObjects] = useState<EditCanvasObj[]>([]);
-    const editObjectsSourceRef = useRef<{
-        fileId: string;
-        pageIndex: number;
-        revision: WorkspaceDocumentRevisionToken;
-        objects: EditCanvasObj[];
-    } | null>(null);
 
     // ─── Edit PDF Object — move/resize/rotate + overlay real-time (task 10.2) ─
     // editInteraction: thao tác kéo đang diễn ra. Transform tạm (xem trước real-time)
@@ -2504,10 +2477,9 @@ export const LivePageFrame = (props: any) => {
     // ObjMeta (bbox hệ PDF bottom-left) rồi convert sang hệ canvas top-left bằng
     // chiều cao trang (pageDim.h, point) — dùng chung công thức `x * scale` với overlay.
     useEffect(() => {
-        editObjectsSourceRef.current = null;
         const shouldLoadObjects = shouldLoadEditObjectsForFrame({
             isObjectEditMode,
-            isActiveFrame: isActiveFrame && isViewerActive === true,
+            isActiveFrame,
             originalPageNum,
             selectionFileId: selectionFileId || '',
             hasPageHeight: Boolean(pageDim?.h),
@@ -2522,22 +2494,19 @@ export const LivePageFrame = (props: any) => {
             setEditObjects(prev => (prev.length ? [] : prev));
             // PERF (feedback 2026-08-21 §EDIT.MULTIPAGE1): frame nền không được xóa
             // selection dùng chung của trang active.
-            if (isActiveFrame && isViewerActive === true) {
+            if (isActiveFrame) {
                 setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
             }
             return;
         }
-        if (!workspaceStore) return;
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
-        // UIUX (audit 2026-09-06 §CUSTOM.PDF): ID cùng tên sau edit không còn là cùng đối tượng.
-        const cacheKey = `${selectionFileId}:${pageIndex}:${selectionRevision.editGeneration}`;
+        const cacheKey = `${selectionFileId}:${pageIndex}`;
 
         // Cache-hit → dùng ngay, KHÔNG fetch lại (bật/tắt chế độ không tải lại).
         // Sau transform, cache bị clear (pdfUrl/fid đổi) nên thường miss; nếu hit
         // vẫn tôn trọng pendingReselectIdsRef.
         const cached = _editObjectsCache.get(cacheKey);
         if (cached) {
-            editObjectsSourceRef.current = { fileId: selectionFileId, pageIndex, revision: selectionRevision, objects: cached };
             setEditObjects(prev => (prev === cached ? prev : cached));
             const pending = pendingReselectIdsRef.current;
             pendingReselectIdsRef.current = null;
@@ -2561,11 +2530,7 @@ export const LivePageFrame = (props: any) => {
                 const res = await authenticatedFetch(`${getApiUrl()}/edit/objects/${selectionFileId}/${pageIndex}`);
                 if (!res.ok) throw new Error(`/edit/objects HTTP ${res.status}`);
                 const data = await res.json();
-                if (
-                    cancelled
-                    || workspaceStore.getState().selectionFileId !== selectionFileId
-                    || !isWorkspaceDocumentRevisionCurrent(selectionRevision, workspaceStore.getState())
-                ) return;
+                if (cancelled) return;
                 if (isActiveFrame && Array.isArray(data.hiddenObjectIds)) {
                     setHiddenObjectIds(data.hiddenObjectIds);
                 }
@@ -2596,7 +2561,6 @@ export const LivePageFrame = (props: any) => {
                 });
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
                 _editCropOriginCache.set(cacheKey, [bx0, by0]);
-                editObjectsSourceRef.current = { fileId: selectionFileId, pageIndex, revision: selectionRevision, objects: objs };
                 setEditObjects(objs);
                 // Sau move/transform: re-select đúng id (cùng text-0…) để khung bám
                 // vị trí MỚI — nếu clear selection, chữ đã dịch dễ bị tưởng "mất".
@@ -2627,7 +2591,7 @@ export const LivePageFrame = (props: any) => {
             }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion, isActiveFrame, isViewerActive, selectionRevision, workspaceStore, setHiddenObjectIds, setSelectedObjectIds, hideEditGhost, t]);
+    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion, isActiveFrame, setHiddenObjectIds, setSelectedObjectIds, hideEditGhost, t]);
 
     // ─── Edit PDF Object: đồng bộ object của TRANG ACTIVE lên panel (fix tắt mắt) ─
     // Panel "Thành phần" đọc store `currentEditObjects`. Vì danh sách trang là ảo
@@ -2636,7 +2600,7 @@ export const LivePageFrame = (props: any) => {
     // nên khi tắt mắt một thành phần, id nhắm trúng trang active và /edit/preview-hide
     // thực sự ẩn object (overlay preview đắp lên trang). Bỏ chọn cũ của trang khác.
     useEffect(() => {
-        if (!isObjectEditMode || !isActiveFrame || isViewerActive !== true || !setCurrentEditObjects) return;
+        if (!isObjectEditMode || !isActiveFrame || !setCurrentEditObjects) return;
         // Chỉ ghi store khi reference/nội dung đổi — tránh loop với panel Thành phần.
         // Chuẩn hóa bbox canvas của overlay về contract object cache của panel.
         // [LINT AUDIT 2026-08-24 LO140]
@@ -2664,34 +2628,25 @@ export const LivePageFrame = (props: any) => {
             }
             return nextEditObjects;
         });
-    }, [isObjectEditMode, isActiveFrame, isViewerActive, editObjects, setCurrentEditObjects]);
+    }, [isObjectEditMode, isActiveFrame, editObjects, setCurrentEditObjects]);
 
-    // UIUX (audit 2026-09-06 §CUSTOM.PDF): giữ lựa chọn khi rời Edit PDF, nhưng chỉ
-    // frame đang xem được ghi; không đóng dấu mới lên danh sách đối tượng của file cũ.
+    // Persist the active-page selection for downstream tools. Edit mode clears
+    // selectedObjectIds while closing, so this effect intentionally does nothing
+    // after edit mode is off; the snapshot survives the mode transition.
     useEffect(() => {
-        if (!isObjectEditMode || !isActiveFrame || isViewerActive !== true || !selectionFileId || originalPageNum < 1) return;
-        const source = editObjectsSourceRef.current;
-        if (!source || source.objects !== editObjects || source.fileId !== selectionFileId || source.pageIndex !== originalPageNum - 1) return;
+        if (!isObjectEditMode || !isActiveFrame || !selectionFileId || originalPageNum < 1) return;
         const availableIds = new Set(editObjects.map((obj) => obj.id));
         const objectIds = selectedObjectIds.filter((id) => availableIds.has(id));
         setObjectSelectionContext(objectIds.length > 0 ? {
             fileId: selectionFileId,
             pageIndex: originalPageNum - 1,
             objectIds,
-            revision: source.revision,
-            viewerPage: previewFramePage,
-            pageInstanceId: source.revision.viewerPageInstanceIds === undefined
-                ? null
-                : (typeof pageInstanceId === 'string' ? pageInstanceId : null),
         } : null);
     }, [
         isObjectEditMode,
         isActiveFrame,
-        isViewerActive,
         selectionFileId,
         originalPageNum,
-        previewFramePage,
-        pageInstanceId,
         editObjects,
         selectedObjectIds,
         setObjectSelectionContext,

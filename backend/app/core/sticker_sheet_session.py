@@ -65,10 +65,6 @@ class StickerSheetPageState:
     # PERF (audit 2026-08-10 §CUTLINE.EXPORT1): chỉ giữ Bézier preview mới nhất
     # của trang trong RAM. Khóa đầy đủ revision/edit/tuning ngăn export dùng nhầm.
     cutline_export_cache: dict[str, object] | None = field(default=None, repr=False)
-    # UIUX (audit 2026-09-06 §CUSTOM.5): nhận diện lại giữ bản đã duyệt cho tới
-    # khi artifact mới công bố thành công; token chặn worker bị hủy ghi đè lượt mới.
-    detection_previous_manifest: dict[str, object] | None = field(default=None, repr=False)
-    detection_token: str | None = field(default=None, repr=False)
     operation_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
@@ -600,8 +596,6 @@ def create_source_session(
 def begin_source_detection(
     session_id: str,
     page_number: int = 1,
-    *,
-    base_revision: int | None = None,
 ) -> StickerSheetSession | None:
     """Giữ quyền nhận diện độc quyền theo trang, không khóa oan trang khác."""
     session = get_session(session_id)
@@ -614,20 +608,8 @@ def begin_source_detection(
         with _STORE_LOCK:
             current = _SESSIONS.get(session_id)
             current_page = current.pages.get(page_number) if current is session else None
-            if current_page is not page:
+            if current_page is not page or page.stage != "inspected":
                 return None
-            if base_revision is not None:
-                if (
-                    page.stage not in {"mask-review", "mask-ready"}
-                    or int(page.manifest.get("mask_revision", 0)) != int(base_revision)
-                ):
-                    raise StickerSheetSessionConflict(
-                        "Vùng tem đã thay đổi. Hãy chọn lại trên bản xem trước mới nhất."
-                    )
-            elif page.stage != "inspected":
-                return None
-            page.detection_previous_manifest = dict(page.manifest)
-            page.detection_token = uuid.uuid4().hex
             page.stage = "detecting"
             page.manifest = {**page.manifest, "stage": "detecting"}
             session.last_access = time.monotonic()
@@ -635,12 +617,7 @@ def begin_source_detection(
             return session
 
 
-def abort_source_detection(
-    session_id: str,
-    page_number: int = 1,
-    *,
-    detection_token: str | None = None,
-) -> bool:
+def abort_source_detection(session_id: str, page_number: int = 1) -> bool:
     """Trả session về trạng thái chờ sau một lần nhận diện lỗi/hủy."""
     with _STORE_LOCK:
         session = _SESSIONS.get(session_id)
@@ -653,18 +630,10 @@ def abort_source_detection(
         with _STORE_LOCK:
             current = _SESSIONS.get(session_id)
             current_page = current.pages.get(page_number) if current is session else None
-            if (
-                current_page is not page
-                or page.stage not in ("detecting", "promoting")
-                or (detection_token is not None and page.detection_token != detection_token)
-            ):
+            if current_page is not page or page.stage not in ("detecting", "promoting"):
                 return False
-            page.manifest = page.detection_previous_manifest or {
-                **page.manifest, "stage": "inspected",
-            }
-            page.stage = str(page.manifest.get("stage", "inspected"))
-            page.detection_previous_manifest = None
-            page.detection_token = None
+            page.stage = "inspected"
+            page.manifest = {**page.manifest, "stage": "inspected"}
             session.last_access = time.monotonic()
             _sync_legacy_active_page(session, page)
             return True
@@ -684,7 +653,6 @@ def promote_source_session(
     warnings: list[str] | None = None,
     edge_background_rgb: tuple[int, int, int] | None = None,
     edge_background_tolerance: int = 0,
-    detection_token: str | None = None,
 ) -> StickerSheetSession | None:
     """Nâng session inspect thành mask-review nhưng vẫn giữ nguyên file nguồn gốc."""
     session = get_session(session_id)
@@ -697,22 +665,14 @@ def promote_source_session(
         with _STORE_LOCK:
             current = _SESSIONS.get(session_id)
             current_page = current.pages.get(source_page) if current is session else None
-            if (
-                current_page is not page
-                or page.stage not in ("inspected", "detecting")
-                or (detection_token is not None and page.detection_token != detection_token)
-            ):
+            if current_page is not page or page.stage not in ("inspected", "detecting"):
                 return None
             previous_stage = page.stage
-            previous_manifest = dict(page.manifest)
-            previous_revision = int(previous_manifest.get("mask_revision", 0))
             page.stage = "promoting"
             _sync_legacy_active_page(session, page)
 
         directory = page.directory
         staging = directory / f".promote-{uuid.uuid4().hex}"
-        backup = directory / f".promote-backup-{uuid.uuid4().hex}"
-        published_artifacts: list[str] = []
         source_preview = directory / "source_preview.png"
         analysis_source_path = directory / "analysis_source.png"
         refinement_available = (
@@ -792,18 +752,14 @@ def promote_source_session(
                 staging / "preview_labels.png",
             )
 
-            source_warnings = list(previous_manifest.get(
-                "source_warnings", previous_manifest.get("warnings", []),
-            ))
             merged_warnings = list(dict.fromkeys([
-                *source_warnings,
+                *list(page.manifest.get("warnings", [])),
                 *analysis.warnings,
                 *(warnings or []),
             ]))
             manifest = {
                 **page.manifest,
                 "stage": "mask-review",
-                "mask_confirmed": False,
                 "boundary_source": boundary_source,
                 "strategy_confidence": round(float(strategy_confidence), 4),
                 "needs_review": bool(needs_review),
@@ -818,12 +774,11 @@ def promote_source_session(
                 "model": analysis.model,
                 "model_seconds": round(analysis.model_seconds, 6),
                 "postprocess_seconds": round(analysis.postprocess_seconds, 6),
-                "mask_revision": previous_revision + 1,
+                "mask_revision": 1,
                 "refinement_available": refinement_available,
                 "alpha_threshold": int(analysis.alpha_threshold),
                 "shadow_cleanup": analysis.shadow_cleanup,
                 "warnings": merged_warnings,
-                "source_warnings": source_warnings,
                 # QUALITY (audit 2026-08-21 §CANONICAL.2): màu nền là metadata
                 # của chính silhouette đã duyệt. Giữ qua session để execute dùng
                 # lại artifact không phải hút màu từ halo JPEG ở mép tem.
@@ -851,29 +806,17 @@ def promote_source_session(
                 ],
                 "vector_geometry_ref": vector_geometry_ref,
             }
-            _write_json_atomic(staging / "manifest.json", manifest)
 
             with _STORE_LOCK:
                 current = _SESSIONS.get(session_id)
                 current_page = current.pages.get(source_page) if current is session else None
-                if (
-                    current_page is not page
-                    or page.stage != "promoting"
-                    or (detection_token is not None and page.detection_token != detection_token)
-                ):
+                if current_page is not page or page.stage != "promoting":
                     return None
                 if not source_preview.exists() and (directory / "preview.png").exists():
                     shutil.copyfile(directory / "preview.png", source_preview)
-                # UIUX (audit 2026-09-06 §CUSTOM.5): staging hoàn chỉnh mới được
-                # thay artifact. Nếu ổ đĩa lỗi giữa chừng, phục hồi cả mask cũ.
-                backup.mkdir(parents=False, exist_ok=False)
-                for filename in [*final_artifacts, "manifest.json"]:
-                    original = directory / filename
-                    if original.is_file():
-                        shutil.copyfile(original, backup / filename)
-                for filename in [*final_artifacts, "manifest.json"]:
+                for filename in final_artifacts:
                     (staging / filename).replace(directory / filename)
-                    published_artifacts.append(filename)
+                _write_json_atomic(directory / "manifest.json", manifest)
                 page.analysis_source_path = analysis_source_path
                 page.original_width_px = normalized_source.width
                 page.original_height_px = normalized_source.height
@@ -887,23 +830,18 @@ def promote_source_session(
                 page.strategy_confidence = float(strategy_confidence)
                 page.needs_review = bool(needs_review)
                 page.manifest = manifest
-                page.cutline_export_cache = None
-                page.detection_previous_manifest = None
-                page.detection_token = None
                 session.last_access = time.monotonic()
                 _sync_legacy_active_page(session, page)
             return session
         except BaseException:
             logger.exception("Không nâng được session nguồn tem %s", session_id)
             try:
-                for filename in published_artifacts:
-                    saved = backup / filename
-                    if saved.is_file():
-                        shutil.copyfile(saved, directory / filename)
-                    else:
+                if source_preview.is_file():
+                    shutil.copyfile(source_preview, directory / "preview.png")
+                for filename in final_artifacts:
+                    if filename != "preview.png":
                         (directory / filename).unlink(missing_ok=True)
-                if (backup / "manifest.json").is_file():
-                    shutil.copyfile(backup / "manifest.json", directory / "manifest.json")
+                _write_json_atomic(directory / "manifest.json", page.manifest)
             except OSError:
                 logger.exception("Không khôi phục trọn vẹn artifact session %s", session_id)
             with _STORE_LOCK:
@@ -911,12 +849,11 @@ def promote_source_session(
                 current_page = current.pages.get(source_page) if current is session else None
                 if current_page is page and page.stage == "promoting":
                     page.stage = previous_stage
-                    page.manifest = previous_manifest
+                    page.manifest = {**page.manifest, "stage": previous_stage}
                     _sync_legacy_active_page(session, page)
             raise
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-            shutil.rmtree(backup, ignore_errors=True)
 
 
 def refine_source_session(

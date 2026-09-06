@@ -206,9 +206,7 @@ export default function StickerSheetWorkspace({
     const maskVisible = ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
     const canEditMask = (
         state.status === 'mask-review' || state.status === 'mask-ready'
-    ) && !state.isRefining
-        && (!tabState.unifiedInitialized || tabState.maskEditingEnabled === true)
-        && !(state.preserveExistingCut && state.manifest?.boundary_source === 'existing-cut');
+    ) && !state.isRefining;
     const brushToolActive = state.activeTool === 'erase' || state.activeTool === 'restore';
     const brushCursorEnabled = Boolean(
         isActive

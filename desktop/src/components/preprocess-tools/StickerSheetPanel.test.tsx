@@ -14,7 +14,6 @@ import { imageFilesToPdfFile } from '../../lib/imageNormalizer';
 import StickerSheetPanel from './StickerSheetPanel';
 import { useStickerSheetStore } from './stickerSheetStore';
 
-const originalStoreActions = useStickerSheetStore.getState();
 
 vi.mock('../../lib/stickerSheetApi', async importOriginal => {
     const actual = await importOriginal<typeof import('../../lib/stickerSheetApi')>();
@@ -37,9 +36,7 @@ vi.mock('../../lib/imageNormalizer', async importOriginal => {
 
 describe('StickerSheetPanel', () => {
     beforeEach(() => {
-        vi.restoreAllMocks();
         vi.clearAllMocks();
-        window.localStorage.clear();
         Object.defineProperty(URL, 'createObjectURL', {
             configurable: true,
             value: vi.fn(() => 'blob:source'),
@@ -51,7 +48,6 @@ describe('StickerSheetPanel', () => {
             fingerprint: 'a'.repeat(64), segment_count: 1,
         });
         useStickerSheetStore.setState({
-            ...originalStoreActions,
             tabs: {
                 tab: {
                     ...useStickerSheetStore.getState().getTab('new'),
@@ -80,132 +76,6 @@ describe('StickerSheetPanel', () => {
                 },
             },
         });
-    });
-
-    it('unified luôn giữ đủ thiết lập và nút xuất sau khi xác nhận', async () => {
-        const { rerender } = render(<StickerSheetPanel tabId="tab" unified onExport={vi.fn()} />);
-        expect(screen.getAllByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toHaveLength(1);
-        expect(screen.getByRole('group', { name: 'Chế độ đường cắt' })).toBeTruthy();
-        expect(screen.getByRole('group', { name: 'Kiểu góc đường cắt' })).toBeTruthy();
-        expect(screen.queryByText('Kích thước và đường cắt')).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Giữ lại' })).toBeNull();
-        const current = useStickerSheetStore.getState().getTab('tab');
-        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'mask-ready' } } });
-        rerender(<StickerSheetPanel tabId="tab" unified onExport={vi.fn()} />);
-        expect(screen.getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
-        expect(screen.getByRole('spinbutton', { name: 'Co giãn đường cắt (mm)' })).toBeTruthy();
-    });
-
-    it('unified có quyền bỏ nền trắng, không bày hai khung thông báo thừa', () => {
-        render(<StickerSheetPanel tabId="tab" unified />);
-        const toggle = screen.getByRole('checkbox', { name: 'Bỏ nền trắng' }) as HTMLInputElement;
-        expect(toggle.checked).toBe(true);
-        expect(screen.queryByText(/Đã nhận diện/)).toBeNull();
-        expect(screen.queryByText('Kiểm tra đường cắt và vùng tem trước khi xuất. Nếu thiếu chi tiết, dùng Giữ lại.')).toBeNull();
-        expect(useStickerSheetStore.getState().getTab('tab').manifest?.needs_review).toBe(true);
-    });
-
-    it('chỉ còn nút tạo PDF toàn chiều ngang, không có mục lưu PNG', async () => {
-        const onExport = vi.fn();
-        render(<StickerSheetPanel tabId="tab" unified onExport={onExport} />);
-        expect(screen.queryByRole('button', { name: 'Lưu bộ PNG' })).toBeNull();
-        expect(screen.queryByText('Kết quả')).toBeNull();
-        const button = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' });
-        expect(button.classList.contains('w-full')).toBe(true);
-        fireEvent.click(button);
-        await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
-    });
-
-    it('giữ lựa chọn nền cũ, đổi trước nhận diện không tự chạy detector', () => {
-        window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
-        const current = useStickerSheetStore.getState().getTab('tab');
-        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'idle', sourceFile: null, manifest: null } } });
-        render(<StickerSheetPanel tabId="tab" unified />);
-        const toggle = screen.getByRole('checkbox', { name: 'Bỏ nền trắng' }) as HTMLInputElement;
-        expect(toggle.checked).toBe(false);
-        fireEvent.click(toggle);
-        expect(useStickerSheetStore.getState().getTab('tab').removeWhiteBg).toBe(true);
-        expect(detectStickerSource).not.toHaveBeenCalled();
-        expect(inspectStickerSource).not.toHaveBeenCalled();
-    });
-
-    it('đổi nền cập nhật mọi trang đã nhận diện và khóa xuất khi mask còn cũ', async () => {
-        const store = useStickerSheetStore.getState();
-        store.setActivePage('tab', 1);
-        const current = store.getTab('tab');
-        const page = current.pages[1];
-        if (!page?.manifest) throw new Error('Thiếu fixture');
-        useStickerSheetStore.setState({ tabs: { tab: { ...current, sourceImageCount: 2,
-            pages: { 1: { ...page, preserveExistingCut: false }, 2: { ...page, preserveExistingCut: false,
-                manifest: { ...page.manifest, source_page: 2, page_count: 2 } } },
-        } } });
-        const detect = vi.spyOn(useStickerSheetStore.getState(), 'detectStickers').mockResolvedValue();
-        render(<StickerSheetPanel tabId="tab" unified onExport={vi.fn()} />);
-        await waitFor(() => expect((screen.getByRole('checkbox', { name: 'Bỏ nền trắng' }) as HTMLInputElement).disabled).toBe(false));
-        fireEvent.click(screen.getByRole('checkbox', { name: 'Bỏ nền trắng' }));
-        await waitFor(() => expect(detect).toHaveBeenCalledTimes(2));
-        expect(detect).toHaveBeenCalledWith('tab', 'auto', 1, undefined);
-        expect(detect).toHaveBeenCalledWith('tab', 'auto', 2, undefined);
-        expect(useStickerSheetStore.getState().getTab('tab').pages[1].whiteBackgroundStale).toBe(true);
-        expect(useStickerSheetStore.getState().getTab('tab').pages[2].whiteBackgroundStale).toBe(true);
-        expect((screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement).disabled).toBe(true);
-        detect.mockRestore();
-    });
-
-    it('không bỏ nét sửa nếu người dùng hủy đổi nền', () => {
-        const current = useStickerSheetStore.getState().getTab('tab');
-        const edits = [{ kind: 'stroke' as const, id: 'safe', tool: 'erase' as const,
-            instanceId: 1, radius: 0.01, points: [{ x: 0.1, y: 0.1 }] }];
-        useStickerSheetStore.setState({ tabs: { tab: { ...current, edits, preserveExistingCut: false } } });
-        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-        render(<StickerSheetPanel tabId="tab" unified />);
-        fireEvent.click(screen.getByRole('checkbox', { name: 'Bỏ nền trắng' }));
-        expect(confirm).toHaveBeenCalledTimes(1);
-        expect(useStickerSheetStore.getState().getTab('tab').removeWhiteBg).toBe(true);
-        expect(useStickerSheetStore.getState().getTab('tab').edits).toEqual(edits);
-        expect(detectStickerSource).not.toHaveBeenCalled();
-        confirm.mockRestore();
-    });
-
-    it.each(['alpha', 'custom', 'existing-cut'])('nền trắng không ghi đè biên %s', kind => {
-        const current = useStickerSheetStore.getState().getTab('tab');
-        if (!current.manifest) throw new Error('Thiếu fixture');
-        useStickerSheetStore.setState({ tabs: { tab: { ...current,
-            outputSettings: { ...current.outputSettings, cutMode: kind === 'alpha' ? 'alpha' : 'original' },
-            manifest: { ...current.manifest,
-                boundary_source: kind === 'existing-cut' ? 'existing-cut' : current.manifest.boundary_source,
-                vector_geometry_ref: kind === 'custom' ? { kind: 'pdf-object-selection', object_ids: ['image-0'] } : null,
-            },
-        } } });
-        render(<StickerSheetPanel tabId="tab" unified />);
-        const toggle = screen.getByRole('checkbox', { name: 'Bỏ nền trắng' }) as HTMLInputElement;
-        expect(toggle.disabled).toBe(true);
-        fireEvent.click(toggle);
-        expect(detectStickerSource).not.toHaveBeenCalled();
-    });
-
-    it('unified hiện thiết lập bù xén ngay cả khi chưa nhận diện', () => {
-        const current = useStickerSheetStore.getState().getTab('tab');
-        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'source-ready', manifest: null } } });
-        const { container } = render(<StickerSheetPanel tabId="tab" unified />);
-        expect(screen.getByRole('button', { name: 'Nhận diện tự động' })).toBeTruthy();
-        fireEvent.change(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' }), { target: { value: '3.25' } });
-        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.bleedMm).toBe(3.25);
-        expect(container.querySelector('input[type=file]')).toBeNull();
-        expect(screen.queryByText('Nguồn tem')).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Đổi file nguồn' })).toBeNull();
-        expect(detectStickerSource).not.toHaveBeenCalled();
-    });
-
-    it('unified không có bộ chọn file riêng kể cả khi chưa mở tài liệu', () => {
-        const current = useStickerSheetStore.getState().getTab('tab');
-        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'idle', sourceFile: null, manifest: null } } });
-        const { container } = render(<StickerSheetPanel tabId="tab" unified />);
-        expect(container.querySelector('input[type=file]')).toBeNull();
-        expect(screen.queryByText('Nguồn tem')).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Chọn PDF hoặc ảnh' })).toBeNull();
-        expect(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toBeTruthy();
-        expect(inspectStickerSource).not.toHaveBeenCalled();
     });
 
     it('hiển thị số tem và chuyển công cụ mà không bày nút rà soát mơ hồ', () => {
@@ -261,14 +131,14 @@ describe('StickerSheetPanel', () => {
     });
 
     it('gom cả nút xuất vào cùng khung thiết lập sau khi vùng tem sẵn sàng', async () => {
-        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} />);
+        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} onExportPng={vi.fn()} />);
 
         const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
         expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
         expect(screen.getByText('Kích thước và đường cắt')).toBeTruthy();
         const settingsRegion = document.getElementById('sticker-settings-tab');
         expect(settingsRegion).not.toBeNull();
-        expect(within(settingsRegion as HTMLElement).queryByRole('button', { name: 'Lưu bộ PNG' })).toBeNull();
+        expect(within(settingsRegion as HTMLElement).getByRole('button', { name: 'Lưu bộ PNG' })).toBeTruthy();
         expect(within(settingsRegion as HTMLElement).getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
 
         const current = useStickerSheetStore.getState().getTab('tab');
@@ -311,7 +181,7 @@ describe('StickerSheetPanel', () => {
             },
         });
 
-        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} />);
+        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} onExportPng={vi.fn()} />);
         const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
         expect(settingsToggle.getAttribute('aria-expanded')).toBe('false');
         expect(screen.queryByText('Kích thước và đường cắt')).toBeNull();
@@ -325,7 +195,7 @@ describe('StickerSheetPanel', () => {
         ).toBe('true'));
         expect(screen.getByText('Kích thước và đường cắt')).toBeTruthy();
         expect(screen.getByText('Cách tạo PDF')).toBeTruthy();
-        expect(screen.queryByRole('button', { name: 'Lưu bộ PNG' })).toBeNull();
+        expect(screen.getByRole('button', { name: 'Lưu bộ PNG' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
     });
 

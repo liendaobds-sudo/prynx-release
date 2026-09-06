@@ -45,7 +45,7 @@ class StickerSheetExportError(RuntimeError):
 
 
 class StickerCanonicalPreviewConflict(RuntimeError):
-    """Artifact preview đã mất, stale hoặc không còn khớp file/tham số nguồn."""
+    """Artifact preview classic đã mất, stale hoặc không còn khớp file nguồn."""
 
 
 @dataclass(frozen=True)
@@ -820,19 +820,6 @@ def _copy_preserved_pdf_page(
         document.save(output_path)
 
 
-def _can_preserve_original_pdf(
-    session: StickerSheetSession,
-    *,
-    output_format: str,
-    crop_to_sticker: bool,
-) -> bool:
-    return bool(
-        session.source_kind == "pdf"
-        and output_format == "pdf"
-        and not crop_to_sticker
-    )
-
-
 def _page_expansion_points(cut_mode: str, offset_mm: float, bleed_mm: float) -> float:
     mm_to_points = 2.83465
     bleed_points = float(bleed_mm) * mm_to_points
@@ -895,8 +882,6 @@ def _cutline_overrides_with_preview_fallback(
     cutline_fidelity: float,
     curve_tension: float,
     min_detail_area_mm2: float,
-    cutline_denoise: float | None = None,
-    expected_fingerprint: str | None = None,
 ) -> list[dict[str, object]] | None:
     """Bảo đảm export trực tiếp cũng dùng đúng preview exact-geometry.
 
@@ -919,14 +904,7 @@ def _cutline_overrides_with_preview_fallback(
         cutline_fidelity=cutline_fidelity,
         curve_tension=curve_tension,
         min_detail_area_mm2=min_detail_area_mm2,
-        cutline_denoise=cutline_denoise,
     )
-    if expected_fingerprint:
-        actual_fingerprint = str((page.cutline_export_cache or {}).get("fingerprint", ""))
-        if actual_fingerprint != expected_fingerprint:
-            raise StickerCanonicalPreviewConflict(
-                "Bản xem trước đường bế đã thay đổi. Hãy cập nhật preview trước khi xuất."
-            )
     overrides = _cutline_overrides_from_preview_cache(
         page,
         cache_key=cache_key,
@@ -937,12 +915,6 @@ def _cutline_overrides_with_preview_fallback(
     )
     if overrides is not None:
         return overrides
-    if expected_fingerprint:
-        # UNIFY (2026-09-06 §L1): đã gửi frame được duyệt thì không tự dựng frame
-        # khác hoặc ghi đè cache khi settings/edit/ID không còn khớp frame đó.
-        raise StickerCanonicalPreviewConflict(
-            "Thiết lập hoặc vùng tem đã đổi sau preview. Hãy cập nhật preview trước khi xuất."
-        )
 
     # Import trễ để giữ module phụ thuộc hai chiều ở mức runtime, không tạo vòng
     # import khi endpoint preview nạp các helper export dùng chung.
@@ -964,7 +936,6 @@ def _cutline_overrides_with_preview_fallback(
         cutline_fidelity=cutline_fidelity,
         curve_tension=curve_tension,
         min_detail_area_mm2=min_detail_area_mm2,
-        cutline_denoise=cutline_denoise,
     )
     return _cutline_overrides_from_preview_cache(
         page,
@@ -996,7 +967,6 @@ def _build_cutline_pdf_from_pngs(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
-    cutline_denoise: float | None = None,
     presmooth_alpha: bool = False,
     alpha_path_override_sequence: list[dict[str, object] | None] | None = None,
 ) -> Path:
@@ -1069,8 +1039,7 @@ def _build_cutline_pdf_from_pngs(
                     cutline_fidelity=cutline_fidelity,
                     curve_tension=curve_tension,
                     min_detail_area_mm2=min_detail_area_mm2,
-                    cutline_denoise=0.0 if cutline_denoise is None else cutline_denoise,
-                    presmooth_alpha=presmooth_alpha and cutline_denoise is None,
+                    presmooth_alpha=presmooth_alpha,
                 )
             except UnsafeCutlineGeometryError as exc:
                 raise StickerSheetExportError(str(exc)) from exc
@@ -1134,12 +1103,7 @@ def _build_cutline_pdf_from_pngs(
     return output_path
 
 
-def _merge_pdf_fragments(
-    fragments: list[Path],
-    output_path: Path,
-    *,
-    preserve_pdf_catalog: bool = False,
-) -> None:
+def _merge_pdf_fragments(fragments: list[Path], output_path: Path) -> None:
     if not fragments:
         raise StickerSheetExportError("Không có trang tem nào để ghép vào PDF kết quả.")
     if len(fragments) == 1:
@@ -1149,14 +1113,10 @@ def _merge_pdf_fragments(
     try:
         for fragment in fragments:
             with pikepdf.Pdf.open(fragment) as source:
-                if preserve_pdf_catalog:
-                    from app.workers.sticker_pdf_preserve import copy_preserved_pdf_catalog
-
-                    copy_preserved_pdf_catalog(source, document)
                 document.pages.extend(source.pages)
         # Các fragment của cầu PNG đều RGB sRGB; giữ một OutputIntent chung
         # sau khi ghép để preview/export không đổi cách diễn giải màu ở seam.
-        if not preserve_pdf_catalog and not document.Root.get("/OutputIntents") and not embed_srgb_output_intent(
+        if not document.Root.get("/OutputIntents") and not embed_srgb_output_intent(
             document,
             replace_existing=False,
         ):
@@ -1191,7 +1151,6 @@ def export_sticker_sheet_document(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
-    cutline_denoise: float | None = None,
 ) -> StickerSheetExportResult:
     """Xuất nhiều trang atomically; mask keyed theo trang, thứ tự có thể lặp/đổi."""
     configs = {int(item["source_page"]): item for item in pages}
@@ -1237,7 +1196,7 @@ def export_sticker_sheet_document(
             segment_paths: list[Path] = []
             segment_overrides: list[dict[str, object] | None] = []
             segment_key: tuple[
-                str, float, float, float, float, float, float, bool, float | None,
+                str, float, float, float, float, float, float, bool,
             ] | None = None
             sticker_count = 0
 
@@ -1254,7 +1213,6 @@ def export_sticker_sheet_document(
                     segment_tension,
                     segment_min_detail,
                     segment_presmooth,
-                    segment_denoise,
                 ) = segment_key
                 fragments.append(_build_cutline_pdf_from_pngs(
                     segment_paths,
@@ -1275,7 +1233,6 @@ def export_sticker_sheet_document(
                     cutline_fidelity=segment_fidelity,
                     curve_tension=segment_tension,
                     min_detail_area_mm2=segment_min_detail,
-                    cutline_denoise=segment_denoise,
                     presmooth_alpha=segment_presmooth,
                     alpha_path_override_sequence=segment_overrides,
                 ))
@@ -1318,27 +1275,16 @@ def export_sticker_sheet_document(
                 edge_background_override = _flat_edge_background_override(rgba)
                 page_dpi = float(config.get("dpi") or dpi)
                 page_dpi_y = float(config.get("dpi_y") or dpi_y or page_dpi)
-                preserve_pdf = _can_preserve_original_pdf(
-                    page_view,
+                png_paths, page_sticker_count = _prepare_output_pngs(
+                    export_dir,
+                    rgba,
+                    labels,
+                    page_dpi,
+                    page_dpi_y,
                     output_format=output_format,
                     crop_to_sticker=crop_to_sticker,
+                    filename_prefix=f"trang_{logical_index:03d}_tem",
                 )
-                if preserve_pdf:
-                    png_paths = []
-                    page_sticker_count = sum(1 for value in np.unique(labels) if value > 0)
-                    if not page_sticker_count:
-                        raise StickerSheetExportError("Mọi tem đã bị xóa khỏi mask; không có gì để xuất.")
-                else:
-                    png_paths, page_sticker_count = _prepare_output_pngs(
-                        export_dir,
-                        rgba,
-                        labels,
-                        page_dpi,
-                        page_dpi_y,
-                        output_format=output_format,
-                        crop_to_sticker=crop_to_sticker,
-                        filename_prefix=f"trang_{logical_index:03d}_tem",
-                    )
                 sticker_count += page_sticker_count
                 all_png_paths.extend(png_paths)
                 if output_format == "png_zip":
@@ -1360,21 +1306,11 @@ def export_sticker_sheet_document(
                 page_min_detail = float(
                     config.get("min_detail_area_mm2", min_detail_area_mm2)
                 )
-                page_denoise = config.get("cutline_denoise")
-                if page_denoise is None:
-                    page_denoise = cutline_denoise
-                if page_denoise is not None:
-                    page_denoise = float(page_denoise)
-                page_fingerprint = config.get("expected_fingerprint")
                 instance_ids = sorted(
                     int(value) for value in np.unique(labels) if int(value) > 0
                 )
                 page_overrides = None
-                if cut_mode != "none" and (draw_cut_contour or preserve_pdf):
-                    if preserve_pdf and not page_fingerprint:
-                        raise StickerCanonicalPreviewConflict(
-                            "Hãy cập nhật bản xem trước đường bế trước khi xuất vùng tem đã chọn."
-                        )
+                if cut_mode != "none" and draw_cut_contour:
                     page_overrides = _cutline_overrides_with_preview_fallback(
                         session,
                         page,
@@ -1394,43 +1330,7 @@ def export_sticker_sheet_document(
                         cutline_fidelity=page_fidelity,
                         curve_tension=page_tension,
                         min_detail_area_mm2=page_min_detail,
-                        cutline_denoise=page_denoise,
-                        expected_fingerprint=(
-                            str(page_fingerprint) if page_fingerprint else None
-                        ),
                     )
-                if preserve_pdf:
-                    # UNIFY (audit 2026-09-06 §CUSTOM.4): chỉ writer nguồn PDF
-                    # gốc giữ được text/vector và object không chọn. Bézier đã
-                    # khóa fingerprint ở trên; tuyệt đối không fit từ PNG lại.
-                    from app.workers.sticker_pdf_preserve import write_preserved_pdf_page
-
-                    flush_raster_segment()
-                    selected_path = export_dir / f"trang_{logical_index:04d}_chon.pdf"
-                    write_preserved_pdf_page(
-                        Path(session.source_path),
-                        page,
-                        selected_path,
-                        rgba=rgba,
-                        path_groups=(page_overrides[0]["path_groups"] if page_overrides else None),
-                        dpi=page_dpi,
-                        dpi_y=page_dpi_y,
-                        offset_mm=offset_mm,
-                        bleed_mm=bleed_mm,
-                        cut_mode=cut_mode,
-                        corner_style=corner_style,
-                        fill_holes=fill_holes,
-                        bleed_color_type=resolved_bleed_type,
-                        solid_bleed_cmyk=solid_bleed_cmyk,
-                        draw_cut_contour=draw_cut_contour,
-                        cutline_smoothness=page_smoothness,
-                        cutline_fidelity=page_fidelity,
-                        curve_tension=page_tension,
-                        min_detail_area_mm2=page_min_detail,
-                        edge_background_override=edge_background_override,
-                    )
-                    fragments.append(selected_path)
-                    continue
                 if page_overrides is None or len(page_overrides) != len(png_paths):
                     page_overrides = [None] * len(png_paths)
                 page_overrides = [
@@ -1451,7 +1351,6 @@ def export_sticker_sheet_document(
                     # §CUTJAG.1: nguồn biên quyết định có khử răng cưa Alpha hay
                     # không, nên hai trang khác nguồn KHÔNG được gộp cùng segment.
                     should_presmooth_cutline_alpha(page.boundary_source),
-                    page_denoise,
                 )
                 if segment_key is not None and segment_key != key:
                     flush_raster_segment()
@@ -1473,11 +1372,7 @@ def export_sticker_sheet_document(
 
             flush_raster_segment()
             temporary = export_dir / "tem_cutcontour_nhieu_trang.pdf"
-            _merge_pdf_fragments(
-                fragments,
-                temporary,
-                preserve_pdf_catalog=(session.source_kind == "pdf" and not crop_to_sticker),
-            )
+            _merge_pdf_fragments(fragments, temporary)
             final_path = session.directory / f"tem_cutcontour_{uuid.uuid4().hex[:8]}.pdf"
             temporary.replace(final_path)
             return StickerSheetExportResult(
@@ -1516,48 +1411,8 @@ def export_sticker_sheet(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
-    cutline_denoise: float | None = None,
 ) -> StickerSheetExportResult:
     """Xuất artifact vào session; caller chịu trách nhiệm phục vụ file."""
-    if _can_preserve_original_pdf(
-        session,
-        output_format=output_format,
-        crop_to_sticker=crop_to_sticker,
-    ):
-        page = session.pages.get(session.legacy_active_page)
-        if page is None:
-            raise StickerSheetExportError("Trang PDF đã chọn không còn tồn tại.")
-        # Cầu một trang dùng cùng writer/canonical contract với endpoint nhiều
-        # trang, không có nhánh riêng làm mất object PDF chưa được chọn.
-        return export_sticker_sheet_document(
-            session,
-            pages=[{
-                "source_page": page.page_number,
-                "expected_revision": int(page.manifest.get("mask_revision", 0)),
-                "expected_fingerprint": (page.cutline_export_cache or {}).get("fingerprint"),
-                "edits": edits,
-            }],
-            page_order=[page.page_number],
-            dpi=dpi,
-            dpi_y=dpi_y,
-            offset_mm=offset_mm,
-            bleed_mm=bleed_mm,
-            output_format=output_format,
-            cut_mode=cut_mode,
-            corner_style=corner_style,
-            fill_holes=fill_holes,
-            crop_to_sticker=crop_to_sticker,
-            bleed_color_type=bleed_color_type,
-            solid_bleed_cmyk=solid_bleed_cmyk,
-            shape_mode=shape_mode,
-            draw_cut_contour=draw_cut_contour,
-            preserve_existing_cut=preserve_existing_cut,
-            cutline_smoothness=cutline_smoothness,
-            cutline_fidelity=cutline_fidelity,
-            curve_tension=curve_tension,
-            min_detail_area_mm2=min_detail_area_mm2,
-            cutline_denoise=cutline_denoise,
-        )
     if _can_preserve_existing_cut(
         session,
         edits=edits,
@@ -1650,7 +1505,6 @@ def export_sticker_sheet(
                 cutline_fidelity=cutline_fidelity,
                 curve_tension=curve_tension,
                 min_detail_area_mm2=min_detail_area_mm2,
-                cutline_denoise=cutline_denoise,
             )
             if (
                 preview_override_sequence is not None
@@ -1712,10 +1566,9 @@ def export_sticker_sheet(
                         cutline_fidelity=cutline_fidelity,
                         curve_tension=curve_tension,
                         min_detail_area_mm2=min_detail_area_mm2,
-                        cutline_denoise=0.0 if cutline_denoise is None else cutline_denoise,
-                        presmooth_alpha=(cutline_denoise is None and should_presmooth_cutline_alpha(
+                        presmooth_alpha=should_presmooth_cutline_alpha(
                             page.boundary_source if page is not None else None
-                        )),
+                        ),
                     )
                 except UnsafeCutlineGeometryError as exc:
                     raise StickerSheetExportError(str(exc)) from exc
