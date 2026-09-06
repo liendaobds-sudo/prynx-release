@@ -590,10 +590,17 @@ def _page_box_detection(
 ) -> StickerSourceDetection:
     """Dựng một silhouette kín đúng khổ trang, không dò nền hay chạy AI.
 
-    UI có tùy chọn giữ nền trắng; khi tùy chọn đó tắt, hợp đồng của luồng xuất là
+    UI có tùy chọn bỏ nền trắng; khi tùy chọn đó tắt, hợp đồng của luồng xuất là
     coi toàn bộ trang như một tem hình chữ nhật. Preview phải dùng đúng mask đó,
     thay vì vô tình gọi detector AI/vector rồi cho ra một silhouette khác.
     """
+    # QUALITY (audit 2026-09-06 §BACKGROUND.2): mask kín trang phải hiển thị
+    # nguồn trên giấy trắng. Bỏ Alpha trực tiếp sẽ làm lộ RGB đen ẩn ở pixel
+    # trong suốt và làm sai cả màu mép bán trong suốt khi xuất/bù xén.
+    source_image = Image.alpha_composite(
+        Image.new("RGBA", source_image.size, (255, 255, 255, 255)),
+        source_image.convert("RGBA"),
+    )
     height, width = source_image.height, source_image.width
     full_alpha = np.full((height, width), 255, dtype=np.uint8)
     analysis = _analysis_from_alpha(

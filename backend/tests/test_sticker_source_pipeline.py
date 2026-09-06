@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import time
+import zipfile
 
 import cv2
 import numpy as np
@@ -697,6 +698,70 @@ def test_page_box_dung_mask_kin_toan_trang_va_bo_qua_moi_detector(
     assert len(preview["paths"]) == 1
     assert preview["paths"][0]["d"].startswith("M ")
     assert preview["paths"][0]["d"].endswith(" Z")
+
+
+@pytest.mark.parametrize("strategy", ["page-box", "alpha"])
+def test_page_box_giu_giay_trang_va_alpha_khong_bi_ep_nen(tmp_path, strategy):
+    """Giữ trang phải ghép Alpha lên giấy trắng; dò Alpha vẫn giữ nền trong suốt."""
+    source = tmp_path / "transparent-black.png"
+    image = Image.new("RGBA", (80, 60), (0, 0, 0, 0))
+    image.paste((255, 0, 0, 255), (20, 15, 60, 45))
+    image.paste((0, 64, 128, 128), (18, 15, 20, 45))
+    original = np.asarray(image, dtype=np.uint8).copy()
+    image.save(source, format="PNG", dpi=(300, 300))
+    session = _create_session(source)
+
+    detected = detect_sticker_source(session, strategy=strategy)
+
+    if strategy == "alpha":
+        assert detected.boundary_source == "alpha"
+        assert detected.analysis.rgba[0, 0, 3] == 0
+        assert tuple(detected.analysis.rgba[20, 19]) == (0, 64, 128, 128)
+        assert np.array_equal(np.asarray(detected.source_image), original)
+        return
+
+    alpha = original[:, :, 3:4].astype(np.int32)
+    expected_rgb = (
+        (original[:, :, :3].astype(np.int32) * alpha + 255 * (255 - alpha) + 127) // 255
+    ).astype(np.uint8)
+    expected = np.dstack((expected_rgb, np.full((60, 80), 255, dtype=np.uint8)))
+    assert detected.boundary_source == "page-box"
+    assert tuple(detected.analysis.rgba[0, 0]) == (255, 255, 255, 255)
+    assert tuple(detected.analysis.rgba[20, 19]) == (127, 159, 191, 255)
+    assert tuple(detected.analysis.rgba[20, 30]) == (255, 0, 0, 255)
+    assert np.array_equal(detected.analysis.rgba, expected)
+    assert np.array_equal(np.asarray(detected.source_image), expected)
+    assert np.all(detected.analysis.labels == 1)
+
+    promoted = promote_source_session(
+        session.session_id,
+        analysis=detected.analysis,
+        analysis_source=detected.source_image,
+        boundary_source=detected.boundary_source,
+        strategy_confidence=detected.strategy_confidence,
+        needs_review=detected.needs_review,
+        dpi=detected.dpi,
+        source_page=detected.source_page,
+        vector_geometry_ref=detected.vector_geometry_ref,
+        warnings=list(detected.warnings),
+    )
+    assert promoted is not None
+    with Image.open(promoted.analysis_source_path) as analysis_source:
+        assert np.array_equal(np.asarray(analysis_source.convert("RGBA")), expected)
+    confirmed = confirm_source_session(session.session_id, page_number=1)
+    assert confirmed is not None
+    result = export_sticker_sheet(
+        confirmed, edits=[], dpi=300, dpi_y=300, offset_mm=0, bleed_mm=0,
+        output_format="png_zip", crop_to_sticker=True,
+    )
+    assert result.sticker_count == 1
+    with zipfile.ZipFile(result.path) as archive:
+        names = archive.namelist()
+        assert len(names) == 1 and names[0].endswith(".png")
+        with archive.open(names[0]) as stream, Image.open(stream) as exported:
+            assert np.array_equal(np.asarray(exported.convert("RGBA")), expected)
+    with Image.open(source) as unchanged_source:
+        assert np.array_equal(np.asarray(unchanged_source), original)
 
 
 def test_auto_mot_tem_dung_ai_cho_hinh_hoc_va_giu_mau_nen_khi_xuat(
