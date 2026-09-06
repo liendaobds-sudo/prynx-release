@@ -19,7 +19,8 @@ export function makeUnifiedStickerRecipe(tab: StickerSheetTabState, pageOrder?: 
     const order = pageOrder?.length ? pageOrder : Array.from({ length: count }, (_, i) => i + 1);
     if (order.length !== count || order.some((n, i) => n !== i + 1)) return null;
     const pages = order.map(n => tab.pages[n] || (n === tab.activeSourcePage ? tab : null));
-    if (pages.some(page => !page?.manifest || page.edits.length)) return null;
+    if (pages.some(page => !page?.manifest || page.edits.length
+        || page.manifest.vector_geometry_ref?.kind === 'pdf-object-selection')) return null;
     const first = pages[0]!;
     const tuning = tuningOf(first);
     const strategy = tab.detectionStrategy || (first.manifest!.boundary_source === 'page-box' ? 'page-box' : 'auto');

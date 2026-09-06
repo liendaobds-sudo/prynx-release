@@ -99,8 +99,21 @@ describe('StickerSheetPanel', () => {
         expect(screen.getByRole('button', { name: 'Nhận diện tự động' })).toBeTruthy();
         fireEvent.change(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' }), { target: { value: '3.25' } });
         expect(useStickerSheetStore.getState().getTab('tab').outputSettings.bleedMm).toBe(3.25);
-        expect(container.querySelector('input[type=file]')?.getAttribute('accept')).toContain('application/pdf');
+        expect(container.querySelector('input[type=file]')).toBeNull();
+        expect(screen.queryByText('Nguồn tem')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Đổi file nguồn' })).toBeNull();
         expect(detectStickerSource).not.toHaveBeenCalled();
+    });
+
+    it('unified không có bộ chọn file riêng kể cả khi chưa mở tài liệu', () => {
+        const current = useStickerSheetStore.getState().getTab('tab');
+        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'idle', sourceFile: null, manifest: null } } });
+        const { container } = render(<StickerSheetPanel tabId="tab" unified />);
+        expect(container.querySelector('input[type=file]')).toBeNull();
+        expect(screen.queryByText('Nguồn tem')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Chọn PDF hoặc ảnh' })).toBeNull();
+        expect(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toBeTruthy();
+        expect(inspectStickerSource).not.toHaveBeenCalled();
     });
 
     it('hiển thị số tem và chuyển công cụ mà không bày nút rà soát mơ hồ', () => {

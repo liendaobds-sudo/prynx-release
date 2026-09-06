@@ -70,6 +70,9 @@ describe('recipe workspace tem', () => {
             manifest: detection, status: 'mask-ready' as const };
         expect(makeUnifiedStickerRecipe(tab)).toMatchObject({ workflow: 'unified-v2' });
         expect(makeUnifiedStickerRecipe({ ...tab, edits: [{ kind: 'stroke', id: '1', tool: 'erase', instanceId: 1, radius: .02, points: [] }] })).toBeNull();
+        expect(makeUnifiedStickerRecipe({ ...tab, manifest: { ...detection,
+            boundary_source: 'manual', vector_geometry_ref: { kind: 'pdf-object-selection', object_ids: ['vector-2'] },
+        } })).toBeNull();
         expect(makeUnifiedStickerRecipe(tab, [2])).toBeNull();
     });
 });
