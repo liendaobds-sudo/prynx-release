@@ -1,5 +1,23 @@
 # Bù xén — nối chọn đối tượng PDF vào workspace chung
 
+## Bổ sung theo phản hồi: nền trắng và thông báo thừa
+
+Người dùng yêu cầu khôi phục quyền giữ/bỏ nền trắng và bỏ hai thẻ “Đã nhận diện”/nhắc kiểm tra.
+`StickerTool` cũ mặc định removeWhiteBg=true và đọc lựa chọn đã lưu; unified chỉ có strategy auto,
+không còn control tương ứng. Khôi phục đúng nghĩa cũ: tắt bỏ nền → mask khung trang, bật → nhận diện
+biên; Alpha và vùng đối tượng custom không áp dụng thao tác dò nền trắng. PDF giữ tấm vẫn bảo toàn
+artwork gốc; không hứa xóa trắng vật lý trong mọi loại đầu ra.
+
+Phạm vi: preference/policy nhận diện, state/recipe và UI; tái dùng backend page-box hiện hữu.
+Đổi tùy chọn sau nhận diện phải cập nhật mọi trang liên quan, bảo vệ nét sửa và chặn export mask cũ
+nếu cập nhật chưa thành công. Hai thẻ thông tin chỉ bỏ UI, không xóa trạng thái needs_review/lỗi.
+Tiếp tục các lô có test trong chiến dịch đã duyệt, không thay engine bóng hoặc writer.
+
+Đã triển khai và verify: 467 test frontend / 45 file; 292 test backend / 6 suite; typecheck/lint đạt.
+Thêm fix phạm vi hẹp `_page_box_detection` để vùng RGBA trong suốt không thành đen khi giữ toàn
+trang; baseline đã tái hiện pixel `(0,0,0,255)`, sau sửa kiểm giấy trắng và ZIP PNG. Không flatten
+nhánh Alpha/custom. Chi tiết và mặc định tại nhật ký mục “khôi phục Bỏ nền trắng”.
+
 ## Phạm vi đã duyệt
 
 Người dùng yêu cầu triển khai một giao diện đầy đủ, dễ hiểu: tự nhận diện và chọn/sửa thủ công

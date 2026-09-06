@@ -203,3 +203,23 @@ cd D:\pdfcompare\backend
 
 Các commit có phụ thuộc; quay lui cả lượt CUSTOM phải thực hiện từ mới về cũ. Không dùng reset
 hard hoặc tác động các tài liệu nesting/master audit đang thay đổi ngoài phạm vi.
+
+## Phản hồi tiếp — khôi phục Bỏ nền trắng
+
+- Khôi phục checkbox cạnh Đặc ruột; đọc `ps_sticker_removeWhiteBg` khi chưa có preference mới.
+  Lưu riêng tại `ps_sticker_unified_detection_v2`, không trộn vào geometry settings. Chưa có lựa
+  chọn hợp lệ thì mặc định bật, giống StickerTool cũ; không suy lựa chọn từ kết quả auto fallback.
+- Tắt bỏ nền dùng mask kín toàn trang; bật dùng chiến lược nhận diện đã chọn. Alpha ưu tiên riêng;
+  custom đối tượng và giữ CUT gốc không bị checkbox ghi đè. Đây là quyền chọn biên, không phải lệnh
+  xóa mọi đối tượng trắng trong PDF gốc.
+- Đổi sau nhận diện cập nhật mọi trang tự động liên quan, giữ thông số bù xén. Có nét sửa thì xác
+  nhận trước; mask cũ giữ để phục hồi nhưng bị đánh dấu stale và chặn PDF/PNG nếu chưa cập nhật xong.
+- Ghi/phát recipe dùng cùng policy nền; nguồn mới/đổi mode Alpha và trang nhiều tem có regression.
+- Bỏ hai khung Đã nhận diện/nhắc kiểm tra trong unified UI; không bỏ `needs_review` hay thông báo lỗi.
+- Phát hiện thêm đúng consumer giữ nền: full-page Alpha làm lộ RGB đen dưới pixel trong suốt.
+  `_page_box_detection` nay composite lên giấy trắng trước khi dựng full mask; test kiểm cả pixel
+  bán trong suốt, RGB thân tem và ZIP PNG. Alpha/custom không bị flatten.
+
+Verify cuối: frontend 467 tests / 45 file đạt; backend 292 tests / 6 suite đạt; typecheck và ESLint
+phạm vi đạt. Backend có 2 warning Starlette/Pydantic cũ. Không cập nhật snapshot/evidence khách,
+không build installer hoặc push. Chưa xác minh lại trực tiếp trong Tauri.
