@@ -78,6 +78,31 @@ describe('StickerSheetPanel', () => {
         });
     });
 
+    it('unified luôn giữ đủ thiết lập và nút xuất sau khi xác nhận', async () => {
+        const { rerender } = render(<StickerSheetPanel tabId="tab" unified onExport={vi.fn()} />);
+        expect(screen.getAllByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toHaveLength(1);
+        expect(screen.getByRole('group', { name: 'Chế độ đường cắt' })).toBeTruthy();
+        expect(screen.getByRole('group', { name: 'Kiểu góc đường cắt' })).toBeTruthy();
+        expect(screen.queryByText('Kích thước và đường cắt')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Giữ lại' })).toBeNull();
+        const current = useStickerSheetStore.getState().getTab('tab');
+        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'mask-ready' } } });
+        rerender(<StickerSheetPanel tabId="tab" unified onExport={vi.fn()} />);
+        expect(screen.getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
+        expect(screen.getByRole('spinbutton', { name: 'Co giãn đường cắt (mm)' })).toBeTruthy();
+    });
+
+    it('unified hiện thiết lập bù xén ngay cả khi chưa nhận diện', () => {
+        const current = useStickerSheetStore.getState().getTab('tab');
+        useStickerSheetStore.setState({ tabs: { tab: { ...current, status: 'source-ready', manifest: null } } });
+        const { container } = render(<StickerSheetPanel tabId="tab" unified />);
+        expect(screen.getByRole('button', { name: 'Nhận diện tự động' })).toBeTruthy();
+        fireEvent.change(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' }), { target: { value: '3.25' } });
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.bleedMm).toBe(3.25);
+        expect(container.querySelector('input[type=file]')?.getAttribute('accept')).toContain('application/pdf');
+        expect(detectStickerSource).not.toHaveBeenCalled();
+    });
+
     it('hiển thị số tem và chuyển công cụ mà không bày nút rà soát mơ hồ', () => {
         render(<StickerSheetPanel tabId="tab" />);
         expect(screen.getByText(/Đã nhận diện/).textContent).toContain('Đã nhận diện 2 tem');

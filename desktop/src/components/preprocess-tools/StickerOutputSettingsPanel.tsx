@@ -19,6 +19,7 @@ export interface StickerOutputSettingsPanelProps {
     onChange: (next: StickerOutputSettings) => void;
     disabled?: boolean;
     preserveNotice?: ReactNode;
+    showCropControl?: boolean;
 }
 
 interface NumberSettingProps {
@@ -204,8 +205,10 @@ export default function StickerOutputSettingsPanel({
     onChange,
     disabled = false,
     preserveNotice,
+    showCropControl = true,
 }: StickerOutputSettingsPanelProps) {
     const settings = sanitizeStickerOutputSettings(value);
+    const inputId = useId();
 
     const emitPatch = (patch: Partial<StickerOutputSettings>) => {
         if (disabled) return;
@@ -250,7 +253,7 @@ export default function StickerOutputSettingsPanel({
                 </div>
 
                 <NumberSetting
-                    id="sticker-output-offset-mm"
+                    id={`${inputId}-offset-mm`}
                     label="Co giãn đường cắt"
                     value={settings.offsetMm}
                     min={-10}
@@ -299,7 +302,7 @@ export default function StickerOutputSettingsPanel({
                     >
                         {tv(settings.fillHoles ? 'Đặc ruột' : 'Giữ lỗ rỗng')}
                     </button>
-                    <button
+                    {showCropControl && <button
                         type="button"
                         aria-label={tv('Crop trang theo đường bế và phần bù xén')}
                         aria-pressed={settings.cropToSticker}
@@ -312,7 +315,7 @@ export default function StickerOutputSettingsPanel({
                         }`}
                     >
                         {tv(settings.cropToSticker ? 'Crop theo tem' : 'Giữ khổ trang')}
-                    </button>
+                    </button>}
                 </div>
             </div>
 
@@ -321,7 +324,7 @@ export default function StickerOutputSettingsPanel({
             <div>
                 <ToolSectionLabel>{tv('Bù xén')}</ToolSectionLabel>
                 <NumberSetting
-                    id="sticker-output-bleed-mm"
+                    id={`${inputId}-bleed-mm`}
                     label="Bù xén ngoài đường cắt"
                     value={settings.bleedMm}
                     min={0}

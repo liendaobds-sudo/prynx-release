@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Redo2, Undo2 } from 'lucide-react';
 
 import { tv } from '../../i18n';
-import { StickerBleedColorControl } from './StickerOutputSettingsPanel';
+import StickerOutputSettingsPanel, { StickerBleedColorControl } from './StickerOutputSettingsPanel';
+import type { StickerDetectionStrategy } from '../../lib/stickerSheetApi';
 import {
     useStickerSheetStore,
     type PrepareStickerWorkspaceSource,
@@ -18,6 +19,7 @@ interface Props {
     isExporting?: boolean;
     pageOrder?: number[];
     prepareWorkspaceSource?: PrepareStickerWorkspaceSource;
+    unified?: boolean;
 }
 
 const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> = [
@@ -97,12 +99,14 @@ export default function StickerSheetPanel({
     isExporting = false,
     pageOrder,
     prepareWorkspaceSource,
+    unified = false,
 }: Props) {
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const state = tab || useStickerSheetStore.getState().getTab(tabId);
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const strategy: StickerDetectionStrategy = state.detectionStrategy || 'auto';
 
     useEffect(() => {
         actions.initTab(tabId);
@@ -111,7 +115,9 @@ export default function StickerSheetPanel({
     const manifest = state.manifest;
     const sourcePreviewLoading = Boolean(state.inspection && !state.sourcePreviewReady);
     const hasMask = Boolean(manifest) && ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
-    const [settingsOpen, setSettingsOpen] = useState(state.status === 'mask-review');
+    const [settingsOpen, setSettingsOpen] = useState(unified || state.status === 'mask-review');
+    const [maskToolsOpen, setMaskToolsOpen] = useState(false);
+    const preserveOriginal = Boolean(manifest?.boundary_source === 'existing-cut' && state.preserveExistingCut);
     const busy = state.isRefining
         || state.isCutlinePreviewing
         || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(state.status);
@@ -126,8 +132,8 @@ export default function StickerSheetPanel({
     // phụ thuộc nguồn mask là AI hay vector; chỉ Khử bóng mới cần dữ liệu AI.
     const canTuneCutline = Boolean(
         manifest
-        && manifest.boundary_source !== 'existing-cut'
-        && state.status === 'mask-review',
+        && (unified ? !preserveOriginal : manifest.boundary_source !== 'existing-cut')
+        && (state.status === 'mask-review' || unified && state.status === 'mask-ready'),
     );
     const roundRadiusMm = cutlineRoundRadiusMm(state.curveTension);
     const pageCount = Math.max(
@@ -186,15 +192,15 @@ export default function StickerSheetPanel({
     useEffect(() => {
         // UIUX (feedback 2026-08-12 §AI.COMPACT1): sau khi xác nhận hoặc đang xuất,
         // thu cả thiết lập lẫn thao tác xuất; người dùng có thể xổ ra để xem lại.
-        setSettingsOpen(state.status === 'mask-review');
-    }, [state.status]);
+        if (!unified) setSettingsOpen(state.status === 'mask-review');
+    }, [state.status, unified]);
     const prepareCutline = async () => {
         const pageNumber = state.activeSourcePage;
         // UIUX (audit 2026-08-15 §XEPTEM.1): auto thử CutContour/vector/Alpha/
         // nền đơn giản trước; AI chỉ là fallback khi các nhánh chắc chắn không đủ.
         await actions.detectStickers(
             tabId,
-            'auto',
+            unified ? strategy : 'auto',
             pageNumber,
             prepareWorkspaceSource,
         );
@@ -237,7 +243,7 @@ export default function StickerSheetPanel({
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff"
+                accept={unified ? 'application/pdf,image/png,image/jpeg,image/webp,image/bmp,image/tiff' : 'image/png,image/jpeg,image/webp,image/bmp,image/tiff'}
                 className="hidden"
                 onChange={event => {
                     const files = Array.from(event.target.files || []);
@@ -246,16 +252,16 @@ export default function StickerSheetPanel({
                 }}
             />
 
-            {!state.sourceFile && (
+            {(!state.sourceFile || unified) && (
                 <div>
-                    <ToolSectionLabel>{tv('Ảnh nhiều tem')}</ToolSectionLabel>
+                    <ToolSectionLabel>{tv(unified ? 'Nguồn tem' : 'Ảnh nhiều tem')}</ToolSectionLabel>
                     <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         disabled={busy}
                         className="w-full h-10 rounded-lg border border-dashed border-violet-400 bg-violet-50 text-[12px] font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-950/30 dark:text-violet-300"
                     >
-                        {tv('Chọn một hoặc nhiều ảnh')}
+                        {tv(unified ? (state.sourceFile ? 'Đổi file nguồn' : 'Chọn PDF hoặc ảnh') : 'Chọn một hoặc nhiều ảnh')}
                     </button>
                 </div>
             )}
@@ -271,6 +277,10 @@ export default function StickerSheetPanel({
                             </div>
                         </div>
                     </div>
+                    {unified && ['inspecting', 'detecting'].includes(state.status) && (
+                        <button type="button" className="mt-2 text-xs font-semibold underline"
+                            onClick={() => actions.cancelDetection(tabId)}>{tv('Hủy nhận diện')}</button>
+                    )}
                 </div>
             )}
 
@@ -288,7 +298,7 @@ export default function StickerSheetPanel({
                             onClick={() => { void prepareCutline(); }}
                             className="h-10 min-w-0 rounded-lg bg-violet-600 px-3 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700"
                         >
-                            {tv('Nhận diện trang hiện tại')}
+                            {tv(unified && visibleSourcePageCount <= 1 ? 'Nhận diện tự động' : 'Nhận diện trang hiện tại')}
                         </button>
                     )}
                     {canDetectAllPages && (
@@ -297,7 +307,7 @@ export default function StickerSheetPanel({
                             onClick={() => {
                                 void actions.detectAllStickers(
                                     tabId,
-                                    'auto',
+                                    unified ? strategy : 'auto',
                                     prepareWorkspaceSource,
                                 );
                             }}
@@ -309,6 +319,50 @@ export default function StickerSheetPanel({
                 </div>
             )}
 
+            {unified && (
+                <>
+                    <details className="rounded-lg border border-slate-200 p-3 dark:border-zinc-700">
+                        <summary className="cursor-pointer text-xs font-semibold">{tv('Nhận diện nâng cao')}</summary>
+                        <label className="mt-2 block text-xs">
+                            {tv('Cách lấy biên tem')}
+                            <select className="mt-1 h-9 w-full rounded border bg-white px-2 dark:bg-zinc-900"
+                                aria-label={tv('Cách lấy biên tem')} value={strategy} disabled={busy || hasMask}
+                                onChange={event => actions.setDetectionStrategy(tabId, event.target.value as StickerDetectionStrategy)}>
+                                <option value="auto">{tv('Tự động')}</option>
+                                <option value="alpha">{tv('Dùng Alpha')}</option>
+                                <option value="simple-bg">{tv('Dùng nền đơn giản')}</option>
+                                <option value="ai">{tv('Dùng AI')}</option>
+                                <option value="page-box">{tv('Giữ toàn bộ trang')}</option>
+                            </select>
+                        </label>
+                        {hasMask && <button type="button" disabled={busy}
+                            className="mt-2 text-xs font-semibold underline"
+                            onClick={() => {
+                                const hasEdits = state.edits.length || Object.values(state.pages).some(page => page.edits.length);
+                                if (hasEdits && !window.confirm(tv('Nhận diện lại sẽ thay vùng tem và bỏ nét sửa trên các trang. Giữ nguyên thông số bù xén?'))) return;
+                                actions.restartDetection(tabId);
+                            }}>{tv('Nhận diện lại nguồn')}</button>}
+                    </details>
+                    {preserveOriginal && (
+                        <div role="note" className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800 dark:bg-sky-950 dark:text-sky-200">
+                            {tv('Đang giữ đường cắt vector có sẵn. Thay thiết lập sẽ tạo lại đường cắt.')}
+                            <button type="button" disabled={busy} className="mt-2 block font-bold underline"
+                                onClick={() => actions.setPreserveExistingCut(tabId, false)}>{tv('Tạo lại đường cắt')}</button>
+                        </div>
+                    )}
+                    {manifest?.source_kind === 'pdf' && !preserveOriginal && (
+                        <p role="note" className="text-[11px] text-slate-500">
+                            {tv('Xuất theo vùng tem đã nhận diện có thể chuyển artwork PDF sang ảnh. Dùng Tùy chọn PDF nâng cao khi cần giữ đối tượng gốc.')}
+                        </p>
+                    )}
+                    <div className="rounded-xl border border-slate-200 p-3 dark:border-zinc-700">
+                        <StickerOutputSettingsPanel value={state.outputSettings}
+                            onChange={settings => actions.setOutputSettings(tabId, settings)}
+                            disabled={busy || isExporting} showCropControl={false} />
+                    </div>
+                </>
+            )}
+
             {manifest && hasMask && (
                 <>
                     <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
@@ -317,7 +371,19 @@ export default function StickerSheetPanel({
                         </div>
                     </div>
 
-                    {canTuneCutline && (
+                    {unified && manifest.needs_review && (
+                        <p role="note" className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                            {tv('Kiểm tra đường cắt và vùng tem trước khi xuất. Nếu thiếu chi tiết, dùng Giữ lại.')}
+                        </p>
+                    )}
+                    {unified && <button type="button" aria-expanded={maskToolsOpen}
+                        className="text-left text-xs font-semibold" onClick={() => {
+                            setMaskToolsOpen(open => !open);
+                            actions.setMaskEditingEnabled(tabId, !maskToolsOpen);
+                        }}>
+                        {tv('Tinh chỉnh đường cắt và sửa vùng tem')}
+                    </button>}
+                    {canTuneCutline && (!unified || maskToolsOpen) && (
                         <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-950/20">
                             <ToolSectionLabel>{tv('Xem và chỉnh đường bế', 'preprocess.stickerSheet')}</ToolSectionLabel>
                             {canRefinePreview && (
@@ -438,7 +504,7 @@ export default function StickerSheetPanel({
                     )}
 
                     <div className="rounded-xl border border-slate-200 bg-white/70 dark:border-zinc-700 dark:bg-zinc-900/40">
-                        <button
+                        {!unified && <button
                             type="button"
                             aria-expanded={settingsOpen}
                             aria-controls={`sticker-settings-${tabId}`}
@@ -457,14 +523,14 @@ export default function StickerSheetPanel({
                                     className={`h-4 w-4 transition-transform duration-200 ${settingsOpen ? 'rotate-180' : ''}`}
                                 />
                             </span>
-                        </button>
+                        </button>}
 
-                        {settingsOpen && (
+                        {(unified || settingsOpen) && (
                             <div
                                 id={`sticker-settings-${tabId}`}
                                 className="space-y-4 border-t border-slate-200 px-3 pb-3 pt-3 dark:border-zinc-700"
                             >
-                                <div>
+                                {(!unified || maskToolsOpen) && <div>
                                     <ToolSectionLabel>{tv('Sửa nhanh vùng tem')}</ToolSectionLabel>
                                     <div className="grid grid-cols-3 gap-1.5">
                                         {TOOL_OPTIONS.map(option => (
@@ -474,7 +540,7 @@ export default function StickerSheetPanel({
                                                 title={tv(option.hint)}
                                                 aria-pressed={state.activeTool === option.id}
                                                 onClick={() => actions.setActiveTool(tabId, option.id)}
-                                                disabled={busy}
+                                                disabled={busy || unified && preserveOriginal}
                                                 className={`min-h-10 rounded-lg border px-1.5 text-[10px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                     state.activeTool === option.id
                                                         ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
@@ -488,11 +554,11 @@ export default function StickerSheetPanel({
                                     <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
                                         {tv(TOOL_OPTIONS.find(option => option.id === state.activeTool)?.hint || '')}
                                     </p>
-                                </div>
+                                </div>}
 
                     {/* UIUX (feedback 2026-08-10 §AI.HISTORY1): chỉ bày lịch sử sau
                         khi người dùng đã sửa vùng tem; Ctrl+Z/Y vẫn hoạt động như cũ. */}
-                    {(state.activeTool !== 'merge' || hasEditHistory) && (
+                    {(!unified || maskToolsOpen) && (state.activeTool !== 'merge' || hasEditHistory) && (
                         <div className="flex items-center gap-2">
                             {state.activeTool !== 'merge' && (
                                 <label className="flex min-w-0 flex-1 items-center gap-3 text-[11px] text-slate-600 dark:text-zinc-300">
@@ -541,7 +607,7 @@ export default function StickerSheetPanel({
                         </div>
                     )}
 
-                                <div>
+                                {!unified && <div>
                                     <ToolSectionLabel>{tv('Kích thước và đường cắt')}</ToolSectionLabel>
                                     <div className="grid grid-cols-2 gap-2">
                                         <ToolNumberInput
@@ -571,7 +637,7 @@ export default function StickerSheetPanel({
                                         disabled={busy || isExporting}
                                         className="mt-3"
                                     />
-                                </div>
+                                </div>}
 
                                 <div>
                                     <ToolSectionLabel>{tv('Cách tạo PDF')}</ToolSectionLabel>
