@@ -44,6 +44,7 @@ import {
     STICKER_PARAM_LIMITS,
 } from '../../components/preprocess-tools/stickerToolPolicy';
 import i18n from '../../i18n';
+import { runUnifiedStickerRecipe } from './unifiedStickerRecipe';
 
 type JsonRecord = Record<string, unknown>;
 interface OptimizeRecipeParams extends JsonRecord { preset?: string; image_dpi?: number | string; strip_metadata?: boolean; grayscale?: boolean; }
@@ -339,6 +340,7 @@ function recipeBleedSides(saved: unknown): Record<string, boolean> {
 
 // ─── Tạo đường cắt / bù xén tem (dò contour server-side mỗi file) ───
 const runStickerDieline: RecipeRunner = async (ctx, params) => {
+    if (params.workflow === 'unified-v2') return runUnifiedStickerRecipe(ctx, params, null);
     const { file, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     const p = params as StickerDielineRecipeParams;
     const productType: 'sticker' | 'rectangle' = p.productType === 'rectangle' ? 'rectangle' : 'sticker';

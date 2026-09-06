@@ -5,6 +5,7 @@ import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { saveBlob } from '../../lib/saveBlob';
 import { toast } from '../ui/Toast';
+import { registerStickerIncomingSource } from '../../lib/stickerIncomingSources';
 import StickerSheetPanel from './StickerSheetPanel';
 import StickerTool from './StickerTool';
 import {
@@ -12,7 +13,8 @@ import {
     type PrepareStickerWorkspaceSource,
     type StickerWorkspaceSourceLease,
 } from './stickerSheetStore';
-import type { RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
+import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
+import { makeUnifiedStickerRecipe } from '../../lib/recipe/unifiedStickerRecipe';
 
 
 interface Props {
@@ -59,6 +61,8 @@ export default function StickerCutlineTool({
     const workspaceLeaseRef = useRef<StickerWorkspaceSourceLease | null>(null);
     const workspaceLeasePromiseRef = useRef<Promise<StickerWorkspaceSourceLease> | null>(null);
     const mode = tab?.mode || 'existing';
+    const productType = tab?.productType || 'sticker';
+    const [classicAdvanced, setClassicAdvanced] = useState(false);
     const [directProcessing, setDirectProcessing] = useState(false);
     const [completedExport, setCompletedExport] = useState<{
         filename: string;
@@ -66,8 +70,8 @@ export default function StickerCutlineTool({
     } | null>(null);
     const exportedFilenameRef = useRef<string | null>(null);
     const workflowBusy = (
-        tab?.status === 'confirming'
-        || tab?.status === 'exporting'
+        ['inspecting', 'detecting', 'confirming', 'exporting'].includes(tab?.status || '')
+        || tab?.isRefining === true
         || directProcessing
     );
     const workingPageOrder = pageOrder?.map((_sourcePage, index) => index + 1);
@@ -76,6 +80,14 @@ export default function StickerCutlineTool({
     const outputIntent = mode === 'ai-sheet' && tab?.outputSettings.cropToSticker
         ? 'Tách từng tem'
         : 'Giữ nguyên tấm';
+
+    useEffect(() => {
+        if (!isActive || classicAdvanced || productType !== 'sticker' || workflowBusy) return undefined;
+        return registerStickerIncomingSource(tabId, files => {
+            void actions.selectSources(tabId, files, 'explicit');
+            return true;
+        });
+    }, [actions, classicAdvanced, isActive, productType, tabId, workflowBusy]);
 
     const prepareWorkspaceSource = useCallback<PrepareStickerWorkspaceSource>(async () => {
         const cached = workspaceLeaseRef.current;
@@ -111,7 +123,16 @@ export default function StickerCutlineTool({
         return pending;
     }, [workingPdf]);
 
-    useEffect(() => actions.initTab(tabId), [actions, tabId]);
+    useEffect(() => {
+        actions.initTab(tabId);
+        // UNIFIED (audit 2026-09-06 §UNIFIED.3): tem nhãn luôn vào workspace
+        // chung; Xén vuông góc vẫn chọn adapter classic riêng bên dưới.
+        if (UNIFIED_STICKER_WORKSPACE && isActive) {
+            actions.enableUnified(tabId);
+            const expectedMode = productType === 'rectangle' || classicAdvanced ? 'existing' : 'ai-sheet';
+            if (mode !== expectedMode) actions.setMode(tabId, expectedMode);
+        }
+    }, [actions, classicAdvanced, isActive, mode, productType, tabId]);
 
     useEffect(() => {
         if (!isActive || mode !== 'ai-sheet') return;
@@ -142,67 +163,35 @@ export default function StickerCutlineTool({
         // UIUX (feedback 2026-08-09 §MP.THUMBNAIL): tài liệu trong Viewer là nguồn
         // duy nhất; đổi file/thumbnail không giữ lại một nguồn ảnh riêng trong panel.
         // Chỉ đồng bộ file, tuyệt đối không inspect/detect ngầm.
-        actions.selectSource(tabId, workspaceSource, 'workspace');
+        actions.selectSource(
+            tabId,
+            workspaceSource,
+            pdfFile ? 'workspace' : 'explicit',
+        );
     }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId]);
 
-    const handleAutoDetect = useCallback(async () => {
-        if (workflowBusy) return;
-        exportedFilenameRef.current = null;
-        setCompletedExport(null);
-        actions.setMode(tabId, 'ai-sheet');
-
-        // Ảnh rời không thuộc Working PDF vẫn đi qua adapter explicit; PDF trong
-        // Viewer đi qua lease để giữ đúng revision hiện hành.
-        const current = useStickerSheetStore.getState().getTab(tabId);
-        const source = current.sourceFile || pdfFile || sourceImageFile;
-        if (source && !current.sourceFile) {
-            actions.selectSource(
-                tabId,
-                source,
-                pdfFile ? 'workspace' : 'explicit',
-                1,
-            );
-        }
-        await actions.detectStickers(
-            tabId,
-            'auto',
-            activeWorkingPage,
-            pdfFile ? prepareWorkspaceSource : undefined,
-        );
-        const detected = useStickerSheetStore.getState().getTab(tabId);
-        const detectedPage = detected.pages[detected.activeSourcePage]
-            || detected;
-        if (
-            detectedPage.status === 'mask-review'
-            && detectedPage.manifest
-            && !detectedPage.manifest.needs_review
-        ) {
-            await actions.confirmMask(tabId, detected.activeSourcePage);
-        }
-    }, [
-        actions,
-        activeWorkingPage,
-        pdfFile,
-        prepareWorkspaceSource,
-        sourceImageFile,
-        tabId,
-        workflowBusy,
-    ]);
-
     const handleExport = async () => {
+        const recording = recipeRecorder.isRecordingFor(tabId);
+        const params = makeUnifiedStickerRecipe(useStickerSheetStore.getState().getTab(tabId), workingPageOrder);
+        if (recording && !params) {
+            toast.error(tv('Vùng sửa tay hoặc thiết lập riêng từng trang không phát lại được. Dừng ghi quy trình rồi xuất.'));
+            return;
+        }
+        const ticket = recording ? recipeRecorder.noteOperation('sticker_dieline', params!, undefined, tabId) : null;
+        if (recording && !ticket) {
+            toast.error(tv('Một thao tác khác đang chờ ghi quy trình. Hãy thử lại.'));
+            return;
+        }
         const result = await actions.exportFile(
             tabId,
             'pdf',
             workingPageOrder,
             prepareWorkspaceSource,
         );
-        if (!result) return;
+        if (!result) { recipeRecorder.discardPending(ticket); return; }
         exportedFilenameRef.current = result.filename;
         try {
-            // RECIPE (audit 2026-08-17 §REC.4S): "Tách nhiều tem" chưa nối vé nên khi
-            // đang ghi quy trình commit bị chặn (trả false) — KHÔNG hiện thẻ/toast
-            // hoàn tất vì tài liệu đang mở không đổi và Recipe không có Step.
-            const committed = await onFileFixed(result.blob, result.filename, result.outputPath);
+            const committed = await onFileFixed(result.blob, result.filename, result.outputPath, ticket);
             if (committed === false) {
                 exportedFilenameRef.current = null;
                 return;
@@ -216,6 +205,7 @@ export default function StickerCutlineTool({
             exportedFilenameRef.current = null;
             toast.error(tv('Đã tạo PDF nhưng không đưa được vào tài liệu đang mở. Hãy thử lại.'));
         } finally {
+            recipeRecorder.discardPending(ticket);
             actions.finishExport(tabId);
         }
     };
@@ -276,20 +266,51 @@ export default function StickerCutlineTool({
                             <span className="mt-0.5 block font-bold text-slate-700 dark:text-zinc-200">{tv(outputIntent)}</span>
                         </div>
                     </div>
-                    {mode === 'existing' && (
-                        <button
-                            type="button"
-                            disabled={workflowBusy}
-                            onClick={() => { void handleAutoDetect(); }}
-                            className="mt-3 h-10 w-full rounded-lg bg-violet-600 px-3 text-[11px] font-bold text-white shadow-sm transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            {tv('Nhận diện tự động', 'preprocess.stickerSheet')}
-                        </button>
-                    )}
                 </div>
             )}
 
-            {mode === 'existing' ? (
+            {UNIFIED_STICKER_WORKSPACE && (
+                <div
+                    role="group"
+                    aria-label={tv('Mục tiêu gia công', 'preprocess.stickerSheet')}
+                    className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 dark:border-zinc-700 dark:bg-zinc-800/60"
+                >
+                    {(['sticker', 'rectangle'] as const).map(productType => (
+                        <button
+                            key={productType}
+                            type="button"
+                            aria-pressed={(tab?.productType || 'sticker') === productType}
+                            disabled={workflowBusy}
+                            onClick={() => {
+                                actions.setProductType(tabId, productType);
+                                setClassicAdvanced(false);
+                                actions.setMode(tabId, productType === 'sticker' ? 'ai-sheet' : 'existing');
+                            }}
+                            className={`min-h-10 rounded-lg px-2 text-[10px] font-bold ${
+                                tab?.productType === productType
+                                    ? 'bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
+                                    : 'text-slate-500 hover:text-slate-800 dark:text-zinc-400'
+                            }`}
+                        >
+                            {productType === 'sticker'
+                                ? tv('Bế tem nhãn', 'preprocess.sticker')
+                                : tv('Xén vuông góc', 'preprocess.sticker')}
+                        </button>
+                    ))}
+                </div>
+            )}
+
+            {productType === 'sticker' && (
+                <details className="text-xs text-slate-600 dark:text-zinc-300">
+                    <summary className="cursor-pointer">{tv('Tùy chọn PDF nâng cao')}</summary>
+                    <p className="my-2">{tv('Giữ công cụ chọn đối tượng, bù xén trực tiếp và quy trình cũ khi cần.')}</p>
+                    <button type="button" disabled={workflowBusy} className="font-semibold underline"
+                        onClick={() => setClassicAdvanced(current => !current)}>
+                        {tv(classicAdvanced ? 'Quay lại workspace tem' : 'Xử lý đối tượng PDF trực tiếp')}
+                    </button>
+                </details>
+            )}
+            {productType === 'rectangle' || classicAdvanced ? (
                 <StickerTool
                     tabId={tabId}
                     pdfFile={pdfFile}
@@ -297,6 +318,8 @@ export default function StickerCutlineTool({
                     onProcessingChange={setDirectProcessing}
                     isActive={isActive}
                     pageNumber={activeWorkingPage}
+                    productType={productType}
+                    showProductTypeSelector={false}
                 />
             ) : (
                 <>
@@ -307,6 +330,7 @@ export default function StickerCutlineTool({
                         isExporting={tab?.isExporting === true}
                         pageOrder={workingPageOrder}
                         prepareWorkspaceSource={prepareWorkspaceSource}
+                        unified
                     />
                     {completedExport && (
                         <div

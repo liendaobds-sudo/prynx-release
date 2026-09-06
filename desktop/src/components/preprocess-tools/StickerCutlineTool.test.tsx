@@ -96,7 +96,7 @@ function detection(needsReview = false): StickerSourceDetectionPayload {
     };
 }
 
-describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', () => {
+describe('StickerCutlineTool — một workspace, giữ adapter tương thích', () => {
     beforeEach(() => {
         window.localStorage.clear();
         useStickerSheetStore.setState({ tabs: {} });
@@ -135,7 +135,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         });
     });
 
-    it('mặc định dùng adapter trực tiếp và hiển thị workspace hợp nhất', async () => {
+    it('mở workspace với đủ bù xén nhưng không tự nhận diện', async () => {
         const pdf = new File(['pdf'], 'current.pdf', { type: 'application/pdf' });
         render(
             <StickerCutlineTool
@@ -153,7 +153,9 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         expect(screen.getByRole('button', { name: 'Nhận diện tự động' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'Tách nhiều tem' })).toBeNull();
-        await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
+        expect(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toBeTruthy();
+        expect(screen.getByRole('spinbutton', { name: 'Co giãn đường cắt (mm)' })).toBeTruthy();
+        expect(screen.queryByText('direct-engine:current.pdf')).toBeNull();
         expect(inspectStickerSource).not.toHaveBeenCalled();
         expect(detectStickerSource).not.toHaveBeenCalled();
     });
@@ -171,7 +173,6 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
             />,
         );
 
-        await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         expect(inspectStickerSource).not.toHaveBeenCalled();
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
         await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
@@ -200,7 +201,6 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         );
 
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
 
         await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
         expect(workingPdfMock.prepare).toHaveBeenCalledTimes(1);
@@ -231,12 +231,12 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         );
 
         fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện trang hiện tại' }));
         await waitFor(() => expect(
             useStickerSheetStore.getState().getTab('review-tab').status,
         ).toBe('mask-review'));
         expect(confirmStickerSource).not.toHaveBeenCalled();
         expect(screen.queryByRole('button', { name: 'Xác nhận vùng tem' })).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Tinh chỉnh đường cắt và sửa vùng tem' }));
         expect(screen.getByText('Sửa nhanh vùng tem')).toBeTruthy();
     });
 
@@ -299,6 +299,7 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
             />,
         );
 
+        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
         await waitFor(() => expect(screen.getByText('direct-preview-page:1')).toBeTruthy());
     });
 
@@ -400,9 +401,10 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 onFileFixed={vi.fn()}
             />,
         );
+        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
         await waitFor(() => expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy());
         fireEvent.click(screen.getByRole('button', { name: 'start-direct' }));
-        const aiButton = screen.getByRole('button', { name: 'Nhận diện tự động' }) as HTMLButtonElement;
+        const aiButton = screen.getByRole('button', { name: 'Bế tem nhãn' }) as HTMLButtonElement;
         expect(aiButton.disabled).toBe(true);
         fireEvent.click(aiButton);
         expect(screen.getByText('direct-engine:current.pdf')).toBeTruthy();
@@ -452,7 +454,6 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 onFileFixed={onFileFixed}
             />,
         );
-        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);
@@ -474,12 +475,12 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         );
         resolveCommit();
         await waitFor(() => expect(screen.getByRole('button', { name: 'Bình tem bế' })).toBeTruthy());
-        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
+        const settingsToggle = screen.getByRole('group', { name: 'Thiết lập đường bế tem' });
         const resultCard = screen.getByRole('status');
         expect(settingsToggle.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING)
             .toBeTruthy();
-        await waitFor(() => expect(settingsToggle.getAttribute('aria-expanded')).toBe('false'));
-        expect(screen.queryByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeNull();
+        expect(screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Tạo PDF có đường cắt' })).toBeTruthy();
         expect(screen.getByText('Đã tạo bù xén thành công!')).toBeTruthy();
         const finished = useStickerSheetStore.getState().getTab('export-tab');
         expect(finished.mode).toBe('ai-sheet');
@@ -549,7 +550,6 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
                 onFileFixed={vi.fn()}
             />,
         );
-        fireEvent.click(screen.getByRole('button', { name: /Thiết lập bù xén/ }));
         const exportButton = screen.getByRole('button', { name: 'Tạo PDF có đường cắt' }) as HTMLButtonElement;
         await waitFor(() => expect(exportButton.disabled).toBe(false));
         fireEvent.click(exportButton);
