@@ -49,6 +49,9 @@ vi.mock('../../lib/stickerSheetApi', () => ({
     inspectStickerSource: vi.fn(),
     previewStickerCutline: vi.fn(),
 }));
+vi.mock('./StickerObjectSelectionControl', () => ({
+    default: () => <button type="button">Chọn tem</button>,
+}));
 vi.mock('../../hooks/useWorkingPdf', () => ({
     useWorkingPdf: () => workingPdfMock,
 }));
@@ -135,7 +138,7 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
         });
     });
 
-    it('mở workspace với đủ bù xén nhưng không tự nhận diện', async () => {
+    it('mở workspace không có thẻ tóm tắt, giữ đủ bù xén và không tự nhận diện', async () => {
         const pdf = new File(['pdf'], 'current.pdf', { type: 'application/pdf' });
         render(
             <StickerCutlineTool
@@ -147,9 +150,17 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
             />,
         );
 
-        expect(screen.getByRole('heading', { name: 'Bù xén và tạo đường cắt' })).toBeTruthy();
-        expect(screen.getByText('current.pdf')).toBeTruthy();
-        expect(screen.getByText('Giữ nguyên tấm')).toBeTruthy();
+        // UIUX (feedback 2026-09-06): bỏ thẻ tóm tắt, không bỏ state hay control xử lý.
+        expect(screen.queryByLabelText('Bù xén và tạo đường cắt')).toBeNull();
+        expect(screen.queryByText('Một quy trình cho tem đã có biên và ảnh nhiều tem.')).toBeNull();
+        expect(screen.queryByText('Tùy chọn PDF nâng cao')).toBeNull();
+        expect(screen.queryByText('Quay lại workspace tem')).toBeNull();
+        expect(screen.getByRole('button', { name: 'Chọn tem' })).toBeTruthy();
+        expect(screen.getByRole('group', { name: 'Mục tiêu gia công' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Đổi file nguồn' })).toBeNull();
+        const state = useStickerSheetStore.getState().getTab('direct-tab');
+        expect(state.sourceFile).toBe(pdf);
+        expect(state.outputSettings.cropToSticker).toBe(false);
         expect(screen.getByRole('button', { name: 'Nhận diện tự động' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
         expect(screen.queryByRole('button', { name: 'Tách nhiều tem' })).toBeNull();
@@ -178,6 +189,9 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
         await waitFor(() => expect(detectStickerSource).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(confirmStickerSource).toHaveBeenCalledTimes(1));
         expect(useStickerSheetStore.getState().getTab('ai-tab').status).toBe('mask-ready');
+        expect(screen.queryByLabelText('Bù xén và tạo đường cắt')).toBeNull();
+        expect(screen.getByRole('button', { name: 'Giữ nguyên tấm' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Tách từng tem' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
     });
 

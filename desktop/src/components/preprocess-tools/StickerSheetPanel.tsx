@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Redo2, Undo2 } from 'lucide-react';
 
 import { tv } from '../../i18n';
@@ -20,6 +20,8 @@ interface Props {
     pageOrder?: number[];
     prepareWorkspaceSource?: PrepareStickerWorkspaceSource;
     unified?: boolean;
+    interactionLocked?: boolean;
+    selectionControl?: ReactNode;
 }
 
 const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> = [
@@ -100,6 +102,8 @@ export default function StickerSheetPanel({
     pageOrder,
     prepareWorkspaceSource,
     unified = false,
+    interactionLocked = false,
+    selectionControl,
 }: Props) {
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const state = tab || useStickerSheetStore.getState().getTab(tabId);
@@ -118,7 +122,7 @@ export default function StickerSheetPanel({
     const [settingsOpen, setSettingsOpen] = useState(unified || state.status === 'mask-review');
     const [maskToolsOpen, setMaskToolsOpen] = useState(false);
     const preserveOriginal = Boolean(manifest?.boundary_source === 'existing-cut' && state.preserveExistingCut);
-    const busy = state.isRefining
+    const busy = interactionLocked || state.isRefining
         || state.isCutlinePreviewing
         || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(state.status);
     const hasEditHistory = state.edits.length > 0 || state.redoEdits.length > 0;
@@ -158,7 +162,7 @@ export default function StickerSheetPanel({
     const pendingPageCount = [...new Set(exportOrder)]
         .filter(pageNumber => ['idle', 'source-ready', 'error'].includes(pageStatus(pageNumber))).length;
     const allPagesExportable = exportablePageCount === exportPageCount;
-    const canDetectActivePage = ['source-ready', 'error'].includes(state.status);
+    const canDetectActivePage = ['source-ready', 'error'].includes(state.status) || unified && hasMask;
     // UIUX (feedback 2026-08-21 §CUTPREVIEW.MULTIPAGE1): PDF từ Viewer đã biết
     // pageOrder trước khi inspect; dùng danh sách đó để không ép quét từng trang.
     const visibleSourcePageCount = new Set(exportOrder).size;
@@ -195,6 +199,8 @@ export default function StickerSheetPanel({
         if (!unified) setSettingsOpen(state.status === 'mask-review');
     }, [state.status, unified]);
     const prepareCutline = async () => {
+        if (busy) return;
+        if (unified && state.edits.length && !window.confirm(tv('Thay vùng tem sẽ bỏ nét sửa trên trang này. Tiếp tục?'))) return;
         const pageNumber = state.activeSourcePage;
         // UIUX (audit 2026-08-15 §XEPTEM.1): auto thử CutContour/vector/Alpha/
         // nền đơn giản trước; AI chỉ là fallback khi các nhánh chắc chắn không đủ.
@@ -239,29 +245,30 @@ export default function StickerSheetPanel({
 
     return (
         <div className="flex flex-col gap-4">
-            <input
+            {/* UIUX (feedback 2026-09-06): workspace dùng tài liệu đang mở, không có bộ đổi file riêng. */}
+            {!unified && <input
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept={unified ? 'application/pdf,image/png,image/jpeg,image/webp,image/bmp,image/tiff' : 'image/png,image/jpeg,image/webp,image/bmp,image/tiff'}
+                accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff"
                 className="hidden"
                 onChange={event => {
                     const files = Array.from(event.target.files || []);
                     if (files.length > 0) void actions.selectSources(tabId, files);
                     event.currentTarget.value = '';
                 }}
-            />
+            />}
 
-            {(!state.sourceFile || unified) && (
+            {!unified && !state.sourceFile && (
                 <div>
-                    <ToolSectionLabel>{tv(unified ? 'Nguồn tem' : 'Ảnh nhiều tem')}</ToolSectionLabel>
+                    <ToolSectionLabel>{tv('Ảnh nhiều tem')}</ToolSectionLabel>
                     <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         disabled={busy}
                         className="w-full h-10 rounded-lg border border-dashed border-violet-400 bg-violet-50 text-[12px] font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-950/30 dark:text-violet-300"
                     >
-                        {tv(unified ? (state.sourceFile ? 'Đổi file nguồn' : 'Chọn PDF hoặc ảnh') : 'Chọn một hoặc nhiều ảnh')}
+                        {tv('Chọn một hoặc nhiều ảnh')}
                     </button>
                 </div>
             )}
@@ -295,15 +302,19 @@ export default function StickerSheetPanel({
                     {canDetectActivePage && (
                         <button
                             type="button"
+                            disabled={busy}
                             onClick={() => { void prepareCutline(); }}
                             className="h-10 min-w-0 rounded-lg bg-violet-600 px-3 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700"
                         >
-                            {tv(unified && visibleSourcePageCount <= 1 ? 'Nhận diện tự động' : 'Nhận diện trang hiện tại')}
+                            {tv(state.detectionRetry ? 'Thử lại'
+                                : unified && hasMask ? 'Nhận diện lại'
+                                : unified && visibleSourcePageCount <= 1 ? 'Nhận diện tự động' : 'Nhận diện trang hiện tại')}
                         </button>
                     )}
                     {canDetectAllPages && (
                         <button
                             type="button"
+                            disabled={busy}
                             onClick={() => {
                                 void actions.detectAllStickers(
                                     tabId,
@@ -319,6 +330,8 @@ export default function StickerSheetPanel({
                 </div>
             )}
 
+            {selectionControl}
+
             {unified && (
                 <>
                     <details className="rounded-lg border border-slate-200 p-3 dark:border-zinc-700">
@@ -326,7 +339,7 @@ export default function StickerSheetPanel({
                         <label className="mt-2 block text-xs">
                             {tv('Cách lấy biên tem')}
                             <select className="mt-1 h-9 w-full rounded border bg-white px-2 dark:bg-zinc-900"
-                                aria-label={tv('Cách lấy biên tem')} value={strategy} disabled={busy || hasMask}
+                                aria-label={tv('Cách lấy biên tem')} value={strategy} disabled={busy}
                                 onChange={event => actions.setDetectionStrategy(tabId, event.target.value as StickerDetectionStrategy)}>
                                 <option value="auto">{tv('Tự động')}</option>
                                 <option value="alpha">{tv('Dùng Alpha')}</option>
@@ -335,13 +348,6 @@ export default function StickerSheetPanel({
                                 <option value="page-box">{tv('Giữ toàn bộ trang')}</option>
                             </select>
                         </label>
-                        {hasMask && <button type="button" disabled={busy}
-                            className="mt-2 text-xs font-semibold underline"
-                            onClick={() => {
-                                const hasEdits = state.edits.length || Object.values(state.pages).some(page => page.edits.length);
-                                if (hasEdits && !window.confirm(tv('Nhận diện lại sẽ thay vùng tem và bỏ nét sửa trên các trang. Giữ nguyên thông số bù xén?'))) return;
-                                actions.restartDetection(tabId);
-                            }}>{tv('Nhận diện lại nguồn')}</button>}
                     </details>
                     {preserveOriginal && (
                         <div role="note" className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800 dark:bg-sky-950 dark:text-sky-200">
@@ -350,9 +356,9 @@ export default function StickerSheetPanel({
                                 onClick={() => actions.setPreserveExistingCut(tabId, false)}>{tv('Tạo lại đường cắt')}</button>
                         </div>
                     )}
-                    {manifest?.source_kind === 'pdf' && !preserveOriginal && (
+                    {manifest?.source_kind === 'pdf' && !preserveOriginal && state.outputSettings.cropToSticker && (
                         <p role="note" className="text-[11px] text-slate-500">
-                            {tv('Xuất theo vùng tem đã nhận diện có thể chuyển artwork PDF sang ảnh. Dùng Tùy chọn PDF nâng cao khi cần giữ đối tượng gốc.')}
+                            {tv('Tách tem: nội dung PDF được xuất thành ảnh.')}
                         </p>
                     )}
                     <div className="rounded-xl border border-slate-200 p-3 dark:border-zinc-700">

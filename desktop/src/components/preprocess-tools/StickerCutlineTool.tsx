@@ -8,6 +8,7 @@ import { toast } from '../ui/Toast';
 import { registerStickerIncomingSource } from '../../lib/stickerIncomingSources';
 import StickerSheetPanel from './StickerSheetPanel';
 import StickerTool from './StickerTool';
+import StickerObjectSelectionControl from './StickerObjectSelectionControl';
 import {
     useStickerSheetStore,
     type PrepareStickerWorkspaceSource,
@@ -37,9 +38,8 @@ interface Props {
 }
 
 /**
- * UIUX (audit 2026-09-06 §UNIFIED.2): một vỏ workflow cho hai adapter cũ.
- * Không gộp writer/state ở lượt này; nút Nhận diện tự động chỉ chuyển sang
- * adapter session và giữ nguyên đường xuất hiện có của StickerSheetPanel.
+ * UIUX (audit 2026-09-06 §CUSTOM.1): tự động và chọn PDF cùng session/form;
+ * chỉ Xén vuông góc giữ adapter hình học riêng.
  */
 const UNIFIED_STICKER_WORKSPACE = true;
 
@@ -62,8 +62,8 @@ export default function StickerCutlineTool({
     const workspaceLeasePromiseRef = useRef<Promise<StickerWorkspaceSourceLease> | null>(null);
     const mode = tab?.mode || 'existing';
     const productType = tab?.productType || 'sticker';
-    const [classicAdvanced, setClassicAdvanced] = useState(false);
     const [directProcessing, setDirectProcessing] = useState(false);
+    const [selectingObjects, setSelectingObjects] = useState(false);
     const [completedExport, setCompletedExport] = useState<{
         filename: string;
         stickerCount: number;
@@ -75,19 +75,14 @@ export default function StickerCutlineTool({
         || directProcessing
     );
     const workingPageOrder = pageOrder?.map((_sourcePage, index) => index + 1);
-    const sourceFile = tab?.sourceFile || pdfFile || sourceImageFile || null;
-    const sourceLabel = sourceFile?.name || 'Chưa chọn file';
-    const outputIntent = mode === 'ai-sheet' && tab?.outputSettings.cropToSticker
-        ? 'Tách từng tem'
-        : 'Giữ nguyên tấm';
 
     useEffect(() => {
-        if (!isActive || classicAdvanced || productType !== 'sticker' || workflowBusy) return undefined;
+        if (!isActive || selectingObjects || productType !== 'sticker' || workflowBusy) return undefined;
         return registerStickerIncomingSource(tabId, files => {
             void actions.selectSources(tabId, files, 'explicit');
             return true;
         });
-    }, [actions, classicAdvanced, isActive, productType, tabId, workflowBusy]);
+    }, [actions, selectingObjects, isActive, productType, tabId, workflowBusy]);
 
     const prepareWorkspaceSource = useCallback<PrepareStickerWorkspaceSource>(async () => {
         const cached = workspaceLeaseRef.current;
@@ -129,10 +124,10 @@ export default function StickerCutlineTool({
         // chung; Xén vuông góc vẫn chọn adapter classic riêng bên dưới.
         if (UNIFIED_STICKER_WORKSPACE && isActive) {
             actions.enableUnified(tabId);
-            const expectedMode = productType === 'rectangle' || classicAdvanced ? 'existing' : 'ai-sheet';
+            const expectedMode = productType === 'rectangle' ? 'existing' : 'ai-sheet';
             if (mode !== expectedMode) actions.setMode(tabId, expectedMode);
         }
-    }, [actions, classicAdvanced, isActive, mode, productType, tabId]);
+    }, [actions, isActive, mode, productType, tabId]);
 
     useEffect(() => {
         if (!isActive || mode !== 'ai-sheet') return;
@@ -238,39 +233,6 @@ export default function StickerCutlineTool({
         <div className="flex flex-col gap-4">
             {UNIFIED_STICKER_WORKSPACE && (
                 <div
-                    aria-label={tv('Bù xén và tạo đường cắt', 'preprocess.stickerSheet')}
-                    className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"
-                >
-                    <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                            <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-100">
-                                {tv('Bù xén và tạo đường cắt', 'preprocess.stickerSheet')}
-                            </h2>
-                            <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
-                                {tv('Một quy trình cho tem đã có biên và ảnh nhiều tem.', 'preprocess.stickerSheet')}
-                            </p>
-                        </div>
-                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 dark:bg-zinc-800 dark:text-zinc-300">
-                            {mode === 'ai-sheet' ? tv('Nhận diện tự động') : tv('Bù xén trực tiếp')}
-                        </span>
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
-                        <div className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-2 dark:bg-zinc-800/80">
-                            <span className="block font-semibold text-slate-500 dark:text-zinc-400">{tv('Nguồn')}</span>
-                            <span className="mt-0.5 block truncate font-bold text-slate-700 dark:text-zinc-200" title={sourceLabel}>
-                                {sourceLabel}
-                            </span>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 px-2.5 py-2 dark:bg-zinc-800/80">
-                            <span className="block font-semibold text-slate-500 dark:text-zinc-400">{tv('Đầu ra')}</span>
-                            <span className="mt-0.5 block font-bold text-slate-700 dark:text-zinc-200">{tv(outputIntent)}</span>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {UNIFIED_STICKER_WORKSPACE && (
-                <div
                     role="group"
                     aria-label={tv('Mục tiêu gia công', 'preprocess.stickerSheet')}
                     className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 dark:border-zinc-700 dark:bg-zinc-800/60"
@@ -280,10 +242,9 @@ export default function StickerCutlineTool({
                             key={productType}
                             type="button"
                             aria-pressed={(tab?.productType || 'sticker') === productType}
-                            disabled={workflowBusy}
+                            disabled={workflowBusy || selectingObjects}
                             onClick={() => {
                                 actions.setProductType(tabId, productType);
-                                setClassicAdvanced(false);
                                 actions.setMode(tabId, productType === 'sticker' ? 'ai-sheet' : 'existing');
                             }}
                             className={`min-h-10 rounded-lg px-2 text-[10px] font-bold ${
@@ -300,17 +261,7 @@ export default function StickerCutlineTool({
                 </div>
             )}
 
-            {productType === 'sticker' && (
-                <details className="text-xs text-slate-600 dark:text-zinc-300">
-                    <summary className="cursor-pointer">{tv('Tùy chọn PDF nâng cao')}</summary>
-                    <p className="my-2">{tv('Giữ công cụ chọn đối tượng, bù xén trực tiếp và quy trình cũ khi cần.')}</p>
-                    <button type="button" disabled={workflowBusy} className="font-semibold underline"
-                        onClick={() => setClassicAdvanced(current => !current)}>
-                        {tv(classicAdvanced ? 'Quay lại workspace tem' : 'Xử lý đối tượng PDF trực tiếp')}
-                    </button>
-                </details>
-            )}
-            {productType === 'rectangle' || classicAdvanced ? (
+            {productType === 'rectangle' ? (
                 <StickerTool
                     tabId={tabId}
                     pdfFile={pdfFile}
@@ -330,6 +281,11 @@ export default function StickerCutlineTool({
                         isExporting={tab?.isExporting === true}
                         pageOrder={workingPageOrder}
                         prepareWorkspaceSource={prepareWorkspaceSource}
+                        interactionLocked={selectingObjects || directProcessing}
+                        selectionControl={pdfFile && <StickerObjectSelectionControl tabId={tabId} workingPage={activeWorkingPage}
+                            isActive={isActive} disabled={workflowBusy || tab?.isCutlinePreviewing === true}
+                            prepareWorkspaceSource={prepareWorkspaceSource}
+                            onSelectionActiveChange={setSelectingObjects} onProcessingChange={setDirectProcessing} />}
                         unified
                     />
                     {completedExport && (
