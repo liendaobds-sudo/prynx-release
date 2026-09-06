@@ -171,6 +171,92 @@ function prepareSuccessfulFlow(sessionId = 'a'.repeat(32), dpi: [number, number]
 }
 
 describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
+    it('custom thay vùng đúng trang, giữ tuning và kết quả trang còn lại', async () => {
+        const store = useStickerSheetStore.getState();
+        store.selectSource('custom', new File(['pdf'], 'batch.pdf', { type: 'application/pdf' }));
+        vi.mocked(inspectStickerSource).mockResolvedValue(multiPageInspection());
+        vi.mocked(detectStickerSource).mockResolvedValue(detectionForPage(1));
+        await store.detectStickers('custom', 'auto', 1);
+        vi.mocked(detectStickerSource).mockResolvedValue(detectionForPage(2));
+        await store.detectStickers('custom', 'auto', 2);
+        await vi.waitFor(() => expect(store.getTab('custom').pages[2].isCutlinePreviewing).toBe(false));
+        store.setActivePage('custom', 1);
+        store.setOutputSettings('custom', { bleedMm: 3.25 });
+        const sibling = store.getTab('custom').pages[2];
+        const selected = detectionForPage(1);
+        selected.manifest.mask_revision = 2;
+        selected.manifest.boundary_source = 'manual';
+        selected.manifest.vector_geometry_ref = { kind: 'pdf-object-selection', object_ids: ['vector-2'] };
+        vi.mocked(detectStickerSource).mockResolvedValue(selected);
+        await store.detectStickers('custom', 'auto', 1, undefined, ['vector-2']);
+        expect(detectStickerSource).toHaveBeenLastCalledWith('d'.repeat(32), expect.objectContaining({
+            pageNumber: 1, baseRevision: 1, objectIds: ['vector-2'],
+        }));
+        expect(store.getTab('custom').pages[1].manifest?.mask_revision).toBe(2);
+        expect(store.getTab('custom').pages[2].manifest).toBe(sibling.manifest);
+        expect(store.getTab('custom').outputSettings.bleedMm).toBe(3.25);
+        expect(closeStickerSheetSession).not.toHaveBeenCalled();
+    });
+
+    it('custom thất bại giữ mask và nét sửa đã duyệt trên trang', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.selectSource('custom-fail', new File(['pdf'], 'tem.pdf', { type: 'application/pdf' }));
+        await store.detectStickers('custom-fail');
+        store.addStroke('custom-fail', { tool: 'erase', instanceId: 1, radius: 0.01, points: [{ x: 0.1, y: 0.1 }] });
+        await vi.waitFor(() => expect(store.getTab('custom-fail').isCutlinePreviewing).toBe(false));
+        const before = store.getTab('custom-fail');
+        vi.mocked(detectStickerSource).mockRejectedValue(new Error('Đối tượng đã thay đổi.'));
+        await store.detectStickers('custom-fail', 'auto', 1, undefined, ['vector-9']);
+        const after = store.getTab('custom-fail');
+        expect(after.manifest).toBe(before.manifest);
+        expect(after.previewUrl).toBe(before.previewUrl);
+        expect(after.edits).toEqual(before.edits);
+        expect(after.status).toBe('mask-review');
+        expect(after.error).toBe('Đối tượng đã thay đổi.');
+    });
+
+    it('lỗi tải mask custom retry đúng selection đã commit, không gửi revision cũ', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.selectSource('custom-retry', new File(['pdf'], 'tem.pdf', { type: 'application/pdf' }));
+        await store.detectStickers('custom-retry');
+        const committed = detection();
+        committed.manifest.mask_revision = 2;
+        committed.manifest.vector_geometry_ref = { kind: 'pdf-object-selection', object_ids: ['vector-2'] };
+        const failed = Object.assign(new Error('Chưa tải được vùng tem mới. Bấm Thử lại.'), {
+            name: 'StickerDetectAssetSyncError', manifest: committed.manifest,
+        });
+        vi.mocked(detectStickerSource).mockRejectedValueOnce(failed);
+        await store.detectStickers('custom-retry', 'auto', 1, undefined, ['vector-2']);
+        expect(store.getTab('custom-retry').status).toBe('error');
+        vi.mocked(detectStickerSource).mockResolvedValue(committed);
+        await store.detectStickers('custom-retry', 'auto', 1);
+        const options = vi.mocked(detectStickerSource).mock.calls.at(-1)?.[1];
+        expect(options?.objectIds).toEqual(['vector-2']);
+        expect(options?.baseRevision).toBeUndefined();
+        expect(store.getTab('custom-retry').manifest?.mask_revision).toBe(2);
+        expect(store.getTab('custom-retry').detectionRetry).toBeUndefined();
+    });
+
+    it('hủy custom phục hồi trang hiện tại mà không đóng session', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.selectSource('custom-cancel', new File(['pdf'], 'tem.pdf', { type: 'application/pdf' }));
+        await store.detectStickers('custom-cancel');
+        const before = store.getTab('custom-cancel');
+        vi.mocked(detectStickerSource).mockImplementationOnce(async (_session, options) => new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(new DOMException('Hủy', 'AbortError')), { once: true });
+        }));
+        const pending = store.detectStickers('custom-cancel', 'auto', 1, undefined, ['vector-2']);
+        await vi.waitFor(() => expect(store.getTab('custom-cancel').status).toBe('detecting'));
+        store.cancelDetection('custom-cancel');
+        await pending;
+        expect(store.getTab('custom-cancel').manifest).toBe(before.manifest);
+        expect(store.getTab('custom-cancel').status).toBe(before.status);
+        expect(closeStickerSheetSession).not.toHaveBeenCalled();
+    });
+
     it('workspace hợp nhất giữ thông số khi chuẩn bị nhận diện lại nguồn', () => {
         const store = useStickerSheetStore.getState();
         store.initTab('restart-unified');

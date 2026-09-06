@@ -89,6 +89,7 @@ export interface StickerCutlineTuning {
 }
 
 export interface StickerSheetPageState {
+    detectionRetry?: { objectIds?: readonly string[]; strategy: StickerDetectionStrategy; maskRevision: number };
     status: StickerSheetStatus;
     isRefining: boolean;
     isCutlinePreviewing: boolean;
@@ -114,6 +115,7 @@ export interface StickerSheetPageState {
 }
 
 export interface StickerSheetTabState {
+    detectionRetry?: StickerSheetPageState['detectionRetry'];
     unifiedInitialized?: boolean;
     detectionStrategy?: StickerDetectionStrategy;
     maskEditingEnabled?: boolean;
@@ -194,6 +196,7 @@ interface StickerSheetStore {
         strategy?: StickerDetectionStrategy,
         pageNumber?: number,
         prepareWorkspaceSource?: PrepareStickerWorkspaceSource,
+        objectIds?: readonly string[],
     ) => Promise<void>;
     detectAllStickers: (
         tabId: string,
@@ -273,6 +276,7 @@ function cutlineGeometryChanged(
 
 function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPageState {
     return {
+        detectionRetry: undefined,
         status,
         isRefining: false,
         isCutlinePreviewing: false,
@@ -359,6 +363,7 @@ function pageState(tab: StickerSheetTabState, pageNumber: number): StickerSheetP
     if (existing) return existing;
     if (pageNumber === tab.activeSourcePage) {
         return {
+            detectionRetry: tab.detectionRetry,
             status: tab.status,
             isRefining: tab.isRefining,
             isCutlinePreviewing: tab.isCutlinePreviewing,
@@ -622,8 +627,12 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
     cancelDetection: tabId => {
         const tab = get().tabs[tabId];
         if (!tab || !['inspecting', 'detecting'].includes(tab.status)) return;
-        // Hủy request chỉ bỏ kết quả về muộn; không dừng tiến trình ứng dụng.
-        // Session có file riêng, đóng sau khi worker nhả khóa như endpoint cũ.
+        if (tab.status === 'detecting' && tab.inspection) {
+            // CUSTOM (2026-09-06): hủy đúng trang, catch phục hồi mask trước đó;
+            // không đóng session đang giữ các trang còn lại.
+            REQUEST_CONTROLLERS.get(pageRequestKey(tabId, tab.activeSourcePage))?.abort();
+            return;
+        }
         get().restartDetection(tabId);
     },
     setMode: (tabId, mode) => set(state => {
@@ -1110,6 +1119,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         strategy = 'auto',
         requestedPage,
         prepareWorkspaceSource,
+        objectIds,
     ) => {
         let previous: StickerSheetTabState;
         let workspaceLease: StickerWorkspaceSourceLease | null;
@@ -1147,11 +1157,19 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         ));
         const previousPage = pageState(previous, pageNumber);
         if (previousPage.status === 'detecting') return;
+        // CUSTOM (2026-09-06 §CUSTOM.3): thay biên đúng một trang, giữ kết quả
+        // và nét sửa cũ để phục hồi nếu lựa chọn mới không nhận diện được.
+        const retry = previousPage.detectionRetry;
+        const resolvedObjectIds = objectIds ?? retry?.objectIds;
+        const sameRetry = retry && strategy === retry.strategy
+            && JSON.stringify(resolvedObjectIds || []) === JSON.stringify(retry.objectIds || []);
+        const baseRevision = sameRetry ? undefined
+            : previousPage.manifest ? (previousPage.manifest.mask_revision ?? 1) : retry?.maskRevision;
         const file = previous.sourceFile;
         const sessionId = previous.inspection.session_id;
         const requestKey = pageRequestKey(tabId, pageNumber);
         const { controller, generation } = nextRequest(requestKey);
-        revokeAnalysisAssets(previousPage);
+        if (!previousPage.manifest) revokeAnalysisAssets(previousPage);
         set(state => {
             const current = state.tabs[tabId];
             if (
@@ -1164,6 +1182,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     ...state.tabs,
                     [tabId]: updatePage(current, pageNumber, page => ({
                         ...page,
+                        detectionRetry: undefined,
                         status: 'detecting',
                         isRefining: false,
                         isCutlinePreviewing: false,
@@ -1186,8 +1205,11 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 model: previous.model,
                 alphaThreshold: previousPage.alphaThreshold,
                 pageNumber,
+                ...(resolvedObjectIds !== undefined ? { objectIds: [...resolvedObjectIds] } : {}),
+                ...(baseRevision !== undefined ? { baseRevision } : {}),
                 signal: controller.signal,
             });
+            if (controller.signal.aborted) throw new DOMException('Hủy nhận diện', 'AbortError');
             const current = get().tabs[tabId];
             if (
                 !requestIsCurrent(requestKey, controller, generation)
@@ -1206,6 +1228,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 get().invalidateWorkspaceSource(tabId);
                 return;
             }
+            if (previousPage.manifest) revokeAnalysisAssets(previousPage);
             const previewUrl = URL.createObjectURL(payload.previewBlob);
             const labelsUrl = URL.createObjectURL(payload.labelsBlob);
             const uncertaintyUrl = URL.createObjectURL(payload.uncertaintyBlob);
@@ -1264,12 +1287,27 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 scheduleCurrentCutlinePreview(tabId, pageNumber, 0);
             }
         } catch (error) {
+            if (controller.signal.aborted && REQUEST_CONTROLLERS.get(requestKey) === controller
+                && REQUEST_GENERATIONS.get(requestKey) === generation) {
+                set(state => {
+                    const current = state.tabs[tabId];
+                    if (!current || current.sourceFile !== file || current.inspection?.session_id !== sessionId) return state;
+                    return { tabs: { ...state.tabs, [tabId]: updatePage(current, pageNumber, () => ({
+                        ...previousPage, status: previousPage.manifest ? previousPage.status : 'source-ready',
+                        isRefining: false, isCutlinePreviewing: false, error: '',
+                    })) } };
+                });
+                return;
+            }
             if (!requestIsCurrent(requestKey, controller, generation)) return;
             const latest = get().tabs[tabId];
             if (latest && !workspaceLeaseMatches(latest, workspaceLease)) {
                 get().invalidateWorkspaceSource(tabId);
                 return;
             }
+            const assetFailure = error instanceof Error && error.name === 'StickerDetectAssetSyncError'
+                && 'manifest' in error ? error.manifest as StickerSourceDetection : null;
+            if (assetFailure && previousPage.manifest) revokeAnalysisAssets(previousPage);
             set(state => {
                 const current = state.tabs[tabId];
                 if (
@@ -1282,12 +1320,15 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     tabs: {
                         ...state.tabs,
                         [tabId]: updatePage(current, pageNumber, page => ({
-                            ...page,
-                            status: 'error',
+                            ...(previousPage.manifest && !assetFailure ? previousPage : page),
+                            status: previousPage.manifest && !assetFailure ? previousPage.status : 'error',
                             isRefining: false,
                             isCutlinePreviewing: false,
-                            manifest: null,
-                            cutlinePreview: null,
+                            manifest: assetFailure ? null : previousPage.manifest,
+                            cutlinePreview: previousPage.manifest && !assetFailure ? previousPage.cutlinePreview : null,
+                            detectionRetry: assetFailure ? {
+                                objectIds: resolvedObjectIds, strategy, maskRevision: assetFailure.mask_revision ?? 1,
+                            } : previousPage.detectionRetry,
                             error: error instanceof Error
                                 ? error.message
                                 : 'Không nhận diện được vùng tem.',
