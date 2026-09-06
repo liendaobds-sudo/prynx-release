@@ -171,6 +171,98 @@ function prepareSuccessfulFlow(sessionId = 'a'.repeat(32), dpi: [number, number]
 }
 
 describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
+    it('Undo nhận diện về nguồn và Redo khôi phục đúng kết quả không chạy AI lại', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('recognition-undo');
+        store.enableUnified('recognition-undo');
+        const source = new File(['png'], 'tem.png', { type: 'image/png' });
+        store.selectSource('recognition-undo', source);
+        store.setOutputSettings('recognition-undo', { bleedMm: 2.25 });
+        await store.detectStickers('recognition-undo');
+        await store.confirmMask('recognition-undo');
+        await vi.waitFor(() => expect(store.getTab('recognition-undo').cutlinePreview).not.toBeNull());
+        const detected = store.getTab('recognition-undo');
+        expect(store.undoDetection('recognition-undo')).toBe(true);
+        const undone = store.getTab('recognition-undo');
+        expect(undone.status).toBe('source-ready');
+        expect(undone.manifest).toBeNull();
+        expect(undone.sourceFile).toBe(source);
+        expect(undone.outputSettings.bleedMm).toBe(2.25);
+        expect(undone.inspection).toBe(detected.inspection);
+        expect(closeStickerSheetSession).not.toHaveBeenCalled();
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(detected.previewUrl);
+        expect(store.redoDetection('recognition-undo')).toBe(true);
+        expect(store.getTab('recognition-undo').manifest).toBe(detected.manifest);
+        expect(store.getTab('recognition-undo').cutlinePreview?.fingerprint).toBe(detected.cutlinePreview?.fingerprint);
+        expect(store.getTab('recognition-undo').status).toBe('mask-ready');
+        expect(detectStickerSource).toHaveBeenCalledTimes(1);
+    });
+
+    it('nhận diện mới sau Undo dùng revision backend đang giữ và bỏ Redo cũ', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('recognition-branch'); store.enableUnified('recognition-branch');
+        store.selectSource('recognition-branch', new File(['png'], 'tem.png'));
+        await store.detectStickers('recognition-branch');
+        const before = store.getTab('recognition-branch');
+        expect(store.undoDetection('recognition-branch')).toBe(true);
+        const next = detection(); next.manifest.mask_revision = 2;
+        vi.mocked(detectStickerSource).mockResolvedValue(next);
+        await store.detectStickers('recognition-branch');
+        expect(detectStickerSource).toHaveBeenLastCalledWith('a'.repeat(32), expect.objectContaining({ baseRevision: 1 }));
+        expect(store.getTab('recognition-branch').manifest?.mask_revision).toBe(2);
+        expect(store.getTab('recognition-branch').detectionRedo).toBeUndefined();
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(before.previewUrl);
+        expect(store.redoDetection('recognition-branch')).toBe(false);
+    });
+
+    it('đổi nguồn sau Undo nhả asset và không Redo nhận diện của file cũ', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('recognition-source'); store.enableUnified('recognition-source');
+        store.selectSource('recognition-source', new File(['first'], 'tem.png'));
+        await store.detectStickers('recognition-source');
+        const before = store.getTab('recognition-source');
+        store.undoDetection('recognition-source');
+        store.selectSource('recognition-source', new File(['second'], 'tem.png'));
+        expect(store.redoDetection('recognition-source')).toBe(false);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(before.previewUrl);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(before.labelsUrl);
+        expect(closeStickerSheetSession).toHaveBeenCalledWith(before.manifest?.session_id);
+    });
+
+    it('nét cọ được Undo trước nhận diện; Redo giữ hàng đợi nét cọ đã hoàn tác', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('recognition-brush'); store.enableUnified('recognition-brush');
+        store.selectSource('recognition-brush', new File(['png'], 'tem.png'));
+        await store.detectStickers('recognition-brush');
+        store.addStroke('recognition-brush', { tool: 'erase', instanceId: 1, radius: .01, points: [{ x: .1, y: .1 }] });
+        expect(store.undoDetection('recognition-brush')).toBe(false);
+        store.undo('recognition-brush');
+        expect(store.undoDetection('recognition-brush')).toBe(true);
+        expect(store.redoDetection('recognition-brush')).toBe(true);
+        expect(store.getTab('recognition-brush').edits).toHaveLength(0);
+        store.redo('recognition-brush');
+        expect(store.getTab('recognition-brush').edits).toHaveLength(1);
+    });
+
+    it('đổi nền trong lúc Undo không cho Redo xuất mask trái với lựa chọn mới', async () => {
+        prepareSuccessfulFlow();
+        const store = useStickerSheetStore.getState();
+        store.initTab('recognition-background'); store.enableUnified('recognition-background');
+        store.selectSource('recognition-background', new File(['png'], 'tem.png'));
+        await store.detectStickers('recognition-background');
+        await store.confirmMask('recognition-background');
+        store.undoDetection('recognition-background');
+        store.setRemoveWhiteBg('recognition-background', false);
+        expect(store.redoDetection('recognition-background')).toBe(true);
+        expect(store.getTab('recognition-background').whiteBackgroundStale).toBe(true);
+        expect(await store.exportFile('recognition-background', 'png_zip')).toBeNull();
+        expect(exportStickerSheet).not.toHaveBeenCalled();
+    });
+
     it('khôi phục nền false vào tab unified cũ và giữ lựa chọn mới khi mở lại', () => {
         window.localStorage.setItem('ps_sticker_removeWhiteBg', 'false');
         const store = useStickerSheetStore.getState();

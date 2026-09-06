@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ComponentType, PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -14,6 +15,8 @@ import {
 } from '../../lib/stickerSheetApi';
 import StickerCutlineTool from './StickerCutlineTool';
 import { useStickerSheetStore } from './stickerSheetStore';
+import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
+import { createImposerSettingsStore, ImposerSettingsContext } from '../imposition-tools/useImposerSettingsStore';
 
 
 const workingPdfMock = vi.hoisted(() => ({
@@ -100,6 +103,16 @@ function detection(needsReview = false): StickerSourceDetectionPayload {
 }
 
 describe('StickerCutlineTool — một workspace, giữ adapter tương thích', () => {
+    const renderRecognizedShell = async (tabId: string, wrapper?: ComponentType<PropsWithChildren>) => {
+        const source = new File(['pdf'], `${tabId}.pdf`, { type: 'application/pdf' });
+        const props = { tabId, pdfFile: source, isActive: true, onFileFixed: vi.fn() };
+        const view = render(<StickerCutlineTool {...props} />, { wrapper });
+        fireEvent.click(screen.getByRole('button', { name: 'Nhận diện tự động' }));
+        await waitFor(() => expect(useStickerSheetStore.getState().getTab(tabId).status).toBe('mask-ready'));
+        await waitFor(() => expect(useStickerSheetStore.getState().getTab(tabId).cutlinePreview?.fingerprint).toBe('b'.repeat(64)));
+        return { view, props };
+    };
+
     beforeEach(() => {
         window.localStorage.clear();
         useStickerSheetStore.setState({ tabs: {} });
@@ -193,6 +206,162 @@ describe('StickerCutlineTool — một workspace, giữ adapter tương thích',
         expect(screen.getByRole('button', { name: 'Giữ nguyên tấm' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Tách từng tem' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'PDF/PNG đã có biên' })).toBeNull();
+    });
+
+    it('Ctrl+Z bỏ nhận diện; Ctrl+Y và Ctrl+Shift+Z khôi phục đúng kết quả mà không chạy AI lần nữa', async () => {
+        await renderRecognizedShell('detect-history');
+        const detected = useStickerSheetStore.getState().getTab('detect-history');
+
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(false);
+        const undone = useStickerSheetStore.getState().getTab('detect-history');
+        expect(undone.status).toBe('source-ready');
+        expect(undone.manifest).toBeNull();
+        expect(undone.cutlinePreview).toBeNull();
+        expect(undone.sourceFile).toBe(detected.sourceFile);
+        expect(undone.sourceRevision).toBe(detected.sourceRevision);
+        expect(undone.inspection).toBe(detected.inspection);
+        expect(undone.outputSettings).toEqual(detected.outputSettings);
+        // Không còn kết quả để hoàn tác: Viewer phải được nhận phím kế tiếp.
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+
+        // Overlay đã biến mất, nhưng shell vẫn phải nhận Làm lại.
+        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(false);
+        const redone = useStickerSheetStore.getState().getTab('detect-history');
+        expect(redone.status).toBe(detected.status);
+        expect(redone.manifest).toBe(detected.manifest);
+        expect(redone.cutlinePreview).toBe(detected.cutlinePreview);
+        expect(redone.previewUrl).toBe(detected.previewUrl);
+        expect(redone.labelsUrl).toBe(detected.labelsUrl);
+        expect(redone.uncertaintyUrl).toBe(detected.uncertaintyUrl);
+
+        fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true, shiftKey: true })).toBe(false);
+        expect(useStickerSheetStore.getState().getTab('detect-history').cutlinePreview?.fingerprint)
+            .toBe(detected.cutlinePreview?.fingerprint);
+        expect(detectStickerSource).toHaveBeenCalledTimes(1);
+        expect(inspectStickerSource).toHaveBeenCalledTimes(1);
+        expect(confirmStickerSource).toHaveBeenCalledTimes(1);
+    });
+
+    it('ưu tiên hoàn tác và làm lại nét sửa trước kết quả nhận diện', async () => {
+        await renderRecognizedShell('edit-history');
+        const manifest = useStickerSheetStore.getState().getTab('edit-history').manifest;
+        act(() => useStickerSheetStore.getState().addStroke('edit-history', {
+            tool: 'erase', points: [{ x: 10, y: 10 }], radius: 2, instanceId: 1,
+        }));
+        expect(useStickerSheetStore.getState().getTab('edit-history').edits).toHaveLength(1);
+
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(false);
+        expect(useStickerSheetStore.getState().getTab('edit-history').edits).toHaveLength(0);
+        expect(useStickerSheetStore.getState().getTab('edit-history').manifest).toBe(manifest);
+        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(false);
+        expect(useStickerSheetStore.getState().getTab('edit-history').edits).toHaveLength(1);
+        expect(useStickerSheetStore.getState().getTab('edit-history').manifest).toBe(manifest);
+    });
+
+    it('tab nền không nhận hoàn tác hoặc làm lại nhận diện', async () => {
+        const { view, props } = await renderRecognizedShell('inactive-history');
+        const detected = useStickerSheetStore.getState().getTab(props.tabId).manifest;
+        view.rerender(<StickerCutlineTool {...props} isActive={false} />);
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+        expect(useStickerSheetStore.getState().getTab(props.tabId).manifest).toBe(detected);
+
+        view.rerender(<StickerCutlineTool {...props} />);
+        fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
+        view.rerender(<StickerCutlineTool {...props} isActive={false} />);
+        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(true);
+        expect(useStickerSheetStore.getState().getTab(props.tabId).manifest).toBeNull();
+    });
+
+    it('không lấy Ctrl+Z của ô nhập liệu, dropdown hoặc nội dung đang soạn', async () => {
+        await renderRecognizedShell('input-history');
+        const detected = useStickerSheetStore.getState().getTab('input-history').manifest;
+        const fields = render(<>
+            <textarea aria-label="ghi chú" />
+            <select aria-label="chọn mục"><option>Một</option></select>
+            <div contentEditable suppressContentEditableWarning><span data-testid="editable-child">Nội dung</span></div>
+        </>);
+        for (const target of [
+            screen.getByRole('spinbutton', { name: 'Bù xén ngoài đường cắt (mm)' }),
+            screen.getByLabelText('ghi chú'), screen.getByLabelText('chọn mục'), screen.getByTestId('editable-child'),
+        ]) {
+            expect(fireEvent.keyDown(target, { key: 'z', ctrlKey: true })).toBe(true);
+            expect(useStickerSheetStore.getState().getTab('input-history').manifest).toBe(detected);
+        }
+        fields.unmount();
+    });
+
+    it('không chiếm phím trong chọn đối tượng, xén trang, công cụ khác hoặc dialog của tab', async () => {
+        const workspace = createWorkspaceStore();
+        const settings = createImposerSettingsStore('history-guards');
+        settings.getState().setActiveDashboardTool('sticker');
+        const wrapper = ({ children }: PropsWithChildren) => (
+            <WorkspaceContext.Provider value={workspace}>
+                <ImposerSettingsContext.Provider value={settings}>
+                    <div data-prynx-tab-id="guard-history">{children}</div>
+                </ImposerSettingsContext.Provider>
+            </WorkspaceContext.Provider>
+        );
+        const { view } = await renderRecognizedShell('guard-history', wrapper);
+        const detected = useStickerSheetStore.getState().getTab('guard-history').manifest;
+        const assertNotHandled = () => {
+            expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+            expect(useStickerSheetStore.getState().getTab('guard-history').manifest).toBe(detected);
+        };
+        act(() => workspace.getState().setIsObjectEditMode(true));
+        assertNotHandled();
+        act(() => workspace.getState().setIsCropMode(true));
+        assertNotHandled();
+        act(() => workspace.getState().setIsCropMode(false));
+        act(() => settings.getState().setActiveDashboardTool('datamerge'));
+        assertNotHandled();
+        act(() => settings.getState().setActiveDashboardTool('sticker'));
+        const dialog = document.createElement('div');
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        view.container.querySelector('[data-prynx-tab-id]')!.appendChild(dialog);
+        assertNotHandled();
+        dialog.remove();
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(false);
+    });
+
+    it('revision đã đổi không được hoàn tác hoặc khôi phục nhận diện cũ', async () => {
+        await renderRecognizedShell('stale-history');
+        const detected = useStickerSheetStore.getState().getTab('stale-history').manifest;
+        workingPdfMock.isCurrent.mockReturnValue(false);
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+        expect(useStickerSheetStore.getState().getTab('stale-history').manifest).toBe(detected);
+
+        workingPdfMock.isCurrent.mockReturnValue(true);
+        fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
+        workingPdfMock.isCurrent.mockReturnValue(false);
+        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(true);
+        expect(useStickerSheetStore.getState().getTab('stale-history').manifest).toBeNull();
+    });
+
+    it('không có lịch sử nhận diện hoặc ở Xén vuông góc thì nhường phím cho Viewer', () => {
+        const pdf = new File(['pdf'], 'no-history.pdf', { type: 'application/pdf' });
+        render(<StickerCutlineTool tabId="no-history" pdfFile={pdf} isActive onFileFixed={vi.fn()} />);
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+        expect(fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+    });
+
+    it('chuyển sang Xén vuông góc không còn nhận phím của kết quả cũ', async () => {
+        await renderRecognizedShell('rectangle-history');
+        const detected = useStickerSheetStore.getState().getTab('rectangle-history').manifest;
+        fireEvent.click(screen.getByRole('button', { name: 'Xén vuông góc' }));
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+        expect(useStickerSheetStore.getState().getTab('rectangle-history').manifest).toBe(detected);
+    });
+
+    it('đóng shell đang nhận phím phải dọn listener nhận diện', async () => {
+        const { view } = await renderRecognizedShell('closed-history');
+        const detected = useStickerSheetStore.getState().getTab('closed-history').manifest;
+        view.unmount();
+        expect(fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })).toBe(true);
+        expect(useStickerSheetStore.getState().getTab('closed-history').manifest).toBe(detected);
     });
 
     it('materialize Working PDF trước khi inspect và khóa kết quả vào đúng revision', async () => {

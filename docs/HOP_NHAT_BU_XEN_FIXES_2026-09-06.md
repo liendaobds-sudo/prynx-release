@@ -223,3 +223,24 @@ hard hoặc tác động các tài liệu nesting/master audit đang thay đổi
 Verify cuối: frontend 467 tests / 45 file đạt; backend 292 tests / 6 suite đạt; typecheck và ESLint
 phạm vi đạt. Backend có 2 warning Starlette/Pydantic cũ. Không cập nhật snapshot/evidence khách,
 không build installer hoặc push. Chưa xác minh lại trực tiếp trong Tauri.
+
+## Đã nối — Ctrl+Z sau nhận diện tự động
+
+Ca người dùng: mở Bù xén → bấm Nhận diện tự động → nhận diện xong → Ctrl+Z không trở về nguồn.
+Nguyên nhân đã đọc/test: history mask chỉ chứa nét cọ/gộp; nhận diện chưa có thao tác Undo. Sau khi
+mask biến mất thì overlay cũng unmount, nên không thể đặt riêng phím Redo ở overlay.
+
+Phạm vi sửa: hoàn tác kết quả nhận diện của trang đang xem về source-ready, giữ file/thông số;
+Redo khôi phục chính kết quả đó từ cùng session, không chạy model lại. Nét cọ vẫn Undo trước kết
+quả nhận diện. Không mở rộng thành lịch sử mọi thiết lập hoặc nhiều phiên detector trước đó.
+Giữ tham chiếu asset hiện hữu trong lúc Undo; nhả chúng khi đổi nguồn/đóng tab/nhận diện mới. Không
+thêm cap tài nguyên hay nhân đôi bitmap. Nối listener ở shell và kiểm tab nền, input, owner nguồn.
+
+Đã có `undoDetection`/`redoDetection`: source-ready giữ session và asset trong Redo; nhận diện mới
+sau Undo dùng đúng revision backend đang giữ rồi bỏ Redo cũ. Đổi nguồn/đóng tab giải phóng asset.
+Redo sau khi đổi thông số phải cập nhật preview; nếu đổi ý định nền thì giữ stale và chặn xuất.
+
+Verify cuối: 505 tests / 47 file frontend đạt, typecheck và ESLint 4 file sửa đạt. Có test đúng chuỗi
+nút Nhận diện tự động → mask-ready → Ctrl+Z → source-ready → Ctrl+Y/Shift+Ctrl+Z, cùng fingerprint
+và không tăng lượt detect. Kiểm input/tab nền/object/crop/VDP/dialog, nguồn đã đổi và nhường Undo
+tài liệu khi không còn lịch sử tem. Không sửa backend; chưa xác minh trực tiếp trong Tauri.

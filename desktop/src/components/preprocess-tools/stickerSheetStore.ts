@@ -94,6 +94,7 @@ export interface StickerCutlineTuning {
 }
 
 export interface StickerSheetPageState {
+    detectionRedo?: StickerDetectionUndoSnapshot;
     whiteBackgroundStale?: boolean;
     detectionRetry?: { objectIds?: readonly string[]; strategy: StickerDetectionStrategy; maskRevision: number };
     status: StickerSheetStatus;
@@ -120,7 +121,16 @@ export interface StickerSheetPageState {
     error: string;
 }
 
+interface StickerDetectionUndoSnapshot {
+    page: Omit<StickerSheetPageState, 'detectionRedo'>;
+    sourceFile: File;
+    sourceRevision: object | null;
+    outputSettings: StickerOutputSettings;
+    removeWhiteBg: boolean;
+}
+
 export interface StickerSheetTabState {
+    detectionRedo?: StickerDetectionUndoSnapshot;
     removeWhiteBg?: boolean;
     whiteBackgroundStale?: boolean;
     detectionRetry?: StickerSheetPageState['detectionRetry'];
@@ -230,6 +240,8 @@ interface StickerSheetStore {
     mergeInstance: (tabId: string, sourceId: number, targetId: number) => void;
     undo: (tabId: string) => void;
     redo: (tabId: string) => void;
+    undoDetection: (tabId: string) => boolean;
+    redoDetection: (tabId: string) => boolean;
     resetAnalysis: (tabId: string) => void;
     disposeTab: (tabId: string) => void;
 }
@@ -285,6 +297,7 @@ function cutlineGeometryChanged(
 
 function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPageState {
     return {
+        detectionRedo: undefined,
         whiteBackgroundStale: false,
         detectionRetry: undefined,
         status,
@@ -316,6 +329,7 @@ function defaultPageState(status: StickerSheetStatus = 'idle'): StickerSheetPage
 
 function defaultTabState(): StickerSheetTabState {
     return {
+        detectionRedo: undefined,
         whiteBackgroundStale: false,
         mode: 'existing',
         productType: 'sticker',
@@ -374,6 +388,7 @@ function pageState(tab: StickerSheetTabState, pageNumber: number): StickerSheetP
     if (existing) return existing;
     if (pageNumber === tab.activeSourcePage) {
         return {
+            detectionRedo: tab.detectionRedo,
             detectionRetry: tab.detectionRetry,
             whiteBackgroundStale: tab.whiteBackgroundStale,
             status: tab.status,
@@ -461,8 +476,10 @@ function revokeUrl(url: string): void {
 function releaseAssets(tab: StickerSheetTabState): void {
     revokeUrl(tab.sourcePreviewUrl);
     const pages = Object.values(tab.pages);
-    if (pages.length > 0) pages.forEach(revokeAnalysisAssets);
-    else revokeAnalysisAssets(tab);
+    for (const page of pages.length ? pages : [tab]) {
+        revokeAnalysisAssets(page);
+        if (page.detectionRedo) revokeAnalysisAssets(page.detectionRedo.page);
+    }
     const sessionId = tab.inspection?.session_id || tab.manifest?.session_id;
     if (sessionId) void closeStickerSheetSession(sessionId);
 }
@@ -1247,7 +1264,8 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         const sameRetry = retry && strategy === retry.strategy
             && JSON.stringify(resolvedObjectIds || []) === JSON.stringify(retry.objectIds || []);
         const baseRevision = sameRetry ? undefined
-            : previousPage.manifest ? (previousPage.manifest.mask_revision ?? 1) : retry?.maskRevision;
+            : previousPage.manifest ? (previousPage.manifest.mask_revision ?? 1)
+                : retry?.maskRevision ?? previousPage.detectionRedo?.page.manifest?.mask_revision;
         const file = previous.sourceFile;
         const sessionId = previous.inspection.session_id;
         const requestKey = pageRequestKey(tabId, pageNumber);
@@ -1312,6 +1330,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 return;
             }
             if (previousPage.manifest) revokeAnalysisAssets(previousPage);
+            if (previousPage.detectionRedo) revokeAnalysisAssets(previousPage.detectionRedo.page);
             const previewUrl = URL.createObjectURL(payload.previewBlob);
             const labelsUrl = URL.createObjectURL(payload.labelsBlob);
             const uncertaintyUrl = URL.createObjectURL(payload.uncertaintyBlob);
@@ -1346,6 +1365,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                         ...state.tabs,
                         [tabId]: updatePage(latest, pageNumber, page => ({
                             ...page,
+                            detectionRedo: undefined,
                             status: 'mask-review',
                             manifest: payload.manifest,
                             whiteBackgroundStale,
@@ -1396,6 +1416,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             const assetFailure = error instanceof Error && error.name === 'StickerDetectAssetSyncError'
                 && 'manifest' in error ? error.manifest as StickerSourceDetection : null;
             if (assetFailure && previousPage.manifest) revokeAnalysisAssets(previousPage);
+            if (assetFailure && previousPage.detectionRedo) revokeAnalysisAssets(previousPage.detectionRedo.page);
             set(state => {
                 const current = state.tabs[tabId];
                 if (
@@ -1413,6 +1434,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             isRefining: false,
                             isCutlinePreviewing: false,
                             manifest: assetFailure ? null : previousPage.manifest,
+                            detectionRedo: assetFailure ? undefined : previousPage.detectionRedo,
                             whiteBackgroundStale: Boolean(previousPage.whiteBackgroundStale
                                 || (previousPage.manifest && !hasCustomObjectBoundary(previousPage)
                                     && detectionSettingsChanged(current))),
@@ -1943,6 +1965,67 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         if (changed) {
             scheduleCurrentCutlinePreview(tabId, get().tabs[tabId]?.activeSourcePage || 1);
         }
+    },
+    undoDetection: tabId => {
+        const tab = get().tabs[tabId];
+        if (!tab?.sourceFile || !tab.unifiedInitialized || workflowMutationLocked(tab)) return false;
+        const pageNumber = tab.activeSourcePage;
+        const page = pageState(tab, pageNumber);
+        if (!page.manifest || page.edits.length || !['mask-review', 'mask-ready'].includes(page.status)) return false;
+        // UNDO (2026-09-06): chuyển quyền giữ asset sang Redo, không copy bitmap
+        // hoặc đóng session đã nhận diện. File và thiết lập hiện tại không đổi.
+        const snapshot = { ...page, detectionRedo: undefined };
+        const detectionRedo: StickerDetectionUndoSnapshot = {
+            page: snapshot, sourceFile: tab.sourceFile, sourceRevision: tab.sourceRevision,
+            outputSettings: tab.outputSettings, removeWhiteBg: tab.removeWhiteBg ?? true,
+        };
+        set(state => ({ tabs: { ...state.tabs, [tabId]: updatePage(tab, pageNumber, current => ({
+            ...current, detectionRedo, status: 'source-ready', manifest: null,
+            isRefining: false, isCutlinePreviewing: false, cutlinePreview: null,
+            previewUrl: '', labelsUrl: '', uncertaintyUrl: '', selectedInstanceId: null,
+            edits: [], redoEdits: [], detectionRetry: undefined, whiteBackgroundStale: false, error: '',
+        })) } }));
+        return true;
+    },
+    redoDetection: tabId => {
+        const tab = get().tabs[tabId];
+        if (!tab?.unifiedInitialized || workflowMutationLocked(tab)) return false;
+        const pageNumber = tab.activeSourcePage;
+        const current = pageState(tab, pageNumber);
+        const saved = current.detectionRedo;
+        if (!saved?.page.manifest || current.manifest
+            || !['source-ready', 'error'].includes(current.status)
+            || saved.sourceFile !== tab.sourceFile || saved.sourceRevision !== tab.sourceRevision
+            || saved.page.manifest.session_id !== tab.inspection?.session_id) return false;
+        const sourcePolicyChanged = !hasCustomObjectBoundary(saved.page) && (
+            saved.removeWhiteBg !== (tab.removeWhiteBg ?? true)
+            || (saved.outputSettings.cutMode === 'alpha') !== (tab.outputSettings.cutMode === 'alpha')
+        );
+        const whiteBackgroundStale = Boolean(saved.page.whiteBackgroundStale || sourcePolicyChanged);
+        const sameSettings = sameStickerOutputSettings(saved.outputSettings, tab.outputSettings);
+        const canKeepCut = saved.page.preserveExistingCut && saved.page.manifest.boundary_source === 'existing-cut'
+            && !whiteBackgroundStale
+            && tab.outputSettings.cutMode === 'original' && tab.outputSettings.offsetMm === 0
+            && tab.outputSettings.bleedMm === 0 && tab.outputSettings.cornerStyle === 'preserve'
+            && !tab.outputSettings.cropToSticker;
+        const sameTuning = saved.page.outputDpi === current.outputDpi && saved.page.outputDpiY === current.outputDpiY
+            && saved.page.cutlineSmoothness === current.cutlineSmoothness
+            && saved.page.cutlineFidelity === current.cutlineFidelity && saved.page.curveTension === current.curveTension
+            && saved.page.minDetailAreaMm2 === current.minDetailAreaMm2 && saved.page.cutlineDenoise === current.cutlineDenoise;
+        const page: StickerSheetPageState = {
+            ...saved.page, detectionRedo: undefined, isRefining: false, isCutlinePreviewing: false,
+            outputDpi: current.outputDpi, outputDpiY: current.outputDpiY,
+            cutlineSmoothness: current.cutlineSmoothness, cutlineFidelity: current.cutlineFidelity,
+            curveTension: current.curveTension, minDetailAreaMm2: current.minDetailAreaMm2, cutlineDenoise: current.cutlineDenoise,
+            preserveExistingCut: canKeepCut, whiteBackgroundStale,
+            cutlinePreview: sameSettings && sameTuning && !whiteBackgroundStale ? saved.page.cutlinePreview : null,
+            error: '',
+        };
+        set(state => ({ tabs: { ...state.tabs, [tabId]: updatePage(tab, pageNumber, () => page) } }));
+        if (!whiteBackgroundStale && !canKeepCut && !page.cutlinePreview) {
+            scheduleCurrentCutlinePreview(tabId, pageNumber, 0);
+        }
+        return true;
     },
     undo: (tabId) => {
         let pageNumber = 1;

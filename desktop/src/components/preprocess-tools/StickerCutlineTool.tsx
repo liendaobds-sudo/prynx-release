@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
@@ -16,6 +16,8 @@ import {
 } from './stickerSheetStore';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
 import { makeUnifiedStickerRecipe } from '../../lib/recipe/unifiedStickerRecipe';
+import { WorkspaceContext } from '../../stores/useWorkspaceStore';
+import { ImposerSettingsContext } from '../imposition-tools/useImposerSettingsStore';
 
 
 interface Props {
@@ -57,6 +59,9 @@ export default function StickerCutlineTool({
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
+    const workspaceStore = useContext(WorkspaceContext);
+    const settingsStore = useContext(ImposerSettingsContext);
+    const shellRef = useRef<HTMLDivElement | null>(null);
     const workingPdf = useWorkingPdf();
     const workspaceLeaseRef = useRef<StickerWorkspaceSourceLease | null>(null);
     const workspaceLeasePromiseRef = useRef<Promise<StickerWorkspaceSourceLease> | null>(null);
@@ -165,6 +170,54 @@ export default function StickerCutlineTool({
         );
     }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId]);
 
+    useEffect(() => {
+        if (!isActive || productType !== 'sticker' || mode !== 'ai-sheet') return;
+        // UIUX (feedback 2026-09-06 §UNDO.DETECT): shell còn mounted sau khi bỏ
+        // nhận diện; lịch sử nét sửa được ưu tiên trước lịch sử kết quả nhận diện.
+        const handleHistoryShortcut = (event: KeyboardEvent) => {
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey
+                || event.isComposing || event.keyCode === 229
+                || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+            const key = event.key.toLowerCase();
+            const undo = key === 'z' && !event.shiftKey;
+            const redo = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey);
+            if (!undo && !redo) return;
+            const workspace = workspaceStore?.getState();
+            const runtimeTool = settingsStore?.getState().activeDashboardTool;
+            if (selectingObjects || directProcessing || workspace?.isObjectEditMode || workspace?.isCropMode
+                || (runtimeTool && runtimeTool !== 'sticker')) return;
+            const owner = shellRef.current?.closest<HTMLElement>('[data-prynx-tab-id]')
+                ?? Array.from(document.querySelectorAll<HTMLElement>('[data-prynx-tab-id]'))
+                    .find(element => element.dataset.prynxTabId === tabId);
+            if (shellRef.current?.closest('[hidden], .opacity-0')
+                || target?.closest('[role="dialog"][aria-modal="true"]')
+                || Array.from(owner?.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]') ?? [])
+                    .some(dialog => !dialog.hidden && !dialog.closest('[hidden], .opacity-0')
+                        && window.getComputedStyle(dialog).display !== 'none'
+                        && window.getComputedStyle(dialog).visibility !== 'hidden')) return;
+            const before = useStickerSheetStore.getState().tabs[tabId];
+            if (!before || before.mode !== 'ai-sheet' || before.productType !== 'sticker') return;
+            // Không áp kết quả cũ vào revision mới hoặc chiếm Undo của PDF vừa xuất.
+            if (exportedFilenameRef.current && pdfFile?.name === exportedFilenameRef.current) return;
+            if (before.sourceOrigin === 'workspace') {
+                const lease = workspaceLeaseRef.current;
+                if (!lease || !lease.isCurrent() || lease.file !== before.sourceFile
+                    || lease.revision !== before.sourceRevision) return;
+            }
+            if (undo) actions.undo(tabId);
+            else actions.redo(tabId);
+            const after = useStickerSheetStore.getState().getTab(tabId);
+            const edited = before.edits.length !== after.edits.length || before.redoEdits.length !== after.redoEdits.length;
+            const changed = edited || (undo ? actions.undoDetection(tabId) : actions.redoDetection(tabId));
+            if (!changed) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+        window.addEventListener('keydown', handleHistoryShortcut, true);
+        return () => window.removeEventListener('keydown', handleHistoryShortcut, true);
+    }, [actions, directProcessing, isActive, mode, pdfFile, productType, selectingObjects, settingsStore, tabId, workspaceStore]);
+
     const handleExport = async () => {
         const recording = recipeRecorder.isRecordingFor(tabId);
         const params = makeUnifiedStickerRecipe(useStickerSheetStore.getState().getTab(tabId), workingPageOrder);
@@ -230,7 +283,7 @@ export default function StickerCutlineTool({
     };
 
     return (
-        <div className="flex flex-col gap-4">
+        <div ref={shellRef} className="flex flex-col gap-4">
             {UNIFIED_STICKER_WORKSPACE && (
                 <div
                     role="group"
