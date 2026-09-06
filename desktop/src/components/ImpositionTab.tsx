@@ -161,6 +161,7 @@ import StickerSheetWorkspace, {
     StickerCutlineOverlay,
 } from './preprocess-tools/StickerSheetWorkspace';
 import { useStickerSheetStore, type StickerSheetPageState } from './preprocess-tools/stickerSheetStore';
+import { stickerObjectSourceIdentity } from '../lib/stickerObjectSelection';
 import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 import {
     resolveStickerSourceSyncMarker,
@@ -418,7 +419,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setHiddenObjectIds,
         setLockedObjectIds,
         setLockedOcgLayerIds,
-        selectionFileId, setSelectionFileId, vdpFields, setVdpFields, isCropMode, setIsCropMode, commitCropSelection, setIsObjectEditMode, setViewerToolMode,
+        selectionFileId, selectionDocumentIdentity, setSelectionFileId, vdpFields, setVdpFields, isCropMode, setIsCropMode, commitCropSelection, setIsObjectEditMode, setViewerToolMode,
         selectedVdpFieldIds, setSelectedVdpFieldIds,
         showCloseConfirm, setShowCloseConfirm,
         viewerNumPages,
@@ -454,6 +455,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setLockedObjectIds: state.setLockedObjectIds,
         setLockedOcgLayerIds: state.setLockedOcgLayerIds,
         selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields, isCropMode: state.isCropMode, setIsCropMode: state.setIsCropMode, commitCropSelection: state.commitCropSelection, setIsObjectEditMode: state.setIsObjectEditMode, setViewerToolMode: state.setViewerToolMode,
+        selectionDocumentIdentity: state.selectionDocumentIdentity,
         selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
         viewerNumPages: state.viewerNumPages,
@@ -837,23 +839,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // tối ưu latency cho tính năng dùng SAU, BỎ QUA với file lớn → để upload LAZY khi tính
     // năng cần (lúc đó mới chịu chi phí, không treo lúc mở).
     useEffect(() => {
-        if (file && !selectionFileId && file.name.toLowerCase().endsWith('.pdf')) {
+        if (file && !selectionFileId && !isObjectEditMode && file.name.toLowerCase().endsWith('.pdf')) {
             const sz = (file as WorkspaceFileLike)?.size || 0;
             // History/native stub có path nhưng chưa biết size: coi là file lớn
             // cho pre-upload. Tác vụ cần file_id sẽ đăng ký path khi người dùng mở nó.
             if ((file as WorkspaceFileLike).path && sz <= 0) return;
             // Bỏ pre-upload eager cho file > 20MB (sẽ upload on-demand khi mở Selection/Output Preview).
             if (sz > 20 * 1024 * 1024) return;
+            let cancelled = false;
+            const canPublish = () => !cancelled
+                && !store.getState().isObjectEditMode
+                && !store.getState().selectionFileId;
             const timer = setTimeout(() => {
                 void (async () => {
                     // REVISION (audit 2026-08-25 §REV.10): upload đúng snapshot
                     // đang thấy và chỉ bind file_id nếu snapshot còn current.
                     const snapshot = getCropWorkingFile.capture();
-                    if (!snapshot) return;
+                    if (!snapshot || !canPublish()) return;
                     const workingFile = await getCropWorkingFile.materialize(snapshot);
-                    if (!getCropWorkingFile.isCurrent(snapshot)) return;
+                    if (!canPublish() || !getCropWorkingFile.isCurrent(snapshot)) return;
                     const res = await uploadPDF(workingFile);
-                    if (!getCropWorkingFile.isCurrent(snapshot)) return;
+                    if (!canPublish() || !getCropWorkingFile.isCurrent(snapshot)) return;
                     const identity = workspaceDocumentIdentity(
                         snapshot.file,
                         snapshot.viewerPageOrder,
@@ -865,9 +871,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     }
                 })().catch(() => { /* silent — tác vụ cần file_id sẽ retry */ });
             }, 2500);
-            return () => clearTimeout(timer);
+            return () => { cancelled = true; clearTimeout(timer); };
         }
-    }, [file, getCropWorkingFile, onTitleChange, selectionFileId, setSelectionFileId]);
+    }, [file, getCropWorkingFile, isObjectEditMode, onTitleChange, selectionFileId, setSelectionFileId, store]);
     // FILEIO (audit 2026-08-02 §TEST.1): chuyển ảnh có trạng thái hữu hạn. Watchdog chỉ
     // đổi thông tin UI, không hard-timeout ảnh lớn; generation fence từ chối mọi callback muộn.
     // [RESULT-TAB FLASH FIX 2026-08-18] Tab kết quả có file ngay từ lúc mount phải
@@ -1760,7 +1766,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
     // --- OBJECT EDIT UPLOAD ---
-    const uploadPromiseRef = useRef<Promise<{ id: string }> | null>(null);
+    const uploadPromiseRef = useRef<{ file: File; promise: Promise<{ id: string }> } | null>(null);
+    const uploadObjectSource = useCallback((sourceFile: File): Promise<{ id: string }> => {
+        const previous = uploadPromiseRef.current;
+        if (previous?.file === sourceFile) return previous.promise;
+        const request = { file: sourceFile, promise: uploadPDF(sourceFile) };
+        uploadPromiseRef.current = request;
+        const release = () => {
+            if (uploadPromiseRef.current === request) uploadPromiseRef.current = null;
+        };
+        void request.promise.then(release, release);
+        return request.promise;
+    }, []);
     const pdfObjectsCacheRef = useRef<ReturnType<typeof globalPdfObjectCache.getAllObjects>>({});
 
     // Keep cache ref in sync
@@ -1772,21 +1789,29 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // với file lớn → fid rỗng → /edit/objects không chạy → không có đối tượng để
     // chọn/sửa. Effect này đảm bảo upload (tái dùng uploadPromiseRef tránh trùng)
     // và set selectionFileId ngay khi vào edit mode mà chưa có fid.
-    useEffect(() => {
-        if (!isObjectEditMode || !file || selectionFileId) return;
+    useLayoutEffect(() => {
+        if (!isObjectEditMode || !file || !isActive) return;
         if (!file.name.toLowerCase().endsWith('.pdf')) return;
+        // UIUX (audit 2026-09-06 §CUSTOM.SOURCE): /edit nhắm originalPageNum;
+        // Output Preview/Crop lại nhắm vị trí trong working PDF. Không trộn hai owner.
+        store.getState().closeOutputPreview();
+        const identity = stickerObjectSourceIdentity(file);
+        if (selectionFileId && selectionDocumentIdentity === identity) return;
+        if (selectionFileId) store.getState().setSelectionFileId('');
+        const snapshot = captureWorkspaceDocumentRevision(store.getState());
         let cancelled = false;
         (async () => {
             try {
-                if (!uploadPromiseRef.current) {
-                    uploadPromiseRef.current = uploadPDF(file).finally(() => { uploadPromiseRef.current = null; });
+                const res = await uploadObjectSource(file);
+                const current = store.getState();
+                if (!cancelled && current.isObjectEditMode && res?.id
+                    && isWorkspaceDocumentRevisionCurrent(snapshot, current)) {
+                    current.setSelectionFileId(res.id, identity);
                 }
-                const res = await uploadPromiseRef.current;
-                if (!cancelled && res?.id) store!.getState().setSelectionFileId(res.id);
             } catch { /* sẽ thử lại khi bật lại edit mode */ }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, file, selectionFileId, store]);
+    }, [isObjectEditMode, file, isActive, selectionFileId, selectionDocumentIdentity, renderedDocumentRevision, store, uploadObjectSource]);
 
     const fetchPdfObjectsForPage = useCallback(async (pageNum: number) => {
         const state = store!.getState();
@@ -1796,20 +1821,26 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (pdfObjectsCacheRef.current[pageNum]) return; // Already fetched
 
         try {
-            // Prefer edit fid if available (more accurate, session aware)
-            let fid = state.selectionFileId || '';
+            // ID trang nguồn không được dùng lại từ working PDF đã materialize.
+            const sourceFile = state.file;
+            if (!sourceFile) return;
+            const sourceIdentity = stickerObjectSourceIdentity(sourceFile);
+            const sourceSnapshot = captureWorkspaceDocumentRevision(state);
+            let fid = state.selectionDocumentIdentity === sourceIdentity ? state.selectionFileId : '';
             const useEdit = state.isObjectEditMode;
 
             if (!fid) {
-                if (!uploadPromiseRef.current) {
-                    uploadPromiseRef.current = uploadPDF(file).finally(() => {
-                        uploadPromiseRef.current = null;
-                    });
-                }
-                const result = await uploadPromiseRef.current;
+                const result = await uploadObjectSource(sourceFile);
+                if (!store.getState().isObjectEditMode
+                    || !isWorkspaceDocumentRevisionCurrent(sourceSnapshot, store.getState())) return;
                 fid = result.id;
-                store!.getState().setSelectionFileId(result.id);
+                store.getState().setSelectionFileId(result.id, sourceIdentity);
             }
+            const requestState = store.getState();
+            if (!requestState.isObjectEditMode || requestState.file !== sourceFile
+                || requestState.selectionFileId !== fid
+                || requestState.selectionDocumentIdentity !== sourceIdentity) return;
+            const requestRevision = captureWorkspaceDocumentRevision(requestState);
 
             // Use modern edit endpoint for better accuracy (replaces old pdfplumber preflight)
             const endpoint = useEdit 
@@ -1822,7 +1853,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const data = await res.json();
             const objects = data.objects || data; // edit returns {objects, pageBox}, preflight {objects}
 
-            const currentPdfUrl = store!.getState().pdfUrl || '';
+            // UIUX (audit 2026-09-06 §CUSTOM.SOURCE): response trang cũ không được
+            // gắn vào pdfUrl mới sau thay file, edit, đổi thứ tự hoặc đổi backend owner.
+            const current = store.getState();
+            if (!current.isObjectEditMode || current.selectionFileId !== fid
+                || current.selectionDocumentIdentity !== sourceIdentity
+                || !isWorkspaceDocumentRevisionCurrent(requestRevision, current)) return;
+            const currentPdfUrl = current.pdfUrl || '';
             globalPdfObjectCache.setPageObjects(currentPdfUrl, pageNum, Array.isArray(objects) ? objects : objects.objects || []);
             setPdfObjectsVersion(prev => prev + 1);
 
@@ -1830,7 +1867,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } catch (err: unknown) {
             setError(errorMessage(err) || t('tabs.imposition:loi_tai_object_trang_n', { n: pageNum }));
         }
-    }, [file, setError, setPdfObjectsVersion, store, t]);
+    }, [file, setError, setPdfObjectsVersion, store, t, uploadObjectSource]);
 
     // Load OCG layers independently from the object cache. A previous PDF can leave
     // virtual layers in the store, so checking only pdfOcgLayers.length is not safe.
@@ -2059,7 +2096,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
             // Trỏ selectionFileId thẳng tới Working_File mới (KHÔNG '' để tránh re-upload).
             // → thao tác edit kế tiếp + effect /edit/objects dùng fid mới ngay.
-            if (outputFid) setSelectionFileId(outputFid);
+            if (outputFid) setSelectionFileId(outputFid, stickerObjectSourceIdentity(newFile));
 
             // Dọn pdfUrl cũ (chỉ revoke nếu là blob — localfile/https là no-op không cần).
             if (prevPdfUrl && prevPdfUrl.startsWith('blob:') && prevPdfUrl !== newPdfUrl) {
@@ -4226,6 +4263,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     pageOverlayRenderer={activeDashboardTool === 'sticker'
                                         && stickerSheetMode === 'ai-sheet'
                                         && stickerSheetSourceVisible
+                                        // UIUX (audit 2026-09-06 §CUSTOM.PDF): chọn trên PDF gốc,
+                                        // không để ảnh khử nền che artwork và khung chọn đối tượng.
+                                        && !isObjectEditMode
                                         ? renderStickerSheetPageOverlay
                                         : undefined}
                                     pageOverlayPage={stickerSheetActiveSourcePage}
