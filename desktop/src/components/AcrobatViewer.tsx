@@ -1158,12 +1158,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         }
     }, [pdfRef, activePageIdentity.sourcePage, numPages, updatePageDimForPage]);
 
-    // Reset zoom state on new file
-    useEffect(() => {
-        // Edit-commit: giữ nguyên zoom/scroll (cùng cấu trúc trang) → không reset.
-        if ((file as ViewerFile)?.__editCommit) return;
-        if (internalScrollRef.current) internalScrollRef.current = null;
-    }, [pdfUrl, file]);
+    // UIUX (feedback 2026-09-06 §STICKER.ZOOM): ref thuộc vòng đời DOM, không phải
+    // vòng đời File. Lưu/đổi đường dẫn có thể giữ nguyên scroller Virtuoso; xóa ref
+    // trong effect sẽ làm Ctrl+wheel mất đích dù trang vẫn hiện. Callback ref tự
+    // dọn khi scroller thật sự unmount và tự gắn lại sau khi tải tài liệu mới.
 
     // ── Giải phóng bitmap trang khi tab ở NỀN lâu (audit RAM: app nặng dần theo số
     //    tab mở). Mọi tab luôn mounted (audit chốt KHÔNG unmount ImpositionTab vì
@@ -2180,8 +2178,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // UIUX (audit 2026-08-23 §VIEWER.STALE.01): itemContent giữ identity qua ref
     // nên Virtuoso không tự gọi lại item đang mount khi một overlay/đầu vào trình bày
-    // đổi. Revision này chỉ theo dõi dữ liệu hiển thị đổi theo sự kiện (không theo zoom
-    // hoặc pan nóng), nhờ đó edit/OCG/Output Preview/reorder/text async xuất hiện ngay.
+    // đổi. Revision theo dõi dữ liệu hiển thị và tỷ lệ trang, không theo pan. Nếu thiếu
+    // zoom, row giữ kích thước cũ khi overscan không đổi (từ 200% trở lên).
     const virtuosoPresentationRevision = useMemo(() => ({
         pageOrder,
         pageInstanceIds,
@@ -2191,6 +2189,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         allPageDims,
         pageDim,
         actualWidth100,
+        effectiveZoom,
         physicalDisplayScale,
         physicalDisplayDpr,
         physicalRawDpi,
@@ -2226,6 +2225,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         allPageDims,
         pageDim,
         actualWidth100,
+        effectiveZoom,
         physicalDisplayScale,
         physicalDisplayDpr,
         physicalRawDpi,
