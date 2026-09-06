@@ -20,6 +20,7 @@ export interface StickerOutputSettingsPanelProps {
     disabled?: boolean;
     preserveNotice?: ReactNode;
     showCropControl?: boolean;
+    backgroundControl?: ReactNode;
 }
 
 interface NumberSettingProps {
@@ -206,6 +207,7 @@ export default function StickerOutputSettingsPanel({
     disabled = false,
     preserveNotice,
     showCropControl = true,
+    backgroundControl,
 }: StickerOutputSettingsPanelProps) {
     const settings = sanitizeStickerOutputSettings(value);
     const inputId = useId();
@@ -302,6 +304,7 @@ export default function StickerOutputSettingsPanel({
                     >
                         {tv(settings.fillHoles ? 'Đặc ruột' : 'Giữ lỗ rỗng')}
                     </button>
+                    {backgroundControl}
                     {showCropControl && <button
                         type="button"
                         aria-label={tv('Crop trang theo đường bế và phần bù xén')}

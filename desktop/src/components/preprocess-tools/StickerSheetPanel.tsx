@@ -110,19 +110,23 @@ export default function StickerSheetPanel({
     const actionsRef = useRef(useStickerSheetStore.getState());
     const actions = actionsRef.current;
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const strategy: StickerDetectionStrategy = state.detectionStrategy || 'auto';
+    const strategy: StickerDetectionStrategy = state.detectionStrategy === 'page-box' ? 'auto' : state.detectionStrategy || 'auto';
 
     useEffect(() => {
         actions.initTab(tabId);
-    }, [actions, tabId]);
+        if (unified) actions.enableUnified(tabId);
+    }, [actions, tabId, unified]);
 
     const manifest = state.manifest;
     const sourcePreviewLoading = Boolean(state.inspection && !state.sourcePreviewReady);
     const hasMask = Boolean(manifest) && ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
     const [settingsOpen, setSettingsOpen] = useState(unified || state.status === 'mask-review');
     const [maskToolsOpen, setMaskToolsOpen] = useState(false);
+    const [refreshingBackground, setRefreshingBackground] = useState(false);
     const preserveOriginal = Boolean(manifest?.boundary_source === 'existing-cut' && state.preserveExistingCut);
-    const busy = interactionLocked || state.isRefining
+    const canChangeBackground = state.outputSettings.cutMode !== 'alpha' && !preserveOriginal
+        && manifest?.vector_geometry_ref?.kind !== 'pdf-object-selection';
+    const busy = interactionLocked || refreshingBackground || state.isRefining
         || state.isCutlinePreviewing
         || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(state.status);
     const hasEditHistory = state.edits.length > 0 || state.redoEdits.length > 0;
@@ -136,6 +140,7 @@ export default function StickerSheetPanel({
     // phụ thuộc nguồn mask là AI hay vector; chỉ Khử bóng mới cần dữ liệu AI.
     const canTuneCutline = Boolean(
         manifest
+        && !state.whiteBackgroundStale
         && (unified ? !preserveOriginal : manifest.boundary_source !== 'existing-cut')
         && (state.status === 'mask-review' || unified && state.status === 'mask-ready'),
     );
@@ -157,10 +162,13 @@ export default function StickerSheetPanel({
         : sourcePages;
     const exportPageCount = Math.max(1, exportOrder.length);
     const exportablePageCount = exportOrder
-        .filter(pageNumber => ['mask-review', 'confirming', 'mask-ready', 'exporting']
-            .includes(pageStatus(pageNumber))).length;
+        .filter(pageNumber => !state.pages[pageNumber]?.whiteBackgroundStale
+            && !(pageNumber === state.activeSourcePage && state.whiteBackgroundStale)
+            && ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(pageStatus(pageNumber))).length;
     const pendingPageCount = [...new Set(exportOrder)]
-        .filter(pageNumber => ['idle', 'source-ready', 'error'].includes(pageStatus(pageNumber))).length;
+        .filter(pageNumber => state.pages[pageNumber]?.whiteBackgroundStale
+            || pageNumber === state.activeSourcePage && state.whiteBackgroundStale
+            || ['idle', 'source-ready', 'error'].includes(pageStatus(pageNumber))).length;
     const allPagesExportable = exportablePageCount === exportPageCount;
     const canDetectActivePage = ['source-ready', 'error'].includes(state.status) || unified && hasMask;
     // UIUX (feedback 2026-08-21 §CUTPREVIEW.MULTIPAGE1): PDF từ Viewer đã biết
@@ -230,6 +238,7 @@ export default function StickerSheetPanel({
             const latest = useStickerSheetStore.getState().getTab(tabId);
             const page = latest.pages[pageNumber]
                 || (latest.activeSourcePage === pageNumber ? latest : null);
+            if (page?.whiteBackgroundStale) return;
             if (page?.status === 'mask-review') {
                 await actions.confirmMask(tabId, pageNumber);
             }
@@ -242,6 +251,54 @@ export default function StickerSheetPanel({
         });
         if (allConfirmed) await callback();
     };
+
+    const refreshBackgroundMasks = async () => {
+        const current = actions.getTab(tabId);
+        const pages = Object.keys(current.pages).length ? current.pages : { [current.activeSourcePage]: current };
+        const stale = Object.entries(pages).filter(([, page]) => page.manifest && page.whiteBackgroundStale);
+        if (!stale.length) return;
+        setRefreshingBackground(true);
+        try {
+            await Promise.all(stale.map(async ([number]) => {
+                const pageNumber = Number(number);
+                await actions.detectStickers(tabId, current.detectionStrategy || 'auto', pageNumber, prepareWorkspaceSource);
+                const latest = actions.getTab(tabId);
+                const page = latest.pages[pageNumber] || latest;
+                if (!page.whiteBackgroundStale && page.status === 'mask-review' && !page.error
+                    && page.manifest && !page.manifest.needs_review) {
+                    await actions.confirmMask(tabId, pageNumber);
+                }
+            }));
+        } finally {
+            setRefreshingBackground(false);
+        }
+    };
+
+    const confirmBackgroundChange = () => {
+        const current = actions.getTab(tabId);
+        const pages = Object.keys(current.pages).length ? Object.values(current.pages) : [current];
+        const hasEdits = pages.some(page => page.manifest?.vector_geometry_ref?.kind !== 'pdf-object-selection'
+            && !(page.preserveExistingCut && page.manifest?.boundary_source === 'existing-cut')
+            && page.edits.length > 0);
+        return !hasEdits || window.confirm(tv('Đổi xử lý nền sẽ bỏ nét sửa trên các trang. Tiếp tục?'));
+    };
+
+    const backgroundControl = unified && (
+        <label className={`flex min-h-10 items-center justify-center gap-2 rounded-lg border px-2 text-[11px] font-bold ${
+            canChangeBackground && state.removeWhiteBg !== false
+                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                : 'border-slate-200 text-slate-600 dark:border-white/10 dark:text-zinc-400'
+        } ${!canChangeBackground ? 'opacity-50' : ''}`}
+            title={!canChangeBackground ? tv('Đang dùng biên có sẵn hoặc vùng tem chọn tay.') : undefined}>
+            <input type="checkbox" checked={canChangeBackground && state.removeWhiteBg !== false}
+                disabled={busy || isExporting || !canChangeBackground}
+                onChange={event => {
+                    if (!confirmBackgroundChange()) return;
+                    if (actions.setRemoveWhiteBg(tabId, event.target.checked)) void refreshBackgroundMasks();
+                }} className="accent-teal-600" />
+            <span>{tv('Bỏ nền trắng', 'preprocess.sticker')}</span>
+        </label>
+    );
 
     return (
         <div className="flex flex-col gap-4">
@@ -339,13 +396,13 @@ export default function StickerSheetPanel({
                         <label className="mt-2 block text-xs">
                             {tv('Cách lấy biên tem')}
                             <select className="mt-1 h-9 w-full rounded border bg-white px-2 dark:bg-zinc-900"
-                                aria-label={tv('Cách lấy biên tem')} value={strategy} disabled={busy}
+                                aria-label={tv('Cách lấy biên tem')} value={state.outputSettings.cutMode === 'alpha' ? 'alpha' : strategy}
+                                disabled={busy || state.removeWhiteBg === false || state.outputSettings.cutMode === 'alpha'}
                                 onChange={event => actions.setDetectionStrategy(tabId, event.target.value as StickerDetectionStrategy)}>
                                 <option value="auto">{tv('Tự động')}</option>
                                 <option value="alpha">{tv('Dùng Alpha')}</option>
                                 <option value="simple-bg">{tv('Dùng nền đơn giản')}</option>
                                 <option value="ai">{tv('Dùng AI')}</option>
-                                <option value="page-box">{tv('Giữ toàn bộ trang')}</option>
                             </select>
                         </label>
                     </details>
@@ -363,26 +420,26 @@ export default function StickerSheetPanel({
                     )}
                     <div className="rounded-xl border border-slate-200 p-3 dark:border-zinc-700">
                         <StickerOutputSettingsPanel value={state.outputSettings}
-                            onChange={settings => actions.setOutputSettings(tabId, settings)}
-                            disabled={busy || isExporting} showCropControl={false} />
+                            onChange={settings => {
+                                const changesMaskMode = (settings.cutMode === 'alpha') !== (state.outputSettings.cutMode === 'alpha');
+                                if (changesMaskMode && !confirmBackgroundChange()) return;
+                                actions.setOutputSettings(tabId, settings);
+                                if (changesMaskMode) void refreshBackgroundMasks();
+                            }}
+                            disabled={busy || isExporting} showCropControl={false} backgroundControl={backgroundControl} />
                     </div>
                 </>
             )}
 
             {manifest && hasMask && (
                 <>
-                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
+                    {!unified && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
                         <div className="text-[13px] font-bold text-emerald-800 dark:text-emerald-300">
                             {tv('Đã nhận diện')} {manifest.instances.length} {tv('tem')}
                         </div>
-                    </div>
-
-                    {unified && manifest.needs_review && (
-                        <p role="note" className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                            {tv('Kiểm tra đường cắt và vùng tem trước khi xuất. Nếu thiếu chi tiết, dùng Giữ lại.')}
-                        </p>
-                    )}
+                    </div>}
                     {unified && <button type="button" aria-expanded={maskToolsOpen}
+                        disabled={busy || state.whiteBackgroundStale}
                         className="text-left text-xs font-semibold" onClick={() => {
                             setMaskToolsOpen(open => !open);
                             actions.setMaskEditingEnabled(tabId, !maskToolsOpen);
