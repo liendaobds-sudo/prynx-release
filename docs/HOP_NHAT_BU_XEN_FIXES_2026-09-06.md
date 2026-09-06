@@ -2,7 +2,7 @@
 
 **Kế hoạch:** `KE_HOACH_HOP_NHAT_BU_XEN_TAO_DUONG_CAT_LAN2_2026-09-06.md`
 
-**Trạng thái:** Đã triển khai và commit luồng workspace chung, thiết lập bù xén, vòng đời nhận diện, nhận file và recipe giới hạn; kiểm thử tự động đạt. Characterization toàn bộ artifact và nghiệm thu app Tauri còn thiếu bằng chứng runtime.
+**Trạng thái:** Workspace chung đã được nối thêm custom PDF theo phản hồi người dùng; xem phần cập nhật CUSTOM cuối tài liệu. Characterization toàn bộ artifact và nghiệm thu app Tauri còn thiếu bằng chứng runtime.
 
 Người dùng đã duyệt triển khai toàn bộ kế hoạch và yêu cầu tiếp tục, không xin duyệt lại từng lô.
 Các lô vẫn được tách commit và verify; quyền tiếp tục không thay thế bằng chứng nghiệm thu thực tế.
@@ -144,3 +144,62 @@ Không cập nhật golden snapshot; không build installer, push hoặc phát h
   Lô 4 dọn compatibility chưa thực hiện vì điều kiện runtime/release chưa đạt, không phải code bị quên.
 - Bản sửa bóng A/B `4f914f4` vẫn nguyên vẹn. Nếu cần quay lui hợp nhất, revert các commit hợp nhất
   theo thứ tự phụ thuộc, không revert bản sửa bóng hoặc các commit nesting/auth ngoài phạm vi.
+
+## Cập nhật CUSTOM — giao diện gọn và chọn PDF trong cùng luồng
+
+Phần này thay thế mô tả “Tùy chọn PDF nâng cao” của lô trước. Báo cáo/hợp đồng:
+`BAO_CAO_AUDIT_BU_XEN_CUSTOM_PDF_2026-09-06.md`.
+
+### Thay đổi đã triển khai
+
+- Bỏ thẻ tóm tắt đầu panel, bộ chọn/đổi file riêng, đoạn giải thích và nút chuyển form PDF cũ.
+- Một panel: nhận diện tự động/nhận diện lại; “Chọn tem” trên canvas; “Dùng phần đã chọn”; cùng
+  bộ thiết lập và cách xuất. Xén vuông góc vẫn là mục tiêu hình học riêng.
+- Custom nhận object ID vào session chung; preview và export cùng mask revision/fingerprint.
+  Nhận diện lại thay đúng trang, tăng revision; lỗi/hủy không chủ động đóng session của sibling.
+- Trong lúc chọn, bỏ overlay ảnh đã tách nền để thao tác trên PDF gốc; giữ session khi overlay
+  unmount. Không để listener sửa mask nuốt thao tác chọn/sửa PDF.
+- Lựa chọn ràng buộc file/generation/page/instance/order/rotation. Edit PDF dùng ID nguồn raw;
+  Output Preview/Ink/Crop tiếp tục dùng working PDF. Các upload/response về muộn bị chặn.
+- Giữ tấm PDF bảo toàn artwork, text, vector, profile và trạng thái OCG; chỉ thêm bleed/CUT từ
+  preview. Split/ZIP dùng pipeline ảnh hiện hữu, có thông báo ngắn khi tách PDF.
+- Lỗi tải asset sau publish có retry riêng, không dùng base_revision cũ. Recipe chưa có selector
+  tái lập vẫn từ chối object ID gắn với file cụ thể.
+
+### Kiểm tra và giới hạn
+
+- Frontend cuối: 50 file / 516 tests đạt; typecheck đạt; ESLint các file thay đổi 0 lỗi, 1 warning
+  có sẵn tại effect trong ImpositionTab (thiếu dependency `store`, ngoài phần sửa).
+- Backend cuối: 448 tests / 7 suite đạt, 2 cảnh báo cũ Starlette/Pydantic. Lượt tổng trước
+  nạp exporter trước khi helper được đổi tên trong quá trình ghép code, nên không dùng làm bằng
+  chứng cuối; đã cố định code giữa các lượt verify. Test shadow artifact cũ được cập nhật theo
+  contract giữ PDF gốc, đồng thời giữ oracle Alpha/CUT và thêm nhánh split để không mất độ phủ.
+- File khách `test/test bu xen.pdf` vẫn có SHA-256
+  `C601B12447EF362A7F9EAE77AD18630A360E8150B8E85A5174C1A1CFBD10B08B`.
+- Chưa thể thay tùy ý CUT đã có khi custom chỉ chọn một phần: chưa đủ ownership nên dừng trước
+  khi xóa dao của tem khác. Auto thay được CUT spot; CUT chỉ theo OCG chưa tách an toàn thì báo lỗi.
+- Chưa nghiệm thu Tauri trong lượt này; không build installer, push hoặc release. Route/recipe
+  legacy còn giữ bên trong, không còn cửa chuyển form trên giao diện tem.
+
+Lệnh regression backend cuối (ngoài sandbox vì NamedPipe worker Windows):
+
+```powershell
+cd D:\pdfcompare\backend
+.\venv\Scripts\python.exe -X utf8 -B -m pytest -q -p no:cacheprovider --tb=short tests/test_sticker_sheet_api.py tests/test_sticker_source_pipeline.py tests/test_sticker_cutline_preview.py tests/test_sticker_ai_artwork_guard.py tests/test_sticker_page_canvas.py tests/test_sticker_custom_pdf_export.py tests/test_sticker_engine_e2e.py --basetemp=../tmp/custom_pdf_unified_verified
+```
+
+### Commit checkpoint CUSTOM
+
+| Commit | Phạm vi |
+|---|---|
+| `def061b` | Detect đối tượng PDF, revision và nhận diện lại theo trang |
+| `4f647f1` | Writer PDF gốc dùng CUT/Alpha đã duyệt |
+| `c908178` | Regression API và artifact giữ mảng tem |
+| `c21f75e` | Fence lựa chọn theo file/trang/instance |
+| `c3c1de1` | Canvas gốc, owner raw/working và hồi quy Output Preview/Ink |
+| `474b4f8` | API/store custom, hủy và retry asset |
+| `71dd1bf` | Một form và thao tác Chọn tem, bỏ text thừa |
+| `0184c2e` | Test panel, bản dịch và recipe guard |
+
+Các commit có phụ thuộc; quay lui cả lượt CUSTOM phải thực hiện từ mới về cũ. Không dùng reset
+hard hoặc tác động các tài liệu nesting/master audit đang thay đổi ngoài phạm vi.

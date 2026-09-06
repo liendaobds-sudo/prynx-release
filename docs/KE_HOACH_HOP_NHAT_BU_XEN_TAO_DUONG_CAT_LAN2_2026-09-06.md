@@ -382,3 +382,17 @@ Lần thử Vite dừng ở màn license và thiếu Tauri IPC; không vượt x
 
 Chưa build installer, push hay release. Khi cần rollback, chỉ revert nhóm commit hợp nhất đã liệt
 kê ở nhật ký (theo thứ tự phụ thuộc); giữ checkpoint bóng A/B `4f914f4` và code nesting/auth riêng.
+
+## 12. Bổ sung đã duyệt — custom PDF cùng giao diện
+
+Người dùng yêu cầu bỏ thẻ tóm tắt, bộ đổi file và nhóm “Tùy chọn PDF nâng cao”; tự động và thủ công
+phải là hai thao tác trong cùng workspace, không chuyển form. Phần này thay mục “PDF nâng cao vẫn
+truy cập được” trong trạng thái lô trước; giữ route legacy nội bộ không đồng nghĩa giữ selector UI.
+
+Đã triển khai các điểm nối cụ thể: lựa chọn object PDF → session/mask canonical → preview → writer
+giữ artwork gốc; nhận diện lại theo revision của đúng trang; fence nguồn raw/working và overlay
+canvas. Chi tiết bằng chứng, kiểm thử, commit và giới hạn tại
+`BAO_CAO_AUDIT_BU_XEN_CUSTOM_PDF_2026-09-06.md` và `HOP_NHAT_BU_XEN_FIXES_2026-09-06.md`.
+
+Không hạ tiêu chí an toàn để ghi hoàn tất: custom có CUT cũ chưa xác định được ownership và CUT
+chỉ theo OCG chưa strip an toàn phải báo rõ, không xóa/nhân đôi dao; nghiệm thu Tauri còn mở.
