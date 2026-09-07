@@ -1399,11 +1399,18 @@ if (-not $SkipNuitka) {
                 # lan goi REST cua build van truy nguyen duoc ve dung buoc da phat ra.
                 $probeUserAgent = "PrynX-Release-Probe/1.0"
                 $probeVerifyUri = "$($releaseSupabaseUrl.TrimEnd('/'))/functions/v1/license-verify"
+                # SEC: native yeu cau claim `v` trong token (audit 2026-09-04).
+                # V1 token khong co `v` nen phai gui protocol_version=2 + challenge.
+                $probeChallengeBytes = [byte[]]::new(32)
+                [System.Security.Cryptography.RandomNumberGenerator]::Fill($probeChallengeBytes)
+                $probeChallenge = [System.BitConverter]::ToString($probeChallengeBytes).Replace('-', '').ToLowerInvariant()
                 $probeVerifyBody = @{
-                    license_key = $probeLicenseKey
-                    machine_id  = $probeMachineId
-                    product_id  = "prynx"
-                    app_version = $APP_VERSION
+                    license_key      = $probeLicenseKey
+                    machine_id       = $probeMachineId
+                    product_id       = "prynx"
+                    app_version      = $APP_VERSION
+                    protocol_version = 2
+                    challenge        = $probeChallenge
                 } | ConvertTo-Json -Compress
 
                 Write-Host "  Probing real dieline activation for version $APP_VERSION..." -ForegroundColor DarkGray
