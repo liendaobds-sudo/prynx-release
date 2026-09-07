@@ -14,11 +14,63 @@ import {
   clampToolMenuDraftTotalWidth,
   resolveWorkspaceToolMenuToggle,
   resolveWorkspaceToolPanelClose,
+  resizeToolMenuPanel,
   toolMenuTotalWidth,
   toolMenuRailWidth,
 } from './rightToolMenuLayout';
 
 describe('rightToolMenuLayout — hai mode', () => {
+  it('lưu riêng hai chiều rộng, thu/mở menu không đổi thiết lập khi đủ chỗ', () => {
+    for (const preferredMode of ['icons', 'full'] as const) {
+      const layout = resolveEffectiveToolMenuLayout({ preferredMode,
+        preferredFullWidth: 310, preferredConfigWidth: 530,
+        containerWidth: 1500, hasConfigPanel: true });
+      expect(layout.configWidth).toBe(530);
+      expect(layout.catalogWidth).toBe(preferredMode === 'full' ? 310 : 48);
+    }
+  });
+
+  it.each(['icons', 'full'] as const)('kéo thiết lập giữ menu ở mode %s qua ngưỡng 560/780 cũ', mode => {
+    const initial = resolveEffectiveToolMenuLayout({ preferredMode: mode,
+      preferredFullWidth: 310, preferredConfigWidth: 390, containerWidth: 1500, hasConfigPanel: true });
+    for (const requested of [280, 400, 512, 650, 750]) {
+      const draft = resizeToolMenuPanel(initial, 'config', requested, 1180);
+      expect(draft).toMatchObject({ mode, configWidth: requested, catalogWidth: initial.catalogWidth });
+      const settled = resolveEffectiveToolMenuLayout({ preferredMode: mode,
+        preferredFullWidth: 310, preferredConfigWidth: draft.configWidth,
+        containerWidth: 1500, hasConfigPanel: true });
+      expect(settled).toEqual(draft);
+    }
+  });
+
+  it('divider đổi riêng catalog và cặp chốt không giật panel thiết lập đang bị giới hạn', () => {
+    const constrained = resolveEffectiveToolMenuLayout({ preferredMode: 'full',
+      preferredFullWidth: 800, preferredConfigWidth: 390, containerWidth: 1400, hasConfigPanel: true });
+    expect(constrained.configWidth).toBe(280);
+    const resized = resizeToolMenuPanel(constrained, 'catalog', 650, 1080);
+    expect(resized).toMatchObject({ catalogWidth: 650, configWidth: 280, mode: 'full', totalWidth: 930 });
+    expect(resolveEffectiveToolMenuLayout({ preferredMode: resized.mode,
+      preferredFullWidth: resized.catalogWidth, preferredConfigWidth: resized.configWidth,
+      containerWidth: 1400, hasConfigPanel: true })).toEqual(resized);
+  });
+
+  it('thiếu chỗ chỉ giới hạn panel đang kéo, không thu panel kia hoặc đổi mode', () => {
+    const layout = { mode: 'full' as const, configWidth: 390, catalogWidth: 310, totalWidth: 700, canExpandFull: true };
+    expect(resizeToolMenuPanel(layout, 'config', 900, 900)).toMatchObject({ configWidth: 590, catalogWidth: 310, mode: 'full' });
+    expect(resizeToolMenuPanel(layout, 'catalog', 900, 900)).toMatchObject({ configWidth: 390, catalogWidth: 510, mode: 'full' });
+    expect(resizeToolMenuPanel(layout, 'config', NaN, 900)).toEqual(layout);
+    expect(resizeToolMenuPanel(layout, 'catalog', Infinity, 900)).toEqual(layout);
+  });
+
+  it('khung cực hẹp không tràn và mở rộng lại không mất preference của hai panel', () => {
+    const input = { preferredMode: 'full' as const, preferredFullWidth: 310, preferredConfigWidth: 530,
+      containerWidth: 470, hasConfigPanel: true };
+    expect(resolveEffectiveToolMenuLayout(input)).toMatchObject({ mode: 'icons', configWidth: 102, catalogWidth: 48, totalWidth: 150 });
+    expect(resolveEffectiveToolMenuLayout({ ...input, containerWidth: 1500 })).toMatchObject({ mode: 'full', configWidth: 530, catalogWidth: 310 });
+    expect(input.preferredConfigWidth).toBe(530);
+    expect(input.preferredFullWidth).toBe(310);
+  });
+
   it.each([
     [true, 48, 'full'],
     [true, 220, 'full'],

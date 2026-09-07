@@ -1078,7 +1078,10 @@ def _run_nup_engine_impl(
                 w_for_nfp,
                 h_for_nfp,
                 gap_x, gap_y,
-                strategy='optimal_auto',
+                # PARITY (audit 2026-09-07 §TEMPERF.S1): lưới đơn giản phải
+                # giữ đúng lựa chọn preview, không tự thêm L-fill khi xuất.
+                # Các policy đặc biệt còn lại giữ nhánh precompute hiện hữu.
+                strategy='simple_auto' if strategy == 'simple_auto' else 'optimal_auto',
                 shape_type_override=p_shape if p_shape else None,
                 shape_props_override=p_shape_props if p_shape_props else None,
                 bleed_pt=bleed_pt,

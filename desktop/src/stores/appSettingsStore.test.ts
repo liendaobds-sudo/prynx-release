@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createJSONStorage } from 'zustand/middleware';
 
 import {
   createLatestSettingsWriteQueue,
@@ -8,6 +9,7 @@ import {
 
 const fallbackLayout = {
   toolMenuWidth: 390,
+  toolConfigWidth: 390,
   homeToolMenuWidth: 320,
   toolMenuMode: 'full' as const,
   isToolMenuExpanded: false,
@@ -15,6 +17,77 @@ const fallbackLayout = {
 };
 
 describe('appSettingsStore — persistence menu công cụ phải', () => {
+  it.each([
+    { toolMenuMode: 'icons' as const, toolMenuWidth: 640, expectedConfig: 640 },
+    { toolMenuMode: 'full' as const, toolMenuWidth: 640, expectedConfig: 390 },
+    { toolMenuMode: 'full' as const, toolMenuWidth: 300, expectedConfig: 300 },
+  ])('di trú config thiếu từ menu $toolMenuMode/$toolMenuWidth', ({ expectedConfig, ...persisted }) => {
+    expect(normalizePersistedRightMenuSettings(persisted, fallbackLayout)).toMatchObject({
+      ...persisted, toolConfigWidth: expectedConfig,
+    });
+  });
+
+  it('giữ cấu hình mới tách biệt với menu, mode và Home khi hydrate', () => {
+    expect(normalizePersistedRightMenuSettings({
+      toolMenuMode: 'full', toolMenuWidth: 310, toolConfigWidth: 720, homeToolMenuWidth: 250,
+    }, fallbackLayout)).toMatchObject({
+      toolMenuMode: 'full', toolMenuWidth: 310, toolConfigWidth: 720, homeToolMenuWidth: 250,
+    });
+    expect(normalizePersistedRightMenuSettings({}, { ...fallbackLayout, toolConfigWidth: 620 })).toMatchObject({ toolConfigWidth: 620 });
+  });
+
+  it.each([Number.NaN, Infinity, null, '720', {}, []].map(value => ({ value })))('config lưu sai kiểu $value không tạo NaN hoặc ghi sang Home', ({ value }) => {
+    expect(normalizePersistedRightMenuSettings({
+      toolMenuMode: 'icons', toolMenuWidth: 520, toolConfigWidth: value, homeToolMenuWidth: 240,
+    }, fallbackLayout)).toMatchObject({ toolMenuWidth: 520, toolConfigWidth: 520, homeToolMenuWidth: 240 });
+  });
+
+  it('menu cũ không hữu hạn vẫn hydrate chiều rộng hợp lệ', () => {
+    const normalized = normalizePersistedRightMenuSettings({ toolMenuWidth: Number.NaN }, fallbackLayout);
+    expect(normalized.toolMenuWidth).toBe(390);
+    expect(normalized.toolConfigWidth).toBe(390);
+    expect(normalized.homeToolMenuWidth).toBe(320);
+  });
+
+  it('setter thiết lập không đổi menu/mode/Home, menu đóng mở không đổi thiết lập', () => {
+    useAppSettingsStore.setState({ ...fallbackLayout, toolMenuWidth: 320, toolConfigWidth: 570, homeToolMenuWidth: 240 });
+    useAppSettingsStore.getState().setToolConfigWidth(700);
+    expect(useAppSettingsStore.getState()).toMatchObject({ toolMenuMode: 'full', toolMenuWidth: 320, toolConfigWidth: 700, homeToolMenuWidth: 240 });
+    useAppSettingsStore.getState().setToolMenuLayout('icons', 520);
+    useAppSettingsStore.getState().openWorkspaceSidebar(600);
+    useAppSettingsStore.getState().collapseWorkspaceSidebar();
+    useAppSettingsStore.getState().setToolMenuWidth(480);
+    expect(useAppSettingsStore.getState()).toMatchObject({ toolMenuMode: 'icons', toolMenuWidth: 480, toolConfigWidth: 700, homeToolMenuWidth: 240 });
+    useAppSettingsStore.getState().setToolConfigWidth(Number.NaN);
+    expect(useAppSettingsStore.getState().toolConfigWidth).toBe(700);
+    useAppSettingsStore.getState().setToolConfigWidth(900);
+    expect(useAppSettingsStore.getState().toolConfigWidth).toBe(800);
+    useAppSettingsStore.getState().setToolConfigWidth(20);
+    expect(useAppSettingsStore.getState().toolConfigWidth).toBe(280);
+  });
+
+  it('ghi và hydrate lại hai chiều rộng độc lập qua middleware persistence', async () => {
+    let saved: string | null = null;
+    const previousStorage = useAppSettingsStore.persist.getOptions().storage;
+    useAppSettingsStore.persist.setOptions({ storage: createJSONStorage(() => ({
+      getItem: () => saved,
+      setItem: (_name, value) => { saved = value; },
+      removeItem: () => { saved = null; },
+    })) });
+    try {
+      useAppSettingsStore.setState({ ...fallbackLayout, toolMenuWidth: 350, homeToolMenuWidth: 230 });
+      useAppSettingsStore.getState().setToolConfigWidth(610);
+      const snapshot = saved;
+      expect(JSON.parse(snapshot!).state).toMatchObject({ toolMenuWidth: 350, toolConfigWidth: 610, homeToolMenuWidth: 230 });
+      useAppSettingsStore.setState(fallbackLayout);
+      saved = snapshot;
+      await useAppSettingsStore.persist.rehydrate();
+      expect(useAppSettingsStore.getState()).toMatchObject({ toolMenuWidth: 350, toolConfigWidth: 610, homeToolMenuWidth: 230 });
+    } finally {
+      useAppSettingsStore.persist.setOptions({ storage: previousStorage });
+    }
+  });
+
   it('tuần tự hóa lượt ghi và chỉ giữ snapshot mới nhất đang chờ', async () => {
     let releaseFirstWrite!: () => void;
     const firstWriteGate = new Promise<void>((resolve) => {
@@ -72,6 +145,7 @@ describe('appSettingsStore — persistence menu công cụ phải', () => {
       isWorkspaceSidebarOpen: true,
     }, fallbackLayout)).toEqual({
       toolMenuWidth: 800,
+      toolConfigWidth: 800,
       homeToolMenuWidth: 200,
       toolMenuMode: 'icons',
       isToolMenuExpanded: false,

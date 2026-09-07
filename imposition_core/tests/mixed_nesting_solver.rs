@@ -276,7 +276,8 @@ fn small_effort() -> SearchEffort {
 #[test]
 fn version_solver_va_multi_start() {
     assert_eq!(SOLVER_VERSION, 4);
-    assert_eq!(BASELINE_VERSION, 12);
+    // NESTROW (audit 2026-09-07 §NESTROW.1): S&R dùng baseline motif phiên bản mới.
+    assert_eq!(BASELINE_VERSION, 13);
     assert_eq!(MULTI_START_VERSION, 5);
 }
 

@@ -1288,7 +1288,9 @@ export default function StickerTool({
 
                     <div>
                         <ToolSectionLabel>{t('preprocess.sticker:2_tran_le_dac_ruot')}</ToolSectionLabel>
-                        <div className="flex gap-2 mb-4 items-end">
+                        {/* UIUX (feedback 2026-09-07 §STICKER.WRAP): panel hẹp phải
+                            xuống dòng theo chiều rộng thật, không cắt nhãn hoặc đẩy nút ra ngoài. */}
+                        <div className="mb-4 flex flex-wrap items-end gap-2">
                             <ToolNumberInput
                                 label={cutMode === 'original' || cutMode === 'alpha'
                                     ? t('preprocess.sticker:bu_xen_ngoai_duong_cat')
@@ -1299,14 +1301,14 @@ export default function StickerTool({
                                 step={0.5}
                                 min={0}
                                 max={10}
-                                className="w-[145px] shrink-0"
+                                className="min-w-0 flex-[1_1_145px]"
                             />
-                            <div className="flex gap-1.5 flex-1">
+                            <div className="flex min-w-0 flex-[1_1_180px] gap-1.5">
                                 <button
                                     onClick={() => setFillHoles(!fillHoles)}
                                     aria-pressed={fillHoles}
                                     title={t('preprocess.sticker:bo_qua_cac_lo_rong_ben_trong_khoi_hinh')}
-                                    className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
+                                    className={`flex min-h-9 min-w-0 flex-1 items-center justify-center whitespace-normal rounded border px-2 py-1 text-[11px] font-bold leading-tight transition-all ${
                                         fillHoles
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                             : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
@@ -1319,7 +1321,7 @@ export default function StickerTool({
                                         onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
                                         aria-pressed={removeWhiteBg}
                                         title={t('preprocess.sticker:chi_do_vien_cua_chi_tiet_bo_qua_mang')}
-                                        className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
+                                        className={`flex min-h-9 min-w-0 flex-1 items-center justify-center whitespace-normal rounded border px-2 py-1 text-[11px] font-bold leading-tight transition-all ${
                                             removeWhiteBg
                                                 ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                                 : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'

@@ -1,0 +1,854 @@
+{
+  "date": "2026-09-07",
+  "head": "79f05a399cb1669e6fb7cd1b84babfcbc7e3aebc",
+  "mode": "Chẩn đoán chỉ đọc code/runtime artifact; không sửa solver/giảm chất lượng/đổi license.",
+  "requestedSourcePages1Based": [
+    6,
+    7,
+    8
+  ],
+  "attachedScreenshotMapping": [
+    {
+      "path": "C:/Users/KHANHP~1/AppData/Local/Temp/codex-clipboard-a8530b4e-03ae-4590-8a67-bfb07f45ba1c.png",
+      "sourcePage1Based": 12,
+      "sourceName": "Great Job! - hoa",
+      "cutPage1Based": 24
+    },
+    {
+      "path": "C:/Users/KHANHP~1/AppData/Local/Temp/codex-clipboard-3279001d-e23a-470d-841c-5efedcf79a86.png",
+      "sourcePage1Based": 7,
+      "sourceName": "Good Job! - nấm",
+      "cutPage1Based": 14
+    },
+    {
+      "path": "C:/Users/KHANHP~1/AppData/Local/Temp/codex-clipboard-b6c8af2a-9754-4093-a949-a02b9c13072b.png",
+      "sourcePage1Based": 6,
+      "sourceName": "Well Done! - trứng",
+      "cutPage1Based": 12
+    }
+  ],
+  "mappingScope": "Đối chiếu trực quan contour/trang nguồn và raster artifact; không phải so hash screenshot pixel-for-pixel.",
+  "renderReview": {
+    "renderer": "Poppler pdftoppm",
+    "sourcePagesReviewed": [
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ],
+    "outputCutPagesReviewed": [
+      12,
+      14,
+      16,
+      24
+    ],
+    "directory": "D:/pdfcompare/tmp/pdfs/nesting-row-drift-20260907"
+  },
+  "probe": {
+    "scope": "Đọc artifact F có sẵn và 4 manifest; không solve/native-validate, không renew lease; dải Y là tham chiếu pose, không phải phân đoạn hàng.",
+    "source": "D:\\pdfcompare\\test\\test nesting.pdf",
+    "sourceSha256": "efcde4f0a16aca0a5a54ee2d952945afe2eb70dd2073bc9ff59ee87292b257ab",
+    "recordedSourceSha256": "efcde4f0a16aca0a5a54ee2d952945afe2eb70dd2073bc9ff59ee87292b257ab",
+    "beforePdf": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\prynx_manifest_F_w9s0raol\\before.pdf",
+    "beforePdfSha256": "6f34b2e7b6e3d41f6333e2980e9d73f51cb12b2ef419dc7afc5fc9e8e52872ac",
+    "afterPdf": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\prynx_manifest_F_w9s0raol\\after.pdf",
+    "afterPdfSha256": "a64378cbaf991e8fc1acc73cb548298c9611d6cfa0b1e6768af9fa8cee7598d6",
+    "rows": [
+      {
+        "sourcePage1Based": 6,
+        "outputCutPage1Based": 12,
+        "manifestFile": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\prynx_manifest_F_w9s0raol\\runtime-data\\manifests\\771166f57cc148e775534a6d2c2a91ee.json",
+        "manifestFileSha256": "e88e83d9278507890df93395c02038392522bd668d3d947bc8a71f84b045da9c",
+        "manifestId": "771166f57cc148e775534a6d2c2a91ee",
+        "placementCount": 66,
+        "cutRingCount": 66,
+        "comparedVertexCount": 12144,
+        "maxCoordinateErrorPt": 4.965841071680188e-10,
+        "cutCmOperatorCount": 0,
+        "cutDoOperatorCount": 0,
+        "beforeAfterCutDecodedBytesEqual": true,
+        "cutDecodedSha256": "9d6c74aa3afef9ae698d65ac25d7e0a3f9c1bebe0560c77f241ac6c577be232f",
+        "angles": {
+          "0.0": 33,
+          "180.0": 33
+        },
+        "bottomBand": {
+          "referenceYBelowMm": 35,
+          "count": 7,
+          "distinctYmm": [
+            26.41958100000002,
+            26.822640000000018
+          ]
+        },
+        "aboveBottomBand": {
+          "count": 59,
+          "distinctYCount": 58
+        },
+        "first14Poses": [
+          {
+            "instanceId": "trang-6#0001",
+            "rotationDeg": 0,
+            "translateXmm": 30.894261,
+            "translateYmm": 26.41958100000002
+          },
+          {
+            "instanceId": "trang-6#0002",
+            "rotationDeg": 180,
+            "translateXmm": 70.710526,
+            "translateYmm": 26.822640000000018
+          },
+          {
+            "instanceId": "trang-6#0003",
+            "rotationDeg": 0,
+            "translateXmm": 113.157375,
+            "translateYmm": 26.41958100000002
+          },
+          {
+            "instanceId": "trang-6#0004",
+            "rotationDeg": 180,
+            "translateXmm": 152.97364,
+            "translateYmm": 26.822640000000018
+          },
+          {
+            "instanceId": "trang-6#0005",
+            "rotationDeg": 0,
+            "translateXmm": 195.420489,
+            "translateYmm": 26.41958100000002
+          },
+          {
+            "instanceId": "trang-6#0006",
+            "rotationDeg": 180,
+            "translateXmm": 235.236754,
+            "translateYmm": 26.822640000000018
+          },
+          {
+            "instanceId": "trang-6#0007",
+            "rotationDeg": 0,
+            "translateXmm": 277.683603,
+            "translateYmm": 26.41958100000002
+          },
+          {
+            "instanceId": "trang-6#0008",
+            "rotationDeg": 180,
+            "translateXmm": 296.453079,
+            "translateYmm": 69.09708500000002
+          },
+          {
+            "instanceId": "trang-6#0009",
+            "rotationDeg": 0,
+            "translateXmm": 61.234096,
+            "translateYmm": 68.52076400000001
+          },
+          {
+            "instanceId": "trang-6#0010",
+            "rotationDeg": 180,
+            "translateXmm": 126.948906,
+            "translateYmm": 69.26525700000002
+          },
+          {
+            "instanceId": "trang-6#0011",
+            "rotationDeg": 0,
+            "translateXmm": 225.760324,
+            "translateYmm": 68.52076400000001
+          },
+          {
+            "instanceId": "trang-6#0012",
+            "rotationDeg": 180,
+            "translateXmm": 175.77574,
+            "translateYmm": 70.98449900000001
+          },
+          {
+            "instanceId": "trang-6#0013",
+            "rotationDeg": 0,
+            "translateXmm": 23.546921,
+            "translateYmm": 84.16396200000001
+          },
+          {
+            "instanceId": "trang-6#0014",
+            "rotationDeg": 180,
+            "translateXmm": 262.131379,
+            "translateYmm": 91.28907200000002
+          }
+        ],
+        "sourceCutOuterVertices": 184,
+        "sourceCutHoles": 0,
+        "profile": "fast",
+        "timeBudgetMs": 3000,
+        "orientationPolicy": {
+          "defaultRotation": {
+            "anglesDeg": [
+              0,
+              90,
+              180,
+              270
+            ],
+            "mode": "discrete"
+          },
+          "reflection": "forbidden"
+        },
+        "stats": {
+          "attempts": 370,
+          "elapsedMs": 1916,
+          "materialUtilization": 0.6139894969444828,
+          "orientationEvaluations": 361,
+          "placedCount": 66,
+          "poseRefinements": 0,
+          "sheetCount": 1,
+          "terminationReason": "sheet_full",
+          "unplacedCount": 0
+        },
+        "search": {
+          "baselineScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 132469935,
+            "primaryPenalty": 9993599868,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 47984980
+          },
+          "budget": {
+            "beamWidth": 4,
+            "evaluationBudget": 30000,
+            "multiStartRestarts": 1,
+            "orientationProposalsPerPart": 12,
+            "refinementRounds": 2,
+            "timeBudgetMs": 3000,
+            "trialCount": 4
+          },
+          "selectedCandidate": {
+            "kind": "baseline"
+          },
+          "selectedScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 132469935,
+            "primaryPenalty": 9993599868,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 47984980
+          },
+          "trialsRejected": 0,
+          "trialsRun": 0
+        },
+        "provenance": {
+          "baselineVersion": 12,
+          "candidateRuleVersion": 1,
+          "canonicalizationVersion": 1,
+          "kernelVersion": 1,
+          "multiStartVersion": 5,
+          "nativeBuildIdentity": "6fc91ac521d4c6866892a6f29bf7d43accd90f88cc0840d6bd134c0d08c0ce89",
+          "nfpRuleVersion": 2,
+          "normalizeRuleVersion": 2,
+          "productionSchemaVersion": 3,
+          "referencePointRuleVersion": 1,
+          "refineRuleVersion": 2,
+          "scoreVersion": 2,
+          "solverVersion": 4,
+          "toleranceVersion": 1
+        }
+      },
+      {
+        "sourcePage1Based": 7,
+        "outputCutPage1Based": 14,
+        "manifestFile": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\prynx_manifest_F_w9s0raol\\runtime-data\\manifests\\e4a50fe500c69426d384331360a1dd5f.json",
+        "manifestFileSha256": "21097a518a8911fdc5209b2a5eddfff3f27f7323b20c6a91ca1350bcbe3fb29e",
+        "manifestId": "e4a50fe500c69426d384331360a1dd5f",
+        "placementCount": 66,
+        "cutRingCount": 66,
+        "comparedVertexCount": 7260,
+        "maxCoordinateErrorPt": 4.96243046654854e-10,
+        "cutCmOperatorCount": 0,
+        "cutDoOperatorCount": 0,
+        "beforeAfterCutDecodedBytesEqual": true,
+        "cutDecodedSha256": "3fe4835302cdaa911fcf45321c8463703f2e4bd0d3a9d05d9b5e4e4383ce0a6e",
+        "angles": {
+          "0.0": 33,
+          "180.0": 33
+        },
+        "bottomBand": {
+          "referenceYBelowMm": 35,
+          "count": 7,
+          "distinctYmm": [
+            20.932102,
+            27.891239,
+            29.790529
+          ]
+        },
+        "aboveBottomBand": {
+          "count": 59,
+          "distinctYCount": 59
+        },
+        "first14Poses": [
+          {
+            "instanceId": "trang-7#0001",
+            "rotationDeg": 0,
+            "translateXmm": 27.542344,
+            "translateYmm": 27.891239
+          },
+          {
+            "instanceId": "trang-7#0002",
+            "rotationDeg": 180,
+            "translateXmm": 69.151217,
+            "translateYmm": 20.932102
+          },
+          {
+            "instanceId": "trang-7#0003",
+            "rotationDeg": 0,
+            "translateXmm": 116.728518,
+            "translateYmm": 27.891239
+          },
+          {
+            "instanceId": "trang-7#0004",
+            "rotationDeg": 180,
+            "translateXmm": 158.337391,
+            "translateYmm": 20.932102
+          },
+          {
+            "instanceId": "trang-7#0005",
+            "rotationDeg": 0,
+            "translateXmm": 205.914692,
+            "translateYmm": 27.891239
+          },
+          {
+            "instanceId": "trang-7#0006",
+            "rotationDeg": 180,
+            "translateXmm": 247.523565,
+            "translateYmm": 20.932102
+          },
+          {
+            "instanceId": "trang-7#0007",
+            "rotationDeg": 0,
+            "translateXmm": 292.664323,
+            "translateYmm": 29.790529
+          },
+          {
+            "instanceId": "trang-7#0008",
+            "rotationDeg": 180,
+            "translateXmm": 92.542462,
+            "translateYmm": 60.390249
+          },
+          {
+            "instanceId": "trang-7#0009",
+            "rotationDeg": 0,
+            "translateXmm": 175.211884,
+            "translateYmm": 59.700169
+          },
+          {
+            "instanceId": "trang-7#0010",
+            "rotationDeg": 180,
+            "translateXmm": 267.87942,
+            "translateYmm": 62.045082
+          },
+          {
+            "instanceId": "trang-7#0011",
+            "rotationDeg": 0,
+            "translateXmm": 49.881077,
+            "translateYmm": 68.097299
+          },
+          {
+            "instanceId": "trang-7#0012",
+            "rotationDeg": 180,
+            "translateXmm": 224.025758,
+            "translateYmm": 74.819495
+          },
+          {
+            "instanceId": "trang-7#0013",
+            "rotationDeg": 0,
+            "translateXmm": 132.772058,
+            "translateYmm": 73.7398
+          },
+          {
+            "instanceId": "trang-7#0014",
+            "rotationDeg": 180,
+            "translateXmm": 188.992228,
+            "translateYmm": 96.795755
+          }
+        ],
+        "sourceCutOuterVertices": 110,
+        "sourceCutHoles": 0,
+        "profile": "fast",
+        "timeBudgetMs": 3000,
+        "orientationPolicy": {
+          "defaultRotation": {
+            "anglesDeg": [
+              0,
+              90,
+              180,
+              270
+            ],
+            "mode": "discrete"
+          },
+          "reflection": "forbidden"
+        },
+        "stats": {
+          "attempts": 387,
+          "elapsedMs": 916,
+          "materialUtilization": 0.6089066434244207,
+          "orientationEvaluations": 383,
+          "placedCount": 66,
+          "poseRefinements": 0,
+          "sheetCount": 1,
+          "terminationReason": "sheet_full",
+          "unplacedCount": 0
+        },
+        "search": {
+          "baselineScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 133136000,
+            "primaryPenalty": 9993599868,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 49350446
+          },
+          "budget": {
+            "beamWidth": 4,
+            "evaluationBudget": 30000,
+            "multiStartRestarts": 1,
+            "orientationProposalsPerPart": 12,
+            "refinementRounds": 2,
+            "timeBudgetMs": 3000,
+            "trialCount": 4
+          },
+          "selectedCandidate": {
+            "kind": "baseline"
+          },
+          "selectedScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 133136000,
+            "primaryPenalty": 9993599868,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 49350446
+          },
+          "trialsRejected": 0,
+          "trialsRun": 0
+        },
+        "provenance": {
+          "baselineVersion": 12,
+          "candidateRuleVersion": 1,
+          "canonicalizationVersion": 1,
+          "kernelVersion": 1,
+          "multiStartVersion": 5,
+          "nativeBuildIdentity": "6fc91ac521d4c6866892a6f29bf7d43accd90f88cc0840d6bd134c0d08c0ce89",
+          "nfpRuleVersion": 2,
+          "normalizeRuleVersion": 2,
+          "productionSchemaVersion": 3,
+          "referencePointRuleVersion": 1,
+          "refineRuleVersion": 2,
+          "scoreVersion": 2,
+          "solverVersion": 4,
+          "toleranceVersion": 1
+        }
+      },
+      {
+        "sourcePage1Based": 8,
+        "outputCutPage1Based": 16,
+        "manifestFile": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\prynx_manifest_F_w9s0raol\\runtime-data\\manifests\\9b073efa76727de4e34672acb3ed5f97.json",
+        "manifestFileSha256": "6a5cde2d5e523039acbde87592a4776b806b162c1b2e15e86c743f7c3c584650",
+        "manifestId": "9b073efa76727de4e34672acb3ed5f97",
+        "placementCount": 57,
+        "cutRingCount": 57,
+        "comparedVertexCount": 8379,
+        "maxCoordinateErrorPt": 4.963567334925756e-10,
+        "cutCmOperatorCount": 0,
+        "cutDoOperatorCount": 0,
+        "beforeAfterCutDecodedBytesEqual": true,
+        "cutDecodedSha256": "51192a671f08560e9967d26907a4fb150ee09830f16ffe9b0d4f8c994db8b6d7",
+        "angles": {
+          "0.0": 29,
+          "180.0": 28
+        },
+        "bottomBand": {
+          "referenceYBelowMm": 35,
+          "count": 6,
+          "distinctYmm": [
+            25.33437949999998,
+            31.55139349999998
+          ]
+        },
+        "aboveBottomBand": {
+          "count": 51,
+          "distinctYCount": 50
+        },
+        "first14Poses": [
+          {
+            "instanceId": "trang-8#0001",
+            "rotationDeg": 0,
+            "translateXmm": 26.546135,
+            "translateYmm": 31.55139349999998
+          },
+          {
+            "instanceId": "trang-8#0002",
+            "rotationDeg": 180,
+            "translateXmm": 72.707341,
+            "translateYmm": 25.33437949999998
+          },
+          {
+            "instanceId": "trang-8#0003",
+            "rotationDeg": 0,
+            "translateXmm": 121.799611,
+            "translateYmm": 31.55139349999998
+          },
+          {
+            "instanceId": "trang-8#0004",
+            "rotationDeg": 180,
+            "translateXmm": 167.960817,
+            "translateYmm": 25.33437949999998
+          },
+          {
+            "instanceId": "trang-8#0005",
+            "rotationDeg": 0,
+            "translateXmm": 217.053087,
+            "translateYmm": 31.55139349999998
+          },
+          {
+            "instanceId": "trang-8#0006",
+            "rotationDeg": 180,
+            "translateXmm": 263.214293,
+            "translateYmm": 25.33437949999998
+          },
+          {
+            "instanceId": "trang-8#0007",
+            "rotationDeg": 0,
+            "translateXmm": 292.256399,
+            "translateYmm": 58.368038499999976
+          },
+          {
+            "instanceId": "trang-8#0008",
+            "rotationDeg": 180,
+            "translateXmm": 50.889174,
+            "translateYmm": 68.24232249999999
+          },
+          {
+            "instanceId": "trang-8#0009",
+            "rotationDeg": 0,
+            "translateXmm": 152.374522,
+            "translateYmm": 66.77835949999998
+          },
+          {
+            "instanceId": "trang-8#0010",
+            "rotationDeg": 180,
+            "translateXmm": 241.396126,
+            "translateYmm": 68.24232249999999
+          },
+          {
+            "instanceId": "trang-8#0011",
+            "rotationDeg": 0,
+            "translateXmm": 99.981444,
+            "translateYmm": 72.89590349999997
+          },
+          {
+            "instanceId": "trang-8#0012",
+            "rotationDeg": 180,
+            "translateXmm": 198.295983,
+            "translateYmm": 92.13309949999999
+          },
+          {
+            "instanceId": "trang-8#0013",
+            "rotationDeg": 0,
+            "translateXmm": 271.330175,
+            "translateYmm": 100.42753449999998
+          },
+          {
+            "instanceId": "trang-8#0014",
+            "rotationDeg": 180,
+            "translateXmm": 138.998175,
+            "translateYmm": 106.02153349999998
+          }
+        ],
+        "sourceCutOuterVertices": 147,
+        "sourceCutHoles": 0,
+        "profile": "fast",
+        "timeBudgetMs": 3000,
+        "orientationPolicy": {
+          "defaultRotation": {
+            "anglesDeg": [
+              0,
+              90,
+              180,
+              270
+            ],
+            "mode": "discrete"
+          },
+          "reflection": "forbidden"
+        },
+        "stats": {
+          "attempts": 395,
+          "elapsedMs": 1985,
+          "materialUtilization": 0.6069807848715125,
+          "orientationEvaluations": 346,
+          "placedCount": 57,
+          "poseRefinements": 0,
+          "sheetCount": 1,
+          "terminationReason": "sheet_full",
+          "unplacedCount": 0
+        },
+        "search": {
+          "baselineScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 131862533,
+            "primaryPenalty": 9994499886,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 48341977
+          },
+          "budget": {
+            "beamWidth": 4,
+            "evaluationBudget": 30000,
+            "multiStartRestarts": 1,
+            "orientationProposalsPerPart": 12,
+            "refinementRounds": 2,
+            "timeBudgetMs": 3000,
+            "trialCount": 4
+          },
+          "selectedCandidate": {
+            "kind": "baseline"
+          },
+          "selectedScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 131862533,
+            "primaryPenalty": 9994499886,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 48341977
+          },
+          "trialsRejected": 0,
+          "trialsRun": 0
+        },
+        "provenance": {
+          "baselineVersion": 12,
+          "candidateRuleVersion": 1,
+          "canonicalizationVersion": 1,
+          "kernelVersion": 1,
+          "multiStartVersion": 5,
+          "nativeBuildIdentity": "6fc91ac521d4c6866892a6f29bf7d43accd90f88cc0840d6bd134c0d08c0ce89",
+          "nfpRuleVersion": 2,
+          "normalizeRuleVersion": 2,
+          "productionSchemaVersion": 3,
+          "referencePointRuleVersion": 1,
+          "refineRuleVersion": 2,
+          "scoreVersion": 2,
+          "solverVersion": 4,
+          "toleranceVersion": 1
+        }
+      },
+      {
+        "sourcePage1Based": 12,
+        "outputCutPage1Based": 24,
+        "manifestFile": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\prynx_manifest_F_w9s0raol\\runtime-data\\manifests\\4df6cd0805282630a03257b95bd8c7fc.json",
+        "manifestFileSha256": "ce55158c473d152dbb9fc2c3949edccbd2a35b0fd7bacc31b0f9e88c05563625",
+        "manifestId": "4df6cd0805282630a03257b95bd8c7fc",
+        "placementCount": 29,
+        "cutRingCount": 29,
+        "comparedVertexCount": 21257,
+        "maxCoordinateErrorPt": 4.963567334925756e-10,
+        "cutCmOperatorCount": 0,
+        "cutDoOperatorCount": 0,
+        "beforeAfterCutDecodedBytesEqual": true,
+        "cutDecodedSha256": "7b6db557ffa541e67b1c85b25387fdab7b6196ba5d34e20662c5729cef5a6b79",
+        "angles": {
+          "0.0": 15,
+          "180.0": 14
+        },
+        "bottomBand": {
+          "referenceYBelowMm": 60,
+          "count": 5,
+          "distinctYmm": [
+            37.9872085,
+            39.6598415
+          ]
+        },
+        "aboveBottomBand": {
+          "count": 24,
+          "distinctYCount": 24
+        },
+        "first14Poses": [
+          {
+            "instanceId": "trang-12#0001",
+            "rotationDeg": 0,
+            "translateXmm": 35.126657,
+            "translateYmm": 39.6598415
+          },
+          {
+            "instanceId": "trang-12#0002",
+            "rotationDeg": 180,
+            "translateXmm": 92.708291,
+            "translateYmm": 37.9872085
+          },
+          {
+            "instanceId": "trang-12#0003",
+            "rotationDeg": 0,
+            "translateXmm": 151.689521,
+            "translateYmm": 39.6598415
+          },
+          {
+            "instanceId": "trang-12#0004",
+            "rotationDeg": 180,
+            "translateXmm": 209.271155,
+            "translateYmm": 37.9872085
+          },
+          {
+            "instanceId": "trang-12#0005",
+            "rotationDeg": 0,
+            "translateXmm": 268.252385,
+            "translateYmm": 39.6598415
+          },
+          {
+            "instanceId": "trang-12#0006",
+            "rotationDeg": 180,
+            "translateXmm": 64.105164,
+            "translateYmm": 99.1243965
+          },
+          {
+            "instanceId": "trang-12#0007",
+            "rotationDeg": 0,
+            "translateXmm": 188.266607,
+            "translateYmm": 98.0771765
+          },
+          {
+            "instanceId": "trang-12#0008",
+            "rotationDeg": 180,
+            "translateXmm": 287.46504,
+            "translateYmm": 100.8863085
+          },
+          {
+            "instanceId": "trang-12#0009",
+            "rotationDeg": 0,
+            "translateXmm": 126.594105,
+            "translateYmm": 101.23797449999999
+          },
+          {
+            "instanceId": "trang-12#0010",
+            "rotationDeg": 180,
+            "translateXmm": 244.278592,
+            "translateYmm": 137.8298775
+          },
+          {
+            "instanceId": "trang-12#0011",
+            "rotationDeg": 0,
+            "translateXmm": 32.53496,
+            "translateYmm": 152.9949685
+          },
+          {
+            "instanceId": "trang-12#0012",
+            "rotationDeg": 180,
+            "translateXmm": 192.57346,
+            "translateYmm": 161.1117525
+          },
+          {
+            "instanceId": "trang-12#0013",
+            "rotationDeg": 0,
+            "translateXmm": 96.718739,
+            "translateYmm": 161.8889135
+          },
+          {
+            "instanceId": "trang-12#0014",
+            "rotationDeg": 180,
+            "translateXmm": 287.46504,
+            "translateYmm": 189.9270185
+          }
+        ],
+        "sourceCutOuterVertices": 733,
+        "sourceCutHoles": 0,
+        "profile": "fast",
+        "timeBudgetMs": 3000,
+        "orientationPolicy": {
+          "defaultRotation": {
+            "anglesDeg": [
+              0,
+              90,
+              180,
+              270
+            ],
+            "mode": "discrete"
+          },
+          "reflection": "forbidden"
+        },
+        "stats": {
+          "attempts": 194,
+          "elapsedMs": 3377,
+          "materialUtilization": 0.5542989873634884,
+          "orientationEvaluations": 195,
+          "placedCount": 29,
+          "poseRefinements": 0,
+          "sheetCount": 1,
+          "terminationReason": "sheet_full",
+          "unplacedCount": 0
+        },
+        "search": {
+          "baselineScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 131304060,
+            "primaryPenalty": 9997299942,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 55032519
+          },
+          "budget": {
+            "beamWidth": 4,
+            "evaluationBudget": 30000,
+            "multiStartRestarts": 1,
+            "orientationProposalsPerPart": 12,
+            "refinementRounds": 2,
+            "timeBudgetMs": 3000,
+            "trialCount": 4
+          },
+          "selectedCandidate": {
+            "kind": "baseline"
+          },
+          "selectedScore": {
+            "invalidCount": 0,
+            "lastSheetUsedAreaFixed": 131304060,
+            "primaryPenalty": 9997299942,
+            "scoreVersion": 2,
+            "sheetCount": 1,
+            "wastedWithinEnvelopeFixed": 55032519
+          },
+          "trialsRejected": 0,
+          "trialsRun": 0
+        },
+        "provenance": {
+          "baselineVersion": 12,
+          "candidateRuleVersion": 1,
+          "canonicalizationVersion": 1,
+          "kernelVersion": 1,
+          "multiStartVersion": 5,
+          "nativeBuildIdentity": "6fc91ac521d4c6866892a6f29bf7d43accd90f88cc0840d6bd134c0d08c0ce89",
+          "nfpRuleVersion": 2,
+          "normalizeRuleVersion": 2,
+          "productionSchemaVersion": 3,
+          "referencePointRuleVersion": 1,
+          "refineRuleVersion": 2,
+          "scoreVersion": 2,
+          "solverVersion": 4,
+          "toleranceVersion": 1
+        }
+      }
+    ]
+  },
+  "probeRun": {
+    "interpreter": "D:/pdfcompare/backend/venv/Scripts/python.exe",
+    "args": [
+      "-X",
+      "utf8",
+      "-B",
+      ".audit-tmp/probe_row_drift_20260907.py"
+    ],
+    "cwd": "D:/pdfcompare/backend",
+    "exitCode": 0,
+    "script": "\"\"\"Audit lệch hàng 2026-09-07: chỉ đọc PDF/manifest, không solve hoặc gia hạn lease.\"\"\"\n\nimport collections\nimport hashlib\nimport json\nimport logging\nimport sys\nfrom pathlib import Path\n\nimport pikepdf\n\nsys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n\nfrom app.workers.nup_artwork import resolve_manifest_artwork_placement\nfrom app.workers.nup_clip_shape import transform_manifest_polygon_rings\n\n\nlogging.disable(logging.CRITICAL)\nROOT = Path(\"C:/Users/Khanh Pham/AppData/Local/Temp/prynx_manifest_F_w9s0raol\")\nSOURCE = Path(\"D:/pdfcompare/test/test nesting.pdf\")\n\n\ndef sha(path):\n    return hashlib.sha256(path.read_bytes()).hexdigest()\n\n\ndef content_bytes(page):\n    value = page.obj[\"/Contents\"]\n    return (\n        b\"\\n\".join(stream.read_bytes() for stream in value)\n        if isinstance(value, pikepdf.Array) else value.read_bytes()\n    )\n\n\nrecord = json.loads((ROOT / \"result.json\").read_text(encoding=\"utf-8\"))\nassert sha(SOURCE) == record[\"sourceSha256\"]\nrows = []\nwith pikepdf.Pdf.open(ROOT / \"before.pdf\") as before, pikepdf.Pdf.open(ROOT / \"after.pdf\") as after:\n    assert len(before.pages) == len(after.pages) == 26\n    for source_page in (6, 7, 8, 12):\n        order = source_page - 1\n        reference = record[\"references\"][order]\n        manifest_path = ROOT / \"runtime-data/manifests\" / (reference[\"manifestId\"] + \".json\")\n        envelope = json.loads(manifest_path.read_text(encoding=\"utf-8\"))\n        production, manifest = envelope[\"productionRequest\"], envelope[\"manifest\"]\n        bundle, request = production[\"renderBundle\"], production[\"engineRequest\"]\n        assert manifest[\"manifestId\"] == reference[\"manifestId\"]\n        assert envelope[\"layoutFingerprint\"] == reference[\"layoutFingerprint\"]\n        assert len(bundle[\"parts\"]) == 1\n        part = bundle[\"parts\"][0]\n        assert part[\"pages\"][\"front\"][\"pageIndex\"] == order\n        assert part[\"pages\"][\"cut\"][\"pageIndex\"] == order\n        placements = sorted(manifest[\"placements\"], key=lambda item: item[\"instanceId\"].encode(\"utf-8\"))\n        expected = []\n        for placement in placements:\n            resolved = resolve_manifest_artwork_placement(\n                placement=placement, part=part, sheet_frame=bundle[\"sheetFrames\"][\"cut\"],\n                side=\"cut\", render_bundle_hash=production[\"renderBundleHash\"],\n            )\n            rings = transform_manifest_polygon_rings(\n                part[\"cutContour\"], sheet_frame=resolved.sheet_frame, pose=resolved.pose,\n                reference_point_mm=resolved.reference_point_mm,\n            )\n            expected.extend([[(x * 72 / 25.4, y * 72 / 25.4) for x, y in ring] for ring in rings])\n        cut_index = 2 * order + 1\n        actual, group, magenta = [], [], False\n        cut_operations = list(pikepdf.parse_content_stream(after.pages[cut_index]))\n        cm_count = sum(str(operator) == \"cm\" for _, operator in cut_operations)\n        do_count = sum(str(operator) == \"Do\" for _, operator in cut_operations)\n        assert cm_count == 0 and do_count == 0, \"CUT phải là tọa độ tờ trực tiếp, không CTM/Form ẩn\"\n        assert int(after.pages[cut_index].obj.get(\"/Rotate\", 0)) == 0\n        assert float(after.pages[cut_index].obj.get(\"/UserUnit\", 1)) == 1\n        for operands, operator in cut_operations:\n            op = str(operator)\n            if op == \"K\":\n                magenta = tuple(map(float, operands)) == (0.0, 1.0, 0.0, 0.0)\n                if not magenta:\n                    group = []\n            if op == \"m\" and magenta:\n                group.append([tuple(map(float, operands))])\n            elif op == \"l\" and magenta:\n                group[-1].append(tuple(map(float, operands)))\n            elif op == \"S\":\n                if magenta:\n                    actual.extend(group)\n                group = []\n        assert len(actual) == len(expected)\n        assert all(len(a) == len(e) for a, e in zip(actual, expected))\n        max_error = max(\n            abs(a - e) for ar, er in zip(actual, expected)\n            for ap, ep in zip(ar, er) for a, e in zip(ap, ep)\n        )\n        assert max_error < 1e-8\n        # Đây là dải theo tọa độ tham chiếu pose, không giả vờ là phân đoạn hàng vật lý.\n        band_y = 60.0 if source_page == 12 else 35.0\n        bottom = [p for p in placements if p[\"pose\"][\"translateYmm\"] < band_y]\n        upper = [p for p in placements if p[\"pose\"][\"translateYmm\"] >= band_y]\n        current_bytes = content_bytes(after.pages[cut_index])\n        before_equal = content_bytes(before.pages[cut_index]) == current_bytes\n        assert before_equal\n        rows.append({\n            \"sourcePage1Based\": source_page,\n            \"outputCutPage1Based\": cut_index + 1,\n            \"manifestFile\": str(manifest_path),\n            \"manifestFileSha256\": sha(manifest_path),\n            \"manifestId\": manifest[\"manifestId\"],\n            \"placementCount\": len(placements),\n            \"cutRingCount\": len(actual),\n            \"comparedVertexCount\": sum(map(len, actual)),\n            \"maxCoordinateErrorPt\": max_error,\n            \"cutCmOperatorCount\": cm_count,\n            \"cutDoOperatorCount\": do_count,\n            \"beforeAfterCutDecodedBytesEqual\": before_equal,\n            \"cutDecodedSha256\": hashlib.sha256(current_bytes).hexdigest(),\n            \"angles\": dict(collections.Counter(str(p[\"pose\"][\"rotationDeg\"]) for p in placements)),\n            \"bottomBand\": {\n                \"referenceYBelowMm\": band_y, \"count\": len(bottom),\n                \"distinctYmm\": sorted(set(p[\"pose\"][\"translateYmm\"] for p in bottom)),\n            },\n            \"aboveBottomBand\": {\n                \"count\": len(upper),\n                \"distinctYCount\": len(set(p[\"pose\"][\"translateYmm\"] for p in upper)),\n            },\n            \"first14Poses\": [{\"instanceId\": p[\"instanceId\"], **p[\"pose\"]} for p in placements[:14]],\n            \"sourceCutOuterVertices\": len(part[\"cutContour\"][\"outer\"]),\n            \"sourceCutHoles\": len(part[\"cutContour\"][\"holes\"]),\n            \"profile\": request[\"profile\"], \"timeBudgetMs\": request.get(\"timeBudgetMs\"),\n            \"orientationPolicy\": request[\"orientationPolicy\"],\n            \"stats\": manifest[\"stats\"], \"search\": manifest[\"search\"],\n            \"provenance\": manifest[\"provenance\"],\n        })\n\nprint(json.dumps({\n    \"scope\": \"Đọc artifact F có sẵn và 4 manifest; không solve/native-validate, không renew lease; dải Y là tham chiếu pose, không phải phân đoạn hàng.\",\n    \"source\": str(SOURCE), \"sourceSha256\": sha(SOURCE),\n    \"recordedSourceSha256\": record[\"sourceSha256\"],\n    \"beforePdf\": str(ROOT / \"before.pdf\"), \"beforePdfSha256\": sha(ROOT / \"before.pdf\"),\n    \"afterPdf\": str(ROOT / \"after.pdf\"), \"afterPdfSha256\": sha(ROOT / \"after.pdf\"),\n    \"rows\": rows,\n}, ensure_ascii=True))\n\r\n"
+  },
+  "limitations": [
+    "Chỉ đọc artifact F và manifest đã lưu; không chứng minh đây là chính response/job GUI mới nhất.",
+    "Before/after PDF là beforeF/afterF với cùng writer D/E, không phải beforeD/E.",
+    "Native validation valid=true là trạng thái manifest đã lưu; lượt chẩn đoán không chạy validator lại.",
+    "Dải Y phân tích là tọa độ điểm tham chiếu pose, không gán số hàng thực bằng phép cắt dải.",
+    "selectedCandidate=baseline không serialize periodic_motif/subcandidate; chưa xác định motif cụ thể bị loại ở guard/capacity/deadline nào.",
+    "trialsRun=0 và poseRefinements=0 không chứng minh số request HTTP hoặc số cold-solve giữa các lần người dùng đổi thiết lập.",
+    "Chưa đo candidate đều hàng có giữ hoặc tăng được số tem trong đúng ngân sách hiện tại; không hứa speedup hoặc quality floor trước A/B."
+  ]
+}

@@ -1,0 +1,2781 @@
+{
+  "schemaVersion": 1,
+  "auditDate": "2026-09-05",
+  "scope": "W2-U09 / W7-U11 — audit nesting Tem bế/CNC; chỉ khảo sát và lưu bằng chứng, chưa sửa production.",
+  "coverage": "TRACED + PROBE; các test AUTO ghi riêng, chưa chứng minh full ARTIFACT/RUNTIME hiện hành.",
+  "source": {
+    "root": "D:/pdfcompare",
+    "initialHead": "baeec0517b213d5c017d4d25dd77ed81b0b6425e",
+    "reportHead": "669b92dbb3a343633c578df6fea9872514c6ef22",
+    "note": "HEAD thay đổi bởi phiên khác trong khi audit. Snapshot SHA256 bên dưới là lúc lập báo cáo. Không đồng nhất installed native với mọi source ở HEAD hiện tại.",
+    "sha256": [
+      {
+        "Path": "D:\\pdfcompare\\test\\test nesting.pdf",
+        "Hash": "EFCDE4F0A16ACA0A5A54EE2D952945AFE2EB70DD2073BC9FF59EE87292B257AB"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\tests\\fixtures\\mixed_nesting\\corpus.json",
+        "Hash": "B38B052959207AEAE1C38EB1FE819302846A2DA98B3347A9114918208DF9864E"
+      },
+      {
+        "Path": "D:\\pdfcompare\\scripts\\benchmark_mixed_nesting.py",
+        "Hash": "64BD03E727A5EF0777F93C447035A412CD3A70C1D14D7AE10C6D685E1EA1B1A9"
+      },
+      {
+        "Path": "D:\\pdfcompare\\_audit_current_nesting_20260905.json",
+        "Hash": "59EB8D230A9C0244E4A275E6A1EFE7202765DCB8A34D02A32967B2114395601A"
+      },
+      {
+        "Path": "D:\\pdfcompare\\_audit_current_nesting_20260905_runs3.json",
+        "Hash": "8650FC980624D396937E7B9EB43FE1B7DF688C7AD2B0CD670B4CA7869958C3CD"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\.audit-tmp\\bench_step_repeat_13.py",
+        "Hash": "961450F193137A62DA78F98E8343A7868A4B284CB38AF16A16F767F30CE9DC3A"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\.audit-tmp\\verify_motif_full13.py",
+        "Hash": "109D9AC5D5245E9AE5DB64D87ACEC050150D408738A9D7260346D80ED01699CC"
+      },
+      {
+        "Path": "D:\\pdfcompare\\desktop\\src\\components\\imposition-tools\\sections\\AdvancedSettingsSection.tsx",
+        "Hash": "07EF9DBDB7D746CBED8AC1F8953764CA9C070D016BCF1432DA8080178E0019FB"
+      },
+      {
+        "Path": "D:\\pdfcompare\\desktop\\src\\components\\imposition-tools\\ImposerDashboard.tsx",
+        "Hash": "1940D65FDB642629F76BB077AD5F494E372CD48E8AA55E42AF3C2D3654990FD7"
+      },
+      {
+        "Path": "D:\\pdfcompare\\desktop\\src\\components\\imposition-tools\\sections\\GridPreview.tsx",
+        "Hash": "063A1300C5E8CC37B5EFCDC10664D318037117ECAFA9E4E983C63931F53FF93C"
+      },
+      {
+        "Path": "D:\\pdfcompare\\desktop\\src\\lib\\processHandlers.ts",
+        "Hash": "F3DCCE2F08BC8C4461AE6955F79E6ACD591EE1A38ADA54135A21B62A6EC2C752"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\api\\routes\\imposition.py",
+        "Hash": "FB239D00CBFB30A2AFD132843DF21BC1D2E74B484BBC69434531E2E337D45F41"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\core\\nesting_preview_capacity.py",
+        "Hash": "94996CE0457098CB209137B05FD448466EDA16FD3B8069A40B7CF4A8E98182D5"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\core\\nesting_preview_session.py",
+        "Hash": "EB6CBD75804B448EA7E9968FB4A0932E819FCC93D99459D58C828F3BF7FD2AD3"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\workers\\nup_true_shape_nesting.py",
+        "Hash": "15738991071F6ABC0812DEBDFEEA7F670AF619AC0D6124A124986FEC6030C172"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\core\\nesting_production_orchestrator.py",
+        "Hash": "1AB6048801CB681DB60F9933DB307DA81032B90D8D1C179F4FEFF70EA05A0450"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\core\\nesting_production_pipeline.py",
+        "Hash": "ADC86A088923A7F07690804D43C5B576A7A90C5188F5FFCB27EF30A96ED89ADE"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\core\\nesting_production_adapter.py",
+        "Hash": "1ECDF228CB26FD4B0C33D3674A57D6173DD916B9EA14D3857BDD17B9348B5D5D"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\app\\core\\mixed_nesting_service.py",
+        "Hash": "EA8CCCEB0704EB8E7E8F3E9243C01637BA896AE5BB168A1987227968DBB2CACB"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\multi_start.rs",
+        "Hash": "805781F0E18CDB4B33149F922E3362B55433B5D03FB05400DDC685C4047C4FA4"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\solver.rs",
+        "Hash": "78C58571C7E1E02E1D8EABAC8D6262943C420E046E464C70E114DA92E7A2FD1C"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\score.rs",
+        "Hash": "736E2334524CBEB9472336AD63110A400148192A9EF3A144832EDF5BBB91E9A8"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\candidates.rs",
+        "Hash": "DEE29209820A531E6BDED5C6C3AE68877B079AC1F3BCBC3437156DB50C4AD627"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\normalize.rs",
+        "Hash": "2E6E6DA336EF154484552D5A93E2C7A87CFECD16715894D3F4C6D3CAD38392EE"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\nfp.rs",
+        "Hash": "7E8C8C645872570ACEF7AB8BC2E41598072309811B8D6578CEDB0D1558084410"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\baseline.rs",
+        "Hash": "6FCDD38F01CA5646A786F07352C6B9DC9548DB25C960591175290965DAC7AC2B"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\refine.rs",
+        "Hash": "A4394AD40DBD67A17DD4EDFF59212D307DD54DEED43A6680F5B843D0638F9112"
+      },
+      {
+        "Path": "D:\\pdfcompare\\imposition_core\\src\\mixed_nesting\\validator.rs",
+        "Hash": "F012A4E9D3ABFD1DDBB35CB5AD86D211B4495C793AE19FC6C412481977413056"
+      },
+      {
+        "Path": "D:\\pdfcompare\\native\\src\\mixed_nesting_py.rs",
+        "Hash": "58304E4075D853EF91848A31645D0F7A836651BDA2AD2E3310171167B57AA594"
+      },
+      {
+        "Path": "D:\\pdfcompare\\native\\build.rs",
+        "Hash": "049ACF3F1DEB35AC6B1E92F399693555D49DB79FC6B6204B2DFDD60B4AC48732"
+      },
+      {
+        "Path": "D:\\pdfcompare\\backend\\venv\\Lib\\site-packages\\pdfcompare_native\\pdfcompare_native.cp311-win_amd64.pyd",
+        "Hash": "6051E167E474D9B9780C881D997BD22E1E98358CADC845B6A042F8A66DE601AA"
+      }
+    ]
+  },
+  "native": {
+    "path": "D:/pdfcompare/backend/venv/Lib/site-packages/pdfcompare_native/pdfcompare_native.cp311-win_amd64.pyd",
+    "sourceRevision": "baeec0517b213d5c017d4d25dd77ed81b0b6425e",
+    "sourceDirty": true,
+    "buildProfile": "release",
+    "buildProvenance": "auto-git",
+    "buildTimestampUtc": "unix:1788538943",
+    "buildIdentity": "fbe222ddf552cc2a8cdef6054d91defa50e971ee88a9352dfef286df9ae572bf",
+    "engineVersion": "0.3.0",
+    "protocolVersion": 2,
+    "baselineVersion": 12,
+    "solverVersion": 4,
+    "multiStartVersion": 5,
+    "runtimeControlVersion": 1,
+    "note": "Build identity không phải content hash toàn source. Không rebuild native trong đợt audit này."
+  },
+  "cncDuplexMarks": {
+    "finding": "§NEST26.1",
+    "status": "CONFIRMED",
+    "method": "Mapper/schema/job builder/handoff thật; detector và solver mock; session store in-memory local thật; fingerprint nguồn thật. Không render hay persist artifact.",
+    "cwd": "D:/pdfcompare/backend",
+    "python": "D:/pdfcompare/backend/venv/Scripts/python.exe",
+    "script": "from types import SimpleNamespace\nfrom unittest.mock import patch\nfrom pydantic import ValidationError\nfrom app.api.routes.imposition import PreviewLayoutRequest\nfrom app.core.nesting_preview_capacity import settings_from_preview_request\nfrom app.workers.nup_true_shape_nesting import build_true_shape_nesting_job,attach_preview_session_reference,route_true_shape\nfrom app.core.nesting_preview_session import NestingPreviewSessionStore,SESSION_REFERENCE_SETTING,job_identity_key\nimport json\nk=72/25.4\nsource='D:/pdfcompare/test/test nesting.pdf'\nreq=PreviewLayoutRequest(usable_w=310*k,usable_h=420*k,item_w=40*k,item_h=40*k,gap_x=2*k,gap_y=2*k,strategy='true_shape_nesting',allow_legacy_fallback=True,is_die_cut=True,imposer_mode='cnc',cnc_two_sided=True,cnc_flip_edge='long',task_mode='nup',layout_type='sequential',grouping_strategy='free_gang',sheet_w=320*k,sheet_h=430*k,margin_left=5*k,margin_right=5*k,margin_top=5*k,margin_bottom=5*k,target_quantity=4,detected_shapes_by_page={'0':'CUSTOM','1':'CUSTOM'},separate_cut_page=False)\npv=settings_from_preview_request(req)\nexp={**pv,'gridStrategy':'optimal_auto','cncDuplexMarks':True}\nshapes={p:SimpleNamespace(page=p,page_contour=SimpleNamespace(page_index=p,outer_top_down_user_units=((0,0),(40,0),(40,40),(0,40)),holes_top_down_user_units=())) for p in [0,1]}\nfake=SimpleNamespace(source_pins=())\nstore=NestingPreviewSessionStore(capacity=2,solver=lambda job,**kw: fake)\nwith patch('app.workers.nup_true_shape_nesting._detect_shapes_for_nesting',return_value=shapes),patch('app.core.nesting_rollout.true_shape_nesting_enabled',return_value=True),patch('app.core.nesting_preview_session.get_preview_session_store',return_value=store):\n pvjob=build_true_shape_nesting_job(source,pv)\n exjob=build_true_shape_nesting_job(source,exp)\n store.get_or_solve(pvjob)\n out=attach_preview_session_reference(dict(exp),source)\n result={'exportRoutesTrueShape':route_true_shape(exp),'previewCacheHit':store.peek_or_wait(pvjob) is fake,'exportCacheHit':store.peek_or_wait(exjob) is fake,'handoffReferencePresent':SESSION_REFERENCE_SETTING in out,'sameIdentity':job_identity_key(pvjob)==job_identity_key(exjob),'previewRegistration':pvjob.duplex_registration,'exportRegistration':exjob.duplex_registration,'previewObstacles':len(pvjob.fixed_obstacles),'exportObstacles':len(exjob.fixed_obstacles)}\ntry:\n PreviewLayoutRequest.model_validate({**req.model_dump(),'cnc_duplex_marks':True})\n result['schemaErrors']=[]\nexcept ValidationError as e:\n result['schemaErrors']=[{'loc':e2['loc'],'type':e2['type']} for e2 in e.errors()]\nprint(json.dumps(result,indent=2))\n",
+    "output": {
+      "exportRoutesTrueShape": true,
+      "previewCacheHit": true,
+      "exportCacheHit": false,
+      "handoffReferencePresent": false,
+      "sameIdentity": false,
+      "previewRegistration": false,
+      "exportRegistration": true,
+      "previewObstacles": 0,
+      "exportObstacles": 4,
+      "schemaErrors": [
+        {
+          "loc": [
+            "cnc_duplex_marks"
+          ],
+          "type": "extra_forbidden"
+        }
+      ]
+    },
+    "limitation": "Chứng minh contract/cache miss và route solve lại; chưa chứng minh collision hay pose PDF cụ thể."
+  },
+  "corpus": {
+    "finding": "§NEST26.3",
+    "source": "D:/pdfcompare/backend/tests/fixtures/mixed_nesting/corpus.json",
+    "harness": "D:/pdfcompare/scripts/benchmark_mixed_nesting.py",
+    "originalResults1": {
+      "corpusVersion": 3,
+      "engineVersion": "0.3.0",
+      "protocolVersion": 2,
+      "baselineDisclaimer": "Baseline bốn góc cardinal là SÀN AN TOÀN để so sánh, KHÔNG phải legal domain của sản phẩm.",
+      "machine": {
+        "platform": "win32",
+        "python": "3.11.9",
+        "cpuCount": 16,
+        "ramTotalMb": 32527.9,
+        "ramAvailableMb": 12926.6,
+        "ramTier": ">=16GB",
+        "workers": 15,
+        "perWorkerMb": 192.01,
+        "estimatedPeakMb": 2944.93,
+        "plannerReason": "mixed-nesting: workers=15 (cpu=16, base=15, ram_total_mb=32528->cap15); model=v4, parts=1, instances=1, vertices=4, worker_grant=15, active_workers=15, portfolio_trial_capacity=12, nfp_cache_mb_per_trial=192.0, per_worker_mb=192.0, peak_mb=2944.9"
+      },
+      "cases": [
+        {
+          "id": "ANGLE_ONLY",
+          "title": "Chỉ vừa tờ khi xoay góc không-cardinal",
+          "expect": {
+            "minPlaced": 1,
+            "maxSheets": 1,
+            "requireNonCardinalAngle": true,
+            "cardinalIsInfeasible": true
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 1.44,
+              "p95Ms": 1.44,
+              "minMs": 1.44,
+              "maxMs": 1.44,
+              "peakRssMb": 21.4,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 1,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.1,
+              "recomputedUtilization": 0.1,
+              "elapsedMsReported": 1,
+              "attempts": 8,
+              "orientationEvaluations": 47,
+              "poseRefinements": 152,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 1,
+              "fractionalTranslationCount": 1
+            },
+            {
+              "profile": "balanced",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 3.24,
+              "p95Ms": 3.24,
+              "minMs": 3.24,
+              "maxMs": 3.24,
+              "peakRssMb": 21.4,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 1,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.1,
+              "recomputedUtilization": 0.1,
+              "elapsedMsReported": 3,
+              "attempts": 48,
+              "orientationEvaluations": 166,
+              "poseRefinements": 2640,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 1,
+              "fractionalTranslationCount": 1
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 0.94,
+            "p95Ms": 0.94,
+            "minMs": 0.94,
+            "maxMs": 0.94,
+            "peakRssMb": 21.4,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 0,
+            "placedCount": 0,
+            "unplacedCount": 1,
+            "reportedUtilization": 0,
+            "recomputedUtilization": null,
+            "elapsedMsReported": 0,
+            "attempts": 0,
+            "orientationEvaluations": 52,
+            "poseRefinements": 0,
+            "terminationReason": "work_budget_exhausted",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 0
+          },
+          "deadline": null
+        },
+        {
+          "id": "CONTINUOUS_XY",
+          "title": "Toạ độ X/Y có phần lẻ mm, không nằm trên lưới",
+          "expect": {
+            "minPlaced": 4,
+            "maxSheets": 2,
+            "requireFractionalTranslation": true
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 38.08,
+              "p95Ms": 38.08,
+              "minMs": 38.08,
+              "maxMs": 38.08,
+              "peakRssMb": 21.6,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 4,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.36466969134997484,
+              "recomputedUtilization": 0.36466969134997484,
+              "elapsedMsReported": 38,
+              "attempts": 172,
+              "orientationEvaluations": 20,
+              "poseRefinements": 3356,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 0,
+              "fractionalTranslationCount": 4
+            },
+            {
+              "profile": "balanced",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 286.49,
+              "p95Ms": 286.49,
+              "minMs": 286.49,
+              "maxMs": 286.49,
+              "peakRssMb": 21.7,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 4,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.36466969134997484,
+              "recomputedUtilization": 0.36466969134997484,
+              "elapsedMsReported": 286,
+              "attempts": 520,
+              "orientationEvaluations": 52,
+              "poseRefinements": 29820,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 0,
+              "fractionalTranslationCount": 4
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 146.94,
+            "p95Ms": 146.94,
+            "minMs": 146.94,
+            "maxMs": 146.94,
+            "peakRssMb": 21.7,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 1,
+            "placedCount": 4,
+            "unplacedCount": 0,
+            "reportedUtilization": 0.36466969134997484,
+            "recomputedUtilization": 0.36466969134997484,
+            "elapsedMsReported": 146,
+            "attempts": 520,
+            "orientationEvaluations": 52,
+            "poseRefinements": 28380,
+            "terminationReason": "all_placed",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 4
+          },
+          "deadline": null
+        },
+        {
+          "id": "CONSTRAINTS",
+          "title": "Trộn free, fixed, discrete, ranges và inherit trong cùng job",
+          "expect": {
+            "minPlaced": 10,
+            "maxSheets": 2,
+            "requirePerPartDomain": true
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 346.42,
+              "p95Ms": 346.42,
+              "minMs": 346.42,
+              "maxMs": 346.42,
+              "peakRssMb": 22,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.14208333333333334,
+              "recomputedUtilization": 0.14208333333333334,
+              "elapsedMsReported": 346,
+              "attempts": 603,
+              "orientationEvaluations": 50,
+              "poseRefinements": 12329,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 3,
+              "fractionalTranslationCount": 8
+            },
+            {
+              "profile": "balanced",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 1859.7,
+              "p95Ms": 1859.7,
+              "minMs": 1859.7,
+              "maxMs": 1859.7,
+              "peakRssMb": 22.1,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.14208333333333334,
+              "recomputedUtilization": 0.14208333333333334,
+              "elapsedMsReported": 1859,
+              "attempts": 1664,
+              "orientationEvaluations": 88,
+              "poseRefinements": 97815,
+              "terminationReason": "work_budget_exhausted",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 2,
+              "fractionalTranslationCount": 8
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 864.69,
+            "p95Ms": 864.69,
+            "minMs": 864.69,
+            "maxMs": 864.69,
+            "peakRssMb": 22.1,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 1,
+            "placedCount": 10,
+            "unplacedCount": 0,
+            "reportedUtilization": 0.14208333333333334,
+            "recomputedUtilization": 0.14208333333333334,
+            "elapsedMsReported": 864,
+            "attempts": 1798,
+            "orientationEvaluations": 94,
+            "poseRefinements": 97680,
+            "terminationReason": "work_budget_exhausted",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 6
+          },
+          "deadline": null
+        },
+        {
+          "id": "S20",
+          "title": "20 con, 5 loại, contour đơn giản",
+          "expect": {
+            "minPlaced": 20,
+            "maxSheets": 6
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 1995.82,
+              "p95Ms": 1995.82,
+              "minMs": 1995.82,
+              "maxMs": 1995.82,
+              "peakRssMb": 22.1,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.23685714285714285,
+              "recomputedUtilization": 0.23685714285714285,
+              "elapsedMsReported": 1995,
+              "attempts": 1244,
+              "orientationEvaluations": 100,
+              "poseRefinements": 27156,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 7,
+              "fractionalTranslationCount": 14
+            },
+            {
+              "profile": "balanced",
+              "runs": 1,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 6151.01,
+              "p95Ms": 6151.01,
+              "minMs": 6151.01,
+              "maxMs": 6151.01,
+              "peakRssMb": 22.2,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.23685714285714285,
+              "recomputedUtilization": 0.23685714285714285,
+              "elapsedMsReported": 6150,
+              "attempts": 1527,
+              "orientationEvaluations": 86,
+              "poseRefinements": 98040,
+              "terminationReason": "work_budget_exhausted",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 0,
+              "fractionalTranslationCount": 14
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 1598.18,
+            "p95Ms": 1598.18,
+            "minMs": 1598.18,
+            "maxMs": 1598.18,
+            "peakRssMb": 22.2,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 1,
+            "placedCount": 20,
+            "unplacedCount": 0,
+            "reportedUtilization": 0.23685714285714285,
+            "recomputedUtilization": 0.23685714285714285,
+            "elapsedMsReported": 1598,
+            "attempts": 1809,
+            "orientationEvaluations": 107,
+            "poseRefinements": 97680,
+            "terminationReason": "work_budget_exhausted",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 14
+          },
+          "deadline": null
+        }
+      ]
+    },
+    "originalResults3": {
+      "corpusVersion": 3,
+      "engineVersion": "0.3.0",
+      "protocolVersion": 2,
+      "baselineDisclaimer": "Baseline bốn góc cardinal là SÀN AN TOÀN để so sánh, KHÔNG phải legal domain của sản phẩm.",
+      "machine": {
+        "platform": "win32",
+        "python": "3.11.9",
+        "cpuCount": 16,
+        "ramTotalMb": 32527.9,
+        "ramAvailableMb": 13679.7,
+        "ramTier": ">=16GB",
+        "workers": 15,
+        "perWorkerMb": 192.01,
+        "estimatedPeakMb": 2944.93,
+        "plannerReason": "mixed-nesting: workers=15 (cpu=16, base=15, ram_total_mb=32528->cap15); model=v4, parts=1, instances=1, vertices=4, worker_grant=15, active_workers=15, portfolio_trial_capacity=12, nfp_cache_mb_per_trial=192.0, per_worker_mb=192.0, peak_mb=2944.9"
+      },
+      "cases": [
+        {
+          "id": "ANGLE_ONLY",
+          "title": "Chỉ vừa tờ khi xoay góc không-cardinal",
+          "expect": {
+            "minPlaced": 1,
+            "maxSheets": 1,
+            "requireNonCardinalAngle": true,
+            "cardinalIsInfeasible": true
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 0.57,
+              "p95Ms": 0.88,
+              "minMs": 0.52,
+              "maxMs": 0.88,
+              "peakRssMb": 21.3,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 1,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.1,
+              "recomputedUtilization": 0.1,
+              "elapsedMsReported": 0,
+              "attempts": 8,
+              "orientationEvaluations": 47,
+              "poseRefinements": 152,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 1,
+              "fractionalTranslationCount": 1
+            },
+            {
+              "profile": "balanced",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 2.88,
+              "p95Ms": 3.1,
+              "minMs": 2.86,
+              "maxMs": 3.1,
+              "peakRssMb": 21.3,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 1,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.1,
+              "recomputedUtilization": 0.1,
+              "elapsedMsReported": 2,
+              "attempts": 48,
+              "orientationEvaluations": 166,
+              "poseRefinements": 2640,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 1,
+              "fractionalTranslationCount": 1
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 0.91,
+            "p95Ms": 0.91,
+            "minMs": 0.91,
+            "maxMs": 0.91,
+            "peakRssMb": 21.3,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 0,
+            "placedCount": 0,
+            "unplacedCount": 1,
+            "reportedUtilization": 0,
+            "recomputedUtilization": null,
+            "elapsedMsReported": 0,
+            "attempts": 0,
+            "orientationEvaluations": 52,
+            "poseRefinements": 0,
+            "terminationReason": "work_budget_exhausted",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 0
+          },
+          "deadline": null
+        },
+        {
+          "id": "CONTINUOUS_XY",
+          "title": "Toạ độ X/Y có phần lẻ mm, không nằm trên lưới",
+          "expect": {
+            "minPlaced": 4,
+            "maxSheets": 2,
+            "requireFractionalTranslation": true
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 37,
+              "p95Ms": 37.51,
+              "minMs": 35.05,
+              "maxMs": 37.51,
+              "peakRssMb": 21.6,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 4,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.36466969134997484,
+              "recomputedUtilization": 0.36466969134997484,
+              "elapsedMsReported": 34,
+              "attempts": 172,
+              "orientationEvaluations": 20,
+              "poseRefinements": 3356,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 0,
+              "fractionalTranslationCount": 4
+            },
+            {
+              "profile": "balanced",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 279.54,
+              "p95Ms": 279.86,
+              "minMs": 275.98,
+              "maxMs": 279.86,
+              "peakRssMb": 21.6,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 4,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.36466969134997484,
+              "recomputedUtilization": 0.36466969134997484,
+              "elapsedMsReported": 275,
+              "attempts": 520,
+              "orientationEvaluations": 52,
+              "poseRefinements": 29820,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 0,
+              "fractionalTranslationCount": 4
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 141.77,
+            "p95Ms": 141.77,
+            "minMs": 141.77,
+            "maxMs": 141.77,
+            "peakRssMb": 21.7,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 1,
+            "placedCount": 4,
+            "unplacedCount": 0,
+            "reportedUtilization": 0.36466969134997484,
+            "recomputedUtilization": 0.36466969134997484,
+            "elapsedMsReported": 141,
+            "attempts": 520,
+            "orientationEvaluations": 52,
+            "poseRefinements": 28380,
+            "terminationReason": "all_placed",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 4
+          },
+          "deadline": null
+        },
+        {
+          "id": "CONSTRAINTS",
+          "title": "Trộn free, fixed, discrete, ranges và inherit trong cùng job",
+          "expect": {
+            "minPlaced": 10,
+            "maxSheets": 2,
+            "requirePerPartDomain": true
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 310.62,
+              "p95Ms": 323.37,
+              "minMs": 309.53,
+              "maxMs": 323.37,
+              "peakRssMb": 22.1,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.14208333333333334,
+              "recomputedUtilization": 0.14208333333333334,
+              "elapsedMsReported": 310,
+              "attempts": 603,
+              "orientationEvaluations": 50,
+              "poseRefinements": 12329,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 3,
+              "fractionalTranslationCount": 8
+            },
+            {
+              "profile": "balanced",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 1772.29,
+              "p95Ms": 1781.56,
+              "minMs": 1769.94,
+              "maxMs": 1781.56,
+              "peakRssMb": 22.1,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.14208333333333334,
+              "recomputedUtilization": 0.14208333333333334,
+              "elapsedMsReported": 1772,
+              "attempts": 1664,
+              "orientationEvaluations": 88,
+              "poseRefinements": 97815,
+              "terminationReason": "work_budget_exhausted",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 2,
+              "fractionalTranslationCount": 8
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 855.5,
+            "p95Ms": 855.5,
+            "minMs": 855.5,
+            "maxMs": 855.5,
+            "peakRssMb": 22.1,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 1,
+            "placedCount": 10,
+            "unplacedCount": 0,
+            "reportedUtilization": 0.14208333333333334,
+            "recomputedUtilization": 0.14208333333333334,
+            "elapsedMsReported": 855,
+            "attempts": 1798,
+            "orientationEvaluations": 94,
+            "poseRefinements": 97680,
+            "terminationReason": "work_budget_exhausted",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 6
+          },
+          "deadline": null
+        },
+        {
+          "id": "S20",
+          "title": "20 con, 5 loại, contour đơn giản",
+          "expect": {
+            "minPlaced": 20,
+            "maxSheets": 6
+          },
+          "freeAngle": [
+            {
+              "profile": "fast",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 2017.37,
+              "p95Ms": 2026.4,
+              "minMs": 1996.48,
+              "maxMs": 2026.4,
+              "peakRssMb": 22.4,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.23685714285714285,
+              "recomputedUtilization": 0.23685714285714285,
+              "elapsedMsReported": 2026,
+              "attempts": 1244,
+              "orientationEvaluations": 100,
+              "poseRefinements": 27156,
+              "terminationReason": "all_placed",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 7,
+              "fractionalTranslationCount": 14
+            },
+            {
+              "profile": "balanced",
+              "runs": 3,
+              "mode": "fixed_work_plan",
+              "timeBudgetMs": null,
+              "p50Ms": 6303.89,
+              "p95Ms": 6311.43,
+              "minMs": 6218.52,
+              "maxMs": 6311.43,
+              "peakRssMb": 22.4,
+              "deterministic": true,
+              "status": "completed",
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "reportedUtilization": 0.23685714285714285,
+              "recomputedUtilization": 0.23685714285714285,
+              "elapsedMsReported": 6218,
+              "attempts": 1527,
+              "orientationEvaluations": 86,
+              "poseRefinements": 98040,
+              "terminationReason": "work_budget_exhausted",
+              "validation": {
+                "valid": true,
+                "validatorVersion": 2
+              },
+              "nonCardinalAngleCount": 0,
+              "fractionalTranslationCount": 14
+            }
+          ],
+          "cardinalBaseline": {
+            "profile": "balanced",
+            "runs": 1,
+            "mode": "fixed_work_plan",
+            "timeBudgetMs": null,
+            "p50Ms": 1621.32,
+            "p95Ms": 1621.32,
+            "minMs": 1621.32,
+            "maxMs": 1621.32,
+            "peakRssMb": 22.4,
+            "deterministic": true,
+            "status": "completed",
+            "sheetCount": 1,
+            "placedCount": 20,
+            "unplacedCount": 0,
+            "reportedUtilization": 0.23685714285714285,
+            "recomputedUtilization": 0.23685714285714285,
+            "elapsedMsReported": 1621,
+            "attempts": 1809,
+            "orientationEvaluations": 107,
+            "poseRefinements": 97680,
+            "terminationReason": "work_budget_exhausted",
+            "validation": {
+              "valid": true,
+              "validatorVersion": 2
+            },
+            "nonCardinalAngleCount": 0,
+            "fractionalTranslationCount": 14
+          },
+          "deadline": null
+        }
+      ]
+    },
+    "correction": {
+      "actualWorkerGrant": 1,
+      "metadataWorkers": 15,
+      "reason": "describe_machine ghi planner; solve_once gọi handle.solve(request), native mặc định worker_grant=1.",
+      "limitations": [
+        "API lab/free-angle, fixed-work, không phải production Tem/CNC cardinal hay full pipeline.",
+        "N=3 là khảo sát; p95Ms trong JSON không phải acceptance percentile.",
+        "machine.estimatedPeakMb là planner estimate cho request đầu, không phải RSS đo hay grant thực."
+      ]
+    }
+  },
+  "scoreProbe": {
+    "finding": "§NEST26.2",
+    "status": "CONFIRMED",
+    "scoreAreaQuantumMm2": 0.001,
+    "cwd": "D:/pdfcompare",
+    "python": "D:/pdfcompare/backend/venv/Scripts/python.exe",
+    "grant1": {
+      "script": "import copy, hashlib, json, runpy, time\nb=runpy.run_path('scripts/benchmark_mixed_nesting.py')\nfrom app.core.mixed_nesting_service import create_run, plan_hardware\nrows=[]\nfor case in b['load_corpus']()['cases']:\n if case['id'] not in ('ANGLE_ONLY','CONTINUOUS_XY','CONSTRAINTS','S20'): continue\n for profile in ('fast','balanced'):\n  req=copy.deepcopy(case['request']); req['profile']=profile; req.pop('timeBudgetMs',None)\n  h=create_run(); t=time.perf_counter(); m=h.solve(req); dt=1000*(time.perf_counter()-t)\n  p=h.progress(); rows.append({'case':case['id'],'profile':profile,'wallMs':round(dt,3),'search':m.get('search'),'stats':m.get('stats'),'runtimeControl':p.get('runtimeControl'),'phaseTimings':p.get('phaseTimings'),'placementSha256':hashlib.sha256(json.dumps(m.get('placements'),sort_keys=True,separators=(',',':')).encode()).hexdigest()})\nprint(json.dumps({'mode':'one-run-fixed-work-legacy-handle-solve','rows':rows},ensure_ascii=False,indent=2))",
+      "output": {
+        "mode": "one-run-fixed-work-legacy-handle-solve",
+        "rows": [
+          {
+            "case": "ANGLE_ONLY",
+            "profile": "fast",
+            "wallMs": 1.181,
+            "search": {
+              "budget": {
+                "trialCount": 4,
+                "orientationProposalsPerPart": 12,
+                "beamWidth": 4,
+                "refinementRounds": 2,
+                "multiStartRestarts": 1,
+                "evaluationBudget": 30000
+              },
+              "trialsRun": 4,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "smart_trial",
+                "trialId": 0
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 1,
+                "sheetCount": 0,
+                "lastSheetUsedAreaFixed": 0,
+                "wastedWithinEnvelopeFixed": 0,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 8676706,
+                "wastedWithinEnvelopeFixed": 7236706,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 1,
+              "unplacedCount": 0,
+              "materialUtilization": 0.1,
+              "elapsedMs": 1,
+              "attempts": 8,
+              "orientationEvaluations": 47,
+              "poseRefinements": 152,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 4,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 4,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 4,
+                "rejectedTrials": 0,
+                "wavesDispatched": 4
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 0,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 0,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 0
+            },
+            "placementSha256": "836c691e0f9ff62a7e31c5538df24b82e014348c6196105308e761bd6992fd1c"
+          },
+          {
+            "case": "ANGLE_ONLY",
+            "profile": "balanced",
+            "wallMs": 3.752,
+            "search": {
+              "budget": {
+                "trialCount": 12,
+                "orientationProposalsPerPart": 32,
+                "beamWidth": 8,
+                "refinementRounds": 6,
+                "multiStartRestarts": 3,
+                "evaluationBudget": 100000
+              },
+              "trialsRun": 12,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "smart_trial",
+                "trialId": 7
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 1,
+                "sheetCount": 0,
+                "lastSheetUsedAreaFixed": 0,
+                "wastedWithinEnvelopeFixed": 0,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 8607203,
+                "wastedWithinEnvelopeFixed": 7167203,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 1,
+              "unplacedCount": 0,
+              "materialUtilization": 0.1,
+              "elapsedMs": 3,
+              "attempts": 48,
+              "orientationEvaluations": 166,
+              "poseRefinements": 2640,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 12,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 12,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 12,
+                "rejectedTrials": 0,
+                "wavesDispatched": 12
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 0,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 3,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 3
+            },
+            "placementSha256": "a9dbe62910ed63b4906b726d0fddbe359a9445a52dc8d777f590f8d474ad54df"
+          },
+          {
+            "case": "CONTINUOUS_XY",
+            "profile": "fast",
+            "wallMs": 35.163,
+            "search": {
+              "budget": {
+                "trialCount": 4,
+                "orientationProposalsPerPart": 12,
+                "beamWidth": 4,
+                "refinementRounds": 2,
+                "multiStartRestarts": 1,
+                "evaluationBudget": 30000
+              },
+              "trialsRun": 4,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "baseline"
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 3562040,
+                "wastedWithinEnvelopeFixed": 1339206,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 3562040,
+                "wastedWithinEnvelopeFixed": 1339206,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 4,
+              "unplacedCount": 0,
+              "materialUtilization": 0.36466969134997484,
+              "elapsedMs": 35,
+              "attempts": 172,
+              "orientationEvaluations": 20,
+              "poseRefinements": 3356,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 4,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 4,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 4,
+                "rejectedTrials": 0,
+                "wavesDispatched": 4
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 0,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 35,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 34
+            },
+            "placementSha256": "03c7e0a5b78f922aa70c1eb369479dd1526aebcf971fd85c1c5123430b618cf5"
+          },
+          {
+            "case": "CONTINUOUS_XY",
+            "profile": "balanced",
+            "wallMs": 283.468,
+            "search": {
+              "budget": {
+                "trialCount": 12,
+                "orientationProposalsPerPart": 32,
+                "beamWidth": 8,
+                "refinementRounds": 6,
+                "multiStartRestarts": 3,
+                "evaluationBudget": 100000
+              },
+              "trialsRun": 12,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "baseline"
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 3562040,
+                "wastedWithinEnvelopeFixed": 1339206,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 3562040,
+                "wastedWithinEnvelopeFixed": 1339206,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 4,
+              "unplacedCount": 0,
+              "materialUtilization": 0.36466969134997484,
+              "elapsedMs": 283,
+              "attempts": 520,
+              "orientationEvaluations": 52,
+              "poseRefinements": 29820,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 12,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 12,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 12,
+                "rejectedTrials": 0,
+                "wavesDispatched": 12
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 0,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 283,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 283
+            },
+            "placementSha256": "03c7e0a5b78f922aa70c1eb369479dd1526aebcf971fd85c1c5123430b618cf5"
+          },
+          {
+            "case": "CONSTRAINTS",
+            "profile": "fast",
+            "wallMs": 308.912,
+            "search": {
+              "budget": {
+                "trialCount": 4,
+                "orientationProposalsPerPart": 12,
+                "beamWidth": 4,
+                "refinementRounds": 2,
+                "multiStartRestarts": 1,
+                "evaluationBudget": 30000
+              },
+              "trialsRun": 4,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "smart_trial",
+                "trialId": 1
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28630529,
+                "wastedWithinEnvelopeFixed": 11580529,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28560098,
+                "wastedWithinEnvelopeFixed": 11510098,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "materialUtilization": 0.14208333333333334,
+              "elapsedMs": 308,
+              "attempts": 603,
+              "orientationEvaluations": 50,
+              "poseRefinements": 12329,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 4,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 4,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 4,
+                "rejectedTrials": 0,
+                "wavesDispatched": 4
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 0,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 308,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 308
+            },
+            "placementSha256": "8dece7f553accfcdaf591b5e1ef3589c556f6459914ad405b2b785170253dd4c"
+          },
+          {
+            "case": "CONSTRAINTS",
+            "profile": "balanced",
+            "wallMs": 1824.238,
+            "search": {
+              "budget": {
+                "trialCount": 12,
+                "orientationProposalsPerPart": 32,
+                "beamWidth": 8,
+                "refinementRounds": 6,
+                "multiStartRestarts": 3,
+                "evaluationBudget": 100000
+              },
+              "trialsRun": 0,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "baseline"
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28630529,
+                "wastedWithinEnvelopeFixed": 11580529,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28630529,
+                "wastedWithinEnvelopeFixed": 11580529,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "materialUtilization": 0.14208333333333334,
+              "elapsedMs": 1824,
+              "attempts": 1664,
+              "orientationEvaluations": 88,
+              "poseRefinements": 97815,
+              "terminationReason": "work_budget_exhausted"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 0,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 12,
+                "interruptedTrials": 12,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 12,
+                "rejectedTrials": 0,
+                "wavesDispatched": 12
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 0,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 1824,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 1823
+            },
+            "placementSha256": "6876c840faa6207c776f01ea14db53b4f3c5525eabbff8edac37b58e12853348"
+          },
+          {
+            "case": "S20",
+            "profile": "fast",
+            "wallMs": 4203.353,
+            "search": {
+              "budget": {
+                "trialCount": 4,
+                "orientationProposalsPerPart": 12,
+                "beamWidth": 4,
+                "refinementRounds": 2,
+                "multiStartRestarts": 1,
+                "evaluationBudget": 30000
+              },
+              "trialsRun": 4,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "smart_trial",
+                "trialId": 0
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 130800000,
+                "wastedWithinEnvelopeFixed": 47900000,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 121168487,
+                "wastedWithinEnvelopeFixed": 38268487,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "materialUtilization": 0.23685714285714285,
+              "elapsedMs": 4203,
+              "attempts": 1244,
+              "orientationEvaluations": 100,
+              "poseRefinements": 27156,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 4,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 4,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 4,
+                "rejectedTrials": 0,
+                "wavesDispatched": 4
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 1,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 4203,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 4201
+            },
+            "placementSha256": "18628a2f45b42795cc39e34ec7c5b0cb28cfeb6bc5712d74439d70ac5e734be3"
+          },
+          {
+            "case": "S20",
+            "profile": "balanced",
+            "wallMs": 13462.454,
+            "search": {
+              "budget": {
+                "trialCount": 12,
+                "orientationProposalsPerPart": 32,
+                "beamWidth": 8,
+                "refinementRounds": 6,
+                "multiStartRestarts": 3,
+                "evaluationBudget": 100000
+              },
+              "trialsRun": 0,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "baseline"
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 130800000,
+                "wastedWithinEnvelopeFixed": 47900000,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 130800000,
+                "wastedWithinEnvelopeFixed": 47900000,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "materialUtilization": 0.23685714285714285,
+              "elapsedMs": 13462,
+              "attempts": 1527,
+              "orientationEvaluations": 86,
+              "poseRefinements": 98040,
+              "terminationReason": "work_budget_exhausted"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 1,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": null,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 0,
+                "concurrencyLimit": 1,
+                "dispatchedTrials": 12,
+                "interruptedTrials": 12,
+                "maxDispatchedWaveWidth": 1,
+                "plannedTrials": 12,
+                "rejectedTrials": 0,
+                "wavesDispatched": 12
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 1,
+              "workerGrant": 1
+            },
+            "phaseTimings": {
+              "baselineMs": 3,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 13462,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 13458
+            },
+            "placementSha256": "fac05b6ef81a17ff803bb41124d23302fac8e8ec0d40176bab57564defea7180"
+          }
+        ]
+      }
+    },
+    "grant15": {
+      "script": "import copy, hashlib, json, runpy, time\nb=runpy.run_path('scripts/benchmark_mixed_nesting.py')\nfrom app.core.mixed_nesting_service import create_run, plan_hardware\nrows=[]\nfor case in b['load_corpus']()['cases']:\n if case['id'] not in ('CONSTRAINTS','S20'): continue\n for profile in ('fast','balanced'):\n  req=copy.deepcopy(case['request']); req['profile']=profile; req.pop('timeBudgetMs',None)\n  h=create_run(); t=time.perf_counter(); plan=plan_hardware(req); m=h.solve_with_hardware(req,worker_grant=plan.worker_grant,nfp_cache_max_bytes_per_trial=plan.nfp_cache_max_bytes_per_trial); dt=1000*(time.perf_counter()-t)\n  p=h.progress(); rows.append({'case':case['id'],'profile':profile,'wallMs':round(dt,3),'search':m.get('search'),'stats':m.get('stats'),'runtimeControl':p.get('runtimeControl'),'phaseTimings':p.get('phaseTimings'),'placementSha256':hashlib.sha256(json.dumps(m.get('placements'),sort_keys=True,separators=(',',':')).encode()).hexdigest()})\nprint(json.dumps({'mode':'one-run-fixed-work-with-hardware-plan','rows':rows},ensure_ascii=False,indent=2))",
+      "output": {
+        "mode": "one-run-fixed-work-with-hardware-plan",
+        "rows": [
+          {
+            "case": "CONSTRAINTS",
+            "profile": "fast",
+            "wallMs": 103.838,
+            "search": {
+              "budget": {
+                "trialCount": 4,
+                "orientationProposalsPerPart": 12,
+                "beamWidth": 4,
+                "refinementRounds": 2,
+                "multiStartRestarts": 1,
+                "evaluationBudget": 30000
+              },
+              "trialsRun": 4,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "smart_trial",
+                "trialId": 1
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28630529,
+                "wastedWithinEnvelopeFixed": 11580529,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28560098,
+                "wastedWithinEnvelopeFixed": 11510098,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "materialUtilization": 0.14208333333333334,
+              "elapsedMs": 103,
+              "attempts": 603,
+              "orientationEvaluations": 50,
+              "poseRefinements": 12329,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 15,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": 201326592,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 4,
+                "concurrencyLimit": 4,
+                "dispatchedTrials": 4,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 4,
+                "plannedTrials": 4,
+                "rejectedTrials": 0,
+                "wavesDispatched": 1
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 4,
+              "workerGrant": 15
+            },
+            "phaseTimings": {
+              "baselineMs": 1,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 96,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 95
+            },
+            "placementSha256": "8dece7f553accfcdaf591b5e1ef3589c556f6459914ad405b2b785170253dd4c"
+          },
+          {
+            "case": "CONSTRAINTS",
+            "profile": "balanced",
+            "wallMs": 279.602,
+            "search": {
+              "budget": {
+                "trialCount": 12,
+                "orientationProposalsPerPart": 32,
+                "beamWidth": 8,
+                "refinementRounds": 6,
+                "multiStartRestarts": 3,
+                "evaluationBudget": 100000
+              },
+              "trialsRun": 0,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "baseline"
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28630529,
+                "wastedWithinEnvelopeFixed": 11580529,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 28630529,
+                "wastedWithinEnvelopeFixed": 11580529,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 10,
+              "unplacedCount": 0,
+              "materialUtilization": 0.14208333333333334,
+              "elapsedMs": 279,
+              "attempts": 1664,
+              "orientationEvaluations": 88,
+              "poseRefinements": 97815,
+              "terminationReason": "work_budget_exhausted"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 15,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": 201326592,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 0,
+                "concurrencyLimit": 12,
+                "dispatchedTrials": 12,
+                "interruptedTrials": 12,
+                "maxDispatchedWaveWidth": 12,
+                "plannedTrials": 12,
+                "rejectedTrials": 0,
+                "wavesDispatched": 1
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 12,
+              "workerGrant": 15
+            },
+            "phaseTimings": {
+              "baselineMs": 1,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 279,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 277
+            },
+            "placementSha256": "6876c840faa6207c776f01ea14db53b4f3c5525eabbff8edac37b58e12853348"
+          },
+          {
+            "case": "S20",
+            "profile": "fast",
+            "wallMs": 613.589,
+            "search": {
+              "budget": {
+                "trialCount": 4,
+                "orientationProposalsPerPart": 12,
+                "beamWidth": 4,
+                "refinementRounds": 2,
+                "multiStartRestarts": 1,
+                "evaluationBudget": 30000
+              },
+              "trialsRun": 4,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "smart_trial",
+                "trialId": 0
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 130800000,
+                "wastedWithinEnvelopeFixed": 47900000,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 121168487,
+                "wastedWithinEnvelopeFixed": 38268487,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "materialUtilization": 0.23685714285714285,
+              "elapsedMs": 613,
+              "attempts": 1244,
+              "orientationEvaluations": 100,
+              "poseRefinements": 27156,
+              "terminationReason": "all_placed"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 15,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": 201326592,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 4,
+                "concurrencyLimit": 4,
+                "dispatchedTrials": 4,
+                "interruptedTrials": 0,
+                "maxDispatchedWaveWidth": 4,
+                "plannedTrials": 4,
+                "rejectedTrials": 0,
+                "wavesDispatched": 1
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 4,
+              "workerGrant": 15
+            },
+            "phaseTimings": {
+              "baselineMs": 2,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 613,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 610
+            },
+            "placementSha256": "18628a2f45b42795cc39e34ec7c5b0cb28cfeb6bc5712d74439d70ac5e734be3"
+          },
+          {
+            "case": "S20",
+            "profile": "balanced",
+            "wallMs": 1248.743,
+            "search": {
+              "budget": {
+                "trialCount": 12,
+                "orientationProposalsPerPart": 32,
+                "beamWidth": 8,
+                "refinementRounds": 6,
+                "multiStartRestarts": 3,
+                "evaluationBudget": 100000
+              },
+              "trialsRun": 0,
+              "trialsRejected": 0,
+              "selectedCandidate": {
+                "kind": "baseline"
+              },
+              "baselineScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 130800000,
+                "wastedWithinEnvelopeFixed": 47900000,
+                "scoreVersion": 2
+              },
+              "selectedScore": {
+                "invalidCount": 0,
+                "primaryPenalty": 0,
+                "sheetCount": 1,
+                "lastSheetUsedAreaFixed": 130800000,
+                "wastedWithinEnvelopeFixed": 47900000,
+                "scoreVersion": 2
+              }
+            },
+            "stats": {
+              "sheetCount": 1,
+              "placedCount": 20,
+              "unplacedCount": 0,
+              "materialUtilization": 0.23685714285714285,
+              "elapsedMs": 1248,
+              "attempts": 1527,
+              "orientationEvaluations": 86,
+              "poseRefinements": 98040,
+              "terminationReason": "work_budget_exhausted"
+            },
+            "runtimeControl": {
+              "maxConcurrentComputeWorkers": 15,
+              "nfpCacheByteBudgetEnforced": true,
+              "nfpCacheMaxBytesPerTrial": 201326592,
+              "nfpColdMissParallelEnabled": true,
+              "portfolioExecution": {
+                "completedTrials": 0,
+                "concurrencyLimit": 12,
+                "dispatchedTrials": 12,
+                "interruptedTrials": 12,
+                "maxDispatchedWaveWidth": 12,
+                "plannedTrials": 12,
+                "rejectedTrials": 0,
+                "wavesDispatched": 1
+              },
+              "portfolioParallelEnabled": true,
+              "trialCapacity": 12,
+              "workerGrant": 15
+            },
+            "phaseTimings": {
+              "baselineMs": 3,
+              "baselineValidationMs": 0,
+              "coreTotalMs": 1248,
+              "publicationMs": 0,
+              "rotationProbeMs": 0,
+              "searchMs": 1245
+            },
+            "placementSha256": "fac05b6ef81a17ff803bb41124d23302fac8e8ec0d40176bab57564defea7180"
+          }
+        ]
+      }
+    },
+    "limitations": [
+      "Một lượt cho mỗi cặp ca/profile/grant, không phải P50/P95.",
+      "Grant15 chỉ có CONSTRAINTS và S20; grant1 có thêm ANGLE_ONLY và CONTINUOUS_XY.",
+      "Wall ở các lượt khác nhau không dùng suy ra speedup CPU: tải ngoài chưa cô lập.",
+      "7.9489% là vùng bao tờ cuối lớn hơn ở S20, không phải giảm số tem hoặc phần trăm hao giấy production.",
+      "Probe hardware tính cả plan_hardware trong wall; không phải microbenchmark thuần native."
+    ]
+  },
+  "stepRepeat13": {
+    "source": "D:/pdfcompare/test/test nesting.pdf",
+    "settings": {
+      "sheetMm": [
+        320,
+        430
+      ],
+      "gapMm": [
+        2,
+        2
+      ],
+      "marginsMm": 3,
+      "pontMm": 5,
+      "pageCount": 13
+    },
+    "harnessPath": "D:/pdfcompare/backend/.audit-tmp/bench_step_repeat_13.py",
+    "helperPath": "D:/pdfcompare/backend/.audit-tmp/verify_motif_full13.py",
+    "harness": "\"\"\"Đo 13 solve S&R lạnh trên đúng file khách, không render hoặc persist manifest.\n\n`PRYNX_BENCH_OUTER_WORKERS` chọn số job đồng thời; `PRYNX_BENCH_PER_JOB_GRANT`\nchọn worker native của từng job. Mặc định 1/auto giữ nguyên đường production tuần tự.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport hashlib\nimport json\nimport os\nimport runpy\nimport sys\nimport time\nfrom concurrent.futures import ThreadPoolExecutor\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[2]\nBACKEND = ROOT / \"backend\"\nif str(BACKEND) not in sys.path:\n    sys.path.insert(0, str(BACKEND))\n\nimport pdfcompare_native\n\nfrom app.core import nesting_production_orchestrator as orchestrator\nfrom app.core.nesting_production_pipeline import solve_production_nesting_job\nfrom app.core.nesting_source_pin import discard_source_pin\nfrom app.workers.nup_true_shape_nesting import build_true_shape_nesting_jobs\n\nPROBE = runpy.run_path(str(BACKEND / \".audit-tmp\" / \"verify_motif_full13.py\"))\nSOURCE = Path(PROBE[\"SOURCE\"])\nSETTINGS = dict(PROBE[\"SETTINGS\"])\nOUTER_WORKERS = max(1, int(os.environ.get(\"PRYNX_BENCH_OUTER_WORKERS\", \"1\")))\nPER_JOB_GRANT = max(1, int(os.environ.get(\"PRYNX_BENCH_PER_JOB_GRANT\", \"1\")))\n\n\ndef _number(value: object) -> float | int | None:\n    if isinstance(value, bool) or value is None:\n        return None\n    try:\n        number = float(value)\n    except (TypeError, ValueError):\n        return None\n    return int(number) if number.is_integer() else round(number, 3)\n\n\ndef _microseconds_to_ms(value: object) -> float | int | None:\n    number = _number(value)\n    return None if number is None else round(float(number) / 1000.0, 3)\n\n\ndef _pose_digest(manifest: dict) -> str:\n    placements = [\n        {\n            \"partId\": item.get(\"partId\"),\n            \"sheetIndex\": item.get(\"sheetIndex\"),\n            \"pose\": item.get(\"pose\"),\n        }\n        for item in (manifest.get(\"placements\") or ())\n    ]\n    payload = json.dumps(\n        placements, sort_keys=True, separators=(\",\", \":\"), ensure_ascii=False\n    ).encode(\"utf-8\")\n    return \"sha256:\" + hashlib.sha256(payload).hexdigest()\n\n\ndef _row_from_session(\n    index: int,\n    session: object,\n    wall_ms: float,\n) -> dict[str, object]:\n    diagnostics = session.solved.runtime_diagnostics\n    phases = diagnostics.get(\"phaseTimings\") or {}\n    native_boundary = diagnostics.get(\"nativeBoundaryTimings\") or {}\n    production_boundary = diagnostics.get(\"productionBoundaryTimings\") or {}\n    runtime_control = diagnostics.get(\"runtimeControl\") or {}\n    nfp = (diagnostics.get(\"nfpDiagnostics\") or {}).get(\"baseline\") or {}\n    manifest = session.solved.manifest\n    stats = manifest.get(\"stats\") or {}\n    solve_wall_ms = float(production_boundary.get(\"solveProductionWallMs\") or 0.0)\n    return {\n        \"page\": index + 1,\n        \"wallMs\": wall_ms,\n        \"solveProductionWallMs\": _number(solve_wall_ms),\n        \"preSolvePythonMs\": round(max(0.0, wall_ms - solve_wall_ms), 3),\n        \"nativeTotalMs\": _number(native_boundary.get(\"nativeTotalMs\")),\n        \"requestPreparationMs\": _number(\n            native_boundary.get(\"requestPreparationMs\")\n        ),\n        \"manifestSerializationMs\": _number(\n            native_boundary.get(\"manifestSerializationMs\")\n        ),\n        \"postNativeWallMs\": _number(production_boundary.get(\"postNativeWallMs\")),\n        \"workerGrant\": _number(runtime_control.get(\"workerGrant\")),\n        \"baselineMs\": _number(phases.get(\"baselineMs\")),\n        \"baselineValidationMs\": _number(phases.get(\"baselineValidationMs\")),\n        \"rotationProbeMs\": _number(phases.get(\"rotationProbeMs\")),\n        \"searchMs\": _number(phases.get(\"searchMs\")),\n        \"publicationMs\": _number(phases.get(\"publicationMs\")),\n        \"nfpBuildCpuMs\": _microseconds_to_ms(nfp.get(\"nfpBuildTimeUs\")),\n        \"differenceCpuMs\": _microseconds_to_ms(nfp.get(\"differenceTimeUs\")),\n        \"feasibleRegionCalls\": _number(nfp.get(\"feasibleRegionCalls\")),\n        \"cacheHits\": _number(nfp.get(\"cacheHits\")),\n        \"cacheMisses\": _number(nfp.get(\"cacheMisses\")),\n        \"placedCount\": int(stats.get(\"placedCount\") or 0),\n        \"poseDigest\": _pose_digest(manifest),\n    }\n\n\ndef _solve_one(index: int, job: object) -> dict[str, object]:\n    session = None\n    started = time.perf_counter()\n    try:\n        session = solve_production_nesting_job(job)\n        wall_ms = round((time.perf_counter() - started) * 1000.0, 3)\n        return _row_from_session(index, session, wall_ms)\n    finally:\n        if session is not None:\n            for pin in session.source_pins:\n                discard_source_pin(pin)\n\n\ndef main() -> None:\n    capabilities = json.loads(pdfcompare_native.MixedNestingRun.capabilities())\n    jobs = build_true_shape_nesting_jobs(str(SOURCE), SETTINGS)\n    if len(jobs) != 13:\n        raise RuntimeError(f\"Cần đúng 13 job S&R, nhận {len(jobs)}.\")\n\n    production_batch = os.environ.get(\"PRYNX_BENCH_PRODUCTION_BATCH\", \"\") == \"1\"\n    original_plan_hardware = orchestrator.plan_hardware\n    batch_sessions: list[object] = []\n    if OUTER_WORKERS > 1 and not production_batch:\n        # PERF (audit 2026-09-01 §SR13-WAVE-PROBE): chỉ probe chia tổng grant;\n        # production vẫn dùng planner thật cho tới khi A/B chứng minh pose bất biến.\n        orchestrator.plan_hardware = lambda request: original_plan_hardware(\n            request, cpu_count=PER_JOB_GRANT + 1\n        )\n\n    total_started = time.perf_counter()\n    try:\n        if production_batch:\n            from app.workers.nup_true_shape_nesting import (\n                _solve_step_repeat_sessions,\n            )\n\n            batch_sessions = _solve_step_repeat_sessions(\n                jobs,\n                cancel_event=None,\n                progress_callback=None,\n            )\n            rows = [\n                _row_from_session(\n                    index,\n                    session,\n                    float(\n                        (\n                            session.solved.runtime_diagnostics.get(\n                                \"productionBoundaryTimings\"\n                            )\n                            or {}\n                        ).get(\"solveProductionWallMs\")\n                        or 0.0\n                    ),\n                )\n                for index, session in enumerate(batch_sessions)\n            ]\n        elif OUTER_WORKERS == 1:\n            rows = [_solve_one(index, job) for index, job in enumerate(jobs)]\n        else:\n            with ThreadPoolExecutor(\n                max_workers=min(OUTER_WORKERS, len(jobs)),\n                thread_name_prefix=\"prynx-sr-bench\",\n            ) as executor:\n                futures = [\n                    executor.submit(_solve_one, index, job)\n                    for index, job in enumerate(jobs)\n                ]\n                rows = [future.result() for future in futures]\n\n        total_wall_ms = round((time.perf_counter() - total_started) * 1000.0, 3)\n        rows.sort(key=lambda row: int(row[\"page\"]))\n        for row in rows:\n            print(json.dumps(row, ensure_ascii=False), flush=True)\n\n        summary = {\n            \"baselineVersion\": capabilities[\"algorithmVersions\"][\"baselineVersion\"],\n            \"nativeBuildIdentity\": capabilities.get(\"nativeBuildIdentity\"),\n            \"productionBatch\": production_batch,\n            \"outerWorkers\": OUTER_WORKERS,\n            \"requestedPerJobGrant\": PER_JOB_GRANT if OUTER_WORKERS > 1 else None,\n            \"totalRequestedGrant\": (\n                OUTER_WORKERS * PER_JOB_GRANT if OUTER_WORKERS > 1 else None\n            ),\n            \"totalWallMs\": total_wall_ms,\n            \"sumSolveWallMs\": round(sum(float(row[\"wallMs\"]) for row in rows), 3),\n            \"sumBaselineMs\": round(\n                sum(float(row[\"baselineMs\"] or 0.0) for row in rows), 3\n            ),\n            \"sumSearchMs\": round(sum(float(row[\"searchMs\"] or 0.0) for row in rows), 3),\n            \"workerGrants\": [row[\"workerGrant\"] for row in rows],\n            \"placedCounts\": [row[\"placedCount\"] for row in rows],\n            \"poseDigests\": [row[\"poseDigest\"] for row in rows],\n        }\n        print(\"SUMMARY \" + json.dumps(summary, ensure_ascii=False), flush=True)\n    finally:\n        orchestrator.plan_hardware = original_plan_hardware\n        if batch_sessions:\n            from app.workers.nup_true_shape_nesting import (\n                _discard_step_repeat_sessions,\n            )\n\n            _discard_step_repeat_sessions(batch_sessions)\n\n\nif __name__ == \"__main__\":\n    main()\n\r\n",
+    "helper": "\"\"\"Verify production motif 0°/180° trên đủ 13 trang của test nesting.pdf.\"\"\"\n\nfrom __future__ import annotations\n\nimport json\nimport math\nimport sys\nfrom collections import Counter\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[2]\nBACKEND = ROOT / \"backend\"\nif str(BACKEND) not in sys.path:\n    sys.path.insert(0, str(BACKEND))\n\nimport pdfcompare_native\nimport pypdfium2 as pdfium\n\nfrom app.core.nesting_production_pipeline import (\n    render_production_nesting_session,\n    solve_production_nesting_job,\n)\nfrom app.core.nesting_quality_gate import grid_beats_nesting, grid_capacity_from_settings\nfrom app.core.pdfium_lock import pdfium_guard\nfrom app.workers.nup_true_shape_nesting import build_true_shape_nesting_jobs\n\nSOURCE = ROOT / \"test\" / \"test nesting.pdf\"\nAUDIT_DIR = BACKEND / \".audit-tmp\"\nOUTPUT = AUDIT_DIR / \"motif_full13_verify.json\"\nPAGE7_PDF = AUDIT_DIR / \"page7_lattice_after.pdf\"\nPAGE7_PNG = AUDIT_DIR / \"page7_lattice_after.png\"\nPAGE9_PDF = AUDIT_DIR / \"page9_motif_after.pdf\"\nPAGE9_PNG = AUDIT_DIR / \"page9_motif_after.png\"\n\n# Số raw true-shape đã đo trước candidate motif (baselineVersion=5).\nBEFORE_NESTING = [43, 47, 60, 46, 57, 63, 59, 55, 48, 37, 39, 29, 34]\n\nPONT_CONFIG = {\n    \"shape\": \"circle\",\n    \"size\": 5.0,\n    \"thickness\": 0.5,\n    \"layerInfoName\": \"SA info\",\n    \"layerName\": \"Pont\",\n    \"groupName\": \"G\",\n    \"itemName\": \"MKLINE\",\n    \"disableCollision\": False,\n    \"marginTop\": 7.0,\n    \"marginBottom\": 7.0,\n    \"marginLeft\": 7.0,\n    \"marginRight\": 7.0,\n}\n\nSETTINGS = {\n    \"gridStrategy\": \"optimal_auto\",\n    \"isDieCutMode\": True,\n    \"taskMode\": \"step_repeat\",\n    \"layoutType\": \"repeat\",\n    \"page_sheet_mode\": False,\n    \"sheetWidth\": 320.0,\n    \"sheetHeight\": 430.0,\n    \"gapX\": 2.0,\n    \"gapY\": 2.0,\n    \"marginLeft\": 3.0,\n    \"marginRight\": 3.0,\n    \"marginTop\": 3.0,\n    \"marginBottom\": 3.0,\n    \"align\": \"center\",\n    \"targetQuantitiesByPage\": {str(index): 0 for index in range(13)},\n    \"detectedShapesByPage\": {str(index): \"CUSTOM\" for index in range(13)},\n    \"detectedShapeParamsByPage\": {},\n    \"pontType\": \"5mm\",\n    \"pontConfig\": PONT_CONFIG,\n    \"cutType\": \"default\",\n}\n\n\ndef _rotation(placement: dict) -> float:\n    return round(float((placement.get(\"pose\") or {}).get(\"rotationDeg\") or 0.0), 6)\n\n\ndef _xy(placement: dict) -> tuple[float, float]:\n    pose = placement.get(\"pose\") or {}\n    return float(pose.get(\"translateXmm\") or 0.0), float(pose.get(\"translateYmm\") or 0.0)\n\n\ndef _lattice_summary(placements: list[dict]) -> dict:\n    \"\"\"Đo mọi pose trang 7 trên một basis affine duy nhất.\"\"\"\n\n    rows: dict[float, list[tuple[float, float]]] = {}\n    for placement in placements:\n        x, y = _xy(placement)\n        rows.setdefault(round(y, 6), []).append((x, y))\n    row_keys = sorted(rows)\n    if len(row_keys) < 2:\n        raise RuntimeError(\"Trang 7 không đủ hai hàng để đo lattice.\")\n    first_row = sorted(rows[row_keys[0]])\n    second_row = sorted(rows[row_keys[1]])\n    if len(first_row) < 3 or len(second_row) < 2:\n        raise RuntimeError(\"Trang 7 không đủ prefix để suy basis lattice.\")\n\n    origin = first_row[0]\n    u = (first_row[1][0] - origin[0], first_row[1][1] - origin[1])\n    v = (second_row[0][0] - origin[0], second_row[0][1] - origin[1])\n    if abs(u[0]) <= 1e-12 or abs(v[1]) <= 1e-12:\n        raise RuntimeError(\"Basis lattice trang 7 bị suy biến.\")\n\n    cells: set[tuple[int, int]] = set()\n    residuals: list[float] = []\n    for placement in placements:\n        x, y = _xy(placement)\n        row = round((y - origin[1]) / v[1])\n        column = round((x - origin[0] - row * v[0]) / u[0])\n        expected_x = origin[0] + column * u[0] + row * v[0]\n        expected_y = origin[1] + column * u[1] + row * v[1]\n        residuals.append(math.hypot(x - expected_x, y - expected_y))\n        cells.add((column, row))\n    rms = math.sqrt(sum(value * value for value in residuals) / len(residuals))\n    return {\n        \"originMm\": [round(origin[0], 6), round(origin[1], 6)],\n        \"uMm\": [round(u[0], 6), round(u[1], 6)],\n        \"vMm\": [round(v[0], 6), round(v[1], 6)],\n        \"rowCount\": len(rows),\n        \"uniqueCellCount\": len(cells),\n        \"rmsResidualMm\": round(rms, 12),\n        \"maxResidualMm\": round(max(residuals), 12),\n    }\n\n\ndef _motif_summary(placements: list[dict]) -> dict:\n    \"\"\"Đo hai coset 0°/180° kể cả khi obstacle chỉ bỏ một member.\"\"\"\n\n    by_rotation: dict[float, list[tuple[float, float]]] = {0.0: [], 180.0: []}\n    for placement in placements:\n        rotation = _rotation(placement)\n        if rotation not in by_rotation:\n            continue\n        by_rotation[rotation].append(_xy(placement))\n\n    primary = {\n        (round(x, 6), round(y, 6)) for x, y in by_rotation[0.0]\n    }\n    half_turn = by_rotation[180.0]\n    best_delta: tuple[float, float] | None = None\n    best_half_anchors: set[tuple[float, float]] = set()\n    best_full_pairs = 0\n    for primary_x, primary_y in primary:\n        for half_x, half_y in half_turn:\n            delta = (\n                round(half_x - primary_x, 6),\n                round(half_y - primary_y, 6),\n            )\n            half_anchors = {\n                (round(x - delta[0], 6), round(y - delta[1], 6))\n                for x, y in half_turn\n            }\n            full_pairs = len(primary & half_anchors)\n            if full_pairs > best_full_pairs:\n                best_delta = delta\n                best_half_anchors = half_anchors\n                best_full_pairs = full_pairs\n\n    if best_delta is None:\n        anchors = primary\n    else:\n        anchors = primary | best_half_anchors\n    anchor_xs = sorted({anchor[0] for anchor in anchors})\n    anchor_ys = sorted({anchor[1] for anchor in anchors})\n    primary_only = primary - best_half_anchors\n    half_turn_only = best_half_anchors - primary\n    rectangular_lattice = bool(anchors) and len(anchors) == len(anchor_xs) * len(anchor_ys)\n    periodic = (\n        best_delta is not None\n        and best_full_pairs == min(len(primary), len(half_turn))\n        and rectangular_lattice\n        and len(primary) + len(half_turn) == len(placements)\n    )\n    return {\n        \"pairCount\": best_full_pairs,\n        \"uniquePairDeltaCount\": int(best_delta is not None),\n        \"pairDeltaHistogram\": (\n            {f\"{best_delta[0]:.6f},{best_delta[1]:.6f}\": best_full_pairs}\n            if best_delta is not None\n            else {}\n        ),\n        \"anchorColumnCount\": len(anchor_xs),\n        \"anchorRowCount\": len(anchor_ys),\n        \"anchorXs\": anchor_xs,\n        \"anchorYs\": anchor_ys,\n        \"cellCount\": len(anchors),\n        \"fullPairCellCount\": best_full_pairs,\n        \"singleMemberCellCount\": len(primary_only) + len(half_turn_only),\n        \"primaryOnlyCellCount\": len(primary_only),\n        \"halfTurnOnlyCellCount\": len(half_turn_only),\n        \"periodicHalfTurn\": periodic,\n    }\n\n\ndef _render_png(pdf_path: Path, png_path: Path) -> None:\n    with pdfium_guard():\n        document = pdfium.PdfDocument(str(pdf_path))\n        try:\n            page = document[0]\n            try:\n                bitmap = page.render(scale=1.5)\n                try:\n                    bitmap.to_pil().save(png_path)\n                finally:\n                    bitmap.close()\n            finally:\n                page.close()\n        finally:\n            document.close()\n\n\ndef main() -> None:\n    capabilities = json.loads(pdfcompare_native.MixedNestingRun.capabilities())\n    baseline_version = int(capabilities[\"algorithmVersions\"][\"baselineVersion\"])\n    if baseline_version != 10:\n        raise RuntimeError(f\"Probe phải dùng baselineVersion=10, nhận {baseline_version}.\")\n\n    jobs = build_true_shape_nesting_jobs(str(SOURCE), SETTINGS)\n    if len(jobs) != 13:\n        raise RuntimeError(f\"Cần đúng 13 job S&R, nhận {len(jobs)}.\")\n\n    summaries: list[dict] = []\n    page7_session = None\n    page9_session = None\n    for index, job in enumerate(jobs):\n        page_index = int(job.parts[0].page_index)\n        if page_index != index:\n            raise RuntimeError(\"Thứ tự job S&R không khớp trang nguồn.\")\n        session = solve_production_nesting_job(job)\n        request = session.solved.production_request.engine_request\n        manifest = session.solved.manifest\n        pdfcompare_native.MixedNestingRun.validate_manifest(\n            json.dumps(request, ensure_ascii=False, separators=(\",\", \":\")),\n            json.dumps(manifest, ensure_ascii=False, separators=(\",\", \":\")),\n        )\n\n        placements = list(manifest.get(\"placements\") or ())\n        nesting = int((manifest.get(\"stats\") or {}).get(\"placedCount\") or 0)\n        grid = int(grid_capacity_from_settings(str(SOURCE), SETTINGS, page_index))\n        grid_selected = grid_beats_nesting(\n            layout_intent=\"autofill_single_sheet\",\n            nesting_placed=nesting,\n            nesting_sheets=int((manifest.get(\"stats\") or {}).get(\"sheetCount\") or 0),\n            total_quantity=0,\n            grid_capacity=grid,\n        )\n        selected = grid if grid_selected else nesting\n        rotation_histogram = Counter(str(_rotation(item)) for item in placements)\n        summaries.append(\n            {\n                \"page\": page_index + 1,\n                \"grid\": grid,\n                \"nestingBefore\": BEFORE_NESTING[page_index],\n                \"nestingAfter\": nesting,\n                \"selected\": selected,\n                \"selectedStrategy\": \"grid\" if grid_selected else \"nesting\",\n                \"validationValid\": (manifest.get(\"validation\") or {}).get(\"valid\") is True,\n                \"rotationHistogram\": dict(sorted(rotation_histogram.items())),\n                \"lattice\": _lattice_summary(placements) if page_index == 6 else None,\n                \"motif\": _motif_summary(placements),\n                \"manifestId\": manifest.get(\"manifestId\"),\n                \"layoutFingerprint\": session.layout_fingerprint,\n            }\n        )\n        if nesting < BEFORE_NESTING[page_index]:\n            raise RuntimeError(\n                f\"Trang {page_index + 1} giảm capacity {BEFORE_NESTING[page_index]}→{nesting}.\"\n            )\n        if selected < max(grid, nesting):\n            raise RuntimeError(f\"Cổng per-design chọn sai trang {page_index + 1}.\")\n        if (manifest.get(\"validation\") or {}).get(\"valid\") is not True:\n            raise RuntimeError(f\"Manifest trang {page_index + 1} không hợp lệ.\")\n        if page_index == 6:\n            page7_session = session\n        if page_index == 8:\n            page9_session = session\n\n    page7 = summaries[6]\n    if page7[\"nestingAfter\"] != 59:\n        raise RuntimeError(f\"Trang 7 phải giữ 59 con, nhận {page7['nestingAfter']}.\")\n    if page7[\"rotationHistogram\"] != {\"0.0\": 59}:\n        raise RuntimeError(f\"Trang 7 còn pose ngoài motif cùng hướng: {page7}.\")\n    lattice = page7[\"lattice\"] or {}\n    if lattice.get(\"rowCount\") != 11 or lattice.get(\"uniqueCellCount\") != 59:\n        raise RuntimeError(f\"Trang 7 không còn đúng 59 cell trên 11 hàng: {lattice}.\")\n    max_residual_mm = lattice.get(\"maxResidualMm\")\n    if max_residual_mm is None or float(max_residual_mm) > 1e-5:\n        raise RuntimeError(f\"Trang 7 còn drift ngoài tolerance affine: {lattice}.\")\n    if page7_session is None:\n        raise RuntimeError(\"Không giữ được session trang 7 để verify render.\")\n    page7_render = render_production_nesting_session(page7_session, output_path=PAGE7_PDF)\n    if page7_render.manifest_id != page7[\"manifestId\"]:\n        raise RuntimeError(\"Render trang 7 lệch manifestId preview authoritative.\")\n    if page7_render.layout_fingerprint != page7[\"layoutFingerprint\"]:\n        raise RuntimeError(\"Render trang 7 lệch layoutFingerprint preview authoritative.\")\n    _render_png(PAGE7_PDF, PAGE7_PNG)\n\n    page9 = summaries[8]\n    motif = page9[\"motif\"]\n    if page9[\"nestingAfter\"] != 55:\n        raise RuntimeError(f\"Trang 9 phải giữ 55 member hợp lệ, nhận {page9['nestingAfter']} con.\")\n    if not motif[\"periodicHalfTurn\"] or motif[\"uniquePairDeltaCount\"] != 1:\n        raise RuntimeError(\"Trang 9 chưa khóa thành hai coset rigid 0°/180°.\")\n    if (motif[\"anchorColumnCount\"], motif[\"anchorRowCount\"]) != (4, 7):\n        raise RuntimeError(f\"Trang 9 chưa giữ lattice 4×7: {motif}.\")\n    if (\n        motif[\"cellCount\"] != 28\n        or motif[\"fullPairCellCount\"] != 27\n        or motif[\"singleMemberCellCount\"] != 1\n        or motif[\"primaryOnlyCellCount\"] + motif[\"halfTurnOnlyCellCount\"] != 1\n    ):\n        raise RuntimeError(f\"Trang 9 không bỏ đúng một member đè ốc: {motif}.\")\n    if page9_session is None:\n        raise RuntimeError(\"Không giữ được session trang 9 để verify render.\")\n\n    page9_render = render_production_nesting_session(page9_session, output_path=PAGE9_PDF)\n    if page9_render.manifest_id != page9[\"manifestId\"]:\n        raise RuntimeError(\"Render trang 9 lệch manifestId preview authoritative.\")\n    if page9_render.layout_fingerprint != page9[\"layoutFingerprint\"]:\n        raise RuntimeError(\"Render trang 9 lệch layoutFingerprint preview authoritative.\")\n    _render_png(PAGE9_PDF, PAGE9_PNG)\n\n    payload = {\n        \"source\": str(SOURCE),\n        \"nativeModule\": str(Path(pdfcompare_native.__file__).resolve()),\n        \"baselineVersion\": baseline_version,\n        \"allNativeRevalidationPassed\": True,\n        \"allCapacityNonRegressing\": True,\n        \"page7RenderIdentityParity\": True,\n        \"page7Pdf\": str(PAGE7_PDF),\n        \"page7Png\": str(PAGE7_PNG),\n        \"page9RenderIdentityParity\": True,\n        \"page9Pdf\": str(PAGE9_PDF),\n        \"page9Png\": str(PAGE9_PNG),\n        \"pages\": summaries,\n        \"totals\": {\n            \"grid\": sum(item[\"grid\"] for item in summaries),\n            \"nestingBefore\": sum(item[\"nestingBefore\"] for item in summaries),\n            \"nestingAfter\": sum(item[\"nestingAfter\"] for item in summaries),\n            \"selected\": sum(item[\"selected\"] for item in summaries),\n        },\n    }\n    OUTPUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding=\"utf-8\")\n    print(json.dumps(payload, ensure_ascii=False, indent=2))\n\n\nif __name__ == \"__main__\":\n    main()\n\r\n",
+    "environment": {
+      "PRYNX_TRUE_SHAPE_NESTING_ENABLED": "true (chỉ subprocess audit)",
+      "productionBatchVariable": "PRYNX_BENCH_PRODUCTION_BATCH",
+      "batchValue": "1",
+      "serialValue": "0"
+    },
+    "productionBatch": {
+      "rows": [
+        {
+          "page": 1,
+          "wallMs": 120.021,
+          "solveProductionWallMs": 120.021,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 62,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 58.021,
+          "workerGrant": 2,
+          "baselineMs": 29,
+          "baselineValidationMs": 12,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 20,
+          "nfpBuildCpuMs": 0.147,
+          "differenceCpuMs": 6.877,
+          "feasibleRegionCalls": 92,
+          "cacheHits": 137,
+          "cacheMisses": 6,
+          "placedCount": 44,
+          "poseDigest": "sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e"
+        },
+        {
+          "page": 2,
+          "wallMs": 2501.776,
+          "solveProductionWallMs": 2501.776,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 2138,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 363.776,
+          "workerGrant": 2,
+          "baselineMs": 1265,
+          "baselineValidationMs": 290,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 582,
+          "nfpBuildCpuMs": 259.937,
+          "differenceCpuMs": 37.794,
+          "feasibleRegionCalls": 110,
+          "cacheHits": 165,
+          "cacheMisses": 6,
+          "placedCount": 54,
+          "poseDigest": "sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9"
+        },
+        {
+          "page": 3,
+          "wallMs": 6016.577,
+          "solveProductionWallMs": 6016.577,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 5262,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 754.577,
+          "workerGrant": 1,
+          "baselineMs": 3001,
+          "baselineValidationMs": 745,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 1516,
+          "nfpBuildCpuMs": 1195.899,
+          "differenceCpuMs": 21.007,
+          "feasibleRegionCalls": 78,
+          "cacheHits": 87,
+          "cacheMisses": 6,
+          "placedCount": 65,
+          "poseDigest": "sha256:d69b7ba5b73e7d763105990b6a417865f02eda273d1c66273122107727346277"
+        },
+        {
+          "page": 4,
+          "wallMs": 6896.762,
+          "solveProductionWallMs": 6896.762,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 6261,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 635.762,
+          "workerGrant": 1,
+          "baselineMs": 3016,
+          "baselineValidationMs": 1060,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 2184,
+          "nfpBuildCpuMs": 1668.822,
+          "differenceCpuMs": 15.544,
+          "feasibleRegionCalls": 35,
+          "cacheHits": 35,
+          "cacheMisses": 2,
+          "placedCount": 34,
+          "poseDigest": "sha256:58b2e8fa9cad4d8907b2e1b0b1d59934087c7b4d671e2e7c728f3dba71541b5f"
+        },
+        {
+          "page": 5,
+          "wallMs": 6096.571,
+          "solveProductionWallMs": 6096.571,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 5320,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 776.571,
+          "workerGrant": 1,
+          "baselineMs": 3014,
+          "baselineValidationMs": 772,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 1533,
+          "nfpBuildCpuMs": 1036.894,
+          "differenceCpuMs": 58.238,
+          "feasibleRegionCalls": 118,
+          "cacheHits": 175,
+          "cacheMisses": 6,
+          "placedCount": 57,
+          "poseDigest": "sha256:7861e4995543e4da583e77f951e098815c5275db4fc11cf4ec32a5dd586e2042"
+        },
+        {
+          "page": 6,
+          "wallMs": 6531.802,
+          "solveProductionWallMs": 6531.802,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 5747,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 784.802,
+          "workerGrant": 1,
+          "baselineMs": 3001,
+          "baselineValidationMs": 881,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 1863,
+          "nfpBuildCpuMs": 1046.69,
+          "differenceCpuMs": 36.764,
+          "feasibleRegionCalls": 115,
+          "cacheHits": 166,
+          "cacheMisses": 6,
+          "placedCount": 60,
+          "poseDigest": "sha256:13ba7b495462e1a719a56a3472f383e566f919103ce72b12879fc2102447e44e"
+        },
+        {
+          "page": 7,
+          "wallMs": 2098.516,
+          "solveProductionWallMs": 2098.516,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 1678,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 420.516,
+          "workerGrant": 1,
+          "baselineMs": 739,
+          "baselineValidationMs": 301,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 638,
+          "nfpBuildCpuMs": 28.86,
+          "differenceCpuMs": 40.243,
+          "feasibleRegionCalls": 136,
+          "cacheHits": 207,
+          "cacheMisses": 6,
+          "placedCount": 66,
+          "poseDigest": "sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7"
+        },
+        {
+          "page": 8,
+          "wallMs": 6384.842,
+          "solveProductionWallMs": 6384.842,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 5681,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 703.842,
+          "workerGrant": 1,
+          "baselineMs": 3006,
+          "baselineValidationMs": 845,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 1817,
+          "nfpBuildCpuMs": 1145.794,
+          "differenceCpuMs": 13.968,
+          "feasibleRegionCalls": 81,
+          "cacheHits": 105,
+          "cacheMisses": 6,
+          "placedCount": 55,
+          "poseDigest": "sha256:3d957459f0f54aaa7069df52744b1bfa57a8213670178027a181a132df8b8aaf"
+        },
+        {
+          "page": 9,
+          "wallMs": 7178.91,
+          "solveProductionWallMs": 7178.91,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 6983,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 195.91,
+          "workerGrant": 1,
+          "baselineMs": 6601,
+          "baselineValidationMs": 132,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 249,
+          "nfpBuildCpuMs": 312.129,
+          "differenceCpuMs": 36.364,
+          "feasibleRegionCalls": 103,
+          "cacheHits": 154,
+          "cacheMisses": 6,
+          "placedCount": 40,
+          "poseDigest": "sha256:9150d490744af268ee990234990383ec2b361a9c70e3e406dd47b16c55b788cd"
+        },
+        {
+          "page": 10,
+          "wallMs": 5695.825,
+          "solveProductionWallMs": 5695.825,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 4871,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 824.825,
+          "workerGrant": 1,
+          "baselineMs": 3005,
+          "baselineValidationMs": 622,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 1243,
+          "nfpBuildCpuMs": 1465.417,
+          "differenceCpuMs": 31.311,
+          "feasibleRegionCalls": 76,
+          "cacheHits": 112,
+          "cacheMisses": 6,
+          "placedCount": 36,
+          "poseDigest": "sha256:daf4f31a6fbdd39b433decf6b2b3ce6a14a676ec5cd03dbdcc8fda661433147b"
+        },
+        {
+          "page": 11,
+          "wallMs": 3111.295,
+          "solveProductionWallMs": 3111.295,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 2716,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 3,
+          "postNativeWallMs": 395.295,
+          "workerGrant": 1,
+          "baselineMs": 1414,
+          "baselineValidationMs": 475,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 822,
+          "nfpBuildCpuMs": 295.269,
+          "differenceCpuMs": 21.739,
+          "feasibleRegionCalls": 88,
+          "cacheHits": 132,
+          "cacheMisses": 6,
+          "placedCount": 39,
+          "poseDigest": "sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0"
+        },
+        {
+          "page": 12,
+          "wallMs": 6942.88,
+          "solveProductionWallMs": 6942.88,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 6281,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 661.88,
+          "workerGrant": 1,
+          "baselineMs": 3063,
+          "baselineValidationMs": 1081,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 2136,
+          "nfpBuildCpuMs": 1774.604,
+          "differenceCpuMs": 1.678,
+          "feasibleRegionCalls": 19,
+          "cacheHits": 19,
+          "cacheMisses": 2,
+          "placedCount": 18,
+          "poseDigest": "sha256:746c521b9bf6e93b1fee1aae3bbe3213fe8868c30f03a7e506b24c4b22d82555"
+        },
+        {
+          "page": 13,
+          "wallMs": 7296.573,
+          "solveProductionWallMs": 7296.573,
+          "preSolvePythonMs": 0,
+          "nativeTotalMs": 6713,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 583.573,
+          "workerGrant": 1,
+          "baselineMs": 3322,
+          "baselineValidationMs": 1195,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 2194,
+          "nfpBuildCpuMs": 1628.188,
+          "differenceCpuMs": 16.407,
+          "feasibleRegionCalls": 43,
+          "cacheHits": 51,
+          "cacheMisses": 5,
+          "placedCount": 32,
+          "poseDigest": "sha256:157bb3dff8710f57394d4922a56580d88f3993087b4494de5eb52fb6b23fc33f"
+        }
+      ],
+      "summary": {
+        "baselineVersion": 12,
+        "nativeBuildIdentity": "fbe222ddf552cc2a8cdef6054d91defa50e971ee88a9352dfef286df9ae572bf",
+        "productionBatch": true,
+        "outerWorkers": 1,
+        "requestedPerJobGrant": null,
+        "totalRequestedGrant": null,
+        "totalWallMs": 10088.373,
+        "sumSolveWallMs": 66872.35,
+        "sumBaselineMs": 34476,
+        "sumSearchMs": 0,
+        "workerGrants": [
+          2,
+          2,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "placedCounts": [
+          44,
+          54,
+          65,
+          34,
+          57,
+          60,
+          66,
+          55,
+          40,
+          36,
+          39,
+          18,
+          32
+        ],
+        "poseDigests": [
+          "sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e",
+          "sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9",
+          "sha256:d69b7ba5b73e7d763105990b6a417865f02eda273d1c66273122107727346277",
+          "sha256:58b2e8fa9cad4d8907b2e1b0b1d59934087c7b4d671e2e7c728f3dba71541b5f",
+          "sha256:7861e4995543e4da583e77f951e098815c5275db4fc11cf4ec32a5dd586e2042",
+          "sha256:13ba7b495462e1a719a56a3472f383e566f919103ce72b12879fc2102447e44e",
+          "sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7",
+          "sha256:3d957459f0f54aaa7069df52744b1bfa57a8213670178027a181a132df8b8aaf",
+          "sha256:9150d490744af268ee990234990383ec2b361a9c70e3e406dd47b16c55b788cd",
+          "sha256:daf4f31a6fbdd39b433decf6b2b3ce6a14a676ec5cd03dbdcc8fda661433147b",
+          "sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0",
+          "sha256:746c521b9bf6e93b1fee1aae3bbe3213fe8868c30f03a7e506b24c4b22d82555",
+          "sha256:157bb3dff8710f57394d4922a56580d88f3993087b4494de5eb52fb6b23fc33f"
+        ]
+      },
+      "stdout": "{\"page\": 1, \"wallMs\": 120.021, \"solveProductionWallMs\": 120.021, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 62, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 58.021, \"workerGrant\": 2, \"baselineMs\": 29, \"baselineValidationMs\": 12, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 20, \"nfpBuildCpuMs\": 0.147, \"differenceCpuMs\": 6.877, \"feasibleRegionCalls\": 92, \"cacheHits\": 137, \"cacheMisses\": 6, \"placedCount\": 44, \"poseDigest\": \"sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e\"}\r\n{\"page\": 2, \"wallMs\": 2501.776, \"solveProductionWallMs\": 2501.776, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 2138, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 363.776, \"workerGrant\": 2, \"baselineMs\": 1265, \"baselineValidationMs\": 290, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 582, \"nfpBuildCpuMs\": 259.937, \"differenceCpuMs\": 37.794, \"feasibleRegionCalls\": 110, \"cacheHits\": 165, \"cacheMisses\": 6, \"placedCount\": 54, \"poseDigest\": \"sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9\"}\r\n{\"page\": 3, \"wallMs\": 6016.577, \"solveProductionWallMs\": 6016.577, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 5262, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 754.577, \"workerGrant\": 1, \"baselineMs\": 3001, \"baselineValidationMs\": 745, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 1516, \"nfpBuildCpuMs\": 1195.899, \"differenceCpuMs\": 21.007, \"feasibleRegionCalls\": 78, \"cacheHits\": 87, \"cacheMisses\": 6, \"placedCount\": 65, \"poseDigest\": \"sha256:d69b7ba5b73e7d763105990b6a417865f02eda273d1c66273122107727346277\"}\r\n{\"page\": 4, \"wallMs\": 6896.762, \"solveProductionWallMs\": 6896.762, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 6261, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 635.762, \"workerGrant\": 1, \"baselineMs\": 3016, \"baselineValidationMs\": 1060, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 2184, \"nfpBuildCpuMs\": 1668.822, \"differenceCpuMs\": 15.544, \"feasibleRegionCalls\": 35, \"cacheHits\": 35, \"cacheMisses\": 2, \"placedCount\": 34, \"poseDigest\": \"sha256:58b2e8fa9cad4d8907b2e1b0b1d59934087c7b4d671e2e7c728f3dba71541b5f\"}\r\n{\"page\": 5, \"wallMs\": 6096.571, \"solveProductionWallMs\": 6096.571, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 5320, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 776.571, \"workerGrant\": 1, \"baselineMs\": 3014, \"baselineValidationMs\": 772, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 1533, \"nfpBuildCpuMs\": 1036.894, \"differenceCpuMs\": 58.238, \"feasibleRegionCalls\": 118, \"cacheHits\": 175, \"cacheMisses\": 6, \"placedCount\": 57, \"poseDigest\": \"sha256:7861e4995543e4da583e77f951e098815c5275db4fc11cf4ec32a5dd586e2042\"}\r\n{\"page\": 6, \"wallMs\": 6531.802, \"solveProductionWallMs\": 6531.802, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 5747, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 784.802, \"workerGrant\": 1, \"baselineMs\": 3001, \"baselineValidationMs\": 881, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 1863, \"nfpBuildCpuMs\": 1046.69, \"differenceCpuMs\": 36.764, \"feasibleRegionCalls\": 115, \"cacheHits\": 166, \"cacheMisses\": 6, \"placedCount\": 60, \"poseDigest\": \"sha256:13ba7b495462e1a719a56a3472f383e566f919103ce72b12879fc2102447e44e\"}\r\n{\"page\": 7, \"wallMs\": 2098.516, \"solveProductionWallMs\": 2098.516, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 1678, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 420.516, \"workerGrant\": 1, \"baselineMs\": 739, \"baselineValidationMs\": 301, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 638, \"nfpBuildCpuMs\": 28.86, \"differenceCpuMs\": 40.243, \"feasibleRegionCalls\": 136, \"cacheHits\": 207, \"cacheMisses\": 6, \"placedCount\": 66, \"poseDigest\": \"sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7\"}\r\n{\"page\": 8, \"wallMs\": 6384.842, \"solveProductionWallMs\": 6384.842, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 5681, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 703.842, \"workerGrant\": 1, \"baselineMs\": 3006, \"baselineValidationMs\": 845, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 1817, \"nfpBuildCpuMs\": 1145.794, \"differenceCpuMs\": 13.968, \"feasibleRegionCalls\": 81, \"cacheHits\": 105, \"cacheMisses\": 6, \"placedCount\": 55, \"poseDigest\": \"sha256:3d957459f0f54aaa7069df52744b1bfa57a8213670178027a181a132df8b8aaf\"}\r\n{\"page\": 9, \"wallMs\": 7178.91, \"solveProductionWallMs\": 7178.91, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 6983, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 195.91, \"workerGrant\": 1, \"baselineMs\": 6601, \"baselineValidationMs\": 132, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 249, \"nfpBuildCpuMs\": 312.129, \"differenceCpuMs\": 36.364, \"feasibleRegionCalls\": 103, \"cacheHits\": 154, \"cacheMisses\": 6, \"placedCount\": 40, \"poseDigest\": \"sha256:9150d490744af268ee990234990383ec2b361a9c70e3e406dd47b16c55b788cd\"}\r\n{\"page\": 10, \"wallMs\": 5695.825, \"solveProductionWallMs\": 5695.825, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 4871, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 824.825, \"workerGrant\": 1, \"baselineMs\": 3005, \"baselineValidationMs\": 622, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 1243, \"nfpBuildCpuMs\": 1465.417, \"differenceCpuMs\": 31.311, \"feasibleRegionCalls\": 76, \"cacheHits\": 112, \"cacheMisses\": 6, \"placedCount\": 36, \"poseDigest\": \"sha256:daf4f31a6fbdd39b433decf6b2b3ce6a14a676ec5cd03dbdcc8fda661433147b\"}\r\n{\"page\": 11, \"wallMs\": 3111.295, \"solveProductionWallMs\": 3111.295, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 2716, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 3, \"postNativeWallMs\": 395.295, \"workerGrant\": 1, \"baselineMs\": 1414, \"baselineValidationMs\": 475, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 822, \"nfpBuildCpuMs\": 295.269, \"differenceCpuMs\": 21.739, \"feasibleRegionCalls\": 88, \"cacheHits\": 132, \"cacheMisses\": 6, \"placedCount\": 39, \"poseDigest\": \"sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0\"}\r\n{\"page\": 12, \"wallMs\": 6942.88, \"solveProductionWallMs\": 6942.88, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 6281, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 661.88, \"workerGrant\": 1, \"baselineMs\": 3063, \"baselineValidationMs\": 1081, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 2136, \"nfpBuildCpuMs\": 1774.604, \"differenceCpuMs\": 1.678, \"feasibleRegionCalls\": 19, \"cacheHits\": 19, \"cacheMisses\": 2, \"placedCount\": 18, \"poseDigest\": \"sha256:746c521b9bf6e93b1fee1aae3bbe3213fe8868c30f03a7e506b24c4b22d82555\"}\r\n{\"page\": 13, \"wallMs\": 7296.573, \"solveProductionWallMs\": 7296.573, \"preSolvePythonMs\": 0.0, \"nativeTotalMs\": 6713, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 583.573, \"workerGrant\": 1, \"baselineMs\": 3322, \"baselineValidationMs\": 1195, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 2194, \"nfpBuildCpuMs\": 1628.188, \"differenceCpuMs\": 16.407, \"feasibleRegionCalls\": 43, \"cacheHits\": 51, \"cacheMisses\": 5, \"placedCount\": 32, \"poseDigest\": \"sha256:157bb3dff8710f57394d4922a56580d88f3993087b4494de5eb52fb6b23fc33f\"}\r\nSUMMARY {\"baselineVersion\": 12, \"nativeBuildIdentity\": \"fbe222ddf552cc2a8cdef6054d91defa50e971ee88a9352dfef286df9ae572bf\", \"productionBatch\": true, \"outerWorkers\": 1, \"requestedPerJobGrant\": null, \"totalRequestedGrant\": null, \"totalWallMs\": 10088.373, \"sumSolveWallMs\": 66872.35, \"sumBaselineMs\": 34476.0, \"sumSearchMs\": 0.0, \"workerGrants\": [2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], \"placedCounts\": [44, 54, 65, 34, 57, 60, 66, 55, 40, 36, 39, 18, 32], \"poseDigests\": [\"sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e\", \"sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9\", \"sha256:d69b7ba5b73e7d763105990b6a417865f02eda273d1c66273122107727346277\", \"sha256:58b2e8fa9cad4d8907b2e1b0b1d59934087c7b4d671e2e7c728f3dba71541b5f\", \"sha256:7861e4995543e4da583e77f951e098815c5275db4fc11cf4ec32a5dd586e2042\", \"sha256:13ba7b495462e1a719a56a3472f383e566f919103ce72b12879fc2102447e44e\", \"sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7\", \"sha256:3d957459f0f54aaa7069df52744b1bfa57a8213670178027a181a132df8b8aaf\", \"sha256:9150d490744af268ee990234990383ec2b361a9c70e3e406dd47b16c55b788cd\", \"sha256:daf4f31a6fbdd39b433decf6b2b3ce6a14a676ec5cd03dbdcc8fda661433147b\", \"sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0\", \"sha256:746c521b9bf6e93b1fee1aae3bbe3213fe8868c30f03a7e506b24c4b22d82555\", \"sha256:157bb3dff8710f57394d4922a56580d88f3993087b4494de5eb52fb6b23fc33f\"]}\r\n"
+    },
+    "serial": {
+      "rows": [
+        {
+          "page": 1,
+          "wallMs": 506.35,
+          "solveProductionWallMs": 19.936,
+          "preSolvePythonMs": 486.414,
+          "nativeTotalMs": 16,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 3.936,
+          "workerGrant": 15,
+          "baselineMs": 9,
+          "baselineValidationMs": 2,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 4,
+          "nfpBuildCpuMs": 0.156,
+          "differenceCpuMs": 3.049,
+          "feasibleRegionCalls": 92,
+          "cacheHits": 137,
+          "cacheMisses": 6,
+          "placedCount": 44,
+          "poseDigest": "sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e"
+        },
+        {
+          "page": 2,
+          "wallMs": 573.118,
+          "solveProductionWallMs": 413.391,
+          "preSolvePythonMs": 159.727,
+          "nativeTotalMs": 361,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 52.391,
+          "workerGrant": 15,
+          "baselineMs": 217,
+          "baselineValidationMs": 47,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 95,
+          "nfpBuildCpuMs": 46.748,
+          "differenceCpuMs": 6.241,
+          "feasibleRegionCalls": 110,
+          "cacheHits": 165,
+          "cacheMisses": 6,
+          "placedCount": 54,
+          "poseDigest": "sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9"
+        },
+        {
+          "page": 3,
+          "wallMs": 2144.461,
+          "solveProductionWallMs": 1500.904,
+          "preSolvePythonMs": 643.557,
+          "nativeTotalMs": 1320,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 180.904,
+          "workerGrant": 15,
+          "baselineMs": 785,
+          "baselineValidationMs": 177,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 357,
+          "nfpBuildCpuMs": 245.225,
+          "differenceCpuMs": 8.518,
+          "feasibleRegionCalls": 142,
+          "cacheHits": 214,
+          "cacheMisses": 6,
+          "placedCount": 67,
+          "poseDigest": "sha256:dd7352baf1cbdd15da5f3047e961116d1b1e6f99b51dd5d9b5928cc908acd63f"
+        },
+        {
+          "page": 4,
+          "wallMs": 3178.821,
+          "solveProductionWallMs": 2357.988,
+          "preSolvePythonMs": 820.833,
+          "nativeTotalMs": 1970,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 387.988,
+          "workerGrant": 15,
+          "baselineMs": 812,
+          "baselineValidationMs": 386,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 770,
+          "nfpBuildCpuMs": 436.19,
+          "differenceCpuMs": 3.359,
+          "feasibleRegionCalls": 52,
+          "cacheHits": 55,
+          "cacheMisses": 4,
+          "placedCount": 47,
+          "poseDigest": "sha256:930959bc08c412775ae6c28898fd7d6ff1e80f67895516800e4140562cbb419c"
+        },
+        {
+          "page": 5,
+          "wallMs": 3035.45,
+          "solveProductionWallMs": 2811.368,
+          "preSolvePythonMs": 224.082,
+          "nativeTotalMs": 2685,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 126.368,
+          "workerGrant": 15,
+          "baselineMs": 2306,
+          "baselineValidationMs": 125,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 253,
+          "nfpBuildCpuMs": 170.611,
+          "differenceCpuMs": 9.812,
+          "feasibleRegionCalls": 126,
+          "cacheHits": 187,
+          "cacheMisses": 6,
+          "placedCount": 59,
+          "poseDigest": "sha256:d302fcd0e1eb3f5900034dc9cfe0979d3bd5e95bde0338941e4e956edb85a983"
+        },
+        {
+          "page": 6,
+          "wallMs": 1836.529,
+          "solveProductionWallMs": 1472.087,
+          "preSolvePythonMs": 364.442,
+          "nativeTotalMs": 1264,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 208.087,
+          "workerGrant": 15,
+          "baselineMs": 650,
+          "baselineValidationMs": 210,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 403,
+          "nfpBuildCpuMs": 198.75,
+          "differenceCpuMs": 11.609,
+          "feasibleRegionCalls": 136,
+          "cacheHits": 207,
+          "cacheMisses": 6,
+          "placedCount": 66,
+          "poseDigest": "sha256:01ee798675d60bf6ebe479bb844c72d4d3bbcd99f945cfc2cea2a840a3822fb3"
+        },
+        {
+          "page": 7,
+          "wallMs": 606.474,
+          "solveProductionWallMs": 381.153,
+          "preSolvePythonMs": 225.321,
+          "nativeTotalMs": 327,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 54.153,
+          "workerGrant": 15,
+          "baselineMs": 137,
+          "baselineValidationMs": 60,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 130,
+          "nfpBuildCpuMs": 6.723,
+          "differenceCpuMs": 7.004,
+          "feasibleRegionCalls": 136,
+          "cacheHits": 207,
+          "cacheMisses": 6,
+          "placedCount": 66,
+          "poseDigest": "sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7"
+        },
+        {
+          "page": 8,
+          "wallMs": 1861.769,
+          "solveProductionWallMs": 1349.747,
+          "preSolvePythonMs": 512.022,
+          "nativeTotalMs": 1173,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 176.747,
+          "workerGrant": 15,
+          "baselineMs": 638,
+          "baselineValidationMs": 172,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 362,
+          "nfpBuildCpuMs": 187.806,
+          "differenceCpuMs": 7.748,
+          "feasibleRegionCalls": 120,
+          "cacheHits": 182,
+          "cacheMisses": 6,
+          "placedCount": 57,
+          "poseDigest": "sha256:09f252e0cf3145c92beb12d481d5adca62d207197b4d7074d68c746bf83b4558"
+        },
+        {
+          "page": 9,
+          "wallMs": 2032.308,
+          "solveProductionWallMs": 1563.505,
+          "preSolvePythonMs": 468.803,
+          "nativeTotalMs": 1487,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 76.505,
+          "workerGrant": 15,
+          "baselineMs": 1261,
+          "baselineValidationMs": 75,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 150,
+          "nfpBuildCpuMs": 55.715,
+          "differenceCpuMs": 5.037,
+          "feasibleRegionCalls": 103,
+          "cacheHits": 154,
+          "cacheMisses": 6,
+          "placedCount": 55,
+          "poseDigest": "sha256:17178a175b465bec61b19dd883289a28dd23a89066e8822c5bd92e88deb6d058"
+        },
+        {
+          "page": 10,
+          "wallMs": 2050.659,
+          "solveProductionWallMs": 1378.464,
+          "preSolvePythonMs": 672.195,
+          "nativeTotalMs": 1205,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 173.464,
+          "workerGrant": 15,
+          "baselineMs": 679,
+          "baselineValidationMs": 171,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 355,
+          "nfpBuildCpuMs": 232.954,
+          "differenceCpuMs": 7.273,
+          "feasibleRegionCalls": 86,
+          "cacheHits": 131,
+          "cacheMisses": 6,
+          "placedCount": 42,
+          "poseDigest": "sha256:1ffc95069e6499dccad8016187ab029d475ce1e8b7921dfe461eb94e54897d96"
+        },
+        {
+          "page": 11,
+          "wallMs": 1266.486,
+          "solveProductionWallMs": 548.086,
+          "preSolvePythonMs": 718.4,
+          "nativeTotalMs": 470,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 78.086,
+          "workerGrant": 15,
+          "baselineMs": 236,
+          "baselineValidationMs": 78,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 155,
+          "nfpBuildCpuMs": 45.943,
+          "differenceCpuMs": 5.108,
+          "feasibleRegionCalls": 88,
+          "cacheHits": 132,
+          "cacheMisses": 6,
+          "placedCount": 39,
+          "poseDigest": "sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0"
+        },
+        {
+          "page": 12,
+          "wallMs": 4252.378,
+          "solveProductionWallMs": 3120.953,
+          "preSolvePythonMs": 1131.425,
+          "nativeTotalMs": 2743,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 377.953,
+          "workerGrant": 15,
+          "baselineMs": 1653,
+          "baselineValidationMs": 363,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 725,
+          "nfpBuildCpuMs": 829.833,
+          "differenceCpuMs": 5.456,
+          "feasibleRegionCalls": 67,
+          "cacheHits": 101,
+          "cacheMisses": 6,
+          "placedCount": 29,
+          "poseDigest": "sha256:469eb350a439842db1542a5c82cdcb5edd6eab749a6014b0b7961337c5ae8271"
+        },
+        {
+          "page": 13,
+          "wallMs": 2438.6,
+          "solveProductionWallMs": 2198.067,
+          "preSolvePythonMs": 240.533,
+          "nativeTotalMs": 1938,
+          "requestPreparationMs": 0,
+          "manifestSerializationMs": 0,
+          "postNativeWallMs": 260.067,
+          "workerGrant": 15,
+          "baselineMs": 1156,
+          "baselineValidationMs": 257,
+          "rotationProbeMs": 0,
+          "searchMs": 0,
+          "publicationMs": 523,
+          "nfpBuildCpuMs": 431.982,
+          "differenceCpuMs": 5.342,
+          "feasibleRegionCalls": 75,
+          "cacheHits": 113,
+          "cacheMisses": 6,
+          "placedCount": 36,
+          "poseDigest": "sha256:d76e072262646fa78c80058b9752f30e2e8a1966d367c7191d4f6e54345c9579"
+        }
+      ],
+      "summary": {
+        "baselineVersion": 12,
+        "nativeBuildIdentity": "fbe222ddf552cc2a8cdef6054d91defa50e971ee88a9352dfef286df9ae572bf",
+        "productionBatch": false,
+        "outerWorkers": 1,
+        "requestedPerJobGrant": null,
+        "totalRequestedGrant": null,
+        "totalWallMs": 25798.704,
+        "sumSolveWallMs": 25783.403,
+        "sumBaselineMs": 10539,
+        "sumSearchMs": 0,
+        "workerGrants": [
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15
+        ],
+        "placedCounts": [
+          44,
+          54,
+          67,
+          47,
+          59,
+          66,
+          66,
+          57,
+          55,
+          42,
+          39,
+          29,
+          36
+        ],
+        "poseDigests": [
+          "sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e",
+          "sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9",
+          "sha256:dd7352baf1cbdd15da5f3047e961116d1b1e6f99b51dd5d9b5928cc908acd63f",
+          "sha256:930959bc08c412775ae6c28898fd7d6ff1e80f67895516800e4140562cbb419c",
+          "sha256:d302fcd0e1eb3f5900034dc9cfe0979d3bd5e95bde0338941e4e956edb85a983",
+          "sha256:01ee798675d60bf6ebe479bb844c72d4d3bbcd99f945cfc2cea2a840a3822fb3",
+          "sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7",
+          "sha256:09f252e0cf3145c92beb12d481d5adca62d207197b4d7074d68c746bf83b4558",
+          "sha256:17178a175b465bec61b19dd883289a28dd23a89066e8822c5bd92e88deb6d058",
+          "sha256:1ffc95069e6499dccad8016187ab029d475ce1e8b7921dfe461eb94e54897d96",
+          "sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0",
+          "sha256:469eb350a439842db1542a5c82cdcb5edd6eab749a6014b0b7961337c5ae8271",
+          "sha256:d76e072262646fa78c80058b9752f30e2e8a1966d367c7191d4f6e54345c9579"
+        ]
+      },
+      "stdout": "{\"page\": 1, \"wallMs\": 506.35, \"solveProductionWallMs\": 19.936, \"preSolvePythonMs\": 486.414, \"nativeTotalMs\": 16, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 3.936, \"workerGrant\": 15, \"baselineMs\": 9, \"baselineValidationMs\": 2, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 4, \"nfpBuildCpuMs\": 0.156, \"differenceCpuMs\": 3.049, \"feasibleRegionCalls\": 92, \"cacheHits\": 137, \"cacheMisses\": 6, \"placedCount\": 44, \"poseDigest\": \"sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e\"}\r\n{\"page\": 2, \"wallMs\": 573.118, \"solveProductionWallMs\": 413.391, \"preSolvePythonMs\": 159.727, \"nativeTotalMs\": 361, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 52.391, \"workerGrant\": 15, \"baselineMs\": 217, \"baselineValidationMs\": 47, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 95, \"nfpBuildCpuMs\": 46.748, \"differenceCpuMs\": 6.241, \"feasibleRegionCalls\": 110, \"cacheHits\": 165, \"cacheMisses\": 6, \"placedCount\": 54, \"poseDigest\": \"sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9\"}\r\n{\"page\": 3, \"wallMs\": 2144.461, \"solveProductionWallMs\": 1500.904, \"preSolvePythonMs\": 643.557, \"nativeTotalMs\": 1320, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 180.904, \"workerGrant\": 15, \"baselineMs\": 785, \"baselineValidationMs\": 177, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 357, \"nfpBuildCpuMs\": 245.225, \"differenceCpuMs\": 8.518, \"feasibleRegionCalls\": 142, \"cacheHits\": 214, \"cacheMisses\": 6, \"placedCount\": 67, \"poseDigest\": \"sha256:dd7352baf1cbdd15da5f3047e961116d1b1e6f99b51dd5d9b5928cc908acd63f\"}\r\n{\"page\": 4, \"wallMs\": 3178.821, \"solveProductionWallMs\": 2357.988, \"preSolvePythonMs\": 820.833, \"nativeTotalMs\": 1970, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 387.988, \"workerGrant\": 15, \"baselineMs\": 812, \"baselineValidationMs\": 386, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 770, \"nfpBuildCpuMs\": 436.19, \"differenceCpuMs\": 3.359, \"feasibleRegionCalls\": 52, \"cacheHits\": 55, \"cacheMisses\": 4, \"placedCount\": 47, \"poseDigest\": \"sha256:930959bc08c412775ae6c28898fd7d6ff1e80f67895516800e4140562cbb419c\"}\r\n{\"page\": 5, \"wallMs\": 3035.45, \"solveProductionWallMs\": 2811.368, \"preSolvePythonMs\": 224.082, \"nativeTotalMs\": 2685, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 126.368, \"workerGrant\": 15, \"baselineMs\": 2306, \"baselineValidationMs\": 125, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 253, \"nfpBuildCpuMs\": 170.611, \"differenceCpuMs\": 9.812, \"feasibleRegionCalls\": 126, \"cacheHits\": 187, \"cacheMisses\": 6, \"placedCount\": 59, \"poseDigest\": \"sha256:d302fcd0e1eb3f5900034dc9cfe0979d3bd5e95bde0338941e4e956edb85a983\"}\r\n{\"page\": 6, \"wallMs\": 1836.529, \"solveProductionWallMs\": 1472.087, \"preSolvePythonMs\": 364.442, \"nativeTotalMs\": 1264, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 208.087, \"workerGrant\": 15, \"baselineMs\": 650, \"baselineValidationMs\": 210, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 403, \"nfpBuildCpuMs\": 198.75, \"differenceCpuMs\": 11.609, \"feasibleRegionCalls\": 136, \"cacheHits\": 207, \"cacheMisses\": 6, \"placedCount\": 66, \"poseDigest\": \"sha256:01ee798675d60bf6ebe479bb844c72d4d3bbcd99f945cfc2cea2a840a3822fb3\"}\r\n{\"page\": 7, \"wallMs\": 606.474, \"solveProductionWallMs\": 381.153, \"preSolvePythonMs\": 225.321, \"nativeTotalMs\": 327, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 54.153, \"workerGrant\": 15, \"baselineMs\": 137, \"baselineValidationMs\": 60, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 130, \"nfpBuildCpuMs\": 6.723, \"differenceCpuMs\": 7.004, \"feasibleRegionCalls\": 136, \"cacheHits\": 207, \"cacheMisses\": 6, \"placedCount\": 66, \"poseDigest\": \"sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7\"}\r\n{\"page\": 8, \"wallMs\": 1861.769, \"solveProductionWallMs\": 1349.747, \"preSolvePythonMs\": 512.022, \"nativeTotalMs\": 1173, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 176.747, \"workerGrant\": 15, \"baselineMs\": 638, \"baselineValidationMs\": 172, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 362, \"nfpBuildCpuMs\": 187.806, \"differenceCpuMs\": 7.748, \"feasibleRegionCalls\": 120, \"cacheHits\": 182, \"cacheMisses\": 6, \"placedCount\": 57, \"poseDigest\": \"sha256:09f252e0cf3145c92beb12d481d5adca62d207197b4d7074d68c746bf83b4558\"}\r\n{\"page\": 9, \"wallMs\": 2032.308, \"solveProductionWallMs\": 1563.505, \"preSolvePythonMs\": 468.803, \"nativeTotalMs\": 1487, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 76.505, \"workerGrant\": 15, \"baselineMs\": 1261, \"baselineValidationMs\": 75, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 150, \"nfpBuildCpuMs\": 55.715, \"differenceCpuMs\": 5.037, \"feasibleRegionCalls\": 103, \"cacheHits\": 154, \"cacheMisses\": 6, \"placedCount\": 55, \"poseDigest\": \"sha256:17178a175b465bec61b19dd883289a28dd23a89066e8822c5bd92e88deb6d058\"}\r\n{\"page\": 10, \"wallMs\": 2050.659, \"solveProductionWallMs\": 1378.464, \"preSolvePythonMs\": 672.195, \"nativeTotalMs\": 1205, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 173.464, \"workerGrant\": 15, \"baselineMs\": 679, \"baselineValidationMs\": 171, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 355, \"nfpBuildCpuMs\": 232.954, \"differenceCpuMs\": 7.273, \"feasibleRegionCalls\": 86, \"cacheHits\": 131, \"cacheMisses\": 6, \"placedCount\": 42, \"poseDigest\": \"sha256:1ffc95069e6499dccad8016187ab029d475ce1e8b7921dfe461eb94e54897d96\"}\r\n{\"page\": 11, \"wallMs\": 1266.486, \"solveProductionWallMs\": 548.086, \"preSolvePythonMs\": 718.4, \"nativeTotalMs\": 470, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 78.086, \"workerGrant\": 15, \"baselineMs\": 236, \"baselineValidationMs\": 78, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 155, \"nfpBuildCpuMs\": 45.943, \"differenceCpuMs\": 5.108, \"feasibleRegionCalls\": 88, \"cacheHits\": 132, \"cacheMisses\": 6, \"placedCount\": 39, \"poseDigest\": \"sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0\"}\r\n{\"page\": 12, \"wallMs\": 4252.378, \"solveProductionWallMs\": 3120.953, \"preSolvePythonMs\": 1131.425, \"nativeTotalMs\": 2743, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 377.953, \"workerGrant\": 15, \"baselineMs\": 1653, \"baselineValidationMs\": 363, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 725, \"nfpBuildCpuMs\": 829.833, \"differenceCpuMs\": 5.456, \"feasibleRegionCalls\": 67, \"cacheHits\": 101, \"cacheMisses\": 6, \"placedCount\": 29, \"poseDigest\": \"sha256:469eb350a439842db1542a5c82cdcb5edd6eab749a6014b0b7961337c5ae8271\"}\r\n{\"page\": 13, \"wallMs\": 2438.6, \"solveProductionWallMs\": 2198.067, \"preSolvePythonMs\": 240.533, \"nativeTotalMs\": 1938, \"requestPreparationMs\": 0, \"manifestSerializationMs\": 0, \"postNativeWallMs\": 260.067, \"workerGrant\": 15, \"baselineMs\": 1156, \"baselineValidationMs\": 257, \"rotationProbeMs\": 0, \"searchMs\": 0, \"publicationMs\": 523, \"nfpBuildCpuMs\": 431.982, \"differenceCpuMs\": 5.342, \"feasibleRegionCalls\": 75, \"cacheHits\": 113, \"cacheMisses\": 6, \"placedCount\": 36, \"poseDigest\": \"sha256:d76e072262646fa78c80058b9752f30e2e8a1966d367c7191d4f6e54345c9579\"}\r\nSUMMARY {\"baselineVersion\": 12, \"nativeBuildIdentity\": \"fbe222ddf552cc2a8cdef6054d91defa50e971ee88a9352dfef286df9ae572bf\", \"productionBatch\": false, \"outerWorkers\": 1, \"requestedPerJobGrant\": null, \"totalRequestedGrant\": null, \"totalWallMs\": 25798.704, \"sumSolveWallMs\": 25783.403, \"sumBaselineMs\": 10539.0, \"sumSearchMs\": 0.0, \"workerGrants\": [15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15], \"placedCounts\": [44, 54, 67, 47, 59, 66, 66, 57, 55, 42, 39, 29, 36], \"poseDigests\": [\"sha256:e2b4314f7e2ed28302aa518726d0859d298379a7596cdbc8bc86cc54f9ab9f5e\", \"sha256:cddcb58e407e736a92e00f0b8e3ad62523294057eafaca5a087b84321b44d9f9\", \"sha256:dd7352baf1cbdd15da5f3047e961116d1b1e6f99b51dd5d9b5928cc908acd63f\", \"sha256:930959bc08c412775ae6c28898fd7d6ff1e80f67895516800e4140562cbb419c\", \"sha256:d302fcd0e1eb3f5900034dc9cfe0979d3bd5e95bde0338941e4e956edb85a983\", \"sha256:01ee798675d60bf6ebe479bb844c72d4d3bbcd99f945cfc2cea2a840a3822fb3\", \"sha256:0a70da1cb2ad02b80220379190c35d048fb2d8a821a20383d8952fb6acef82b7\", \"sha256:09f252e0cf3145c92beb12d481d5adca62d207197b4d7074d68c746bf83b4558\", \"sha256:17178a175b465bec61b19dd883289a28dd23a89066e8822c5bd92e88deb6d058\", \"sha256:1ffc95069e6499dccad8016187ab029d475ce1e8b7921dfe461eb94e54897d96\", \"sha256:030f2251e1b70256d68c91bf39715ef74585c205643e469afb254a664b58c6b0\", \"sha256:469eb350a439842db1542a5c82cdcb5edd6eab749a6014b0b7961337c5ae8271\", \"sha256:d76e072262646fa78c80058b9752f30e2e8a1966d367c7191d4f6e54345c9579\"]}\r\n"
+    },
+    "derived": [
+      {
+        "mode": "productionBatch",
+        "totalPlaced": 600,
+        "sumPipelineRowWallMs": 66872.35,
+        "sumSolveProductionWallMs": 66872.35,
+        "sumNativeTotalMs": 59713,
+        "sumBaselineMs": 34476,
+        "sumBaselineValidationMs": 8411,
+        "sumPublicationMs": 16797,
+        "sumPostNativeWallMs": 7159.35
+      },
+      {
+        "mode": "serial",
+        "totalPlaced": 661,
+        "sumPipelineRowWallMs": 25783.403,
+        "sumSolveProductionWallMs": 19115.649,
+        "sumNativeTotalMs": 16959,
+        "sumBaselineMs": 10539,
+        "sumBaselineValidationMs": 2123,
+        "sumPublicationMs": 4282,
+        "sumPostNativeWallMs": 2156.649
+      }
+    ],
+    "limitations": [
+      "N=1 mỗi mode; solve-only, không render/persist và không chạy quality gate auto UI.",
+      "Batch dùng scheduling production; serial harness mặc định chạy 13 job lần lượt.",
+      "Tổng phase/song song không bằng wall tổng và có thể lớn hơn wall tổng.",
+      "sumSolveWallMs trong harness cộng row.wallMs: serial là pipeline wall, batch gán bằng solveProductionWallMs.",
+      "nfpBuildCpuMs/differenceCpuMs là nhãn harness từ elapsed counters, không phải đo CPU bằng profiler.",
+      "Batch 600 vs serial 661 placements là trade-off deadline/lane quan sát; không khẳng định output UI giảm 61 tem hoặc speedup giữ chất lượng.",
+      "S&R baseline lock giữ periodic intent là EXPECTED; searchMs=0 không chứng minh mất song song."
+    ]
+  },
+  "verification": {
+    "backendFocused": {
+      "passed": 257,
+      "environmentFailure": 1,
+      "note": "Lỗi multiprocessing Queue WinError 5 trong sandbox; không gọi toàn invocation là xanh."
+    },
+    "isolatedRerun": {
+      "cwd": "D:/pdfcompare/backend",
+      "command": ".\\venv\\Scripts\\python.exe -B -m pytest -q -p no:cacheprovider tests/test_nesting_session_handover.py::test_process_con_that_render_khong_solve",
+      "outsideSandbox": true,
+      "passed": 1,
+      "warnings": "1 Pydantic deprecation warning"
+    },
+    "rustLib": {
+      "passed": 47
+    },
+    "rustAnisotropicGap": {
+      "command": "cargo test --manifest-path imposition_core/Cargo.toml --test mixed_nesting_solver gap_di_huong -- --nocapture",
+      "passed": 2,
+      "note": "Warning cleanup incremental access denied, test không fail."
+    },
+    "contractScannerSelfTest": {
+      "passed": 17
+    },
+    "notRun": [
+      "frontend full/typecheck mới cho snapshot báo cáo",
+      "full CNC duplex artifact từ fixture nguồn thô nặng",
+      "Tauri dev/installed runtime",
+      "N20 đầy đủ/hai tier RAM thấp/profiler CPU và RSS process tree"
+    ]
+  },
+  "caveats": [
+    "Raw log đầy đủ cho các test trước compaction không được lưu vào gói này; số test là nhật ký phiên audit, không phải content-addressed test log.",
+    "Không thêm giới hạn RAM/worker, không đổi rollout, không bỏ validator, không sửa source để đạt benchmark."
+  ]
+}

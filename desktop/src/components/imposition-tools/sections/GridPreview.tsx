@@ -3382,7 +3382,12 @@ export default function GridPreview(props: GridPreviewProps) {
         >
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
-              <span role="status" aria-live="polite" aria-atomic="true" className="truncate">
+              <span
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                className={usesNestingProgress ? "sr-only" : "truncate"}
+              >
                 {nestingPhaseLabel}
               </span>
               {hasMeasuredProgress && (

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
-import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
 import { saveBlob } from '../../lib/saveBlob';
 import { toast } from '../ui/Toast';
 import StickerSheetPanel from './StickerSheetPanel';
@@ -139,6 +139,19 @@ export default function StickerCutlineTool({
         }
         const current = useStickerSheetStore.getState().getTab(tabId);
         if (current.sourceOrigin === 'explicit' && current.sourceFile) return;
+        // REVISION (feedback 2026-09-07 §SHEET.SOURCE3): Working PDF đã bake
+        // không phải file mới để mở lại khi trở về tab; chỉ bỏ khi revision thật đổi.
+        if (current.sourceRevision !== null) {
+            const revision = current.sourceRevision;
+            const lease = workspaceLeaseRef.current;
+            const currentLease = lease?.revision === revision && lease.file === current.sourceFile
+                ? lease.isCurrent()
+                : 'file' in revision && 'editGeneration' in revision
+                    && workingPdf.isCurrent(revision as WorkingPdfRevisionSnapshot);
+            if (currentLease) return;
+            workspaceLeaseRef.current = null;
+            actions.invalidateWorkspaceSource(tabId);
+        }
         const historySourceOwner = stickerSourceOwnerFromHistory(pdfFile);
         if (
             current.sourceFile === workspaceSource
@@ -148,7 +161,7 @@ export default function StickerCutlineTool({
         // duy nhất; đổi file/thumbnail không giữ lại một nguồn ảnh riêng trong panel.
         // Chỉ đồng bộ file, tuyệt đối không inspect/detect ngầm.
         actions.selectSource(tabId, workspaceSource, 'workspace');
-    }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId]);
+    }, [actions, isActive, mode, pdfFile, sourceImageFile, tabId, workingPdf]);
 
     const handleExport = async () => {
         const result = await actions.exportFile(

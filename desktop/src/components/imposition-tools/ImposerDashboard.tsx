@@ -1236,8 +1236,18 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     // compute_sticker_layout_for_page) để điền SỐ RIÊNG của TỪNG loại (đầy 1 tờ loại đó),
     // KHỚP output. Key theo cùng chỉ số trang single-preview dùng (previewCapacities[X]).
     const batchCapAbortRef = useRef<AbortController | null>(null);
+    // PERF (audit 2026-09-07 §TEMPERF.2): App giữ tab nền mounted. Authority và
+    // capacity mới nhất phải theo render hiện tại, không theo snapshot trước await.
+    const batchCapStateRef = useRef({
+        isActive, isLayoutPreviewEnabled, tabId, fetchEpoch: s.fetchEpoch,
+        ocgVisibilityKey, previewCapacities: s.previewCapacities,
+    });
+    batchCapStateRef.current = {
+        isActive, isLayoutPreviewEnabled, tabId, fetchEpoch: s.fetchEpoch,
+        ocgVisibilityKey, previewCapacities: s.previewCapacities,
+    };
     useEffect(() => {
-        if (!isLayoutPreviewEnabled) {
+        if (isActive === false || !isLayoutPreviewEnabled) {
             batchCapAbortRef.current?.abort();
             batchCapAbortRef.current = null;
             return;
@@ -1291,9 +1301,22 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             return;
         }
 
-        let cancelled = false;
+        batchCapAbortRef.current?.abort();
+        const controller = new AbortController();
+        batchCapAbortRef.current = controller;
+        const isCurrentGeneration = () => {
+            const latest = batchCapStateRef.current;
+            return !controller.signal.aborted
+                && batchCapAbortRef.current === controller
+                && latest.isActive !== false
+                && latest.isLayoutPreviewEnabled
+                && latest.tabId === tabId
+                && latest.fetchEpoch === s.fetchEpoch
+                && latest.ocgVisibilityKey === ocgVisibilityKey;
+        };
         const MM_TO_PT = 72 / 25.4;
         const timer = setTimeout(async () => {
+            if (!isCurrentGeneration()) return;
             try {
                 // ── Nguồn file: working file (bake sửa viewer) — .path khi không sửa (Tauri). ──
                 const isTauri = !!(window as RuntimeWindow).__TAURI_INTERNALS__;
@@ -1301,26 +1324,40 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 let srcFileId: string | undefined;
                 try {
                     const wf = await readWorkingFile();
+                    if (!isCurrentGeneration()) return;
                     if (isTauri && (wf as WorkspaceFileLike)?.path) {
                         srcPath = (wf as WorkspaceFileLike).path;
                     } else {
                         const bytes = new Uint8Array(await wf.arrayBuffer());
+                        if (!isCurrentGeneration()) return;
                         if (isTauri) {
                             const { tempDir, join } = await import('@tauri-apps/api/path');
+                            if (!isCurrentGeneration()) return;
                             const { writeFile } = await import('@tauri-apps/plugin-fs');
-                            const tPath = await join(await tempDir(), `prynx_batchcap_${Date.now()}.pdf`);
+                            if (!isCurrentGeneration()) return;
+                            const sourceTempDir = await tempDir();
+                            if (!isCurrentGeneration()) return;
+                            const tPath = await join(sourceTempDir, `prynx_batchcap_${Date.now()}.pdf`);
+                            if (!isCurrentGeneration()) return;
                             await writeFile(tPath, bytes);
+                            if (!isCurrentGeneration()) return;
                             srcPath = tPath;
                         } else {
-                            const up = await uploadPDF(new File([bytes], 'batchcap.pdf', { type: 'application/pdf' }));
+                            const up = await uploadPDF(
+                                new File([bytes], 'batchcap.pdf', { type: 'application/pdf' }),
+                                { signal: controller.signal },
+                            );
+                            if (!isCurrentGeneration()) return;
                             if (up?.id) srcFileId = up.id;
                         }
                     }
                 } catch (e) {
-                    console.warn('[BatchCapacity] resolve source failed:', e);
+                    if (isCurrentGeneration() && !isAbortError(e)) {
+                        console.warn('[BatchCapacity] resolve source failed:', e);
+                    }
                     return;
                 }
-                if (cancelled || (!srcPath && !srcFileId)) return;
+                if (!isCurrentGeneration() || (!srcPath && !srcFileId)) return;
 
                 // ── Lề hiệu dụng (mirror khối GridPreview 972-991) ──
                 let effMarginTop = s.marginTop || 0;
@@ -1424,9 +1461,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     tile_gap_y: (s.tileGapY || 0) * MM_TO_PT,
                 };
 
-                if (batchCapAbortRef.current) batchCapAbortRef.current.abort();
-                const controller = new AbortController();
-                batchCapAbortRef.current = controller;
+                if (!isCurrentGeneration()) return;
 
                 const _tBatch = performance.now();
                 void previewPerfLog('batch-capacity START', { pages: pages.length });
@@ -1436,7 +1471,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     body: JSON.stringify(body),
                     signal: controller.signal,
                 });
-                if (cancelled || !res.ok) {
+                if (!isCurrentGeneration()) return;
+                if (!res.ok) {
                     void previewPerfLog('batch-capacity FAIL', {
                         ms: Math.round(performance.now() - _tBatch),
                         status: res.status,
@@ -1444,7 +1480,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     return;
                 }
                 const data = await res.json();
-                if (cancelled || !data?.success || !data.capacities) return;
+                if (!isCurrentGeneration() || !data?.success || !data.capacities) return;
                 void previewPerfLog('batch-capacity OK', {
                     ms: Math.round(performance.now() - _tBatch),
                     keys: Object.keys(data.capacities || {}).length,
@@ -1458,16 +1494,24 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     if (v > 0) caps[Number(k)] = v;
                 });
                 if (Object.keys(caps).length > 0) {
-                    s.setPreviewCapacities({ ...s.previewCapacities, ...caps });
+                    s.setPreviewCapacities({ ...batchCapStateRef.current.previewCapacities, ...caps });
                 }
             } catch (e: unknown) {
-                if (!isAbortError(e)) console.warn('[BatchCapacity] fetch failed:', e);
+                if (isCurrentGeneration() && !isAbortError(e)) console.warn('[BatchCapacity] fetch failed:', e);
+            } finally {
+                if (batchCapAbortRef.current === controller) batchCapAbortRef.current = null;
             }
         }, 350);
 
-        return () => { cancelled = true; clearTimeout(timer); };
+        return () => {
+            clearTimeout(timer);
+            // Abort HTTP không dừng CPU route đồng bộ đã nhận; ownership guard
+            // vẫn bắt buộc để response cũ không ghi đè capacity của lượt mới.
+            controller.abort();
+            if (batchCapAbortRef.current === controller) batchCapAbortRef.current = null;
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [s.fetchEpoch, ocgVisibilityKey, isLayoutPreviewEnabled]);
+    }, [s.fetchEpoch, ocgVisibilityKey, isLayoutPreviewEnabled, isActive, tabId]);
 
     const handleLayoutPreviewToggle = useCallback((enabled: boolean) => {
         const emptySnapshot: PreviewDiagnosticSnapshot = {

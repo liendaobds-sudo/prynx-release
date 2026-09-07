@@ -101,7 +101,7 @@ import {
     maxFullToolMenuWidth,
    resolveToolMenuDrag,
     resolveEffectiveToolMenuLayout,
-    resolveToolMenuDividerLayout,
+    resizeToolMenuPanel,
     resolveToolMenuDraftLayout,
    resolveWorkspaceToolMenuToggle,
     resolveWorkspaceToolPanelClose,
@@ -370,6 +370,7 @@ export default function ImpositionTab(props: Props) {
    const [store] = useState(() => createWorkspaceStore(
         useAppSettingsStore.getState().toolMenuMode,
        useAppSettingsStore.getState().toolMenuWidth,
+       useAppSettingsStore.getState().toolConfigWidth,
    ));
     const imposerScope = props.tabId ? `tab:${props.tabId}` : undefined;
     const [imposerStore] = useState(() => {
@@ -409,6 +410,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         viewerPageInstanceIds, setViewerPageInstanceIds,
         viewerPageRotations, setViewerPageRotations, editGeneration, advanceEditGeneration, setBleedView,
         isDraggingSidebar, setIsDraggingSidebar, rightToolMenuFullWidth, setRightToolMenuFullWidth,
+        rightToolConfigWidth, setRightToolConfigWidth,
         rightToolMenuMode: toolMenuMode, setRightToolMenuMode,
         pdfObjectsVersion, setPdfObjectsVersion,
         isObjectEditMode,
@@ -442,6 +444,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         editGeneration: state.editGeneration, advanceEditGeneration: state.advanceEditGeneration, setBleedView: state.setBleedView,
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
         rightToolMenuFullWidth: state.rightToolMenuFullWidth, setRightToolMenuFullWidth: state.setRightToolMenuFullWidth,
+        rightToolConfigWidth: state.rightToolConfigWidth, setRightToolConfigWidth: state.setRightToolConfigWidth,
         rightToolMenuMode: state.rightToolMenuMode, setRightToolMenuMode: state.setRightToolMenuMode,
         pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
         isObjectEditMode: state.isObjectEditMode,
@@ -550,29 +553,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [setRightToolMenuMode]);
 
     const hasActiveRightTool = activeDashboardTool !== 'none' || isObjectEditMode;
-    const [preferredCatalogSplitWidth, setPreferredCatalogSplitWidth] = useState<number | null>(null);
-    const baseEffectiveToolMenuLayout = resolveEffectiveToolMenuLayout({
+    const effectiveToolMenuLayout = resolveEffectiveToolMenuLayout({
         preferredMode: toolMenuMode,
         preferredFullWidth: sidebarWidth,
+        preferredConfigWidth: rightToolConfigWidth,
         containerWidth: workspaceWidth,
         hasConfigPanel: hasActiveRightTool,
         viewerReservedWidth: TOOL_MENU_VIEWER_MIN_WIDTH,
     });
-    const maximumRightToolMenuWidth = Math.max(
-        TOOL_MENU_ICON_WIDTH,
-        Math.floor(workspaceWidth - TOOL_MENU_VIEWER_MIN_WIDTH),
-    );
-    const effectiveToolMenuLayout = preferredCatalogSplitWidth === null
-        ? baseEffectiveToolMenuLayout
-        : resolveToolMenuDividerLayout(
-            baseEffectiveToolMenuLayout,
-            preferredCatalogSplitWidth,
-            maximumRightToolMenuWidth,
-        );
     const effectiveToolMenuMode = effectiveToolMenuLayout.mode;
-    useEffect(() => {
-        if (!hasActiveRightTool) setPreferredCatalogSplitWidth(null);
-    }, [hasActiveRightTool]);
 
     const licensePlan = useAuthStore(state => state.licensePlan);
     const licenseFeatures = useAuthStore(state => state.licenseFeatures);
@@ -589,6 +578,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const {
         stickerSheetMode,
         stickerSheetSourceFile,
+        stickerSheetSourceOrigin,
+        stickerSheetSourceRevision,
         stickerSheetActiveSourcePage,
         stickerSheetPages,
         stickerSheetBusy,
@@ -894,6 +885,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         file,
         sourceImageFileForRevision,
         stickerSheetSourceFile,
+        stickerSheetSourceOrigin === 'workspace' && stickerSheetSourceRevision
+            ? isWorkspaceDocumentRevisionCurrent(
+                stickerSheetSourceRevision as WorkspaceDocumentRevisionToken,
+                store.getState(),
+            ) : undefined,
     );
     const currentViewerDocumentIdentity = workspaceDocumentIdentity(
         file,
@@ -2301,15 +2297,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         startTotalWidth: number;
         startFullWidth: number;
         startCatalogWidth: number;
+        startLayout: EffectiveToolMenuLayout | null;
         target: 'outer' | 'catalog';
-    }>({ startX: 0, startTotalWidth: 0, startFullWidth: 0, startCatalogWidth: 0, target: 'outer' });
+    }>({ startX: 0, startTotalWidth: 0, startFullWidth: 0, startCatalogWidth: 0, startLayout: null, target: 'outer' });
     const [sidebarDraftTotalWidth, setSidebarDraftTotalWidth] = useState<number | null>(null);
     const [sidebarDraftLayout, setSidebarDraftLayout] = useState<EffectiveToolMenuLayout | null>(null);
     const sidebarDraftLayoutRef = useRef<{ mode: ToolMenuMode; fullWidth: number } | null>(null);
     const sidebarDraftEffectiveLayoutRef = useRef<EffectiveToolMenuLayout | null>(null);
     const sidebarDraftFrameRef = useRef<number | null>(null);
     const sidebarDraftTotalWidthRef = useRef<number | null>(null);
-    const sidebarDividerCatalogWidthRef = useRef<number | null>(null);
     const sidebarDragPointerIdRef = useRef<number | null>(null);
 
     useEffect(() => {
@@ -2319,22 +2315,26 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 cancelAnimationFrame(sidebarDraftFrameRef.current);
                 sidebarDraftFrameRef.current = null;
             }
-            const dragTarget = sidebarDragRef.current.target;
             const layout = sidebarDraftLayoutRef.current;
-            const dividerCatalogWidth = sidebarDividerCatalogWidthRef.current;
+            const panelLayout = sidebarDraftEffectiveLayoutRef.current;
+            const hadConfigPanel = (sidebarDragRef.current.startLayout?.configWidth ?? 0) > 0;
             sidebarDraftLayoutRef.current = null;
             sidebarDraftEffectiveLayoutRef.current = null;
-            sidebarDividerCatalogWidthRef.current = null;
             sidebarDragPointerIdRef.current = null;
             setSidebarDraftTotalWidth(null);
             setSidebarDraftLayout(null);
             setIsDraggingSidebar(false);
-            if (dragTarget === 'catalog') {
-                if (dividerCatalogWidth !== null) setPreferredCatalogSplitWidth(dividerCatalogWidth);
+            if (hadConfigPanel && panelLayout) {
+                // UIUX (feedback 2026-09-07 §PANEL.WIDTH): chốt đúng cặp đang
+                // nhìn thấy để panel bị giới hạn trước đó không bật rộng sau thả.
+                // Mode chỉ do nút thu/mở quyết định, tay kéo không ghi lại nó.
+                setRightToolConfigWidth(panelLayout.configWidth);
+                useAppSettingsStore.getState().setToolConfigWidth(panelLayout.configWidth);
+                if (panelLayout.mode === 'full') {
+                    setRightToolMenuFullWidth(panelLayout.catalogWidth);
+                    useAppSettingsStore.getState().setToolMenuWidth(panelLayout.catalogWidth);
+                }
             } else if (layout) {
-                // Outer handle chốt lại toàn bộ layout, không giữ split cũ khiến
-                // tổng width vừa kéo bị bật ngược sau pointerup.
-                setPreferredCatalogSplitWidth(null);
                 setToolMenuLayout(layout.mode, layout.fullWidth);
             }
         };
@@ -2354,19 +2354,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             );
             let draftTotalWidth: number;
             let draftEffectiveLayout: EffectiveToolMenuLayout;
-            if (sidebarDragRef.current.target === 'catalog') {
-                const startCatalogWidth = sidebarDragRef.current.startCatalogWidth;
-                const startTotalWidth = sidebarDragRef.current.startTotalWidth;
-                draftEffectiveLayout = resolveToolMenuDividerLayout({
-                    mode: 'full',
-                    configWidth: startTotalWidth - startCatalogWidth,
-                    catalogWidth: startCatalogWidth,
-                    totalWidth: startTotalWidth,
-                    canExpandFull: true,
-                }, startCatalogWidth + deltaX, maximumTotalWidth);
+            const startLayout = sidebarDragRef.current.startLayout;
+            if (startLayout && startLayout.configWidth > 0) {
+                const target = sidebarDragRef.current.target === 'catalog' ? 'catalog' : 'config';
+                const startWidth = target === 'catalog' ? startLayout.catalogWidth : startLayout.configWidth;
+                draftEffectiveLayout = resizeToolMenuPanel(startLayout, target, startWidth + deltaX, maximumTotalWidth);
                 draftTotalWidth = draftEffectiveLayout.totalWidth;
                 sidebarDraftLayoutRef.current = null;
-                sidebarDividerCatalogWidthRef.current = draftEffectiveLayout.catalogWidth;
             } else {
                 draftTotalWidth = clampToolMenuDraftTotalWidth(
                     requestedTotalWidth,
@@ -2380,9 +2374,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     maximumFullWidth,
                 );
                 sidebarDraftLayoutRef.current = nextLayout;
-                sidebarDividerCatalogWidthRef.current = null;
-                // UIUX (audit 2026-08-25): outer handle đổi tổng width;
-                // divider giữa hai pane có nhánh riêng để Viewer không reflow.
+                // Không có bảng thiết lập: giữ thao tác resize catalog cũ.
                 draftEffectiveLayout = resolveToolMenuDraftLayout({
                     totalWidth: draftTotalWidth,
                     mode: nextLayout.mode,
@@ -2433,6 +2425,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         hasActiveRightTool,
         isDraggingSidebar,
         setIsDraggingSidebar,
+        setRightToolConfigWidth,
+        setRightToolMenuFullWidth,
         setToolMenuLayout,
         workspaceWidth,
     ]);
@@ -2534,14 +2528,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             !isActive
             || activeDashboardTool !== 'sticker'
             || stickerSheetMode !== 'ai-sheet'
+            || stickerSheetSourceOrigin !== 'explicit'
         ) {
             return;
         }
         if (!stickerSheetSourceFile || fileOpeningPhase === 'loading' || stickerSheetBusy) return;
         if (syncedStickerSourceRef.current === stickerSheetSourceFile) return;
         syncedStickerSourceRef.current = stickerSheetSourceFile;
-        // UIUX (feedback 2026-08-09 §AI.VIEW1): picker trong panel AI cũng phải
-        // cập nhật tài liệu của AcrobatViewer; không dựng một viewport ảnh song song.
+        // REVISION (audit 2026-09-07 §SHEET.SYNC): chỉ nguồn chọn riêng mới mở
+        // vào Viewer. Mở ngược PDF đã bake reorder/rotation giữa nhận diện sẽ tự
+        // thay File của workspace và khiến snapshot của chính job đó bị stale.
         void handleFileSelected(stickerSheetSourceFile);
     }, [
         activeDashboardTool,
@@ -2551,6 +2547,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         stickerSheetBusy,
         stickerSheetMode,
         stickerSheetSourceFile,
+        stickerSheetSourceOrigin,
     ]);
     //#endregion
 
@@ -3895,13 +3892,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             : null;
         sidebarDraftEffectiveLayoutRef.current = null;
         sidebarDraftTotalWidthRef.current = null;
-        sidebarDividerCatalogWidthRef.current = null;
         event.currentTarget.setPointerCapture?.(event.pointerId);
         sidebarDragRef.current = {
             startX: event.clientX,
             startTotalWidth: displayedToolMenuLayout.totalWidth,
             startFullWidth: sidebarWidth,
             startCatalogWidth: displayedToolMenuLayout.catalogWidth,
+            startLayout: displayedToolMenuLayout,
             target,
         };
         setIsDraggingSidebar(true);
@@ -4282,9 +4279,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             style={{ width: `${effectiveRightToolMenuWidth}px` }}
                                             className="shrink-0 bg-[#f8fafc] dark:bg-zinc-900 shadow-[-10px_0_30px_rgba(0,0,0,0.05)] flex flex-row justify-end z-20 h-full relative border-l border-slate-200 dark:border-zinc-800"
                                         >
-                                        {/* Mép ngoài: đổi tổng width của cả cụm. */}
+                                        {/* Có thiết lập: mép ngoài chỉ đổi thiết lập; không có thì đổi catalog. */}
                                         {/* UIUX (audit 2026-07-27 §B-25): vùng bắt chuột rộng gấp đôi (w-2.5), chỉ vẽ 1px ở giữa — nhìn không đổi */}
                                         <div
+                                            data-testid="workspace-panel-resize"
                                             className="absolute left-0 top-0 bottom-0 w-2.5 -ml-[5px] cursor-col-resize touch-none hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
                                             onPointerDown={(event) => beginRightToolMenuDrag(event, 'outer')}
                                         >
@@ -4294,6 +4292,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             panel thiết lập đứng yên, Viewer nhận/trả phần chiều rộng thay đổi. */}
                                         {hasActiveRightTool && displayedIsSidebarOpen && (
                                             <div
+                                                data-testid="workspace-catalog-resize"
                                                 style={{ right: `${displayedToolMenuLayout.catalogWidth}px` }}
                                                 role="separator"
                                                 aria-orientation="vertical"

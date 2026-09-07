@@ -2258,6 +2258,16 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             
             if not file_path or not os.path.exists(file_path):
                 raise ValueError(f"File not found: {req.file_id or req.path}")
+
+            # PERF (audit 2026-09-07 §TEMPERF.1): chụp revision trước khi mở
+            # bản canonical; không gắn hình học cũ vào mtime của file vừa thay.
+            _preview_uses_sticker_cache = (
+                bool(req.is_die_cut)
+                or req.task_mode not in ('nup', 'step_repeat', 'booklet')
+            )
+            _preview_source_fingerprint = (
+                capture_source_fingerprint(file_path) if _preview_uses_sticker_cache else None
+            )
             
             logger.debug("   file_path=%s", file_path)
             
@@ -2983,7 +2993,9 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     # Nesting master ĐÚNG MỘT LẦN (shape-aware) — dùng làm layout_fn.
                     _master_layout = _csl(
                         _master_page, req.usable_w, req.usable_h, req.gap_x, req.gap_y,
-                        strategy='optimal_auto',
+                        # PARITY (audit 2026-09-07 §TEMPERF.S1): cùng policy
+                        # với full-layout export, không ép lưới đơn giản thành L-fill.
+                        strategy='simple_auto' if req.strategy == 'simple_auto' else 'optimal_auto',
                         shape_type_override=homogeneous_plan.shape_type.name,
                         shape_props_override=(homogeneous_plan.shape_props or None),
                         bleed_pt=bleed_pt,
@@ -3829,13 +3841,9 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _ct_a = getattr(req, 'cut_type', 'default')
                 _dsm_a = getattr(req, 'die_size_mode', 'die')
                 _dom_a = getattr(req, 'die_offset_mm', 0)
-                try:
-                    _mtime_a = os.path.getmtime(file_path)
-                except OSError:
-                    _mtime_a = 0.0
                 _ck_a = _sticker_nest_cache_key(
                     file_path=file_path,
-                    mtime=_mtime_a,
+                    mtime=_preview_source_fingerprint,
                     page_idx=page_idx,
                     compute_w=compute_w,
                     compute_h=compute_h,
@@ -3851,15 +3859,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     die_offset_mm=_dom_a,
                     alternate_rotation=_preview_alternate_rotation,
                 )
-                with _NEST_CACHE_LOCK:
-                    _hit_a = _NEST_A_CACHE.get(_ck_a)
-                    if _hit_a is not None:
-                        _NEST_A_CACHE.move_to_end(_ck_a)
-                if _hit_a is not None:
-                    result = _copy_mod.deepcopy(_hit_a)
-                    _plog("compute layout done (nest CACHE HIT)")
-                else:
-                    result = compute_sticker_layout_for_page(
+                def _compute_preview_sticker_layout():
+                    return compute_sticker_layout_for_page(
                         page=page,
                         sheet_usable_w=compute_w,
                         sheet_usable_h=compute_h,
@@ -3883,11 +3884,21 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         die_offset_mm=_dom_a,
                         alternate_rotation=_preview_alternate_rotation,
                     )
-                    _plog("compute layout done (nest)")
-                    with _NEST_CACHE_LOCK:
-                        _NEST_A_CACHE[_ck_a] = _copy_mod.deepcopy(result)
-                        if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
-                            _NEST_A_CACHE.popitem(last=False)
+                try:
+                    result, _layout_reused = _get_or_compute_sticker_layout(
+                        _ck_a,
+                        _compute_preview_sticker_layout,
+                        source_fingerprint=_preview_source_fingerprint,
+                    )
+                except SourceRevisionChangedError as exc:
+                    doc.close()
+                    raise HTTPException(
+                        status_code=409, detail=SOURCE_REVISION_CHANGED_MESSAGE,
+                    ) from exc
+                except BaseException:
+                    doc.close()
+                    raise
+                _plog("compute layout done (nest REUSED)" if _layout_reused else "compute layout done (nest)")
 
             base_poly = _build_pont_base_poly_for_preview(page, result, req, shape_override)
 
@@ -4017,6 +4028,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             logger.info(f"[PREVIEW] abs S&R: shape={result.get('shapeType')} items={len(abs_cells)} (strategy={result.get('strategyUsed')})")
 
             _plog(f"RETURN branch A die/S&R ({len(abs_cells)} cells)")
+            _assert_sticker_preview_source(_preview_source_fingerprint)
             return {
                 "success": True,
                 "cells": abs_cells,
@@ -4128,9 +4140,82 @@ _ZONE_NEST_CACHE_MAX = 2048
 # compute_sticker_layout_for_page + (file, mtime, page_idx). deepcopy vào/ra.
 import copy as _copy_mod
 import threading as _threading_batch
+from concurrent.futures import Future as _LayoutFuture
 _NEST_A_CACHE: "_OrderedDict_batch[tuple, dict]" = _OrderedDict_batch()
 _NEST_A_CACHE_MAX = 1024
 _NEST_CACHE_LOCK = _threading_batch.RLock()
+_NEST_A_INFLIGHT: dict[tuple, tuple[int, _LayoutFuture]] = {}
+
+
+def _assert_sticker_preview_source(source_fingerprint: SourceFingerprint) -> None:
+    """Nguồn đổi revision không được thành preview/capacity thành công."""
+    try:
+        assert_source_fingerprint(source_fingerprint)
+    except SourceRevisionChangedError as exc:
+        raise HTTPException(
+            status_code=409, detail=SOURCE_REVISION_CHANGED_MESSAGE,
+        ) from exc
+
+
+def _get_or_compute_sticker_layout(key, compute, *, source_fingerprint: SourceFingerprint):
+    """PERF (audit 2026-09-07 §TEMPERF.1): một owner cho mỗi raw-layout key.
+
+    Cache và kết quả đang tính không chia sẻ dict mutable với caller. Khóa chỉ
+    bảo vệ metadata; compute/chờ/deepcopy ở ngoài khóa để key khác chạy song song.
+    Route sync chưa có token hủy: chỉ truyền lỗi/hủy từ compute, không giả timeout.
+    """
+    assert_source_fingerprint(source_fingerprint)
+    thread_id = _threading_batch.get_ident()
+    owner = False
+    with _NEST_CACHE_LOCK:
+        cached = _NEST_A_CACHE.get(key)
+        if cached is not None:
+            _NEST_A_CACHE.move_to_end(key)
+        else:
+            flight = _NEST_A_INFLIGHT.get(key)
+            if flight is None:
+                flight = (thread_id, _LayoutFuture())
+                _NEST_A_INFLIGHT[key] = flight
+                owner = True
+            elif flight[0] == thread_id:
+                raise RuntimeError("Không được chờ lại bố cục đang tính trong cùng luồng.")
+
+    if cached is not None:
+        result = _copy_mod.deepcopy(cached)
+        assert_source_fingerprint(source_fingerprint)
+        return result, True
+
+    future = flight[1]
+    if not owner:
+        result = _copy_mod.deepcopy(future.result())
+        assert_source_fingerprint(source_fingerprint)
+        return result, True
+
+    try:
+        computed = compute()
+        snapshot = _copy_mod.deepcopy(computed)
+        result = _copy_mod.deepcopy(snapshot)
+        assert_source_fingerprint(source_fingerprint)
+        with _NEST_CACHE_LOCK:
+            _NEST_A_CACHE[key] = snapshot
+            _NEST_A_CACHE.move_to_end(key)
+            if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
+                _NEST_A_CACHE.popitem(last=False)
+    except BaseException as exc:
+        with _NEST_CACHE_LOCK:
+            if _NEST_A_INFLIGHT.get(key) is flight:
+                _NEST_A_INFLIGHT.pop(key)
+        # Đánh thức cả khi InterruptedError/BaseException; không giữ flight lỗi
+        # khiến mọi lượt retry về sau bị treo hoặc nhận lại lỗi đã hết hiệu lực.
+        future.set_exception(exc)
+        raise
+    else:
+        with _NEST_CACHE_LOCK:
+            if _NEST_A_INFLIGHT.get(key) is flight:
+                _NEST_A_INFLIGHT.pop(key)
+        future.set_result(snapshot)
+    assert_source_fingerprint(source_fingerprint)
+    return result, False
 
 
 def _sticker_nest_cache_key(
@@ -4138,16 +4223,21 @@ def _sticker_nest_cache_key(
     strategy, shape_override, shape_props, bleed_pt, secondary_gap,
     cut_type, die_size_mode, die_offset_mm, alternate_rotation='none',
 ):
-    """Một cache key dùng chung cho batch capacity và preview từng trang."""
+    """Một cache key dùng chung cho batch capacity và preview từng trang.
+
+    PERF (audit 2026-09-07 §TEMPERF.1): giữ float thật như solver nhận, không
+    làm tròn key rồi trộn layout của hai gap/khổ gần nhau nhưng khác tọa độ.
+    ``mtime`` ở hai route là SourceFingerprint của đường gốc, không phải temp PDF.
+    """
     return (
         file_path, mtime, int(page_idx),
-        round(float(compute_w), 3), round(float(compute_h), 3),
-        round(float(gap_x), 3), round(float(gap_y), 3),
+        float(compute_w), float(compute_h),
+        float(gap_x), float(gap_y),
         strategy, shape_override,
         _json_batch.dumps(shape_props or {}, sort_keys=True),
-        round(float(bleed_pt), 3),
-        round(float(secondary_gap), 3) if secondary_gap is not None else None,
-        cut_type, die_size_mode, round(float(die_offset_mm or 0), 3),
+        float(bleed_pt),
+        float(secondary_gap) if secondary_gap is not None else None,
+        cut_type, die_size_mode, float(die_offset_mm or 0),
         str(alternate_rotation or 'none'),
     )
 
@@ -4423,6 +4513,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
     _use_sticker = False if req.page_sheet_mode else (
         bool(req.is_die_cut) or req.task_mode not in ('nup', 'step_repeat', 'booklet')
     )
+    _batch_source_fingerprint = capture_source_fingerprint(file_path) if _use_sticker else None
 
     # ── Cache: nesting shape-aware (parse vector + NFP Shapely) ĐẮT → cache theo
     # (file+mtime, page_idx, params layout). Đổi trang xem / nhập SL (không đổi params)
@@ -4483,7 +4574,10 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
             pages_total=len(pages_in),
         )
 
-    def _nest_one_page(p: dict, page_idx: int, doc) -> int:
+    def _nest_one_page(p: dict, page_idx: int, doc=None, *, page_loader=None) -> int:
+        def _page():
+            return page_loader() if page_loader is not None else doc[page_idx]
+
         _shape = p.get("shape_type")
         shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)
         _layout_ck = None
@@ -4492,7 +4586,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         if _use_sticker:
             _layout_ck = _sticker_nest_cache_key(
                 file_path=file_path,
-                mtime=_mtime,
+                mtime=_batch_source_fingerprint,
                 page_idx=page_idx,
                 compute_w=compute_w,
                 compute_h=compute_h,
@@ -4508,17 +4602,6 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 die_offset_mm=req.die_offset_mm,
                 alternate_rotation=_batch_alternate_rotation,
             )
-            with _NEST_CACHE_LOCK:
-                _cached_layout = _NEST_A_CACHE.get(_layout_ck)
-                if _cached_layout is not None:
-                    _NEST_A_CACHE.move_to_end(_layout_ck)
-            if _cached_layout is not None:
-                # PONT (audit 2026-08-13 §BATCH-CAP.1): cache chỉ chứa layout
-                # thô; sức chứa vẫn phải tính lại sau né ốc theo cấu hình hiện tại.
-                return _sticker_capacity_after_pont(
-                    _cached_layout, req, doc[page_idx], page_idx,
-                    shape_override, is_cluster=is_cluster, logger=logger,
-                )
         else:
             _batch_ck = (
                 file_path, _mtime, page_idx, _use_sticker,
@@ -4550,31 +4633,41 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         try:
             if _use_sticker:
                 from app.workers.nup_sticker import compute_sticker_layout_for_page
-                result = compute_sticker_layout_for_page(
-                    page=doc[page_idx],
-                    sheet_usable_w=compute_w,
-                    sheet_usable_h=compute_h,
-                    gap_x=req.gap_x,
-                    gap_y=req.gap_y,
-                    strategy=req.strategy,
-                    shape_type_override=shape_override,
-                    shape_props_override=(p.get("shape_props") or None),
-                    bleed_pt=bleed_pt,
-                    secondary_gap=_secondary_gap,
-                    cut_type=getattr(req, 'cut_type', 'default'),
-                    die_size_mode=getattr(req, 'die_size_mode', 'die'),
-                    die_offset_mm=getattr(req, 'die_offset_mm', 0),
-                    alternate_rotation=_batch_alternate_rotation,
+
+                def _compute_batch_sticker_layout():
+                    return compute_sticker_layout_for_page(
+                        page=_page(),
+                        sheet_usable_w=compute_w,
+                        sheet_usable_h=compute_h,
+                        gap_x=req.gap_x,
+                        gap_y=req.gap_y,
+                        strategy=req.strategy,
+                        shape_type_override=shape_override,
+                        shape_props_override=(p.get("shape_props") or None),
+                        bleed_pt=bleed_pt,
+                        secondary_gap=_secondary_gap,
+                        cut_type=getattr(req, 'cut_type', 'default'),
+                        die_size_mode=getattr(req, 'die_size_mode', 'die'),
+                        die_offset_mm=getattr(req, 'die_offset_mm', 0),
+                        alternate_rotation=_batch_alternate_rotation,
+                    )
+
+                result, _ = _get_or_compute_sticker_layout(
+                    _layout_ck,
+                    _compute_batch_sticker_layout,
+                    source_fingerprint=_batch_source_fingerprint,
+                )
+                # PONT (audit 2026-08-13 §BATCH-CAP.1): chỉ gộp raw layout;
+                # từng caller vẫn né ốc bằng bản riêng và cấu hình hiện hành.
+                _needs_pont_geometry = (
+                    bool(req.pont_config)
+                    and not req.pont_config.get("disableCollision", False)
+                    and not is_cluster
                 )
                 _cap = _sticker_capacity_after_pont(
-                    result, req, doc[page_idx], page_idx,
+                    result, req, _page() if _needs_pont_geometry else None, page_idx,
                     shape_override, is_cluster=is_cluster, logger=logger,
                 )
-                with _NEST_CACHE_LOCK:
-                    _NEST_A_CACHE[_layout_ck] = _copy_mod.deepcopy(result)
-                    _NEST_A_CACHE.move_to_end(_layout_ck)
-                    if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
-                        _NEST_A_CACHE.popitem(last=False)
             else:
                 from app.workers.nup_layout_solver import solve_manual, solve_optimal_layout
                 trim_w = float(p.get("item_w") or 0) - 2 * bleed_pt
@@ -4631,6 +4724,8 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                     if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
                         _BATCH_CAP_CACHE.popitem(last=False)
             return int(_cap)
+        except SourceRevisionChangedError:
+            raise
         except Exception as error:
             logger.warning(
                 "[BATCH CAPACITY] Tính trang %s thất bại (loại=%s).",
@@ -4639,8 +4734,20 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
             )
             return 0
 
-    doc = pdf_lib.open(file_path)
+    # PERF/PARITY (audit 2026-09-07 §TEMPERF.C1): batch và preview đơn phải
+    # đọc cùng hệ tọa độ trước khi chia sẻ raw-layout cache. Giữ file_path gốc
+    # trong khóa; file canonical sống đến khi mọi worker đã đóng document riêng.
+    _batch_source_stack = contextlib.ExitStack()
     try:
+        if _use_sticker:
+            from app.workers.nup_engine import canonical_page_space
+            _batch_doc_path = _batch_source_stack.enter_context(
+                canonical_page_space(file_path)
+            )
+        else:
+            _batch_doc_path = file_path
+        doc = pdf_lib.open(_batch_doc_path)
+        _batch_source_stack.callback(doc.close)
         if _mold_master is not None:
             # ── FAST PATH: 1 khuôn → nest master, broadcast ──
             try:
@@ -4689,11 +4796,21 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
 
             def _nest_group(valid_group):
                 p, page_idx = valid_group[0]
-                local_doc = pdf_lib.open(file_path)
+                # PERF (audit 2026-09-07 §TEMPERF.1): hit/follower đã có layout,
+                # không mở thêm toàn PDF nếu helper sức chứa không cần né ốc.
+                local_doc = None
+
+                def _load_page():
+                    nonlocal local_doc
+                    if local_doc is None:
+                        local_doc = pdf_lib.open(_batch_doc_path)
+                    return local_doc[page_idx]
+
                 try:
-                    return _nest_one_page(p, page_idx, local_doc)
+                    return _nest_one_page(p, page_idx, page_loader=_load_page)
                 finally:
-                    local_doc.close()
+                    if local_doc is not None:
+                        local_doc.close()
 
             if workers <= 1:
                 for valid_group in valid_groups:
@@ -4708,6 +4825,8 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         valid_group = pending[future]
                         try:
                             cap = future.result()
+                        except SourceRevisionChangedError:
+                            raise
                         except Exception as exc:
                             logger.warning(
                                 "[BATCH CAPACITY] Tính nhóm hình học thất bại (loại=%s).",
@@ -4728,8 +4847,15 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 if page_idx < 0 or page_idx >= doc.page_count:
                     continue
                 results[page_idx] = _nest_one_page(p, page_idx, doc)
+    except SourceRevisionChangedError as exc:
+        raise HTTPException(
+            status_code=409, detail=SOURCE_REVISION_CHANGED_MESSAGE,
+        ) from exc
     finally:
-        doc.close()
+        _batch_source_stack.close()
+
+    if _batch_source_fingerprint is not None:
+        _assert_sticker_preview_source(_batch_source_fingerprint)
 
     _pmark(
         "BATCH", "api_done", _t0,

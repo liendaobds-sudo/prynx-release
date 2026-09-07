@@ -170,12 +170,14 @@ interface AppSettingsState {
   toggleRulers: () => void;
   setShowMenuBar: (show: boolean) => void;
   toolMenuWidth: number;
+  toolConfigWidth: number;
   homeToolMenuWidth: number;
   toolMenuMode: ToolMenuMode;
   isToolMenuExpanded: boolean;
   isWorkspaceSidebarOpen: boolean;
   collapsedSections: Record<string, boolean>;
   setToolMenuWidth: (width: number) => void;
+  setToolConfigWidth: (width: number) => void;
   setHomeToolMenuWidth: (width: number) => void;
   setToolMenuLayout: (mode: ToolMenuMode, width?: number) => void;
   openWorkspaceSidebar: (minWidth?: number) => void;
@@ -190,6 +192,7 @@ interface AppSettingsState {
 type RightMenuSettings = Pick<
   AppSettingsState,
   | 'toolMenuWidth'
+  | 'toolConfigWidth'
   | 'homeToolMenuWidth'
   | 'toolMenuMode'
   | 'isToolMenuExpanded'
@@ -248,7 +251,7 @@ export function normalizePersistedRightMenuSettings(
         : fallback.toolMenuMode);
   // UIUX (audit 2026-08-22 §UX.MT.14): bản cũ chỉ có toolMenuWidth;
   // dùng nó làm seed một lần cho Home, sau đó giữ hai preference độc lập.
-  const legacyWorkspaceWidth = typeof persisted.toolMenuWidth === 'number'
+  const legacyWorkspaceWidth = typeof persisted.toolMenuWidth === 'number' && Number.isFinite(persisted.toolMenuWidth)
     ? persisted.toolMenuWidth
     : fallback.homeToolMenuWidth;
   const homeWidthFallback = persisted.homeToolMenuWidth === undefined
@@ -256,9 +259,20 @@ export function normalizePersistedRightMenuSettings(
     : fallback.homeToolMenuWidth;
   const legacyHomeWidth = normalizeHomeToolMenuWidth(persisted.homeToolMenuWidth, homeWidthFallback);
   const fullWidthSource = persisted.toolMenuWidth ?? persisted.homeToolMenuWidth;
+  const menuLayout = canonicalToolMenuLayout(mode, fullWidthSource, fallback.toolMenuWidth);
+  // UIUX (audit 2026-09-07 §PANE.WIDTH): chỉ seed từ preference dùng chung
+  // ở bản cũ; sau khi lưu riêng, đổi menu/full/icons không được đổi thiết lập.
+  const hasPersistedLayout = hasLegacyLayout || 'homeToolMenuWidth' in persisted || 'toolMenuMode' in persisted;
+  const legacyConfigWidth = hasPersistedLayout
+    ? mode === 'icons' ? menuLayout.toolMenuWidth : Math.min(TOOL_MENU_FULL_DEFAULT_WIDTH, menuLayout.toolMenuWidth)
+    : normalizeFullToolMenuWidth(fallback.toolConfigWidth);
+  const configWidth = typeof persisted.toolConfigWidth === 'number' && Number.isFinite(persisted.toolConfigWidth)
+    ? normalizeFullToolMenuWidth(persisted.toolConfigWidth, legacyConfigWidth)
+    : legacyConfigWidth;
 
   return {
-    ...canonicalToolMenuLayout(mode, fullWidthSource, fallback.toolMenuWidth),
+    ...menuLayout,
+    toolConfigWidth: configWidth,
     homeToolMenuWidth: legacyHomeWidth,
   };
 }
@@ -296,6 +310,7 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
       setShowMenuBar: (show) => set({ showMenuBar: show }),
       toolMenuWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
+      toolConfigWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       homeToolMenuWidth: 320,
       toolMenuMode: 'full',
       isToolMenuExpanded: false,
@@ -305,6 +320,11 @@ export const useAppSettingsStore = create<AppSettingsState>()(
         const state = get();
         const normalizedWidth = normalizeFullToolMenuWidth(width, state.toolMenuWidth);
         if (normalizedWidth !== state.toolMenuWidth) set({ toolMenuWidth: normalizedWidth });
+      },
+      setToolConfigWidth: (width) => {
+        const state = get();
+        const normalizedWidth = normalizeFullToolMenuWidth(width, state.toolConfigWidth);
+        if (normalizedWidth !== state.toolConfigWidth) set({ toolConfigWidth: normalizedWidth });
       },
       setHomeToolMenuWidth: (width) => {
         const state = get();

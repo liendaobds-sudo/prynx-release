@@ -8,6 +8,7 @@ import itertools
 import pikepdf
 import math
 import logging
+from app.core.development_diagnostics import development_diagnostic_enabled
 from app.workers.pdf_types import Point, Rect
 
 logger = logging.getLogger(__name__)
@@ -235,8 +236,14 @@ class ShapeBuilder:
             oc_name = self._register_ocg(oc)
             wrapped = [f"/OC /{oc_name} BDC"] + wrapped + ["EMC"]
 
-        if oc is not None and new_part:
-            logger.warning(
+        # PERF (audit 2026-09-07 §TEMPERF.5): không ghi một WARNING cho từng tem.
+        # Chỉ dev chủ động bật trace; bản đóng gói không thể bật lại bằng env.
+        if (
+            oc is not None and new_part
+            and logger.isEnabledFor(logging.DEBUG)
+            and development_diagnostic_enabled("PRYNX_CUT_PATH_DEBUG")
+        ):
+            logger.debug(
                 "[CUT-PATH-AUDIT] subpaths=%d joined_segments=%d operators=%d close=%s",
                 self._path_subpaths,
                 self._path_joins,

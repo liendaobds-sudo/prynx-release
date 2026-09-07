@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-07",
+  "scope": "R2 native integration cô lập + R3 artifact production cho S&R StepRepeatSingleSheet",
+  "source": "D:/pdfcompare/test/test nesting.pdf",
+  "sourceSha256": "efcde4f0a16aca0a5a54ee2d952945afe2eb70dd2073bc9ff59ee87292b257ab",
+  "native": {
+    "baselineVersion": 13,
+    "nativeBuildIdentity": "077f23637a9279f3dc98441cbcd02a1c5abe011469cbba403af1c62e310fa6f9",
+    "wheel": "D:/pdfcompare/native/tmp/native-wheels-r2-final/pdfcompare_native-0.1.0-cp311-cp311-win_amd64.whl",
+    "runtimeInstall": "Đã cài vào backend/venv sau khi app dev đóng",
+    "installedBuildIdentity": "077f23637a9279f3dc98441cbcd02a1c5abe011469cbba403af1c62e310fa6f9"
+  },
+  "artifact": {
+    "pdf": "D:/pdfcompare/tmp/r2-r3-production-final-final/step-repeat.pdf",
+    "sha256": "3cb4b9e94c570bcf19f7d6b9fce03c69ee2c49ea304210f97e525f39b7884b00",
+    "bytes": 1583312,
+    "pages": 8,
+    "elapsedMs": 9938,
+    "totalPlacements": 229,
+    "rows": [
+      {"sourcePage1Based": 6, "placements": 69, "floor": 66, "cutRings": 73, "attempts": 102539, "elapsedMs": 3624, "termination": "deadline"},
+      {"sourcePage1Based": 7, "placements": 71, "floor": 66, "cutRings": 75, "attempts": 3924, "elapsedMs": 601, "termination": "sheet_full"},
+      {"sourcePage1Based": 8, "placements": 58, "floor": 57, "cutRings": 62, "attempts": 1794, "elapsedMs": 1456, "termination": "sheet_full"},
+      {"sourcePage1Based": 12, "placements": 31, "floor": 29, "cutRings": 35, "attempts": 2268, "elapsedMs": 5401, "termination": "deadline"}
+    ],
+    "cutOperators": {"cm": 0, "Do": 0},
+    "cutRingsRule": "placementCount + 4 sheet marks per CUT page"
+  },
+  "verification": {
+    "rustStepRepeatFixture": "12 passed",
+    "rustRegression": {
+      "mixed_nesting_baseline": "43 passed, 2 ignored",
+      "mixed_nesting_baseline_budget": "8 passed",
+      "mixed_nesting_baseline_rotate": "13 passed",
+      "mixed_nesting_deadline_in_region": "8 passed",
+      "mixed_nesting_solver": "41 passed"
+    },
+    "backend": {
+      "test_nesting_production_pipeline.py + test_mixed_nesting_native.py": "67 passed",
+      "test_nup_true_shape_nesting_entry.py": "78 passed",
+      "test_nesting_dispatch_route.py + test_nesting_auto_route_custom.py": "65 passed",
+      "test_nesting_preview_capacity.py": "47 passed"
+    },
+    "format": "cargo fmt -- --check passed",
+    "runtimeSmoke": {
+      "package": "backend/venv",
+      "tests": "145 passed, 1 warning Pydantic hiện hữu",
+      "artifact": "D:/pdfcompare/tmp/r2-r3-production-runtime-final/step-repeat.pdf",
+      "artifactSha256": "1c512270a9f5b6afab458184f0e13bed02eac8d3b9baa620b1aaf4fb8277e846",
+      "placementCounts": [69, 71, 58, 31],
+      "cutRingCounts": [73, 75, 62, 35],
+      "cutOperators": {"cm": 0, "Do": 0}
+    }
+  },
+  "limitations": [
+    "Chưa nghiệm thu GUI/Tauri/installer.",
+    "Wall-clock có thể vượt timeBudgetMs để giữ baseline periodic hoàn chỉnh; không dùng số đo này làm speedup."
+  ]
+}

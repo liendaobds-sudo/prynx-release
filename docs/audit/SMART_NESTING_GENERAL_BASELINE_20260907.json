@@ -1,0 +1,20 @@
+{
+  "date": "2026-09-07",
+  "scope": "Core-only fresh MixedNestingRun handles; fixed engine requests from row-drift fixture; no HTTP/source detection/writer/app.",
+  "nativeSha256": "3b7b05da2b3f7f3a921a7789e7746046bb25f5a3b32d0d42743d69671c3f95f8",
+  "nativeBuildIdentity": "8ef0c08bdf671afb7b6bc18f5c1193a9d3ba40d95291a8bcd26302e0e866946a",
+  "workerGrant": 15,
+  "warmups": 1,
+  "iterations": 1,
+  "rows": [
+    {"sourcePage1Based": 6, "count": 69, "wallMs": 3614.409, "poseSha256": "888b92b95724f58a87dc16c0790f50cc371015b6726823395cfe14945330654a", "attempts": 102539, "termination": "sheet_full"},
+    {"sourcePage1Based": 7, "count": 71, "wallMs": 510.904, "poseSha256": "76bda442c7db71d24106281e1fcaa9c8204143961490a7db57bfdac198656a5a", "attempts": 3924, "termination": "sheet_full"},
+    {"sourcePage1Based": 8, "count": 58, "wallMs": 1354.88, "poseSha256": "3766a82ca6424bc7bc749413dedb25874b9e8647152c05493f97a254b1b2c0a0", "attempts": 1794, "termination": "sheet_full"},
+    {"sourcePage1Based": 12, "count": 31, "wallMs": 5592.216, "poseSha256": "d6da6c17f76252d97a7807973b9b250fe91e27c1ae6a98ccc743eaeff4bd625d", "attempts": 2268, "termination": "deadline"}
+  ],
+  "floors": {"page6": 66, "page7": 66, "page8": 57, "page12": 29},
+  "notes": [
+    "Current baseline is the quality/speed floor; no production code changed in this measurement.",
+    "S&R selects periodic baseline and reports trialsRun=0; any new smart portfolio must not slow these rows on the same machine."
+  ]
+}

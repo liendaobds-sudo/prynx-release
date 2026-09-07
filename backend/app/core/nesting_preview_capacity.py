@@ -42,7 +42,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from app.workers.nup_artwork import ManifestPartContext
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +185,7 @@ def _to_top_down_pt(
 
 def _placed_rings_mm(
     placement: Mapping[str, Any],
-    part: Mapping[str, Any],
+    part: Mapping[str, Any] | ManifestPartContext,
     *,
     sheet_frame: Any,
     render_bundle_hash: str,
@@ -193,8 +196,10 @@ def _placed_rings_mm(
     không thể có hai hình khác nhau: chỉ có MỘT đường đọc pose.
     """
 
-    from app.workers.imposition_affine import Affine2D
-    from app.workers.nup_artwork import resolve_manifest_artwork_placement
+    from app.workers.nup_artwork import (
+        ManifestPartContext,
+        resolve_manifest_artwork_placement,
+    )
     from app.workers.nup_clip_shape import transform_manifest_polygon_rings
 
     resolved = resolve_manifest_artwork_placement(
@@ -205,8 +210,8 @@ def _placed_rings_mm(
         render_bundle_hash=render_bundle_hash,
     )
     return transform_manifest_polygon_rings(
-        part["cutContour"],
-        sheet_frame=Affine2D.from_sequence(sheet_frame, field="sheetFrame"),
+        part.cut_contour if isinstance(part, ManifestPartContext) else part["cutContour"],
+        sheet_frame=resolved.sheet_frame,
         pose=resolved.pose,
         reference_point_mm=resolved.reference_point_mm,
         field="cutContour",
@@ -674,6 +679,10 @@ def _project_sheet_cells(
     parts = {str(part["partId"]): part for part in bundle["parts"]}
     sheet_frame = bundle["sheetFrames"]["cut"]
     sheet_height_mm = float(job.sheet_height_mm)
+    # PERF (audit 2026-09-07 §TEMPERF.3): chỉ chuẩn hóa khuôn có placement trên
+    # tờ đang chiếu, không đọc side/part không dùng và không giữ alias JSON.
+    from app.workers.nup_artwork import prepare_manifest_part_context
+    part_contexts: dict[str, ManifestPartContext] = {}
 
     cells: list[dict[str, Any]] = []
     for placement in manifest.get("placements") or ():
@@ -682,9 +691,15 @@ def _project_sheet_cells(
         part = parts.get(str(placement.get("partId")))
         if part is None:
             continue
+        part_id = str(placement.get("partId"))
+        if part_id not in part_contexts:
+            part_contexts[part_id] = prepare_manifest_part_context(
+                part=part, side="cut",
+                render_bundle_hash=production.render_bundle_hash,
+            )
         rings = _placed_rings_mm(
             placement,
-            part,
+            part_contexts[part_id],
             sheet_frame=sheet_frame,
             render_bundle_hash=production.render_bundle_hash,
         )

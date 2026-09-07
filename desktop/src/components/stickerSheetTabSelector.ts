@@ -6,6 +6,8 @@ import type {
 export interface StickerSheetTabSummary {
     stickerSheetMode: StickerSheetTabState['mode'];
     stickerSheetSourceFile: File | null;
+    stickerSheetSourceOrigin: StickerSheetTabState['sourceOrigin'];
+    stickerSheetSourceRevision: StickerSheetTabState['sourceRevision'];
     stickerSheetActiveSourcePage: number;
     stickerSheetPages: Readonly<Record<number, StickerSheetPageState>>;
     stickerSheetPageCount: number;
@@ -42,7 +44,12 @@ export function viewerShowsStickerSource(
     viewerFile: File | null,
     sourceImageFile: File | null,
     stickerSourceFile: File | null,
+    workspaceRevisionCurrent?: boolean,
 ): boolean {
+    // REVISION (audit 2026-09-07 §SHEET.SYNC): PDF đã bake là nguồn xử lý,
+    // không phải File đang mở. Lease current chứng minh overlay thuộc Viewer;
+    // lease stale không được fallback theo File reference rồi hiện đường bế cũ.
+    if (workspaceRevisionCurrent !== undefined) return Boolean(stickerSourceFile && workspaceRevisionCurrent);
     const historyStickerSource = stickerSourceOwnerFromHistory(viewerFile);
     return Boolean(
         stickerSourceFile
@@ -66,6 +73,8 @@ export function selectStickerSheetTabSummary(
     return {
         stickerSheetMode: stickerTab?.mode ?? 'existing',
         stickerSheetSourceFile: stickerTab?.sourceFile ?? null,
+        stickerSheetSourceOrigin: stickerTab?.sourceOrigin ?? 'workspace',
+        stickerSheetSourceRevision: stickerTab?.sourceRevision ?? null,
         stickerSheetActiveSourcePage: stickerTab?.activeSourcePage ?? 1,
         stickerSheetPages: stickerTab?.pages ?? EMPTY_STICKER_SHEET_PAGES,
         stickerSheetPageCount: stickerTab?.inspection?.page_count ?? 0,

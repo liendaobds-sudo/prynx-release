@@ -1279,18 +1279,26 @@ def _assert_no_reparse_chain(path: Path) -> None:
             )
 
 
-def _read_regular_file(path: Path) -> bytes:
-    """Đọc file thường, không theo symlink trên nền tảng có ``O_NOFOLLOW``."""
-
+def _regular_manifest_file_size(path: Path) -> int:
+    """Kiểm đường/file trước khi dùng kích thước để lập ngân sách batch."""
     _assert_no_reparse_chain(path)
     try:
-        mode = path.lstat().st_mode
+        metadata = path.lstat()
     except FileNotFoundError as exc:
         raise ManifestNotFoundError(path.name) from exc
     except OSError as exc:
         raise ManifestIntegrityError("Không kiểm tra được file manifest.") from exc
-    if not stat.S_ISREG(mode):
+    if not stat.S_ISREG(metadata.st_mode):
         raise ManifestIntegrityError("Đích manifest không phải file thường.")
+    return metadata.st_size
+
+
+def _read_regular_file(path: Path, *, expected_size: int | None = None) -> bytes:
+    """Đọc file thường; batch ràng buộc size trước cấp phát và kiểm lại bytes."""
+
+    size = _regular_manifest_file_size(path)
+    if expected_size is not None and size != expected_size:
+        raise ManifestIntegrityError("File manifest đổi kích thước trong khi nạp batch.")
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -1300,9 +1308,17 @@ def _read_regular_file(path: Path) -> bytes:
     except OSError as exc:
         raise ManifestIntegrityError("Không mở được file manifest an toàn.") from exc
     with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode):
             raise ManifestIntegrityError("File manifest đổi loại trong lúc đọc.")
-        return stream.read()
+        if expected_size is None:
+            return stream.read()
+        if opened.st_size != expected_size:
+            raise ManifestIntegrityError("File manifest đổi kích thước trước khi đọc.")
+        payload = stream.read(expected_size + 1)
+        if len(payload) != expected_size:
+            raise ManifestIntegrityError("File manifest đổi kích thước trong khi đọc.")
+        return payload
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1734,40 +1750,68 @@ class NestingManifestStore:
         root = self._checked_root(create=False)
         if not root.exists():
             raise ManifestNotFoundError(checked[0][0])
-        decoded_records: list[_DecodedManifestRecord] = []
-        locator_ids: set[str] = set()
-        for manifest_id, layout_fingerprint in checked:
-            payload = _read_regular_file(
-                self._path_for_validated_id(root, manifest_id)
-            )
-            decoded = _decode_record_core(
-                payload,
-                expected_manifest_id=manifest_id,
-                expected_layout_fingerprint=layout_fingerprint,
-            )
-            decoded_records.append(decoded)
-            locator_ids.update(decoded.source_expectations)
-
-        lease_resolutions = resolve_nesting_source_leases(
-            tuple(sorted(locator_ids)),
-            require_final=True,
+        from contextlib import nullcontext
+        from app.core.nesting_manifest_batch import (
+            ManifestBatchIntegrityError,
+            decode_manifest_batch,
         )
-        if lease_resolutions is None or set(lease_resolutions) != locator_ids:
-            raise ManifestFingerprintMismatchError(
-                "Batch source pin final đã mất, trùng locator hoặc hết hạn."
+
+        def _path(reference: tuple[str, str]) -> Path:
+            return self._path_for_validated_id(root, reference[0])
+
+        def _decode(reference: tuple[str, str], payload: bytes) -> _DecodedManifestRecord:
+            # PERF (audit 2026-09-07 §TEMPERF.F): không truyền proof để bỏ qua
+            # native validator. Mọi record vẫn đi nguyên đường kiểm định cũ.
+            return _decode_record_core(
+                payload,
+                expected_manifest_id=reference[0],
+                expected_layout_fingerprint=reference[1],
             )
 
-        inspection_cache: dict[str, tuple[PinnedPageMetadata, ...]] = {}
-        stored: list[StoredNestingManifest] = []
-        for decoded in decoded_records:
-            resolved_sources = _resolve_stored_sources(
-                decoded.source_expectations,
-                renew=True,
-                inspection_cache=inspection_cache,
-                lease_resolutions=lease_resolutions,
+        if len(checked) == 1:
+            # Một record không có việc để song song; giữ fast path cũ, không
+            # trả thêm phí prepass/executor cho caller đơn.
+            decoded_context = nullcontext([
+                _decode(checked[0], _read_regular_file(_path(checked[0])))
+            ])
+        else:
+            decoded_context = decode_manifest_batch(
+                checked,
+                get_size=lambda ref: _regular_manifest_file_size(_path(ref)),
+                read_payload=lambda ref, size: _read_regular_file(
+                    _path(ref), expected_size=size,
+                ),
+                decode=_decode,
             )
-            stored.append(_materialize_decoded_record(decoded, resolved_sources))
-        return tuple(stored)
+        try:
+            with decoded_context as decoded_records:
+                locator_ids: set[str] = set()
+                for decoded in decoded_records:
+                    locator_ids.update(decoded.source_expectations)
+                # Chỉ đi tới source/lease sau khi TẤT CẢ record đã đạt. CPU đã
+                # nhả nhưng reservation vẫn tính các cây decoded còn giữ trong RAM.
+                lease_resolutions = resolve_nesting_source_leases(
+                    tuple(sorted(locator_ids)),
+                    require_final=True,
+                )
+                if lease_resolutions is None or set(lease_resolutions) != locator_ids:
+                    raise ManifestFingerprintMismatchError(
+                        "Batch source pin final đã mất, trùng locator hoặc hết hạn."
+                    )
+
+                inspection_cache: dict[str, tuple[PinnedPageMetadata, ...]] = {}
+                stored: list[StoredNestingManifest] = []
+                for decoded in decoded_records:
+                    resolved_sources = _resolve_stored_sources(
+                        decoded.source_expectations,
+                        renew=True,
+                        inspection_cache=inspection_cache,
+                        lease_resolutions=lease_resolutions,
+                    )
+                    stored.append(_materialize_decoded_record(decoded, resolved_sources))
+                return tuple(stored)
+        except ManifestBatchIntegrityError as exc:
+            raise ManifestIntegrityError(str(exc)) from exc
 
     def close(self) -> None:
         """Không có tài nguyên nền để đóng; chủ đích không dọn final manifest."""

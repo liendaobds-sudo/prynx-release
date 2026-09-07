@@ -14,7 +14,7 @@ Hàm `place_one_artwork` xử lý cho MỘT placement:
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any, Mapping, Sequence
 
 from app.core.imposition_page_box import effective_imposition_box
@@ -1467,6 +1467,35 @@ class ManifestPlacementIdentity:
     pose: PoseMm
 
 
+_MANIFEST_PART_CONTEXT_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestPartContext:
+    """PERF (audit 2026-09-07 §TEMPERF.3): hình học đã sở hữu theo khuôn/mặt.
+
+    Không giữ mapping nguồn; token chỉ có ở factory và không nằm trong DTO.
+    dataclasses.replace không được mang token sang để tự tạo context chưa kiểm.
+    """
+
+    part_id: str
+    render_bundle_hash: str
+    side: str
+    locator_id: str
+    source_revision: str
+    reference_point_mm: tuple[float, float]
+    page_binding: ManifestPageBinding
+    artwork_clip_path: FrozenManifestPolygon
+    cut_contour: FrozenManifestPolygon | None
+    _factory_token: InitVar[object | None] = None
+
+    def __post_init__(self, _factory_token: object | None) -> None:
+        if _factory_token is not _MANIFEST_PART_CONTEXT_TOKEN:
+            raise ManifestArtworkContractError(
+                "ManifestPartContext phải được tạo qua factory kiểm chứng."
+            )
+
+
 def _identity(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
         raise ManifestArtworkContractError(f"{field} không phải định danh hợp lệ.")
@@ -1514,20 +1543,16 @@ def parse_manifest_placement_identity(
     )
 
 
-def resolve_manifest_artwork_placement(
+def _prepare_manifest_part_context(
     *,
-    placement: Mapping[str, Any],
     part: Mapping[str, Any],
-    sheet_frame: Sequence[Any],
     side: str,
     render_bundle_hash: str,
-) -> ManifestArtworkPlacement:
-    """Đóng băng seam manifest → writer và chặn mọi identity mâu thuẫn."""
+    own_polygons: bool,
+    include_cut_contour: bool,
+) -> ManifestPartContext:
+    """Giữ cùng schema phần tĩnh của seam raw; không đọc field không dùng."""
 
-    if not isinstance(placement, Mapping) or set(placement) != {
-        "instanceId", "partId", "sheetIndex", "pose", "sourceRevision"
-    }:
-        raise ManifestArtworkContractError("placement không đúng schema manifest.")
     if not isinstance(part, Mapping):
         raise ManifestArtworkContractError("part không phải object RenderBundle.")
     expected_part_fields = {
@@ -1546,13 +1571,8 @@ def resolve_manifest_artwork_placement(
         expected_part_fields.add("dieDimensionsMm")
     if set(part) != expected_part_fields:
         raise ManifestArtworkContractError("part không đúng schema RenderBundle V2.")
-    placement_identity = parse_manifest_placement_identity(
-        placement,
-        render_bundle_hash=render_bundle_hash,
-    )
-    if placement_identity.part_id != _identity(part["partId"], "part.partId"):
-        raise ManifestArtworkContractError("placement.partId không khớp RenderBundle.")
-    bundle_hash = placement_identity.source_revision
+    part_id = _identity(part["partId"], "part.partId")
+    bundle_hash = _identity(render_bundle_hash, "renderBundleHash")
     if side not in {"front", "back", "cut"}:
         raise ManifestArtworkContractError("side chỉ nhận front/back/cut.")
     pages = part["pages"]
@@ -1571,27 +1591,94 @@ def resolve_manifest_artwork_placement(
     reference_point = parse_point_mm(
         part["referencePointMm"], field="part.referencePointMm"
     )
-    clip = part["artworkClipPath"]
-    try:
-        # Tách mapping mutable khỏi StoredNestingManifest ngay tại seam.
-        frozen_clip = freeze_manifest_polygon(clip, field="part.artworkClipPath")
-    except ValueError as exc:
-        raise ManifestArtworkContractError(str(exc)) from exc
+
+    def _freeze_polygon(raw, field):
+        # Context sống suốt request/job phải sở hữu tuple thật, kể cả caller nội
+        # bộ dựng FrozenManifestPolygon bằng list (dataclass không tự kiểm kiểu).
+        if own_polygons and isinstance(raw, FrozenManifestPolygon):
+            raw = {"outer": raw.outer, "holes": raw.holes}
+        try:
+            return freeze_manifest_polygon(raw, field=field)
+        except ValueError as exc:
+            raise ManifestArtworkContractError(str(exc)) from exc
+
+    frozen_clip = _freeze_polygon(part["artworkClipPath"], "part.artworkClipPath")
+    frozen_cut = (
+        _freeze_polygon(part["cutContour"], "cutContour")
+        if include_cut_contour else None
+    )
+    return ManifestPartContext(
+        part_id=part_id,
+        render_bundle_hash=bundle_hash,
+        side=side,
+        locator_id=_identity(source["locatorId"], "source.locatorId"),
+        source_revision=_identity(source["revision"], "source.revision"),
+        reference_point_mm=reference_point,
+        page_binding=ManifestPageBinding.from_mapping(
+            raw_binding, field=f"part.pages.{side}"
+        ),
+        artwork_clip_path=frozen_clip,
+        cut_contour=frozen_cut,
+        _factory_token=_MANIFEST_PART_CONTEXT_TOKEN,
+    )
+
+
+def prepare_manifest_part_context(
+    *, part: Mapping[str, Any], side: str, render_bundle_hash: str,
+) -> ManifestPartContext:
+    """Chuẩn hóa đúng khuôn/mặt đang dùng, không cache xuyên request.
+
+    PERF (audit 2026-09-07 §TEMPERF.3): chỉ mặt CUT đọc cutContour; side/back
+    không dùng hoặc metadata report không được biến thành điều kiện chặn mới.
+    """
+
+    return _prepare_manifest_part_context(
+        part=part, side=side, render_bundle_hash=render_bundle_hash,
+        own_polygons=True, include_cut_contour=side == "cut",
+    )
+
+
+def resolve_manifest_artwork_placement(
+    *,
+    placement: Mapping[str, Any],
+    part: Mapping[str, Any] | ManifestPartContext,
+    sheet_frame: Sequence[Any],
+    side: str,
+    render_bundle_hash: str,
+) -> ManifestArtworkPlacement:
+    """Đóng băng seam manifest → writer và chặn mọi identity mâu thuẫn."""
+
+    placement_identity = parse_manifest_placement_identity(
+        placement, render_bundle_hash=render_bundle_hash,
+    )
+    context = (
+        part if isinstance(part, ManifestPartContext)
+        else _prepare_manifest_part_context(
+            part=part, side=side, render_bundle_hash=render_bundle_hash,
+            # Public raw seam chưa đọc CUT: giữ đúng hợp đồng cũ, contour chỉ
+            # được kiểm khi consumer CUT dùng factory hoặc gọi transform.
+            own_polygons=False, include_cut_contour=False,
+        )
+    )
+    if placement_identity.part_id != context.part_id:
+        raise ManifestArtworkContractError("placement.partId không khớp RenderBundle.")
+    if context.render_bundle_hash != placement_identity.source_revision:
+        raise ManifestArtworkContractError("context không khớp renderBundleHash.")
+    if side not in {"front", "back", "cut"} or side != context.side:
+        raise ManifestArtworkContractError("side không khớp ManifestPartContext.")
     return ManifestArtworkPlacement(
         instance_id=placement_identity.instance_id,
         part_id=placement_identity.part_id,
         sheet_index=placement_identity.sheet_index,
         side=side,
-        placement_revision=bundle_hash,
-        locator_id=_identity(source["locatorId"], "source.locatorId"),
-        source_revision=_identity(source["revision"], "source.revision"),
-        reference_point_mm=reference_point,
+        placement_revision=placement_identity.source_revision,
+        locator_id=context.locator_id,
+        source_revision=context.source_revision,
+        reference_point_mm=context.reference_point_mm,
         pose=placement_identity.pose,
         sheet_frame=Affine2D.from_sequence(sheet_frame, field="sheetFrame"),
-        page_binding=ManifestPageBinding.from_mapping(
-            raw_binding, field=f"part.pages.{side}"
-        ),
-        artwork_clip_path=frozen_clip,
+        page_binding=context.page_binding,
+        artwork_clip_path=context.artwork_clip_path,
     )
 
 

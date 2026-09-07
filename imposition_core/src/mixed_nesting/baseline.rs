@@ -49,8 +49,10 @@ use super::score::{bottom_left_order, score_layout, LayoutScore};
 use super::spatial::SpatialGrid;
 use super::transform::place_ring_checked;
 
+mod periodic;
+
 /// Version của chiến lược baseline. Đổi chiến lược là đổi sàn an toàn.
-pub const BASELINE_VERSION: u32 = 12;
+pub const BASELINE_VERSION: u32 = 13;
 
 /// Số đỉnh miền hợp lệ thử tối đa cho mỗi (chi tiết, góc, tờ).
 ///
@@ -1912,6 +1914,11 @@ fn run_autofill_baseline(
     control: &RunControl,
     policy: BaselineAnglePolicy,
 ) -> Result<BaselineOutcome, BaselineError> {
+    // NEST (audit 2026-09-07 §NEST-SR-RIGID): S&R bắt buộc lặp cùng basis/motif;
+    // greedy tự do chỉ còn là đường N-up/gang, không phải fallback chế bản S&R.
+    if request.layout_intent.prefers_periodic_motif() && request.parts.len() == 1 {
+        return periodic::run(request, control, policy);
+    }
     let mut nfp_cache = NfpCache::with_telemetry_and_resources(
         control.progress().clone(),
         NfpTelemetryPhase::Baseline,

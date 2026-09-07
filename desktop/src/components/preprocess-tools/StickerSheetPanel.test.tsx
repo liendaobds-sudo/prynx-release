@@ -275,6 +275,44 @@ describe('StickerSheetPanel', () => {
         expect(previewStickerCutline).not.toHaveBeenCalled();
     });
 
+    it.each(['image', 'trajectory', 'inpaint', 'solid'] as const)(
+        'ẩn toàn bộ lựa chọn màu %s khi tràn lề bằng 0', bleedColorType => {
+            const current = useStickerSheetStore.getState().getTab('tab');
+            useStickerSheetStore.setState({ tabs: { tab: { ...current,
+                outputSettings: { ...current.outputSettings, bleedMm: 0, bleedColorType },
+            } } });
+            render(<StickerSheetPanel tabId="tab" />);
+            expect(screen.getByText('Tràn lề')).toBeTruthy();
+            expect(screen.queryByRole('group', { name: 'Màu bù xén' })).toBeNull();
+            expect(screen.queryByRole('group', { name: 'Màu bù xén CMYK' })).toBeNull();
+            expect(screen.queryByText('Màu bù xén')).toBeNull();
+        },
+    );
+
+    it('đổi tràn lề 2 → 0 → 0,5 ẩn rồi hiện lại màu đã chọn, không tự nhận diện', () => {
+        const current = useStickerSheetStore.getState().getTab('tab');
+        useStickerSheetStore.setState({ tabs: { tab: { ...current,
+            outputSettings: { ...current.outputSettings, bleedMm: 2, bleedColorType: 'solid',
+                solidBleedCmyk: [35, 20, 0, 10] },
+        } } });
+        render(<StickerSheetPanel tabId="tab" />);
+        const bleedInput = within(screen.getByText('Tràn lề').parentElement!).getByRole('spinbutton');
+        expect(screen.getByRole('group', { name: 'Màu bù xén CMYK' })).toBeTruthy();
+        fireEvent.change(bleedInput, { target: { value: '0' } });
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.bleedMm).toBe(0);
+        expect(screen.queryByRole('group', { name: 'Màu bù xén' })).toBeNull();
+        expect(screen.queryByRole('group', { name: 'Màu bù xén CMYK' })).toBeNull();
+        fireEvent.change(bleedInput, { target: { value: '0.5' } });
+        expect(screen.getByRole('group', { name: 'Màu bù xén' })).toBeTruthy();
+        expect((screen.getByRole('spinbutton', { name: 'C (%)' }) as HTMLInputElement).value).toBe('35');
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings).toMatchObject({
+            bleedMm: 0.5, bleedColorType: 'solid', solidBleedCmyk: [35, 20, 0, 10],
+        });
+        expect(detectStickerSource).not.toHaveBeenCalled();
+        expect(inspectStickerSource).not.toHaveBeenCalled();
+        expect(previewStickerCutline).not.toHaveBeenCalled();
+    });
+
     it('khóa xuất theo đúng danh sách thumbnail hiện tại, không bắt trang đã xóa', async () => {
         useStickerSheetStore.getState().setActivePage('tab', 1);
         const current = useStickerSheetStore.getState().getTab('tab');

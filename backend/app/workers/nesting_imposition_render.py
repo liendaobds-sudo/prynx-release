@@ -46,11 +46,12 @@ from app.core.perf_sampler import (
     increment_perf_counter,
     start_perf_stage,
 )
-from app.workers.imposition_affine import Affine2D
 from app.workers.imposition_pdf_form import DIE_STRIPPED_FORM_VARIANT, PT_PER_MM
 from app.workers.nup_artwork import (
     ManifestArtworkContractError,
+    ManifestPartContext,
     parse_manifest_placement_identity,
+    prepare_manifest_part_context,
     render_manifest_artwork,
     resolve_manifest_artwork_placement,
 )
@@ -63,6 +64,7 @@ PRODUCTION_WRITER_VERSION = "nesting-manifest-writer-v6-unique-recipes"
 
 _SheetRecipeCellKey = tuple[str, str, str, str]
 _SheetRecipeKey = tuple[str, tuple[_SheetRecipeCellKey, ...]]
+_SheetPlacementIndex = Mapping[int, Sequence[Mapping[str, Any]]]
 
 #: Màu ốc bế và guide: **registration** CMYK 100/100/100/100.
 #:
@@ -578,6 +580,7 @@ def _report_text(
     sheet_count: int,
     recipe_run_count: int | None = None,
     tool: str = "",
+    placements_by_sheet: _SheetPlacementIndex | None = None,
 ) -> str:
     """Dựng report cho đúng một physical sheet từ các đại lượng tách biệt.
 
@@ -606,11 +609,17 @@ def _report_text(
     placements = manifest.get("placements")
     if isinstance(placements, (str, bytes)) or not isinstance(placements, Sequence):
         raise ManifestRenderContractError("manifest.placements phải là mảng.")
-    sheet_placements = [
-        _mapping(item, "manifest.placements[]")
-        for item in placements
-        if isinstance(item, Mapping) and item.get("sheetIndex") == sheet_index
-    ]
+    # PERF (audit 2026-09-07 §TEMPERF.4): writer truyền cùng index đã kiểm;
+    # helper độc lập giữ đường đọc raw cũ để không đổi hợp đồng caller/test.
+    sheet_placements = (
+        placements_by_sheet.get(sheet_index, ())
+        if placements_by_sheet is not None
+        else [
+            _mapping(item, "manifest.placements[]")
+            for item in placements
+            if isinstance(item, Mapping) and item.get("sheetIndex") == sheet_index
+        ]
+    )
     items_on_this_sheet = len(sheet_placements)
     if items_on_this_sheet <= 0:
         raise ManifestRenderContractError(
@@ -753,6 +762,7 @@ def _stamp_report(
     sheet_count: int,
     recipe_run_counts: Mapping[int, int] | None = None,
     tool: str = "",
+    placements_by_sheet: _SheetPlacementIndex | None = None,
 ) -> None:
     """Vẽ text riêng theo physical sheet lên Front/Back; tuyệt đối bỏ trang CUT."""
 
@@ -786,6 +796,7 @@ def _stamp_report(
                 sheet_count=sheet_count,
                 recipe_run_count=recipe_run_count,
                 tool=tool,
+                placements_by_sheet=placements_by_sheet,
             )
             text_by_sheet[page.sheet_index] = text
         if text:
@@ -1161,11 +1172,50 @@ def _sheet_frame(bundle: Mapping[str, Any], side: str) -> Sequence[Any]:
     return frame
 
 
+def _build_sheet_placement_index(
+    manifest: Mapping[str, Any],
+    *,
+    sheet_count: int,
+    parts: Mapping[str, Mapping[str, Any]],
+    render_bundle_hash: str,
+) -> dict[int, tuple[Mapping[str, Any], ...]]:
+    """PERF (audit 2026-09-07 §TEMPERF.4): một lượt gom P, không quét lại P×S.
+
+    Kiểm mọi occurrence trước khi dedup recipe, kể cả tờ không được render.
+    Chỉ sắp bản danh sách riêng; không mutate placement hay thứ tự manifest.
+    """
+
+    grouped: dict[int, list[Mapping[str, Any]]] = {}
+    for occurrence in manifest["placements"]:
+        try:
+            identity = parse_manifest_placement_identity(
+                occurrence, render_bundle_hash=render_bundle_hash,
+            )
+        except ManifestArtworkContractError as exc:
+            raise ManifestRenderContractError(str(exc)) from exc
+        if identity.part_id not in parts:
+            raise ManifestRenderContractError(
+                f"placement.partId {identity.part_id!r} không thuộc RenderBundle."
+            )
+        if identity.sheet_index >= sheet_count:
+            raise ManifestRenderContractError("placement.sheetIndex vượt số tờ manifest.")
+        grouped.setdefault(identity.sheet_index, []).append(occurrence)
+    if set(grouped) != set(range(sheet_count)):
+        raise ManifestRenderContractError("Index placement thiếu tờ trong manifest.")
+    return {
+        index: tuple(sorted(items, key=lambda item: item["instanceId"].encode("utf-8")))
+        for index, items in grouped.items()
+    }
+
+
 def _placements_for_sheet(
-    manifest: Mapping[str, Any], sheet_index: int
+    manifest: Mapping[str, Any], sheet_index: int,
+    *, placements_by_sheet: _SheetPlacementIndex | None = None,
 ) -> list[Mapping[str, Any]]:
     """Placement của một tờ, sắp theo instanceId để thứ tự vẽ xác định."""
 
+    if placements_by_sheet is not None:
+        return list(placements_by_sheet.get(sheet_index, ()))
     selected = [
         placement
         for placement in manifest["placements"]
@@ -1219,13 +1269,16 @@ def _render_sheet_plan(
     parts: Mapping[str, Mapping[str, Any]],
     render_bundle_hash: str,
     export_unique_sheets: bool,
+    placements_by_sheet: _SheetPlacementIndex | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Trả ``(representative sheet index, physical run count)`` theo thứ tự đầu tiên."""
 
     plan: list[tuple[int, int]] = []
     recipe_positions: dict[_SheetRecipeKey, int] = {}
     for sheet_index in range(sheet_count):
-        placements = _placements_for_sheet(manifest, sheet_index)
+        placements = _placements_for_sheet(
+            manifest, sheet_index, placements_by_sheet=placements_by_sheet,
+        )
         if not placements:
             raise ManifestRenderContractError(
                 f"Tờ {sheet_index} không có placement nào."
@@ -1280,6 +1333,12 @@ def render_production_nesting(
     sheet_count = _sheet_count(manifest_value)
     sides = _output_sides(bundle)
     parts = _parts_by_id(bundle)
+    placements_by_sheet = _build_sheet_placement_index(
+        manifest_value,
+        sheet_count=sheet_count,
+        parts=parts,
+        render_bundle_hash=render_bundle_hash,
+    )
     cut_style = _mapping(bundle.get("cutStyle"), "renderBundle.cutStyle")
     artifact_options = _mapping(
         bundle.get("artifactOptions"), "renderBundle.artifactOptions"
@@ -1306,6 +1365,7 @@ def render_production_nesting(
         parts=parts,
         render_bundle_hash=render_bundle_hash,
         export_unique_sheets=export_unique_sheets,
+        placements_by_sheet=placements_by_sheet,
     )
     recipe_run_counts = (
         {sheet_index: run_count for sheet_index, run_count in sheet_plan}
@@ -1345,13 +1405,27 @@ def render_production_nesting(
 
     target = Path(output_path)
     rendered: list[RenderedProductionSheet] = []
+    # PERF (audit 2026-09-07 §TEMPERF.3): context bất biến chỉ sống trong job.
+    # Chuẩn hóa lazily theo khuôn/mặt để không siết side/part không được render.
+    part_contexts: dict[tuple[str, str], ManifestPartContext] = {}
+
+    def _part_context(part: Mapping[str, Any], side: str) -> ManifestPartContext:
+        key = (part["partId"], side)
+        if key not in part_contexts:
+            part_contexts[key] = prepare_manifest_part_context(
+                part=part, side=side, render_bundle_hash=render_bundle_hash,
+            )
+        return part_contexts[key]
+
     output = pikepdf.Pdf.new()
     # PERF (audit 2026-09-02 §PERF-NEST-06): phase cha này là tổng inclusive của
     # toàn bộ dựng trang; embed/form-paint là phase con, không được cộng thêm vào tổng.
     base_sample = start_perf_stage()
     try:
         for sheet_index, _recipe_run_count in sheet_plan:
-            sheet_placements = _placements_for_sheet(manifest_value, sheet_index)
+            sheet_placements = _placements_for_sheet(
+                manifest_value, sheet_index, placements_by_sheet=placements_by_sheet,
+            )
             for side in sides:
                 page = output.add_blank_page(page_size=(width_pt, height_pt))
                 frame = _sheet_frame(bundle, side)
@@ -1368,18 +1442,17 @@ def render_production_nesting(
                         # Dùng chính seam của artwork để KHÔNG có đường thứ hai
                         # đọc pose: mọi kiểm identity (sourceRevision, page
                         # binding, partId) áp cho CUT y như artwork.
+                        context = _part_context(part, CUT_SIDE)
                         resolved = resolve_manifest_artwork_placement(
                             placement=placement,
-                            part=part,
+                            part=context,
                             sheet_frame=frame,
                             side=CUT_SIDE,
                             render_bundle_hash=render_bundle_hash,
                         )
                         rings = transform_manifest_polygon_rings(
-                            part["cutContour"],
-                            sheet_frame=Affine2D.from_sequence(
-                                frame, field="sheetFrame"
-                            ),
+                            context.cut_contour,
+                            sheet_frame=resolved.sheet_frame,
                             pose=resolved.pose,
                             reference_point_mm=resolved.reference_point_mm,
                             field="cutContour",
@@ -1411,7 +1484,7 @@ def render_production_nesting(
                             )
                         resolved = resolve_manifest_artwork_placement(
                             placement=placement,
-                            part=part,
+                            part=_part_context(part, side),
                             sheet_frame=frame,
                             side=side,
                             render_bundle_hash=render_bundle_hash,
@@ -1506,6 +1579,7 @@ def render_production_nesting(
             sheet_count=sheet_count,
             recipe_run_counts=recipe_run_counts,
             tool=_report_mode_tool,
+            placements_by_sheet=placements_by_sheet,
         )
 
     # FIX/PARITY (audit 2026-08-29 §MAP-NEST-08): dấu canh là dấu sản xuất

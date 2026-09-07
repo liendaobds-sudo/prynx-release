@@ -299,6 +299,29 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(screen.getByTestId('sticker-bleed-geometry-summary')).toBeTruthy();
     });
 
+    it('hàng bù xén xuống dòng theo panel hẹp và giữ hoạt động của hai nút', () => {
+        render(<StickerTool pdfFile={null} onFileFixed={vi.fn()} />);
+        const removeBackground = screen.getByRole('button', { name: 'Bỏ nền trắng' });
+        const fill = screen.getByRole('button', { name: 'Đặc ruột' });
+        const toggles = removeBackground.parentElement!;
+        const row = toggles.parentElement!;
+        expect(row.classList.contains('flex-wrap')).toBe(true);
+        expect(toggles.classList.contains('min-w-0')).toBe(true);
+        for (const button of [fill, removeBackground]) {
+            expect(button.classList.contains('whitespace-nowrap')).toBe(false);
+            expect(button.classList.contains('overflow-hidden')).toBe(false);
+        }
+        const bleed = row.querySelector('input[type="number"]')!;
+        fireEvent.change(bleed, { target: { value: '2.5' } });
+        fireEvent.click(removeBackground);
+        fireEvent.click(fill);
+        expect(screen.getByRole('button', { name: 'Giữ nền trắng' }).getAttribute('aria-pressed')).toBe('false');
+        expect(screen.getByRole('button', { name: 'Không đặc ruột' }).getAttribute('aria-pressed')).toBe('false');
+        expect(window.localStorage.getItem('ps_sticker_bleedMm')).toBe('2.5');
+        expect(window.localStorage.getItem('ps_sticker_removeWhiteBg')).toBe('false');
+        expect(window.localStorage.getItem('ps_sticker_fillHoles')).toBe('false');
+    });
+
     it('chỉ hiện Độ bo cong khi chọn Góc tròn và gửi đúng xuống backend', async () => {
         vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
         vi.mocked(authenticatedFetch).mockResolvedValue({

@@ -1,0 +1,2006 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-07",
+  "objective": "1 sửa lệch sau đó làm hết kế hoạch từ B đến F, ko cần hỏi lại giữa chừng,",
+  "sourceSnapshot": {
+    "head": "79f05a399cb1669e6fb7cd1b84babfcbc7e3aebc",
+    "hashes": [
+      {
+        "path": "backend/app/api/routes/imposition.py",
+        "sha256": "6EB4D141ED0EFA02373A4DCB88B650431FA4E7B1A0FA8B4809EE04957A78AE7A"
+      },
+      {
+        "path": "backend/app/workers/nup_engine.py",
+        "sha256": "B2028FD58AE60D74041D38AD3ECF588BB76DC5ACB7673A187A945AB18D9CCA6C"
+      },
+      {
+        "path": "backend/app/workers/pdf_ops.py",
+        "sha256": "5B58609D99B2FB710A007105D27B63CD753DAB2CAD454AFA8047859278CB76CA"
+      },
+      {
+        "path": "backend/app/workers/nup_artwork.py",
+        "sha256": "783F73D693B3091FFF0FFEE8128070344DB68D59C9E77374A6402B291661C6A0"
+      },
+      {
+        "path": "backend/app/workers/nesting_imposition_render.py",
+        "sha256": "87F07836DDCED847C7921057B63018608AD28884513FEABBEC3E415D023B8F7A"
+      },
+      {
+        "path": "backend/app/core/nesting_preview_capacity.py",
+        "sha256": "1CB650058B26E5F0B761F3C847FC521EDE4B6B2FD1CFFC059802C0805B5B2A31"
+      },
+      {
+        "path": "backend/app/core/nesting_manifest_store.py",
+        "sha256": "A599791CC7EC94DA365F8DE9049C920384D8136CCDBF51B1AF89D481ADF12361"
+      },
+      {
+        "path": "backend/app/core/nesting_manifest_batch.py",
+        "sha256": "84A9698C752740C2122156574E5F21F9CCC0600B183682D6473DEA8B74D1E6F9"
+      },
+      {
+        "path": "backend/tests/test_sticker_simple_preview_export_parity.py",
+        "sha256": "4CAB6498DF4D4ACEF872F6FB6555ADDFA99BD508E3DEE2498F59F64F3F2BEE90"
+      },
+      {
+        "path": "backend/tests/test_cut_path_continuity.py",
+        "sha256": "893EEF043CBB35527F25CF3D879D2EEC436B4A7B578F323F2D46A860F96F1745"
+      },
+      {
+        "path": "backend/tests/test_manifest_part_context.py",
+        "sha256": "6903BD60FBB07606CDDD2BDC90910B38FAA1C95F32F45AEDDE0AC08B4DF0543D"
+      },
+      {
+        "path": "backend/tests/test_nesting_writer_sheet_index.py",
+        "sha256": "4490E26C60DB3AA9362D8172457229320529B660004A022FB62EA5199A50F9DB"
+      },
+      {
+        "path": "backend/tests/test_nesting_manifest_batch.py",
+        "sha256": "EBB58C14840D50B7CEB7EFC55D14A0EF2B7A049409243B386268043A7E951576"
+      },
+      {
+        "path": "desktop/src/components/imposition-tools/ImposerDashboard.tsx",
+        "sha256": "A07013B8BD76605445EF677BEC81C2A6273A50290E41831E8A639A54F4A45B1D"
+      },
+      {
+        "path": "desktop/src/components/imposition-tools/ImposerDashboard.groupingParity.test.tsx",
+        "sha256": "9BEC930AB8A16441E8EE6499376FD8B48309B96A0296477636C409DE0AB8C99C"
+      },
+      {
+        "path": "test/test nesting.pdf",
+        "sha256": "EFCDE4F0A16ACA0A5A54EE2D952945AFE2EB70DD2073BC9FF59EE87292B257AB"
+      },
+      {
+        "path": "backend/venv/Lib/site-packages/pdfcompare_native/pdfcompare_native.cp311-win_amd64.pyd",
+        "sha256": "CAC22B947E503B3E42D70ED9567E37E40B76707A27B869E83F6DDCCA606FCBE9"
+      }
+    ]
+  },
+  "scope": "Source+AUTO+ARTIFACT for S1 and B-F; no installed GUI claim",
+  "benchmarks": {
+    "B": {
+      "scope": "1000 ShapeBuilder CUT paths, INFO logger, StringIO synchronous handler, save PDF; not whole export/real disklogging",
+      "samePdfBytes": true,
+      "summary": [
+        {
+          "variant": "before",
+          "n": 20,
+          "medianMs": 16.503999999999998,
+          "logs": [
+            1000
+          ]
+        },
+        {
+          "variant": "after",
+          "n": 20,
+          "medianMs": 7.021,
+          "logs": [
+            0
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "lap": 0,
+          "warmup": true,
+          "variant": "before",
+          "wallMs": 18.606,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 0,
+          "warmup": true,
+          "variant": "after",
+          "wallMs": 7.551,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 1,
+          "warmup": true,
+          "variant": "after",
+          "wallMs": 7.563,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 1,
+          "warmup": true,
+          "variant": "before",
+          "wallMs": 18.507,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 2,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 19.674,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 2,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 8.24,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 3,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.02,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 3,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.406,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 4,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.529,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 4,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.899,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 5,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.008,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 5,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.451,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 6,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.237,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 6,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.811,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 7,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.945,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 7,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.752,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 8,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.572,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 8,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.362,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 9,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.701,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 9,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.437,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 10,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.46,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 10,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 8.622,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 11,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.914,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 11,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.286,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 12,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.22,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 12,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.743,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 13,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.032,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 13,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.479,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 14,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.64,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 14,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.883,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 15,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.027,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 15,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.408,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 16,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.229,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 16,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.381,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 17,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.022,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 17,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.693,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 18,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 16.758,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 18,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 6.811,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 19,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.151,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 19,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 18.603,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 20,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 17.731,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 20,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 7.201,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 21,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 8.103,
+          "logs": 0,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        },
+        {
+          "lap": 21,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 18.13,
+          "logs": 1000,
+          "pdfSha256": "adeed515e76ebde31e89747c662addc905d3ee5d705f6485864e26828ffc55fb"
+        }
+      ],
+      "script": "import io,json,logging,statistics,subprocess,sys,time,types,hashlib\nimport pikepdf\nfrom app.workers import pdf_ops as after\nfrom app.workers.pdf_types import Point\nbefore=types.ModuleType('app.workers.pdf_ops_before_b')\nbefore.__file__='app/workers/pdf_ops.py'\nsys.modules[before.__name__]=before\ncode=subprocess.check_output(['git','show','79f05a399cb1669e6fb7cd1b84babfcbc7e3aebc:backend/app/workers/pdf_ops.py'],text=True,encoding='utf-8')\nexec(compile(code,before.__file__,'exec'),before.__dict__)\nrows=[]\nexpected=None\nfor lap in range(22):\n    variants=(('before',before),('after',after))\n    if lap%2:variants=variants[::-1]\n    for variant,module in variants:\n        logbuf=io.StringIO()\n        handler=logging.StreamHandler(logbuf)\n        handler.setFormatter(logging.Formatter('%(levelname)s %(message)s'))\n        log=module.logger\n        log.setLevel(logging.INFO)\n        log.handlers=[handler]\n        log.propagate=False\n        start=time.perf_counter()\n        with pikepdf.Pdf.new() as pdf:\n            page=pdf.add_blank_page(page_size=(1000,1000))\n            ocg=module.add_ocg(pdf,'CUT')\n            shape=module.new_shape(pdf,page)\n            for n in range(1000):\n                x=1.+n%30*30\n                y=1.+n//30*25\n                shape.draw_line(Point(x,y),Point(x+10,y))\n                shape.draw_line(Point(x+10,y),Point(x+10,y+10))\n                shape.finish(color=(0,1,0,0),width=.5,oc=ocg)\n            shape.commit()\n            target=io.BytesIO()\n            pdf.save(target,static_id=True)\n        wall=(time.perf_counter()-start)*1000\n        raw=target.getvalue()\n        digest=hashlib.sha256(raw).hexdigest()\n        if expected is None:expected=digest\n        assert digest==expected\n        rows.append(dict(lap=lap,warmup=lap<2,variant=variant,wallMs=round(wall,3),logs=len(logbuf.getvalue().splitlines()),pdfSha256=digest))\nsummary=[]\nfor variant in ('before','after'):\n    values=[r for r in rows if not r['warmup'] and r['variant']==variant]\n    summary.append(dict(variant=variant,n=len(values),medianMs=statistics.median(r['wallMs'] for r in values),logs=sorted(set(r['logs'] for r in values))))\nprint(json.dumps(dict(scope='1000 ShapeBuilder CUT paths, INFO logger, StringIO synchronous handler, save PDF; not whole export/real disklogging',samePdfBytes=True,summary=summary,rows=rows)))\n"
+    },
+    "D": {
+      "scope": "real projection function on13fixed validatedpublishedmanifests,659cells; not wholepreview; baseline code fromHEAD inisolatedmodule",
+      "sameResponse": true,
+      "summary": [
+        {
+          "variant": "before",
+          "n": 20,
+          "medianMs": 346.567,
+          "minMs": 337.379,
+          "maxMs": 377.883
+        },
+        {
+          "variant": "after",
+          "n": 20,
+          "medianMs": 185.507,
+          "minMs": 156.741,
+          "maxMs": 198.151
+        }
+      ],
+      "records": [
+        {
+          "lap": 0,
+          "warmup": true,
+          "variant": "before",
+          "wallMs": 359.386,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 0,
+          "warmup": true,
+          "variant": "after",
+          "wallMs": 167.342,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 1,
+          "warmup": true,
+          "variant": "after",
+          "wallMs": 160.51,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 1,
+          "warmup": true,
+          "variant": "before",
+          "wallMs": 371.321,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 2,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 343.198,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 2,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 185.372,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 3,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 164.32,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 3,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 372.412,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 4,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 340.78,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 4,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 156.741,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 5,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 185.642,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 5,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 337.379,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 6,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 369.69,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 6,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 161.78,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 7,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 197.047,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 7,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 342.681,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 8,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 339.69,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 8,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 188.236,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 9,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 160.256,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 9,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 377.883,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 10,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 377.459,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 10,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 187.282,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 11,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 198.151,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 11,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 347.248,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 12,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 372.124,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 12,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 162.916,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 13,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 194.166,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 13,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 344.502,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 14,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 341.192,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 14,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 192.921,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 15,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 161.74,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 15,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 374.286,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 16,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 344.733,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 16,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 162.448,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 17,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 188.565,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 17,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 343.595,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 18,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 370.782,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 18,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 166.138,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 19,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 194.938,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 19,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 350.153,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 20,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 345.886,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 20,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 191.148,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 21,
+          "warmup": false,
+          "variant": "after",
+          "wallMs": 164.66,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        },
+        {
+          "lap": 21,
+          "warmup": false,
+          "variant": "before",
+          "wallMs": 373.419,
+          "cells": 659,
+          "sha256": "68aaea2d7ba89dbbafb5a2cf82b3663c068791e45c964ed399d156fdaba704b4"
+        }
+      ],
+      "script": "import hashlib,json,logging,statistics,subprocess,sys,time,types\nfrom pathlib import Path\nfrom types import SimpleNamespace\nfrom app.core import nesting_preview_capacity as after\nfrom app.core import nesting_manifest_store as store\nfrom app.workers import nup_artwork as live_artwork\nimport app.workers as worker_package\nlogging.disable(logging.CRITICAL)\ndef old_module(name,path):\n    module=types.ModuleType(name)\n    module.__file__=str(Path('../'+path).resolve())\n    sys.modules[name]=module\n    code=subprocess.check_output(['git','show','79f05a399cb1669e6fb7cd1b84babfcbc7e3aebc:'+path],text=True,encoding='utf-8')\n    exec(compile(code,module.__file__,'exec'),module.__dict__)\n    return module\nbefore_artwork=old_module('app.workers.nup_artwork_before_d','backend/app/workers/nup_artwork.py')\nbefore=old_module('app.core.nesting_preview_capacity_before_d','backend/app/core/nesting_preview_capacity.py')\nroot=Path('..').resolve()\nevidence=json.loads((root/'docs/audit/BINH_TEM_BE_HIEU_NANG_EVIDENCE_2026-09-07.json').read_text(encoding='utf-8'))\nrefs=evidence['nestingRuns'][2]['records'][0]['renderRecords']\nfixture=root/'backend/.audit-tmp/userfile-timing-20260905-2n0v09te/runtime-data/manifests'\nscenes=[]\nfor ref in refs:\n    raw=store._read_regular_file(fixture/(ref['manifestId']+'.json'))\n    decoded=store._decode_record_core(raw,expected_manifest_id=ref['manifestId'],expected_layout_fingerprint=ref['layoutFingerprint'])\n    production=decoded.production_request\n    job=SimpleNamespace(sheet_height_mm=production.engine_request['sheet']['heightMm'],parts=[SimpleNamespace(part_id=p['partId'],page_index=p['pages']['front']['pageIndex']) for p in production.render_bundle['parts']])\n    session=SimpleNamespace(solved=SimpleNamespace(production_request=production,manifest=decoded.manifest))\n    scenes.append((job,session))\nrows=[]\nexpected=None\ntry:\n    for lap in range(22):\n        variants=(('before',before,before_artwork),('after',after,live_artwork))\n        if lap%2:variants=variants[::-1]\n        for variant,capacity,artwork in variants:\n            sys.modules['app.workers.nup_artwork']=artwork\n            worker_package.nup_artwork=artwork\n            started=time.perf_counter()\n            values=[capacity._project_sheet_cells(job,session) for job,session in scenes]\n            wall=1000*(time.perf_counter()-started)\n            digest=hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()\n            if expected is None:expected=digest\n            assert digest==expected\n            rows.append(dict(lap=lap,warmup=lap<2,variant=variant,wallMs=round(wall,3),cells=sum(len(v) for v in values),sha256=digest))\n        if lap%5==0:print('LAP '+str(lap),flush=True)\nfinally:\n    sys.modules['app.workers.nup_artwork']=live_artwork\n    worker_package.nup_artwork=live_artwork\nsummary=[]\nfor variant in ('before','after'):\n    values=[r['wallMs'] for r in rows if not r['warmup'] and r['variant']==variant]\n    summary.append(dict(variant=variant,n=len(values),medianMs=round(statistics.median(values),3),minMs=min(values),maxMs=max(values)))\nprint('RESULT '+json.dumps(dict(scope='real projection function on13fixed validatedpublishedmanifests,659cells; not wholepreview; baseline code fromHEAD inisolatedmodule',sameResponse=True,summary=summary,records=rows)))\n"
+    },
+    "F": {
+      "settings": {
+        "gridStrategy": "true_shape_nesting",
+        "isDieCutMode": true,
+        "taskMode": "step_repeat",
+        "layoutType": "repeat",
+        "page_sheet_mode": false,
+        "sheetWidth": 320,
+        "sheetHeight": 430,
+        "gapX": 2,
+        "gapY": 2,
+        "marginLeft": 3,
+        "marginRight": 3,
+        "marginTop": 3,
+        "marginBottom": 3,
+        "align": "center",
+        "targetQuantitiesByPage": {
+          "0": 0,
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 0,
+          "12": 0
+        },
+        "detectedShapesByPage": {
+          "0": "CUSTOM",
+          "1": "CUSTOM",
+          "2": "CUSTOM",
+          "3": "CUSTOM",
+          "4": "CUSTOM",
+          "5": "CUSTOM",
+          "6": "CUSTOM",
+          "7": "CUSTOM",
+          "8": "CUSTOM",
+          "9": "CUSTOM",
+          "10": "CUSTOM",
+          "11": "CUSTOM",
+          "12": "CUSTOM"
+        },
+        "detectedShapeParamsByPage": {},
+        "pontType": "5mm",
+        "pontConfig": {
+          "shape": "circle",
+          "size": 5,
+          "thickness": 0.5,
+          "layerInfoName": "SA info",
+          "layerName": "Pont",
+          "groupName": "G",
+          "itemName": "MKLINE",
+          "disableCollision": false,
+          "marginTop": 7,
+          "marginBottom": 7,
+          "marginLeft": 7,
+          "marginRight": 7
+        },
+        "cutType": "default",
+        "separateCutPage": true,
+        "pontsOnCutFile": true,
+        "exportUniqueSheets": true,
+        "reportDisplay": {
+          "enabled": true,
+          "fieldOrder": [
+            "labelName"
+          ],
+          "showLabelName": true,
+          "labelNameText": "AUDIT-F2-SR13",
+          "position": "top",
+          "offsetX": 5,
+          "offsetY": 5,
+          "fontSize": 8,
+          "centered": true,
+          "customText": "",
+          "removeDiacritics": false
+        }
+      },
+      "references": [
+        {
+          "manifestId": "742383d1acb185a692b803915e74d898",
+          "layoutFingerprint": "sha256:bf45e5ffbbca66575dada45753d828a9940d9af657927bc1c5783429c84446a5",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "abeed2c99bddd3c89046ac3ce9287a1f",
+          "layoutFingerprint": "sha256:c72585cc7369bdad1ad2b2c2bb4285afb177b6c2b4bca2a85c2ee56084660384",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "5838fa3cea9e64a37da1b35712da0dcb",
+          "layoutFingerprint": "sha256:3973287e546091e861e9007627a47dd4af39c2166603f993186cef040d0a413d",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "a8bfcadd3096bd6166d36560f9d08e51",
+          "layoutFingerprint": "sha256:80feef5fbb9f5c8078a4a47c4029419d9b5eada90b212d385c6467af17b321f6",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "de9f04e697292857f0ba9a94b36fe9cd",
+          "layoutFingerprint": "sha256:9cd9c2fc69221c998b608e5fd159257818f7b1355e5e8611177f2791c0bb58b3",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "771166f57cc148e775534a6d2c2a91ee",
+          "layoutFingerprint": "sha256:9dff4cc6d1c7ccac0316416850d6b959233f8fa8df78008c0efc05fe72e57dd0",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "e4a50fe500c69426d384331360a1dd5f",
+          "layoutFingerprint": "sha256:69156054d8a1fe0bd50ca7516293a04ee5ed65a5e8b8fd786509f2293fb58b3c",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "9b073efa76727de4e34672acb3ed5f97",
+          "layoutFingerprint": "sha256:2e44d03375fd58b7f9549653bb2e3bfe238f5fccdcbee4fad324f5cfa01fefb2",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "25a4a9325358cf0da16c802ffc0df47d",
+          "layoutFingerprint": "sha256:792e67131bdfa86a45bb2fe042b5d45d67b1605ff488823eb08a0d628b0a1f0b",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "6711580dfe3dfa2d73aa12f87de7f5b3",
+          "layoutFingerprint": "sha256:08da22d4176d3b7fa4aed51ba626ee33c530053e3b64c74a79fb3c5e516dc774",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "e0cf12feb1ac6e5623e41da5964dbfc3",
+          "layoutFingerprint": "sha256:2979bb8785ed06eeb5ff802d78584e09674ccef7477f4b8c92969529157a298d",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "4df6cd0805282630a03257b95bd8c7fc",
+          "layoutFingerprint": "sha256:1dcd118212d04ce3b8bbbe36621ae9def9ab580ebb75d22cf33c61c58f60a62f",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        },
+        {
+          "manifestId": "508bcf8ccedee704de95f21ce55b7a3f",
+          "layoutFingerprint": "sha256:cf2a8800b4a952d67b50c2f5450b4b68e2394674929ca126d6aad80ed94001d1",
+          "reportHash": "sha256:2ee0cecdf562bbd0e0daaffa95afc96b38a82854f1fc8157e55a5c7a01322c44"
+        }
+      ],
+      "placed": 659,
+      "sourceSha256": "efcde4f0a16aca0a5a54ee2d952945afe2eb70dd2073bc9ff59ee87292b257ab",
+      "native": {
+        "algorithmVersions": {
+          "baselineVersion": 12,
+          "candidateRuleVersion": 1,
+          "canonicalizationVersion": 1,
+          "engineVersion": "0.3.0",
+          "kernelVersion": 1,
+          "multiStartVersion": 5,
+          "nfpRuleVersion": 2,
+          "normalizeRuleVersion": 2,
+          "productionSchemaVersion": 3,
+          "protocolVersion": 2,
+          "referencePointRuleVersion": 1,
+          "refineRuleVersion": 2,
+          "scoreVersion": 2,
+          "solverVersion": 4,
+          "toleranceVersion": 1,
+          "validatorVersion": 2
+        },
+        "continuousTranslation": true,
+        "defaultRotation": "free",
+        "engineVersion": "0.3.0",
+        "layoutIntents": [
+          "quantity_fulfillment",
+          "autofill_single_sheet",
+          "step_repeat_single_sheet"
+        ],
+        "manifestSchemaVersion": 1,
+        "nativeBuildIdentity": "6fc91ac521d4c6866892a6f29bf7d43accd90f88cc0840d6bd134c0d08c0ce89",
+        "nfpCacheByteBudgetEnforced": true,
+        "nfpColdMissParallelEnabled": true,
+        "portfolioParallelEnabled": true,
+        "profiles": [
+          "fast",
+          "balanced",
+          "tight"
+        ],
+        "protocolVersion": 2,
+        "reflection": "forbidden",
+        "runtimeControlVersion": 1
+      },
+      "rows": [
+        {
+          "lap": 0,
+          "warmup": true,
+          "variant": "before",
+          "load": {
+            "wallMs": 2883.029,
+            "cpuMs": 3109.375,
+            "peakRssMb": 97.8515625,
+            "rssSamples": 46
+          },
+          "export": {
+            "wallMs": 5441.718,
+            "cpuMs": 5312.5,
+            "peakRssMb": 105.36328125,
+            "rssSamples": 66
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 0,
+          "warmup": true,
+          "variant": "after",
+          "load": {
+            "wallMs": 1079.274,
+            "cpuMs": 3593.75,
+            "peakRssMb": 103.25390625,
+            "rssSamples": 13
+          },
+          "export": {
+            "wallMs": 3509.078,
+            "cpuMs": 5906.25,
+            "peakRssMb": 106.45703125,
+            "rssSamples": 33
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 1,
+          "warmup": true,
+          "variant": "after",
+          "load": {
+            "wallMs": 1137.289,
+            "cpuMs": 3546.875,
+            "peakRssMb": 104.15625,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3518.12,
+            "cpuMs": 5593.75,
+            "peakRssMb": 105.94140625,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 1,
+          "warmup": true,
+          "variant": "before",
+          "load": {
+            "wallMs": 2820.109,
+            "cpuMs": 2937.5,
+            "peakRssMb": 103.5703125,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5258.348,
+            "cpuMs": 5078.125,
+            "peakRssMb": 106.9375,
+            "rssSamples": 64
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 2,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2844.35,
+            "cpuMs": 2875,
+            "peakRssMb": 103.4609375,
+            "rssSamples": 45
+          },
+          "export": {
+            "wallMs": 5326.904,
+            "cpuMs": 5125,
+            "peakRssMb": 107.15234375,
+            "rssSamples": 64
+          },
+          "pages": 26,
+          "pixelDigest": "77cf6d42c6494b43f7d045f6ce2c8bab8a5ee8337c88e9c0d8c8889f9027f47b"
+        },
+        {
+          "lap": 2,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1073.114,
+            "cpuMs": 3453.125,
+            "peakRssMb": 110.82421875,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3628.864,
+            "cpuMs": 5765.625,
+            "peakRssMb": 116.0625,
+            "rssSamples": 34
+          },
+          "pages": 26,
+          "pixelDigest": "77cf6d42c6494b43f7d045f6ce2c8bab8a5ee8337c88e9c0d8c8889f9027f47b"
+        },
+        {
+          "lap": 3,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1089.165,
+            "cpuMs": 3640.625,
+            "peakRssMb": 111.87109375,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3579.042,
+            "cpuMs": 5828.125,
+            "peakRssMb": 116.20703125,
+            "rssSamples": 32
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 3,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2787.943,
+            "cpuMs": 2984.375,
+            "peakRssMb": 112.375,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5247.597,
+            "cpuMs": 5171.875,
+            "peakRssMb": 116.18359375,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 4,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2729.481,
+            "cpuMs": 2921.875,
+            "peakRssMb": 112.66796875,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5226.613,
+            "cpuMs": 5093.75,
+            "peakRssMb": 115.26171875,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 4,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1104.979,
+            "cpuMs": 3765.625,
+            "peakRssMb": 112.58203125,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3538.059,
+            "cpuMs": 5671.875,
+            "peakRssMb": 117.16796875,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 5,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1114.786,
+            "cpuMs": 3703.125,
+            "peakRssMb": 112.7421875,
+            "rssSamples": 15
+          },
+          "export": {
+            "wallMs": 3452.235,
+            "cpuMs": 5843.75,
+            "peakRssMb": 116.82421875,
+            "rssSamples": 32
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 5,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2776.686,
+            "cpuMs": 2828.125,
+            "peakRssMb": 111.6796875,
+            "rssSamples": 42
+          },
+          "export": {
+            "wallMs": 5189.826,
+            "cpuMs": 5046.875,
+            "peakRssMb": 116.44140625,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 6,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2790.102,
+            "cpuMs": 2781.25,
+            "peakRssMb": 111.64453125,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5294.705,
+            "cpuMs": 5109.375,
+            "peakRssMb": 117.05078125,
+            "rssSamples": 64
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 6,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 978.905,
+            "cpuMs": 3718.75,
+            "peakRssMb": 112.6015625,
+            "rssSamples": 12
+          },
+          "export": {
+            "wallMs": 3547.415,
+            "cpuMs": 5937.5,
+            "peakRssMb": 116.7421875,
+            "rssSamples": 32
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 7,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1084.306,
+            "cpuMs": 3421.875,
+            "peakRssMb": 112.5078125,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3591.402,
+            "cpuMs": 5984.375,
+            "peakRssMb": 116.6875,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 7,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2776.634,
+            "cpuMs": 2843.75,
+            "peakRssMb": 111.44140625,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5158.343,
+            "cpuMs": 5078.125,
+            "peakRssMb": 116.60546875,
+            "rssSamples": 63
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 8,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2674.521,
+            "cpuMs": 2953.125,
+            "peakRssMb": 113.36328125,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5200.976,
+            "cpuMs": 5171.875,
+            "peakRssMb": 115.7578125,
+            "rssSamples": 61
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 8,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1112.141,
+            "cpuMs": 3593.75,
+            "peakRssMb": 112.5546875,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3518.43,
+            "cpuMs": 5703.125,
+            "peakRssMb": 116.01171875,
+            "rssSamples": 30
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 9,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 969.81,
+            "cpuMs": 3531.25,
+            "peakRssMb": 112.5078125,
+            "rssSamples": 12
+          },
+          "export": {
+            "wallMs": 3519.404,
+            "cpuMs": 5843.75,
+            "peakRssMb": 115.84375,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 9,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2712.502,
+            "cpuMs": 2812.5,
+            "peakRssMb": 111.9296875,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5258.201,
+            "cpuMs": 4968.75,
+            "peakRssMb": 116.39453125,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 10,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2794.606,
+            "cpuMs": 2843.75,
+            "peakRssMb": 111.9375,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5302.447,
+            "cpuMs": 5265.625,
+            "peakRssMb": 115.53515625,
+            "rssSamples": 64
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 10,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1082.708,
+            "cpuMs": 3500,
+            "peakRssMb": 112.7734375,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3496.034,
+            "cpuMs": 5921.875,
+            "peakRssMb": 116.37109375,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 11,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1103.939,
+            "cpuMs": 3500,
+            "peakRssMb": 112.9296875,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3449.868,
+            "cpuMs": 5687.5,
+            "peakRssMb": 116.50390625,
+            "rssSamples": 30
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 11,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2719.008,
+            "cpuMs": 2781.25,
+            "peakRssMb": 111.6640625,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5191.55,
+            "cpuMs": 5062.5,
+            "peakRssMb": 116.7578125,
+            "rssSamples": 63
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 12,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2757.375,
+            "cpuMs": 2875,
+            "peakRssMb": 111.953125,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5282.114,
+            "cpuMs": 4968.75,
+            "peakRssMb": 116.7578125,
+            "rssSamples": 64
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 12,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1278.597,
+            "cpuMs": 3453.125,
+            "peakRssMb": 112.5,
+            "rssSamples": 17
+          },
+          "export": {
+            "wallMs": 3634.699,
+            "cpuMs": 5843.75,
+            "peakRssMb": 116.55078125,
+            "rssSamples": 34
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 13,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1068.519,
+            "cpuMs": 3625,
+            "peakRssMb": 112.48828125,
+            "rssSamples": 13
+          },
+          "export": {
+            "wallMs": 3631.304,
+            "cpuMs": 5781.25,
+            "peakRssMb": 115.96484375,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 13,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2846.476,
+            "cpuMs": 3015.625,
+            "peakRssMb": 111.953125,
+            "rssSamples": 45
+          },
+          "export": {
+            "wallMs": 5276.81,
+            "cpuMs": 5125,
+            "peakRssMb": 116.1171875,
+            "rssSamples": 63
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 14,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2728.452,
+            "cpuMs": 2890.625,
+            "peakRssMb": 113.54296875,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5275.931,
+            "cpuMs": 5171.875,
+            "peakRssMb": 116.2421875,
+            "rssSamples": 63
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 14,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1117.598,
+            "cpuMs": 3625,
+            "peakRssMb": 112.90234375,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3505.869,
+            "cpuMs": 5796.875,
+            "peakRssMb": 116.16015625,
+            "rssSamples": 31
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 15,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1074.252,
+            "cpuMs": 3515.625,
+            "peakRssMb": 114.05859375,
+            "rssSamples": 13
+          },
+          "export": {
+            "wallMs": 3601.127,
+            "cpuMs": 5609.375,
+            "peakRssMb": 116.77734375,
+            "rssSamples": 34
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 15,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2732.025,
+            "cpuMs": 2828.125,
+            "peakRssMb": 112.7421875,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5485.205,
+            "cpuMs": 5250,
+            "peakRssMb": 117.33984375,
+            "rssSamples": 64
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 16,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2832.619,
+            "cpuMs": 2812.5,
+            "peakRssMb": 113.26953125,
+            "rssSamples": 45
+          },
+          "export": {
+            "wallMs": 5127.514,
+            "cpuMs": 5000,
+            "peakRssMb": 116.875,
+            "rssSamples": 60
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 16,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1106.159,
+            "cpuMs": 3593.75,
+            "peakRssMb": 113.2265625,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3538.452,
+            "cpuMs": 5781.25,
+            "peakRssMb": 118.2890625,
+            "rssSamples": 33
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 17,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1082.789,
+            "cpuMs": 3421.875,
+            "peakRssMb": 113.73828125,
+            "rssSamples": 13
+          },
+          "export": {
+            "wallMs": 3581.28,
+            "cpuMs": 5703.125,
+            "peakRssMb": 118.1953125,
+            "rssSamples": 34
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 17,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2783.216,
+            "cpuMs": 2734.375,
+            "peakRssMb": 112.19921875,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5212.129,
+            "cpuMs": 5234.375,
+            "peakRssMb": 117.26171875,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 18,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2745.895,
+            "cpuMs": 2859.375,
+            "peakRssMb": 111.9453125,
+            "rssSamples": 44
+          },
+          "export": {
+            "wallMs": 5133.908,
+            "cpuMs": 5062.5,
+            "peakRssMb": 117.51171875,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 18,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1122.442,
+            "cpuMs": 3656.25,
+            "peakRssMb": 112.91015625,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3678.414,
+            "cpuMs": 6062.5,
+            "peakRssMb": 117.93359375,
+            "rssSamples": 32
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 19,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1102.013,
+            "cpuMs": 3671.875,
+            "peakRssMb": 113.09765625,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3583.443,
+            "cpuMs": 5843.75,
+            "peakRssMb": 117.3515625,
+            "rssSamples": 32
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 19,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2801.136,
+            "cpuMs": 2843.75,
+            "peakRssMb": 112.83984375,
+            "rssSamples": 45
+          },
+          "export": {
+            "wallMs": 5266.428,
+            "cpuMs": 5203.125,
+            "peakRssMb": 117.41015625,
+            "rssSamples": 66
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 20,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2744.568,
+            "cpuMs": 2875,
+            "peakRssMb": 112.0625,
+            "rssSamples": 43
+          },
+          "export": {
+            "wallMs": 5243.271,
+            "cpuMs": 5265.625,
+            "peakRssMb": 116.98828125,
+            "rssSamples": 62
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 20,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1083.633,
+            "cpuMs": 3656.25,
+            "peakRssMb": 112.8984375,
+            "rssSamples": 13
+          },
+          "export": {
+            "wallMs": 3479.46,
+            "cpuMs": 5671.875,
+            "peakRssMb": 117.09375,
+            "rssSamples": 32
+          },
+          "pages": 26,
+          "pixelDigest": null
+        },
+        {
+          "lap": 21,
+          "warmup": false,
+          "variant": "after",
+          "load": {
+            "wallMs": 1111.118,
+            "cpuMs": 3468.75,
+            "peakRssMb": 113.46875,
+            "rssSamples": 14
+          },
+          "export": {
+            "wallMs": 3764.342,
+            "cpuMs": 5734.375,
+            "peakRssMb": 116.38671875,
+            "rssSamples": 35
+          },
+          "pages": 26,
+          "pixelDigest": "77cf6d42c6494b43f7d045f6ce2c8bab8a5ee8337c88e9c0d8c8889f9027f47b"
+        },
+        {
+          "lap": 21,
+          "warmup": false,
+          "variant": "before",
+          "load": {
+            "wallMs": 2783.151,
+            "cpuMs": 2937.5,
+            "peakRssMb": 112.9453125,
+            "rssSamples": 45
+          },
+          "export": {
+            "wallMs": 5224.74,
+            "cpuMs": 4953.125,
+            "peakRssMb": 116.89453125,
+            "rssSamples": 63
+          },
+          "pages": 26,
+          "pixelDigest": "77cf6d42c6494b43f7d045f6ce2c8bab8a5ee8337c88e9c0d8c8889f9027f47b"
+        }
+      ],
+      "summary": [
+        {
+          "variant": "before",
+          "phase": "load",
+          "n": 20,
+          "medianMs": 2776.66,
+          "p95Ms": 2844.35,
+          "peakRssMb": 113.54296875
+        },
+        {
+          "variant": "before",
+          "phase": "export",
+          "n": 20,
+          "medianMs": 5245.433999999999,
+          "p95Ms": 5326.904,
+          "peakRssMb": 117.51171875
+        },
+        {
+          "variant": "after",
+          "phase": "load",
+          "n": 20,
+          "medianMs": 1095.589,
+          "p95Ms": 1122.442,
+          "peakRssMb": 114.05859375
+        },
+        {
+          "variant": "after",
+          "phase": "export",
+          "n": 20,
+          "medianMs": 3563.2285,
+          "p95Ms": 3678.414,
+          "peakRssMb": 118.2890625
+        }
+      ],
+      "grantProbe": [
+        {
+          "workers": 13,
+          "reservedMiB": 935.3889770507812,
+          "coordinator": {
+            "capacity": 15,
+            "held": 13,
+            "batches": 1,
+            "waiters": 0
+          },
+          "modelVersion": 1
+        }
+      ],
+      "script": "\"\"\"A/B F trên một bộ manifest cố định; chỉ ghi kho benchmark riêng.\"\"\"\nfrom __future__ import annotations\n\nimport argparse\nimport ast\nimport copy\nimport hashlib\nimport json\nimport logging\nimport os\nimport statistics\nimport subprocess\nimport sys\nimport tempfile\nimport time\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[2]\nBACKEND = ROOT / \"backend\"\nsys.path.insert(0, str(BACKEND))\n\n\ndef sha(path):\n    return hashlib.sha256(Path(path).read_bytes()).hexdigest()\n\n\ndef digest(value):\n    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(\",\", \":\")).encode()).hexdigest()\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"--iterations\", type=int, default=20)\n    parser.add_argument(\"--warmups\", type=int, default=2)\n    args = parser.parse_args()\n    run_root = Path(tempfile.mkdtemp(prefix=\"prynx_manifest_F_\")).resolve()\n    assert run_root.parent == Path(tempfile.gettempdir()).resolve()\n    print(\"ROOT=\" + str(run_root), flush=True)\n    os.environ[\"DEV_MODE\"] = \"true\"\n    os.environ[\"PRYNX_TRUE_SHAPE_NESTING_ENABLED\"] = \"true\"\n    os.environ[\"PRYNX_PERF\"] = \"1\"\n    os.environ[\"PRYNX_PERF_DIR\"] = str(run_root / \"perf\")\n    os.environ[\"PRYNX_MIXED_NESTING_DATA_DIR\"] = str(run_root / \"runtime-data\")\n    from app.config import settings as config\n    config.UPLOAD_DIR = run_root / \"uploads\"\n    config.RESULTS_DIR = run_root / \"results\"\n    config.UPLOAD_DIR.mkdir()\n    config.RESULTS_DIR.mkdir()\n    logging.disable(logging.CRITICAL)\n    import pikepdf\n    import pdfcompare_native\n    from app.core import nesting_manifest_store as ms\n    from app.core import nesting_preview_capacity as capacity\n    from app.core import nesting_preview_session as session\n    from app.core import nesting_production_pipeline as pipeline\n    from app.core import mixed_nesting_service as service\n    from app.core.perf_sampler import ProcessRssSampler\n    from app.workers import nup_true_shape_nesting as nesting\n    import runpy\n    helpers = runpy.run_path(str(BACKEND / \".audit-tmp/f2_driver_e3b.py\"))\n    evidence = json.loads((ROOT / \"docs/audit/BINH_TEM_BE_HIEU_NANG_EVIDENCE_2026-09-07.json\").read_text(encoding=\"utf-8\"))\n    source = ROOT / \"test/test nesting.pdf\"\n    source_hash = sha(source)\n    settings = copy.deepcopy(evidence[\"nestingRuns\"][2][\"settings\"])\n    capacity._build_step_repeat_preview(\n        str(source), settings, job_id=\"audit-f-fixed\", cancel_event=None,\n        progress_callback=None, subscriber_id=\"audit-f-fixed\", legacy_preview_for_page=None,\n        allow_legacy_fallback=False, raise_if_cancelled=lambda: None,\n    )\n    attached = nesting.attach_preview_session_reference(copy.deepcopy(settings), str(source), job_id=\"audit-f-export\")\n    references = attached[session.SESSION_REFERENCE_SETTING]\n    assert len(references) == 13\n    store = ms.NestingManifestStore()\n    original_load = ms.NestingManifestStore.load_many\n    loaded = store.load_many(references)\n    expected = [(r.manifest_id, r.layout_fingerprint, digest(r.manifest)) for r in loaded]\n    placed = sum(len(r.manifest[\"placements\"]) for r in loaded)\n    del loaded\n    # Nạp CHỈ method trước F, dùng cùng validator/source helpers hiện hành.\n    raw = subprocess.check_output([\"git\", \"show\", \"79f05a399cb1669e6fb7cd1b84babfcbc7e3aebc:backend/app/core/nesting_manifest_store.py\"], cwd=ROOT, text=True, encoding=\"utf-8\")\n    tree = ast.parse(raw)\n    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == \"NestingManifestStore\")\n    function = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == \"load_many\")\n    namespace = dict(ms.__dict__)\n    exec(compile(ast.Module(body=[function], type_ignores=[]), \"<before-F-load-many>\", \"exec\"), namespace)\n    legacy_load = namespace[\"load_many\"]\n    solve_calls = []\n    original_solve = pipeline.solve_production_nesting_job\n    def unexpected_solve(*a, **kw):\n        solve_calls.append(True)\n        raise AssertionError(\"Xuất từ reference không được solve lại\")\n    pipeline.solve_production_nesting_job = unexpected_solve\n    rows = []\n    raster_hash = None\n    def measure(fn):\n        sampler = ProcessRssSampler(os.getpid(), interval_ms=50)\n        sampler.start()\n        start, cpu = time.perf_counter(), time.process_time()\n        try:\n            fn()\n        finally:\n            wall = (time.perf_counter() - start) * 1000\n            cpu_ms = (time.process_time() - cpu) * 1000\n            sampler.stop()\n        return dict(wallMs=round(wall, 3), cpuMs=round(cpu_ms, 3), peakRssMb=sampler.peak_mb, rssSamples=sampler.sample_count)\n    try:\n        for lap in range(args.warmups + args.iterations):\n            variants = ((\"before\", legacy_load), (\"after\", original_load))\n            if lap % 2:\n                variants = variants[::-1]\n            for name, method in variants:\n                ms.NestingManifestStore.load_many = method\n                def load():\n                    records = store.load_many(references)\n                    assert [(r.manifest_id, r.layout_fingerprint, digest(r.manifest)) for r in records] == expected\n                load_metrics = measure(load)\n                output = run_root / (name + \".pdf\")\n                export_metrics = measure(lambda: nesting.run_true_shape_nesting(\n                    str(source), str(output), attached, job_id=\"audit-f-export\",\n                ))\n                with pikepdf.Pdf.open(output) as pdf:\n                    pages = len(pdf.pages)\n                    assert pages == 26\n                pixel_digest = None\n                if lap in (args.warmups, args.warmups + args.iterations - 1):\n                    pixel_digest = helpers[\"raster_pdf_digest\"](output, scale=0.5)\n                    if raster_hash is None:\n                        raster_hash = pixel_digest\n                    assert pixel_digest == raster_hash\n                assert sha(source) == source_hash\n                assert service._SHARED_BATCH_WORKER_GRANTS.snapshot() == {\"capacity\": 0, \"held\": 0, \"batches\": 0, \"waiters\": 0}\n                row = dict(lap=lap, warmup=lap < args.warmups, variant=name, load=load_metrics, export=export_metrics, pages=pages, pixelDigest=pixel_digest)\n                rows.append(row)\n                print(json.dumps(row), flush=True)\n                (run_root / \"result.json\").write_text(json.dumps(dict(settings=settings, references=references, placed=placed, sourceSha256=source_hash, native=json.loads(pdfcompare_native.MixedNestingRun.capabilities()), rows=rows), indent=2), encoding=\"utf-8\")\n    finally:\n        ms.NestingManifestStore.load_many = original_load\n        pipeline.solve_production_nesting_job = original_solve\n        session.reset_preview_session_store()\n    summary = []\n    for name in (\"before\", \"after\"):\n        for phase in (\"load\", \"export\"):\n            selected = [r[phase] for r in rows if not r[\"warmup\"] and r[\"variant\"] == name]\n            times = sorted(r[\"wallMs\"] for r in selected)\n            summary.append(dict(variant=name, phase=phase, n=len(times), medianMs=statistics.median(times), p95Ms=times[max(0, __import__(\"math\").ceil(.95*len(times))-1)], minMs=min(times), maxMs=max(times), peakRssMb=max(r[\"peakRssMb\"] or 0 for r in selected)))\n    print(\"SUMMARY \" + json.dumps(dict(summary=summary, placed=placed, sourceUnchanged=True, unexpectedSolves=len(solve_calls), sameRaster=True, root=str(run_root))), flush=True)\n    print(\"RAW=\" + str(run_root / \"result.json\"), flush=True)\n\n\nif __name__ == \"__main__\":\n    main()\n\r\n",
+      "rawPath": "C:/Users/Khanh Pham/AppData/Local/Temp/prynx_manifest_F_w9s0raol/result.json",
+      "method": "Same published13manifests/659placements. Before only substitutes pre-F load_many method with same validator/source and current D/E writer. 2warmups+20 interleaved; loaddata identity checked eachsample; all26pages raster atfirst/last measured pair, outside timers."
+    }
+  },
+  "verification": {
+    "simpleParity": {
+      "tests": 24,
+      "artifact": "S&R/multi-page/single-template/homogeneous;Rotate0/90/180/270;fractional gaps/margins;allCUTbbox+pixels"
+    },
+    "B": {
+      "tests": 7,
+      "beforeFailed": 4,
+      "logsPer64PathsBefore": 64,
+      "logsWhenOffAfter": 0,
+      "pdfBytesExact": true
+    },
+    "C": {
+      "focusedTests": 32,
+      "parentBroaderFrontend": 125,
+      "typecheck": "pass",
+      "inactivityRequestCount": "1→0",
+      "legacyAcceptedBackendCpuCancellation": false
+    },
+    "D": {
+      "parentTests": 156,
+      "previewRingParses8Placement": "32→4",
+      "writerRingParses8Placement": "48→6",
+      "sameCoordinatesAndPixels": true
+    },
+    "E": {
+      "parentTests": 115,
+      "visitsBefore": [
+        260,
+        920,
+        3440
+      ],
+      "visitsAfter": [
+        60,
+        120,
+        240
+      ],
+      "sourcePlacementCounts": [
+        20,
+        40,
+        80
+      ],
+      "artifactVariants": 6,
+      "pixelsReportsExact": true
+    },
+    "F": {
+      "helperAndIntegrationTests": 64,
+      "earlierParentSuitePassed": 273,
+      "sandboxNamedPipeFailures": 3,
+      "exactOutsideRerunPassed": 3,
+      "checks": "Everyrecord nativevalidation inclduplicates;order;sourcephase only after allnative;RAMthroughsourceCPUreleased;hash/schema/build/pose;prepassSHA;boundedreadgrowth;cancel/BaseException/drain"
+    },
+    "finalBackend": {
+      "passed": 770,
+      "skipped": 1,
+      "seconds": 90.66,
+      "skip": "test_p6b_chua_co_route_reachable: route addedinP7a, coveredinthatphase"
+    },
+    "finalTypecheck": "pass",
+    "goldenUpdates": 0,
+    "releaseBuild": false,
+    "commit": false,
+    "gui": {
+      "app": "PrynX",
+      "process": "D:/pdfcompare/desktop/src-tauri/target/debug/pdf-inspector.exe",
+      "windowObservedInInventory": true,
+      "stateRequest": "get_window_state",
+      "previousOutcome": "Lịch sử: timeout quyền Computer Use, sau đó quan sát được hộp thiếu checkpoint; người dùng đã thử xác minh lại thành công",
+      "windowId": 6751614,
+      "windowTitle": "PrynX - Print made easy!",
+      "stateObserved": true,
+      "observationDate": "2026-09-07",
+      "outcome": "License đã mở lại; mở được Bình Tem Bế từ Home, thấy PDF thử và preview chờ tài nguyên; người dùng dừng Computer Use bằng Esc trước khi nghiệm thu xong",
+      "licenseDialogTitle": "Không thể xác minh bản quyền",
+      "licenseMessage": "Chưa có checkpoint thời gian tin cậy. Vui lòng kết nối internet để xác minh bản quyền.",
+      "licenseDialogObservedCurrently": false,
+      "userRestoredLicense": true,
+      "activationActions": 2,
+      "inputActions": 2,
+      "authenticationActions": 0,
+      "interruptedByUserEscape": true,
+      "nextStep": "Ưu tiên phản hồi layout lệch hàng theo BAO_CAO_AUDIT_NESTING_LECH_HANG_2026-09-07.md; chưa chốt nghiệm thu GUI hoặc chất lượng bố cục",
+      "verifiedRuntime": false
+    }
+  },
+  "limitations": [
+    "Measurements are isolated processes but machine not globally isolated; never killed user processes.",
+    "B benchmarkStringIO logging is a substage, not wholeexport. D isprojectiononly.",
+    "F measuredCPUtotal higher underparallelism, notCPUefficiencyclaim;measuredRSS is sampled,not strictallocatorupperbound.",
+    "RAMtiers/cancel/coordinator testedwithfixtures;notphysicalweakPCorcross-processCPUglobaladmissionproof.",
+    "License đã được người dùng khôi phục; GUI acceptance bị gián đoạn bởi Esc, chưa hoàn tất. Phản hồi layout lệch hàng được ưu tiên chẩn đoán trong NESTING_ROW_DRIFT_EVIDENCE_2026-09-07.json; parity/tốc độ không chứng minh layout đều hàng."
+  ]
+}

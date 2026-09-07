@@ -563,14 +563,14 @@ export default function StickerSheetPanel({
                                             suffix="mm"
                                         />
                                     </div>
-                                    {/* UIUX (feedback 2026-08-11 §AI.BLEED1): độ rộng và cách
-                                        sinh màu tràn lề phải cùng hiển thị, không dùng mặc định ẩn. */}
-                                    <StickerBleedColorControl
+                                    {/* UIUX (feedback 2026-09-07 §AI.BLEED0): không có tràn lề
+                                        thì không có vùng tô màu; giữ lựa chọn khi tăng lại độ rộng. */}
+                                    {state.outputSettings.bleedMm > 0 && <StickerBleedColorControl
                                         value={state.outputSettings}
                                         onChange={next => actions.setOutputSettings(tabId, next)}
                                         disabled={busy || isExporting}
                                         className="mt-3"
-                                    />
+                                    />}
                                 </div>
 
                                 <div>

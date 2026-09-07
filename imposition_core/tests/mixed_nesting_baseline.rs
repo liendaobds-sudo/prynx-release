@@ -451,7 +451,8 @@ fn baseline_and_validate(
 
 #[test]
 fn version_baseline_va_score() {
-    assert_eq!(BASELINE_VERSION, 12);
+    // NESTROW (audit 2026-09-07 §NESTROW.1): S&R đổi sang motif authoritative.
+    assert_eq!(BASELINE_VERSION, 13);
     assert_eq!(SCORE_VERSION, 2);
     // Trần ứng viên phải đủ rộng để đỉnh Bottom-Left đầu tiên hầu như luôn dùng được.
     assert_eq!(MAX_CANDIDATES_PER_ANGLE, 64);

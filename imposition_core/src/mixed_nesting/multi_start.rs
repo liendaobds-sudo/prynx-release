@@ -604,6 +604,7 @@ pub fn solve(
         },
     );
     let chi_thieu_design_autofill = !request.layout_intent.quantity_la_yeu_cau()
+        && !request.layout_intent.prefers_periodic_motif()
         && !baseline_report.issues.is_empty()
         && baseline_report
             .issues
@@ -614,13 +615,15 @@ pub fn solve(
         // transform, collision, quantity hay thống kê.
         return Err(SolveError::BaselineInvalid);
     }
-    // S&R (audit 2026-08-31 §NEST-SR-AUTHORITY): intent S&R tường minh chọn
-    // baseline production làm phương án authoritative. Baseline tự ưu tiên motif/lattice
-    // khi dựng được; nếu không, nó vẫn giữ thứ tự lặp ổn định và quality gate backend có
-    // quyền chọn grid tốt hơn. Không chạy free-nesting rồi bỏ kết quả hoặc làm trôi nhịp
-    // S&R. N-up autofill thường vẫn reduce hoàn toàn bằng LayoutScore.
-    let step_repeat_baseline_locked =
-        request.layout_intent.prefers_periodic_motif() && baseline_report.valid;
+    // NESTROW (audit 2026-09-07 §NESTROW.1): validator va chạm không chứng minh nhịp
+    // lặp. S&R chỉ công bố baseline đã được dựng theo motif; nếu thiếu, không dùng
+    // generic rescue để âm thầm đổi thành xếp dàn tự do. N-up vẫn giữ rescue/score cũ.
+    if request.layout_intent.prefers_periodic_motif() && !baseline.periodic_motif {
+        return Err(SolveError::BaselineInvalid);
+    }
+    let step_repeat_baseline_locked = request.layout_intent.prefers_periodic_motif()
+        && baseline_report.valid
+        && baseline.periodic_motif;
     reject_cancelled(control)?;
     let mut baseline_score = if baseline_report.valid {
         let baseline_score = score_layout(

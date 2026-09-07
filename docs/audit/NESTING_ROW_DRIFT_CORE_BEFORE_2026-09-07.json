@@ -1,0 +1,107 @@
+{
+  "scope": "Core-only; source engine requests from the existing four F manifests. Three measured samples after one warm-up. Full terminal RESULT was truncated; only complete ROW metrics below are retained. No whole-feature latency claim.",
+  "nativePath": "D:/pdfcompare/backend/.audit-tmp/row-drift-native-20260907/before/pdfcompare_native.cp311-win_amd64.pyd",
+  "nativeSha256": "CAC22B947E503B3E42D70ED9567E37E40B76707A27B869E83F6DDCCA606FCBE9",
+  "logicalProcessors": 16,
+  "totalRamBytes": 34107990016,
+  "workerGrant": 15,
+  "baselineVersion": 12,
+  "rows": [
+    {
+      "lap": 1,
+      "warmup": false,
+      "sourcePage1Based": 6,
+      "wallMs": 2261.948,
+      "count": 66,
+      "poseSha256": "ef4f001c3239cf74c577bf1131003a46842670ce1bbb9a8fa74cb59c549748c1"
+    },
+    {
+      "lap": 1,
+      "warmup": false,
+      "sourcePage1Based": 7,
+      "wallMs": 533.165,
+      "count": 66,
+      "poseSha256": "41de487579fa1168b5bf64b78d4db08355ec4ab8ca76f28af8f2fd7a866aa499"
+    },
+    {
+      "lap": 1,
+      "warmup": false,
+      "sourcePage1Based": 8,
+      "wallMs": 2283.292,
+      "count": 57,
+      "poseSha256": "1981eaf8e32dc04df76a8666bb68f18e73abc4f0c2f93b68fa404fbda409328f"
+    },
+    {
+      "lap": 1,
+      "warmup": false,
+      "sourcePage1Based": 12,
+      "wallMs": 5158.789,
+      "count": 28,
+      "poseSha256": "c0f24d88eec5ad3d7c7142e2f7765f57b478d05f6a8d98b078b0daa218710fbe"
+    },
+    {
+      "lap": 2,
+      "warmup": false,
+      "sourcePage1Based": 6,
+      "wallMs": 2325.68,
+      "count": 66,
+      "poseSha256": "ef4f001c3239cf74c577bf1131003a46842670ce1bbb9a8fa74cb59c549748c1"
+    },
+    {
+      "lap": 2,
+      "warmup": false,
+      "sourcePage1Based": 7,
+      "wallMs": 548.779,
+      "count": 66,
+      "poseSha256": "41de487579fa1168b5bf64b78d4db08355ec4ab8ca76f28af8f2fd7a866aa499"
+    },
+    {
+      "lap": 2,
+      "warmup": false,
+      "sourcePage1Based": 8,
+      "wallMs": 2047.851,
+      "count": 57,
+      "poseSha256": "1981eaf8e32dc04df76a8666bb68f18e73abc4f0c2f93b68fa404fbda409328f"
+    },
+    {
+      "lap": 2,
+      "warmup": false,
+      "sourcePage1Based": 12,
+      "wallMs": 2907.511,
+      "count": 29,
+      "poseSha256": "0285a3aa81f5aaaae20578d1ae20ae403b999877682c69a698b9ca58182d353a"
+    },
+    {
+      "lap": 3,
+      "warmup": false,
+      "sourcePage1Based": 6,
+      "wallMs": 1233.642,
+      "count": 66,
+      "poseSha256": "ef4f001c3239cf74c577bf1131003a46842670ce1bbb9a8fa74cb59c549748c1"
+    },
+    {
+      "lap": 3,
+      "warmup": false,
+      "sourcePage1Based": 7,
+      "wallMs": 299.097,
+      "count": 66,
+      "poseSha256": "41de487579fa1168b5bf64b78d4db08355ec4ab8ca76f28af8f2fd7a866aa499"
+    },
+    {
+      "lap": 3,
+      "warmup": false,
+      "sourcePage1Based": 8,
+      "wallMs": 1249.867,
+      "count": 57,
+      "poseSha256": "1981eaf8e32dc04df76a8666bb68f18e73abc4f0c2f93b68fa404fbda409328f"
+    },
+    {
+      "lap": 3,
+      "warmup": false,
+      "sourcePage1Based": 12,
+      "wallMs": 3087.043,
+      "count": 29,
+      "poseSha256": "0285a3aa81f5aaaae20578d1ae20ae403b999877682c69a698b9ca58182d353a"
+    }
+  ]
+}

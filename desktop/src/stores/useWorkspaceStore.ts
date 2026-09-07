@@ -4,7 +4,7 @@ import { createContext, useContext } from 'react';
 import type { StoreApi } from 'zustand';
 import type { OutputPreviewPageBoxes, PlateOverlay } from '../lib/outputPreviewOverlay';
 import type { CropRegionFrac } from '../lib/cropGeometry';
-import type { ToolMenuMode } from '../lib/rightToolMenuLayout';
+import { normalizeFullToolMenuWidth, TOOL_MENU_FULL_DEFAULT_WIDTH, type ToolMenuMode } from '../lib/rightToolMenuLayout';
 import type { StickerCutlinePreview } from '../lib/stickerSheetApi';
 import type { CachedPdfObject } from './pdfObjectCache';
 import type { VdpToolField } from '../hooks/useVdpTool';
@@ -305,6 +305,7 @@ export interface WorkspaceState {
     // ── Sidebar & Layout ──
     rightToolMenuMode: ToolMenuMode;
     rightToolMenuFullWidth: number;
+    rightToolConfigWidth: number;
     toolMenuQuery: string;
     toolMenuScrollTop: number;
     isDraggingSidebar: boolean;
@@ -440,6 +441,7 @@ export interface WorkspaceState {
 
     setRightToolMenuMode: (mode: ToolMenuMode) => void;
     setRightToolMenuFullWidth: (width: number) => void;
+    setRightToolConfigWidth: (width: number) => void;
     setToolMenuQuery: (query: string) => void;
     setToolMenuScrollTop: (scrollTop: number) => void;
     setIsDraggingSidebar: (val: boolean) => void;
@@ -638,23 +640,53 @@ export function isWorkspaceDocumentRevisionCurrent(
         && sameOptionalArray(expected.viewerPageOrder, state.viewerPageOrder)
         && sameOptionalArray(expected.viewerPageInstanceIds, state.viewerPageInstanceIds)
         && sameOptionalArray(expected.viewerPageRotations, state.viewerPageRotations)
-        && (
-            expected.hiddenOcgLayerIds === undefined
-            && expected.ocgVisibilityProvenance === undefined
-            // Token legacy không thể chứng minh bytes sau override; fail-closed.
-            && state.ocgVisibilityProvenance.intent !== 'explicit'
-            || expected.hiddenOcgLayerIds !== undefined
-            && expected.ocgVisibilityProvenance !== undefined
-            && sameOptionalArray(expected.hiddenOcgLayerIds, state.hiddenOcgLayerIds)
-            && sameOcgVisibilityProvenance(
-                expected.ocgVisibilityProvenance,
-                state.ocgVisibilityProvenance,
-            )
-        )
+        && sameEffectiveOcgRevision(expected, state)
     );
 }
 
-export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'full', initialRightToolMenuFullWidth = 390) => createStore<WorkspaceState>()((set) => ({
+function sameEffectiveOcgRevision(
+    expected: WorkspaceDocumentRevisionToken,
+    state: WorkspaceDocumentRevisionSource,
+): boolean {
+    const before = expected.ocgVisibilityProvenance;
+    const current = state.ocgVisibilityProvenance;
+    // Token legacy không thể chứng minh bytes sau override; fail-closed.
+    if (before === undefined && expected.hiddenOcgLayerIds === undefined) {
+        return current.intent !== 'explicit';
+    }
+    if (!before || expected.hiddenOcgLayerIds === undefined || before.intent !== current.intent) return false;
+
+    // REVISION (feedback 2026-09-07 §SHEET.SOURCE1): đọc metadata mặc định
+    // không sửa PDF; vẫn kiểm owner và danh sách ẩn để không bỏ lọt override thật.
+    if (before.intent === 'source-default') {
+        const followsSourceDefault = (
+            provenance: WorkspaceOcgVisibilityProvenance,
+            hiddenIds: readonly number[],
+        ) => provenance.baselineLoaded
+            ? provenance.sourceFile === state.file
+                && provenance.sourceEditGeneration === state.editGeneration
+                && sameOptionalArray(hiddenIds, provenance.sourceDefaultHiddenLayerIds)
+            : hiddenIds.length === 0 && provenance.sourceDefaultHiddenLayerIds.length === 0;
+        return followsSourceDefault(before, expected.hiddenOcgLayerIds)
+            && followsSourceDefault(current, state.hiddenOcgLayerIds);
+    }
+    return sameOptionalArray(expected.hiddenOcgLayerIds, state.hiddenOcgLayerIds)
+        && before.sourceFile === current.sourceFile
+        && before.sourceFileId === current.sourceFileId
+        && before.sourceEditGeneration === current.sourceEditGeneration;
+}
+
+function initialConfigWidth(mode: ToolMenuMode, menuWidth: number, configWidth?: number): number {
+    const legacyWidth = normalizeFullToolMenuWidth(menuWidth);
+    return normalizeFullToolMenuWidth(configWidth, mode === 'icons'
+        ? legacyWidth : Math.min(TOOL_MENU_FULL_DEFAULT_WIDTH, legacyWidth));
+}
+
+export const createWorkspaceStore = (
+    initialRightToolMenuMode: ToolMenuMode = 'full',
+    initialRightToolMenuFullWidth = TOOL_MENU_FULL_DEFAULT_WIDTH,
+    initialRightToolConfigWidth?: number,
+) => createStore<WorkspaceState>()((set) => ({
     // ── File & Phase ──
     phase: 'upload',
     file: null,
@@ -685,7 +717,10 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
     bleedView: { show: false, mm: 0 },
 
     rightToolMenuMode: initialRightToolMenuMode,
-    rightToolMenuFullWidth: Math.round(Math.max(280, Math.min(800, initialRightToolMenuFullWidth))),
+    rightToolMenuFullWidth: normalizeFullToolMenuWidth(initialRightToolMenuFullWidth),
+    // UIUX (audit 2026-09-07 §PANE.WIDTH): hai pane nhớ chiều rộng riêng;
+    // caller cũ thiếu tham số thứ ba vẫn giữ kích thước thiết lập lúc di trú.
+    rightToolConfigWidth: initialConfigWidth(initialRightToolMenuMode, initialRightToolMenuFullWidth, initialRightToolConfigWidth),
     toolMenuQuery: '',
     toolMenuScrollTop: 0,
     isDraggingSidebar: false,
@@ -872,8 +907,12 @@ export const createWorkspaceStore = (initialRightToolMenuMode: ToolMenuMode = 'f
         state.rightToolMenuMode === mode ? state : { rightToolMenuMode: mode }
     )),
     setRightToolMenuFullWidth: (width) => set((state) => {
-        const normalized = Math.round(Math.max(280, Math.min(800, width)));
+        const normalized = normalizeFullToolMenuWidth(width, state.rightToolMenuFullWidth);
         return state.rightToolMenuFullWidth === normalized ? state : { rightToolMenuFullWidth: normalized };
+    }),
+    setRightToolConfigWidth: (width) => set((state) => {
+        const normalized = normalizeFullToolMenuWidth(width, state.rightToolConfigWidth);
+        return state.rightToolConfigWidth === normalized ? state : { rightToolConfigWidth: normalized };
     }),
     setToolMenuQuery: (query) => set((state) => (
         state.toolMenuQuery === query ? state : { toolMenuQuery: query }

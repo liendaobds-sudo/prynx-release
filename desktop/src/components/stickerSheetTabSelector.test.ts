@@ -101,6 +101,24 @@ describe('selectStickerSheetTabSummary', () => {
         expect(viewerShowsStickerSource(pdfSource, null, pdfSource)).toBe(true);
     });
 
+    it('lease current chấp nhận nguồn đã bake, lease stale không fallback theo File', () => {
+        const raw = new File(['raw'], 'source.pdf', { type: 'application/pdf' });
+        const materialized = new File(['baked'], 'source.pdf', { type: 'application/pdf' });
+        expect(viewerShowsStickerSource(raw, null, materialized)).toBe(false);
+        expect(viewerShowsStickerSource(raw, null, materialized, true)).toBe(true);
+        expect(viewerShowsStickerSource(raw, null, raw, false)).toBe(false);
+    });
+
+    it('summary giữ origin và revision của nguồn không lệ thuộc state trang', () => {
+        const source = new File(['pdf'], 'source.pdf', { type: 'application/pdf' });
+        const revision = { file: source, editGeneration: 0 };
+        const summary = selectStickerSheetTabSummary({ tabs: {
+            'tab-a': { sourceFile: source, sourceOrigin: 'workspace', sourceRevision: revision } as unknown as StickerSheetTabState,
+        } }, 'tab-a');
+        expect(summary.stickerSheetSourceOrigin).toBe('workspace');
+        expect(summary.stickerSheetSourceRevision).toBe(revision);
+    });
+
     it('nhận file lịch sử là cùng nguồn PDF để Undo không kích hoạt lượt mở thứ hai', () => {
         const pdfSource = new File(['pdf'], 'sheet-source.pdf', { type: 'application/pdf' });
         const historyFile = new File([], 'sheet-source.pdf', { type: 'application/pdf' });

@@ -138,6 +138,49 @@ function readBlob(blob: Blob): Promise<ArrayBuffer> {
 }
 
 describe('useWorkingPdf', () => {
+    it('metadata nền đến sau không tạo revision mới khi vẫn giữ layer mặc định của PDF', async () => {
+        const { file, hiddenId } = await layeredSourcePdf();
+        const store = createWorkspaceStore();
+        store.getState().setFile(file);
+        const wrapper = ({ children }: { children: React.ReactNode }) => (
+            <WorkspaceContext.Provider value={store}>{children}</WorkspaceContext.Provider>
+        );
+        const { result } = renderHook(() => useWorkingPdf(), { wrapper });
+        const snapshot = result.current.capture();
+        if (!snapshot) throw new Error('Thiếu snapshot nguồn trước metadata.');
+        await expect(result.current.materialize(snapshot)).resolves.toBe(file);
+
+        store.getState().setSelectionFileId('background-upload');
+        store.getState().seedOcgLayerState([], [hiddenId], [], file, 0, 'background-upload');
+        expect(result.current.isCurrent(snapshot)).toBe(true);
+        await expect(result.current.resolveUnprepared()).resolves.toBe(file);
+        const unchanged = await PDFDocument.load(await readBlob(file));
+        expect(ocgNamesInConfig(unchanged, 'OFF')).toContain('Ghi chu noi bo');
+
+        // Mở/tải lại metadata bằng owner mới vẫn không phải sửa nội dung PDF.
+        store.getState().setSelectionFileId('second-upload');
+        expect(result.current.isCurrent(snapshot)).toBe(true);
+        store.getState().seedOcgVisibilityDefaults([hiddenId], file, 0, 'second-upload');
+        expect(result.current.isCurrent(snapshot)).toBe(true);
+        store.getState().setHiddenOcgLayerIds([]);
+        expect(result.current.isCurrent(snapshot)).toBe(false);
+    });
+
+    it('baseline đến sau không tạo revision giả cho explicit override không đổi', async () => {
+        const { file, hiddenId } = await layeredSourcePdf();
+        const store = createWorkspaceStore();
+        store.getState().setFile(file);
+        store.getState().setSelectionFileId('fid-layered');
+        store.getState().setHiddenOcgLayerIds([]);
+        const snapshot = captureWorkspaceDocumentRevision(store.getState());
+
+        store.getState().seedOcgVisibilityDefaults([hiddenId], file, 0, 'fid-layered');
+        expect(isWorkspaceDocumentRevisionCurrent(snapshot, store.getState())).toBe(true);
+        expect(store.getState().hiddenOcgLayerIds).toEqual([]);
+        store.getState().setHiddenOcgLayerIds([hiddenId]);
+        expect(isWorkspaceDocumentRevisionCurrent(snapshot, store.getState())).toBe(false);
+    });
+
     it('materializes reorder, deletion, duplication and per-instance rotation', async () => {
         const file = await sourcePdf();
         const store = createWorkspaceStore();

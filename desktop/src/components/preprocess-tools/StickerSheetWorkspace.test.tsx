@@ -295,7 +295,7 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
             });
         });
         expect(svg.querySelector('[data-cutline-layer="main"]')?.getAttribute('stroke')).toBe('#7c3aed');
-        expect(svg.querySelector('[data-cutline-layer="main"]')?.getAttribute('stroke-width')).toBe('1.4');
+        expect(svg.querySelector('[data-cutline-layer="main"]')?.getAttribute('stroke-width')).toBe('2');
     });
 
     it('làm nét bế nổi ở zoom nhỏ và tự thu mảnh khi zoom lớn', () => {
@@ -325,7 +325,7 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
                 ?.getAttribute('stroke-width'),
         );
 
-        expect(strokeWidth()).toBe(2.4);
+        expect(strokeWidth()).toBe(3);
         rerender(
             <StickerCutlineOverlay
                 preview={preview}
@@ -333,7 +333,7 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
                 displayZoom={1}
             />,
         );
-        expect(strokeWidth()).toBe(1.4);
+        expect(strokeWidth()).toBe(2);
         rerender(
             <StickerCutlineOverlay
                 preview={preview}
@@ -341,7 +341,34 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
                 displayZoom={4}
             />,
         );
-        expect(strokeWidth()).toBe(0.7);
+        expect(strokeWidth()).toBe(1);
+    });
+
+    it.each([
+        { zoom: 0.25, width: '3' }, { zoom: 1, width: '2' },
+        { zoom: 2, width: '1.41' }, { zoom: 4, width: '1' }, { zoom: 16, width: '1' },
+    ])('classic và nhiều tem cùng độ rõ tại zoom=$zoom, chỉ lựa chọn đổi màu', ({ zoom, width }) => {
+        const path = 'M 5 5 L 95 5 L 95 75 L 5 75 Z';
+        const preview = {
+            page_number: 1, mask_revision: 1, preview_width_px: 100, preview_height_px: 80,
+            paths: [{ instance_id: 1, d: path, segment_count: 4 }],
+            fingerprint: 'e'.repeat(64), segment_count: 4,
+        };
+        const before = JSON.stringify(preview);
+        const { container } = render(<>
+            <StickerCutlineOverlay preview={preview} selectedInstanceId={null} displayZoom={zoom} />
+            <StickerCutlineOverlay preview={preview} selectedInstanceId={1} displayZoom={zoom} />
+        </>);
+        const lines = container.querySelectorAll('[data-cutline-layer="main"]');
+        expect(lines).toHaveLength(2);
+        for (const line of lines) {
+            expect(line.getAttribute('stroke-width')).toBe(width);
+            expect(line.getAttribute('vector-effect')).toBe('non-scaling-stroke');
+            expect(line.getAttribute('d')).toBe(path);
+        }
+        expect(lines[0].getAttribute('stroke')).toBe('#7c3aed');
+        expect(lines[1].getAttribute('stroke')).toBe('#d946ef');
+        expect(JSON.stringify(preview)).toBe(before);
     });
 
     it('khóa cọ trên canvas trong lúc cập nhật preview AI', () => {

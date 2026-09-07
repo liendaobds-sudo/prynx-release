@@ -1643,6 +1643,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
         .toBe("baseline");
       expect(screen.getByText("42%")).toBeTruthy();
     }, { timeout: 3_000 });
+    expect(screen.getByRole("status").classList.contains("sr-only")).toBe(true);
     expect(screen.getByTestId("nesting-preview-progress-bar").getAttribute("style"))
       .toContain("42%");
     expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");

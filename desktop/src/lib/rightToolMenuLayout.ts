@@ -156,6 +156,8 @@ export function resolveEffectiveToolMenuLayout(input: {
   preferredMode: ToolMenuMode;
   /** Độ rộng pane đang mở; full+active là catalog, icons+active là panel thiết lập. */
   preferredFullWidth: number;
+  /** Khi có mặt, hai panel dùng preference độc lập; caller cũ/Home giữ hợp đồng cũ. */
+  preferredConfigWidth?: number;
   containerWidth: number;
   hasConfigPanel: boolean;
   viewerReservedWidth?: number;
@@ -169,6 +171,21 @@ export function resolveEffectiveToolMenuLayout(input: {
     Math.floor(input.containerWidth - viewerReservedWidth),
   );
   const preferredWidth = normalizeFullToolMenuWidth(input.preferredFullWidth);
+
+  // UIUX (feedback 2026-09-07 §PANEL.WIDTH): menu được cấp chỗ riêng;
+  // đổi số đo thiết lập không chia lại catalog hoặc tự đổi mode.
+  if (input.hasConfigPanel && input.preferredConfigWidth !== undefined) {
+    const canExpandFull = maximumTotalWidth >= TOOL_MENU_FULL_MIN_WIDTH * 2;
+    const mode = input.preferredMode === 'full' && canExpandFull ? 'full' : 'icons';
+    const catalogWidth = mode === 'full'
+      ? Math.min(preferredWidth, maximumTotalWidth - TOOL_MENU_FULL_MIN_WIDTH)
+      : TOOL_MENU_ICON_WIDTH;
+    const configWidth = Math.max(0, Math.min(
+      normalizeFullToolMenuWidth(input.preferredConfigWidth),
+      maximumTotalWidth - catalogWidth,
+    ));
+    return { mode, configWidth, catalogWidth, totalWidth: configWidth + catalogWidth, canExpandFull };
+  }
 
   if (!input.hasConfigPanel) {
     const canExpandFull = maximumTotalWidth >= TOOL_MENU_FULL_MIN_WIDTH;
@@ -219,6 +236,28 @@ export function resolveEffectiveToolMenuLayout(input: {
     totalWidth: split.totalWidth,
     canExpandFull,
   };
+}
+
+/** Kéo đúng một panel, giữ số đo panel kia và mode; draft cũng chính là số đo chốt. */
+export function resizeToolMenuPanel(
+  layout: EffectiveToolMenuLayout,
+  target: 'config' | 'catalog',
+  requestedWidth: number,
+  maximumTotalWidth: number,
+): EffectiveToolMenuLayout {
+  if (target === 'config' && layout.configWidth <= 0
+    || target === 'catalog' && layout.mode !== 'full') return layout;
+  const otherWidth = target === 'config' ? layout.catalogWidth : layout.configWidth;
+  const available = Math.max(0, Math.floor(maximumTotalWidth) - otherWidth);
+  const minimum = Math.min(TOOL_MENU_FULL_MIN_WIDTH, available);
+  const maximum = Math.min(TOOL_MENU_FULL_MAX_WIDTH, available);
+  const current = target === 'config' ? layout.configWidth : layout.catalogWidth;
+  const width = Math.round(Math.max(minimum, Math.min(
+    maximum, Number.isFinite(requestedWidth) ? requestedWidth : current,
+  )));
+  const configWidth = target === 'config' ? width : layout.configWidth;
+  const catalogWidth = target === 'catalog' ? width : layout.catalogWidth;
+  return { ...layout, configWidth, catalogWidth, totalWidth: configWidth + catalogWidth };
 }
 
 /**

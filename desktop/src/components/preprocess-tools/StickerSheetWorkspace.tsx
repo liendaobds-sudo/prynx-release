@@ -36,14 +36,15 @@ interface Props {
  */
 function resolveStickerCutlineStrokeWidth(
     displayZoom: number | undefined,
-    selected: boolean,
 ): number {
     const zoom = Number.isFinite(displayZoom) && Number(displayZoom) > 0
         ? Number(displayZoom)
         : 1;
-    const base = selected ? 2 : 1.4;
-    const min = selected ? 1 : 0.7;
-    const max = selected ? 3 : 2.4;
+    // UIUX (feedback 2026-09-07 §CUTPREVIEW.PARITY): classic không có selected ID
+    // vẫn phải rõ như nhiều tem; phân biệt lựa chọn bằng màu, không làm mờ nét còn lại.
+    const base = 2;
+    const min = 1;
+    const max = 3;
     const width = Math.max(min, Math.min(max, base / Math.sqrt(zoom)));
     return Math.round(width * 100) / 100;
 }
@@ -75,7 +76,7 @@ export function StickerCutlineOverlay({
                         d={path.d}
                         fill="none"
                         stroke={selected ? '#d946ef' : '#7c3aed'}
-                        strokeWidth={resolveStickerCutlineStrokeWidth(displayZoom, selected)}
+                        strokeWidth={resolveStickerCutlineStrokeWidth(displayZoom)}
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         vectorEffect="non-scaling-stroke"

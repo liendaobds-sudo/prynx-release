@@ -1,0 +1,55 @@
+{
+  "date": "2026-09-07",
+  "lot": "A + speed-safe baseline optimization",
+  "qualityOracle": {
+    "files": [
+      "scripts/smart_nesting_quality.py",
+      "backend/tests/test_smart_nesting_quality.py"
+    ],
+    "tests": "9 passed, 1 existing Pydantic warning",
+    "productionOverhead": "not imported/called by solver; offline only"
+  },
+  "productionChange": {
+    "files": ["imposition_core/src/mixed_nesting/baseline/periodic.rs"],
+    "changes": [
+      "phase ranking uses bbox/count summary instead of allocating and discarding Vec<Span>",
+      "row-contact scans bbox-filter forbidden rings before exact kernel intersection"
+    ],
+    "qualityHashStable": true,
+    "stepRepeatTests": "12 passed",
+    "candidateTests": "22 passed",
+    "solverTests": "41 passed",
+    "format": "cargo fmt -- --check passed",
+    "cargoCheck": "cargo check --release passed"
+  },
+  "benchmark": {
+    "machine": "Windows, 32GB RAM tier, worker grant 15",
+    "scope": "fresh native handles, same four page requests, one warmup + three measured single-page probes",
+    "baselineNote": "wall time is noisy under concurrent desktop load; compare medians, placement hash and counts",
+    "page6": {"baselineMedianMs": 6505.857, "candidateMedianMs": 6270.858, "baselineCount": 69, "candidateCount": 69},
+    "page7": {"baselineMedianMs": 464.881, "candidateMedianMs": 392.832, "baselineCount": 71, "candidateCount": 71},
+    "page8": {"baselineMedianMs": 1290.178, "candidateMedianMs": 1306.887, "baselineCount": 58, "candidateCount": 58},
+    "page12": {"baselineSamplesMs": [7630.638, 10016.364], "candidateSamplesMs": [7033.006, 9618.96], "baselineCount": 31, "candidateCount": 31}
+  },
+  "rejectedExperiments": [
+    "bbox-overlap motif ranking: page12 reached about 10.4s and gave no placement/quality gain",
+    "stratified translation beam: no measured quality gain; runtime varied and could regress"
+  ],
+  "runtime": {
+    "installedBuildIdentity": "704b7547860daf1b2ec8e152275092f169019f573fc5e0db9dd9f1731e4d15a3",
+    "smokeTests": "145 passed, 1 existing Pydantic warning",
+    "rollout": "candidate wheel installed in backend/venv; no GUI/installer claim"
+  },
+  "benchmarkHarness": {
+    "files": ["scripts/bench_smart_nesting_ab.py", "backend/tests/test_bench_smart_nesting_ab.py"],
+    "tests": "2 passed, py_compile/help/fail-closed smoke passed",
+    "scope": "A/B native subprocesses, solve-only timer, raw output/error/hash/capabilities retained",
+    "workerGrantVerified": 15,
+    "genericCorpus": "backend/tests/fixtures/mixed_nesting/corpus.json",
+    "genericFindings": [
+      "stratified beam: same score/count on ANGLE_ONLY, CONTINUOUS_XY, CONSTRAINTS, S20; no quality gain",
+      "angle order diversity: S20 envelope worsened 121168487 -> 130800000 fixed area; rejected"
+    ]
+  },
+  "currentDecision": "Keep only offline oracle + summary-only periodic optimization; do not install interlock/motif/beam experiments without quality gain and no slowdown."
+}
