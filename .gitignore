@@ -105,6 +105,7 @@ backend/sandbox/
 backend/debug/
 backend/debug_output/
 /_to_delete/
+/_quarantine/
 backend/test_*.jpg
 proposal.html
 backend/download_sam.py
