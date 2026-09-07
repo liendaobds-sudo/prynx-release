@@ -1402,7 +1402,8 @@ if (-not $SkipNuitka) {
                 # SEC: native yeu cau claim `v` trong token (audit 2026-09-04).
                 # V1 token khong co `v` nen phai gui protocol_version=2 + challenge.
                 $probeChallengeBytes = [byte[]]::new(32)
-                [System.Security.Cryptography.RandomNumberGenerator]::Fill($probeChallengeBytes)
+                $probeRng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
+                try { $probeRng.GetBytes($probeChallengeBytes) } finally { $probeRng.Dispose() }
                 $probeChallenge = [System.BitConverter]::ToString($probeChallengeBytes).Replace('-', '').ToLowerInvariant()
                 $probeVerifyBody = @{
                     license_key      = $probeLicenseKey
