@@ -242,7 +242,7 @@ $script:PrynXReleaseProbeSecretSchema = 1
 # Machine id co dinh cua probe. Hop le vi `authorize_dieline` NHAN hwid lam tham
 # so va chi so voi claim `m`; module native khong tu tinh hardware id. Gia tri co
 # dinh nghia la probe tieu dung MOT suat activation, khong sinh them moi lan build.
-$script:PrynXReleaseProbeMachineId = "PRYNX-RELEASE-PROBE-01"
+$script:PrynXReleaseProbeMachineId = "00000000000B1D01"
 
 function Resolve-PrynXReleaseProbeStorePath {
     param([string]$StorePath = "")
