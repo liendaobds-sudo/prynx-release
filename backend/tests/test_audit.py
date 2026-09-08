@@ -17,7 +17,8 @@ async def test_large_sticker_imposer_still_bin_packs():
 
     with patch('app.workers.pdf_wrapper.open') as mock_pdf_open, \
          patch('app.database.SessionLocal') as mock_db, \
-         patch('app.workers.sticker_imposer_pkg.bin_packing.solve_auto_fill_mixed') as mock_solve_mixed:
+         patch('app.workers.sticker_imposer_pkg.bin_packing.solve_auto_fill_mixed') as mock_solve_mixed, \
+         patch('app.api.routes.imposition.capture_source_fingerprint', return_value=None):
         
         mock_page = MagicMock()
         mock_page.trimbox.width = 100.0
@@ -48,7 +49,8 @@ async def test_normal_sticker_imposer():
 
     with patch('app.workers.pdf_wrapper.open') as mock_pdf_open, \
          patch('app.database.SessionLocal') as mock_db, \
-         patch('app.workers.sticker_imposer_pkg.bin_packing.solve_auto_fill_mixed') as mock_solve_mixed:
+         patch('app.workers.sticker_imposer_pkg.bin_packing.solve_auto_fill_mixed') as mock_solve_mixed, \
+         patch('app.api.routes.imposition.capture_source_fingerprint', return_value=None):
         
         mock_page = MagicMock()
         mock_page.trimbox.width = 100.0
