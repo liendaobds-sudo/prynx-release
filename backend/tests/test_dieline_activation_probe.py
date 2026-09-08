@@ -146,13 +146,13 @@ def test_probe_dung_anon_key_cong_khai_khong_nhan_secret_service_role() -> None:
 def test_finally_don_file_tam_va_bien_moi_truong_probe() -> None:
     block = _probe_block(_build_text())
 
-    finally_at = block.index("} finally {")
+    finally_at = block.rindex("} finally {")
     tail = block[finally_at:]
     assert "Remove-Item Env:PRYNX_PROBE_*" in tail
     assert "Remove-Item -LiteralPath $probeScriptTemp -Force" in tail
     assert "$secureProbeLicense.Dispose()" in tail
     # Fail-closed: build chết ở probe không được để khoá dieline lại trong shell.
-    catch_at = block.index("} catch {")
+    catch_at = block.rindex("} catch {", 0, finally_at)
     assert "Remove-Item Env:PRYNX_DIELINE_KEY_B64" in block[catch_at:finally_at]
 
 
@@ -352,7 +352,7 @@ def test_kho_probe_la_file_rieng_va_khong_doi_schema_kho_cu() -> None:
     legacy_payload = store[legacy_payload_at:legacy_payload_end]
     assert "ProbeLicense" not in legacy_payload
     assert legacy_payload.count("=") == 4
-    assert "PRYNX-RELEASE-PROBE-01" in store
+    assert "00000000000B1D01" in store
 
 
 # ─────────────────────────────────────────────────────────────────────────────
