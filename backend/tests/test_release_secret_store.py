@@ -2156,6 +2156,12 @@ def test_direct_release_entries_reject_ambient_git_github_routing() -> None:
             "GITHUB_TOKEN",
             "GITHUB_ENTERPRISE_TOKEN",
             "XDG_CONFIG_HOME",
+            # QA pipeline set CARGO/RUSTC — phải xóa để build không reject
+            # Rust override trước khi tới Git/GitHub check.
+            "CARGO",
+            "CARGO_HOME",
+            "RUSTC",
+            "RUSTDOC",
         }:
             clean_env.pop(name, None)
 
