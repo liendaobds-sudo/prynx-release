@@ -1573,6 +1573,12 @@ if (-not $SkipNuitka) {
         New-Item -ItemType Directory -Path $SIDECAR_DIR -ErrorAction Stop | Out-Null
     }
     $null = Assert-NoReparsePointInPathComponents -Path $SIDECAR_DIR
+    # Tauri build.rs kiem tra resource paths ton tai khi `cargo test`. Tao
+    # placeholder de QA pass — file se bi ghi de boi manifest that sau do.
+    $placeholderManifest = Join-Path $SIDECAR_DIR "payload-manifest.json"
+    if (-not (Test-Path -LiteralPath $placeholderManifest)) {
+        [System.IO.File]::WriteAllText($placeholderManifest, "{}", [System.Text.Encoding]::UTF8)
+    }
     Push-Location "$ROOT\backend"
 
     # --- Locate pdfium.dll for pdfcompare_native (Rust PyO3 module) ---
