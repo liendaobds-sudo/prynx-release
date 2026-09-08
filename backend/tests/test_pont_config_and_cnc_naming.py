@@ -93,6 +93,13 @@ def test_empty_config_and_invalid_pont_type_are_rejected():
         validate_pont_config({})
     with pytest.raises(ValueError, match="pontType"):
         normalize_pont_settings({"pontType": 1, "pontConfig": dict(PONT_CONFIG)})
+    with pytest.raises(ValueError, match="pontType"):
+        normalize_pont_settings({"pontType": "unknown", "pontConfig": dict(PONT_CONFIG)})
+
+
+def test_pont_type_is_normalized_case_insensitively():
+    normalized = normalize_pont_settings({"pontType": " CUSTOM ", "pontConfig": dict(PONT_CONFIG)})
+    assert normalized["pontType"] == "custom"
 
 
 @pytest.mark.parametrize(
@@ -220,3 +227,40 @@ def test_cnc_keeps_pont_layers_items_and_front_cut_contract(
                 assert all(path.get("fill") is None for path in pont_paths)
     finally:
         rendered.close()
+
+
+def test_cnc_guides_carry_item_name_metadata(tmp_path):
+    source = tmp_path / "cnc-guide-source.pdf"
+    output = tmp_path / "cnc-guide-output.pdf"
+    _make_plain_pdf(source, 1)
+    config = {
+        **PONT_CONFIG,
+        "guide1Enabled": True,
+        "guide1Pos": "BL",
+        "guide1Length": 20.0,
+        "guide1Thickness": 0.5,
+        "guide1OffX": 0.0,
+        "guide1OffY": 0.0,
+    }
+    run_cnc_two_sided(
+        str(source),
+        str(output),
+        {
+            "cncTwoSided": False,
+            "sheetWidth": 180,
+            "sheetHeight": 240,
+            "layoutType": "repeat",
+            "gridStrategy": "manual",
+            "marginTop": 10,
+            "marginBottom": 10,
+            "marginLeft": 10,
+            "marginRight": 10,
+            "targetQuantity": 1,
+            "pontType": "custom",
+            "pontConfig": config,
+        },
+        job_id="cnc-guide-item",
+    )
+    with pikepdf.open(output) as pdf:
+        assert _named_items(pdf.pages[0]) == ["AUDIT_ITEM"] * 5
+        assert _named_items(pdf.pages[1]) == ["AUDIT_ITEM"] * 5

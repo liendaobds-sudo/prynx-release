@@ -996,7 +996,7 @@ async def test_resize_route_forwards_page_size_mode(tmp_path, monkeypatch):
         response.headers["access-control-expose-headers"]
         == "X-PrynX-Resize-Timing"
     )
-    assert captured == [{"target_dpi": 0, "mode": "auto", "bg_fill_mode": "image", "bg_fill_color": "#ffffff", "page_size_mode": "fixed_width", "resize_by_content": True}]
+    assert captured == [{"target_dpi": 0, "mode": "auto", "bg_fill_mode": "image", "bg_fill_color": "#ffffff", "page_size_mode": "fixed_width", "resize_by_content": True, "quality_report": {}}]
 
 
 async def test_resize_route_rejects_locked_axis_with_fill_or_stretch():

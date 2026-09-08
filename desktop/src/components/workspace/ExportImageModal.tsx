@@ -40,6 +40,11 @@ interface Props {
     /** EXPORT (audit 2026-07-30 §IMG-07 lô 3): kích thước trang gốc (pt) để ước lượng output. */
     pageWidthPt?: number;
     pageHeightPt?: number;
+    /** Kích thước chính xác theo page box nếu caller đã đọc được; thiếu thì dùng khổ active và ghi chú. */
+    pageBoxDimensions?: {
+        media?: { widthPt: number; heightPt: number };
+        trim?: { widthPt: number; heightPt: number };
+    };
 }
 
 type RangeMode = 'all' | 'current' | 'custom';
@@ -65,7 +70,7 @@ function isAbortError(error: unknown): boolean {
         && (error as { name?: unknown }).name === 'AbortError';
 }
 
-export default function ExportImageModal({ open, onClose, initialTab = 'export', fileId, filePath, numPages, currentPage, baseName, getWorkingFile, pageWidthPt, pageHeightPt }: Props) {
+export default function ExportImageModal({ open, onClose, initialTab = 'export', fileId, filePath, numPages, currentPage, baseName, getWorkingFile, pageWidthPt, pageHeightPt, pageBoxDimensions }: Props) {
   const { t } = useTranslation();
     const [format, setFormat] = useState<Fmt>('png');
     const formatRef = useRef(format);
@@ -110,6 +115,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
     // EXPORT (audit 2026-07-30 §IMG-06): progress + cancel
     const [progressText, setProgressText] = useState('');
     const abortRef = useRef<AbortController | null>(null);
+    const [isCancelling, setIsCancelling] = useState(false);
 
     useEffect(() => {
         if (!open) return;
@@ -125,7 +131,8 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
     useEffect(() => {
         if (!open && abortRef.current) {
             abortRef.current.abort();
-            abortRef.current = null;
+            // Giữ controller tới khi promise kết thúc để lượt mới không chạy chồng worker.
+            setIsCancelling(true);
         }
     }, [open]);
 
@@ -139,7 +146,18 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
 
     // EXPORT (audit 2026-07-30 §IMG-07 lô 3): ước lượng kích thước pixel + dung lượng
     const outputEstimate = useMemo(() => {
-        if (!pageWidthPt || !pageHeightPt || pageCount === 0) return null;
+        if (pageCount === 0) return null;
+        const selectedBox = includeBleed ? pageBoxDimensions?.media : pageBoxDimensions?.trim;
+        const hasSelectedBox = Boolean(
+            selectedBox
+            && Number.isFinite(selectedBox.widthPt) && selectedBox.widthPt > 0
+            && Number.isFinite(selectedBox.heightPt) && selectedBox.heightPt > 0,
+        );
+        const estimateWidthPt = hasSelectedBox ? selectedBox!.widthPt : pageWidthPt;
+        const estimateHeightPt = hasSelectedBox ? selectedBox!.heightPt : pageHeightPt;
+        if (!estimateWidthPt || !estimateHeightPt
+            || !Number.isFinite(estimateWidthPt) || !Number.isFinite(estimateHeightPt)
+            || estimateWidthPt <= 0 || estimateHeightPt <= 0) return null;
         let jobs: ExportPlanJob[];
         try {
             jobs = buildExportJobs({
@@ -151,8 +169,8 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
         const channels = colorMode === 'gray' ? 1 : colorMode === 'cmyk' ? 4 : 3;
         let totalBytes = 0;
         const dimensions = jobs.map(job => {
-            const pw = Math.round(pageWidthPt * job.dpi / 72);
-            const ph = Math.round(pageHeightPt * job.dpi / 72);
+            const pw = Math.round(estimateWidthPt * job.dpi / 72);
+            const ph = Math.round(estimateHeightPt * job.dpi / 72);
             let ratio: number;
             if (job.format === 'jpeg' || job.format === 'webp') ratio = jpegQuality / 300;
             else if (job.format === 'tiff') ratio = 0.65;
@@ -165,18 +183,22 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
             : totalBytes < 1024 * 1024 * 1024
                 ? `${(totalBytes / (1024 * 1024)).toFixed(1)} MB`
                 : `${(totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-        return { dimensions: dimensions.join(' + '), sizeStr };
-    }, [pageWidthPt, pageHeightPt, dpi, colorMode, format, jpegQuality, pageCount, multiScaleEnabled, scaleRows, subFolderMode]);
+        return {
+            dimensions: dimensions.join(' + '),
+            sizeStr,
+            usesActiveBox: !hasSelectedBox,
+        };
+    }, [pageWidthPt, pageHeightPt, pageBoxDimensions, includeBleed, dpi, colorMode, format, jpegQuality, pageCount, multiScaleEnabled, scaleRows, subFolderMode]);
 
     // EXPORT (audit 2026-07-30 §IMG-06): hủy job đang chạy
     // Hooks phải gọi TRƯỚC mọi early return (rules of hooks).
     const handleCancel = useCallback(() => {
-        if (abortRef.current) {
-            abortRef.current.abort();
-            abortRef.current = null;
-        }
-        setBusy(false);
-        setProgressText('');
+        const controller = abortRef.current;
+        if (!controller || controller.signal.aborted) return;
+        // EXPORT (audit 2026-09-08 §EXIMG-06): chỉ đánh dấu hủy; busy giữ đến finally
+        // để promise cũ settle trước khi cho phép lượt export mới.
+        setIsCancelling(true);
+        controller.abort();
     }, []);
 
     // EXPORT (audit 2026-07-30 §IMG-06): chặn click nền khi busy
@@ -202,7 +224,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
             toast.info(t('misc.exportImage:dai_trang_khong_hop_le_vi_du_1_3_5')); return;
         }
         // EXPORT (audit 2026-07-30 §IMG-06): chặn job trùng
-        if (abortRef.current) return;
+        if (abortRef.current || busy || isCancelling) return;
         let exportJobs: ExportPlanJob[];
         try {
             exportJobs = buildExportJobs({
@@ -215,6 +237,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
 
 
         setBusy(true);
+        setIsCancelling(false);
         setProgressText(t('misc.exportImage:dang_chuan_bi'));
         const controller = new AbortController();
         abortRef.current = controller;
@@ -254,6 +277,9 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                     baseName: prefix + job.suffix,
                 })),
             });
+            if (controller.signal.aborted) {
+                throw new DOMException('Xuất ảnh đã bị hủy.', 'AbortError');
+            }
             const totalExported = res.count;
 
             toast.success(t('misc.exportImage:da_xuat_file_anh_vao', { count: totalExported, dir: outputDir }));
@@ -275,6 +301,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
         } finally {
             if (abortRef.current === controller) abortRef.current = null;
             setBusy(false);
+            setIsCancelling(false);
             setProgressText('');
         }
     };
@@ -454,6 +481,12 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                                 CMYK dùng PPE ink-space (FOGRA39). PNG/WebP không hỗ trợ — chỉ TIFF/JPEG.
                             </p>
                         )}
+                        <p className="mt-1 text-[11px] text-slate-400 dark:text-zinc-500">
+                            {t('misc.exportImage:alpha_flatten_white_note')}
+                        </p>
+                        <p className="text-[11px] text-slate-400 dark:text-zinc-500">
+                            {t('misc.exportImage:annotation_policy_note')}
+                        </p>
                     </div>
 
                     {/* Dải trang */}
@@ -504,9 +537,18 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                                 : format === 'tiff' && multipageTiff ? t('misc.exportImage:1_file_tiff_n_trang', { n: pageCount }) : t('misc.exportImage:n_file_anh', { n: pageCount })}
                         </span>
                         {!busy && outputEstimate && (
-                            <span className="text-[11px] text-slate-400 dark:text-zinc-500 tabular-nums">
-                                {outputEstimate.dimensions} px · ~{outputEstimate.sizeStr}
-                            </span>
+                            <>
+                                <span className="text-[11px] text-slate-400 dark:text-zinc-500 tabular-nums">
+                                    {outputEstimate.dimensions} px · ~{outputEstimate.sizeStr}
+                                </span>
+                                {outputEstimate.usesActiveBox && (
+                                    <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                                        {t('misc.exportImage:estimate_theo_kho_active', {
+                                            defaultValue: 'Ước lượng theo khổ trang đang xem; chưa có kích thước MediaBox/TrimBox riêng.',
+                                        })}
+                                    </span>
+                                )}
+                            </>
                         )}
                     </div>
                     <div className="flex gap-2">

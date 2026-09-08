@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,8 +12,20 @@ import { DEFAULT_RESIZE_SETTINGS } from '../imposition-tools/store/slices/prepro
 const api = vi.hoisted(() => ({
     inspectResizeTransparency: vi.fn(),
 }));
+const imageReader = vi.hoisted(() => ({ getFileArrayBuffer: vi.fn() }));
 
 vi.mock('../../lib/api', () => api);
+vi.mock('../../lib/utils', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../../lib/utils')>(),
+    getFileArrayBuffer: imageReader.getFileArrayBuffer,
+}));
+
+function jpegDpi(x: number, y: number): ArrayBuffer {
+    return new Uint8Array([
+        0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 1,
+        x >>> 8, x & 0xff, y >>> 8, y & 0xff, 0, 0, 0xff, 0xd9,
+    ]).buffer;
+}
 
 
 const baseSettings = {
@@ -53,6 +67,113 @@ describe('PageResizerTool background-fill visibility', () => {
             targetW: 215.9,
             targetH: 279.4,
         });
+    });
+
+    it('shows the real output pixel budget and quality warning for 600 DPI', () => {
+        render(React.createElement(PageResizerTool, {
+            settings: {
+                ...baseSettings,
+                targetW: 50,
+                targetH: 50,
+                targetDpi: 600,
+                resizeMode: 'vector',
+            },
+            onChange: vi.fn(),
+        }));
+
+        expect(screen.getByText((content) => content.includes('1181') && content.includes('600 DPI'))).toBeTruthy();
+        expect(screen.getByText((content) => content.includes('Giảm mẫu sẽ bỏ bớt pixel nguồn'))).toBeTruthy();
+    });
+
+    it.each(['fixed', 'fixed_width', 'fixed_height'] as const)(
+        'hiển thị DPI EXIF của ảnh nguồn thay cho ước lượng ở %s',
+        async (pageSizeMode) => {
+            const bytes = await readFile(resolve(process.cwd(), '..', 'test', 'Tem thuc pham sach Duc An.jpg'));
+            imageReader.getFileArrayBuffer.mockResolvedValue(Uint8Array.from(bytes).buffer);
+            const imageFile = new File([], 'Tem thuc pham sach Duc An.jpg', { type: 'image/jpeg' });
+            Object.defineProperty(imageFile, 'path', { value: 'D:\\jobs\\Tem thuc pham sach Duc An.jpg' });
+            const settings = { ...baseSettings, targetW: 50, targetH: 50, targetDpi: 600, pageSizeMode };
+            const { rerender } = render(React.createElement(PageResizerTool, {
+                settings,
+                sourceImageFile: imageFile,
+                onChange: vi.fn(),
+            }));
+
+            expect(await screen.findByText('Độ phân giải hiện tại: 288 DPI.')).toBeTruthy();
+            expect(screen.queryByText(/Khi giảm mẫu:|Trục .*khi giảm mẫu:/)).toBeNull();
+            expect(imageReader.getFileArrayBuffer).toHaveBeenCalledWith(imageFile);
+
+            // Khổ/DPI đích không phải độ phân giải của ảnh đang mở.
+            rerender(React.createElement(PageResizerTool, {
+                settings: { ...settings, targetW: 20, targetH: 20, targetDpi: 0 },
+                sourceImageFile: imageFile,
+                onChange: vi.fn(),
+            }));
+            expect(screen.getByText('Độ phân giải hiện tại: 288 DPI.')).toBeTruthy();
+            expect(imageReader.getFileArrayBuffer).toHaveBeenCalledTimes(1);
+        },
+    );
+
+    it('giữ hai trục DPI khi metadata X/Y khác nhau', async () => {
+        imageReader.getFileArrayBuffer.mockResolvedValue(jpegDpi(300, 150));
+        render(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            sourceImageFile: new File([], 'anisotropic.jpg'),
+            onChange: vi.fn(),
+        }));
+
+        expect(await screen.findByText('Độ phân giải hiện tại: 300 × 150 DPI.')).toBeTruthy();
+    });
+
+    it('không giả định 72 hoặc DPI đích khi ảnh thiếu metadata', async () => {
+        imageReader.getFileArrayBuffer.mockResolvedValue(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]).buffer);
+        render(React.createElement(PageResizerTool, {
+            settings: { ...baseSettings, targetDpi: 600 },
+            sourceImageFile: new File([], 'unknown.jpg'),
+            onChange: vi.fn(),
+        }));
+
+        expect(await screen.findByText('Độ phân giải hiện tại: không xác định (ảnh không có metadata DPI).')).toBeTruthy();
+        expect(screen.queryByText(/Độ phân giải hiện tại: (72|600) DPI/)).toBeNull();
+    });
+
+    it('báo không đọc được metadata nếu đọc ảnh nguồn thất bại', async () => {
+        imageReader.getFileArrayBuffer.mockRejectedValue(new Error('Không đọc được file'));
+        render(React.createElement(PageResizerTool, {
+            settings: baseSettings,
+            sourceImageFile: new File([], 'unreadable.jpg'),
+            onChange: vi.fn(),
+        }));
+
+        expect(await screen.findByText('Độ phân giải hiện tại: không đọc được metadata ảnh.')).toBeTruthy();
+        expect(screen.queryByText(/Khi giảm mẫu:|Trục .*khi giảm mẫu:/)).toBeNull();
+    });
+
+    it('không rò DPI cũ khi đổi ảnh hoặc chuyển sang PDF', async () => {
+        let resolveOld!: (bytes: ArrayBuffer) => void;
+        imageReader.getFileArrayBuffer
+            .mockImplementationOnce(() => new Promise<ArrayBuffer>(resolvePromise => { resolveOld = resolvePromise; }))
+            .mockResolvedValueOnce(jpegDpi(300, 300));
+        const firstFile = new File([], 'image.jpg');
+        const secondFile = new File([], 'image.jpg');
+        const settings = { ...baseSettings, targetW: 50, targetH: 50, targetDpi: 300 };
+        const { rerender } = render(React.createElement(PageResizerTool, {
+            settings, sourceImageFile: firstFile, onChange: vi.fn(),
+        }));
+        expect(screen.getByText('Độ phân giải hiện tại: đang đọc…')).toBeTruthy();
+
+        rerender(React.createElement(PageResizerTool, {
+            settings, sourceImageFile: secondFile, onChange: vi.fn(),
+        }));
+        expect(await screen.findByText('Độ phân giải hiện tại: 300 DPI.')).toBeTruthy();
+        await act(async () => { resolveOld(jpegDpi(288, 288)); });
+        expect(screen.getByText('Độ phân giải hiện tại: 300 DPI.')).toBeTruthy();
+
+        rerender(React.createElement(PageResizerTool, {
+            settings, sourceImageFile: null, onChange: vi.fn(),
+        }));
+        expect(screen.queryByText(/Độ phân giải hiện tại:/)).toBeNull();
+        expect(screen.getByText(/591 × 591 px.*300 DPI/)).toBeTruthy();
     });
 
     it.each([true, false, undefined])(

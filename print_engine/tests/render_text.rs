@@ -5,6 +5,7 @@
 //! là nơi dễ sai nhất.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 use print_engine::color::space::OutputPreviewFilter;
@@ -105,6 +106,48 @@ fn build_with_truetype(content: &str, ttf: Vec<u8>, widths: bool) -> Document {
     doc
 }
 
+/// Dựng Type0 tối giản không có font con để kiểm tra đường fail-closed của CMap.
+/// Khi truyền fallback, bản cũ sẽ rơi về identity và có thể vẽ nhầm GID; bản mới
+/// phải chặn glyph nếu `/Encoding` không được PPE hỗ trợ.
+fn build_type0(content: Vec<u8>, encoding: &str) -> Document {
+    let mut doc = Document::with_version("1.7");
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type0",
+        "BaseFont" => "FallbackProbe",
+        "Encoding" => encoding,
+    });
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => Object::Reference(font_id) },
+    });
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content));
+    let pages_object_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_object_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), PAGE.into(), PAGE.into()],
+    });
+    doc.set_object(
+        pages_object_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(pages_object_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    doc
+}
+
+fn type0_probe_content(gid: u16) -> Vec<u8> {
+    let mut content = b"BT /F1 48 Tf 0 0 0 1 k 10 40 Td (".to_vec();
+    content.extend_from_slice(&[(gid >> 8) as u8, gid as u8]);
+    content.extend_from_slice(b") Tj ET");
+    content
+}
+
 fn render(doc: &Document) -> PageRender {
     render_page(doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
         .expect("render phải thành công")
@@ -112,6 +155,57 @@ fn render(doc: &Document) -> PageRender {
 
 fn render_with_options(doc: &Document, options: RenderOptions) -> PageRender {
     render_page(doc, 1, 72.0, PageBox::Crop, options).expect("render phải thành công")
+}
+
+#[test]
+fn unsupported_named_type0_cmap_is_not_drawn_even_with_fallback_font() {
+    let fallback = font_or_skip!();
+    let face = ttf_parser::Face::parse(&fallback, 0).expect("font fallback phải parse được");
+    let gid = face
+        .glyph_index('H')
+        .expect("font fallback phải có glyph H")
+        .0;
+    assert!(gid <= u8::MAX as u16, "probe cần mã 2 byte có CID thấp");
+    let doc = build_type0(type0_probe_content(gid), "UniJIS-UCS2-H");
+    let result = render_with_options(
+        &doc,
+        RenderOptions::ink_accurate().with_fallback_font(Arc::new(fallback)),
+    );
+
+    assert_eq!(
+        inked_pixels(&result, 3),
+        0,
+        "CMap chưa hỗ trợ không được vẽ nhầm"
+    );
+    assert!(result.warnings.ink_unsound());
+    assert!(result.warnings.dropped_objects > 0);
+    assert!(result
+        .warnings
+        .skipped_ops
+        .iter()
+        .any(|(reason, _)| reason.contains("CMap Type0 chưa hỗ trợ")));
+}
+
+#[test]
+fn identity_h_type0_cmap_still_draws_with_fallback_font() {
+    let fallback = font_or_skip!();
+    let face = ttf_parser::Face::parse(&fallback, 0).expect("font fallback phải parse được");
+    let gid = face
+        .glyph_index('H')
+        .expect("font fallback phải có glyph H")
+        .0;
+    assert!(gid <= u8::MAX as u16, "probe cần mã 2 byte có CID thấp");
+    let doc = build_type0(type0_probe_content(gid), "Identity-H");
+    let result = render_with_options(
+        &doc,
+        RenderOptions::ink_accurate().with_fallback_font(Arc::new(fallback)),
+    );
+
+    assert!(
+        inked_pixels(&result, 3) > 50,
+        "Identity-H phải giữ hành vi cũ"
+    );
+    assert_eq!(result.warnings.dropped_objects, 0, "{:?}", result.warnings);
 }
 
 fn inked_pixels(r: &PageRender, channel: usize) -> usize {

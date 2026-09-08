@@ -12,7 +12,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
+import { buildSavePlan, sanitizeFilename, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
 import { fetchLocalFileBuffer } from '../../lib/localFileTransport';
 import { useTranslation } from 'react-i18next';
 
@@ -48,10 +48,18 @@ async function readResultBytes(path: string | undefined, blob: Blob | null): Pro
     const isTauriEnv = typeof window !== 'undefined'
         && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     if (isTauriEnv && path) {
+        // FILEIO (audit 2026-09-08 §PONTLAYER.RE): path native là nguồn chân lý;
+        // không fallback sang Blob sentinel 11 byte khi file tạm đã hết hạn.
         try {
             return new Uint8Array(await fetchLocalFileBuffer(path));
-        } catch (e) {
-            if (!blob || blob.size === 0) throw e;
+        } catch (error) {
+            if (!blob || blob.size === 0) throw error;
+            const probe = typeof blob.slice === 'function' ? blob.slice(0, 5) : blob;
+            const header = new TextDecoder().decode(new Uint8Array(await probe.arrayBuffer()));
+            if (!header.startsWith('%PDF-')) throw error;
+            // Blob chứa PDF thật là fallback hợp lệ cho webview vừa mất path;
+            // sentinel `native-path` bị từ chối trước khi tới pdf-lib.
+            return new Uint8Array(await blob.arrayBuffer());
         }
     }
     if (!blob) throw new Error('missing result bytes');
@@ -148,7 +156,12 @@ export default function OpenInDesignModal({
                 const doc = await PDFDocument.load(await readResultBytes(resultFilePath, resultBlob));
                 const pageCount = doc.getPageCount();
                 const per = pagesPerUnit(cncMode, cncTwoSided, separateCut);
-                const count = Math.max(1, Math.floor(pageCount / per));
+                // Sticker homogeneous/single-mold có [in_0..in_N, CUT_chung] nên
+                // tổng trang lẻ; trang CUT thật nằm cuối, không theo cặp xen kẽ.
+                const sharedMasterCut = !cncMode && separateCut && pageCount % 2 === 1;
+                const count = sharedMasterCut
+                    ? Math.max(1, pageCount - 1)
+                    : Math.max(1, Math.floor(pageCount / per));
                 const types: SaveTypeInfo[] = Array.from({ length: count }, (_, i) => ({
                     label: `Trang ${i + 1}`, sheetCount: 0,
                 }));
@@ -156,10 +169,14 @@ export default function OpenInDesignModal({
                     nameMode: 'number', folderMode: 'flat', separateCut,
                     includeOrderCode: false, includeDate: false, originalName, cncMode, cncTwoSided,
                 };
-                const plan = buildSavePlan(types, cfg);
-                const pages: CutPage[] = plan
-                    .filter(it => it.kind === 'cut' && it.pageIndex < pageCount)
-                    .map((it, i) => ({ sheetNum: i + 1, pageIndex: it.pageIndex }));
+                const plan = buildSavePlan(types, { ...cfg, sharedMasterCut });
+                const pages: CutPage[] = sharedMasterCut
+                    ? [{ sheetNum: 1, pageIndex: pageCount - 1 }]
+                    : !cncMode && !separateCut
+                        ? Array.from({ length: count }, (_, i) => ({ sheetNum: i + 1, pageIndex: i }))
+                        : plan
+                            .filter(it => it.kind === 'cut' && it.pageIndex < pageCount)
+                            .map((it, i) => ({ sheetNum: i + 1, pageIndex: it.pageIndex }));
                 if (!active) return;
                 setCutPages(pages);
                 // Chọn sẵn tờ chứa trang đang xem (viewer 1-indexed → pageIndex 0-indexed).
@@ -290,7 +307,12 @@ export default function OpenInDesignModal({
         }
         const bytes = await out.save();
 
-        const base = (originalName || 'khuon').replace(/\.pdf$/i, '');
+        // FILEIO (audit 2026-09-08 §WIN32-7B): tên nguồn có thể đến từ metadata/
+        // File object chứ không phải basename Win32 sạch. Không để `:`, `\\`, `/`,
+        // `*`... lọt vào tên tạm; SetFileInformationByHandle trả 0x8007007b.
+        const base = sanitizeFilename(
+            (originalName || 'khuon').replace(/\.pdf$/i, ''),
+        ) || 'khuon';
         const selSheets = cutPages.filter(p => selected.has(p.pageIndex)).map(p => p.sheetNum);
         const suffix = selSheets.length === cutPages.length
             ? 'tatca'

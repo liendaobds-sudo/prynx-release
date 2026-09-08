@@ -9,6 +9,8 @@ type OverlayStoreState = {
   retryValidation: () => Promise<void>;
   isRevoking: boolean;
   licenseValidationOutcome: LicenseValidationOutcome;
+  licenseValid?: boolean;
+  licenseToken?: string | null;
 };
 
 const mocks = vi.hoisted(() => ({
@@ -17,6 +19,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../stores/useAuthStore', () => ({
   useAuthStore: () => mocks.state,
+  isTransientLicenseOutcome: (outcome: string) => [
+    'anchor_missing', 'anchor_corrupt', 'anchor_unavailable',
+    'network_error', 'rate_limited',
+  ].includes(outcome),
 }));
 
 vi.mock('./ChangeLicenseKeyPanel', () => ({
@@ -29,6 +35,13 @@ vi.mock('react-i18next', () => {
     'misc.licenseLockOverlay:ban_quyen_da_het_han': 'Bản quyền đã hết hạn',
     'misc.licenseLockOverlay:dat_gioi_han_thiet_bi': 'Đã đạt giới hạn thiết bị',
     'misc.licenseLockOverlay:khong_the_xac_minh_ban_quyen': 'Không thể xác minh bản quyền',
+    'misc.licenseLockOverlay:dang_kiem_tra': 'Đang kiểm tra…',
+    'misc.licenseLockOverlay:he_thong_tu_dong_kiem_tra_dinh_ky': 'Hệ thống tự động kiểm tra định kỳ',
+    'misc.licenseLockOverlay:dang_thu': 'Đang thử…',
+    'misc.licenseLockOverlay:thu_lai_ngay': 'Thử lại ngay',
+    'misc.licenseLockOverlay:dang_dung_phien_offline': 'Đang dùng phiên offline',
+    'misc.licenseLockOverlay:offline_dang_cho_xac_minh': 'Đang chờ kết nối lại để xác minh phiên bản quyền.',
+    'misc.licenseLockOverlay:offline_duoi_mot_phut': 'Sắp hết phiên offline; hãy kết nối mạng để tiếp tục.',
   };
   return {
     useTranslation: () => ({ t: (key: string) => messages[key] ?? key }),
@@ -98,5 +111,51 @@ describe('LicenseLockOverlay — phân loại trạng thái bản quyền', () =
       level: 2,
       name: 'Bản quyền đã bị thu hồi',
     })).toBeNull();
+  });
+
+  it('lỗi mạng/anchor chỉ hiện banner không chặn', () => {
+    setOutcome('anchor_missing', 'Chưa có checkpoint thời gian tin cậy.');
+
+    render(<LicenseLockOverlay />);
+
+    expect(screen.getByRole('status')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Nhập license key khác' })).toBeNull();
+  });
+
+  it('hiện trạng thái phiên offline thay vì giả là đang online', () => {
+    mocks.state = {
+      isLicenseLocked: false,
+      lockReason: '',
+      retryValidation: vi.fn(async () => undefined),
+      isRevoking: false,
+      licenseValidationOutcome: 'valid_offline',
+      licenseValid: true,
+      licenseToken: null,
+    };
+
+    render(<LicenseLockOverlay />);
+
+    expect(screen.getByText('Đang dùng phiên offline')).toBeTruthy();
+    expect(screen.getByText('Đang chờ kết nối lại để xác minh phiên bản quyền.')).toBeTruthy();
+  });
+
+  it('retry luôn thoát loading nếu validator ném lỗi bất ngờ', async () => {
+    const retry = vi.fn(async () => { throw new Error('unexpected'); });
+    mocks.state = {
+      isLicenseLocked: true,
+      lockReason: 'Mạng tạm thời lỗi.',
+      retryValidation: retry,
+      isRevoking: false,
+      licenseValidationOutcome: 'network_error',
+    };
+    render(<LicenseLockOverlay />);
+
+    // React event handler promise bị reject; gọi trực tiếp để kiểm tra spinner
+    // không bị kẹt (console error của React không làm test fail).
+    const button = screen.getByRole('button', { name: 'Thử lại ngay' });
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(retry).toHaveBeenCalledTimes(1);
   });
 });

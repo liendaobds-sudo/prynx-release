@@ -40,6 +40,22 @@ describe('buildSavePlan', () => {
         expect(plan[1].folder).toContain('Bế');
     });
 
+    it('tách CUT chung ở cuối file homogeneous', () => {
+        const plan = buildSavePlan(
+            [
+                { label: 'Mẫu 1', sheetCount: 1 },
+                { label: 'Mẫu 2', sheetCount: 1 },
+                { label: 'Mẫu 3', sheetCount: 1 },
+                { label: 'Mẫu 4', sheetCount: 1 },
+            ],
+            { ...base, separateCut: true, sharedMasterCut: true },
+        );
+        expect(plan).toHaveLength(5);
+        expect(plan.slice(0, 4).map(item => item.pageIndex)).toEqual([0, 1, 2, 3]);
+        expect(plan[4]).toMatchObject({ kind: 'cut', pageIndex: 4 });
+        expect(plan[4].filename).toContain('Khuon chung');
+    });
+
     it('number mode = sequential', () => {
         const plan = buildSavePlan([{ label: 'X', sheetCount: 1 }], { ...base, nameMode: 'number' });
         expect(plan[0].filename).toBe('1.pdf');

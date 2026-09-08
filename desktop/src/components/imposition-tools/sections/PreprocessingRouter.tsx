@@ -194,6 +194,7 @@ export default function PreprocessingRouter({
                         settings={s.resizeSettings}
                         onChange={s.setResizeSettings}
                         pdfFile={pdfFile}
+                        sourceImageFile={sourceImageFile}
                         getWorkingFile={getWorkingFile}
                         viewerPageOrder={viewerPageOrder}
                         viewerPageRotations={viewerPageRotations}

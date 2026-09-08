@@ -46,6 +46,21 @@ def _insert_jpeg_app2_after_soi(path: Path) -> None:
     path.write_bytes(original[:2] + app2 + original[2:])
 
 
+def _make_jpeg_exif_only(path: Path, dpi: int = 288) -> None:
+    """JPEG có EXIF DPI nhưng bỏ APP0/JFIF, giống fixture người dùng."""
+    from PIL.TiffImagePlugin import IFDRational
+
+    exif = Image.Exif()
+    exif[282] = IFDRational(dpi, 1)  # XResolution
+    exif[283] = IFDRational(dpi, 1)  # YResolution
+    exif[296] = 2        # inch
+    Image.new("RGB", (2, 2), (240, 230, 220)).save(path, format="JPEG", exif=exif)
+    raw = path.read_bytes()
+    assert raw[2:4] == b"\xff\xe0"
+    segment_length = int.from_bytes(raw[4:6], "big")
+    path.write_bytes(raw[:2] + raw[2 + 2 + segment_length:])
+
+
 def _make_png_16bit(path: Path) -> None:
     Image.new("I;16", (2, 1), 32768).save(path, format="PNG")
 
@@ -363,6 +378,20 @@ def test_merge_manifest_reads_jfif_dpi_after_app2_and_preserves_dct(tmp_path: Pa
             if not isinstance(filters, pikepdf.Array)
             else [str(value) for value in filters]
         )
+
+
+def test_merge_manifest_reads_exif_dpi_when_jfif_is_missing(tmp_path: Path):
+    source = tmp_path / "source-exif-only.jpg"
+    output = tmp_path / "output-exif-only.pdf"
+    _make_jpeg_exif_only(source, dpi=288)
+
+    assert manifest_engine._read_jpeg_jfif_dpi(str(source)) == pytest.approx((288.0, 288.0))
+    merge_manifest([str(source)], [{"file_index": 0}], str(output))
+
+    with pikepdf.Pdf.open(output) as pdf:
+        page = pdf.pages[0]
+        assert float(page.mediabox[2]) == pytest.approx((2 / 288) * 72, abs=0.01)
+        assert float(page.mediabox[3]) == pytest.approx((2 / 288) * 72, abs=0.01)
 
 
 @pytest.mark.parametrize(

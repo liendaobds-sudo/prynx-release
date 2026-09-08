@@ -1386,6 +1386,12 @@ fn anti_alias_mode_softens_edges_while_ink_mode_does_not() {
     let has_partial = |r: &PageRender| r.buffer.plane(3).iter().any(|v| *v > 0.001 && *v < 0.999);
     assert!(has_partial(&aa), "chế độ xem trước phải có AA");
     assert!(!has_partial(&ink), "chế độ đo mực phải nhị phân");
+
+    let export = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::cmyk_export()).unwrap();
+    assert!(
+        has_partial(&export),
+        "ảnh CMYK xuất phải giữ anti-alias ở biên"
+    );
 }
 
 const STATE_DEPTH_OVERFLOW_REASON: &str = "q (vượt trần graphics-state)";

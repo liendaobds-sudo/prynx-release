@@ -7,13 +7,18 @@ CHỈ ĐỌC file nguồn (render), KHÔNG ghi đè/sửa file gốc (đúng inv
 import os
 import asyncio
 import logging
+import math
 import re
 import tempfile
 import threading
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
+from app.core.heavy_job_scheduler import (
+    HeavyJobQueueCancelled,
+    HeavyJobMemoryUnavailable,
+    run_scheduled_in_threadpool,
+)
 
 from app.core.license_guard import require_license
 from app.schemas.export import ExportImagesResponse
@@ -45,6 +50,105 @@ _WINDOWS_RESERVED_NAMES = {
 }
 _OUTPUT_RESERVATION_LOCK = threading.Lock()
 _RESERVED_OUTPUT_PATHS: set[str] = set()
+
+
+def _read_page_user_units(src_path: str, page_count: int) -> list[float]:
+    """Đọc `/UserUnit` theo từng trang; PDFium không tự áp hệ số này."""
+    import pikepdf
+
+    units: list[float] = []
+    with pikepdf.open(src_path) as pdf:
+        for index, page in enumerate(pdf.pages):
+            try:
+                value = float(page.get("/UserUnit", 1) or 1)
+            except (TypeError, ValueError, OverflowError):
+                value = 1.0
+            if not math.isfinite(value) or value <= 0 or value > 75000:
+                raise ValueError(f"Trang {index + 1}: /UserUnit không hợp lệ.")
+            units.append(value)
+    if len(units) != page_count:
+        raise ValueError("Bảng /UserUnit không khớp số trang PDF.")
+    return units
+
+
+def _export_memory_budget_mb() -> float | None:
+    """Dùng cùng ngân sách PPE/RAM tier cho bitmap PDFium của export."""
+    from app.core.print_engine.facade import _memory_budget_mb
+
+    return float(_memory_budget_mb())
+
+
+def _estimate_export_peak_mb(
+    src_path: str,
+    dpi: int,
+    color_mode: str,
+    pages: Optional[List[int]],
+    include_bleed: bool,
+) -> float:
+    """Ước lượng peak của một trang trước khi chiếm heavy slot.
+
+    Export ghi từng trang nên peak không nhân số trang. CMYK PPE giữ bốn mặt
+    phẳng float và buffer chuyển đổi, RGB/Gray giữ bitmap PDFium + Pillow.
+    Đây là reservation bảo thủ, không phải hard-cap chất lượng.
+    """
+    import pypdfium2 as pdfium
+    from app.core.pdfium_lock import pdfium_guard
+
+    with pdfium_guard("export_images_estimate"):
+        pdf = pdfium.PdfDocument(src_path)
+        try:
+            count = len(pdf)
+            page_boxes: list[tuple[float, float]] = []
+            for page in pdf:
+                if include_bleed:
+                    box = page.get_mediabox()
+                else:
+                    try:
+                        box = page.get_trimbox()
+                    except Exception:
+                        box = page.get_cropbox()
+                page_boxes.append((
+                    abs(float(box[2]) - float(box[0])),
+                    abs(float(box[3]) - float(box[1])),
+                ))
+        finally:
+            pdf.close()
+
+    user_units = _read_page_user_units(src_path, count)
+    page_nos = pages if pages else list(range(1, count + 1))
+    selected = []
+    seen: set[int] = set()
+    for pno in page_nos:
+        if 1 <= pno <= count and pno not in seen:
+            seen.add(pno)
+            selected.append(pno)
+    if not selected:
+        raise ValueError("Không có trang hợp lệ để xuất.")
+
+    max_pixels = 0
+    for pno in selected:
+        width_pt, height_pt = page_boxes[pno - 1]
+        unit = user_units[pno - 1]
+        width_px = max(1, math.ceil(width_pt * unit * dpi / 72.0))
+        height_px = max(1, math.ceil(height_pt * unit * dpi / 72.0))
+        max_pixels = max(max_pixels, width_px * height_px)
+
+    bytes_per_pixel = 32 if color_mode == "cmyk" else 8
+    return max(64.0, (max_pixels * bytes_per_pixel) / (1024 * 1024) + 64.0)
+
+
+def _estimate_batch_export_peak_mb(
+    src_path: str,
+    jobs: List[ExportImageBatchJob],
+    pages: Optional[List[int]],
+    color_mode: str,
+    include_bleed: bool,
+) -> float:
+    """Lấy peak lớn nhất trong batch; các job chạy tuần tự trong worker."""
+    return max(
+        _estimate_export_peak_mb(src_path, job.dpi, color_mode, pages, include_bleed)
+        for job in jobs
+    )
 
 
 # ── ICC profile helpers (audit 2026-07-30 §IMG-01 lô 3) ──────────────────────
@@ -254,6 +358,7 @@ def _render_cmyk_pages(
         pdf = pdfium.PdfDocument(src_path)
         n = len(pdf)
         pdf.close()
+    user_units = _read_page_user_units(src_path, n)
 
     page_nos = pages if pages else list(range(1, n + 1))
     seen: set[int] = set()
@@ -266,7 +371,10 @@ def _render_cmyk_pages(
     page_box = "media" if include_bleed else "trim"
 
     def render_page(pno: int):
-        result = ppe_export_cmyk(src_path, pno, dpi=dpi, page_box=page_box)
+        # PDFium/PPE đều nhận tọa độ raw; UserUnit phải đi vào DPI hiệu dụng
+        # để số pixel đầu ra vẫn đúng kích thước vật lý người dùng chọn.
+        effective_dpi = dpi * user_units[pno - 1]
+        result = ppe_export_cmyk(src_path, pno, dpi=effective_dpi, page_box=page_box)
         # EXPORT (re-audit 2026-07-31 §RA-02): output chế bản không được phép
         # âm thầm giao trang mà PPE đã đánh dấu thiếu mực hoặc sai hình học.
         if result.get("ink_unsound"):
@@ -421,6 +529,7 @@ def render_pdf_to_images(
     with pdfium_guard("export_images_open"):
         pdf = pdfium.PdfDocument(src_path)
         _n_pages = len(pdf)
+    user_units = _read_page_user_units(src_path, _n_pages)
     written: List[str] = []
     try:
         n = _n_pages
@@ -471,7 +580,14 @@ def render_pdf_to_images(
                             except Exception:
                                 target_box = original_crop
                         page.set_cropbox(*target_box)
-                        bitmap = page.render(scale=scale, rotation=0)
+                        bitmap = page.render(
+                            scale=scale * user_units[pno - 1],
+                            rotation=0,
+                            # EXPORT (audit 2026-09-08 §EXIMG-09): ảnh xuất là
+                            # artifact nội dung trang, không trộn lớp chú thích/
+                            # widget tương tác khác với đường CMYK PPE.
+                            draw_annots=False,
+                        )
                         # ``convert`` tạo buffer độc lập; đóng handle ngay trong khóa.
                         img = bitmap.to_pil().convert(pil_mode)
                     finally:
@@ -573,6 +689,14 @@ async def export_images(req: ExportImagesRequest, request: Request):
 
     try:
         disconnect_watcher = asyncio.create_task(_watch_export_disconnect(request, cancel_event))
+        estimated_peak_mb = await asyncio.to_thread(
+            _estimate_export_peak_mb,
+            src_path,
+            req.dpi,
+            req.color_mode,
+            req.pages,
+            req.include_bleed,
+        )
         # PERF (audit 2026-07-30 §IMG-02): export lớn chạy ngoài event loop để
         # health/preview/công cụ khác vẫn phản hồi, nhưng vẫn qua scheduler RAM.
         files = await run_scheduled_in_threadpool(
@@ -589,11 +713,18 @@ async def export_images(req: ExportImagesRequest, request: Request):
             req.base_name,
             cancel_event,
             req.include_bleed,
+            queue_cancelled=cancel_event.is_set,
+            memory_required_mb=estimated_peak_mb,
+            memory_budget_provider=_export_memory_budget_mb,
         )
         return {"ok": True, "count": len(files), "output_dir": req.output_dir, "files": files}
     except ExportCancelled:
         logger.info("Export ảnh: job bị hủy bởi client.")
         raise HTTPException(status_code=499, detail="Xuất ảnh đã bị hủy.")
+    except HeavyJobQueueCancelled:
+        raise HTTPException(status_code=499, detail="Xuất ảnh đã bị hủy.")
+    except HeavyJobMemoryUnavailable as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except FileNotFoundError as e:
         # Không trả str(e) ra client: chứa đường dẫn nội bộ. Log nội bộ, client nhận generic.
         logger.warning("Export ảnh: không tìm thấy file nguồn: %s", e)
@@ -668,6 +799,14 @@ async def export_images_batch(req: ExportImagesBatchRequest, request: Request):
     cancel_event = threading.Event()
     disconnect_watcher = asyncio.create_task(_watch_export_disconnect(request, cancel_event))
     try:
+        estimated_peak_mb = await asyncio.to_thread(
+            _estimate_batch_export_peak_mb,
+            src_path,
+            req.jobs,
+            req.pages,
+            req.color_mode,
+            req.include_bleed,
+        )
         files = await run_scheduled_in_threadpool(
             "export-images-batch",
             _render_image_batch,
@@ -677,10 +816,17 @@ async def export_images_batch(req: ExportImagesBatchRequest, request: Request):
             req.pages,
             req.include_bleed,
             cancel_event,
+            queue_cancelled=cancel_event.is_set,
+            memory_required_mb=estimated_peak_mb,
+            memory_budget_provider=_export_memory_budget_mb,
         )
         return {"ok": True, "count": len(files), "output_dir": req.jobs[0].output_dir, "files": files}
     except ExportCancelled:
         raise HTTPException(status_code=499, detail="Xuất ảnh đã bị hủy.")
+    except HeavyJobQueueCancelled:
+        raise HTTPException(status_code=499, detail="Xuất ảnh đã bị hủy.")
+    except HeavyJobMemoryUnavailable as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

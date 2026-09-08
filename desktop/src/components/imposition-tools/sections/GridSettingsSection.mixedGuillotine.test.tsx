@@ -543,3 +543,20 @@ describe('Cách xếp — chỉ ba option chuẩn, không còn option nesting th
         expect(screen.queryByLabelText(/góc|angle|rotation/i)).toBeNull();
     });
 });
+
+describe('Hình dạng tem — engine tự nhận diện, ẩn dropdown Sticker/CNC', () => {
+    function shapeSelector(): HTMLSelectElement | undefined {
+        return Array.from(document.querySelectorAll<HTMLSelectElement>('select')).find((element) =>
+            Array.from(element.options).some((option) => option.value === 'CIRCLE_ELLIPSE'),
+        );
+    }
+
+    it.each(['sticker_imposer', 'cnc_imposer'] as const)(
+        '%s không hiển thị dropdown hình dạng nhưng vẫn render phần cấu hình bình',
+        (activeTool) => {
+            renderGridSettings({ activeTool, taskMode: 'nup' });
+            expect(shapeSelector()).toBeUndefined();
+            expect(screen.getByText(/CÁCH XẾP/i)).toBeTruthy();
+        },
+    );
+});

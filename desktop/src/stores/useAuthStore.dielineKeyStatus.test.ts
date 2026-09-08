@@ -72,7 +72,7 @@ vi.mock('../lib/securityEventQueue', () => ({
   ...securityQueue,
 }));
 
-import { useAuthStore, type DielineKeyStatus } from './useAuthStore';
+import { isTransientLicenseOutcome, useAuthStore, type DielineKeyStatus } from './useAuthStore';
 
 const LICENSE_KEY = 'PRYNX-TEST-KEY';
 const NATIVE_HWID = '0123456789ABCDEF';
@@ -264,6 +264,14 @@ afterEach(() => {
 });
 
 describe('validateLicense → dielineKeyStatus', () => {
+  it('phân loại lỗi hạ tầng là transient, không phải server terminal', () => {
+    expect(isTransientLicenseOutcome('anchor_missing')).toBe(true);
+    expect(isTransientLicenseOutcome('network_error')).toBe(true);
+    expect(isTransientLicenseOutcome('native_error')).toBe(false);
+    expect(isTransientLicenseOutcome('server_rejected')).toBe(false);
+    expect(isTransientLicenseOutcome('device_limit')).toBe(false);
+  });
+
   it.each(SERVER_STATUSES)('ánh xạ nguyên vẹn rk_status = %s', async (status) => {
     edge.invoke.mockResolvedValue(validResponse({ rk_status: status }));
 
@@ -385,7 +393,9 @@ describe('validateLicense → dielineKeyStatus', () => {
 
     expect(edge.invoke).toHaveBeenCalledTimes(1);
     expect(tauri.invoke).not.toHaveBeenCalledWith('register_validated_key', expect.anything());
-    expect(useAuthStore.getState().licenseValidationOutcome).toBe('token_invalid');
+    // Không có token v3 offline hợp lệ: vẫn giữ key nhưng coi mất mạng là
+    // transient để banner/retry phục hồi, không báo nhầm “token hết hạn”.
+    expect(useAuthStore.getState().licenseValidationOutcome).toBe('network_error');
   });
 
   it('server trả token v1 cho request v3 thì bị từ chối, không fallback', async () => {
@@ -544,6 +554,61 @@ describe('validateLicense → dielineKeyStatus', () => {
     await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
     expect(useAuthStore.getState().licenseValid).toBe(false);
     expect(useAuthStore.getState().isLicenseLocked).toBe(true);
+  });
+
+  it('lỗi mạng/anchor tự retry sau backoff và tự gỡ transient lock', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      licenseV3.run.mockImplementation(async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error('network'), { code: 'NETWORK_ERROR' });
+        }
+        return { ...(validResponse().data as Record<string, unknown>), completed_challenge_id: CHALLENGE_ID };
+      });
+      tauri.invoke.mockImplementation(async (command: string) => {
+        if (command === 'load_clock_anchor') return attempts === 0 ? { status: 'missing' } : validAnchor();
+        return undefined;
+      });
+
+      await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
+      expect(useAuthStore.getState().isLicenseLocked).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+      expect(attempts).toBe(2);
+      expect(useAuthStore.getState().licenseValid).toBe(true);
+      expect(useAuthStore.getState().isLicenseLocked).toBe(false);
+      expect(useAuthStore.getState().lockReason).toBe('');
+    } finally {
+      useAuthStore.getState().stopHeartbeat();
+      vi.useRealTimers();
+    }
+  });
+
+  it('rate-limit không có token offline vẫn là transient, không báo nhầm hết hạn', async () => {
+    edge.invoke.mockResolvedValue({ data: { status: 'RATE_LIMITED' }, error: null });
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
+
+    expect(useAuthStore.getState().licenseValidationOutcome).toBe('rate_limited');
+    expect(useAuthStore.getState().lockReason)
+      .toContain('giới hạn lượt xác minh');
+  });
+
+  it('offline token hợp lệ tự gỡ lock cũ khi mạng tạm thời mất', async () => {
+    useAuthStore.setState({
+      licenseToken: validToken(),
+      isLicenseLocked: true,
+      lockReason: 'Chưa có checkpoint thời gian tin cậy.',
+    });
+    licenseV3.run.mockRejectedValue(Object.assign(new Error('offline'), { code: 'NETWORK_ERROR' }));
+
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(true);
+
+    expect(useAuthStore.getState().licenseValid).toBe(true);
+    expect(useAuthStore.getState().isLicenseLocked).toBe(false);
+    expect(useAuthStore.getState().lockReason).toBe('');
   });
 
   it("status thu hồi cứng → 'unknown' (server không nói gì về khoá engine)", async () => {

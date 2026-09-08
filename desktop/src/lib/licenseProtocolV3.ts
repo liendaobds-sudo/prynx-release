@@ -3,6 +3,8 @@
 // lượt thuộc server và CNG trong Tauri (ưu tiên Platform KSP, fallback Software KSP).
 
 export const LICENSE_PROTOCOL_V3 = 3 as const;
+/** Lease offline cho app mới; server mặc định 900 giây nếu client cũ không gửi capability. */
+export const LICENSE_TOKEN_V3_OFFLINE_LEASE_SECONDS = 72 * 60 * 60;
 
 export type LicenseProtocolV3Action = 'enroll' | 'refresh' | 'rk_grant' | 'release' | 'recover';
 export type LicenseProtocolV3EntitlementAction = Exclude<LicenseProtocolV3Action, 'release'>;
@@ -91,6 +93,8 @@ export interface RunLicenseProtocolV3Options {
   nowSeconds?: number;
   /** Hạn chờ cho từng IPC/request; chủ yếu cho test, production dùng mặc định. */
   stepTimeoutMs?: number;
+  /** Capability rollout: client mới xin lease 72h, client cũ bỏ qua field này. */
+  offlineLeaseSeconds?: number;
 }
 
 export type RunLicenseReleaseProtocolV3Options = Omit<
@@ -312,6 +316,12 @@ async function runLicenseProtocolV3Exchange(
   if (!Number.isSafeInteger(stepTimeoutMs) || stepTimeoutMs <= 0 || stepTimeoutMs > 60_000) {
     fail('INVALID_INPUT', 'Hạn chờ xác minh license không hợp lệ');
   }
+  const offlineLeaseSeconds = options.offlineLeaseSeconds
+    ?? LICENSE_TOKEN_V3_OFFLINE_LEASE_SECONDS;
+  if (!Number.isSafeInteger(offlineLeaseSeconds)
+    || ![15 * 60, LICENSE_TOKEN_V3_OFFLINE_LEASE_SECONDS].includes(offlineLeaseSeconds)) {
+    fail('INVALID_INPUT', 'Lease offline license không hợp lệ');
+  }
 
   const identity = parseIdentity(
     await awaitProtocolStep(
@@ -329,6 +339,7 @@ async function runLicenseProtocolV3Exchange(
       product_id: 'prynx',
       action: options.action,
       device_identity: identity,
+      offline_lease_seconds: offlineLeaseSeconds,
       ...(options.appVersion ? { app_version: options.appVersion } : {}),
     }),
     stepTimeoutMs,
@@ -364,6 +375,7 @@ async function runLicenseProtocolV3Exchange(
       challenge_id: challengeResponse.challenge_id,
       challenge: challengeResponse.challenge,
       proof,
+      offline_lease_seconds: offlineLeaseSeconds,
       ...(options.appVersion ? { app_version: options.appVersion } : {}),
     }),
     stepTimeoutMs,

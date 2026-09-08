@@ -2623,6 +2623,9 @@
     "khong_mo_duoc_hop_thoai_chon_thu_muc": "Could not open the folder picker dialog: {{msg}}",
     "loi_xuat_anh": "Image export error: {{msg}}",
     "mau": "Color",
+    "alpha_flatten_white_note": "Transparent PDF areas are composited on white; image export does not preserve alpha.",
+    "annotation_policy_note": "Comments and form fields are not included in image export; flatten them into the PDF first if needed.",
+    "estimate_theo_kho_active": "Estimate uses the active page size; separate MediaBox/TrimBox dimensions are unavailable.",
     "pagecount_file_anh": "${pageCount} image files",
     "thu_muc_dich": "Destination folder",
     "tuy_chon": "Options",
@@ -2695,7 +2698,7 @@
     "dat_gioi_han_thiet_bi": "Device limit reached",
     "dang_kiem_tra": "⏳ Checking...",
     "dang_thu": "Retrying...",
-    "doi_key_recovery_hint": "Paste a new license key (renewed or replacement). Google stays signed in.",
+    "doi_key_recovery_hint": "Paste a new license key (renewed or replacement).",
     "he_thong_tu_dong_kiem_tra_dinh_ky": "🔄 The system checks automatically at regular intervals",
     "het_han": "expired",
     "kiem_tra_ket_noi_mang_hoac_cai_dat": "💡 Check your network connection or firewall settings.",
@@ -2704,7 +2707,11 @@
     "nhap_license_key_khac": "Enter a different license key",
     "phat_hien_su_co_ket_noi": "Connection issue detected",
     "thu_lai_ngay": "Retry now",
-    "vui_long_luu_cong_viec_dang_lam_ngay": "Please save your current work now. The app will lock in:"
+    "vui_long_luu_cong_viec_dang_lam_ngay": "Please save your current work now. The app will lock in:",
+    "dang_dung_phien_offline": "Using offline license session",
+    "offline_con_thoi_gian": "{{hours}}h {{minutes}}m remain before an internet connection is required.",
+    "offline_dang_cho_xac_minh": "Waiting for a connection to verify the license session.",
+    "offline_duoi_mot_phut": "The offline session is about to expire; connect to continue."
   },
   "misc.livePageFrame": {
     "anh": "image",
@@ -4344,7 +4351,7 @@
     "thu_vua_khit": "Scale to fit",
     "trang_chan": "Even pages",
     "trang_le": "Odd pages",
-    "tu_chon_theo_noi_dung_trang": "Auto-select based on page content.",
+    "tu_chon_theo_noi_dung_trang": "Auto mode prioritizes keeping image/vector structure; raster only when explicitly selected.",
     "tu_dat_do_phan_giai_dich_cho_anh": "Manually set the target image resolution.",
     "tu_dong": "Auto",
     "tuy_chinh": "Custom",
@@ -4370,7 +4377,16 @@
     "kich_thuoc_con_lai_tu_dong": "The other dimension follows each page's aspect ratio; transparent canvas is kept unless Resize by content is enabled.",
     "canh_bao_nhieu_kho": "The output PDF will contain multiple page sizes; some layout modes only accept pages of the same size.",
     "resize_theo_noi_dung": "Resize by content",
-    "resize_theo_noi_dung_desc": "Applies only to {{count}} page(s) with transparency: removes the outer transparent area and calculates the ratio from visible artwork. Turn it off to keep the full page size."
+    "resize_theo_noi_dung_desc": "Applies only to {{count}} page(s) with transparency: removes the outer transparent area and calculates the ratio from visible artwork. Turn it off to keep the full page size.",
+    "giu_nguyen_pixel_nguon": "Keep all source image pixels; the file may be large.",
+    "du_kien_pixel_dau_ra": "When downsampling: about {{width}} × {{height}} px at {{dpi}} DPI.",
+    "du_kien_pixel_mot_chieu": "Locked {{axis}} after downsampling: about {{pixels}} px at {{dpi}} DPI.",
+    "canh_bao_giam_mau_co_the_mem": "Downsampling removes source pixels and may soften raster detail. Choose “Keep as-is” to preserve them.",
+    "canh_bao_raster_giam_net": "Raster rebuilds the whole page and may soften text/logos; use only when losing vectors is acceptable.",
+    "do_phan_giai_dang_doc": "Current resolution: reading…",
+    "do_phan_giai_khong_doc_duoc": "Current resolution: image metadata could not be read.",
+    "do_phan_giai_hien_tai": "Current resolution: {{dpi}} DPI.",
+    "do_phan_giai_khong_xac_dinh": "Current resolution: unknown (the image has no DPI metadata)."
   },
   "preprocess.pageTools": {
     "help_b7": "Rotate, delete, duplicate, insert/extract pages in the open file. Cross-file copy/move: right-click page thumbnail → Copy/Move.",

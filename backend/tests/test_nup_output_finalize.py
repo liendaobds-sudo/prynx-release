@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from app.workers.nup_output_finalize import NupOutputContext, finalize_nup_output
+from app.workers.nup_output_finalize import (
+    NupOutputContext,
+    _merge_layered_chunks,
+    finalize_nup_output,
+)
 
 
 class _PerfStages:
@@ -149,6 +153,49 @@ def test_multi_chunk_dung_executor_va_ghep_pikepdf_pdfium(
     with pikepdf.Pdf.open(context.output_path) as output:
         assert len(output.pages) == 2
     assert message.startswith("✅ Hoàn tất!")
+
+
+def test_merge_layered_chunks_remap_ocg_theo_ref_khong_theo_ten(tmp_path):
+    """Layer trùng tên ở hai chunk vẫn phải giữ đúng ref của từng trang."""
+
+    import pikepdf
+
+    chunks = []
+    for index in range(2):
+        chunk = tmp_path / f"chunk-ocg-{index}.pdf"
+        pdf = pikepdf.Pdf.new()
+        group = pdf.make_indirect(pikepdf.Dictionary({
+            "/Type": pikepdf.Name("/OCG"),
+            "/Name": pikepdf.String("AUDIT_GROUP"),
+        }))
+        pdf.Root["/OCProperties"] = pikepdf.Dictionary({
+            "/OCGs": pikepdf.Array([group]),
+            "/D": pikepdf.Dictionary({
+                "/ON": pikepdf.Array([group]),
+                "/OFF": pikepdf.Array([]),
+                "/Order": pikepdf.Array([group]),
+            }),
+        })
+        page = pdf.add_blank_page(page_size=(100, 100))
+        page.obj["/Resources"] = pikepdf.Dictionary({
+            "/Properties": pikepdf.Dictionary({"/MC0": group}),
+        })
+        page.contents_add(pikepdf.Stream(pdf, b"/OC /MC0 BDC 0 0 10 10 re S EMC"))
+        pdf.save(chunk)
+        pdf.close()
+        chunks.append(chunk)
+
+    output = tmp_path / "merged-ocg.pdf"
+    _merge_layered_chunks([str(path) for path in chunks], str(output))
+
+    with pikepdf.Pdf.open(output) as pdf:
+        refs = [
+            pdf.pages[index].Resources["/Properties"]["/MC0"].objgen
+            for index in range(2)
+        ]
+        assert refs[0] != refs[1]
+        names = [str(item.get("/Name", "")) for item in pdf.Root["/OCProperties"]["/OCGs"]]
+        assert names == ["AUDIT_GROUP", "AUDIT_GROUP"]
 
 
 def test_render_inline_loi_thi_don_chunk_da_tao(tmp_path):

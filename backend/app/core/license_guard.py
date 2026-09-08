@@ -635,9 +635,11 @@ def _enforce_license_token() -> bool:
 # ── V2→V4: chống lùi đồng hồ (anti-clockback) phía sidecar ───────────────────
 _CLOCK_SKEW_SECONDS = 300  # dung sai NTP 5 phút
 
-# V3 (deletion-proof): cận trên tuổi thọ token. Token do edge function ký có TTL 72h
-# (audit 2026-07-25 rút từ 7 ngày → thu hẹp độ trễ thu hồi khi client offline);
-# tuổi thọ hợp lệ (exp - now) LUÔN ≤ TTL ngay sau khi cấp và giảm dần về 0. Nếu
+# V3 (deletion-proof): cận trên tuổi thọ token. Token do edge function ký có TTL
+# 72 giờ để hỗ trợ cuối tuần/offline dài; heartbeat online vẫn làm mới token định kỳ.
+# Các token v1/v2 cũ tiếp tục dùng cận legacy bên dưới để rollout không làm brick
+# phiên bản đã phát hành. Tuổi thọ V3 hợp lệ (exp - now) LUÔN ≤ TTL ngay sau khi
+# cấp và giảm dần về 0. Nếu
 # (exp - now) VƯỢT cận này nghĩa là đồng hồ đã bị LÙI xa so với lúc token được cấp
 # → replay token cũ bằng cách quay ngược giờ. Khác với `_clock_guard` (dựa trên file
 # có thể bị XOÁ để reset mốc), kiểm tra này KHÔNG có trạng thái trên đĩa nên không
@@ -661,7 +663,12 @@ else:
 # native dùng-một-lần. Giữ đúng kích thước 32 byte/64 ký tự hex với Rust + Edge.
 _LICENSE_TOKEN_V2 = 2
 _LICENSE_TOKEN_V3 = 3
-_LICENSE_TOKEN_V3_MAX_TTL_SECONDS = 15 * 60
+# SEC (audit 2026-09-09 §SEC.LICTTL): nới riêng lease V3 để hỗ trợ offline cuối
+# tuần; không nới freshness của challenge/proof hoặc các protocol legacy.
+# Chính sách offline V3: 72 giờ (không bao gồm dung sai clock skew; đó chỉ là
+# khoảng đệm khi so sánh thời gian hiện tại). Giữ hằng số riêng để không vô tình
+# nới cận token legacy hoặc freshness của proof khôi phục clock.
+_LICENSE_TOKEN_V3_MAX_TTL_SECONDS = 72 * 60 * 60
 _LICENSE_CHALLENGE_HEX_LENGTH = 64
 _LICENSE_CLOCK_SKEW_SECONDS = _CLOCK_SKEW_SECONDS
 # Clock-state repair is a recovery path, not an offline grace path.  The token

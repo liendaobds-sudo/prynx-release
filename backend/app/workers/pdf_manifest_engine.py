@@ -205,8 +205,69 @@ def _read_png_phys_dpi(source_path: str) -> tuple[float, float] | None:
         return None
 
 
+def _read_tiff_dpi_bytes(data: bytes) -> tuple[float, float] | None:
+    """Đọc XResolution/YResolution trong một TIFF/EXIF nhỏ đã nằm trong RAM."""
+    if len(data) < 8 or data[:2] not in {b"II", b"MM"}:
+        return None
+    little = data[:2] == b"II"
+
+    def u16(offset: int) -> int | None:
+        if offset < 0 or offset + 2 > len(data):
+            return None
+        return int.from_bytes(data[offset:offset + 2], "little" if little else "big")
+
+    def u32(offset: int) -> int | None:
+        if offset < 0 or offset + 4 > len(data):
+            return None
+        return int.from_bytes(data[offset:offset + 4], "little" if little else "big")
+
+    if u16(2) != 42:
+        return None
+    ifd_offset = u32(4)
+    if ifd_offset is None:
+        return None
+    count = u16(ifd_offset)
+    if count is None or count > 4096:
+        return None
+    x_resolution: float | None = None
+    y_resolution: float | None = None
+    resolution_unit = 2  # inch theo TIFF khi thiếu ResolutionUnit.
+    for index in range(count):
+        entry = ifd_offset + 2 + index * 12
+        tag, typ, item_count = u16(entry), u16(entry + 2), u32(entry + 4)
+        if tag is None or typ is None or item_count is None:
+            return None
+        if tag in {0x011A, 0x011B} and typ == 5 and item_count == 1:
+            value_offset = u32(entry + 8)
+            if value_offset is None:
+                return None
+            numerator, denominator = u32(value_offset), u32(value_offset + 4)
+            if numerator is None or denominator in (None, 0):
+                return None
+            value = numerator / denominator
+            if not math.isfinite(value) or value <= 0:
+                return None
+            if tag == 0x011A:
+                x_resolution = value
+            else:
+                y_resolution = value
+        elif tag == 0x0128 and typ == 3 and item_count == 1:
+            unit = u16(entry + 8)
+            if unit is None:
+                return None
+            resolution_unit = unit
+    if x_resolution is None or y_resolution is None or resolution_unit == 1:
+        return None
+    if resolution_unit == 2:
+        return x_resolution, y_resolution
+    if resolution_unit == 3:
+        return x_resolution * 2.54, y_resolution * 2.54
+    return None
+
+
 def _read_jpeg_jfif_dpi(source_path: str) -> tuple[float, float] | None:
-    """Quét marker đến APP0/JFIF; ICC/EXIF có thể đứng trước metadata mật độ."""
+    """Quét JFIF; nếu thiếu thì dùng EXIF TIFF trong APP1 làm fallback."""
+    exif_dpi: tuple[float, float] | None = None
     try:
         with open(source_path, "rb") as source:
             if source.read(2) != b"\xff\xd8":
@@ -222,7 +283,7 @@ def _read_jpeg_jfif_dpi(source_path: str) -> tuple[float, float] | None:
                     return None
                 marker = marker_bytes[0]
                 if marker in {0xD9, 0xDA}:
-                    return None
+                    return exif_dpi
                 if marker == 0x01 or 0xD0 <= marker <= 0xD7:
                     continue
                 if marker == 0x00:
@@ -234,6 +295,11 @@ def _read_jpeg_jfif_dpi(source_path: str) -> tuple[float, float] | None:
                 if length < 2:
                     return None
                 payload_length = length - 2
+                if marker == 0xE1:
+                    payload = source.read(payload_length)
+                    if payload[:6] == b"Exif\x00\x00" and exif_dpi is None:
+                        exif_dpi = _read_tiff_dpi_bytes(payload[6:])
+                    continue
                 if marker != 0xE0:
                     source.seek(payload_length, os.SEEK_CUR)
                     continue
@@ -253,9 +319,10 @@ def _read_jpeg_jfif_dpi(source_path: str) -> tuple[float, float] | None:
                     return float(density_x), float(density_y)
                 if units == 2:
                     return density_x * 2.54, density_y * 2.54
-                return None
+                return exif_dpi
     except OSError:
-        return None
+        return exif_dpi
+    return exif_dpi
 
 
 def _read_image_dpi(source_path: str, extension: str) -> tuple[float, float]:

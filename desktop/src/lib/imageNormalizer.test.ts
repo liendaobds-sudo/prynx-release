@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { invoke } from '@tauri-apps/api/core';
 import { PDFDocument } from 'pdf-lib';
 import {
@@ -142,6 +144,18 @@ describe('imageBytesToPdfDoc — khổ vật lý theo DPI', () => {
 
         expect(page.getWidth()).toBeCloseTo(0.48, 5);
         expect(page.getHeight()).toBeCloseTo(0.72, 5);
+    });
+
+    it('đọc EXIF DPI khi JPEG Photoshop không có APP0/JFIF', async () => {
+        const path = resolve(process.cwd(), '..', 'test', 'Tem thuc pham sach Duc An.jpg');
+        const jpeg = await readFile(path);
+        const document = await imageBytesToPdfDoc(jpeg, 'Tem thuc pham sach Duc An.jpg');
+        const page = document.getPage(0);
+
+        // Fixture có 5216 px và EXIF 288 DPI → 1304 pt ≈ 46 cm, không phải
+        // fallback 72 DPI (5216 pt ≈ 184 cm) như trước.
+        expect(page.getWidth()).toBeCloseTo((5216 / 288) * 72, 2);
+        expect(page.getHeight()).toBeCloseTo((5216 / 288) * 72, 2);
     });
 
     it('đọc TIFF little-endian 300 DPI để giữ đúng khổ vật lý', async () => {

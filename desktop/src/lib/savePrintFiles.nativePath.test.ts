@@ -2,7 +2,7 @@
 // Hồi quy FILEIO (audit 2026-08-06 §2): trên "đường native", File kết quả chỉ là sentinel
 // 11 byte 'native-path' kèm `.path` — savePrintFilesToFolder phải đọc bytes THẬT từ đĩa,
 // không được đưa bytes sentinel cho pdf-lib ("No PDF header found").
-import { PDFDocument } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFString } from 'pdf-lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { savePrintFilesToFolder } from './savePrintFiles';
@@ -23,6 +23,30 @@ const tauriWindow = window as TauriWindow;
 async function makeRealPdf(): Promise<Uint8Array<ArrayBuffer>> {
     const doc = await PDFDocument.create();
     for (let i = 0; i < 4; i++) doc.addPage([595, 842]);
+    const saved = await doc.save();
+    return new Uint8Array(saved.slice()) as Uint8Array<ArrayBuffer>;
+}
+
+async function makeLayeredPdf(): Promise<Uint8Array<ArrayBuffer>> {
+    const doc = await PDFDocument.create();
+    doc.addPage([595, 842]);
+    const cut = doc.addPage([595, 842]);
+    const graph = doc.context.register(doc.context.obj({ Type: 'OCG', Name: PDFString.of('GRAPH_INFO') }));
+    const layer = doc.context.register(doc.context.obj({ Type: 'OCG', Name: PDFString.of('PONT_LAYER') }));
+    const group = doc.context.register(doc.context.obj({ Type: 'OCG', Name: PDFString.of('PONT_GROUP') }));
+    cut.node.set(PDFName.of('Contents'), doc.context.register(doc.context.stream(
+        '/OC /MarkGroup BDC /Span /MarkItem BDC 0 0 0 1 k 10 10 20 20 re f EMC EMC',
+    )));
+    cut.node.set(PDFName.of('Resources'), doc.context.obj({
+        Properties: {
+            MarkGroup: group,
+            MarkItem: { NM: PDFString.of('PONT_ITEM') },
+        },
+    }));
+    doc.catalog.set(PDFName.of('OCProperties'), doc.context.obj({
+        OCGs: [graph, layer, group],
+        D: { BaseState: PDFName.of('ON'), ON: [graph, layer, group], OFF: [], Order: [graph, layer, [group]] },
+    }));
     const saved = await doc.save();
     return new Uint8Array(saved.slice()) as Uint8Array<ArrayBuffer>;
 }
@@ -86,5 +110,38 @@ describe('savePrintFilesToFolder — đường native (File sentinel + path)', (
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(ok).toBe(4);
+    });
+
+    it('giữ cây layer rỗng Graphtec khi ghi riêng file CUT', async () => {
+        const realBytes = await makeLayeredPdf();
+        const blob = new Blob([realBytes], { type: 'application/pdf' });
+        Object.defineProperty(blob, 'arrayBuffer', { value: async () => realBytes.buffer });
+
+        const { ok, total } = await savePrintFilesToFolder(blob, 'D:\\out', {
+            nameMode: 'number',
+            folderMode: 'flat',
+            separateCut: true,
+            includeOrderCode: false,
+            includeDate: false,
+        }, {
+            types: [{ label: 'Tem', sheetCount: 1 }],
+            pagesPerType: 2,
+        });
+
+        expect({ ok, total }).toEqual({ ok: 2, total: 2 });
+        const written = mocks.invoke.mock.calls.filter(c => c[0] === 'write_file_atomic');
+        const cutBytes = (written[1]?.[1] as { contents: Uint8Array }).contents;
+        const cut = await PDFDocument.load(cutBytes);
+        const ocgs = cut.catalog.lookupMaybe(PDFName.of('OCProperties'), PDFDict)
+            ?.lookupMaybe(PDFName.of('OCGs'), PDFArray);
+        const names = [] as string[];
+        for (let i = 0; ocgs && i < ocgs.size(); i += 1) {
+            const ref = ocgs.get(i);
+            if (!(ref instanceof PDFRef)) continue;
+            const name = cut.context.lookupMaybe(ref, PDFDict)
+                ?.lookupMaybe(PDFName.of('Name'), PDFString)?.decodeText();
+            if (name) names.push(name);
+        }
+        expect(names).toEqual(['GRAPH_INFO', 'PONT_LAYER', 'PONT_GROUP']);
     });
 });

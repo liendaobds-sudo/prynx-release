@@ -37,6 +37,8 @@ export interface SavePlanConfig {
     cncMode?: boolean;
     /** CNC in 2 mặt → mỗi đơn vị 3 trang [Trước, Sau, Khuôn]; tắt → 2 trang [Trước, Khuôn]. */
     cncTwoSided?: boolean;
+    /** Sticker homogeneous/single-mold: một trang CUT dùng chung nằm cuối file. */
+    sharedMasterCut?: boolean;
 }
 
 export interface SavePlanItem {
@@ -82,6 +84,8 @@ export function buildSavePlan(types: SaveTypeInfo[], cfg: SavePlanConfig): SaveP
         ? sanitizeFilename(cfg.orderCode || 'DonHang')
         : '';
     const join = (...p: string[]) => p.filter(Boolean).join('/');
+    const printSub = cfg.folderMode === 'per_order' && cfg.separateCut ? 'In' : '';
+    const cutSub = cfg.folderMode === 'per_order' && cfg.separateCut ? 'Bế' : '';
 
     // ── Bố cục CNC: mỗi đơn vị 3 trang [Trước, Sau, Khuôn] (2 mặt) hoặc 2 trang [Trước, Khuôn] ──
     if (cfg.cncMode) {
@@ -102,8 +106,29 @@ export function buildSavePlan(types: SaveTypeInfo[], cfg: SavePlanConfig): SaveP
         return items;
     }
 
-    const printSub = cfg.folderMode === 'per_order' && cfg.separateCut ? 'In' : '';
-    const cutSub = cfg.folderMode === 'per_order' && cfg.separateCut ? 'Bế' : '';
+    // Sticker homogeneous/single-mold ghi [in_0, in_1, ..., CUT_chung] thay vì
+    // cặp xen kẽ. Không suy trang CUT bằng i*2+1 trong layout này.
+    if (cfg.sharedMasterCut && cfg.separateCut) {
+        types.forEach((t, i) => {
+            const base = sanitizeFilename(buildBaseName(i, t, cfg));
+            items.push({
+                kind: 'print',
+                folder: join(orderFolder, printSub),
+                filename: `${base}.pdf`,
+                pageIndex: i,
+            });
+        });
+        const cutBase = sanitizeFilename(
+            cfg.orderCode ? `${cfg.orderCode} - Khuon chung` : 'Khuon chung',
+        ) || 'Khuon chung';
+        items.push({
+            kind: 'cut',
+            folder: join(orderFolder, cutSub),
+            filename: `${cutBase} (cut).pdf`,
+            pageIndex: types.length,
+        });
+        return items;
+    }
 
     types.forEach((t, i) => {
         const base = sanitizeFilename(buildBaseName(i, t, cfg));

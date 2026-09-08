@@ -61,6 +61,7 @@ export type LicenseValidationOutcome =
   | 'valid_online'
   | 'valid_offline'
   | 'rate_limited_offline'
+  | 'rate_limited'
   | 'server_rejected'
   | 'device_limit'
   | 'anchor_missing'
@@ -72,6 +73,24 @@ export type LicenseValidationOutcome =
   | 'persistence_error'
   | 'network_error'
   | 'offline_exceeded';
+
+/**
+ * Lỗi kết nối/clock-anchor có thể tự hồi phục; lỗi native/persistence vẫn giữ
+ * hard-lock vì cache ký có thể đã bị xóa hoặc chưa lưu bền vững.
+ * Native signer vẫn khóa request trong các trạng thái này, chỉ thay đổi cách UX
+ * chờ và thử lại (SEC (audit 2026-09-08 §SEC.LICUX.1–2)).
+ */
+export function isTransientLicenseOutcome(
+  outcome: LicenseValidationOutcome,
+): boolean {
+  return [
+    'anchor_missing',
+    'anchor_corrupt',
+    'anchor_unavailable',
+    'network_error',
+    'rate_limited',
+  ].includes(outcome);
+}
 
 type HardLockOutcome = Extract<
   LicenseValidationOutcome,
@@ -829,11 +848,14 @@ function serializeLicenseOperation<T>(operation: () => Promise<T>): Promise<T> {
 // UIUX (audit 2026-09-05 §AUTH.RATE): challenge v3 giới hạn 8 lượt/device/action
 // trong một giờ. Nhịp 5 phút tạo 12 lượt/giờ trước cả focus; 10 phút còn tối đa
 // 6 lượt/giờ, vẫn đủ dư địa cho một lượt focus sau khi người dùng quay lại app.
-// Token v3 có TTL 15 phút nên nhịp này vẫn refresh trước khi hết hạn.
+// Token v3 có lease offline 72 giờ; nhịp 10 phút vẫn làm mới sớm khi online và
+// không làm thay đổi giới hạn offline đã ký trong token.
 const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
 const SCHEDULED_VALIDATION_MIN_INTERVAL_MS = 10 * 60 * 1000;
 const RATE_LIMIT_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
-const RETRY_INTERVAL_MS = 30 * 1000;              // 30 seconds (when locked)
+// SEC (audit 2026-09-08 §SEC.LICUX.1): retry lỗi tạm thời không được tạo burst
+// challenge vượt quota Edge; 10 phút vẫn đủ sớm mà không đốt 8 lượt/giờ.
+const RETRY_INTERVAL_MS = 10 * 60 * 1000;
 const REVOKE_GRACE_MS = 5 * 60 * 1000;            // 5 phút ân hạn để khách kịp lưu file trước khi khóa cứng
 
 /**
@@ -1201,6 +1223,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         lockReason: reason,
         licenseValidationOutcome: outcome,
       });
+      if (isTransientLicenseOutcome(outcome) && !retryInterval) {
+        retryInterval = setInterval(() => {
+          void get().retryValidation();
+        }, RETRY_INTERVAL_MS);
+      }
       return false;
     };
 
@@ -1421,8 +1448,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (!isCurrent()) return false;
         if (!isOfflineV3TokenUsable(offlineToken, anchorState)) {
           return failClosed(
-            'token_invalid',
-            'Phiên xác minh bản quyền đã hết hạn. Vui lòng kết nối mạng để xác minh lại.',
+            code === 'RATE_LIMITED' ? 'rate_limited' : 'network_error',
+            code === 'RATE_LIMITED'
+              ? 'Máy chủ đang giới hạn lượt xác minh. PrynX sẽ tự thử lại sau.'
+              : 'Mất kết nối máy chủ bản quyền; PrynX sẽ tự thử lại khi mạng hoạt động.',
           );
         }
         try {
@@ -1444,6 +1473,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           licenseFeatures: offlineClaims?.features ?? null,
           licenseSessionEpoch: operationEpoch,
           licenseValid: true,
+          isLicenseLocked: false,
+          lockReason: '',
           lastValidated: Date.now(),
           licenseValidationOutcome: code === 'RATE_LIMITED'
             ? 'rate_limited_offline'
@@ -1491,6 +1522,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // UIUX (audit 2026-09-05 §AUTH.RATE): tránh một cú click/automation tạo
     // challenge mới ngay sau khi server vừa trả RATE_LIMITED.
     if (Date.now() < rateLimitedRetryAfterMs) return;
+    // Heartbeat có thể nổ cùng thời điểm với retry interval; bỏ lượt trùng để
+    // không đốt thêm quota challenge trong cùng một nhịp.
+    if (isLicenseOperationPending()) return;
     const isValid = await get().validateLicense();
     if (isValid) {
       set({ isLicenseLocked: false, lockReason: '' });
@@ -1858,16 +1892,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Nếu không có window (SSR) thì heartbeat vẫn giữ nhịp, không cần debounce UI.
       if (isLicenseOperationPending()) return;
       if (claimScheduledValidation && !claimScheduledValidation()) return;
-      const isValid = await get().validateLicense();
-      if (!isValid && !get().isLicenseLocked) {
-        // Don't sign out — just lock. validateLicense already sets isLicenseLocked.
-        // Start rapid retry interval
-        if (!retryInterval) {
-          retryInterval = setInterval(async () => {
-            await get().retryValidation();
-          }, RETRY_INTERVAL_MS);
-        }
-      }
+      await get().validateLicense();
+      // validateLicense đã tự xếp retry khi gặp lỗi tạm thời. Không tạo thêm
+      // interval ở đây vì heartbeat và retry có thể chồng challenge.
     }, HEARTBEAT_INTERVAL_MS);
   },
 

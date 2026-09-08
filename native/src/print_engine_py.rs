@@ -1359,10 +1359,10 @@ pub fn ppe_export_cmyk(
         .checked_mul(1024 * 1024)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
-    // PERF (audit 2026-07-30 lô 4): production CMYK không cần anti-alias (RIP xử lý),
-    // dùng ink_accurate() (AA tắt) + flatten_spots thay vì softproof() (AA bật).
-    // Tiết kiệm ~30-50% thời gian render.
-    let mut base_opts = RenderOptions::ink_accurate()
+    // EXPORT (audit 2026-09-08 §EXIMG-01): đây là bitmap giao cho người dùng,
+    // không phải phép đo TAC. Giữ anti-alias để biên glyph/vector không thành
+    // răng cưa; vẫn render trực tiếp CMYK và gộp mực pha ở bước xuất.
+    let mut base_opts = RenderOptions::cmyk_export()
         .with_overprint_simulation(simulate_overprint)
         .with_memory_budget_bytes(memory_budget_bytes);
     base_opts.flatten_spots = true;

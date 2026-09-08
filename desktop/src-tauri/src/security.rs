@@ -776,11 +776,19 @@ struct VerifiedLicenseToken {
 
 const LICENSE_TOKEN_V2: u8 = 2;
 const LICENSE_TOKEN_V3: u8 = 3;
-const LICENSE_TOKEN_V3_MAX_TTL_SECS: u64 = 15 * 60;
+// Lease offline v3 đủ cho một cuối tuần dài. Đây chỉ là TTL của token đã ký;
+// challenge/proof online và neo đồng hồ vẫn giữ cửa sổ ngắn riêng bên dưới.
+const LICENSE_TOKEN_V3_MAX_TTL_SECS: u64 = 72 * 60 * 60;
+#[cfg(test)]
+const LICENSE_TOKEN_V3_LEGACY_MAX_TTL_SECS: u64 = 15 * 60;
 const LICENSE_CHALLENGE_BYTES: usize = 32;
 const LICENSE_CHALLENGE_TTL_SECS: u64 = 5 * 60;
 const LICENSE_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const MAX_PENDING_LICENSE_CHALLENGES: usize = 32;
+// Cache binding trong RAM ngắn hơn lease token. Khi hết hạn, frontend có thể
+// đăng ký lại token đã lưu bằng đường offline nếu anchor còn hợp lệ; không kéo
+// dài cache lên 72h vì đó sẽ biến mất chốt refresh định kỳ của sidecar.
+const VALIDATED_LICENSE_CACHE_TTL_SECS: u64 = 8 * 60 * 60;
 
 /// Challenge nằm trong RAM của đúng process Tauri.  Không ghi challenge ra
 /// disk/localStorage; restart sẽ buộc một lần xác minh online mới.
@@ -968,6 +976,17 @@ fn ensure_license_token_binding(
     Ok(())
 }
 
+/// Kiểm tra tuổi cache native mà không dùng `saturating_sub`: đồng hồ lùi phải
+/// bị từ chối, không được biến thành cache vừa mới xác thực. Token v3 có lease
+/// 72 giờ nhưng binding RAM vẫn chỉ sống 8 giờ; sau đó frontend đăng ký lại
+/// token DPAPI đã ký (không cần gọi mạng) khi neo đồng hồ còn hợp lệ.
+fn validated_license_cache_is_fresh(validated_at: u64, now_secs: u64) -> Result<bool, String> {
+    if now_secs < validated_at {
+        return Err("Clock rollback detected; license cache is from the future".to_string());
+    }
+    Ok(now_secs - validated_at < VALIDATED_LICENSE_CACHE_TTL_SECS)
+}
+
 // In-memory cache of native-verified license bindings (session-scoped).
 static VALIDATED_KEYS: std::sync::LazyLock<Mutex<HashMap<String, ValidatedLicense>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -1137,8 +1156,9 @@ pub fn register_validated_key(
     }
 
     // SEC (audit 2026-09-03 §SEC.19): đăng ký binding cũng là một đường cấp quyền.
-    // Anchor thiếu/hỏng chỉ được khôi phục sau proof online (token v2 + challenge).
-    // Anchor hợp lệ mới cho phép đăng ký lại token v2 đã cache khi offline.
+    // Anchor thiếu/hỏng chỉ được khôi phục sau proof online (token v2/v3 +
+    // challenge/receipt hiện tại). Anchor hợp lệ mới cho phép đăng ký lại token
+    // đã cache khi offline.
     let now_ms = epoch_millis()?;
     let _anchor_guard = clock_anchor_guard();
     let anchor_state = load_clock_anchor_state_unlocked();
@@ -1340,8 +1360,8 @@ fn verify_token_with_pubkey_and_device(
     // cũ bằng cách LÙI đồng hồ hệ thống. Token TTL 72h nên (exp - now) hợp lệ luôn ≤ TTL;
     // vượt cận (TTL + dư + skew) ⇒ đồng hồ đã bị lùi xa lúc cấp token. Không phụ thuộc file
     // trên đĩa nên không thể vô hiệu bằng cách xoá state.
-    // 8 ngày. TTL server đã rút 7 ngày → 72h (audit 2026-07-25) nhưng cận này GIỮ
-    // NGUYÊN trong giai đoạn chuyển tiếp: token 7 ngày phát trước đó vẫn còn hạn.
+    // 8 ngày. Lease server V3 hiện là 72h; cận rộng hơn vẫn giữ để token legacy
+    // 7 ngày cũ tiếp tục tương thích trong giai đoạn chuyển tiếp.
     // Siết xuống 4 ngày SAU KHI chúng hết hạn. Bất biến: PHẢI ≥ TTL token edge function cấp.
     const MAX_TOKEN_LIFETIME_SECS: u64 = 8 * 24 * 60 * 60;
     if exp - now > MAX_TOKEN_LIFETIME_SECS {
@@ -1665,7 +1685,7 @@ mod token_tests {
     }
 
     #[test]
-    fn valid_v3_token_requires_local_tpm_binding_and_short_ttl() {
+    fn valid_v3_token_supports_legacy_and_weekend_lease_with_local_tpm_binding() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
         let now = std::time::SystemTime::now()
@@ -1673,21 +1693,34 @@ mod token_tests {
             .unwrap()
             .as_secs();
         let device_id = format!("d3_{}", "A".repeat(43));
-        let token = mk_token_v3(&sk, &device_id, "LIC-KEY", now, now + 900);
-        let claims = verify_token_with_pubkey_and_device(
-            &token,
-            "HWID-LEGACY",
+        let token = mk_token_v3(
+            &sk,
+            &device_id,
             "LIC-KEY",
-            &pubk,
-            Some(&device_id),
-        )
-        .unwrap();
-        assert_eq!(claims.version, LICENSE_TOKEN_V3);
-        assert_eq!(claims.device_key_id.as_deref(), Some(device_id.as_str()));
-        assert_eq!(
-            claims.challenge_id.as_deref(),
-            Some("018f0f5e-8d51-7f77-bbd5-f19db33c4b7a")
+            now,
+            now + LICENSE_TOKEN_V3_LEGACY_MAX_TTL_SECS,
         );
+        // Token v3 cũ 15 phút tiếp tục tương thích trong thời kỳ chuyển tiếp.
+        for ttl in [
+            LICENSE_TOKEN_V3_LEGACY_MAX_TTL_SECS,
+            LICENSE_TOKEN_V3_MAX_TTL_SECS,
+        ] {
+            let token = mk_token_v3(&sk, &device_id, "LIC-KEY", now, now + ttl);
+            let claims = verify_token_with_pubkey_and_device(
+                &token,
+                "HWID-LEGACY",
+                "LIC-KEY",
+                &pubk,
+                Some(&device_id),
+            )
+            .unwrap();
+            assert_eq!(claims.version, LICENSE_TOKEN_V3);
+            assert_eq!(claims.device_key_id.as_deref(), Some(device_id.as_str()));
+            assert_eq!(
+                claims.challenge_id.as_deref(),
+                Some("018f0f5e-8d51-7f77-bbd5-f19db33c4b7a")
+            );
+        }
 
         assert!(
             verify_token_with_pubkey_and_device(&token, "HWID-LEGACY", "LIC-KEY", &pubk, None,)
@@ -1702,9 +1735,45 @@ mod token_tests {
         )
         .is_err());
 
-        let too_long = mk_token_v3(&sk, &device_id, "LIC-KEY", now, now + 901);
+        let too_long = mk_token_v3(
+            &sk,
+            &device_id,
+            "LIC-KEY",
+            now,
+            now + LICENSE_TOKEN_V3_MAX_TTL_SECS + 1,
+        );
         assert!(verify_token_with_pubkey_and_device(
             &too_long,
+            "HWID-LEGACY",
+            "LIC-KEY",
+            &pubk,
+            Some(&device_id),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn v3_expired_or_malformed_token_is_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let device_id = format!("d3_{}", "A".repeat(43));
+
+        let expired = mk_token_v3(&sk, &device_id, "LIC-KEY", now - 120, now - 1);
+        assert!(verify_token_with_pubkey_and_device(
+            &expired,
+            "HWID-LEGACY",
+            "LIC-KEY",
+            &pubk,
+            Some(&device_id),
+        )
+        .is_err());
+
+        assert!(verify_token_with_pubkey_and_device(
+            "not-a-signed-token",
             "HWID-LEGACY",
             "LIC-KEY",
             &pubk,
@@ -2749,12 +2818,7 @@ pub fn sign_api_request(
         let cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock: {}", e))?;
         match cache.get(&license_key) {
             Some(value) => {
-                if now_secs < value.validated_at {
-                    return Err(
-                        "Clock rollback detected; license cache is from the future".to_string()
-                    );
-                }
-                if now_secs - value.validated_at >= 28800 {
+                if !validated_license_cache_is_fresh(value.validated_at, now_secs)? {
                     return Err("License not validated in Rust cache".to_string());
                 }
                 value.clone()
@@ -2872,6 +2936,20 @@ mod request_signing_binding_tests {
         let error = ensure_license_token_binding(&binding, "token-moi")
             .expect_err("token khác binding phải bị từ chối");
         assert!(error.contains("đăng ký lại cache Rust"));
+    }
+
+    #[test]
+    fn cache_native_8_gio_cho_dang_ky_lai_offline_va_chan_lui_dong_ho() {
+        let now = 1_700_000_000_u64;
+        assert!(
+            validated_license_cache_is_fresh(now, now + VALIDATED_LICENSE_CACHE_TTL_SECS - 1)
+                .expect("cache còn hạn trước mốc 8 giờ")
+        );
+        assert!(
+            !validated_license_cache_is_fresh(now, now + VALIDATED_LICENSE_CACHE_TTL_SECS)
+                .expect("cache hết hạn đúng mốc 8 giờ")
+        );
+        assert!(validated_license_cache_is_fresh(now, now - 1).is_err());
     }
 
     #[test]
@@ -3236,7 +3314,7 @@ impl ClockAnchorState {
 
 /// Tính mốc cần ghi sau một lần đăng ký license. Hàm thuần này giữ chung policy
 /// cho đường khôi phục anchor và cổng signer: anchor thiếu/hỏng chỉ nhận proof
-/// online v2, còn anchor hợp lệ chỉ được tiến về phía trước.
+/// online v2/v3 có cờ challenge, còn anchor hợp lệ chỉ được tiến về phía trước.
 fn license_anchor_update_target(
     state: ClockAnchorState,
     anchor_required: bool,
@@ -3266,7 +3344,13 @@ fn license_anchor_update_target(
             let issued_ms = claims
                 .filter(|value| {
                     (value.version == LICENSE_TOKEN_V2 && has_challenge)
-                        || (value.version == LICENSE_TOKEN_V3 && value.challenge_id.is_some())
+                        // `challenge_id` chỉ là claim đã ký; phải có cờ proof
+                        // online của lượt đăng ký hiện tại mới được bootstrap
+                        // anchor. Token DPAPI 72 giờ không tự tạo lại anchor
+                        // sau khi file bị xoá/hỏng.
+                        || (value.version == LICENSE_TOKEN_V3
+                            && has_challenge
+                            && value.challenge_id.is_some())
                 })
                 .and_then(|value| value.issued_at)
                 .and_then(|value| value.checked_mul(1_000))
@@ -3304,6 +3388,16 @@ mod license_anchor_policy_tests {
             challenge: Some("ab".repeat(32)),
             challenge_id: None,
             device_key_id: None,
+        }
+    }
+
+    fn v3_claim(issued_at: u64) -> VerifiedLicenseToken {
+        VerifiedLicenseToken {
+            version: LICENSE_TOKEN_V3,
+            issued_at: Some(issued_at),
+            challenge: None,
+            challenge_id: Some("018f0f5e-8d51-7f77-bbd5-f19db33c4b7a".to_string()),
+            device_key_id: Some(format!("d3_{}", "A".repeat(43))),
         }
     }
 
@@ -3368,6 +3462,46 @@ mod license_anchor_policy_tests {
         .expect("proof v2 phải khôi phục được anchor")
         .expect("anchor thiếu phải có mốc mới");
         assert_eq!(target, now_ms);
+    }
+
+    #[test]
+    fn anchor_hop_le_cho_phep_dang_ky_lai_token_v3_offline() {
+        let now_ms = 1_700_000_000_000;
+        let claims = v3_claim(now_ms / 1_000);
+        // Khi anchor còn hợp lệ, registration không cần challenge mới; token
+        // v3 72 giờ được dùng để dựng lại binding RAM sau khi cache 8 giờ hết hạn.
+        let target = license_anchor_update_target(
+            ClockAnchorState::Valid(now_ms),
+            true,
+            now_ms,
+            Some(&claims),
+            false,
+        )
+        .expect("anchor hợp lệ phải cho phép đăng ký lại offline");
+        assert_eq!(target, None);
+
+        // Anchor bị mất vẫn buộc proof online, không được dùng lease dài để
+        // tự bootstrap một mốc mới offline. Có receipt v3 nhưng không truyền
+        // challenge hiện tại vẫn là đường offline và phải bị từ chối.
+        assert!(license_anchor_update_target(
+            ClockAnchorState::Missing,
+            true,
+            now_ms,
+            Some(&claims),
+            false,
+        )
+        .is_err());
+        assert_eq!(
+            license_anchor_update_target(
+                ClockAnchorState::Missing,
+                true,
+                now_ms,
+                Some(&claims),
+                true,
+            )
+            .expect("proof v3 online phải khôi phục được anchor"),
+            Some(now_ms)
+        );
     }
 
     #[test]

@@ -144,6 +144,11 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     activeTool,
     s.impositionUnit,
   );
+  // UIUX (audit 2026-09-09 §HIDE-SHAPE): hình dạng đã được detect tự động và
+  // truyền nguyên vẹn qua state/payload cho engine nesting. Ẩn control thủ công
+  // ở Sticker/CNC để bớt rối, không xóa dữ liệu detection hay đổi route engine.
+  const showDetectedShapeSelector = activeTool !== "sticker_imposer"
+    && activeTool !== "cnc_imposer";
 
   // Derived variables for shape selector
   const actualIndex = viewerPageOrder
@@ -436,7 +441,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           )}
 
           {/* === HÌNH DẠNG TEM (sticker_imposer + cnc_imposer) === */}
-          {dieGeometryMode && (
+          {dieGeometryMode && showDetectedShapeSelector && (
             <div className="flex items-center gap-3">
               <label
                 className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"

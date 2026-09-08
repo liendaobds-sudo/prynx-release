@@ -260,7 +260,15 @@ const SPLASH_AUTH_DEADLINE_MS = 15_000;
 
 export default function App({ documentWindowBootstrap }: AppProps) {
   const isDocumentWindow = Boolean(documentWindowBootstrap);
-  const { licenseKey, licenseValid, isChecking, checkSession, setUser } = useAuthStore();
+  const {
+    licenseKey,
+    licenseValid,
+    isChecking,
+    isLicenseLocked,
+    isRevoking,
+    checkSession,
+    setUser,
+  } = useAuthStore();
   const [splashMinElapsed, setSplashMinElapsed] = useState(isDocumentWindow);
   const [splashAuthDeadlineElapsed, setSplashAuthDeadlineElapsed] = useState(isDocumentWindow);
   const [splashExiting, setSplashExiting] = useState(isDocumentWindow);
@@ -344,10 +352,14 @@ export default function App({ documentWindowBootstrap }: AppProps) {
   // [KEY-FIRST ACTIVATION 2026-08-18] Gmail chỉ hỗ trợ tìm lại key; quyền mở app
   // phải dựa trên key đã được xác minh, không phụ thuộc phiên đăng nhập Google.
   const isAuthenticated = Boolean(licenseKey && licenseValid);
+  const showLogin = !licenseKey
+    || (!isChecking && !isLicenseLocked && !isRevoking && !licenseValid);
 
   return (
     <FileProvider>
-      {!isAuthenticated && <LoginScreen />}
+      {/* Khi còn key nhưng đang chờ xác minh/đã lock, overlay là giao diện recovery
+          duy nhất; không mount thêm LoginScreen để tránh hai aria-modal chồng nhau. */}
+      {showLogin && <LoginScreen />}
       <LicenseLockOverlay />
       {isAuthenticated && <TrialExpiryBanner />}
       <AppInner />

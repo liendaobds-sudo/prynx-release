@@ -198,9 +198,9 @@ describe('isLicenseTokenValid', () => {
     expect(isLicenseTokenValid(makeV3Token(), VALID_ANCHOR())).toBe(true);
   });
 
-  it('token v3 quá 900 giây hoặc issued-at quá xa tương lai bị từ chối', () => {
+  it('token v3 quá 72 giờ hoặc issued-at quá xa tương lai bị từ chối', () => {
     const now = NOW();
-    expect(readLicenseTokenClaims(makeV3Token(now + 901, { iat: now }))).toBeNull();
+    expect(readLicenseTokenClaims(makeV3Token(now + 72 * 60 * 60 + 1, { iat: now }))).toBeNull();
     const future = makeV3Token(now + 10 * 60, { iat: now + 5 * 60 + 1 });
     expect(isLicenseTokenValid(future, VALID_ANCHOR(), now * 1000)).toBe(false);
   });

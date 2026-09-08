@@ -95,7 +95,12 @@ def _draw_ponts_on_page(page, placements, pont_config, sheet_w, sheet_h, margin_
             return
         g_shape = page.new_shape()
         g_shape.draw_line(g_start, g_end)
-        g_shape.finish(color=color, width=thick_pt, oc=ocg_xref) if ocg_xref else g_shape.finish(color=color, width=thick_pt)
+        g_shape.finish(
+            color=color,
+            width=thick_pt,
+            oc=ocg_xref,
+            item_name=item_name,
+        )
         g_shape.commit()
 
     draw_guide(pont_config.get('guide1Enabled', False), pont_config.get('guide1Pos', 'BL'),

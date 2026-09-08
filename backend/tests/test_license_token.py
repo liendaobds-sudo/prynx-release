@@ -80,10 +80,11 @@ def _payload_v3(
     key="ABCDE-FGHIJ-KLMNO",
     product="prynx",
     ttl=900,
+    iat=None,
     **overrides,
 ):
     import hashlib
-    now = int(time.time())
+    now = int(time.time()) if iat is None else iat
     thumbprint = "A" * 43
     device_key_id = "d3_" + thumbprint
     payload = {
@@ -145,7 +146,8 @@ def test_v2_challenge_mismatch_rejected(signing):
     assert not ok and "challenge" in reason.lower()
 
 
-def test_valid_v3_token_has_short_ttl_and_device_confirmation(signing):
+def test_valid_v3_token_has_legacy_short_ttl_and_device_confirmation(signing):
+    """Token V3 cũ 15 phút vẫn hợp lệ trong thời gian rollout chính sách 72 giờ."""
     payload = _payload_v3()
     token = _make_token(signing, payload)
 
@@ -181,9 +183,20 @@ def test_v3_downgrade_hybrid_or_binding_mismatch_rejected(signing, overrides, ne
     assert not ok and needle in reason.lower()
 
 
-def test_v3_claim_lifetime_over_900_seconds_is_rejected(signing):
+def test_v3_claim_lifetime_at_72_hours_is_accepted(signing):
+    payload = _payload_v3(ttl=lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS)
+    token = _make_token(signing, payload)
+    ok, reason = lg.verify_license_token(
+        token,
+        payload["d"],
+        "ABCDE-FGHIJ-KLMNO",
+    )
+    assert ok, reason
+
+
+def test_v3_claim_lifetime_over_72_hours_is_rejected(signing):
     payload = _payload_v3()
-    payload["exp"] = payload["iat"] + 901
+    payload["exp"] = payload["iat"] + lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS + 1
     token = _make_token(signing, payload)
     ok, reason = lg.verify_license_token(
         token,
@@ -191,6 +204,61 @@ def test_v3_claim_lifetime_over_900_seconds_is_rejected(signing):
         "ABCDE-FGHIJ-KLMNO",
     )
     assert not ok and "lifetime" in reason.lower()
+
+
+def test_v3_72_hour_token_survives_weekend_time_advancement(signing, monkeypatch):
+    """Token 72 giờ dùng được khi app chạy offline qua cuối tuần."""
+    issued_at = 1_800_000_000
+    payload = _payload_v3(
+        iat=issued_at,
+        ttl=lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS,
+    )
+    token = _make_token(signing, payload)
+
+    # Sau 48 giờ (thời lượng cuối tuần thông thường), token vẫn còn hạn.
+    monkeypatch.setattr(lg.time, "time", lambda: issued_at + 48 * 60 * 60)
+    ok, reason = lg.verify_license_token(token, payload["d"], "ABCDE-FGHIJ-KLMNO")
+    assert ok, reason
+
+    # Gần sát mốc 72 giờ vẫn hợp lệ; đây là cận hành vi chứ không chỉ metadata.
+    monkeypatch.setattr(
+        lg.time,
+        "time",
+        lambda: issued_at + lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS - 1,
+    )
+    ok, reason = lg.verify_license_token(token, payload["d"], "ABCDE-FGHIJ-KLMNO")
+    assert ok, reason
+
+
+def test_v3_72_hour_token_expires_after_time_advancement(signing, monkeypatch):
+    issued_at = 1_800_000_000
+    payload = _payload_v3(
+        iat=issued_at,
+        ttl=lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS,
+    )
+    token = _make_token(signing, payload)
+
+    monkeypatch.setattr(
+        lg.time,
+        "time",
+        lambda: issued_at + lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS + 1,
+    )
+    ok, reason = lg.verify_license_token(token, payload["d"], "ABCDE-FGHIJ-KLMNO")
+    assert not ok and "expired" in reason.lower()
+
+
+def test_v3_72_hour_token_tampered_signature_is_rejected(signing):
+    payload = _payload_v3(ttl=lg._LICENSE_TOKEN_V3_MAX_TTL_SECONDS)
+    token = _make_token(signing, payload)
+    payload_b64, sig_b64 = token.split(".", 1)
+    tampered_sig = ("A" if sig_b64[0] != "A" else "B") + sig_b64[1:]
+
+    ok, reason = lg.verify_license_token(
+        payload_b64 + "." + tampered_sig,
+        payload["d"],
+        "ABCDE-FGHIJ-KLMNO",
+    )
+    assert not ok and "signature" in reason.lower()
 
 
 def test_v3_token_copied_to_another_device_id_is_rejected(signing):

@@ -115,6 +115,107 @@ class ProductionRenderResult:
         return len(self.pages)
 
 
+@dataclass(frozen=True, slots=True)
+class _PontLayerContext:
+    """Các ref OCG/property dùng chung cho một artifact true-shape."""
+
+    group_property: str
+    item_property: str
+    group_ref: pikepdf.Object
+    item_name: str
+
+
+def _new_pont_ocg(output: pikepdf.Pdf, name: str) -> pikepdf.Object:
+    """Tạo OCG tương thích với layer mà lane lưới cũ đã xuất."""
+
+    return output.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/OCG"),
+        "/Name": pikepdf.String(name),
+        "/Intent": pikepdf.Array([pikepdf.Name("/View"), pikepdf.Name("/Design")]),
+        "/Usage": pikepdf.Dictionary({
+            "/CreatorInfo": pikepdf.Dictionary({
+                "/Creator": pikepdf.String("Adobe Illustrator 29.8"),
+                "/Subtype": pikepdf.Name("/Artwork"),
+            }),
+        }),
+    }))
+
+
+def _install_pont_layers(
+    output: pikepdf.Pdf,
+    config: Mapping[str, Any],
+) -> _PontLayerContext:
+    """Đăng ký cây Graphtec → layer → group trước khi ghi trang.
+
+    NEST (audit 2026-09-08 §PONTLAYER.RE.1): production writer trước đây chỉ
+    phát stream raw, dù bundle đã mang đủ tên. OCG được tạo một lần cho toàn
+    artifact; page resource chỉ trỏ tới group/item nên không sinh cây trùng.
+    """
+
+    layer_name = str(config.get("layerName") or "").strip()
+    group_name = str(config.get("groupName") or "").strip()
+    item_name = str(config.get("itemName") or "").strip()
+    if not layer_name or not group_name or not item_name:
+        raise ManifestRenderContractError(
+            "marks.pont.config phải có layerName, groupName và itemName không rỗng."
+        )
+
+    graph_info_name = str(config.get("layerInfoName") or "").strip()
+    graph_ref = (
+        _new_pont_ocg(output, graph_info_name)
+        if bool(config.get("isGraphtec")) and graph_info_name
+        else None
+    )
+    layer_ref = _new_pont_ocg(output, layer_name)
+    group_ref = _new_pont_ocg(output, group_name)
+    all_refs = [ref for ref in (graph_ref, layer_ref, group_ref) if ref is not None]
+    order = pikepdf.Array([])
+    if graph_ref is not None:
+        order.append(graph_ref)
+    order.append(layer_ref)
+    order.append(pikepdf.Array([group_ref]))
+    output.Root["/OCProperties"] = pikepdf.Dictionary({
+        "/OCGs": pikepdf.Array(all_refs),
+        "/D": pikepdf.Dictionary({
+            "/BaseState": pikepdf.Name("/ON"),
+            "/ON": pikepdf.Array(all_refs),
+            "/OFF": pikepdf.Array([]),
+            "/Order": order,
+        }),
+    })
+
+    # Tên property PDF là ASCII; tên hiển thị thật nằm trong /NM và /Name.
+    for property_name in ("MC_PONT_GROUP", "NM_PONT_ITEM"):
+        if not property_name.isascii():
+            raise ManifestRenderContractError("Tên property boong không hợp lệ.")
+    return _PontLayerContext(
+        group_property="MC_PONT_GROUP",
+        item_property="NM_PONT_ITEM",
+        group_ref=group_ref,
+        item_name=item_name,
+    )
+
+
+def _attach_pont_page_properties(
+    page: pikepdf.Page,
+    context: _PontLayerContext,
+) -> None:
+    """Gắn `/Resources/Properties` cho OCG group và marked-content `/NM`."""
+
+    resources = page.obj.get("/Resources")
+    if not isinstance(resources, pikepdf.Dictionary):
+        resources = pikepdf.Dictionary()
+        page.obj["/Resources"] = resources
+    properties = resources.get("/Properties")
+    if not isinstance(properties, pikepdf.Dictionary):
+        properties = pikepdf.Dictionary()
+        resources["/Properties"] = properties
+    properties[pikepdf.Name(f"/{context.group_property}")] = context.group_ref
+    properties[pikepdf.Name(f"/{context.item_property}")] = pikepdf.Dictionary({
+        "/NM": pikepdf.String(context.item_name),
+    })
+
+
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ManifestRenderContractError(f"{field} phải là object.")
@@ -1014,7 +1115,9 @@ _L_CORNER_POINTS: dict[str, dict[str, tuple[tuple[int, int], ...]]] = {
 
 
 def _pont_stream(
-    pont: Mapping[str, Any], *, width_pt: float, height_pt: float
+    pont: Mapping[str, Any], *, width_pt: float, height_pt: float,
+    oc_property_name: str | None = None,
+    item_property_name: str | None = None,
 ) -> str:
     """Toán tử vẽ bốn ốc góc + guide. Trả chuỗi rỗng khi không có ốc.
 
@@ -1046,38 +1149,51 @@ def _pont_stream(
 
     fill = " ".join(_format_number(value) for value in _PONT_REGISTRATION_CMYK)
     operations = ["q"]
+    if oc_property_name:
+        operations.append(f"/OC /{oc_property_name} BDC")
+
+    def wrap_item(parts: Sequence[str]) -> list[str]:
+        if not item_property_name:
+            return list(parts)
+        return [f"/Span /{item_property_name} BDC", *parts, "EMC"]
 
     centers = _pont_corner_centers_pt(
         config, width_pt=width_pt, height_pt=height_pt, radius_pt=radius_pt
     )
     if shape == "circle":
         # Ốc tròn là hình ĐẶC: lane cũ `finish(color, fill=color, width=0)`.
-        operations.append(f"{fill} k")
         for cx, cy, _name in centers:
-            operations.extend(_circle_stream(cx, cy, radius_pt))
-            operations.append("f")
+            mark = [f"{fill} k", *_circle_stream(cx, cy, radius_pt), "f"]
+            operations.extend(wrap_item(mark))
     elif shape in _L_CORNER_POINTS:
         # Góc L là MỘT polyline liền ba điểm, có miter join thật ở đỉnh — không phải hai
         # đoạn rời chạm nhau. `0 j` = miter, đúng `line_join=0` của lane cũ.
-        operations.append(f"{fill} K")
-        operations.append(f"{_format_number(thickness_pt)} w")
-        operations.append("0 j")
         table = _L_CORNER_POINTS[shape]
         for cx, cy, name in centers:
+            mark = [
+                f"{fill} K",
+                f"{_format_number(thickness_pt)} w",
+                "0 j",
+            ]
             for index, (sign_x, sign_y) in enumerate(table[name]):
                 x_pt = cx + sign_x * radius_pt
                 y_pt = cy + sign_y * radius_pt
                 verb = "m" if index == 0 else "l"
-                operations.append(
+                mark.append(
                     f"{_format_number(x_pt)} {_format_number(y_pt)} {verb}"
                 )
-            operations.append("S")
+            mark.append("S")
+            operations.extend(wrap_item(mark))
     else:
         raise ManifestRenderContractError(
             "marks.pont.config.shape không được writer hỗ trợ."
         )
 
-    operations.append(_pont_guides_stream(config, width_pt=width_pt, height_pt=height_pt))
+    guides = _pont_guides_stream(config, width_pt=width_pt, height_pt=height_pt)
+    if guides:
+        operations.extend(wrap_item([guides]))
+    if oc_property_name:
+        operations.append("EMC")
     operations.append("Q")
     return "\n".join(part for part in operations if part) + "\n"
 
@@ -1321,6 +1437,7 @@ def render_production_nesting(
 
     payload = _mapping(production_request, "productionRequest")
     bundle = _mapping(payload.get("renderBundle"), "productionRequest.renderBundle")
+    flow = _mapping(bundle.get("flow"), "renderBundle.flow")
     engine_request = _mapping(
         payload.get("engineRequest"), "productionRequest.engineRequest"
     )
@@ -1377,6 +1494,8 @@ def render_production_nesting(
     # dừng ở đó.
     marks = _mapping(bundle.get("marks"), "renderBundle.marks")
     pont_sides = _pont_sides(bundle, sides)
+    pont = _mapping(marks.get("pont"), "renderBundle.marks.pont")
+    pont_layer_context: _PontLayerContext | None = None
     duplex_registration = marks.get("duplexRegistration")
     if not isinstance(duplex_registration, bool):
         raise ManifestRenderContractError(
@@ -1418,6 +1537,17 @@ def render_production_nesting(
         return part_contexts[key]
 
     output = pikepdf.Pdf.new()
+    # OCG phải đăng ký trên chính tài liệu đích, không trên tài liệu tạm.
+    if pont.get("type") != "none":
+        pont_layer_context = _install_pont_layers(
+            output,
+            _mapping(pont.get("config"), "renderBundle.marks.pont.config"),
+        )
+    pont_ocg_sides = (
+        frozenset({"front", CUT_SIDE})
+        if flow.get("tool") == "cnc_imposer"
+        else (frozenset({CUT_SIDE}) if CUT_SIDE in sides else frozenset({"front"}))
+    )
     # PERF (audit 2026-09-02 §PERF-NEST-06): phase cha này là tổng inclusive của
     # toàn bộ dựng trang; embed/form-paint là phase con, không được cộng thêm vào tổng.
     base_sample = start_perf_stage()
@@ -1463,11 +1593,23 @@ def render_production_nesting(
                         instance_ids.append(resolved.instance_id)
                     stream_parts.append("Q\n")
                     if side in pont_sides:
+                        if pont_layer_context is not None:
+                            _attach_pont_page_properties(page, pont_layer_context)
                         stream_parts.append(
                             _pont_stream(
-                                _mapping(marks.get("pont"), "renderBundle.marks.pont"),
+                                pont,
                                 width_pt=width_pt,
                                 height_pt=height_pt,
+                                oc_property_name=(
+                                    pont_layer_context.group_property
+                                    if pont_layer_context is not None and side in pont_ocg_sides
+                                    else None
+                                ),
+                                item_property_name=(
+                                    pont_layer_context.item_property
+                                    if pont_layer_context is not None
+                                    else None
+                                ),
                             )
                         )
                     page.contents_add(
@@ -1508,10 +1650,22 @@ def render_production_nesting(
                     if side in pont_sides:
                         # Vẽ ốc SAU artwork để không bị hình đè lên. Ốc là dấu canh của
                         # thợ, phải nhìn thấy được.
+                        if pont_layer_context is not None:
+                            _attach_pont_page_properties(page, pont_layer_context)
                         pont_stream = _pont_stream(
-                            _mapping(marks.get("pont"), "renderBundle.marks.pont"),
+                            pont,
                             width_pt=width_pt,
                             height_pt=height_pt,
+                            oc_property_name=(
+                                pont_layer_context.group_property
+                                if pont_layer_context is not None and side in pont_ocg_sides
+                                else None
+                            ),
+                            item_property_name=(
+                                pont_layer_context.item_property
+                                if pont_layer_context is not None
+                                else None
+                            ),
                         )
                         if pont_stream:
                             page.contents_add(

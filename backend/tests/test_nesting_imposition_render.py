@@ -1026,6 +1026,100 @@ def test_oc_tron_ve_du_bon_goc_tren_ca_trang_in_va_trang_cut(workdir: Path) -> N
         assert raw.count(" c\n") >= 16, f"trang {index} không đủ cung tròn"
 
 
+def _ocg_name_list(path: Path) -> list[str]:
+    with pikepdf.Pdf.open(str(path)) as pdf:
+        oc_props = pdf.Root.get("/OCProperties")
+        return [str(item.get("/Name", "")) for item in oc_props.get("/OCGs", [])]
+
+
+def test_true_shape_sticker_giu_cay_graphtec_va_nm_tren_artifact(
+    workdir: Path,
+) -> None:
+    """Tên boong Sticker phải tồn tại trên PDF production, không chỉ trong bundle."""
+
+    source = workdir / "nguon.pdf"
+    _make_full_ink_source(source)
+    bundle = _bundle_with_pont(
+        source,
+        pont={
+            "type": "custom",
+            "config": _pont_config(
+                isGraphtec=True,
+                layerInfoName="AUDIT_GRAPH_INFO",
+                layerName="AUDIT_LAYER",
+                groupName="AUDIT_GROUP",
+                itemName="AUDIT_ITEM",
+            ),
+        },
+    )
+    production = _production(source, bundle=bundle, quantity=1)
+    manifest = _manifest(production, poses=[_pose(60.0, 60.0)])
+    output = workdir / "sticker-true-shape-layered.pdf"
+    render_production_nesting(
+        production_request={
+            "engineRequest": production.engine_request,
+            "renderBundle": production.render_bundle,
+            "renderBundleHash": production.render_bundle_hash,
+        },
+        manifest=manifest,
+        source_paths={LOCATOR: source},
+        output_path=output,
+    )
+
+    assert _ocg_name_list(output) == [
+        "AUDIT_GRAPH_INFO", "AUDIT_LAYER", "AUDIT_GROUP",
+    ]
+    raw_cut = _raw(output, 1)
+    assert "/OC /MC_PONT_GROUP BDC" in raw_cut
+    assert raw_cut.count("/Span /NM_PONT_ITEM BDC") >= 4
+    with pikepdf.Pdf.open(str(output)) as pdf:
+        props = pdf.pages[1].Resources["/Properties"]
+        group_ref = props["/MC_PONT_GROUP"]
+        assert str(group_ref.get("/Name", "")) == "AUDIT_GROUP"
+        assert str(props["/NM_PONT_ITEM"].get("/NM", "")) == "AUDIT_ITEM"
+
+
+def test_true_shape_cnc_giu_ocg_tren_front_va_cut_khong_o_back(
+    workdir: Path,
+) -> None:
+    """CNC true-shape giữ tên trên Front/CUT và không gắn boong lên Back."""
+
+    source = workdir / "nguon-cnc.pdf"
+    _make_full_ink_source(source, page_count=2)
+    bundle = _bundle_cnc_duplex_with_pont(source, flip_edge="long")
+    bundle["marks"]["pont"]["config"].update({
+        "isGraphtec": True,
+        "layerInfoName": "AUDIT_GRAPH_INFO",
+        "layerName": "AUDIT_LAYER",
+        "groupName": "AUDIT_GROUP",
+        "itemName": "AUDIT_ITEM",
+    })
+    production = _production(source, bundle=bundle, quantity=1)
+    manifest = _manifest(production, poses=[_pose(60.0, 60.0)])
+    output = workdir / "cnc-true-shape-layered.pdf"
+    render_production_nesting(
+        production_request={
+            "engineRequest": production.engine_request,
+            "renderBundle": production.render_bundle,
+            "renderBundleHash": production.render_bundle_hash,
+        },
+        manifest=manifest,
+        source_paths={LOCATOR: source},
+        output_path=output,
+    )
+
+    assert _ocg_name_list(output) == [
+        "AUDIT_GRAPH_INFO", "AUDIT_LAYER", "AUDIT_GROUP",
+    ]
+    for page_index in (0, 2):
+        raw = _raw(output, page_index)
+        assert "/OC /MC_PONT_GROUP BDC" in raw
+        assert raw.count("/Span /NM_PONT_ITEM BDC") >= 4
+    raw_back = _raw(output, 1)
+    assert "/OC /MC_PONT_GROUP BDC" not in raw_back
+    assert "/Span /NM_PONT_ITEM BDC" not in raw_back
+
+
 def test_oc_dung_vi_tri_bon_goc_do_bang_pixel(workdir: Path) -> None:
     """Chốt hình học thật: có mực ở đúng tâm bốn ốc, và không có ở giữa tờ.
 

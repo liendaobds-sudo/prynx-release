@@ -47,18 +47,25 @@ export async function savePrintFilesToFolder(
     const srcBytes = new Uint8Array(await getFileArrayBuffer(resultBlob));
     const srcDoc = await PDFDocument.load(srcBytes);
     const pageCount = srcDoc.getPageCount();
+    const sharedMasterCut = cfg.sharedMasterCut === true
+        || (!cfg.cncMode && cfg.separateCut && pageCount % 2 === 1);
+    const effectiveCfg = sharedMasterCut === cfg.sharedMasterCut
+        ? cfg
+        : { ...cfg, sharedMasterCut };
 
     let types = opts.types;
     if (!types || !types.length) {
         const per = Math.max(1, opts.pagesPerType || 1);
-        const count = Math.max(1, Math.floor(pageCount / per));
+        const count = sharedMasterCut
+            ? Math.max(1, pageCount - 1)
+            : Math.max(1, Math.floor(pageCount / per));
         types = Array.from({ length: count }, (_, i) => ({
             label: opts.labelName || `Trang ${i + 1}`,
             sheetCount: 0,
         }));
     }
 
-    const plan = buildSavePlan(types, cfg);
+    const plan = buildSavePlan(types, effectiveCfg);
     const sep = folder.includes('\\') ? '\\' : '/';
     const joined = (...p: string[]) => p.filter(Boolean).join(sep);
 
@@ -74,7 +81,12 @@ export async function savePrintFilesToFolder(
         const out = await PDFDocument.create();
         // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties → file in tách ra mất lớp
         // (kể cả lớp dao cắt do bình bản sinh, máy bế dò theo tên lớp) và lộ lớp đã ẩn.
-        const ocTransfer = beginOptionalContentTransfer([srcDoc]);
+        const preservePontLayers = it.kind === 'cut'
+            || (cfg.cncMode === true && it.kind === 'front');
+        const ocTransfer = beginOptionalContentTransfer(
+            [srcDoc],
+            preservePontLayers ? { preserveUnreferencedOcgs: true } : undefined,
+        );
         try {
             const [pg] = await out.copyPages(srcDoc, [it.pageIndex]);
             out.addPage(pg);

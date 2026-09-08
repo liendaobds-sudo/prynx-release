@@ -125,11 +125,10 @@ def _merge_layered_chunks(chunk_paths: list[str], output_path: str) -> None:
             src_pdf = pikepdf.Pdf.open(chunk_path)
             try:
                 src_oc_props = src_pdf.Root.get("/OCProperties")
-                chunk_ocg_map = {}
+                ocg_remap = {}
                 if src_oc_props:
                     final_oc_props = final_doc.Root.get("/OCProperties")
                     if final_oc_props:
-                        ocg_remap = {}
                         for src_ocg in src_oc_props.get("/OCGs", []):
                             try:
                                 new_ocg = final_doc.copy_foreign(src_ocg)
@@ -139,9 +138,6 @@ def _merge_layered_chunks(chunk_paths: list[str], output_path: str) -> None:
                                     default_cfg["/ON"].append(new_ocg)
                                 if hasattr(src_ocg, "objgen"):
                                     ocg_remap[src_ocg.objgen] = new_ocg
-                                name = str(src_ocg.get("/Name", ""))
-                                if name:
-                                    chunk_ocg_map[name] = new_ocg
                             except Exception:
                                 pass
 
@@ -171,13 +167,13 @@ def _merge_layered_chunks(chunk_paths: list[str], output_path: str) -> None:
                                 props = page.Resources["/Properties"]
                                 for key in list(props.keys()):
                                     value = props[key]
-                                    if (
-                                        isinstance(value, pikepdf.Dictionary)
-                                        and value.get("/Type") == "/OCG"
-                                    ):
-                                        name = str(value.get("/Name", ""))
-                                        if name in chunk_ocg_map:
-                                            props[key] = chunk_ocg_map[name]
+                                    # PONTLAYER FIX (audit 2026-09-08 §PONTLAYER.RE.7):
+                                    # layer/group tùy chỉnh lặp tên ở nhiều sheet. Remap
+                                    # theo object identity, không theo `/Name`; dùng tên làm
+                                    # khóa khiến mọi trang của chunk sau trỏ OCG của sheet cuối.
+                                    objgen = getattr(value, "objgen", None)
+                                    if objgen in ocg_remap:
+                                        props[key] = ocg_remap[objgen]
                         except Exception:
                             pass
             finally:

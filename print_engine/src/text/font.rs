@@ -220,6 +220,11 @@ pub struct LoadedFont {
     /// `true` khi `program` là font THAY THẾ (font không nhúng trong file) —
     /// glyph vẽ ra chỉ gần đúng hình dạng gốc nên caller phải hạ `accuracy`.
     substituted: bool,
+    /// Lý do CMap Type0 không thể giải mã an toàn.
+    ///
+    /// Giữ CMap hai byte chỉ để tiến con trỏ trong chuỗi; glyph vẫn bị chặn ở
+    /// interpreter thay vì rơi về identity rồi vẽ nhầm CID.
+    unsupported_cmap: Option<String>,
     /// Cache đường viền theo mã ký tự (hoặc CID với Type0).
     cache: RefCell<HashMap<u32, Option<Arc<Path>>>>,
 }
@@ -242,6 +247,11 @@ impl LoadedFont {
     /// `true` nếu chương trình font là bản thay thế, không phải font trong file.
     pub fn is_substituted(&self) -> bool {
         self.substituted
+    }
+
+    /// Trả lý do CMap Type0 không được hỗ trợ, nếu có.
+    pub(crate) fn unsupported_cmap(&self) -> Option<&str> {
+        self.unsupported_cmap.as_deref()
     }
 
     pub fn describe(&self) -> String {
@@ -565,6 +575,7 @@ fn load_simple(
         is_type0: false,
         base_font,
         substituted: false,
+        unsupported_cmap: None,
         cache: RefCell::new(HashMap::new()),
     }
 }
@@ -618,22 +629,41 @@ fn load_simple_widths(
 
 fn load_type0(doc: &Document, font_dict: &Dictionary, base_font: String) -> LoadedFont {
     // CMap của font Type0.
+    let mut unsupported_cmap: Option<String> = None;
     let cmap = match pdf::dict_get(doc, font_dict, "Encoding") {
         Some(Object::Name(_)) => {
             let name = pdf::dict_get(doc, font_dict, "Encoding")
                 .and_then(pdf::name_str)
                 .unwrap_or_default();
-            if name.starts_with("Identity") {
+            if name == "Identity-H" {
                 CMap::identity_two_byte()
             } else {
-                // CMap dựng sẵn của CJK (UniJIS-UCS2-H…) chưa có bảng. Dùng
-                // identity 2 byte làm xấp xỉ; sai CID nhưng giữ đúng nhịp 2 byte
-                // nên phần còn lại của chuỗi không bị lệch.
+                // CMap dựng sẵn của CJK (UniJIS-UCS2-H…) chưa có bảng. Không
+                // được xấp xỉ identity: CID sai vẫn có thể trông như chữ đúng.
+                // Giữ nhịp 2 byte để tiếp tục duyệt stream, nhưng chặn glyph ở
+                // interpreter và báo trang không đáng tin.
+                unsupported_cmap = Some(format!(
+                    "CMap Type0 chưa hỗ trợ: /{}",
+                    if name.is_empty() {
+                        "(không tên)"
+                    } else {
+                        &name
+                    }
+                ));
                 CMap::identity_two_byte()
             }
         }
-        Some(obj @ Object::Stream(_)) => parse_cmap_stream(doc, obj),
-        _ => CMap::identity_two_byte(),
+        Some(obj @ Object::Stream(_)) => match parse_cmap_stream(doc, obj) {
+            Some(cmap) => cmap,
+            None => {
+                unsupported_cmap = Some("CMap Type0 nhúng không hợp lệ".into());
+                CMap::identity_two_byte()
+            }
+        },
+        _ => {
+            unsupported_cmap = Some("CMap Type0 thiếu hoặc không hợp lệ".into());
+            CMap::identity_two_byte()
+        }
     };
 
     // Font con (DescendantFonts) mang chương trình font và bề rộng.
@@ -683,6 +713,7 @@ fn load_type0(doc: &Document, font_dict: &Dictionary, base_font: String) -> Load
         is_type0: true,
         base_font,
         substituted: false,
+        unsupported_cmap,
         cache: RefCell::new(HashMap::new()),
     }
 }
@@ -733,13 +764,13 @@ fn parse_cid_widths(doc: &Document, cid_font: &Dictionary) -> Vec<(u32, u32, f32
 }
 
 /// Đọc CMap nhúng: lấy `codespacerange`, `cidrange`, `cidchar`.
-fn parse_cmap_stream(doc: &Document, obj: &Object) -> CMap {
-    let Some(data) = pdf::stream_data(doc, obj) else {
-        return CMap::identity_two_byte();
-    };
+fn parse_cmap_stream(doc: &Document, obj: &Object) -> Option<CMap> {
+    let data = pdf::stream_data(doc, obj)?;
     let text = String::from_utf8_lossy(&data);
     let mut ranges = Vec::new();
     let mut codespace = Vec::new();
+    let mut malformed = false;
+    let mut external_base = false;
 
     let mut tokens = text.split_whitespace().peekable();
     let mut section: Option<&str> = None;
@@ -762,34 +793,58 @@ fn parse_cmap_stream(doc: &Document, obj: &Object) -> CMap {
             "endcodespacerange" | "endcidrange" | "endcidchar" => {
                 match section {
                     Some("codespace") => {
+                        if buf.len() % 2 != 0 {
+                            malformed = true;
+                        }
                         for pair in buf.chunks(2) {
                             if let [lo, hi] = pair {
-                                if let (Some((n, l)), Some((_, h))) = (hex_token(lo), hex_token(hi))
+                                if let (Some((n, l)), Some((m, h))) = (hex_token(lo), hex_token(hi))
                                 {
-                                    codespace.push((n, l, h));
+                                    if n == m && l <= h {
+                                        codespace.push((n, l, h));
+                                    } else {
+                                        malformed = true;
+                                    }
+                                } else {
+                                    malformed = true;
                                 }
                             }
                         }
                     }
                     Some("cidrange") => {
+                        if buf.len() % 3 != 0 {
+                            malformed = true;
+                        }
                         for triple in buf.chunks(3) {
                             if let [lo, hi, cid] = triple {
-                                if let (Some((n, l)), Some((_, h))) = (hex_token(lo), hex_token(hi))
+                                if let (Some((n, l)), Some((m, h))) = (hex_token(lo), hex_token(hi))
                                 {
-                                    if let Ok(c) = cid.parse::<u32>() {
-                                        ranges.push((n, l, h, c));
+                                    if n == m && l <= h {
+                                        if let Some(c) = cid_token(cid) {
+                                            ranges.push((n, l, h, c));
+                                        } else {
+                                            malformed = true;
+                                        }
+                                    } else {
+                                        malformed = true;
                                     }
+                                } else {
+                                    malformed = true;
                                 }
                             }
                         }
                     }
                     Some("cidchar") => {
+                        if buf.len() % 2 != 0 {
+                            malformed = true;
+                        }
                         for pair in buf.chunks(2) {
                             if let [code, cid] = pair {
-                                if let (Some((n, c)), Ok(id)) =
-                                    (hex_token(code), cid.parse::<u32>())
+                                if let (Some((n, c)), Some(id)) = (hex_token(code), cid_token(cid))
                                 {
                                     ranges.push((n, c, c, id));
+                                } else {
+                                    malformed = true;
                                 }
                             }
                         }
@@ -799,22 +854,39 @@ fn parse_cmap_stream(doc: &Document, obj: &Object) -> CMap {
                 section = None;
                 buf.clear();
             }
+            // `usecmap` kế thừa bảng dựng sẵn bên ngoài parser này; các mã
+            // không ghi đè sẽ bị tra identity nếu vẫn tiếp tục, nên từ chối cả
+            // stream thay vì dựng một CMap nửa đúng nửa sai.
+            "usecmap" => external_base = true,
             other if section.is_some() => buf.push(other.to_string()),
             _ => {}
         }
     }
 
-    if codespace.is_empty() && ranges.is_empty() {
-        return CMap::identity_two_byte();
+    // Stream kết thúc khi một section vẫn còn mở là malformed; không được dùng
+    // phần ánh xạ đã đọc dở để suy ra identity.
+    if section.is_some() {
+        malformed = true;
     }
-    if codespace.is_empty() {
-        codespace.push((2, 0, 0xFFFF));
+
+    // CMap nhúng phải có cả codespace và ít nhất một ánh xạ. Thiếu một trong hai
+    // thì không thể biết byte nào là mã hợp lệ; rơi về identity sẽ vẽ nhầm glyph.
+    if malformed || external_base || codespace.is_empty() || ranges.is_empty() {
+        return None;
     }
-    CMap {
+    Some(CMap {
         identity: false,
         ranges,
         codespace,
-    }
+    })
+}
+
+/// CID đích trong CMap thường là số thập phân; chấp nhận thêm dạng hex để tránh
+/// coi các stream hợp lệ nhưng viết `<0001>` là malformed rồi bỏ cả trang.
+fn cid_token(tok: &str) -> Option<u32> {
+    hex_token(tok)
+        .map(|(_, value)| value)
+        .or_else(|| tok.parse().ok())
 }
 
 /// `<0041>` → (số byte, giá trị).
@@ -858,6 +930,7 @@ fn load_type3(doc: &Document, font_dict: &Dictionary, base_font: String) -> Load
         is_type0: false,
         base_font,
         substituted: false,
+        unsupported_cmap: None,
         cache: RefCell::new(HashMap::new()),
     }
 }
@@ -897,6 +970,7 @@ fn load_program(doc: &Document, descriptor: Option<&Dictionary>) -> FontProgram 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::{dictionary, Stream};
 
     #[test]
     fn simple_widths_lookup_and_missing() {
@@ -989,10 +1063,46 @@ mod tests {
     }
 
     #[test]
-    fn parse_cmap_stream_falls_back_to_identity_when_empty() {
+    fn parse_cmap_stream_rejects_empty_stream() {
         let doc = Document::new();
-        let cmap = parse_cmap_stream(&doc, &Object::Null);
-        assert!(cmap.identity);
+        assert!(parse_cmap_stream(&doc, &Object::Null).is_none());
+    }
+
+    #[test]
+    fn parse_cmap_stream_requires_codespace_and_mapping() {
+        let doc = Document::new();
+        let no_codespace = Object::Stream(Stream::new(
+            dictionary! {},
+            b"begincidchar <0001> 10 endcidchar".to_vec(),
+        ));
+        assert!(parse_cmap_stream(&doc, &no_codespace).is_none());
+
+        let no_mapping = Object::Stream(Stream::new(
+            dictionary! {},
+            b"begincodespacerange <0001> <0002> endcodespacerange".to_vec(),
+        ));
+        assert!(parse_cmap_stream(&doc, &no_mapping).is_none());
+    }
+
+    #[test]
+    fn named_type0_cmap_is_fail_closed_except_identity_h() {
+        let doc = Document::new();
+        let identity_h = load_font(
+            &doc,
+            &dictionary! { "Subtype" => "Type0", "Encoding" => "Identity-H" },
+        );
+        assert!(identity_h.unsupported_cmap().is_none());
+
+        for name in ["Identity-V", "UniJIS-UCS2-H"] {
+            let font = load_font(
+                &doc,
+                &dictionary! { "Subtype" => "Type0", "Encoding" => name },
+            );
+            assert_eq!(
+                font.unsupported_cmap(),
+                Some(format!("CMap Type0 chưa hỗ trợ: /{name}").as_str())
+            );
+        }
     }
 
     #[test]
@@ -1027,6 +1137,7 @@ mod tests {
             is_type0: false,
             base_font: "AAAAAA+DejaVuSans".into(),
             substituted: false,
+            unsupported_cmap: None,
             cache: RefCell::new(HashMap::new()),
         };
         assert_eq!(font.truetype_gid(&face, 0x80), Some(expected));
@@ -1044,6 +1155,7 @@ mod tests {
             is_type0: false,
             base_font: "Test".into(),
             substituted: false,
+            unsupported_cmap: None,
             cache: RefCell::new(HashMap::new()),
         };
         assert!(font.cannot_draw());
@@ -1064,6 +1176,7 @@ mod tests {
             is_type0: false,
             base_font: "Test".into(),
             substituted: false,
+            unsupported_cmap: None,
             cache: RefCell::new(HashMap::new()),
         };
         assert!(font.advance(65) > 0.0);

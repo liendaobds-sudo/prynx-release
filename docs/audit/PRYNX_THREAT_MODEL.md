@@ -72,6 +72,11 @@
   symbol gate và behavior smoke thật trên PNG có pHYs + alpha + RGB ICC, kiểm MediaBox, `/SMask` và
   `/ICCBased /N 3`. Secret không nằm trong repo/artifact/log và output cũ không được tái sử dụng âm thầm.
 - Migration/RPC/RLS phải fail-closed, chống race và không trao quyền mặc định cho anon/authenticated ngoài chủ đích.
+- License V3 có lease offline tối đa **72 giờ** để hỗ trợ cuối tuần; heartbeat online
+  vẫn chạy theo nhịp 10 phút, clock anchor vẫn bắt buộc và native cache binding
+  trong RAM vẫn có TTL riêng. Đây là accepted trade-off: key bị thu hồi khi máy
+  hoàn toàn offline có thể còn dùng được tối đa 72 giờ; không được mô tả là revoke
+  tức thời trong UI/tài liệu phát hành.
 
 ## 6. Accepted risk và non-goal
 

@@ -15,6 +15,8 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { useEffect, useState } from 'react';
 import { inspectResizeTransparency } from '../../lib/api';
+import { isSupportedImageFileName, readImageDpi } from '../../lib/imageNormalizer';
+import { getFileArrayBuffer } from '../../lib/utils';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
 
@@ -54,6 +56,11 @@ const SCALE_MODE_OPTIONS = (
 
 const DPI_PRESETS = [150, 300, 600];
 
+function pixelsAtDpi(mm: number, dpi: number): number {
+    if (!(mm > 0) || !(dpi > 0)) return 0;
+    return Math.max(1, Math.round((mm / 25.4) * dpi));
+}
+
 type DpiChoice = 'auto' | 'off' | 'custom';
 type ResizeRasterMode = 'auto' | 'vector' | 'raster';
 
@@ -61,6 +68,7 @@ interface Props {
     settings: PageResizerSettings;
     onChange: (settings: PageResizerSettings) => void;
     pdfFile?: File | null;
+    sourceImageFile?: File | null;
     getWorkingFile?: () => Promise<File>;
     viewerPageOrder?: number[];
     viewerPageRotations?: number[];
@@ -70,12 +78,67 @@ export default function PageResizerTool({
     settings,
     onChange,
     pdfFile,
+    sourceImageFile,
     getWorkingFile,
     viewerPageOrder,
     viewerPageRotations,
 }: Props) {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const pageSizeMode: PageSizeMode = settings.pageSizeMode || 'fixed';
+    // Chỉ nhận ảnh còn khớp revision do workspace cấp, không dùng ảnh tham
+    // chiếu cũ sau khi tài liệu đã resize/edit rồi gắn nhãn là "hiện tại".
+    const inputImageFile = sourceImageFile
+        ?? (pdfFile && isSupportedImageFileName(pdfFile.name) ? pdfFile : null);
+    const [imageResolution, setImageResolution] = useState<{
+        file: File;
+        dpi: ReturnType<typeof readImageDpi>;
+        readFailed: boolean;
+    } | null>(null);
+    const currentImageResolution = imageResolution?.file === inputImageFile
+        ? imageResolution
+        : null;
+
+    useEffect(() => {
+        if (!inputImageFile) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                // getFileArrayBuffer đọc đúng cả File rỗng có path của Tauri.
+                const bytes = await getFileArrayBuffer(inputImageFile);
+                if (cancelled) return;
+                const dpi = readImageDpi(new Uint8Array(bytes));
+                setImageResolution({ file: inputImageFile, dpi, readFailed: false });
+            } catch {
+                if (!cancelled) {
+                    setImageResolution({ file: inputImageFile, dpi: null, readFailed: true });
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [inputImageFile]);
+
+    const formatDpi = (value: number) => new Intl.NumberFormat(i18n.resolvedLanguage || i18n.language, {
+        maximumFractionDigits: 2,
+    }).format(value);
+    const sourceDpi = currentImageResolution?.dpi;
+    const currentResolutionLabel = !currentImageResolution
+        ? t('preprocess.pageResizer:do_phan_giai_dang_doc', {
+            defaultValue: 'Độ phân giải hiện tại: đang đọc…',
+        })
+        : currentImageResolution.readFailed
+            ? t('preprocess.pageResizer:do_phan_giai_khong_doc_duoc', {
+                defaultValue: 'Độ phân giải hiện tại: không đọc được metadata ảnh.',
+            })
+            : sourceDpi
+                ? t('preprocess.pageResizer:do_phan_giai_hien_tai', {
+                    dpi: formatDpi(sourceDpi.x) === formatDpi(sourceDpi.y)
+                        ? formatDpi(sourceDpi.x)
+                        : `${formatDpi(sourceDpi.x)} × ${formatDpi(sourceDpi.y)}`,
+                    defaultValue: 'Độ phân giải hiện tại: {{dpi}} DPI.',
+                })
+                : t('preprocess.pageResizer:do_phan_giai_khong_xac_dinh', {
+                    defaultValue: 'Độ phân giải hiện tại: không xác định (ảnh không có metadata DPI).',
+                });
     const [transparencyInspection, setTransparencyInspection] = useState<{
         file: File;
         pageOrder?: number[];
@@ -366,6 +429,9 @@ export default function PageResizerTool({
                         else onChange({ ...settings, targetDpi: settings.targetDpi && settings.targetDpi > 0 ? settings.targetDpi : 300 });
                     };
                     const mode = settings.resizeMode || 'auto';
+                    const displayDpi = settings.targetDpi === undefined ? 300 : settings.targetDpi;
+                    const outputWidthPx = pixelsAtDpi(settings.targetW, displayDpi);
+                    const outputHeightPx = pixelsAtDpi(settings.targetH, displayDpi);
                     return (
                         <>
                             <RichSelect
@@ -401,6 +467,49 @@ export default function PageResizerTool({
                                         />
                                     </div>
                                 </div>
+                            )}
+
+                            {inputImageFile && (
+                                <div className="text-[10.5px] leading-snug text-slate-600 dark:text-zinc-300">
+                                    {currentResolutionLabel}
+                                </div>
+                            )}
+
+                            {dpiChoice === 'off' ? (
+                                <div className="text-[10.5px] leading-snug text-emerald-700 dark:text-emerald-300">
+                                    {t('preprocess.pageResizer:giu_nguyen_pixel_nguon', {
+                                        defaultValue: 'Giữ nguyên toàn bộ pixel ảnh nguồn; file có thể lớn.',
+                                    })}
+                                </div>
+                            ) : (
+                                <>
+                                    {!inputImageFile && <div className="text-[10.5px] leading-snug text-slate-600 dark:text-zinc-300">
+                                        {pageSizeMode === 'fixed'
+                                            ? t('preprocess.pageResizer:du_kien_pixel_dau_ra', {
+                                                width: outputWidthPx,
+                                                height: outputHeightPx,
+                                                dpi: displayDpi,
+                                                defaultValue: 'Khi giảm mẫu: khoảng {{width}} × {{height}} px ở {{dpi}} DPI.',
+                                            })
+                                            : t('preprocess.pageResizer:du_kien_pixel_mot_chieu', {
+                                                axis: pageSizeMode === 'fixed_width'
+                                                    ? t('preprocess.pageResizer:chieu_rong', { defaultValue: 'chiều rộng' })
+                                                    : t('preprocess.pageResizer:chieu_cao', { defaultValue: 'chiều cao' }),
+                                                pixels: pageSizeMode === 'fixed_width' ? outputWidthPx : outputHeightPx,
+                                                dpi: displayDpi,
+                                                defaultValue: 'Trục {{axis}} khi giảm mẫu: khoảng {{pixels}} px ở {{dpi}} DPI.',
+                                            })}
+                                    </div>}
+                                    <div className="text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
+                                        {mode === 'raster'
+                                            ? t('preprocess.pageResizer:canh_bao_raster_giam_net', {
+                                                defaultValue: 'Raster sẽ dựng lại toàn trang và có thể làm mềm chữ/logo; chỉ dùng khi chấp nhận mất vector.',
+                                            })
+                                            : t('preprocess.pageResizer:canh_bao_giam_mau_co_the_mem', {
+                                                defaultValue: 'Giảm mẫu sẽ bỏ bớt pixel nguồn và có thể làm mềm chi tiết raster. Muốn giữ nguyên hãy chọn “Giữ nguyên”.',
+                                            })}
+                                    </div>
+                                </>
                             )}
 
                             {dpiChoice !== 'off' && (

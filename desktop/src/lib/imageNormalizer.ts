@@ -315,9 +315,11 @@ export async function embedImagePreserveCompression(
 /**
  * Đọc DPI (điểm/inch) từ header ảnh. Trả null nếu không chắc chắn → caller mặc định 72
  * (px == pt, đúng bằng hành vi cũ) nên KHÔNG gây regression cho ảnh không mang DPI.
- * JPEG: đọc APP0/JFIF; PNG: đọc chunk pHYs. Bỏ qua EXIF (hiếm, dễ đọc sai → cứ trả null).
+ * JPEG: đọc APP0/JFIF, fallback EXIF TIFF; PNG: đọc chunk pHYs.
  */
-function readImageDpi(bytes: Uint8Array): { x: number; y: number } | null {
+// RESIZE (audit 2026-09-08 §RZ.5): UI dùng cùng parser với bước mở ảnh;
+// giữ null khi thiếu metadata, không hiển thị fallback 72 như DPI đo được.
+export function readImageDpi(bytes: Uint8Array): { x: number; y: number } | null {
     try {
         const format = detectRasterFormat(bytes);
         if (format === 'jpeg') return readJpegJfifDpi(bytes);
@@ -351,6 +353,7 @@ export function sourceImagePixelsPerPdfPoint(
 function readJpegJfifDpi(b: Uint8Array): { x: number; y: number } | null {
     // FILEIO (audit 2026-08-26 §IMG.B2): APP2 ICC/EXIF được phép đứng trước APP0.
     if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
+    let exifDpi: { x: number; y: number } | null = null;
     let offset = 2;
     while (offset < b.length) {
         if (b[offset] !== 0xff) return null;
@@ -358,25 +361,29 @@ function readJpegJfifDpi(b: Uint8Array): { x: number; y: number } | null {
         if (offset >= b.length) return null;
         const marker = b[offset];
         offset += 1;
-        if (marker === 0xda || marker === 0xd9) return null;
+        if (marker === 0xda || marker === 0xd9) return exifDpi;
         if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
         if (marker === 0x00 || offset + 2 > b.length) return null;
         const length = (b[offset] << 8) | b[offset + 1];
         if (length < 2 || offset + length > b.length) return null;
         const dataStart = offset + 2;
         const dataLength = length - 2;
+        if (marker === 0xe1 && dataLength >= 6 && ascii(b, dataStart, 6) === 'Exif\0\0') {
+            // EXIF chứa một TIFF nhỏ: dùng parser hiện có, bỏ 6 byte tiền tố Exif.
+            exifDpi ??= readTiffDpi(b.slice(dataStart + 6, dataStart + dataLength));
+        }
         if (marker === 0xe0 && dataLength >= 14 && ascii(b, dataStart, 5) === 'JFIF\0') {
             const units = b[dataStart + 7];
             const densityX = (b[dataStart + 8] << 8) | b[dataStart + 9];
             const densityY = (b[dataStart + 10] << 8) | b[dataStart + 11];
-            if (densityX <= 0 || densityY <= 0) return null;
+            if (densityX <= 0 || densityY <= 0) return exifDpi;
             if (units === 1) return { x: densityX, y: densityY };
             if (units === 2) return { x: densityX * 2.54, y: densityY * 2.54 };
-            return null;
+            return exifDpi;
         }
         offset += length;
     }
-    return null;
+    return exifDpi;
 }
 
 function readTiffDpi(b: Uint8Array): { x: number; y: number } | null {

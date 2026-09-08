@@ -576,13 +576,18 @@ def _raster_resize(source_path: str, output_path: str,
 
 
 def _choose_auto_mode(apply_to: str, has_text: bool, has_non_rgb_images: bool) -> str:
-    """Quyết định mode cho 'auto' (thuần hàm, dễ test).
+    """Chọn đường ``auto`` theo chính sách ưu tiên chất lượng.
 
-    Raster (nhanh/nhỏ nhất nhưng mất vector & CMYK) CHỈ an toàn khi: xử lý TOÀN BỘ
-    trang, KHÔNG có text-font (không mất chữ), và KHÔNG có ảnh non-RGB (không phá
-    tách kênh in). Mọi trường hợp khác → vector (giữ vector/text/CMYK)."""
-    if apply_to == "all" and not has_text and not has_non_rgb_images:
-        return "raster"
+    ``auto`` từng tự chọn raster cho PDF chỉ có ảnh RGB vì nhỏ/nhanh hơn. Nhưng
+    render lại rồi JPEG hóa có thể làm mềm nét mà người dùng không chủ ý, và
+    còn loại bỏ cấu trúc màu/vector của tài liệu. Từ audit Resize 2026-09-08,
+    ``auto`` luôn đi đường object-level ``vector``; raster chỉ chạy khi người
+    dùng chọn tường minh ``mode='raster'``.
+
+    Giữ các tham số trong chữ ký để không phá caller/test cũ và để telemetry
+    vẫn ghi nhận đặc tính tài liệu khi cần mở rộng policy sau này.
+    """
+    del apply_to, has_text, has_non_rgb_images
     return "vector"
 
 
@@ -594,6 +599,7 @@ def resize_pages_smart(source_path: str, output_path: str,
                        bg_fill_color: str = "#ffffff",
                        page_size_mode: str = "fixed",
                        resize_by_content: bool = False,
+                       quality_report: Optional[dict] = None,
                        pdf_finalizer: Optional[Callable[[pikepdf.Pdf], bool]] = None) -> str:
     """Resize trang + (tuỳ chọn) giảm dữ liệu theo khổ mới.
 
@@ -606,6 +612,15 @@ def resize_pages_smart(source_path: str, output_path: str,
     )
 
     target_dpi = int(target_dpi or 0)
+    if quality_report is not None:
+        quality_report.clear()
+        quality_report.update({
+            "requested_dpi": target_dpi,
+            "requested_mode": str(mode or "auto"),
+            "applied_mode": "geometry_only",
+            "applied_dpi": 0,
+            "downsample_applied": False,
+        })
     # RESIZE (audit 2026-08-06 §G.5): chuỗi chọn trang sai cú pháp trước đây ra tập
     # RỖNG → trả file y nguyên, người dùng tưởng đã đổi khổ. ValueError ở đây được
     # route /resize map thành HTTP 422.
@@ -675,6 +690,8 @@ def resize_pages_smart(source_path: str, output_path: str,
 
     # DPI=0 chỉ giữ artwork gốc; lớp nền động vẫn dựng ở 300 DPI.
     if target_dpi <= 0 or mode == "xobject":
+        if quality_report is not None and target_dpi > 0 and mode == "xobject":
+            quality_report["fallback_reason"] = "mode_xobject"
         return _resize_geometry(output_path)
 
     # RESIZE (audit 2026-08-01 §B.1): artwork đã là Form vector nằm trên
@@ -686,20 +703,36 @@ def resize_pages_smart(source_path: str, output_path: str,
     # Form/XObject; downsample object-level bên dưới hạ ảnh và SMask cùng tỷ lệ.
     chosen = "vector" if content_aware_resize or has_transparency else mode
     if mode == "auto" and not content_aware_resize and not has_transparency:
+        # RESIZE (audit 2026-09-08 §RZ.2): auto đã cố định ở vector để tránh
+        # render/JPEG lần hai. Không cần quét lại toàn bộ object graph chỉ để
+        # chứng minh điều kiện raster cũ; bỏ chi phí scan trên PDF lớn.
         chosen = _choose_auto_mode(
             apply_to=apply_to,
-            has_text=_doc_has_text_fonts(source_path),
-            has_non_rgb_images=_doc_has_non_rgb_images(source_path),
+            has_text=False,
+            has_non_rgb_images=False,
         )
 
     if chosen == "raster" and apply_to == "all":
         try:
-            return _raster_resize(
+            result = _raster_resize(
                 source_path, output_path, target_w_mm, target_h_mm,
                 scale_mode, target_dpi, bg_fill_mode, bg_fill_color,
             )
+            if quality_report is not None:
+                quality_report.update({
+                    "applied_mode": "raster",
+                    "applied_dpi": target_dpi,
+                    "downsample_applied": True,
+                    "output_pixels": {
+                        "width": max(1, round(target_w_mm / 25.4 * target_dpi)),
+                        "height": max(1, round(target_h_mm / 25.4 * target_dpi)),
+                    },
+                })
+            return result
         except Exception as e:  # noqa: BLE001
             _pt_logger.warning("raster resize lỗi (%s) → fallback sang vector.", e)
+            if quality_report is not None:
+                quality_report["fallback_reason"] = "raster_failed"
             chosen = "vector"
 
     # ── Vector: đổi hình học (XObject) rồi hạ độ phân giải ảnh ──
@@ -713,9 +746,25 @@ def resize_pages_smart(source_path: str, output_path: str,
         if _native_downsample(tmp_geom, output_path, int(target_dpi)):
             try:
                 if os.path.getsize(output_path) < os.path.getsize(tmp_geom):
+                    if quality_report is not None:
+                        quality_report.update({
+                            "applied_mode": "vector",
+                            "applied_dpi": target_dpi,
+                            "downsample_applied": True,
+                        })
                     return output_path
             except OSError:
+                if quality_report is not None:
+                    quality_report.update({
+                        "applied_mode": "vector",
+                        "applied_dpi": target_dpi,
+                        "downsample_applied": True,
+                    })
                 return output_path
+            if quality_report is not None:
+                quality_report["fallback_reason"] = "downsampled_artifact_not_smaller"
+        elif quality_report is not None:
+            quality_report["fallback_reason"] = "downsample_failed_or_unsupported"
         # Fallback: dùng bản chỉ-đổi-hình-học.
         os.replace(tmp_geom, output_path)
         tmp_geom = None

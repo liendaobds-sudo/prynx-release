@@ -73,9 +73,10 @@ def _page_sizes_mm(path: str):
 # ── Logic chọn mode (thuần hàm) ──────────────────────────────────────────────
 
 def test_choose_auto_mode_table():
-    # Raster CHỈ khi: all + không text + không ảnh non-RGB.
-    assert _choose_auto_mode("all", has_text=False, has_non_rgb_images=False) == "raster"
-    # Có text → giữ vector (không mất chữ).
+    # Chính sách chất lượng: auto không được tự raster hóa dù tài liệu chỉ có
+    # ảnh RGB; raster phải do người dùng chọn tường minh.
+    assert _choose_auto_mode("all", has_text=False, has_non_rgb_images=False) == "vector"
+    # Có text → vẫn giữ vector (không mất chữ).
     assert _choose_auto_mode("all", has_text=True, has_non_rgb_images=False) == "vector"
     # Có ảnh CMYK/ICC → giữ vector (không phá tách kênh in).
     assert _choose_auto_mode("all", has_text=False, has_non_rgb_images=True) == "vector"
@@ -467,6 +468,49 @@ def test_raster_resize_shrinks_and_a5(tmp_path):
     assert os.path.getsize(out) < src_size, (os.path.getsize(out), src_size)
 
 
+def test_auto_quality_does_not_rasterize_rgb_image(tmp_path, monkeypatch):
+    """RESIZE (audit 2026-09-08 §RZ.2): auto phải giữ Form/XObject.
+
+    Ảnh RGB thuần vẫn được hạ mẫu object-level, nhưng không được đi qua
+    ``_raster_resize`` (render toàn trang + JPEG lần hai) nếu người dùng chưa
+    chọn raster tường minh.
+    """
+    src = str(tmp_path / "rgb_auto_src.pdf")
+    out = str(tmp_path / "rgb_auto_out.pdf")
+    _a1_image_pdf(src, pages=1, px=(900, 900))
+
+    monkeypatch.setattr(
+        pdf_tools_engine,
+        "_raster_resize",
+        lambda *_args, **_kwargs: pytest.fail("auto không được raster hóa ảnh RGB"),
+    )
+    monkeypatch.setattr(
+        pdf_tools_engine,
+        "_doc_has_text_fonts",
+        lambda *_args, **_kwargs: pytest.fail("auto không cần quét font để chọn vector"),
+    )
+
+    resize_pages_smart(
+        src,
+        out,
+        50.0,
+        50.0,
+        "fit",
+        "all",
+        target_dpi=150,
+        mode="auto",
+    )
+
+    with pikepdf.open(out) as pdf:
+        resources = pdf.pages[0].get("/Resources")
+        xobjects = resources.get("/XObject") if resources else None
+        assert xobjects is not None
+        assert any(
+            str(obj.get("/Subtype", "")) == "/Form"
+            for _, obj in xobjects.items()
+        ), "auto phải giữ artwork trong Form/XObject"
+
+
 # ── Vector (native) downsample: giữ khổ A5 + nhỏ hơn ────────────────────────
 
 def _bleed_pdf(path: str):
@@ -622,6 +666,32 @@ def test_native_vector_downsample_shrinks(tmp_path):
     assert sizes == [(148, 210)], sizes
     # Ảnh A1 nhiễu độ phân giải cao đặt trên A5 → downsample 150 DPI phải nhỏ hơn hẳn.
     assert os.path.getsize(out) < src_size, (os.path.getsize(out), src_size)
+
+
+def test_resize_quality_report_records_applied_native_dpi(tmp_path):
+    """RESIZE (audit 2026-09-08 §RZ.6): caller biết DPI thực thi."""
+    src = str(tmp_path / "quality_report_src.pdf")
+    out = str(tmp_path / "quality_report_out.pdf")
+    _a1_image_pdf(src, pages=1, px=(900, 900))
+    report: dict[str, object] = {}
+
+    resize_pages_smart(
+        src,
+        out,
+        50.0,
+        50.0,
+        "fit",
+        "all",
+        target_dpi=150,
+        mode="vector",
+        quality_report=report,
+    )
+
+    assert report["requested_dpi"] == 150
+    assert report["requested_mode"] == "vector"
+    assert report["applied_mode"] == "vector"
+    assert report["downsample_applied"] is True
+    assert report["applied_dpi"] == 150
 
 
 # ══ scale_mode parity: stretch & center_no_scale (regression bug "ép bóp méo cắt") ══

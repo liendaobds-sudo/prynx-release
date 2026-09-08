@@ -39,10 +39,14 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState('');
     const [derivedTypes, setDerivedTypes] = useState<SaveTypeInfo[] | null>(null);
+    const [sharedMasterCut, setSharedMasterCut] = useState(false);
 
     // Nếu không được truyền types, tự suy từ số trang PDF khi mở.
     useEffect(() => {
-        if (!open || (typesProp && typesProp.length) || !resultBlob) return;
+        if (!open || (typesProp && typesProp.length) || !resultBlob) {
+            if (!open || (typesProp && typesProp.length) || !resultBlob) setSharedMasterCut(false);
+            return;
+        }
         let active = true;
         (async () => {
             try {
@@ -53,8 +57,13 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                 const doc = await PDFDocument.load(new Uint8Array(await getFileArrayBuffer(resultBlob)));
                 const pageCount = doc.getPageCount();
                 const pagesPerType = cncMode ? (cncTwoSided ? 3 : 2) : (separateCut ? 2 : 1);
-                const count = Math.floor(pageCount / pagesPerType);
+                // Sticker homogeneous/single-mold dồn một CUT chung xuống cuối file.
+                // Tổng trang lẻ là tín hiệu contract của lane này (CNC luôn theo nhóm
+                // 2/3 trang), nên không chia cặp xen kẽ làm mất trang CUT cuối.
+                const shared = !cncMode && separateCut && pageCount % 2 === 1;
+                const count = shared ? Math.max(1, pageCount - 1) : Math.floor(pageCount / pagesPerType);
                 if (!active) return;
+                setSharedMasterCut(shared);
                 setDerivedTypes(Array.from({ length: Math.max(1, count) }, (_, i) => ({
                     label: labelNameText || t('misc.savePrintFiles:trang_n', { n: i + 1 }),
                     sheetCount: 0,
@@ -63,6 +72,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                 // UIUX (audit 2026-08-06 §4): trước đây nuốt lỗi → UI hiện "1 loại / 0 tờ" như
                 // thể bình thường, che mất việc không đọc được file kết quả.
                 if (!active) return;
+                setSharedMasterCut(false);
                 setDerivedTypes([{ label: labelNameText || t('misc.savePrintFiles:trang_1'), sheetCount: 0 }]);
                 setStatus(t('misc.savePrintFiles:loi_khi_luu', { msg: (e as Error)?.message || String(e) }));
             }
@@ -91,7 +101,8 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
         originalName,
         cncMode,
         cncTwoSided,
-    }), [savePrint.nameMode, savePrint.folderMode, savePrint.includeOrderCode, savePrint.includeDate, separateCut, orderCode, originalName, cncMode, cncTwoSided]);
+        sharedMasterCut,
+    }), [savePrint.nameMode, savePrint.folderMode, savePrint.includeOrderCode, savePrint.includeDate, separateCut, orderCode, originalName, cncMode, cncTwoSided, sharedMasterCut]);
 
     const plan = useMemo(() => buildSavePlan(types, cfg), [types, cfg]);
 

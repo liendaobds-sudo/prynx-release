@@ -22,6 +22,7 @@ _PONT_DEFAULTS: dict[str, Any] = {
 }
 _VALID_SHAPES = {"circle", "l_corner", "l_inverted"}
 _VALID_GUIDE_POSITIONS = {"TL", "TR", "BL", "BR"}
+_VALID_PONT_TYPES = {"none", "corner", "5mm", "custom"}
 
 
 def _finite_number(config: dict[str, Any], key: str, *, minimum: float | None = None) -> float:
@@ -130,6 +131,11 @@ def normalize_pont_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
         return normalized
     if not isinstance(pont_type, str):
         raise ValueError("Cấu hình ốc: 'pontType' phải là chuỗi hợp lệ.")
+    pont_type = pont_type.strip().lower()
+    if pont_type not in _VALID_PONT_TYPES:
+        allowed = ", ".join(sorted(_VALID_PONT_TYPES))
+        raise ValueError(f"Cấu hình ốc: 'pontType' chỉ nhận một trong: {allowed}.")
+    normalized["pontType"] = pont_type
     enabled = pont_type != "none"
     if enabled:
         normalized["pontConfig"] = validate_pont_config(normalized.get("pontConfig"))

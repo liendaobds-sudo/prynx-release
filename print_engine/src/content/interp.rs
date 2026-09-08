@@ -249,6 +249,19 @@ impl RenderOptions {
         }
     }
 
+    /// Cấu hình xuất bitmap CMYK để giao cho người dùng hoặc RIP.
+    ///
+    /// Khác với `ink_accurate()` (chỉ dùng để đo TAC/separations), ảnh đầu ra
+    /// phải giữ dải chuyển tiếp ở biên glyph và vector. CMYK vẫn được dựng
+    /// trực tiếp trong không gian mực và mực pha chỉ gộp ở bước xuất.
+    pub fn cmyk_export() -> Self {
+        RenderOptions {
+            anti_alias: true,
+            flatten_spots: true,
+            ..Default::default()
+        }
+    }
+
     /// Cấu hình **soft-proof**: khử răng cưa, và mực pha quy về CMYK.
     ///
     /// Ngược hẳn với [`RenderOptions::ink_accurate`] ở cả hai điểm, và đó là có chủ
@@ -4757,9 +4770,10 @@ impl<'a> Renderer<'a> {
                     // và làm bẩn danh sách đó sẽ khiến lớp trên tưởng quản lý màu
                     // còn thiếu trong khi ICC đã áp đủ.
                     loaded.substitute_program(FontProgram::TrueType(data.clone()));
-                    self.warnings.note_substituted_font(&loaded.base_font);
-                    self.warnings
-                        .note_skipped_op(&format!("font thay thế: {}", loaded.base_font));
+                    // Chỉ ghi cảnh báo khi glyph thật sự được dùng. Nhiều PDF
+                    // khai font chuẩn (Helvetica) trong `BT/Tf` mở đầu nhưng
+                    // không vẽ ký tự nào; hạ accuracy ngay tại đây sẽ từ chối
+                    // nhầm một trang có font nhúng đang được dùng.
                 }
                 None => {
                     // Chỉ ghi vết chẩn đoán. Font được khai trong /Resources nhưng
@@ -4864,6 +4878,22 @@ impl<'a> Renderer<'a> {
             }
             return Ok(());
         }
+
+        // CMap Type0 dựng sẵn (ví dụ UniJIS-*) và CMap nhúng hỏng không thể suy
+        // CID an toàn. Tuyệt đối không rơi về identity rồi vẽ nhầm glyph: với
+        // bitmap, đánh dấu object bị bỏ để cổng tin cậy chặn TAC; với OUTLINE,
+        // tăng missing_glyphs để caller từ chối artifact thiếu chữ.
+        if let Some(reason) = font.unsupported_cmap() {
+            self.warnings.note_skipped_op(reason);
+            if self.opts.collect_text_outlines {
+                self.text_outlines.missing_glyphs =
+                    self.text_outlines.missing_glyphs.saturating_add(1);
+            } else {
+                self.warnings.dropped_objects = self.warnings.dropped_objects.saturating_add(1);
+            }
+            return Ok(());
+        }
+
         let gs_ctm = stack.current().ctm;
         let trm = crate::text::state::glyph_matrix(&stack.current().text, &self.text_obj.matrix);
 
@@ -4891,6 +4921,12 @@ impl<'a> Renderer<'a> {
             }
             return Ok(());
         };
+
+        if font.is_substituted() {
+            self.warnings.note_substituted_font(&font.base_font);
+            self.warnings
+                .note_skipped_op(&format!("font thay thế: {}", font.base_font));
+        }
 
         let full = trm.then(&gs_ctm);
         let Some(device_path) = outline.as_ref().clone().transform(to_ts(&full)) else {
@@ -5077,6 +5113,11 @@ impl<'a> Renderer<'a> {
             }
             return Ok(());
         };
+        if font.is_substituted() {
+            self.warnings.note_substituted_font(&font.base_font);
+            self.warnings
+                .note_skipped_op(&format!("font thay thế: {}", font.base_font));
+        }
         let Some(glyph_user) = outline.as_ref().clone().transform(to_ts(trm)) else {
             self.text_outlines.missing_glyphs += 1;
             return Ok(());

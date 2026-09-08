@@ -2,7 +2,7 @@
 //!
 //! Ưu tiên tạo private key trong Microsoft Platform Crypto Provider (TPM). Nếu
 //! TPM không sẵn sàng, dùng Microsoft Software Key Storage Provider với policy
-//! non-exportable; token v3 vẫn chỉ sống 15 phút. Module chỉ expose thao tác có
+//! non-exportable; token v3 có lease offline tối đa 72 giờ. Module chỉ expose thao tác có
 //! cấu trúc, renderer không có primitive "ký bytes tùy ý".
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

@@ -59,7 +59,9 @@ const TOKEN_EXPIRY_SAFETY_MS = 60_000;
 const LICENSE_TOKEN_V1 = 1;
 const LICENSE_TOKEN_V2 = 2;
 const LICENSE_TOKEN_V3 = 3;
-const LICENSE_TOKEN_V3_MAX_TTL_SECONDS = 15 * 60;
+// Token v3 mới có lease offline 72 giờ; verifier vẫn chấp nhận token cũ 15 phút
+// trong giai đoạn rollout vì 900 giây nằm dưới cận mới.
+const LICENSE_TOKEN_V3_MAX_TTL_SECONDS = 72 * 60 * 60;
 const LICENSE_CHALLENGE_RE = /^[0-9a-f]{64}$/i;
 const DEVICE_KEY_ID_RE = /^d3_([A-Za-z0-9_-]{43})$/;
 const CHALLENGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

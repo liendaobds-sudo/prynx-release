@@ -66,6 +66,42 @@ def test_export_grayscale(tmp_path):
         assert im.mode == "L"
 
 
+def test_rgb_export_composites_transparency_on_white(tmp_path):
+    """EXPORT (audit 2026-09-08 §EXIMG-08): output ảnh hiện hành là opaque RGB."""
+    from reportlab.pdfgen.canvas import Canvas
+    from PIL import Image
+
+    src = str(tmp_path / "transparent.pdf")
+    canvas = Canvas(src, pagesize=(100, 100))
+    canvas.setFillAlpha(0.5)
+    canvas.setFillColorRGB(0, 0, 0)
+    canvas.rect(0, 0, 100, 100, fill=1, stroke=0)
+    canvas.save()
+
+    files = render_pdf_to_images(src, str(tmp_path / "out"), fmt="png", dpi=72)
+    with Image.open(files[0]) as image:
+        assert image.mode == "RGB"
+        assert "transparency" not in image.info
+        assert image.getpixel((50, 50))[0] in range(100, 256)
+
+
+def test_rgb_export_disables_annotation_widgets_for_parity(tmp_path, monkeypatch):
+    """EXPORT (audit 2026-09-08 §EXIMG-09): widget tương tác không vào artifact ảnh."""
+    import pypdfium2 as pdfium
+
+    src = _make_pdf(tmp_path, 1)
+    calls = []
+    original_render = pdfium.PdfPage.render
+
+    def spy_render(page, *args, **kwargs):
+        calls.append(kwargs.copy())
+        return original_render(page, *args, **kwargs)
+
+    monkeypatch.setattr(pdfium.PdfPage, "render", spy_render)
+    render_pdf_to_images(src, str(tmp_path / "out"), fmt="png", dpi=72)
+    assert calls and all(call.get("draw_annots") is False for call in calls)
+
+
 def test_export_multipage_tiff(tmp_path):
     src = _make_pdf(tmp_path, 3)
     out = str(tmp_path / "out")
@@ -343,6 +379,47 @@ _requires_cmyk_native = pytest.mark.skipif(
 
 
 @_requires_cmyk_native
+def test_cmyk_export_keeps_antialiased_text_edges(tmp_path):
+    """EXPORT (audit 2026-09-08 §EXIMG-01): bitmap CMYK không được tắt AA chữ."""
+    from pathlib import Path
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen.canvas import Canvas
+    from app.core.icc_profiles import resolve_cmyk_profile_path
+    from app.core.print_engine.facade import _native
+
+    font_path = str(
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "assets"
+        / "fonts"
+        / "DejaVuSans.ttf"
+    )
+    pdfmetrics.registerFont(TTFont("PrynXAuditDejaVu", font_path))
+    src = str(tmp_path / "text.pdf")
+    canvas = Canvas(src, pagesize=(300, 200))
+    canvas.setFillColorCMYK(0, 1, 1, 0)
+    canvas.setFont("PrynXAuditDejaVu", 72)
+    canvas.drawString(20, 70, "Lạc Long Quân")
+    canvas.save()
+
+    native = _native()
+    raw = native.ppe_export_cmyk(
+        src,
+        page=1,
+        dpi=300,
+        cmyk_profile=resolve_cmyk_profile_path("fogra39"),
+        page_box="media",
+    )
+    cmyk = bytes(raw["cmyk"])
+    partial = [
+        sum(1 for value in cmyk[channel::4] if 0 < value < 255)
+        for channel in range(4)
+    ]
+    assert any(partial), f"CMYK export vẫn nhị phân, thiếu anti-alias: {partial}"
+
+
+@_requires_cmyk_native
 def test_cmyk_tiff_is_four_channel_with_icc(tmp_path):
     """EXPORT (audit 2026-07-30 §IMG-04 lô 4): TIFF CMYK phải là 4 kênh + nhúng ICC FOGRA39.
 
@@ -486,6 +563,37 @@ def test_rgb_include_bleed_selects_media_or_trim_box(tmp_path):
     trim_file = render_pdf_to_images(src, str(tmp_path / "trim"), dpi=72, include_bleed=False)[0]
     with Image.open(media_file) as media, Image.open(trim_file) as trim:
         assert media.size == (200, 200)
+        assert trim.size == (100, 80)
+
+
+def test_rgb_export_applies_user_unit(tmp_path):
+    """EXPORT (audit 2026-09-08 §EXIMG-02): DPI phải là DPI vật lý."""
+    import pikepdf
+    from PIL import Image
+
+    src = _make_pdf(tmp_path, 1, width=100, height=50)
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        pdf.pages[0]["/UserUnit"] = 2
+        pdf.save(src)
+
+    files = render_pdf_to_images(src, str(tmp_path / "out"), fmt="png", dpi=72)
+    with Image.open(files[0]) as image:
+        assert image.size == (200, 100)
+
+
+def test_export_memory_estimate_scales_with_user_unit(tmp_path):
+    """EXPORT (audit 2026-09-08 §EXIMG-03): reservation tính theo pixel vật lý."""
+    import pikepdf
+
+    src = _make_pdf(tmp_path, 1, width=5000, height=5000)
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        pdf.pages[0]["/UserUnit"] = 2
+        pdf.save(src)
+
+    estimated = export_route._estimate_export_peak_mb(
+        src, dpi=1200, color_mode="rgb", pages=None, include_bleed=True,
+    )
+    assert estimated > 100_000
 
 
 def test_batch_rolls_back_files_from_previous_jobs(tmp_path, monkeypatch):
@@ -533,4 +641,3 @@ def test_batch_schema_limits_number_of_jobs():
             file_path="source.pdf",
             jobs=[{"output_dir": "out", "format": "png", "dpi": 150}] * 9,
         )
-        assert trim.size == (100, 80)

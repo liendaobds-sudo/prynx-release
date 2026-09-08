@@ -352,7 +352,7 @@ describe('OpenInDesignModal', () => {
             }
             return Promise.resolve();
         });
-        renderModal({ resultBlob });
+        renderModal({ resultBlob, resultFilePath: undefined });
 
         await screen.findByText(ILLUSTRATOR);
         await screen.findAllByText('Tờ 1');
@@ -392,5 +392,82 @@ describe('OpenInDesignModal', () => {
                 ?.lookupMaybe(PDFName.of('NM'), PDFString)
                 ?.decodeText(),
         ).toBe(ITEM_NAME);
+    });
+
+    it('nhận diện CUT chung ở cuối file homogeneous thay vì lấy nhầm trang artwork', async () => {
+        const source = await PDFDocument.create();
+        source.addPage([100, 110]);
+        source.addPage([200, 210]);
+        source.addPage([300, 310]);
+        source.addPage([400, 410]);
+        source.addPage([500, 510]); // CUT chung thực sự nằm cuối file.
+        attachPontLayerTree(source, 4);
+        const sourceBytes = await source.save();
+        const resultBlob = {
+            arrayBuffer: async () => sourceBytes.buffer.slice(
+                sourceBytes.byteOffset,
+                sourceBytes.byteOffset + sourceBytes.byteLength,
+            ),
+        } as Blob;
+
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') {
+                return Promise.resolve({ illustrator: ILLUSTRATOR, corel: null });
+            }
+            return Promise.resolve();
+        });
+        renderModal({ resultBlob, resultFilePath: undefined, currentPage: 1 });
+
+        await screen.findByText(ILLUSTRATOR);
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+        fireEvent.click(screen.getByRole('button', { name: /Adobe Illustrator/ }));
+
+        await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith(
+            'launch_external_app', expect.objectContaining({ appPath: ILLUSTRATOR }),
+        ));
+        const writeCall = mocks.invoke.mock.calls.find(([command]) => command === 'write_file_atomic');
+        expect(writeCall).toBeTruthy();
+        const output = await PDFDocument.load((writeCall?.[1] as { contents: Uint8Array }).contents);
+        expect(output.getPageCount()).toBe(1);
+        expect(output.getPage(0).getSize()).toEqual({ width: 500, height: 510 });
+        expect(ocgNames(output)).toEqual([GRAPH_INFO_NAME, LAYER_NAME, GROUP_NAME]);
+    });
+
+    it('làm sạch tên file tạm trước khi publish Win32', async () => {
+        const source = await PDFDocument.create();
+        source.addPage([500, 510]);
+        attachPontLayerTree(source, 0);
+        const sourceBytes = await source.save();
+        const resultBlob = {
+            arrayBuffer: async () => sourceBytes.buffer.slice(
+                sourceBytes.byteOffset,
+                sourceBytes.byteOffset + sourceBytes.byteLength,
+            ),
+        } as Blob;
+
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') {
+                return Promise.resolve({ illustrator: ILLUSTRATOR, corel: null });
+            }
+            return Promise.resolve();
+        });
+        renderModal({
+            resultBlob,
+            resultFilePath: undefined,
+            separateCut: false,
+            originalName: 'Don:Hang\\Mau?.pdf',
+        });
+
+        await screen.findByText(ILLUSTRATOR);
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+        fireEvent.click(screen.getByRole('button', { name: /Adobe Illustrator/ }));
+        await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith(
+            'launch_external_app', expect.objectContaining({ appPath: ILLUSTRATOR }),
+        ));
+        const writeCall = mocks.invoke.mock.calls.find(([command]) => command === 'write_file_atomic');
+        const targetPath = String((writeCall?.[1] as { path?: string })?.path || '');
+        const targetName = targetPath.split(/[\\/]/).pop() || '';
+        expect(targetName).not.toMatch(/[\\/:*?"<>|]/);
+        expect(targetPath.toLowerCase()).toContain('don-hang-mau');
     });
 });

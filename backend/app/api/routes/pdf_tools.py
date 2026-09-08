@@ -831,6 +831,7 @@ async def resize_pages_endpoint(
 
             source_ready = time.perf_counter()
             engine_started = source_ready
+            quality_payload: dict[str, object] = {}
             resize_kwargs = {
                 "target_dpi": target_dpi,
                 "mode": mode,
@@ -838,6 +839,7 @@ async def resize_pages_endpoint(
                 "bg_fill_color": bg_fill_color,
                 "page_size_mode": page_size_mode,
                 "resize_by_content": resize_by_content,
+                "quality_report": quality_payload,
             }
             if resize_pdf_finalizer is not None:
                 resize_kwargs["pdf_finalizer"] = resize_pdf_finalizer
@@ -864,6 +866,7 @@ async def resize_pages_endpoint(
             "backend_ms": round((response_ready - request_started) * 1000.0, 1),
             "input_bytes": os.path.getsize(source_path),
             "output_bytes": os.path.getsize(output_path),
+            "quality": quality_payload,
         }
         timing_header = json.dumps(timing_payload, separators=(",", ":"))
         logger.info("[RESIZE_TIMING] route_done %s", timing_header)

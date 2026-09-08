@@ -157,6 +157,7 @@ describe('license protocol v3 client', () => {
       challenge: CHALLENGE.challenge,
       proof: PROOF,
       app_version: '1.2.3',
+      offline_lease_seconds: 72 * 60 * 60,
     });
     expect(proveBody).not.toHaveProperty('license_key');
     expect(proveBody).not.toHaveProperty('device_identity');
