@@ -343,12 +343,80 @@ async function invokeNativeLicenseV3<T>(
   return invoke<T>(command, args);
 }
 
+function sha256Hex16Sync(ascii: string): string {
+  function rightRotate(value: number, amount: number) {
+    return (value >>> amount) | (value << (32 - amount));
+  }
+  const mathPow = Math.pow;
+  const maxWord = mathPow(2, 32);
+  const words: number[] = [];
+  const asciiBitLength = ascii.length * 8;
+  const hash: number[] = [];
+  const k: number[] = [];
+  let primeCounter = 0;
+  const isPrime = (n: number) => {
+    for (let f = 2; f * f <= n; f++) {
+      if (n % f === 0) return false;
+    }
+    return true;
+  };
+  for (let c = 2; primeCounter < 64; c++) {
+    if (isPrime(c)) {
+      if (primeCounter < 8) hash[primeCounter] = (mathPow(c, 1 / 2) * maxWord) | 0;
+      k[primeCounter] = (mathPow(c, 1 / 3) * maxWord) | 0;
+      primeCounter++;
+    }
+  }
+  for (let i = 0; i < ascii.length; i++) {
+    const j = i >> 2;
+    words[j] = (words[j] || 0) | (ascii.charCodeAt(i) << ((3 - (i % 4)) * 8));
+  }
+  const i = ascii.length;
+  const j = i >> 2;
+  words[j] = (words[j] || 0) | (0x80 << ((3 - (i % 4)) * 8));
+  words[(((ascii.length + 8) >> 6) << 4) + 15] = asciiBitLength;
+  for (let b = 0; b < words.length; b += 16) {
+    const w: number[] = [];
+    for (let t = 0; t < 16; t++) w[t] = words[b + t] || 0;
+    for (let t = 16; t < 64; t++) {
+      const s0 = rightRotate(w[t - 15], 7) ^ rightRotate(w[t - 15], 18) ^ (w[t - 15] >>> 3);
+      const s1 = rightRotate(w[t - 2], 17) ^ rightRotate(w[t - 2], 19) ^ (w[t - 2] >>> 10);
+      w[t] = ((w[t - 16] + s0 + w[t - 7] + s1) | 0);
+    }
+    let a = hash[0], c = hash[1], d = hash[2], e = hash[3],
+        f = hash[4], g = hash[5], h_ = hash[6], l = hash[7];
+    for (let t = 0; t < 64; t++) {
+      const S1 = rightRotate(f, 6) ^ rightRotate(f, 11) ^ rightRotate(f, 25);
+      const ch = (f & g) ^ (~f & h_);
+      const temp1 = (l + S1 + ch + k[t] + w[t]) | 0;
+      const S0 = rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22);
+      const maj = (a & c) ^ (a & d) ^ (c & d);
+      const temp2 = (S0 + maj) | 0;
+      l = h_; h_ = g; g = f; f = (e + temp1) | 0;
+      e = d; d = c; c = a; a = (temp1 + temp2) | 0;
+    }
+    hash[0] = (hash[0] + a) | 0; hash[1] = (hash[1] + c) | 0;
+    hash[2] = (hash[2] + d) | 0; hash[3] = (hash[3] + e) | 0;
+    hash[4] = (hash[4] + f) | 0; hash[5] = (hash[5] + g) | 0;
+    hash[6] = (hash[6] + h_) | 0; hash[7] = (hash[7] + l) | 0;
+  }
+  let hex = '';
+  for (let idx = 0; idx < 4; idx++) hex += (hash[idx] >>> 0).toString(16).padStart(8, '0');
+  return hex.slice(0, 16);
+}
+
 function selectLicenseProtocolV3Action(
   cachedToken: string | null,
   recoveryRequired: boolean,
+  currentKeyHash?: string,
 ): LicenseProtocolV3EntitlementAction {
-  if (recoveryRequired) return 'recover';
   const claims = readLicenseTokenClaims(cachedToken);
+  // Token DPAPI V3 có thể thuộc key CŨ (đã deactivate hoặc khác key hiện tại) — dùng enroll cho key mới
+  // để không gửi 'refresh' hoặc 'recover' cho một key chưa có activation trên thiết bị này.
+  if (claims?.version === LICENSE_PROTOCOL_V3 && currentKeyHash && claims.k && currentKeyHash !== claims.k) {
+    return 'enroll';
+  }
+  if (recoveryRequired) return 'recover';
   if (claims?.version !== LICENSE_PROTOCOL_V3) return 'enroll';
   if (!claims.hasResourceKey
     && hasFeatureAccess('packaging.dieline', claims.plan || 'free', claims.features ?? null)) {
@@ -1264,10 +1332,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // challenge; không có đường refresh/offline v1/v2 và không fallback sau lỗi v3.
     const cachedProtocolToken = get().licenseToken || await loadTokenFromDPAPI();
     if (!isCurrent()) return false;
+    const currentKeyHash = licenseKey ? sha256Hex16Sync(licenseKey) : undefined;
     const protocolRecoveryRequired = get().licenseProtocolRecoveryRequired;
     const action = selectLicenseProtocolV3Action(
       cachedProtocolToken,
       protocolRecoveryRequired,
+      currentKeyHash,
     );
 
     const tryCommitLegacyDrain = async (): Promise<boolean> => {
@@ -1325,7 +1395,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           response.token,
           claims.challengeId,
         );
-      } catch {
+      } catch (nativeErr) {
+        console.error('[AUTH] ensureKeyRegisteredInRust failed:', nativeErr);
         set({ dielineKeyStatus: 'unknown' });
         return failClosed(
           'native_error',
@@ -1484,9 +1555,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       if (code === 'RECOVERY_REQUIRED') {
+        await queueDeleteLicenseToken();
+        set({ licenseProtocolRecoveryRequired: false, licenseToken: null });
         return failClosed(
           'native_error',
-          'Không thể khôi phục trạng thái bản quyền trên thiết bị này. Vui lòng liên hệ hỗ trợ.',
+          'Không thể khôi phục trạng thái bản quyền trên thiết bị này. Vui lòng liên hệ hỗ trợ hoặc nhập lại license key.',
         );
       }
       if ([
@@ -1658,7 +1731,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           freshClaims.challengeId,
           current || null,
         );
-      } catch {
+      } catch (nativeErr) {
+        console.error('[AUTH] changeLicenseKey: ensureKeyRegisteredInRust failed:', nativeErr);
         const restored = await rollbackCredentials();
         if (!restored && isNativeRuntime()) {
           set({

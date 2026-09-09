@@ -122,7 +122,7 @@ function makeToken(expSeconds: number, extra: Record<string, unknown> = {}): str
     d: DEVICE_ID,
     cnf: { jkt: DEVICE_THUMBPRINT },
     m: DEVICE_ID,
-    k: 'a'.repeat(16),
+    k: '90f80031ee7948a3',
     p: 'prynx',
     plan: 'pro',
     rk: 'resource-key',
