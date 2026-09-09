@@ -223,7 +223,7 @@ def test_repeat_report_uses_capacity_after_pont_resolution(tmp_path, monkeypatch
         "detectedShapeParamsByPage": {"0": dict(SHAPE_PROPS)},
         "gridStrategy": "optimal_auto",
         "groupingStrategy": "none",
-        "pontType": "circle",
+        "pontType": "5mm",
         "pontConfig": dict(PONT),
         "reportDisplay": {
             "enabled": True,
