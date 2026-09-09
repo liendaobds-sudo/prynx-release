@@ -235,6 +235,12 @@ try {
     New-Item -ItemType Directory -Path $frontendQaNormalizeSource | Out-Null
     Copy-Item -LiteralPath "$ROOT\imposition_core\src\mixed_nesting\normalize.rs" `
         -Destination $frontendQaNormalizeSource
+    # imageNormalizer / PageResizerTool / audit_quality_pipeline tests resolve
+    # JPEG fixtures through `../test/` (workspace-sibling layout).
+    $frontendQaTestFixtures = Join-Path $frontendQaFull "test"
+    New-Item -ItemType Directory -Path $frontendQaTestFixtures | Out-Null
+    Copy-Item -LiteralPath "$ROOT\test\Tem thuc pham sach Duc An.jpg" `
+        -Destination $frontendQaTestFixtures
 
     Push-Location $frontendQaDesktop
     try {
