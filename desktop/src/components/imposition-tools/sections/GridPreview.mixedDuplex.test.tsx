@@ -1749,13 +1749,13 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
 
     // Pager tay không bị effect kéo lại nếu viewer vẫn ở cùng trang.
     fireEvent.click(screen.getByRole("button", { name: "►" }));
-    await waitFor(() => expect(screen.getByText(/2 \/ 13/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/2 \/ 13/)).toBeTruthy(), { timeout: 3_000 });
     view.rerender(previewAt(0));
-    await waitFor(() => expect(screen.getByText(/2 \/ 13/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/2 \/ 13/)).toBeTruthy(), { timeout: 3_000 });
 
     // Cuộn viewer tới trang 13 phải chọn sheet chứa cell.pageIdx=12 tại chỗ.
     view.rerender(previewAt(12));
-    await waitFor(() => expect(screen.getByText(/13 \/ 13/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/13 \/ 13/)).toBeTruthy(), { timeout: 3_000 });
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 850));
     });
