@@ -21,6 +21,7 @@ import {
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Expose-Headers': 'Retry-After',
 };
 
 // Token license ký Ed25519 — sidecar (pdfcompare) verify bằng public key nhúng sẵn.
@@ -159,7 +160,7 @@ async function logSecurityEvent(
 
         const { data: duplicate, error: duplicateError } = await duplicateQuery.maybeSingle();
         if (duplicateError) {
-            console.error('Security log dedupe query failed:', duplicateError.message);
+            console.error('Security log dedupe query failed');
         } else if (duplicate) {
             return { processed: true, stored: false, deduplicated: true };
         }
@@ -176,12 +177,12 @@ async function logSecurityEvent(
             details: row.details ?? null,
         });
         if (error) {
-            console.error('Security log insert failed:', error.message);
+            console.error('Security log insert failed');
             return { processed: false, stored: false, deduplicated: false };
         }
         return { processed: true, stored: true, deduplicated: false };
-    } catch (e) {
-        console.error('logSecurityEvent failed (non-blocking):', e);
+    } catch (_error) {
+        console.error('Security event logging failed (non-blocking)');
         return { processed: false, stored: false, deduplicated: false };
     }
 }
@@ -294,7 +295,7 @@ async function lookupResourceKey(
     if (error) {
         // KHÔNG chặn kích hoạt: bản cũ (không mã hoá) vẫn phải dùng được. Bản đã khoá
         // sẽ tự báo "engine locked" phía client, và log này cho ops biết vì sao.
-        console.error('Resource key lookup failed:', error.message);
+        console.error('Resource key lookup failed');
         return null;
     }
     const key = data?.resource_key;
@@ -317,7 +318,7 @@ async function signLicenseToken(
 ): Promise<string | null> {
     const privB64 = Deno.env.get("LICENSE_SIGNING_KEY");
     if (!privB64) {
-        console.error("LICENSE_SIGNING_KEY not configured — cannot sign token");
+        console.error("License signing is unavailable");
         return null;
     }
     const priv = b64ToBytes(privB64.trim());
@@ -447,7 +448,7 @@ async function readPrynXProtocolPolicy(
         .eq('product_id', 'prynx')
         .maybeSingle();
     if (error || !data) {
-        console.error('PrynX protocol policy unavailable:', error?.message ?? 'missing row');
+        console.error('PrynX protocol policy unavailable');
         return null;
     }
     const minimum = Number(data.minimum_issue_protocol);
@@ -474,7 +475,7 @@ async function recordV3Failure(
         p_challenge_id: challengeId,
         p_result_code: resultCode,
     });
-    if (error) console.error('Could not record v3 challenge failure:', error.message);
+    if (error) console.error('Could not record v3 challenge failure');
 }
 
 const V3_STATUS_MESSAGES: Readonly<Record<string, string>> = {
@@ -515,6 +516,7 @@ function v3StatusResponse(value: unknown, httpStatus = 200): Response {
         response.max_activations = record.max_activations;
     }
     if (typeof record.expires_at === 'string') response.expires_at = record.expires_at;
+    if (status === 'RATE_LIMITED') response.retry_after_seconds = record.retry_after_seconds;
     return jsonResponse(response, httpStatus);
 }
 
@@ -550,7 +552,7 @@ async function issuePrynXV3Success(
         licenseRow.is_active !== true ||
         !isSafeIdentifier(licenseRow.license_key, 50)
     ) {
-        console.error('V3 entitlement lookup failed:', licenseError?.message ?? 'invalid license row');
+        console.error('V3 entitlement lookup failed');
         return jsonResponse({ status: 'ERROR', message: 'License entitlement lookup failed' }, 500);
     }
 
@@ -582,7 +584,7 @@ async function issuePrynXV3Success(
             p_version_limit: RK_BURST_VERSION_LIMIT,
         });
         if (rkClaimError) {
-            console.error('V3 rk grant failed closed:', rkClaimError.message);
+            console.error('V3 rk grant failed closed');
             resourceKey = await lookupResourceKey(
                 supabase, 'prynx', appVersion, plan, features, true,
             );
@@ -747,7 +749,7 @@ async function handlePrynXV3Challenge(
         p_legacy_machine_id: null,
     });
     if (error) {
-        console.error('Could not issue PrynX v3 challenge:', error.message);
+        console.error('Could not issue PrynX v3 challenge');
         return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
     }
     if (!isRecord(data) || data.status !== 'CHALLENGE') return v3StatusResponse(data);
@@ -826,7 +828,7 @@ async function handlePrynXV3Prove(
         .eq('id', body.challenge_id)
         .maybeSingle();
     if (challengeError) {
-        console.error('Could not load PrynX v3 challenge:', challengeError.message);
+        console.error('Could not load PrynX v3 challenge');
         return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
     }
     if (!challengeRow) return v3StatusResponse({ status: 'INVALID_CHALLENGE' }, 400);
@@ -920,7 +922,7 @@ async function handlePrynXV3Prove(
         },
     );
     if (finalError) {
-        console.error('Could not finalize PrynX v3 challenge:', finalError.message);
+        console.error('Could not finalize PrynX v3 challenge');
         return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
     }
     if (isRecord(finalData) && finalData.status === 'RELEASED') {
@@ -1082,7 +1084,7 @@ serve(async (req) => {
                 .eq('product_id', normalizedProductId)
                 .maybeSingle();
             if (blockedLicenseError) {
-                console.error('Reset-block lookup failed:', blockedLicenseError.message);
+                console.error('Reset-block lookup failed');
                 return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
             }
             if (blockedLicense?.id) {
@@ -1093,7 +1095,7 @@ serve(async (req) => {
                     .eq('machine_id', machineBlockLookupId)
                     .maybeSingle();
                 if (machineBlockError) {
-                    console.error('Machine reset-block lookup failed:', machineBlockError.message);
+                    console.error('Machine reset-block lookup failed');
                     return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
                 }
                 if (machineBlock) {
@@ -1126,7 +1128,7 @@ serve(async (req) => {
             .eq('product_id', normalizedProductId)
             .maybeSingle();
         if (ownerLookupError) {
-            console.error('License owner lookup failed; security log will omit email:', ownerLookupError.message);
+            console.error('License owner lookup failed; security log will omit email');
             if (normalizedProductId === 'prynx') {
                 return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
             }
@@ -1148,7 +1150,7 @@ serve(async (req) => {
                 .ilike('machine_id', normalizedMachineId)
                 .maybeSingle();
             if (activationFloorError) {
-                console.error('Device protocol floor lookup failed:', activationFloorError.message);
+                console.error('Device protocol floor lookup failed');
                 return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
             }
             if (Number(activationFloor?.protocol_floor ?? 1) >= LICENSE_PROTOCOL_V3) {
@@ -1170,7 +1172,7 @@ serve(async (req) => {
         });
 
         if (error) {
-            console.error('RPC verify_license error:', error);
+            console.error('RPC verify_license failed');
             return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
         }
 
@@ -1190,7 +1192,7 @@ serve(async (req) => {
                 .eq('machine_id', machineBlockLookupId)
                 .maybeSingle();
             if (postBlockError) {
-                console.error('Post-verify reset-block lookup failed:', postBlockError.message);
+                console.error('Post-verify reset-block lookup failed');
                 return jsonResponse({ status: 'ERROR', message: 'License verification failed' }, 500);
             }
             if (postBlock) {
@@ -1223,7 +1225,7 @@ serve(async (req) => {
                 .eq('product_id', normalizedProductId)
                 .maybeSingle();
             if (entitlementError) {
-                console.error('Entitlement lookup failed; refusing signed token:', entitlementError);
+                console.error('Entitlement lookup failed; refusing signed token');
                 return jsonResponse({ status: 'ERROR', message: 'License entitlement lookup failed' }, 500);
             }
             if (licenseRow) {
@@ -1275,7 +1277,7 @@ serve(async (req) => {
                     p_version_limit: RK_BURST_VERSION_LIMIT,
                 });
                 if (rkClaimErr) {
-                    console.error('claim_rk_grant_v2 failed; checking legacy fallback:', rkClaimErr.message);
+                    console.error('claim_rk_grant_v2 failed; checking legacy fallback');
                     resourceKey = await lookupResourceKey(
                         supabase, normalizedProductId, safeVersion, plan, features, true,
                     );
@@ -1375,15 +1377,29 @@ serve(async (req) => {
         }
 
         return jsonResponse(response);
-    } catch (error) {
-        console.error('License verify error:', error);
+    } catch (_error) {
+        console.error('License verify request failed');
         return jsonResponse({ status: 'ERROR', message: 'Internal server error' }, 500);
     }
 });
 
-function jsonResponse(data: Record<string, any>, status = 200) {
-    return new Response(JSON.stringify(data), {
+function jsonResponse(data: Record<string, unknown>, status = 200) {
+    const headers: Record<string, string> = { ...corsHeaders, 'Content-Type': 'application/json' };
+    let response = data;
+    if (data.status === 'RATE_LIMITED') {
+        // UIUX/SEC (audit 2026-09-09 §LIC.RATE): DB mới trả thời gian còn lại
+        // của cửa sổ trượt. DB cũ/chưa migrate dùng 5 phút; không echo input vào header.
+        // Giữ HTTP status cũ để client legacy vẫn đọc được mã RATE_LIMITED trong JSON.
+        const rawDelay = data.retry_after_seconds;
+        const retryAfterSeconds = typeof rawDelay === 'number'
+            && Number.isSafeInteger(rawDelay) && rawDelay >= 1 && rawDelay <= 3600
+            ? rawDelay
+            : 300;
+        response = { ...data, retry_after_seconds: retryAfterSeconds };
+        headers['Retry-After'] = String(retryAfterSeconds);
+    }
+    return new Response(JSON.stringify(response), {
         status,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers,
     });
 }

@@ -1,5 +1,6 @@
 import i18n, { tv } from '../i18n';
 import { fetchLocalFileBuffer } from './localFileTransport';
+import { clearJobCompletionAccess, getJobCompletionGeneration, jobCompletionHeader, rememberJobCompletionAccess } from './jobCompletionAccess';
 // UIUX (audit 2026-07-27 §D-16): i18nT = t() dùng được ở module non-component, có chuỗi
 // mặc định tiếng Việt nên KHÔNG cần thêm key vào vi.json (thiếu key → dùng default).
 const i18nT = (key: string, defaultValue: string, opts?: Record<string, unknown>) =>
@@ -30,7 +31,9 @@ interface RequestBodyBinding {
 interface PreparedBackendRequest {
   request: Request;
   bodyBinding: RequestBodyBinding;
+  completionGeneration: number;
 }
+const preparedCompletionGenerations = new WeakMap<Request, number>();
 
 const BODY_COMMITMENT_CHUNK_BYTES = 1024 * 1024;
 const BODY_COMMITMENT_VERSION = '2';
@@ -277,6 +280,15 @@ async function getLicenseHeaders(
     // SEC (feedback 2026-08-15 §UP.403): chụp key + token cùng một thời điểm để
     // header, cache native và chữ ký HMAC luôn thuộc cùng một phiên license.
     const authState = useAuthStore.getState();
+    // Chỉ kết quả/hủy job đã cấp phép được đi bằng receipt riêng sau expiry.
+    // Sign-out hoặc thu hồi tường minh xóa receipt; không cho quyền tạo job mới.
+    const receiptAllowed = !authState.licenseSignOutPending && Boolean(authState.licenseKey)
+      && (authState.licenseValidationOutcome !== 'server_rejected' || authState.licenseServerStatus === 'EXPIRED');
+    if (!receiptAllowed) clearJobCompletionAccess();
+    if (receiptAllowed && bodyBinding.mode === 'none') {
+      const receipt = jobCompletionHeader(url, method, authState.licenseKey || '');
+      if (receipt) return { 'X-PrynX-Job-Access': receipt };
+    }
     const operationEpoch = getLicenseOperationEpoch();
     const licenseKey = authState.licenseKey || '';
     const licenseToken = authState.licenseToken || '';
@@ -398,6 +410,7 @@ async function prepareBackendRequest(
 ): Promise<PreparedBackendRequest> {
   // Dựng đúng MỘT Request để Content-Type/boundary được ký trùng với request gửi đi.
   const outgoing = new Request(input, init);
+  const completionGeneration = getJobCompletionGeneration();
   const bodyBinding = await buildBodyBinding(
     bodyInputForRequest(input, init),
     outgoing.headers.get('content-type')?.trim() || '',
@@ -407,6 +420,7 @@ async function prepareBackendRequest(
   return {
     request: new Request(outgoing, { headers: mergedHeaders }),
     bodyBinding,
+    completionGeneration,
   };
 }
 
@@ -424,7 +438,10 @@ async function signPreparedBackendRequest(
     prepared.bodyBinding,
   );
   for (const [name, value] of Object.entries(licenseHeaders)) mergedHeaders.set(name, value);
-  return new Request(outgoing, { headers: mergedHeaders });
+  if (prepared.completionGeneration !== getJobCompletionGeneration()) mergedHeaders.delete('X-PrynX-Job-Access');
+  const signed = new Request(outgoing, { headers: mergedHeaders });
+  preparedCompletionGenerations.set(signed, prepared.completionGeneration);
+  return signed;
 }
 
 async function buildAuthenticatedBackendRequest(
@@ -441,7 +458,32 @@ export async function authenticatedFetch(url: string, init?: RequestInit): Promi
   // main.tsx cài interceptor sớm. Khi đã cài, để nó chuẩn bị/ký đúng một lần;
   // tránh băm file lớn và sinh nonce thừa hai lần cho cùng request.
   if (_backendFetchPatched) return fetch(url, init);
-  return fetch(await buildAuthenticatedBackendRequest(url, init));
+  const request = await buildAuthenticatedBackendRequest(url, init);
+  const response = await fetch(request);
+  return captureJobCompletionReceipt(request, response);
+}
+
+async function captureJobCompletionReceipt(request: Request, response: Response): Promise<Response> {
+  const generation = preparedCompletionGenerations.get(request);
+  if (generation === undefined || generation !== getJobCompletionGeneration()) return response;
+  // Chỉ phản hồi JSON submit job; không clone PDF/ảnh hoặc JSON preview lớn.
+  const path = new URL(request.url).pathname;
+  if (request.method !== 'POST' || !response || response.ok !== true
+    || typeof response.headers?.get !== 'function'
+    || !response.headers.get('content-type')?.includes('application/json')
+    || !/^\/api\/(?:jobs\/compare|imposition\/(?:impose|nup|sticker)-start|vdp\/generate)$/.test(path)) return response;
+  try {
+    const { useAuthStore } = await import('../stores/useAuthStore');
+    const state = useAuthStore.getState();
+    const owner = request.headers.get('X-License-Key');
+    if (!owner || state.licenseSignOutPending || state.licenseKey !== owner) return response;
+    const value = await response.clone().json();
+    const current = useAuthStore.getState();
+    if (generation === getJobCompletionGeneration() && !current.licenseSignOutPending && current.licenseKey === owner) {
+      rememberJobCompletionAccess(request.url, value, owner);
+    }
+  } catch { /* Receipt thiếu/hỏng không tạo đường fallback cấp quyền. */ }
+  return response;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -508,7 +550,7 @@ export function installBackendFetchAuth(): void {
       // hiểu nhầm là sidecar restart rồi tự lặp request.
       const signedAttempt = await signPreparedBackendRequest(prepared);
       try {
-        return await origFetch(signedAttempt);
+        return captureJobCompletionReceipt(signedAttempt, await origFetch(signedAttempt));
       } catch (error) {
         const aborted =
           request.signal.aborted ||

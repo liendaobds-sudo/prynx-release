@@ -51,7 +51,15 @@ class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class JobCreateResponse(BaseModel):
+class JobAccessResponse(BaseModel):
+    """Receipt hoàn tất hẹp; client không được suy đây là quyền license chung."""
+
+    job_access_token: str | None = None
+    job_access_expires_at: int | None = None
+    job_access_paths: list[str] | None = None
+
+
+class JobCreateResponse(JobAccessResponse):
     job_id: str
     message: str = "Job đã được tạo thành công"
 

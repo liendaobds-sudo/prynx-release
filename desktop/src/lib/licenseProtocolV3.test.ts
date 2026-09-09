@@ -74,6 +74,52 @@ function nativeInvoker(expectedChallenge: NativeLicenseChallengeV3 = CHALLENGE) 
 }
 
 describe('license protocol v3 client', () => {
+  it.each([1, 300, 3600])('giữ thời gian chờ %is từ server', async retry => {
+    await expect(runLicenseProtocolV3({
+      licenseKey: 'TEST', action: 'refresh', invokeNative: nativeInvoker(), nowSeconds: NOW,
+      invokeEdge: async () => ({ data: { status: 'RATE_LIMITED', retry_after_seconds: retry }, error: null }),
+    })).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfterSeconds: retry });
+  });
+
+  it.each([0, -1, 3601, '300', 1.5])('bỏ qua thời gian chờ sai kiểu/biên %s', async retry => {
+    await expect(runLicenseProtocolV3({
+      licenseKey: 'TEST', action: 'refresh', invokeNative: nativeInvoker(), nowSeconds: NOW,
+      invokeEdge: async () => ({ data: { status: 'RATE_LIMITED', retry_after_seconds: retry }, error: null }),
+    })).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfterSeconds: undefined });
+  });
+
+  it('timeout abort fetch và không gửi prove từ phản hồi muộn', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    let late!: (value: { data: unknown; error: null }) => void;
+    const edge = vi.fn((_body: unknown, options?: { signal: AbortSignal }) => {
+      signal = options?.signal;
+      return new Promise<{ data: unknown; error: null }>(resolve => { late = resolve; });
+    });
+    try {
+      const pending = runLicenseProtocolV3({ licenseKey: 'TEST', action: 'refresh',
+        invokeNative: nativeInvoker(), invokeEdge: edge, nowSeconds: NOW, stepTimeoutMs: 25 });
+      const failure = expect(pending).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+      await vi.advanceTimersByTimeAsync(25);
+      await failure;
+      expect(signal?.aborted).toBe(true);
+      late({ data: challengeResponse(), error: null });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(edge).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('cancel trước lúc chạy không đọc CNG hoặc gọi Edge', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const native = nativeInvoker();
+    const edge = vi.fn();
+    await expect(runLicenseProtocolV3({ licenseKey: 'TEST', action: 'refresh',
+      invokeNative: native, invokeEdge: edge, nowSeconds: NOW, signal: controller.signal }))
+      .rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(native).not.toHaveBeenCalled();
+    expect(edge).not.toHaveBeenCalled();
+  });
   it('hết hạn chờ Edge thì dừng fail-closed thay vì treo vô hạn', async () => {
     vi.useFakeTimers();
     try {
@@ -148,7 +194,7 @@ describe('license protocol v3 client', () => {
       step: 'challenge',
       license_key: 'PRYNX-TEST-KEY',
       device_identity: IDENTITY,
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     const proveBody = invokeEdge.mock.calls[1][0] as Record<string, unknown>;
     expect(proveBody).toEqual({
       step: 'prove',
@@ -226,12 +272,12 @@ describe('license protocol v3 client', () => {
     expect(invokeEdge).toHaveBeenNthCalledWith(1, expect.objectContaining({
       step: 'challenge',
       action: 'release',
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(invokeEdge).toHaveBeenNthCalledWith(2, expect.objectContaining({
       step: 'prove',
       challenge_id: CHALLENGE.challenge_id,
       proof: PROOF,
-    }));
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   it('không fallback khi challenge sai device/scope hoặc server từ chối proof', async () => {

@@ -17,7 +17,8 @@ from app.schemas.job import (
     JobResponse, PageResultResponse, ComparisonResultResponse, DiffRegion,
     DeleteJobResponse,
 )
-from app.core.license_guard import require_license
+from app.core.license_guard import enforce_feature, require_license
+from app.core.job_access import is_job_access_for
 from app.core.artifact_lease import (
     claim_artifact_lease,
     release_artifact_lease,
@@ -26,6 +27,16 @@ from app.core.artifact_lease import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def require_comparison_result_access(
+    job_id: str,
+    license_info: dict = Depends(require_license),
+) -> dict:
+    """Receipt chỉ được dùng cho đúng job; context thường vẫn phải có quyền Pro."""
+    if is_job_access_for(license_info, "compare", job_id):
+        return license_info
+    return enforce_feature("qc.compare_pdf", license_info)
 
 # LIFECYCLE (audit 2026-08-25 §REV.11): mỗi heartbeat Edit kéo hạn DB theo
 # cửa sổ rolling 24 giờ. Không hard-cap tổng tuổi tab; lease owner vẫn là lớp
@@ -173,7 +184,7 @@ def _build_page_response(pr, summary: dict | None = None) -> PageResultResponse:
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)
-def get_job_status(job_id: str, db: Session = Depends(get_db), license_info: dict = Depends(require_license)):
+def get_job_status(job_id: str, db: Session = Depends(get_db), license_info: dict = Depends(require_comparison_result_access)):
     """Get job status and progress."""
     job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
     if not job:
@@ -182,7 +193,7 @@ def get_job_status(job_id: str, db: Session = Depends(get_db), license_info: dic
 
 
 @router.get("/jobs/{job_id}/results", response_model=ComparisonResultResponse)
-def get_job_results(job_id: str, db: Session = Depends(get_db), license_info: dict = Depends(require_license)):
+def get_job_results(job_id: str, db: Session = Depends(get_db), license_info: dict = Depends(require_comparison_result_access)):
     """Get full comparison results with all page details."""
     job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
     if not job:
@@ -212,7 +223,7 @@ def get_job_results(job_id: str, db: Session = Depends(get_db), license_info: di
 
 
 @router.get("/jobs/{job_id}/page/{page_num}", response_model=PageResultResponse)
-def get_page_result(job_id: str, page_num: int, db: Session = Depends(get_db), license_info: dict = Depends(require_license)):
+def get_page_result(job_id: str, page_num: int, db: Session = Depends(get_db), license_info: dict = Depends(require_comparison_result_access)):
     """Get comparison result for a specific page."""
     pr = (
         db.query(PageResult)

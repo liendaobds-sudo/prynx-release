@@ -2,7 +2,10 @@ import { isTransientLicenseOutcome, useAuthStore } from '../../stores/useAuthSto
 import { readLicenseTokenClaims } from '../../stores/licenseToken';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { hasJobCompletionAccess } from '../../lib/jobCompletionAccess';
 import ChangeLicenseKeyPanel from './ChangeLicenseKeyPanel';
+
+const OFFLINE_WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * RevocationCountdown: panel nổi (không che toàn màn, không chặn thao tác) hiện khi
@@ -94,23 +97,46 @@ export default function LicenseLockOverlay() {
     licenseValid,
     licenseToken,
     licenseValidationOutcome,
+    licenseRetryAt,
+    licenseServerStatus,
+    licenseKey,
   } = useAuthStore();
   const [isRetrying, setIsRetrying] = useState(false);
   const [showChangeKey, setShowChangeKey] = useState(false);
-  const [offlineNow, setOfflineNow] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const isOfflineSession = licenseValid
     && (licenseValidationOutcome === 'valid_offline'
       || licenseValidationOutcome === 'rate_limited_offline');
   const offlineClaims = isOfflineSession ? readLicenseTokenClaims(licenseToken) : null;
+  const isCoolingDown = licenseRetryAt > now;
 
+  // UIUX (audit 2026-09-09 §LIC.RETRY): đếm ngược chỉ là trạng thái hiển thị;
+  // store vẫn quyết định khi nào được gửi lượt xác minh tiếp theo.
   useEffect(() => {
-    if (!isOfflineSession) return;
-    const timer = setInterval(() => setOfflineNow(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, [isOfflineSession]);
+    if (!isOfflineSession && !isCoolingDown) return;
+    // Đồng bộ ngay khi có deadline/phiên mới sau thời gian dài component im lặng.
+    const initialTick = setTimeout(() => setNow(Date.now()), 0);
+    const timer = setInterval(() => setNow(Date.now()), isCoolingDown ? 1000 : 60_000);
+    return () => {
+      clearTimeout(initialTick);
+      clearInterval(timer);
+    };
+  }, [isOfflineSession, isCoolingDown, licenseRetryAt]);
+
+  const retrySecondsLeft = Math.max(0, Math.ceil((licenseRetryAt - now) / 1000));
+  const retryTimeLeft = `${String(Math.floor(retrySecondsLeft / 60)).padStart(2, '0')}:${String(retrySecondsLeft % 60).padStart(2, '0')}`;
+  const retryDisabled = isRetrying || isCoolingDown;
+  const retryLabel = isCoolingDown
+    ? t('misc.licenseLockOverlay:thu_lai_sau', {
+      defaultValue: 'Thử lại sau {{time}}',
+      time: retryTimeLeft,
+    })
+    : isRetrying
+      ? t('misc.licenseLockOverlay:dang_thu')
+      : t('misc.licenseLockOverlay:thu_lai_ngay');
 
   const offlineMsLeft = offlineClaims
-    ? Math.max(0, offlineClaims.exp * 1000 - offlineNow)
+    ? Math.max(0, offlineClaims.exp * 1000 - now)
     : null;
   const offlineHoursLeft = offlineMsLeft === null
     ? null
@@ -122,6 +148,9 @@ export default function LicenseLockOverlay() {
   if (!isLicenseLocked) {
     if (isRevoking) return <RevocationCountdown />;
     if (isOfflineSession) {
+      // UIUX (audit 2026-09-09 §LIC.OFFLINE): lease còn dài vẫn dùng bình thường;
+      // chỉ nhắc kết nối trong ngày cuối, không che lỗi state thiếu token.
+      if (offlineMsLeft !== null && offlineMsLeft > OFFLINE_WARNING_WINDOW_MS) return null;
       return (
         <aside
           role="status"
@@ -143,6 +172,7 @@ export default function LicenseLockOverlay() {
                   : offlineHoursLeft === 0 && offlineMinutesLeft === 0
                     ? t('misc.licenseLockOverlay:offline_duoi_mot_phut')
                     : t('misc.licenseLockOverlay:offline_con_thoi_gian', {
+                      defaultValue: 'Phiên offline còn {{hours}} giờ {{minutes}} phút. Hãy kết nối internet trước khi hết phiên.',
                       hours: offlineHoursLeft,
                       minutes: offlineMinutesLeft,
                     })}
@@ -156,7 +186,7 @@ export default function LicenseLockOverlay() {
   }
 
   const handleRetry = async () => {
-    if (isRetrying) return;
+    if (isRetrying || licenseRetryAt > Date.now()) return;
     setIsRetrying(true);
     try {
       await retryValidation();
@@ -173,7 +203,20 @@ export default function LicenseLockOverlay() {
   // từ chữ hoa/thường trong câu hiển thị (DEVICE_LIMIT từng bị ghi nhầm là lỗi mạng).
   const isDeviceLimit = licenseValidationOutcome === 'device_limit';
   const isServerRejected = licenseValidationOutcome === 'server_rejected';
-  const isTransientValidation = isTransientLicenseOutcome(licenseValidationOutcome);
+  const canFinishAcceptedJobs = licenseServerStatus === 'EXPIRED'
+    && hasJobCompletionAccess(licenseKey || '');
+  const isTransientValidation = isTransientLicenseOutcome(licenseValidationOutcome) || canFinishAcceptedJobs;
+  const isAnchorRecovery = ['anchor_missing', 'anchor_corrupt', 'anchor_unavailable']
+    .includes(licenseValidationOutcome);
+  const transientReason = isCoolingDown
+    ? t('misc.licenseLockOverlay:dang_cho_luot_xac_minh', {
+      defaultValue: 'PrynX đang chờ lượt xác minh tiếp theo. Bạn không cần nhập lại key.',
+    })
+    : isAnchorRecovery
+      ? t('misc.licenseLockOverlay:ket_noi_de_xac_minh_lai', {
+        defaultValue: 'Hãy kết nối internet để PrynX tự xác minh lại bản quyền. Bạn không cần nhập lại key.',
+      })
+      : lockReason;
 
   // Lỗi mạng/anchor tạm thời không phải license bị thu hồi. Giữ native
   // gate fail-closed nhưng chỉ hiện banner không chặn để workspace không bị
@@ -192,9 +235,13 @@ export default function LicenseLockOverlay() {
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-[14px] font-semibold leading-snug text-app-text-1">
-              {t('misc.licenseLockOverlay:khong_the_xac_minh_ban_quyen')}
+              {canFinishAcceptedJobs
+                ? t('misc.licenseLockOverlay:ban_quyen_da_het_han')
+                : t('misc.licenseLockOverlay:khong_the_xac_minh_ban_quyen')}
             </h2>
-            <p className="mt-1 text-[12px] leading-relaxed text-app-text-2">{lockReason}</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-app-text-2">{canFinishAcceptedJobs
+              ? t('misc.licenseLockOverlay:hoan_tat_viec_da_gui', { defaultValue: 'Bản quyền đã hết hạn. Bạn vẫn có thể theo dõi, hủy và tải kết quả của việc đã gửi; cần gia hạn để tạo việc mới.' })
+              : transientReason}</p>
             <p className="mt-2 text-[11px] leading-relaxed text-app-text-3">
               {isRetrying
                 ? t('misc.licenseLockOverlay:dang_kiem_tra')
@@ -203,12 +250,10 @@ export default function LicenseLockOverlay() {
             <button
               type="button"
               onClick={handleRetry}
-              disabled={isRetrying}
+              disabled={retryDisabled}
               className="mt-3 flex h-9 w-full items-center justify-center rounded-app-md bg-app-accent px-4 text-[12px] font-semibold text-white transition-colors hover:bg-app-accent-hover disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-app-accent"
             >
-              {isRetrying
-                ? t('misc.licenseLockOverlay:dang_thu')
-                : t('misc.licenseLockOverlay:thu_lai_ngay')}
+              <span aria-live="off">{retryLabel}</span>
             </button>
           </div>
         </div>
@@ -276,10 +321,10 @@ export default function LicenseLockOverlay() {
                 <button
                   type="button"
                   onClick={handleRetry}
-                  disabled={isRetrying}
-                  className={`flex h-11 items-center justify-center rounded-app-md px-6 text-sm font-semibold text-white transition-colors focus-visible:ring-2 focus-visible:ring-app-accent ${isRetrying ? 'cursor-not-allowed bg-app-3 text-app-text-3' : 'bg-app-accent hover:bg-app-accent-hover'}`}
+                  disabled={retryDisabled}
+                  className={`flex h-11 items-center justify-center rounded-app-md px-6 text-sm font-semibold text-white transition-colors focus-visible:ring-2 focus-visible:ring-app-accent ${retryDisabled ? 'cursor-not-allowed bg-app-3 text-app-text-3' : 'bg-app-accent hover:bg-app-accent-hover'}`}
                 >
-                  {isRetrying ? t('misc.licenseLockOverlay:dang_thu') : t('misc.licenseLockOverlay:thu_lai_ngay')}
+                  <span aria-live="off">{retryLabel}</span>
                 </button>
                 <button
                   type="button"

@@ -82,6 +82,7 @@ type LicenseReleasedResponseV3 = Omit<LicenseProtocolV3ReleaseResult, 'completed
 export type NativeInvokeV3 = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export type EdgeInvokeV3 = (
   body: Record<string, unknown>,
+  options?: { signal: AbortSignal },
 ) => Promise<{ data: unknown; error: { message?: string } | null }>;
 
 export interface RunLicenseProtocolV3Options {
@@ -95,6 +96,8 @@ export interface RunLicenseProtocolV3Options {
   stepTimeoutMs?: number;
   /** Capability rollout: client mới xin lease 72h, client cũ bỏ qua field này. */
   offlineLeaseSeconds?: number;
+  /** Hủy network khi đăng xuất/đổi key; native vẫn kiểm owner/epoch khi commit. */
+  signal?: AbortSignal;
 }
 
 export type RunLicenseReleaseProtocolV3Options = Omit<
@@ -104,11 +107,13 @@ export type RunLicenseReleaseProtocolV3Options = Omit<
 
 export class LicenseProtocolV3ClientError extends Error {
   readonly code: string;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, retryAfterSeconds?: number) {
     super(message);
     this.name = 'LicenseProtocolV3ClientError';
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -121,8 +126,11 @@ const MAX_CHALLENGE_FUTURE_SECONDS = 5 * 60;
 const CHALLENGE_CLOCK_SKEW_SECONDS = 30;
 const DEFAULT_STEP_TIMEOUT_MS = 10_000;
 
-function fail(code: string, message: string): never {
-  throw new LicenseProtocolV3ClientError(code, message);
+function fail(code: string, message: string, retryAfter?: unknown): never {
+  const retryAfterSeconds = code === 'RATE_LIMITED' && typeof retryAfter === 'number'
+    && Number.isInteger(retryAfter) && retryAfter >= 1 && retryAfter <= 3600
+    ? retryAfter : undefined;
+  throw new LicenseProtocolV3ClientError(code, message, retryAfterSeconds);
 }
 
 async function awaitProtocolStep<T>(
@@ -130,18 +138,42 @@ async function awaitProtocolStep<T>(
   timeoutMs: number,
   code: 'NETWORK_ERROR' | 'NATIVE_TIMEOUT',
   message: string,
+  signal?: AbortSignal,
+  abortOperation?: () => void,
 ): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutId = setTimeout(() => {
+      abortOperation?.();
       reject(new LicenseProtocolV3ClientError(code, message));
     }, timeoutMs);
   });
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => { abortOperation?.(); reject(new LicenseProtocolV3ClientError('CANCELLED', 'Lượt xác minh đã được hủy.')); };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+  });
   try {
-    return await Promise.race([operation, timeout]);
+    return await Promise.race([operation, timeout, cancelled]);
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
+}
+
+async function invokeEdgeStep(
+  options: RunLicenseProtocolV3Options | (RunLicenseReleaseProtocolV3Options & { action: 'release' }),
+  body: Record<string, unknown>,
+  timeoutMs: number,
+  message: string,
+): Promise<Awaited<ReturnType<EdgeInvokeV3>>> {
+  if (options.signal?.aborted) fail('CANCELLED', 'Lượt xác minh đã được hủy.');
+  const controller = new AbortController();
+  return awaitProtocolStep(
+    options.invokeEdge(body, { signal: controller.signal }), timeoutMs,
+    'NETWORK_ERROR', message, options.signal, () => controller.abort(),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,7 +223,7 @@ function parseChallengeResponse(
       : 'INVALID_CHALLENGE';
     fail(status, typeof value.message === 'string'
       ? value.message
-      : 'Máy chủ từ chối cấp challenge thiết bị');
+      : 'Máy chủ từ chối cấp challenge thiết bị', value.retry_after_seconds);
   }
   if (!isRecord(value) || !hasExactKeys(value, [
     'status', 'protocol_version', 'minimum_protocol', 'environment', 'action',
@@ -262,7 +294,7 @@ function parseValidResponse(value: unknown, deviceKeyId: string): LicenseValidRe
     const status = typeof value.status === 'string' && SERVER_STATUS_RE.test(value.status)
       ? value.status
       : 'INVALID_RESPONSE';
-    fail(status, typeof value.message === 'string' ? value.message : 'Máy chủ từ chối proof thiết bị');
+    fail(status, typeof value.message === 'string' ? value.message : 'Máy chủ từ chối proof thiết bị', value.retry_after_seconds);
   }
   if (value.protocol_version !== 3
     || value.minimum_protocol !== 3
@@ -281,7 +313,7 @@ function parseReleasedResponse(value: unknown, deviceKeyId: string): LicenseRele
     const status = typeof value.status === 'string' && SERVER_STATUS_RE.test(value.status)
       ? value.status
       : 'INVALID_RESPONSE';
-    fail(status, typeof value.message === 'string' ? value.message : 'Máy chủ từ chối nhả thiết bị');
+    fail(status, typeof value.message === 'string' ? value.message : 'Máy chủ từ chối nhả thiết bị', value.retry_after_seconds);
   }
   if (!hasExactKeys(value, [
     'status', 'protocol_version', 'minimum_protocol', 'device_key_id',
@@ -303,6 +335,7 @@ interface LicenseProtocolV3Exchange {
 async function runLicenseProtocolV3Exchange(
   options: RunLicenseProtocolV3Options | (RunLicenseReleaseProtocolV3Options & { action: 'release' }),
 ): Promise<LicenseProtocolV3Exchange> {
+  if (options.signal?.aborted) fail('CANCELLED', 'Lượt xác minh đã được hủy.');
   const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
   if (!Number.isSafeInteger(nowSeconds) || nowSeconds <= 0) {
     fail('INVALID_CLOCK', 'Đồng hồ hệ thống không hợp lệ');
@@ -329,10 +362,11 @@ async function runLicenseProtocolV3Exchange(
       stepTimeoutMs,
       'NATIVE_TIMEOUT',
       'Native không trả định danh thiết bị đúng hạn',
+      options.signal,
     ),
   );
-  const challengeCall = await awaitProtocolStep(
-    options.invokeEdge({
+  const challengeCall = await invokeEdgeStep(
+    options, {
       step: 'challenge',
       protocol_version: 3,
       license_key: licenseKey,
@@ -341,9 +375,8 @@ async function runLicenseProtocolV3Exchange(
       device_identity: identity,
       offline_lease_seconds: offlineLeaseSeconds,
       ...(options.appVersion ? { app_version: options.appVersion } : {}),
-    }),
+    },
     stepTimeoutMs,
-    'NETWORK_ERROR',
     'Máy chủ không trả challenge license đúng hạn',
   );
   if (challengeCall.error) {
@@ -364,12 +397,13 @@ async function runLicenseProtocolV3Exchange(
       stepTimeoutMs,
       'NATIVE_TIMEOUT',
       'Native không ký proof thiết bị đúng hạn',
+      options.signal,
     ),
     identity.device_key_id,
   );
 
-  const proveCall = await awaitProtocolStep(
-    options.invokeEdge({
+  const proveCall = await invokeEdgeStep(
+    options, {
       step: 'prove',
       protocol_version: 3,
       challenge_id: challengeResponse.challenge_id,
@@ -377,9 +411,8 @@ async function runLicenseProtocolV3Exchange(
       proof,
       offline_lease_seconds: offlineLeaseSeconds,
       ...(options.appVersion ? { app_version: options.appVersion } : {}),
-    }),
+    },
     stepTimeoutMs,
-    'NETWORK_ERROR',
     'Máy chủ không trả kết quả proof đúng hạn',
   );
   if (proveCall.error) {

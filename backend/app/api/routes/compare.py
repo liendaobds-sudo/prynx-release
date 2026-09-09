@@ -21,7 +21,8 @@ from app.core.disk_space_guard import (
     ensure_job_disk_space,
     estimate_compare_disk,
 )
-from app.core.license_guard import require_feature
+from app.core.license_guard import enforce_feature, require_feature, require_license
+from app.core.job_access import is_job_access_for, issue_job_access
 from app.core.heavy_job_scheduler import scheduled_job
 from app.core.system_memory import plan_worker_count
 
@@ -449,14 +450,36 @@ def create_comparison_job(
             _COMPARE_SUBMISSION_SLOTS.release()
         raise
     logger.info(f"Created job: {job.id} (sync_mode={local_mode})")
-    return JobCreateResponse(job_id=job.id)
+    # SEC (audit 2026-09-09 §LICUX.JOB): chỉ enqueue thành công mới có quyền
+    # tiếp tục đọc/hủy đúng job khi license hết hạn; không nhận scope từ client.
+    from app.core import license_guard
+    access = issue_job_access(
+        family="compare", job_id=str(job.id), license_info=license_info,
+        session_token=license_guard._SIDECAR_TOKEN,
+        source_ids=(str(job.file_a_id), str(job.file_b_id)),
+    )
+    return JobCreateResponse(
+        job_id=job.id,
+        job_access_token=access.token if access else None,
+        job_access_expires_at=access.expires_at if access else None,
+        job_access_paths=list(access.paths) if access else None,
+    )
+
+
+async def require_comparison_cancel_access(
+    job_id: str,
+    license_info: dict = Depends(require_license),
+) -> dict:
+    if is_job_access_for(license_info, "compare", job_id):
+        return license_info
+    return enforce_feature("qc.compare_pdf", license_info)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobCancelResponse)
 def cancel_comparison_job(
     job_id: str,
     db: Session = Depends(get_db),
-    license_info: dict = Depends(require_feature("qc.compare_pdf")),
+    license_info: dict = Depends(require_comparison_cancel_access),
 ):
     """Hủy job Compare queued/running; endpoint idempotent."""
     local_mode = settings.DEV_MODE or settings.IS_DESKTOP_APP

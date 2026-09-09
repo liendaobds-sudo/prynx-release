@@ -14,7 +14,9 @@ const MAX_CLAIM_LIFETIME_SECONDS: u64 = 8 * 24 * 60 * 60;
 const CLOCK_SKEW_SECONDS: u64 = 5 * 60;
 const LICENSE_PROTOCOL_V2: u64 = 2;
 const LICENSE_PROTOCOL_V3: u64 = 3;
-const V3_MAX_CLAIM_LIFETIME_SECONDS: u64 = 15 * 60;
+// SEC (audit 2026-09-09 §SEC.LIC20.04/S2): cùng lease cuối tuần với server/
+// Tauri; token 15 phút cũ vẫn hợp lệ, iat/exp và clock-skew vẫn bị kiểm riêng.
+const V3_MAX_CLAIM_LIFETIME_SECONDS: u64 = 72 * 60 * 60;
 const DEVICE_KEY_ID_PREFIX: &str = "d3_";
 
 fn decode_url(value: &str) -> Result<Vec<u8>, String> {
@@ -63,7 +65,32 @@ mod device_identity {
     use windows::Win32::Security::OBJECT_SECURITY_INFORMATION;
 
     const DEVICE_KEY_NAME: windows::core::PCWSTR = w!("PrintSolutions.PrynX.DeviceAuthority.v3");
+    const SOFTWARE_PROVIDER_NAME: windows::core::PCWSTR =
+        w!("Microsoft Software Key Storage Provider");
     const RSA_PUBLIC_BLOB_HEADER_BYTES: usize = 24;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DeviceKeyProvider {
+        Platform,
+        Software,
+    }
+
+    // SEC (audit 2026-09-09 §SEC.LIC20.04/S2): cùng thứ tự đọc key đã có với
+    // Tauri, nhưng engine không được tạo/ghi đè key hay đổi device ID. Chỉ lỗi
+    // mở provider/key mới thử software; policy và presence của key đã chọn
+    // phải fail-closed, không được thử key khác để né lỗi.
+    fn open_preferred_existing_key<T>(
+        mut open: impl FnMut(DeviceKeyProvider) -> Result<T, String>,
+    ) -> Result<T, String> {
+        match open(DeviceKeyProvider::Platform) {
+            Ok(key) => Ok(key),
+            Err(platform_error) => open(DeviceKeyProvider::Software).map_err(|software_error| {
+                format!(
+                    "Không mở được khóa thiết bị CNG đã có (TPM: {platform_error}; software: {software_error})"
+                )
+            }),
+        }
+    }
 
     struct ProviderHandle(NCRYPT_PROV_HANDLE);
 
@@ -117,9 +144,9 @@ mod device_identity {
     fn read_u32_le(blob: &[u8], offset: usize) -> Result<u32, String> {
         let bytes: [u8; 4] = blob
             .get(offset..offset + 4)
-            .ok_or_else(|| "Public-key blob TPM bị cắt ngắn".to_string())?
+            .ok_or_else(|| "Public-key blob CNG bị cắt ngắn".to_string())?
             .try_into()
-            .map_err(|_| "Public-key blob TPM có header không hợp lệ".to_string())?;
+            .map_err(|_| "Public-key blob CNG có header không hợp lệ".to_string())?;
         Ok(u32::from_le_bytes(bytes))
     }
 
@@ -136,9 +163,9 @@ mod device_identity {
                 NCRYPT_FLAGS(0),
             )
         }
-        .map_err(|error| cng_error("Đo public key TPM", error))?;
+        .map_err(|error| cng_error("Đo public key CNG", error))?;
         if !(RSA_PUBLIC_BLOB_HEADER_BYTES as u32..=1024).contains(&required) {
-            return Err("Kích thước public-key blob TPM bất thường".to_string());
+            return Err("Kích thước public-key blob CNG bất thường".to_string());
         }
 
         let mut blob = vec![0u8; required as usize];
@@ -154,9 +181,9 @@ mod device_identity {
                 NCRYPT_FLAGS(0),
             )
         }
-        .map_err(|error| cng_error("Đọc public key TPM", error))?;
+        .map_err(|error| cng_error("Đọc public key CNG", error))?;
         if written != required {
-            return Err("Public-key blob TPM có chiều dài không ổn định".to_string());
+            return Err("Public-key blob CNG có chiều dài không ổn định".to_string());
         }
 
         let magic = read_u32_le(&blob, 0)?;
@@ -173,13 +200,13 @@ mod device_identity {
             || prime1_len != 0
             || prime2_len != 0
         {
-            return Err("Public key TPM không đúng định dạng RSA-2048".to_string());
+            return Err("Public key CNG không đúng định dạng RSA-2048".to_string());
         }
         let exponent_start = RSA_PUBLIC_BLOB_HEADER_BYTES;
         let modulus_start = exponent_start + exponent_len;
         let end = modulus_start + modulus_len;
         if end != blob.len() || blob[exponent_start..modulus_start] != [0x01, 0x00, 0x01] {
-            return Err("Public key TPM không dùng exponent 65537".to_string());
+            return Err("Public key CNG không dùng exponent 65537".to_string());
         }
 
         let e = URL_SAFE_NO_PAD.encode(&blob[exponent_start..modulus_start]);
@@ -194,7 +221,7 @@ mod device_identity {
         device_key_id: &str,
     ) -> Result<(), String> {
         // Chỉ mở/export public metadata chưa đủ mạnh khi cây key store bị chép.
-        // Một phép ký cục bộ buộc Platform KSP gọi private key đã seal trong TPM.
+        // Một phép ký cục bộ buộc KSP dùng private key, dù ở TPM hay software.
         let digest: [u8; 32] =
             Sha256::digest(format!("PRYNX-LOCAL-DEVICE-PRESENCE-V3\n{device_key_id}\n").as_bytes())
                 .into();
@@ -214,9 +241,9 @@ mod device_identity {
                 NCRYPT_PAD_PSS_FLAG,
             )
         }
-        .map_err(|error| cng_error("Chứng minh private key TPM", error))?;
+        .map_err(|error| cng_error("Chứng minh private key CNG", error))?;
         if required != 256 {
-            return Err("TPM trả chiều dài chữ ký presence bất thường".to_string());
+            return Err("CNG trả chiều dài chữ ký presence bất thường".to_string());
         }
         let mut signature = vec![0u8; required as usize];
         let mut written = 0u32;
@@ -230,23 +257,30 @@ mod device_identity {
                 NCRYPT_PAD_PSS_FLAG,
             )
         }
-        .map_err(|error| cng_error("Chứng minh private key TPM", error))?;
+        .map_err(|error| cng_error("Chứng minh private key CNG", error))?;
         if written != required {
-            return Err("TPM trả chữ ký presence bị cắt ngắn".to_string());
+            return Err("CNG trả chữ ký presence bị cắt ngắn".to_string());
         }
         Ok(())
     }
 
-    pub(super) fn local_device_key_id() -> Result<String, String> {
+    fn open_existing_key(kind: DeviceKeyProvider) -> Result<(ProviderHandle, KeyHandle), String> {
+        let provider_name = match kind {
+            DeviceKeyProvider::Platform => MS_PLATFORM_CRYPTO_PROVIDER,
+            DeviceKeyProvider::Software => SOFTWARE_PROVIDER_NAME,
+        };
         let mut provider = NCRYPT_PROV_HANDLE::default();
-        unsafe { NCryptOpenStorageProvider(&mut provider, MS_PLATFORM_CRYPTO_PROVIDER, 0) }
-            .map_err(|error| cng_error("Mở Microsoft Platform Crypto Provider", error))?;
+        unsafe { NCryptOpenStorageProvider(&mut provider, provider_name, 0) }
+            .map_err(|error| cng_error("Mở provider của khóa thiết bị CNG", error))?;
         let provider = ProviderHandle(provider);
-        let implementation = get_u32_property(provider.0.into(), NCRYPT_IMPL_TYPE_PROPERTY)?;
-        if implementation & NCRYPT_IMPL_HARDWARE_FLAG == 0 {
-            return Err(
-                "Crypto provider của khóa thiết bị không được đánh dấu hardware-backed".to_string(),
-            );
+        if kind == DeviceKeyProvider::Platform {
+            let implementation = get_u32_property(provider.0.into(), NCRYPT_IMPL_TYPE_PROPERTY)?;
+            if implementation & NCRYPT_IMPL_HARDWARE_FLAG == 0 {
+                return Err(
+                    "Crypto provider của khóa thiết bị không được đánh dấu hardware-backed"
+                        .to_string(),
+                );
+            }
         }
 
         let mut key = NCRYPT_KEY_HANDLE::default();
@@ -259,27 +293,102 @@ mod device_identity {
                 NCRYPT_SILENT_FLAG,
             )
         }
-        .map_err(|error| cng_error("Mở khóa thiết bị TPM", error))?;
-        let key = KeyHandle(key);
-        let bits = get_u32_property(key.0.into(), NCRYPT_LENGTH_PROPERTY)?;
-        let usage = get_u32_property(key.0.into(), NCRYPT_KEY_USAGE_PROPERTY)?;
-        let export_policy = get_u32_property(key.0.into(), NCRYPT_EXPORT_POLICY_PROPERTY)?;
+        .map_err(|error| cng_error("Mở khóa thiết bị CNG", error))?;
+        Ok((provider, KeyHandle(key)))
+    }
+
+    fn validate_key_properties(bits: u32, usage: u32, export_policy: u32) -> Result<(), String> {
         if bits != 2048 || usage & NCRYPT_ALLOW_SIGNING_FLAG == 0 {
             return Err("Khóa thiết bị không đúng policy RSA-2048 SIGN".to_string());
         }
         if export_policy & (NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG) != 0 {
             return Err("Khóa thiết bị đang cho phép export".to_string());
         }
+        Ok(())
+    }
+
+    pub(super) fn local_device_key_id() -> Result<String, String> {
+        let (_provider, key) = open_preferred_existing_key(open_existing_key)?;
+        let bits = get_u32_property(key.0.into(), NCRYPT_LENGTH_PROPERTY)?;
+        let usage = get_u32_property(key.0.into(), NCRYPT_KEY_USAGE_PROPERTY)?;
+        let export_policy = get_u32_property(key.0.into(), NCRYPT_EXPORT_POLICY_PROPERTY)?;
+        validate_key_properties(bits, usage, export_policy)?;
         let device_key_id = export_device_key_id(key.0)?;
         prove_private_key_presence(key.0, &device_key_id)?;
         Ok(device_key_id)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn uu_tien_khoa_tpm_da_co_khong_mo_software() {
+            let mut visited = Vec::new();
+            let key = open_preferred_existing_key(|provider| {
+                visited.push(provider);
+                Ok("khoa-tpm-gia")
+            })
+            .expect("key TPM đã có phải được giữ nguyên");
+            assert_eq!(key, "khoa-tpm-gia");
+            assert_eq!(visited, [DeviceKeyProvider::Platform]);
+        }
+
+        #[test]
+        fn tpm_khong_mo_duoc_thi_dung_khoa_software_da_co() {
+            let mut visited = Vec::new();
+            let key = open_preferred_existing_key(|provider| {
+                visited.push(provider);
+                match provider {
+                    DeviceKeyProvider::Platform => Err("TPM không có key".to_string()),
+                    DeviceKeyProvider::Software => Ok("khoa-software-gia"),
+                }
+            })
+            .expect("software key đã có phải được dùng, không tạo key TPM mới");
+            assert_eq!(key, "khoa-software-gia");
+            assert_eq!(
+                visited,
+                [DeviceKeyProvider::Platform, DeviceKeyProvider::Software]
+            );
+        }
+
+        #[test]
+        fn thieu_ca_hai_khoa_phai_bao_loi_khong_co_nhanh_tao_moi() {
+            let mut visited = Vec::new();
+            let result = open_preferred_existing_key::<()>(|provider| {
+                visited.push(provider);
+                Err("Không có khóa giả".to_string())
+            });
+            assert!(result.is_err());
+            assert_eq!(
+                visited,
+                [DeviceKeyProvider::Platform, DeviceKeyProvider::Software]
+            );
+        }
+
+        #[test]
+        fn khoa_tpm_hay_software_deu_phai_rsa2048_sign_va_khong_export() {
+            assert!(validate_key_properties(2048, NCRYPT_ALLOW_SIGNING_FLAG, 0).is_ok());
+            for (bits, usage, export_policy) in [
+                (1024, NCRYPT_ALLOW_SIGNING_FLAG, 0),
+                (2048, 0, 0),
+                (2048, NCRYPT_ALLOW_SIGNING_FLAG, NCRYPT_ALLOW_EXPORT_FLAG),
+                (
+                    2048,
+                    NCRYPT_ALLOW_SIGNING_FLAG,
+                    NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG,
+                ),
+            ] {
+                assert!(validate_key_properties(bits, usage, export_policy).is_err());
+            }
+        }
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 mod device_identity {
     pub(super) fn local_device_key_id() -> Result<String, String> {
-        Err("Device authority TPM chỉ hỗ trợ trên Windows".to_string())
+        Err("Device authority CNG chỉ hỗ trợ trên Windows".to_string())
     }
 }
 
@@ -335,9 +444,9 @@ fn validate_v3_device_binding(
         return Err("License token v3 device binding mismatch".to_string());
     }
     let local = local_device_key_id
-        .ok_or_else(|| "Local TPM device key is required for license token v3".to_string())?;
+        .ok_or_else(|| "License token v3 cần khóa thiết bị CNG cục bộ".to_string())?;
     if local != device_key_id {
-        return Err("License token belongs to another TPM device key".to_string());
+        return Err("License token thuộc khóa thiết bị CNG khác".to_string());
     }
     Ok(())
 }
@@ -361,7 +470,7 @@ fn validate_dieline_claims(
     }
 
     // SEC (audit 2026-09-04 §SEC.16-A1): v3 bind token với public-key
-    // fingerprint của khóa TPM. V2 chỉ còn đường drain có hạn ở phía server.
+    // fingerprint của khóa CNG. V2 chỉ còn đường drain có hạn ở phía server.
     let version = claims
         .get("v")
         .and_then(Value::as_u64)
@@ -391,8 +500,7 @@ fn validate_dieline_claims(
         }
         LICENSE_PROTOCOL_V3 => {
             if exp - issued_at > V3_MAX_CLAIM_LIFETIME_SECONDS
-                || exp.saturating_sub(now)
-                    > V3_MAX_CLAIM_LIFETIME_SECONDS + CLOCK_SKEW_SECONDS
+                || exp.saturating_sub(now) > V3_MAX_CLAIM_LIFETIME_SECONDS + CLOCK_SKEW_SECONDS
             {
                 return Err("License token v3 lifetime is invalid".to_string());
             }
@@ -599,8 +707,51 @@ mod tests {
         }
     }
 
+    // SEC (audit 2026-09-09 §SEC.LIC20.04/S2): giá trị biên độc lập hằng số
+    // production để test không tự giữ lại policy 15 phút đã lỗi thời.
     #[test]
-    fn token_v3_can_khoa_tpm_cuc_bo_moi_mo_duoc_engine() {
+    fn token_v3_chap_nhan_lease_15_phut_va_72_gio() {
+        for lifetime in [900_u64, 259_200] {
+            let mut claims = valid_v3_claims();
+            claims["exp"] = json!(NOW + lifetime);
+            let result = super::validate_dieline_claims(
+                &claims,
+                DEVICE_KEY_ID,
+                LICENSE_KEY,
+                NOW,
+                Some(DEVICE_KEY_ID),
+            );
+            assert!(result.is_ok(), "lease {lifetime} giây hợp lệ: {result:?}");
+        }
+    }
+
+    #[test]
+    fn token_v3_72_gio_van_chan_qua_han_va_dong_ho_lui() {
+        for (issued_at, expires_at, now) in [
+            (NOW, NOW + 259_201, NOW),
+            (NOW, NOW + 259_200, NOW + 259_201),
+            (NOW - 259_200, NOW + 1, NOW),
+            (NOW + 301, NOW + 301 + 259_200, NOW),
+        ] {
+            let mut claims = valid_v3_claims();
+            claims["iat"] = json!(issued_at);
+            claims["exp"] = json!(expires_at);
+            assert!(
+                super::validate_dieline_claims(
+                    &claims,
+                    DEVICE_KEY_ID,
+                    LICENSE_KEY,
+                    now,
+                    Some(DEVICE_KEY_ID),
+                )
+                .is_err(),
+                "lease quá giới hạn, hết hạn hoặc đồng hồ lùi phải bị từ chối"
+            );
+        }
+    }
+
+    #[test]
+    fn token_v3_can_khoa_cng_cuc_bo_moi_mo_duoc_engine() {
         assert!(super::validate_dieline_claims(
             &valid_v3_claims(),
             DEVICE_KEY_ID,
@@ -619,7 +770,7 @@ mod tests {
             Some(other_device),
         )
         .expect_err("token chép sang máy không có private key tương ứng phải bị từ chối");
-        assert!(reason.contains("another TPM"));
+        assert!(reason.contains("khóa thiết bị CNG khác"));
     }
 
     #[test]

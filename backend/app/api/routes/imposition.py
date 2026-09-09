@@ -35,6 +35,8 @@ from app.schemas.imposition import (
     NupJobStatusResponse,
 )
 from app.schemas.pont import PontConfigPayload, normalize_pont_settings
+from app.schemas.job import JobAccessResponse
+from app.core.job_access import issue_job_access
 from app.config import settings
 from app.utils.errors import raise_http
 from app.workers.imposition_preview_helpers import (
@@ -47,6 +49,10 @@ from app.workers.imposition_preview_helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/imposition", tags=["Imposition"], dependencies=[Depends(require_license)])
+
+
+class ImposeJobAccessResponse(ImposeJobStartResponse, JobAccessResponse):
+    """Giữ hợp đồng tạo job cũ và bổ sung receipt hoàn tất hẹp."""
 
 UPLOAD_DIR = settings.UPLOAD_DIR
 RESULTS_DIR = settings.RESULTS_DIR
@@ -1261,10 +1267,21 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         _NUP_SUBMISSION_SLOTS.release()
         nup_jobs.pop(job_id, None)
         raise
-    return {"job_id": job_id}
+    # SEC (audit 2026-09-09 §LICUX.JOB): chỉ job đã vào executor mới có receipt.
+    from app.core import license_guard
+    access = issue_job_access(
+        family="nup", job_id=job_id, license_info=license_info or {},
+        session_token=license_guard._SIDECAR_TOKEN,
+    )
+    return {
+        "job_id": job_id,
+        "job_access_token": access.token if access else None,
+        "job_access_expires_at": access.expires_at if access else None,
+        "job_access_paths": list(access.paths) if access else None,
+    }
 
 
-@router.post("/impose-start", response_model=ImposeJobStartResponse)
+@router.post("/impose-start", response_model=ImposeJobAccessResponse)
 async def start_impose_job(body: dict, license_info: dict = Depends(require_license)):
     """
     Endpoint hợp nhất N-Up & Bế Tem. Tiền tố tên file theo settings.isDieCutMode.
@@ -1276,13 +1293,13 @@ async def start_impose_job(body: dict, license_info: dict = Depends(require_lice
     return _launch_impose_job(body, "sticker" if (is_diecut or is_page_sheet) else "nup", license_info)
 
 
-@router.post("/nup-start", response_model=ImposeJobStartResponse)
+@router.post("/nup-start", response_model=ImposeJobAccessResponse)
 async def start_nup_job(body: dict, license_info: dict = Depends(require_license)):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "nup", license_info)
 
 
-@router.post("/sticker-start", response_model=ImposeJobStartResponse)
+@router.post("/sticker-start", response_model=ImposeJobAccessResponse)
 async def start_sticker_job(body: dict, license_info: dict = Depends(require_license)):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "sticker", license_info)

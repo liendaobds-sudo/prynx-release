@@ -756,6 +756,17 @@ pub fn get_hardware_id() -> Result<String, String> {
 
 use std::sync::Mutex;
 
+// SEC (audit 2026-09-09 §SEC.LICUX.COMMIT): thứ tự khóa duy nhất là transaction
+// → renewal → pending/anchor/cache. Wrapper IPC lấy khóa này; helper *_inner
+// không khóa lại, để giao dịch xác minh + DPAPI không deadlock do gọi lồng nhau.
+static LICENSE_TRANSACTION: Mutex<()> = Mutex::new(());
+
+pub(crate) fn license_transaction_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    LICENSE_TRANSACTION
+        .lock()
+        .map_err(|_| "Không khóa được giao dịch bản quyền".to_string())
+}
+
 #[derive(Clone)]
 struct ValidatedLicense {
     validated_at: u64,
@@ -928,6 +939,7 @@ fn ensure_registration_challenge_policy(
 /// được ràng buộc với đúng key + HWID mà native tự lấy.
 #[command]
 pub fn begin_license_validation(license_key: String) -> Result<String, String> {
+    let _transaction = license_transaction_guard()?;
     let license_key = license_key.trim().to_string();
     if license_key.is_empty() || license_key.len() > 256 {
         return Err("License key không hợp lệ".to_string());
@@ -1011,6 +1023,20 @@ fn commit_validated_license_binding(
     Ok(())
 }
 
+fn persist_then_commit_binding(
+    cache: &mut HashMap<String, ValidatedLicense>,
+    license_key: String,
+    binding: ValidatedLicense,
+    replace_license_key: Option<&str>,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if replace_license_key == Some(license_key.as_str()) {
+        return Err("Binding thay thế phải dùng license key khác".into());
+    }
+    persist()?;
+    commit_validated_license_binding(cache, license_key, binding, replace_license_key)
+}
+
 /// Called by frontend after successful Supabase RPC validation
 /// to register the key in Rust's in-memory cache.
 ///
@@ -1024,6 +1050,25 @@ pub fn register_validated_key(
     challenge: Option<String>,
     challenge_id: Option<String>,
     replace_license_key: Option<String>,
+) -> Result<(), String> {
+    let _transaction = license_transaction_guard()?;
+    register_validated_key_inner(
+        license_key,
+        token,
+        challenge,
+        challenge_id,
+        replace_license_key,
+        || Ok(()),
+    )
+}
+
+fn register_validated_key_inner(
+    license_key: String,
+    token: Option<String>,
+    challenge: Option<String>,
+    challenge_id: Option<String>,
+    replace_license_key: Option<String>,
+    before_binding_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let license_key = license_key.trim().to_string();
     if license_key.is_empty() || license_key.len() > 256 {
@@ -1039,11 +1084,17 @@ pub fn register_validated_key(
         }
         None => None,
     };
+    if replace_license_key.as_deref() == Some(license_key.as_str()) {
+        return Err("Binding thay thế phải dùng license key khác".to_string());
+    }
     let tok = token.unwrap_or_default().trim().to_string();
     // Release builds always fail closed. Environment chỉ có tác dụng trong debug để
     // mô phỏng production; không có cờ runtime nào tắt được enforcement của bản ship.
     let enforce = license_token_enforcement_enabled();
-    let hw = get_hardware_id()?;
+    // SEC (audit 2026-09-09 §SEC.LIC20.S1): v3 dùng khóa CNG, không phụ thuộc
+    // hồ sơ WMI/DPAPI legacy. Hint chỉ chọn công việc cần làm; chữ ký và toàn bộ
+    // claims vẫn được verify bên dưới, không cấp quyền từ payload chưa xác minh.
+    let hw = registration_hardware_id(&tok, get_hardware_id)?;
     // V3 chỉ chấp nhận device ID suy ra từ public key của chính Platform KSP.
     // Lỗi/no-TPM được giữ lại dưới dạng None để token legacy vẫn drain được,
     // còn verifier v3 sẽ fail-closed thay vì rơi về HWID.
@@ -1203,7 +1254,9 @@ pub fn register_validated_key(
             .as_ref()
             .and_then(|claims| claims.device_key_id.clone())
             .unwrap_or_else(|| hw.clone());
-        commit_validated_license_binding(
+        // Chỉ persist sau toàn bộ chữ ký/proof/anchor/epoch, nhưng trước khi
+        // binding mới có thể cấp chữ ký API. Lỗi ghi giữ nguyên binding cũ.
+        persist_then_commit_binding(
             &mut cache,
             license_key,
             ValidatedLicense {
@@ -1212,6 +1265,7 @@ pub fn register_validated_key(
                 license_token_hash,
             },
             replace_license_key.as_deref(),
+            before_binding_commit,
         )?;
         if let (Some(challenge_value), Some(guard)) =
             (normalized_challenge.as_ref(), pending_guard.as_mut())
@@ -1247,12 +1301,112 @@ fn license_token_enforcement_enabled() -> bool {
     enforcement_policy(cfg!(debug_assertions), env_value.as_deref())
 }
 
+// SEC (audit 2026-09-09 §SEC.LICUX.NATIVE): renderer chỉ nhận policy debug từ
+// native; bản release luôn enforced bất kể environment hay cờ frontend.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseRuntimePolicy {
+    development: bool,
+    clock_anchor_required: bool,
+}
+
+fn development_license_mode(is_debug: bool, token: bool, anchor: bool, gated: bool) -> bool {
+    is_debug && !token && !anchor && !gated
+}
+
+#[command]
+pub fn get_license_runtime_policy() -> LicenseRuntimePolicy {
+    let anchor_required = clock_anchor_required();
+    let gated = parse_security_flag(
+        std::env::var("PRYNX_FEATURE_GATING_ENABLED")
+            .ok()
+            .as_deref(),
+    );
+    LicenseRuntimePolicy {
+        development: development_license_mode(
+            cfg!(debug_assertions),
+            license_token_enforcement_enabled(),
+            anchor_required,
+            gated,
+        ),
+        clock_anchor_required: anchor_required,
+    }
+}
+
+pub(crate) fn license_session_epoch() -> u64 {
+    LICENSE_SESSION_EPOCH.load(Ordering::Acquire)
+}
+
+fn registration_hardware_id(
+    token: &str,
+    legacy_resolver: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let version_hint = token.split_once('.').and_then(|(payload, _)| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|claims| claims.get("v").and_then(serde_json::Value::as_u64))
+    });
+    if version_hint == Some(u64::from(LICENSE_TOKEN_V3)) {
+        Ok(String::new())
+    } else {
+        legacy_resolver()
+    }
+}
+
+#[cfg(test)]
+mod license_runtime_policy_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    fn release_va_dev_gated_khong_co_quyen_dev_gia() {
+        for token in [false, true] {
+            for anchor in [false, true] {
+                for gated in [false, true] {
+                    assert!(!development_license_mode(false, token, anchor, gated));
+                }
+            }
+        }
+        assert!(development_license_mode(true, false, false, false));
+        assert!(!development_license_mode(true, true, false, false));
+        assert!(!development_license_mode(true, false, true, false));
+        assert!(!development_license_mode(true, false, false, true));
+    }
+
+    #[test]
+    fn v3_khong_doc_hwid_legacy_nhung_chu_ky_gia_van_bi_chan() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"v":3}"#);
+        let fake = format!("{payload}.ZmFrZQ");
+        let hw =
+            registration_hardware_id(&fake, || panic!("v3 không được đọc HWID legacy")).unwrap();
+        assert!(hw.is_empty());
+        assert!(verify_license_token_internal(&fake, &hw, "KEY", Some("d3_invalid")).is_err());
+    }
+
+    #[test]
+    fn token_legacy_va_hong_khong_duoc_ne_hwid() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"v":2}"#);
+        for token in [format!("{payload}.ZmFrZQ"), String::new(), "invalid".into()] {
+            assert!(registration_hardware_id(&token, || Err("WMI unavailable".into())).is_err());
+        }
+    }
+}
+
 /// Xoá sạch cache key đã xác thực → sign_api_request lập tức từ chối ký request mới.
 /// Gọi khi license bị thu hồi/khóa để chặn quyền dùng NGAY trong phiên, không chờ
 /// cache hết TTL.
 /// Best-effort: lỗi lock chỉ trả về String, không panic.
 #[command]
 pub fn clear_validated_keys() -> Result<(), String> {
+    let _transaction = license_transaction_guard()?;
+    clear_validated_keys_inner()
+}
+
+fn clear_validated_keys_inner() -> Result<(), String> {
     {
         let mut cache = VALIDATED_KEYS
             .lock()
@@ -2799,6 +2953,7 @@ pub fn sign_api_request(
     body_commitment: String,
     content_type: String,
 ) -> Result<HashMap<String, String>, String> {
+    let transaction = license_transaction_guard()?;
     // Gate 1: Check license in Rust cache (mandatory, not opt-in)
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2831,6 +2986,8 @@ pub fn sign_api_request(
     // Nếu token vừa được làm mới nhưng cache chưa kịp cập nhật, trả lỗi trước khi
     // tạo chữ ký để frontend đăng ký lại; không gửi request HMAC sai tới sidecar.
     ensure_license_token_binding(&binding, &license_token)?;
+    // Không giữ khóa giao dịch qua phần tạo HMAC; snapshot binding đã nhất quán.
+    drop(transaction);
 
     // Gate 3: Decrypt token from encrypted memory (VECTOR #14)
     let token_str = decrypt_sidecar_token()?;
@@ -3052,6 +3209,12 @@ fn get_credential_path() -> Result<std::path::PathBuf, String> {
 
 #[command]
 pub fn store_license(license_key: String) -> Result<(), String> {
+    let _transaction = license_transaction_guard()?;
+    LICENSE_SESSION_EPOCH.fetch_add(1, Ordering::AcqRel);
+    store_license_inner(license_key)
+}
+
+fn store_license_inner(license_key: String) -> Result<(), String> {
     let cred_path = get_credential_path()?;
     let cred_path_str = ps_single_quote_escape(&cred_path.to_string_lossy());
 
@@ -3087,6 +3250,11 @@ pub fn store_license(license_key: String) -> Result<(), String> {
 
 #[command]
 pub fn load_license() -> Result<String, String> {
+    let _transaction = license_transaction_guard()?;
+    load_license_inner()
+}
+
+fn load_license_inner() -> Result<String, String> {
     let cred_path = get_credential_path()?;
 
     if !cred_path.exists() {
@@ -3129,11 +3297,13 @@ pub fn load_license() -> Result<String, String> {
 
 #[command]
 pub fn delete_license() -> Result<(), String> {
+    let _transaction = license_transaction_guard()?;
     let cred_path = get_credential_path()?;
     if cred_path.exists() {
         std::fs::remove_file(&cred_path)
             .map_err(|e| format!("Failed to delete credential file: {}", e))?;
     }
+    LICENSE_SESSION_EPOCH.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }
 
@@ -3740,6 +3910,18 @@ fn publish_clock_anchor(temp: &std::path::Path, target: &std::path::Path) -> Res
     }
 }
 
+fn flush_license_staged_file(path: &std::path::Path) -> Result<(), String> {
+    // SEC (audit 2026-09-09 §SEC.LICUX.COMMIT): FlushFileBuffers trên Windows
+    // cần handle ghi; File::open/read-only từng làm fixture publication bị từ chối.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| "Không mở được file bản quyền tạm để flush".to_string())?
+        .sync_all()
+        .map_err(|_| "Không flush được file bản quyền tạm".to_string())
+}
+
 fn atomic_store_clock_anchor(path: &std::path::Path, timestamp_ms: u64) -> Result<(), String> {
     let parent = path
         .parent()
@@ -3760,12 +3942,7 @@ fn atomic_store_clock_anchor(path: &std::path::Path, timestamp_ms: u64) -> Resul
     let result = (|| {
         dpapi_encrypt_clock_anchor(&temp, timestamp_ms)?;
         // Flush file tạm trước khi publish; rename cùng volume là bước công bố nguyên tử.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .open(&temp)
-            .map_err(|_| "Không mở được clock anchor tạm".to_string())?;
-        file.sync_all()
-            .map_err(|_| "Không flush được clock anchor tạm".to_string())?;
+        flush_license_staged_file(&temp)?;
         publish_clock_anchor(&temp, path)?;
         Ok(())
     })();
@@ -3777,6 +3954,14 @@ fn atomic_store_clock_anchor(path: &std::path::Path, timestamp_ms: u64) -> Resul
 
 #[command]
 pub fn load_clock_anchor() -> Result<ClockAnchorStatus, String> {
+    // SEC (audit 2026-09-09 §SEC.LICUX.DEV): trả đúng policy do native quyết
+    // định; debug không tạo anchor thì renderer cũng không được đòi nó.
+    if !clock_anchor_required() {
+        return Ok(ClockAnchorStatus {
+            status: "not_required",
+            timestamp_ms: None,
+        });
+    }
     let _guard = clock_anchor_guard();
     Ok(load_clock_anchor_state_unlocked().status())
 }
@@ -3803,6 +3988,12 @@ fn get_token_path() -> Result<std::path::PathBuf, String> {
 
 #[command]
 pub fn store_license_token(token: String) -> Result<(), String> {
+    let _transaction = license_transaction_guard()?;
+    LICENSE_SESSION_EPOCH.fetch_add(1, Ordering::AcqRel);
+    store_license_token_inner(token)
+}
+
+fn store_license_token_inner(token: String) -> Result<(), String> {
     let path = get_token_path()?;
     let path_str = ps_single_quote_escape(&path.to_string_lossy());
     let ps_script = format!(
@@ -3833,6 +4024,11 @@ pub fn store_license_token(token: String) -> Result<(), String> {
 
 #[command]
 pub fn load_license_token() -> Result<String, String> {
+    let _transaction = license_transaction_guard()?;
+    load_license_token_inner()
+}
+
+fn load_license_token_inner() -> Result<String, String> {
     let path = get_token_path()?;
     if !path.exists() {
         return Err("No stored license token".to_string());
@@ -3864,18 +4060,484 @@ pub fn load_license_token() -> Result<String, String> {
     Ok(tok)
 }
 
+// SEC (audit 2026-09-09 §SEC.LICUX.COMMIT): giao dịch hai slot có rollback cho
+// lỗi đã bắt trong cùng process. Không tuyên bố atomic khi mất điện/crash giữa
+// hai rename; bản raw DPAPI cũ được giữ trong thư mục recovery nếu rollback lỗi.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CredentialSlot {
+    Key,
+    Token,
+}
+
+const CREDENTIAL_SLOTS: [CredentialSlot; 2] = [CredentialSlot::Key, CredentialSlot::Token];
+
+struct CredentialCommitError {
+    rollback_failed: bool,
+}
+
+trait CredentialPairStorage {
+    fn read(&mut self, slot: CredentialSlot) -> Result<Option<Vec<u8>>, ()>;
+    fn backup(&mut self, previous: &[Option<Vec<u8>>; 2]) -> Result<(), ()>;
+    // Hợp đồng: lỗi publish không làm thay đổi slot đích.
+    fn write_atomic(&mut self, slot: CredentialSlot, bytes: &[u8]) -> Result<(), ()>;
+    fn remove(&mut self, slot: CredentialSlot) -> Result<(), ()>;
+    fn cleanup(&mut self);
+}
+
+fn publish_credential_pair(
+    storage: &mut impl CredentialPairStorage,
+    next: &[Vec<u8>; 2],
+) -> Result<(), CredentialCommitError> {
+    let mut previous = [None, None];
+    for (index, slot) in CREDENTIAL_SLOTS.into_iter().enumerate() {
+        previous[index] = storage.read(slot).map_err(|_| CredentialCommitError {
+            rollback_failed: false,
+        })?;
+    }
+    if storage.backup(&previous).is_err() {
+        storage.cleanup();
+        return Err(CredentialCommitError {
+            rollback_failed: false,
+        });
+    }
+    for (index, slot) in CREDENTIAL_SLOTS.into_iter().enumerate() {
+        if storage.write_atomic(slot, &next[index]).is_err() {
+            let mut rollback_failed = false;
+            for restored_index in (0..index).rev() {
+                let restored_slot = CREDENTIAL_SLOTS[restored_index];
+                let restored = match previous[restored_index].as_deref() {
+                    Some(bytes) => storage.write_atomic(restored_slot, bytes),
+                    None => storage.remove(restored_slot),
+                };
+                rollback_failed |= restored.is_err();
+            }
+            if !rollback_failed {
+                storage.cleanup();
+            }
+            return Err(CredentialCommitError { rollback_failed });
+        }
+    }
+    storage.cleanup();
+    Ok(())
+}
+
+struct FileCredentialPairStorage {
+    paths: [std::path::PathBuf; 2],
+    recovery: std::path::PathBuf,
+    recovery_created: bool,
+}
+
+impl FileCredentialPairStorage {
+    fn new() -> Result<Self, String> {
+        let paths = [get_credential_path()?, get_token_path()?];
+        let parent = paths[0].parent().ok_or("Không có thư mục bản quyền")?;
+        let mut nonce = [0u8; 16];
+        use rand::RngCore;
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| "Không tạo được định danh giao dịch bản quyền")?;
+        Ok(Self {
+            recovery: parent.join(format!(".license-recovery-{}", hex::encode(nonce))),
+            paths,
+            recovery_created: false,
+        })
+    }
+
+    fn index(slot: CredentialSlot) -> usize {
+        match slot {
+            CredentialSlot::Key => 0,
+            CredentialSlot::Token => 1,
+        }
+    }
+}
+
+impl CredentialPairStorage for FileCredentialPairStorage {
+    fn read(&mut self, slot: CredentialSlot) -> Result<Option<Vec<u8>>, ()> {
+        match std::fs::read(&self.paths[Self::index(slot)]) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        }
+    }
+
+    fn backup(&mut self, previous: &[Option<Vec<u8>>; 2]) -> Result<(), ()> {
+        std::fs::create_dir(&self.recovery).map_err(|_| ())?;
+        self.recovery_created = true;
+        for (index, snapshot) in previous.iter().enumerate() {
+            if let Some(bytes) = snapshot {
+                let path = self.recovery.join(format!("previous-{index}.dat"));
+                std::fs::write(&path, bytes).map_err(|_| ())?;
+                flush_license_staged_file(&path).map_err(|_| ())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_atomic(&mut self, slot: CredentialSlot, bytes: &[u8]) -> Result<(), ()> {
+        let index = Self::index(slot);
+        let staged = self.recovery.join(format!("staged-{index}.dat"));
+        std::fs::write(&staged, bytes).map_err(|_| ())?;
+        flush_license_staged_file(&staged).map_err(|_| ())?;
+        publish_clock_anchor(&staged, &self.paths[index]).map_err(|_| ())
+    }
+
+    fn remove(&mut self, slot: CredentialSlot) -> Result<(), ()> {
+        match std::fs::remove_file(&self.paths[Self::index(slot)]) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(()),
+        }
+    }
+
+    fn cleanup(&mut self) {
+        // Chỉ dọn bốn file do transaction này tạo, không xóa recursive AppData.
+        if !self.recovery_created {
+            return;
+        }
+        for name in [
+            "previous-0.dat",
+            "previous-1.dat",
+            "staged-0.dat",
+            "staged-1.dat",
+        ] {
+            let _ = std::fs::remove_file(self.recovery.join(name));
+        }
+        let _ = std::fs::remove_dir(&self.recovery);
+    }
+}
+
+fn encrypt_credential_pair(license_key: &str, token: &str) -> Result<[Vec<u8>; 2], String> {
+    use base64::Engine as _;
+    let input = serde_json::json!({ "key": license_key, "token": token }).to_string();
+    let script = r#"
+        $ErrorActionPreference = 'Stop'
+        Add-Type -AssemblyName System.Security
+        $values = $env:PRYNX_DPAPI_IN | ConvertFrom-Json
+        $result = @{}
+        foreach ($name in @('key', 'token')) {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$values.$name)
+            $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
+                $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+            $result[$name] = [Convert]::ToBase64String($encrypted)
+        }
+        [Console]::Out.Write(($result | ConvertTo-Json -Compress))
+    "#;
+    let output = powershell_command()?
+        .env("PRYNX_DPAPI_IN", input)
+        .args(["-NoProfile", "-NoLogo", "-Command", script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|_| "Không chuẩn bị được DPAPI cho giao dịch bản quyền")?;
+    if !output.status.success() {
+        return Err("Không mã hóa được giao dịch bản quyền bằng DPAPI".into());
+    }
+    let encrypted: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "DPAPI trả dữ liệu giao dịch không hợp lệ")?;
+    let decode = |field: &str| -> Result<Vec<u8>, String> {
+        let value = encrypted
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .ok_or("DPAPI thiếu slot giao dịch")?;
+        base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|_| "DPAPI trả slot giao dịch không hợp lệ".into())
+    };
+    Ok([decode("key")?, decode("token")?])
+}
+
+fn ensure_credential_target(
+    current_key: Option<&str>,
+    new_key: &str,
+    replaced_key: Option<&str>,
+) -> Result<(), String> {
+    let expected = replaced_key.unwrap_or(new_key);
+    let current_matches = current_key.is_some_and(|key| key == expected);
+    if !current_matches && (current_key.is_some() || replaced_key.is_some()) {
+        return Err("Key đã thay đổi ở cửa sổ khác; hãy nạp lại phiên bản quyền".into());
+    }
+    Ok(())
+}
+
+/// Caller đã giữ LICENSE_TRANSACTION và ownership renewal; không gọi qua IPC cũ.
+pub(crate) fn commit_license_credentials(
+    license_key: String,
+    token: String,
+    challenge: Option<String>,
+    challenge_id: Option<String>,
+    replace_license_key: Option<String>,
+) -> Result<(), String> {
+    let key = license_key.trim().to_uppercase();
+    if key.is_empty() || key.len() > 256 || token.is_empty() || token.len() > 16 * 1024 {
+        return Err("Dữ liệu giao dịch bản quyền không hợp lệ".into());
+    }
+    if challenge.is_some() == challenge_id.is_some() {
+        return Err("Giao dịch bản quyền yêu cầu đúng một proof online v2 hoặc v3".into());
+    }
+    let replace = replace_license_key.map(|value| value.trim().to_uppercase());
+    let mut storage = FileCredentialPairStorage::new()?;
+    let key_on_disk = storage
+        .read(CredentialSlot::Key)
+        .map_err(|_| "Không đọc được trạng thái credential trước giao dịch")?;
+    let current_key = if key_on_disk.is_some() {
+        Some(load_license_inner()?)
+    } else {
+        None
+    };
+    ensure_credential_target(current_key.as_deref(), &key, replace.as_deref())?;
+    let rollback_failed = std::cell::Cell::new(false);
+    let result = register_validated_key_inner(
+        key.clone(),
+        Some(token.clone()),
+        challenge,
+        challenge_id,
+        replace,
+        || {
+            let encrypted = encrypt_credential_pair(&key, &token)?;
+            publish_credential_pair(&mut storage, &encrypted).map_err(|error| {
+                rollback_failed.set(error.rollback_failed);
+                if error.rollback_failed {
+                    "Không khôi phục được credential cũ; bản DPAPI recovery đã được giữ, cần hỗ trợ"
+                        .into()
+                } else {
+                    "Không lưu được giao dịch bản quyền; credential cũ vẫn được giữ".into()
+                }
+            })
+        },
+    );
+    if rollback_failed.get() {
+        // Helper verify đã trả về nên pending/anchor/cache đều được thả trước clear.
+        let _ = clear_validated_keys_inner();
+    }
+    result
+}
+
+#[cfg(test)]
+mod credential_transaction_tests {
+    use super::*;
+
+    struct MemoryStorage {
+        slots: [Option<Vec<u8>>; 2],
+        recovery: Option<[Option<Vec<u8>>; 2]>,
+        write_calls: usize,
+        fail_calls: Vec<usize>,
+        fail_read: bool,
+        fail_backup: bool,
+    }
+
+    impl MemoryStorage {
+        fn new(key: Option<&[u8]>) -> Self {
+            Self {
+                slots: [key.map(Vec::from), Some(b"old-token".to_vec())],
+                recovery: None,
+                write_calls: 0,
+                fail_calls: Vec::new(),
+                fail_read: false,
+                fail_backup: false,
+            }
+        }
+        fn may_write(&mut self) -> Result<(), ()> {
+            self.write_calls += 1;
+            if self.fail_calls.contains(&self.write_calls) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl CredentialPairStorage for MemoryStorage {
+        fn read(&mut self, slot: CredentialSlot) -> Result<Option<Vec<u8>>, ()> {
+            if self.fail_read {
+                return Err(());
+            }
+            Ok(self.slots[FileCredentialPairStorage::index(slot)].clone())
+        }
+        fn backup(&mut self, previous: &[Option<Vec<u8>>; 2]) -> Result<(), ()> {
+            if self.fail_backup {
+                return Err(());
+            }
+            self.recovery = Some(previous.clone());
+            Ok(())
+        }
+        fn write_atomic(&mut self, slot: CredentialSlot, bytes: &[u8]) -> Result<(), ()> {
+            self.may_write()?;
+            self.slots[FileCredentialPairStorage::index(slot)] = Some(bytes.to_vec());
+            Ok(())
+        }
+        fn remove(&mut self, slot: CredentialSlot) -> Result<(), ()> {
+            self.may_write()?;
+            self.slots[FileCredentialPairStorage::index(slot)] = None;
+            Ok(())
+        }
+        fn cleanup(&mut self) {
+            self.recovery = None;
+        }
+    }
+
+    fn next() -> [Vec<u8>; 2] {
+        [b"new-key".to_vec(), b"new-token".to_vec()]
+    }
+
+    #[test]
+    fn publish_pair_thanh_cong_co_du_hai_slot() {
+        let mut storage = MemoryStorage::new(Some(b"old-key"));
+        assert!(publish_credential_pair(&mut storage, &next()).is_ok());
+        assert_eq!(storage.slots, next().map(Some));
+        assert!(storage.recovery.is_none());
+    }
+
+    #[test]
+    fn loi_read_hoac_backup_khong_duoc_bat_dau_ghi() {
+        for fail_read in [false, true] {
+            let mut storage = MemoryStorage::new(Some(b"old-key"));
+            let before = storage.slots.clone();
+            storage.fail_read = fail_read;
+            storage.fail_backup = !fail_read;
+            assert!(publish_credential_pair(&mut storage, &next()).is_err());
+            assert_eq!(storage.slots, before);
+            assert_eq!(storage.write_calls, 0);
+        }
+    }
+
+    #[test]
+    fn loi_tung_publish_giu_nguyen_credential_cu() {
+        for failed_write in [1, 2] {
+            for old_key in [None, Some(b"old-key".as_slice())] {
+                let mut storage = MemoryStorage::new(old_key);
+                let before = storage.slots.clone();
+                storage.fail_calls = vec![failed_write];
+                let error = publish_credential_pair(&mut storage, &next())
+                    .err()
+                    .unwrap();
+                assert!(!error.rollback_failed);
+                assert_eq!(storage.slots, before);
+                assert!(storage.recovery.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn rollback_loi_phai_bao_fail_closed_va_giu_raw_backup() {
+        let mut storage = MemoryStorage::new(Some(b"old-key"));
+        let before = storage.slots.clone();
+        storage.fail_calls = vec![2, 3];
+        let error = publish_credential_pair(&mut storage, &next())
+            .err()
+            .unwrap();
+        assert!(error.rollback_failed);
+        assert_eq!(storage.recovery.as_ref(), Some(&before));
+    }
+
+    #[test]
+    fn cas_key_tu_choi_cua_so_cu_sau_khi_key_da_doi() {
+        assert!(ensure_credential_target(None, "NEW", None).is_ok());
+        assert!(ensure_credential_target(Some("NEW"), "NEW", None).is_ok());
+        assert!(ensure_credential_target(Some("OLD"), "NEW", Some("OLD")).is_ok());
+        assert!(ensure_credential_target(Some("OTHER"), "NEW", None).is_err());
+        assert!(ensure_credential_target(Some("OTHER"), "NEW", Some("OLD")).is_err());
+        assert!(ensure_credential_target(None, "NEW", Some("OLD")).is_err());
+    }
+
+    #[test]
+    fn persistence_loi_khong_duoc_cong_bo_native_binding_moi() {
+        let binding = |token: &str| ValidatedLicense {
+            validated_at: 1,
+            hardware_id: "device".into(),
+            license_token_hash: token.into(),
+        };
+        let mut cache = HashMap::from([("OLD".into(), binding("old-token"))]);
+        assert!(persist_then_commit_binding(
+            &mut cache,
+            "NEW".into(),
+            binding("new-token"),
+            Some("OLD"),
+            || Err("write failed".into())
+        )
+        .is_err());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("OLD").unwrap().license_token_hash, "old-token");
+        assert!(persist_then_commit_binding(
+            &mut cache,
+            "NEW".into(),
+            binding("new-token"),
+            Some("OLD"),
+            || Ok(())
+        )
+        .is_ok());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("NEW").unwrap().license_token_hash, "new-token");
+    }
+
+    #[test]
+    fn publisher_windows_ghi_hai_file_gia_khong_cham_dpapi() {
+        let root = std::env::temp_dir().join(format!(
+            "prynx-credential-pair-test-{}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let paths = [root.join("fixture-key.dat"), root.join("fixture-token.dat")];
+        std::fs::write(&paths[0], b"old-key").unwrap();
+        std::fs::write(&paths[1], b"old-token").unwrap();
+        let mut storage = FileCredentialPairStorage {
+            paths: paths.clone(),
+            recovery: root.join("recovery"),
+            recovery_created: false,
+        };
+        let result = publish_credential_pair(&mut storage, &next());
+        let observed = [
+            std::fs::read(&paths[0]).unwrap(),
+            std::fs::read(&paths[1]).unwrap(),
+        ];
+        storage.cleanup();
+        for path in &paths {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(&root).unwrap();
+        assert!(
+            result.is_ok(),
+            "Publisher fixture phải qua flush và replace Windows"
+        );
+        assert_eq!(observed, next());
+    }
+}
+
 #[command]
 pub fn delete_license_token() -> Result<(), String> {
+    let _transaction = license_transaction_guard()?;
     let path = get_token_path()?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| format!("Failed to delete token file: {}", e))?;
     }
+    LICENSE_SESSION_EPOCH.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }
 
 #[cfg(test)]
 mod clock_anchor_publish_tests {
-    use super::publish_clock_anchor;
+    use super::{flush_license_staged_file, publish_clock_anchor};
+
+    #[test]
+    fn anchor_flush_dung_handle_ghi_va_khong_cham_dpapi() {
+        let root = std::env::temp_dir().join(format!(
+            "prynx-anchor-flush-test-{}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let temp = root.join("fixture-anchor.tmp");
+        let target = root.join("fixture-anchor.dat");
+        std::fs::write(&temp, b"synthetic-encrypted-anchor").unwrap();
+        let flush_result = flush_license_staged_file(&temp);
+        let published = flush_result.and_then(|()| publish_clock_anchor(&temp, &target));
+        let observed = std::fs::read(&target).ok();
+        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::remove_file(&target);
+        std::fs::remove_dir(&root).unwrap();
+        assert!(published.is_ok());
+        assert_eq!(
+            observed.as_deref(),
+            Some(b"synthetic-encrypted-anchor".as_slice())
+        );
+    }
 
     #[test]
     fn cong_bo_anchor_thay_duoc_file_dich_da_ton_tai() {

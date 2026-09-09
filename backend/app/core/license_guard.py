@@ -1713,6 +1713,28 @@ async def require_license(request: Request) -> dict:
             # license_info contains {"license_key": "...", "hwid": "...", "verified": True}
             ...
     """
+    # SEC (audit 2026-09-09 §LICUX.JOB): capability đã cấp lúc submit chỉ cho
+    # phép hoàn tất đúng job. Hợp đồng method/path/body được kiểm riêng, không
+    # kéo dài token license hay cho generic request đi qua sau expiry.
+    from app.core.job_access import JOB_ACCESS_HEADER, resolve_job_access
+
+    job_access_headers = request.headers.getlist(JOB_ACCESS_HEADER)
+    if job_access_headers:
+        if len(job_access_headers) != 1:
+            raise HTTPException(status_code=403, detail="Receipt tác vụ không hợp lệ.")
+        try:
+            completion_context = resolve_job_access(
+                token=job_access_headers[0], method=request.method,
+                path=request_signature_path(request), session_token=_SIDECAR_TOKEN,
+                owner_is_revoked=lambda owner: bool(
+                    owner in _license_cache and _license_cache[owner][0] is False
+                ),
+            )
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from None
+        await _consume_and_verify_empty_body(request)
+        return completion_context
+
     # Read the credential binding before checking the HMAC. Rust signs these exact
     # values, so the WebView cannot swap a registered Free identity for a stolen
     # Pro token after obtaining a valid sidecar signature.
@@ -1832,6 +1854,8 @@ async def require_license(request: Request) -> dict:
             if is_valid:
                 return _license_context(license_key, hwid, True, token_entitlements, lic_token)
             else:
+                from app.core.job_access import invalidate_job_access_owner
+                invalidate_job_access_owner(cache_key)
                 raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     
     # ── Step 4: Verify with Supabase (optional, for online validation) ──
@@ -1841,6 +1865,8 @@ async def require_license(request: Request) -> dict:
         verified_online = bool(verified)
         _license_cache[cache_key] = (verified, time.time() + _CACHE_TTL_SECONDS)
         if not verified:
+            from app.core.job_access import invalidate_job_access_owner
+            invalidate_job_access_owner(cache_key)
             raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     except HTTPException:
         raise

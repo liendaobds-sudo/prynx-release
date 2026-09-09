@@ -13,6 +13,9 @@ set "PATH=%ROOT_DIR%\poppler\poppler-24.08.0\Library\bin;%PATH%"
 :: co frontend va backend qua process environment. Dung: run_dev.bat --gated
 :: Ep build native khi can: run_dev.bat --rebuild-native
 set "PRYNX_DEV_GATED_MODE=false"
+set "PRYNX_LICENSE_TEST_MODE=false"
+set "PRYNX_ENFORCE_LICENSE_TOKEN=false"
+set "PRYNX_ENFORCE_CLOCK_ANCHOR=false"
 if /I "%PRYNX_DEV_GATED%"=="true" set "PRYNX_DEV_GATED_MODE=true"
 set "PRYNX_FORCE_NATIVE_BUILD_MODE=false"
 if /I "%PRYNX_FORCE_NATIVE_REBUILD%"=="true" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
@@ -21,6 +24,9 @@ if /I "%~1"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
 if /I "%~1"=="--rebuild-native" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
 if /I "%~2"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
 if /I "%~2"=="--rebuild-native" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
+if /I "%~1"=="--license-test" set "PRYNX_LICENSE_TEST_MODE=true"
+if /I "%~2"=="--license-test" set "PRYNX_LICENSE_TEST_MODE=true"
+if /I "%PRYNX_LICENSE_TEST_MODE%"=="true" set "PRYNX_DEV_GATED_MODE=true"
 
 if /I "%PRYNX_DEV_GATED_MODE%"=="true" (
     set "VITE_FEATURE_GATING_ENABLED=true"
@@ -30,6 +36,16 @@ if /I "%PRYNX_DEV_GATED_MODE%"=="true" (
     set "VITE_FEATURE_GATING_ENABLED=false"
     set "PRYNX_FEATURE_GATING_ENABLED=false"
     echo - DEV thuong: Free/Pro gate TAT. Dung --gated de test nhu ban dong goi.
+)
+
+:: SEC (audit 2026-09-09 LICUX.TEST): kiem license that trong dev, khong bypass.
+:: Dung Windows profile/key THU rieng; khong tu tao key hay sua quota production.
+if /I "%PRYNX_LICENSE_TEST_MODE%"=="true" (
+    set "PRYNX_ENFORCE_LICENSE_TOKEN=true"
+    set "PRYNX_ENFORCE_CLOCK_ANCHOR=true"
+    set "DEV_MODE=false"
+    echo - LICENSE-TEST: bat chu ky, device binding, clock anchor va Free/Pro.
+    echo - CHI DUNG KEY THU VA WINDOWS PROFILE THU; quota server van duoc kiem that.
 )
 
 echo [1/3] Kiem tra moi truong Backend (Python)...

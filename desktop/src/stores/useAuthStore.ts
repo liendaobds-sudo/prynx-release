@@ -12,6 +12,7 @@ import {
 import { hasFeatureAccess, normalizePlan, type LicensePlan } from '../lib/license/features';
 import { normalizeLicenseKey } from '../lib/licenseKey';
 import { APP_VERSION } from '../lib/uiErrorDiagnostics';
+import { clearJobCompletionAccess } from '../lib/jobCompletionAccess';
 import {
   LICENSE_PROTOCOL_V3,
   runLicenseReleaseProtocolV3,
@@ -57,6 +58,7 @@ export type ChangeLicenseKeyResult = {
  */
 export type LicenseValidationOutcome =
   | 'unknown'
+  | 'valid_cached'
   | 'no_key'
   | 'valid_online'
   | 'valid_offline'
@@ -233,9 +235,10 @@ async function readLicenseEdgeErrorPayload(error: unknown): Promise<unknown | nu
 
 async function invokeLicenseEdgeV3(
   body: Record<string, unknown>,
+  options?: { signal: AbortSignal },
 ): Promise<{ data: unknown; error: { message?: string } | null }> {
   try {
-    const { data, error } = await supabase.functions.invoke('license-verify', { body });
+    const { data, error } = await supabase.functions.invoke('license-verify', { body, signal: options?.signal });
     if (!error) return { data, error: null };
     const payload = await readLicenseEdgeErrorPayload(error);
     if (isRecord(payload) && typeof payload.status === 'string') {
@@ -779,6 +782,10 @@ interface AuthState {
   lastValidated: number;
   /** Phân loại lần validate gần nhất; state lỗi không làm mất key cục bộ. */
   licenseValidationOutcome: LicenseValidationOutcome;
+  /** Thời điểm có thể thử lại; chỉ là lịch UX, không phải quyền offline. */
+  licenseRetryAt: number;
+  /** Chỉ EXPIRED được giữ quyền hoàn tất job; BLOCKED/INVALID/REVOKED thì không. */
+  licenseServerStatus: string | null;
   /** Native cache đã bị xoá/lỗi commit; chỉ proof online v3 mới được dựng lại binding. */
   licenseProtocolRecoveryRequired: boolean;
   /** Soft lock: blocks UI but does NOT sign out. Auto-unlocks when internet returns. */
@@ -834,6 +841,23 @@ let revokeTimer: ReturnType<typeof setTimeout> | null = null;
 // UIUX (audit 2026-09-05 §AUTH.RATE): RATE_LIMITED là trạng thái tạm thời của
 // server. Giữ một khoảng nghỉ để nút Thử lại không tự đốt tiếp quota v3.
 let rateLimitedRetryAfterMs = 0;
+let activeLicenseExchange: AbortController | null = null;
+let renewalRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleLicenseRetry(waitMs: number): void {
+  if (renewalRetryTimer) clearTimeout(renewalRetryTimer);
+  const delay = Number.isFinite(waitMs) ? Math.max(1_000, waitMs) : 30_000;
+  const state = useAuthStore.getState();
+  const key = state.licenseKey;
+  const epoch = getLicenseOperationEpoch();
+  useAuthStore.setState({ licenseRetryAt: Date.now() + delay });
+  renewalRetryTimer = setTimeout(() => {
+    renewalRetryTimer = null;
+    if (sessionSnapshotIsCurrent(useAuthStore.getState, epoch, key)) {
+      void useAuthStore.getState().retryValidation();
+    }
+  }, delay);
+}
 // Generation riêng cho timer thu hồi. clearTimeout không đủ nếu callback đã
 // được đưa vào event loop; callback cũ phải tự chứng minh nó vẫn là lượt hiện
 // tại trước khi dọn token mới.
@@ -898,16 +922,17 @@ function bumpLicenseOperationEpoch(): number {
 }
 
 function bumpLicenseChangeEpoch(): { operationEpoch: number; changeEpoch: number } {
+  activeLicenseExchange?.abort();
   const operationEpoch = bumpLicenseOperationEpoch();
   licenseChangeEpoch += 1;
   return { operationEpoch, changeEpoch: licenseChangeEpoch };
 }
 
-function serializeLicenseOperation<T>(operation: () => Promise<T>): Promise<T> {
-  licenseMutationPending += 1;
+function serializeLicenseOperation<T>(operation: () => Promise<T>, blocksRequests = true): Promise<T> {
+  if (blocksRequests) licenseMutationPending += 1;
   const run = licenseOperationTail.then(operation, operation);
   const tracked = run.finally(() => {
-    licenseMutationPending = Math.max(0, licenseMutationPending - 1);
+    if (blocksRequests) licenseMutationPending = Math.max(0, licenseMutationPending - 1);
   });
   licenseOperationTail = tracked.then(() => undefined, () => undefined);
   return tracked;
@@ -1063,6 +1088,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   licenseValid: false,
   lastValidated: 0,
   licenseValidationOutcome: 'unknown',
+  licenseRetryAt: 0,
+  licenseServerStatus: null,
   licenseProtocolRecoveryRequired: false,
   isLicenseLocked: false,
   lockReason: '',
@@ -1077,7 +1104,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setLicenseKey: (key) => {
     const previousKey = get().licenseKey;
     const keyChanged = previousKey !== key;
-    if (keyChanged) rateLimitedRetryAfterMs = 0;
+    if (keyChanged) { clearJobCompletionAccess(); rateLimitedRetryAfterMs = 0; set({ licenseRetryAt: 0 }); }
     const epoch = keyChanged
       // Setter là một đường thay đổi credential thật (startup reject, import
       // legacy, hoặc UI cũ). Invalidate cả change transaction đang chờ, không
@@ -1124,6 +1151,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // ngoài queue, lượt staged đó có thể commit lại key/token sau khi người dùng đã
   // đăng xuất. Serialize cùng hàng đợi để cleanup hoàn tất rồi mới cho operation mới.
   signOut: () => {
+    activeLicenseExchange?.abort();
+    clearJobCompletionAccess();
     // Đánh dấu barrier NGAY khi caller yêu cầu, trước cả khi lượt này được xếp
     // sau một transaction đang chờ Edge. API signer/checkSession nhìn thấy cờ này
     // và không được đăng ký lại credential cũ trong khoảng cleanup.
@@ -1190,15 +1219,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return;
     }
 
-    try {
-      const { data: { session }, error } = await supabase.auth.getSession();
-      if (error) throw error;
-      if (isCurrent()) set({ session, user: session?.user || null });
-    } catch (err) {
-      // Google là kênh hỗ trợ tìm lại key, lỗi phiên Google không được chặn kích hoạt bằng key.
-      console.error('Session check failed:', err);
-      if (isCurrent()) set({ session: null, user: null });
-    }
+    // Phiên Google chỉ hỗ trợ tìm key; refresh tài khoản không được giữ splash
+    // trong khi lease native đã có thể dùng được.
+    void (async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (isCurrent()) set({ session, user: session?.user || null });
+      } catch (err) {
+        console.error('Session check failed:', err);
+        if (isCurrent()) set({ session: null, user: null });
+      }
+    })();
 
     try {
       if (!isCurrent()) return;
@@ -1235,6 +1267,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           await queueDeleteLicenseToken(isCurrent); // token cũ đã hết hạn → dọn
           if (!isCurrent()) return;
         }
+        // SEC (audit 2026-09-09 §SEC.LICUX.STARTUP): mở bằng lease trên đĩa
+        // đã native-verify trước, không bắt người dùng chờ roundtrip mạng.
+        // Không có anchor/proof phù hợp thì vẫn đi online như trước.
+        const restored = await serializeLicenseOperation(async () => {
+          if (!isCurrent() || get().licenseProtocolRecoveryRequired) return false;
+          const anchor = await loadClockAnchorState();
+          const token = get().licenseToken || persistedToken;
+          if (!isCurrent() || !isOfflineV3TokenUsable(token, anchor)) return false;
+          try {
+            await ensureKeyRegisteredInRust(storedKey, token);
+          } catch { return false; }
+          if (!isCurrent()) return false;
+          const claims = readLicenseTokenClaims(token);
+          set({ licenseValid: true, isLicenseLocked: false, lockReason: '',
+            licenseValidationOutcome: 'valid_cached', licenseToken: token,
+            licensePlan: normalizePlan(claims?.plan || 'free'), licenseFeatures: claims?.features ?? null });
+          return true;
+        });
+        if (restored) {
+          get().startHeartbeat();
+          // Network phase không giữ mutation barrier. Chỉ một lượt online nền;
+          // khi lỗi sẽ giữ lease còn hợp lệ và tự hẹn lịch lần sau.
+          void get().validateLicense();
+          return;
+        }
         const isValid = await get().validateLicense();
         // Chính validate có thể tăng operation epoch khi nhận token mới hoặc khóa
         // native. Chỉ nhận epoch mới nếu lượt startup này vẫn sở hữu cùng key và
@@ -1248,7 +1305,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           // Chỉ câu trả lời terminal đã được server xác nhận mới được dọn credential.
           // Anchor/DPAPI/network/native lỗi phải giữ key để người dùng recovery và buộc
           // online revalidation; tuyệt đối không biến lỗi tạm thời thành logout âm thầm.
-          if (outcome === 'server_rejected') {
+          if (outcome === 'server_rejected' && get().licenseServerStatus !== 'EXPIRED') {
             console.warn('[AUTH] Stored license key rejected by server — clearing');
             get().cancelRevocation();
             get().setLicenseKey(null);
@@ -1341,6 +1398,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     );
 
     const tryCommitLegacyDrain = async (): Promise<boolean> => {
+      licenseMutationPending += 1;
+      try {
       const legacyDrain = await tryLegacyV2DrainAfterDeviceLimit(licenseKey);
       if (!isCurrent() || !legacyDrain) return false;
       if (!(await queueSaveLicenseToken(legacyDrain.token, isCurrent))) return false;
@@ -1364,22 +1423,92 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         lockReason: '',
       });
       rateLimitedRetryAfterMs = 0;
+      renewalOutcome = 'completed';
       if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
       return true;
+      } finally { licenseMutationPending = Math.max(0, licenseMutationPending - 1); }
     };
 
+    // SEC (audit 2026-09-09 §SEC.LICUX.RENEW): lịch được native chia sẻ giữa
+    // các cửa sổ. Lượt đang bận/cooldown không cấp quyền; vẫn phải verify cache.
+    let renewalAttemptId: string | null = null;
+    let renewalOutcome: 'completed' | 'rate_limited' | 'transient' | 'failed' = 'failed';
+    let serverRetryAfterSeconds: number | undefined;
+    const exchange = new AbortController();
+    activeLicenseExchange = exchange;
+    let commitStarted = false;
+    const startCommit = () => {
+      if (!commitStarted) { licenseMutationPending += 1; commitStarted = true; }
+    };
+    let deferredRenewal = false;
+    if (isNativeRuntime()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const permit = await invoke<{ status: string; attemptId?: string; retryAfterMs: number }>(
+          'begin_license_renewal', { licenseKey },
+        );
+        if (!isCurrent()) return false;
+        if (permit?.status === 'started' && typeof permit.attemptId === 'string') {
+          renewalAttemptId = permit.attemptId;
+          set({ licenseRetryAt: 0 });
+        } else if (permit?.status === 'busy' || permit?.status === 'cooldown') {
+          deferredRenewal = true;
+          const waitMs = Number.isFinite(permit.retryAfterMs) ? Math.max(0, permit.retryAfterMs) : 30_000;
+          scheduleLicenseRetry(waitMs);
+        } else {
+          deferredRenewal = true;
+          scheduleLicenseRetry(30_000);
+        }
+      } catch (error) {
+        // Native cũ chưa có coordinator: giữ cổng chữ ký/anchor hiện hữu,
+        // không tự cấp quyền hoặc xóa credential để nâng cấp protocol.
+        const message = String(error);
+        const unsupported = message.includes('begin_license_renewal')
+          && /not found|unknown command|not registered/i.test(message);
+        if (!unsupported) {
+          deferredRenewal = true;
+          scheduleLicenseRetry(30_000);
+        }
+      }
+    }
+
     try {
+      if (deferredRenewal) {
+        // Cửa sổ khác có thể vừa làm mới token: ưu tiên bản bền vững mới nhất,
+        // không ghi ngược binding native sang token cũ còn trong WebView.
+        const cached = await loadTokenFromDPAPI() || get().licenseToken;
+        if (!isCurrent()) return false;
+        if (!protocolRecoveryRequired && isOfflineV3TokenUsable(cached, anchorState)) {
+          startCommit();
+          try { await ensureKeyRegisteredInRust(licenseKey, cached); }
+          catch { return failClosed('native_error', 'Không xác minh được phiên bản quyền đã lưu. Key vẫn được giữ; vui lòng thử lại.'); }
+          if (!isCurrent()) return false;
+          const cachedClaims = readLicenseTokenClaims(cached);
+          if (cached !== get().licenseToken) operationEpoch = bumpLicenseOperationEpoch();
+          set({ licenseToken: cached, licenseValid: true, isLicenseLocked: false, lockReason: '',
+            licensePlan: normalizePlan(cachedClaims?.plan || 'free'), licenseFeatures: cachedClaims?.features ?? null,
+            licenseSessionEpoch: operationEpoch, licenseValidationOutcome: 'valid_cached' });
+          return true;
+        }
+        return failClosed('rate_limited', 'Đang chờ lượt xác minh bản quyền. PrynX sẽ tự thử lại; không cần nhập lại key.');
+      }
       const response = await runLicenseProtocolV3({
         licenseKey,
         action,
         appVersion: APP_VERSION,
         invokeNative: invokeNativeLicenseV3,
         invokeEdge: invokeLicenseEdgeV3,
+        signal: exchange.signal,
       });
       if (!isCurrent()) return false;
 
+      // Chỉ giữ hàng rào API trong lúc commit native/DPAPI; thời gian đợi mạng
+      // không được làm tác vụ đang dùng lease hợp lệ mất header xác thực.
+      startCommit();
+
       // Một lượt online thành công đã giải phóng mọi cooldown tạm thời trước đó.
       rateLimitedRetryAfterMs = 0;
+      set({ licenseRetryAt: 0, licenseServerStatus: null });
       const claims = readValidatedV3ResponseClaims(response);
       if (!claims) {
         set({ dielineKeyStatus: 'unknown' });
@@ -1390,11 +1519,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       try {
-        await ensureKeyRegisteredInRust(
-          licenseKey,
-          response.token,
-          claims.challengeId,
-        );
+        if (renewalAttemptId) {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('commit_license_renewal', {
+            attemptId: renewalAttemptId, licenseKey, token: response.token,
+            challengeId: claims.challengeId,
+          });
+          set({ licenseProtocolRecoveryRequired: false });
+        } else {
+          await ensureKeyRegisteredInRust(licenseKey, response.token, claims.challengeId);
+        }
       } catch (nativeErr) {
         console.error('[AUTH] ensureKeyRegisteredInRust failed:', nativeErr);
         set({ dielineKeyStatus: 'unknown' });
@@ -1407,7 +1541,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // Chỉ lưu token sau khi native đã xác minh chữ ký, device binding và private-key
       // presence. Nếu DPAPI lỗi, dọn binding vừa cấp để không có cửa sổ quyền lệch state.
-      if (!(await queueSaveLicenseToken(response.token, isCurrent))) {
+      if (!renewalAttemptId && !(await queueSaveLicenseToken(response.token, isCurrent))) {
         if (isCurrent()) await clearValidatedKeysInRust();
         set({ dielineKeyStatus: 'unknown' });
         return failClosed(
@@ -1447,23 +1581,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       if (get().isRevoking) get().cancelRevocation();
       void flushPendingSecurityEvents();
+      renewalOutcome = 'completed';
       return true;
     } catch (error) {
       if (!isCurrent()) return false;
       const code = licenseProtocolV3ErrorCode(error);
+      if (code === 'CANCELLED') return false;
+      renewalOutcome = code === 'RATE_LIMITED' ? 'rate_limited'
+        : code === 'NETWORK_ERROR' ? 'transient' : 'failed';
       console.warn('[AUTH] License protocol v3 failed:', code);
       set({ dielineKeyStatus: 'unknown' });
 
       if (code === 'RATE_LIMITED') {
+        const retryHint = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+        serverRetryAfterSeconds = typeof retryHint === 'number' && Number.isInteger(retryHint)
+          && retryHint >= 1 && retryHint <= 3600 ? retryHint : undefined;
         // Server dùng cửa sổ trượt một giờ; retry sớm hơn chỉ làm tình trạng xấu
         // thêm mà không tăng khả năng phục hồi. Không ảnh hưởng các lỗi terminal.
         rateLimitedRetryAfterMs = Math.max(
           rateLimitedRetryAfterMs,
-          Date.now() + RATE_LIMIT_RETRY_COOLDOWN_MS,
+          Date.now() + (serverRetryAfterSeconds ? serverRetryAfterSeconds * 1000 : RATE_LIMIT_RETRY_COOLDOWN_MS),
         );
+        scheduleLicenseRetry(rateLimitedRetryAfterMs - Date.now());
       }
 
       if (code === 'DEVICE_LIMIT') {
+        startCommit();
         logSecurityEvent('device_limit');
         // Máy đang dùng seat HWID cũ không được bị đá khỏi công việc chỉ vì lần
         // nâng binding lên CNG cần admin migration. Kể cả native vừa bị clear,
@@ -1482,6 +1625,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       if (isTerminalServerStatus(code)) {
+        if (code !== 'EXPIRED') clearJobCompletionAccess();
+        set({ licenseServerStatus: code });
+        startCommit();
         const reasonByStatus: Record<string, string> = {
           EXPIRED: 'Bản quyền đã hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.',
           MACHINE_REVOKED: 'Máy này đã bị quản trị viên thu hồi khỏi license.',
@@ -1508,6 +1654,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           if (await tryCommitLegacyDrain()) return true;
           if (!isCurrent()) return false;
         }
+        // RATE_LIMITED là nguyên nhân online; anchor thiếu chỉ giải thích vì
+        // sao không dùng được cache. Không che mã 429 bằng câu bảo khách sửa mạng.
+        if (code === 'RATE_LIMITED' && !isOfflineAnchorUsable(anchorState, now)
+          && anchorState.kind !== 'valid') {
+          return failClosed('rate_limited', 'Máy chủ đang giới hạn lượt xác minh. PrynX sẽ tự thử lại khi hết thời gian chờ; key vẫn được giữ.');
+        }
         if (!ensureOfflineAnchor()) return false;
         if (protocolRecoveryRequired) {
           return failClosed(
@@ -1526,6 +1678,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           );
         }
         try {
+          startCommit();
           await ensureKeyRegisteredInRust(licenseKey, offlineToken);
         } catch {
           return failClosed(
@@ -1555,11 +1708,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       if (code === 'RECOVERY_REQUIRED') {
+        startCommit();
         await queueDeleteLicenseToken();
         set({ licenseProtocolRecoveryRequired: false, licenseToken: null });
         return failClosed(
           'native_error',
-          'Không thể khôi phục trạng thái bản quyền trên thiết bị này. Vui lòng liên hệ hỗ trợ hoặc nhập lại license key.',
+          'Cần xác minh lại bản quyền trên thiết bị này. Key vẫn được giữ; hãy chọn Thử lại khi hết thời gian chờ.',
         );
       }
       if ([
@@ -1585,8 +1739,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         'token_invalid',
         'Không thể xác minh bản quyền. Vui lòng thử lại.',
       );
+    } finally {
+      if (activeLicenseExchange === exchange) activeLicenseExchange = null;
+      if (commitStarted) licenseMutationPending = Math.max(0, licenseMutationPending - 1);
+      if (renewalAttemptId) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const schedule = await invoke<{ retryAfterMs: number }>('finish_license_renewal', {
+            attemptId: renewalAttemptId, outcome: renewalOutcome,
+            ...(serverRetryAfterSeconds ? { retryAfterSeconds: serverRetryAfterSeconds } : {}),
+          });
+          if (isCurrent() && schedule && renewalOutcome !== 'completed') {
+            scheduleLicenseRetry(schedule.retryAfterMs);
+          }
+        } catch { /* Lượt stale không được thay lịch của phiên mới. */ }
+      }
     }
-  }),
+  }, false),
 
   /**
    * Manual retry: called by user clicking "Thử lại" on lock screen.
@@ -1594,7 +1763,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   retryValidation: async () => {
     // UIUX (audit 2026-09-05 §AUTH.RATE): tránh một cú click/automation tạo
     // challenge mới ngay sau khi server vừa trả RATE_LIMITED.
-    if (Date.now() < rateLimitedRetryAfterMs) return;
+    if (Date.now() < Math.max(rateLimitedRetryAfterMs, get().licenseRetryAt)) return;
     // Heartbeat có thể nổ cùng thời điểm với retry interval; bỏ lượt trùng để
     // không đốt thêm quota challenge trong cùng một nhịp.
     if (isLicenseOperationPending()) return;
@@ -1614,6 +1783,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
    * thành công. Không còn nhánh `ok: true` giả khi validate/token thất bại.
   */
   changeLicenseKey: (rawKey: string): Promise<ChangeLicenseKeyResult> => {
+    // Same-key recovery phải chạy NGOÀI hàng đợi đổi key để không tự đợi chính
+    // queue của mình; kết quả chỉ thành công khi key/epoch vẫn đúng sau validate.
+    const normalizedInput = normalizeLicenseKey(rawKey);
+    const currentKey = normalizeLicenseKey(get().licenseKey || '');
+    if (currentKey && currentKey === normalizedInput) {
+      if (get().licenseValid && !get().isLicenseLocked) {
+        return Promise.resolve({ ok: false, reason: 'same', message: 'Đây đã là key đang dùng trên máy này.' });
+      }
+      if (Date.now() < Math.max(rateLimitedRetryAfterMs, get().licenseRetryAt)) {
+        return Promise.resolve({ ok: false, reason: 'network', message: 'Đang chờ máy chủ cho phép xác minh lại. Key vẫn được giữ.' });
+      }
+      return get().validateLicense().then(ok => {
+        const state = get();
+        const confirmed = ok && state.licenseKey === currentKey && state.licenseValid
+          && !state.isLicenseLocked && !state.licenseSignOutPending;
+        return { ok: confirmed, reason: confirmed ? undefined : 'token',
+          message: confirmed ? 'Đã xác minh lại bản quyền.' : 'Chưa xác minh lại được bản quyền. Key vẫn được giữ.' };
+      });
+    }
+    activeLicenseExchange?.abort();
     return serializeLicenseOperation(async () => {
     // Chỉ cấp generation khi transaction thực sự tới lượt chạy. Lời gọi đổi key
     // tiếp theo đã bị hàng đợi serialize và `licenseMutationPending` chặn API signer;
@@ -1655,7 +1844,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return { ok: false, reason: 'unknown', message: 'Thao tác license đã bị thay thế. Vui lòng thử lại.' };
     }
 
+    let changeAttemptId: string | null = null;
+    let changeOutcome: 'completed' | 'rate_limited' | 'transient' | 'failed' = 'failed';
+    let changeRetryAfter: number | undefined;
+    const changeExchange = new AbortController();
+    activeLicenseExchange = changeExchange;
     try {
+      if (isNativeRuntime()) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const permit = await invoke<{ status: string; attemptId?: string; retryAfterMs: number }>(
+            'begin_license_renewal', { licenseKey: newKey },
+          );
+          if (isStaleOperation()) return { ok: false, reason: 'unknown', message: 'Thao tác bản quyền đã thay đổi.' };
+          if (permit?.status === 'started' && permit.attemptId) changeAttemptId = permit.attemptId;
+          else {
+            scheduleLicenseRetry(permit?.retryAfterMs ?? 30_000);
+            return { ok: false, reason: 'network', message: 'Đang có lượt xác minh hoặc thời gian chờ. Key hiện tại vẫn được giữ.' };
+          }
+        } catch (error) {
+          const message = String(error);
+          if (!(message.includes('begin_license_renewal') && /not found|unknown command|not registered/i.test(message))) throw error;
+        }
+      }
       let response: LicenseProtocolV3Result;
       try {
         response = await runLicenseProtocolV3({
@@ -1666,9 +1877,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           appVersion: APP_VERSION,
           invokeNative: invokeNativeLicenseV3,
           invokeEdge: invokeLicenseEdgeV3,
+          signal: changeExchange.signal,
         });
       } catch (error) {
         const code = licenseProtocolV3ErrorCode(error);
+        changeOutcome = code === 'RATE_LIMITED' ? 'rate_limited' : code === 'NETWORK_ERROR' ? 'transient' : 'failed';
+        const hint = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+        changeRetryAfter = typeof hint === 'number' && Number.isInteger(hint) && hint >= 1 && hint <= 3600 ? hint : undefined;
         const networkFailure = code === 'NETWORK_ERROR' || code === 'RATE_LIMITED';
         return {
           ok: false,
@@ -1695,6 +1910,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Ghi bền vững key/token mới trong khi binding native cũ vẫn còn nguyên.
       // API signer đã bị `licenseMutationPending` chặn nên không có cửa sổ state cũ
       // đọc credential mới. Nếu persistence lỗi, rollback chỉ đụng hai slot DPAPI.
+      if (changeAttemptId) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        try {
+          await invoke('commit_license_renewal', {
+            attemptId: changeAttemptId, licenseKey: newKey, token: freshToken,
+            challengeId: freshClaims.challengeId,
+            ...(current ? { replaceLicenseKey: current } : {}),
+          });
+          set({ licenseProtocolRecoveryRequired: false });
+        } catch {
+          return { ok: false, reason: 'token', message: 'Không thể hoàn tất giao dịch bản quyền. Thông tin cũ được giữ để khôi phục.' };
+        }
+      } else {
       const keySaved = await persistLicenseKeySecure(newKey, isTransactionCurrent);
       if (!keySaved) {
         await rollbackCredentials();
@@ -1748,6 +1976,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           message: 'Không thể áp dụng key bản quyền mới. Key hiện tại vẫn được giữ.',
         };
       }
+      }
       if (isStaleOperation()) {
         return {
           ok: false,
@@ -1757,9 +1986,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       // Commit frontend state chỉ sau khi mọi proof/persistence thành công.
+      changeOutcome = 'completed';
+      if (previousKey !== newKey) clearJobCompletionAccess();
       if (previousKey && previousKey !== newKey) clearPendingSecurityEvents();
       set({
         licenseKey: newKey,
+        licenseServerStatus: null,
         licenseToken: freshToken,
         licensePlan: normalizePlan(freshClaims.plan || 'free'),
         licenseFeatures: freshClaims.features ?? null,
@@ -1816,6 +2048,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         reason: 'network',
         message: 'Không cập nhật được bản quyền. Key hiện tại vẫn được giữ.',
       };
+    } finally {
+      if (activeLicenseExchange === changeExchange) activeLicenseExchange = null;
+      if (changeAttemptId) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const schedule = await invoke<{ retryAfterMs: number }>('finish_license_renewal', {
+            attemptId: changeAttemptId, outcome: changeOutcome,
+            ...(changeRetryAfter ? { retryAfterSeconds: changeRetryAfter } : {}),
+          });
+          if (!isStaleOperation() && changeOutcome !== 'completed') scheduleLicenseRetry(schedule.retryAfterMs);
+        } catch { /* Commit thành công đã kết thúc owner; không sửa lịch của lượt mới. */ }
+      }
     }
     });
   },
@@ -1932,7 +2176,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   startHeartbeat: () => {
+    const retryRemaining = get().licenseRetryAt - Date.now();
+    const keepRetry = retryRemaining > 0 && get().licenseValidationOutcome !== 'valid_online';
     get().stopHeartbeat();
+    if (keepRetry) scheduleLicenseRetry(retryRemaining);
     // SEC (audit 2026-08-22 §SEC.LIC.3): khi quay lại cửa sổ sau thao tác quản trị,
     // xác minh theo cổng chung với heartbeat, tránh tạo challenge trùng trong cùng
     // một nhịp nhưng vẫn kiểm tra sớm khi đã qua khoảng tối thiểu.
@@ -1976,6 +2223,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
     if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
     if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
+    if (renewalRetryTimer) { clearTimeout(renewalRetryTimer); renewalRetryTimer = null; }
     rateLimitedRetryAfterMs = 0;
     revokeGeneration += 1;
     if (focusValidationHandler && typeof window !== 'undefined') {

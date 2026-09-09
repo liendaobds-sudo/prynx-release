@@ -35,6 +35,8 @@ from app.workers.vdp_validate import (
 )
 from app.workers.vdp_preview import render_record_preview
 from app.core.license_guard import enforce_feature, require_license, require_feature
+from app.core.job_access import issue_job_access
+from app.schemas.job import JobAccessResponse
 from app.core.artifact_lease import artifact_delete_guard, create_artifact_lease
 from app.core.heavy_job_scheduler import scheduled_job
 from app.config import settings
@@ -44,6 +46,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class VdpJobAccessResponse(VdpJobStartResponse, JobAccessResponse):
+    """Không đổi field cũ; receipt chỉ cấp quyền nhận/hủy tác vụ đã nhận."""
 
 # SEC (audit 2026-08-04 §BE.01): ba công cụ dùng chung engine VDP, nhưng quyền
 # phải theo đúng capability mà cửa vào UI đã chọn. Không chấp nhận FeatureId
@@ -495,7 +501,7 @@ def vdp_background_task_spooled(
                     pass
             _VDP_SUBMISSION_SLOTS.release()
 
-@router.post("/generate", response_model=VdpJobStartResponse)
+@router.post("/generate", response_model=VdpJobAccessResponse)
 async def start_vdp_job(
     fields: str = Form(...),
     data_file: UploadFile = File(...),
@@ -598,7 +604,18 @@ async def start_vdp_job(
         with _VDP_JOBS_LOCK:
             vdp_jobs[job_id]["future"] = future
         submitted = True
-        return {"job_id": job_id}
+        # SEC (audit 2026-09-09 §LICUX.JOB): không mint receipt trước enqueue.
+        from app.core import license_guard
+        access = issue_job_access(
+            family="vdp", job_id=job_id, license_info=license_info,
+            session_token=license_guard._SIDECAR_TOKEN,
+        )
+        return {
+            "job_id": job_id,
+            "job_access_token": access.token if access else None,
+            "job_access_expires_at": access.expires_at if access else None,
+            "job_access_paths": list(access.paths) if access else None,
+        }
     except HTTPException:
         raise
     except ValueError as exc:

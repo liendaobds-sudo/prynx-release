@@ -27,7 +27,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
+const renewal = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, args?: unknown) => {
+  // Fixture mặc định mô phỏng native trước coordinator; các ca renewal bật
+  // riêng contract mới. Không để undefined giả thành phản hồi IPC hợp lệ.
+  if (!renewal.enabled && command === 'begin_license_renewal') {
+    return Promise.reject('Command begin_license_renewal not found');
+  }
+  return args === undefined ? tauri.invoke(command) : tauri.invoke(command, args);
+} }));
 
 const edge = vi.hoisted(() => ({ invoke: vi.fn(), getSession: vi.fn(), signOut: vi.fn() }));
 vi.mock('../lib/supabase', () => ({
@@ -72,7 +80,7 @@ vi.mock('../lib/securityEventQueue', () => ({
   ...securityQueue,
 }));
 
-import { isTransientLicenseOutcome, useAuthStore, type DielineKeyStatus } from './useAuthStore';
+import { isLicenseOperationPending, isTransientLicenseOutcome, useAuthStore, type DielineKeyStatus } from './useAuthStore';
 
 const LICENSE_KEY = 'PRYNX-TEST-KEY';
 const NATIVE_HWID = '0123456789ABCDEF';
@@ -180,6 +188,7 @@ function validResponse(extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  renewal.enabled = false;
   Object.defineProperty(globalThis, '__TAURI_INTERNALS__', {
     value: {}, configurable: true, writable: true,
   });
@@ -254,6 +263,7 @@ beforeEach(() => {
     revokeReason: '',
     dielineKeyStatus: 'unknown',
     licenseProtocolRecoveryRequired: false,
+    licenseRetryAt: 0,
     isChecking: false,
   });
 });
@@ -261,6 +271,186 @@ beforeEach(() => {
 afterEach(() => {
   useAuthStore.getState().stopHeartbeat();
   delete (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+});
+
+describe('xác minh nền và cooldown native không làm phiền công việc', () => {
+  it('native mới commit lease bằng một giao dịch, không ghi ba IPC rời', async () => {
+    renewal.enabled = true;
+    const token = validToken();
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'begin_license_renewal') return { status: 'started', attemptId: 'a'.repeat(32), retryAfterMs: 0, nativeEpoch: 4 };
+      if (command === 'commit_license_renewal') return { retryAfterMs: 600_000, nativeEpoch: 5 };
+      if (command === 'load_clock_anchor') return validAnchor();
+      return undefined;
+    });
+    edge.invoke.mockResolvedValue(validResponse({ token }));
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(true);
+    expect(tauri.invoke).toHaveBeenCalledWith('commit_license_renewal', expect.objectContaining({
+      attemptId: 'a'.repeat(32), licenseKey: LICENSE_KEY, token, challengeId: CHALLENGE_ID,
+    }));
+    for (const command of ['store_license', 'store_license_token', 'register_validated_key']) {
+      expect(tauri.invoke.mock.calls.some(call => call[0] === command)).toBe(false);
+    }
+  });
+
+  it('giao dịch đổi key bị native từ chối không rollback mù lên credential cửa sổ khác', async () => {
+    renewal.enabled = true;
+    const previous = validToken();
+    useAuthStore.setState({ licenseToken: previous, licenseValid: true });
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'begin_license_renewal') return { status: 'started', attemptId: 'a'.repeat(32), retryAfterMs: 0 };
+      if (command === 'commit_license_renewal') throw new Error('stale owner');
+      return undefined;
+    });
+    edge.invoke.mockResolvedValue(validResponse());
+    await expect(useAuthStore.getState().changeLicenseKey('PRYNX-NEW-KEY')).resolves.toMatchObject({ ok: false });
+    expect(useAuthStore.getState().licenseKey).toBe(LICENSE_KEY);
+    expect(useAuthStore.getState().licenseToken).toBe(previous);
+    for (const command of ['store_license', 'store_license_token', 'delete_license', 'delete_license_token', 'register_validated_key']) {
+      expect(tauri.invoke.mock.calls.some(call => call[0] === command)).toBe(false);
+    }
+  });
+  it('RATE_LIMITED thiếu anchor giữ đúng nguyên nhân và deadline', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'load_clock_anchor') return { status: 'missing' };
+      return undefined;
+    });
+    licenseV3.run.mockRejectedValue(Object.assign(new Error('quota'), { code: 'RATE_LIMITED' }));
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
+    expect(useAuthStore.getState().licenseValidationOutcome).toBe('rate_limited');
+    expect(useAuthStore.getState().licenseRetryAt).toBeGreaterThan(Date.now());
+    expect(useAuthStore.getState().lockReason).not.toContain('checkpoint');
+  });
+
+  it('chờ network không giữ mutation barrier, commit native thì vẫn giữ', async () => {
+    let resolveNetwork!: (value: Record<string, unknown>) => void;
+    let resolveNative!: () => void;
+    useAuthStore.setState({ licenseValid: true, licenseToken: validToken() });
+    licenseV3.run.mockReturnValue(new Promise(resolve => { resolveNetwork = resolve; }));
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'load_clock_anchor') return validAnchor();
+      if (command === 'register_validated_key') await new Promise<void>(resolve => { resolveNative = resolve; });
+      return undefined;
+    });
+    const pending = useAuthStore.getState().validateLicense();
+    await vi.waitFor(() => expect(resolveNetwork).toBeTypeOf('function'));
+    expect(isLicenseOperationPending()).toBe(false);
+    expect(useAuthStore.getState().licenseValid).toBe(true);
+    resolveNetwork({ ...validResponse().data, completed_challenge_id: CHALLENGE_ID });
+    await vi.waitFor(() => expect(resolveNative).toBeTypeOf('function'));
+    expect(isLicenseOperationPending()).toBe(true);
+    resolveNative();
+    await expect(pending).resolves.toBe(true);
+    expect(isLicenseOperationPending()).toBe(false);
+  });
+
+  it('cooldown dùng token DPAPI mới của cửa sổ khác, không gửi thêm challenge', async () => {
+    renewal.enabled = true;
+    const previous = validToken();
+    const fresh = makeToken(Math.floor(Date.now() / 1000) + 600, { cid: STALE_CHALLENGE_ID });
+    useAuthStore.setState({ licenseToken: previous });
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'begin_license_renewal') return { status: 'cooldown', retryAfterMs: 60_000 };
+      if (command === 'load_clock_anchor') return validAnchor();
+      if (command === 'load_license_token') return fresh;
+      return undefined;
+    });
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(true);
+    expect(licenseV3.run).not.toHaveBeenCalled();
+    expect(tauri.invoke).toHaveBeenCalledWith('register_validated_key', { licenseKey: LICENSE_KEY, token: fresh });
+    expect(useAuthStore.getState().licenseToken).toBe(fresh);
+  });
+
+  it('scheduler native lỗi không được biến thành gọi Edge không điều phối', async () => {
+    renewal.enabled = true;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'begin_license_renewal') throw new Error('native mutex unavailable');
+      if (command === 'load_clock_anchor') return validAnchor();
+      return undefined;
+    });
+    await expect(useAuthStore.getState().validateLicense()).resolves.toBe(false);
+    expect(licenseV3.run).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().licenseValid).toBe(false);
+  });
+
+  it('deadline native hẹn đúng retry, không đợi interval 10 phút', async () => {
+    vi.useFakeTimers();
+    renewal.enabled = true;
+    let permits = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'begin_license_renewal') {
+        permits += 1;
+        return permits === 1 ? { status: 'cooldown', retryAfterMs: 5_000 }
+          : { status: 'started', attemptId: 'a'.repeat(32), retryAfterMs: 0 };
+      }
+      if (command === 'load_clock_anchor') return validAnchor();
+      return undefined;
+    });
+    edge.invoke.mockResolvedValue(validResponse());
+    try {
+      await useAuthStore.getState().validateLicense();
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(licenseV3.run).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(licenseV3.run).toHaveBeenCalledTimes(1);
+      expect(useAuthStore.getState().licenseValid).toBe(true);
+    } finally { useAuthStore.getState().stopHeartbeat(); vi.useRealTimers(); }
+  });
+
+  it('lease offline vẫn giữ lịch backoff khi heartbeat được khởi động lại', async () => {
+    vi.useFakeTimers();
+    renewal.enabled = true;
+    let finishes = 0;
+    useAuthStore.setState({ licenseToken: validToken(), licenseValid: true });
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'begin_license_renewal') return { status: 'started', attemptId: 'a'.repeat(32), retryAfterMs: 0 };
+      if (command === 'finish_license_renewal') {
+        finishes += 1;
+        return { retryAfterMs: finishes === 1 ? 30_000 : 60_000 };
+      }
+      if (command === 'load_clock_anchor') return validAnchor();
+      return undefined;
+    });
+    licenseV3.run.mockRejectedValue(Object.assign(new Error('offline'), { code: 'NETWORK_ERROR' }));
+    try {
+      await useAuthStore.getState().retryValidation();
+      expect(licenseV3.run).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(licenseV3.run).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(licenseV3.run).toHaveBeenCalledTimes(3);
+      expect(useAuthStore.getState().licenseValid).toBe(true);
+    } finally { useAuthStore.getState().stopHeartbeat(); vi.useRealTimers(); }
+  });
+
+  it('nhập lại cùng key đang khóa phải xác minh thật', async () => {
+    useAuthStore.setState({ licenseValid: false, isLicenseLocked: true });
+    edge.invoke.mockResolvedValue(validResponse());
+    await expect(useAuthStore.getState().changeLicenseKey(LICENSE_KEY)).resolves.toMatchObject({ ok: true });
+    expect(licenseV3.run).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().isLicenseLocked).toBe(false);
+  });
+
+  it('startup dùng lease native hợp lệ trước khi online kết thúc', async () => {
+    const token = validToken();
+    let finishNetwork!: (value: Record<string, unknown>) => void;
+    edge.getSession.mockResolvedValue({ data: { session: null }, error: null });
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'load_license') return LICENSE_KEY;
+      if (command === 'load_license_token') return token;
+      if (command === 'load_clock_anchor') return validAnchor();
+      return undefined;
+    });
+    licenseV3.run.mockReturnValue(new Promise(resolve => { finishNetwork = resolve; }));
+    await useAuthStore.getState().checkSession();
+    expect(useAuthStore.getState().isChecking).toBe(false);
+    expect(useAuthStore.getState().licenseValid).toBe(true);
+    expect(useAuthStore.getState().licenseValidationOutcome).toBe('valid_cached');
+    expect(tauri.invoke).toHaveBeenCalledWith('register_validated_key', { licenseKey: LICENSE_KEY, token });
+    await vi.waitFor(() => expect(licenseV3.run).toHaveBeenCalledTimes(1));
+    finishNetwork({ ...validResponse().data, completed_challenge_id: CHALLENGE_ID });
+    await vi.waitFor(() => expect(useAuthStore.getState().licenseValidationOutcome).toBe('valid_online'));
+  });
 });
 
 describe('validateLicense → dielineKeyStatus', () => {

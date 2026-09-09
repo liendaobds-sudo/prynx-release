@@ -8,6 +8,8 @@ const authStateMock = vi.hoisted(() => ({
   licenseKey: 'LICENSE-KEY' as string | null,
   licenseToken: 'license-token' as string | null,
   licenseSignOutPending: false,
+  licenseValidationOutcome: 'valid_online' as string,
+  licenseServerStatus: null as string | null,
 }));
 
 vi.mock('../stores/useAuthStore', () => ({
@@ -20,6 +22,7 @@ vi.mock('../stores/useAuthStore', () => ({
 }));
 
 import { authenticatedFetch, installBackendFetchAuth } from './api';
+import { clearJobCompletionAccess, jobCompletionHeader } from './jobCompletionAccess';
 
 const originalBlobArrayBuffer = Blob.prototype.arrayBuffer;
 
@@ -68,6 +71,7 @@ function signArguments(): NativeSignArgs[] {
 
 describe('API request authentication', () => {
   beforeEach(() => {
+    clearJobCompletionAccess();
     installBlobArrayBufferForJsdom();
     invokeMock.mockReset();
     operationEpochMock.value = 0;
@@ -75,6 +79,8 @@ describe('API request authentication', () => {
     authStateMock.licenseKey = 'LICENSE-KEY';
     authStateMock.licenseToken = 'license-token';
     authStateMock.licenseSignOutPending = false;
+    authStateMock.licenseValidationOutcome = 'valid_online';
+    authStateMock.licenseServerStatus = null;
     invokeMock.mockImplementation(async (command: string, args?: NativeSignArgs) => {
       if (command === 'sign_api_request') return signedHeaders(args);
       return undefined;
@@ -134,6 +140,46 @@ describe('API request authentication', () => {
       licenseToken: 'license-token',
       method: 'POST',
     }));
+  });
+
+  it('captures actual submit response and uses scoped receipt after license expiry', async () => {
+    const token = 'b'.repeat(64);
+    const response = { job_id: 'test-job', job_access_token: token,
+      job_access_expires_at: Math.floor(Date.now() / 1000) + 3600,
+      job_access_paths: ['GET /api/jobs/test-job', 'POST /api/jobs/test-job/cancel'] };
+    const fetchMock = vi.fn(async (_request: RequestInfo | URL) => {
+      void _request;
+      return new Response(JSON.stringify(response), { headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await authenticatedFetch('http://localhost:8321/api/jobs/compare', {
+      method: 'POST', body: JSON.stringify({ fixture: true }), headers: { 'content-type': 'application/json' },
+    });
+    expect(jobCompletionHeader('http://localhost:8321/api/jobs/test-job', 'GET', 'LICENSE-KEY')).toBe(token);
+    invokeMock.mockClear();
+    authStateMock.licenseToken = null;
+    authStateMock.licenseValidationOutcome = 'server_rejected';
+    authStateMock.licenseServerStatus = 'EXPIRED';
+    await authenticatedFetch('http://localhost:8321/api/jobs/test-job');
+    expect((fetchMock.mock.calls[1][0] as Request).headers.get('X-PrynX-Job-Access')).toBe(token);
+    expect(invokeMock).not.toHaveBeenCalled();
+    authStateMock.licenseServerStatus = 'BLOCKED';
+    await authenticatedFetch('http://localhost:8321/api/jobs/test-job');
+    expect((fetchMock.mock.calls[2][0] as Request).headers.get('X-PrynX-Job-Access')).toBeNull();
+  });
+
+  it('late submit response cannot restore completion access after sign-out and same-key login', async () => {
+    let respond!: (value: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>(resolve => { respond = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const pending = authenticatedFetch('http://localhost:8321/api/jobs/compare', { method: 'POST' });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    clearJobCompletionAccess();
+    respond(new Response(JSON.stringify({ job_id: 'test-job', job_access_token: 'c'.repeat(64),
+      job_access_expires_at: Math.floor(Date.now() / 1000) + 3600, job_access_paths: ['GET /api/jobs/test-job'] }),
+    { headers: { 'Content-Type': 'application/json' } }));
+    await pending;
+    expect(jobCompletionHeader('http://localhost:8321/api/jobs/test-job', 'GET', 'LICENSE-KEY')).toBeNull();
   });
 
   it('binds the serialized query string when requesting a native signature', async () => {

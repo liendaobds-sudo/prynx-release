@@ -87,6 +87,24 @@
   trong RAM vẫn có TTL riêng. Đây là accepted trade-off: key bị thu hồi khi máy
   hoàn toàn offline có thể còn dùng được tối đa 72 giờ; không được mô tả là revoke
   tức thời trong UI/tài liệu phát hành.
+- License UX (2026-09-09, source/test): native có scheduler renewal chung process
+  với owner cửa sổ, epoch và cooldown monotonic; kết quả scheduler chỉ là lịch,
+  không cấp quyền. Startup có thể dùng lease đã native-verify trước network;
+  network V3 không giữ mutation barrier của API, commit vẫn giữ barrier/epoch.
+  Token V3 không cần HWID legacy; native khuôn bế nhận 15 phút/72 giờ và đọc khóa
+  CNG TPM/software có sẵn, vẫn kiểm signature/device/private-key presence.
+  Không thêm bypass license dev; debug chỉ báo đúng việc anchor có bắt buộc hay
+  không. Chưa có môi trường test/rollout quota server mới, strict HTTP cancellation,
+  commit ownership đa cửa sổ hoặc quyền hoàn tất job sau expiry; runtime còn mở.
+  Xem `docs/LICENSE_IT_LAM_PHIEN_FIXES_2026-09-09.md`.
+- Completion receipt (2026-09-09): Compare/N-Up/VDP chỉ cấp receipt sau khi job
+  enqueue thành công và license request đã verify; receipt bind sidecar generation,
+  owner/license/device, job id, source id (Compare) và hết hạn tối đa 24 giờ.
+  `require_license` chỉ chấp nhận receipt trên status/result/page/download/cancel
+  đúng job đã neo; route dependency vẫn kiểm job id và entitlement thường cho các
+  đường khác. Receipt không mang plan/features, không khởi tạo job, không liệt kê
+  file; sign-out/đổi key/thu hồi quan sát được xóa hoặc vô hiệu hóa. Đây là source
+  + fixture test, chưa clean-install hay kiểm mọi workflow async khác.
 
 ## 6. Accepted risk và non-goal
 
