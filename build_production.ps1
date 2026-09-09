@@ -638,6 +638,127 @@ function Assert-NoReparsePointInPathComponents {
     return $fullPath
 }
 
+function Publish-PrynXInstallerManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceInstaller,
+        [Parameter(Mandatory = $true)][string]$PublishDirectory,
+        [Parameter(Mandatory = $true)][string[]]$ManifestLines
+    )
+
+    # SEC (audit 2026-09-09 §SEC.LIC20.03): chuẩn bị đủ cặp artifact trước khi
+    # chạm bản đang bàn giao. Không để installer mới nằm cạnh manifest cũ khi
+    # finalize lỗi; backup giữ lại trong thư mục riêng, không xóa bản trước.
+    $fields = @{}
+    foreach ($line in $ManifestLines) {
+        if ($line -match '^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$') {
+            $name = $Matches[1]
+            if ($fields.ContainsKey($name)) {
+                throw "SEC: Manifest co field trung lap: $name"
+            }
+            $fields[$name] = $Matches[2]
+        }
+    }
+    foreach ($name in @('INSTALLER', 'INSTALLER_SHA256', 'APP_VERSION', 'RUNTIME_VERIFIED')) {
+        if (-not $fields.ContainsKey($name) -or [string]::IsNullOrWhiteSpace($fields[$name])) {
+            throw "SEC: Manifest thieu field bat buoc: $name"
+        }
+    }
+    $expectedHash = [string]$fields['INSTALLER_SHA256']
+    if ($expectedHash -cnotmatch '\A[0-9a-f]{64}\z' -or
+        [string]$fields['RUNTIME_VERIFIED'] -cne 'no') {
+        throw 'SEC: Manifest build phai co SHA-256 hop le va RUNTIME_VERIFIED=no.'
+    }
+    $sourcePath = Assert-NoReparsePointInPathComponents -Path $SourceInstaller
+    $publishRoot = Assert-NoReparsePointInPathComponents -Path $PublishDirectory
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw 'SEC: Khong tim thay installer nguon de ban giao.'
+    }
+    $installerName = [System.IO.Path]::GetFileName($sourcePath)
+    $version = [string]$fields['APP_VERSION']
+    if ([string]$fields['INSTALLER'] -cne $installerName -or
+        $version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?\z' -or
+        $installerName -cnotmatch ('\APrynX_' + [regex]::Escape($version) + '_[A-Za-z0-9-]+-setup\.exe\z')) {
+        throw 'SEC: Ten hoac phien ban installer khong khop manifest.'
+    }
+    $null = New-Item -ItemType Directory -Path $publishRoot -Force -ErrorAction Stop
+    $finalInstallerPath = Join-Path $publishRoot $installerName
+    $finalManifestPath = Join-Path $publishRoot 'release-manifest.txt'
+    $lockPath = Join-Path $publishRoot '.release-publish.lock'
+    foreach ($path in @($finalInstallerPath, $finalManifestPath, $lockPath)) {
+        $null = Assert-NoReparsePointInPathComponents -Path $path
+    }
+    if ($sourcePath -ieq $finalInstallerPath) {
+        throw 'SEC: Installer nguon phai nam ngoai dich ban giao.'
+    }
+
+    # Khóa chỉ serialize các lượt bàn giao, không dừng app hoặc tiến trình khác.
+    $publishLock = [System.IO.File]::Open(
+        $lockPath, [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None
+    )
+    $stageRoot = $null
+    try {
+        $stageRoot = Join-Path $publishRoot ('.publish-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop
+        $pendingInstaller = Join-Path $stageRoot 'installer.pending'
+        $pendingManifest = Join-Path $stageRoot 'manifest.pending'
+        $previousInstaller = Join-Path $stageRoot 'installer.previous'
+        $previousManifest = Join-Path $stageRoot 'manifest.previous'
+
+        # OpenRead giữ FileShare.Read: source không thể bị ghi/đổi tên trong lúc
+        # copy; hash của staging mới là byte-set sẽ được promote.
+        $sourceStream = [System.IO.File]::OpenRead($sourcePath)
+        try {
+            $destinationStream = [System.IO.File]::Open(
+                $pendingInstaller, [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::None
+            )
+            try { $sourceStream.CopyTo($destinationStream) }
+            finally { $destinationStream.Dispose() }
+        } finally { $sourceStream.Dispose() }
+        $stagedHash = (Get-FileHash -LiteralPath $pendingInstaller -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        if ($stagedHash -cne $expectedHash) {
+            throw 'SEC: Installer staging khong khop SHA-256 manifest; giu nguyen ban cu.'
+        }
+        [System.IO.File]::WriteAllLines($pendingManifest, $ManifestLines, [System.Text.Encoding]::ASCII)
+
+        # Hai filename không thể thay nguyên tử cùng lúc. Manifest là dấu chốt:
+        # thu hồi bản cũ TRƯỚC thay installer, chỉ công bố bản mới SAU hậu kiểm.
+        # Mất điện/lỗi ở giữa => chưa có manifest, không có cặp được xác nhận giả.
+        foreach ($path in @($finalInstallerPath, $finalManifestPath, $stageRoot)) {
+            $null = Assert-NoReparsePointInPathComponents -Path $path
+        }
+        if ([System.IO.File]::Exists($finalManifestPath)) {
+            [System.IO.File]::Move($finalManifestPath, $previousManifest)
+        }
+        if ([System.IO.File]::Exists($finalInstallerPath)) {
+            [System.IO.File]::Replace($pendingInstaller, $finalInstallerPath, $previousInstaller)
+        } else {
+            [System.IO.File]::Move($pendingInstaller, $finalInstallerPath)
+        }
+        # Giữ read handle qua thời điểm công bố manifest để không có khoảng
+        # ghi/đổi tên installer giữa hậu kiểm hash và dấu chốt bàn giao.
+        $publishedStream = [System.IO.File]::OpenRead($finalInstallerPath)
+        try {
+            $publishedHash = (Get-FileHash -InputStream $publishedStream -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            if ($publishedHash -cne $expectedHash) {
+                throw 'SEC: Installer dich thay doi trong luc ban giao; khong cong bo manifest.'
+            }
+            [System.IO.File]::Move($pendingManifest, $finalManifestPath)
+        } finally { $publishedStream.Dispose() }
+        return [pscustomobject]@{
+            InstallerPath = $finalInstallerPath
+            ManifestPath = $finalManifestPath
+            BackupDirectory = $stageRoot
+        }
+    } catch {
+        if ($stageRoot) {
+            Write-Warning "Ban giao chua hoan tat. File staging/backup duoc giu tai: $stageRoot"
+        }
+        throw
+    } finally { $publishLock.Dispose() }
+}
+
 function Assert-StagingSafeToRecreate {
     param(
         [Parameter(Mandatory = $true)][string]$StagingRoot,
@@ -2094,7 +2215,10 @@ if (-not $SkipTauri) {
         Write-Host "  PRYNX_FRONTEND_HASH = $FRONTEND_HASH ($($allFiles.Count) files)" -ForegroundColor Green
         $env:PRYNX_FRONTEND_HASH = $FRONTEND_HASH
     } else {
-        Write-Host "  WARNING: dist/ not found, skipping frontend hash." -ForegroundColor Yellow
+        # SEC (audit 2026-09-09 §SEC.LIC20.01): không tạo EXE thiếu hash rồi
+        # để lỗi cấu hình chỉ lộ ra khi khách mở bản cài.
+        Pop-Location
+        throw 'Khong tim thay dist/ sau frontend build; tu choi dong goi thieu hash.'
     }
     Pop-Location
 
@@ -2448,22 +2572,11 @@ if (-not $SkipTauri) {
         }
     }
 
-    Write-Host ""
-    Write-Host "  ===========================================" -ForegroundColor Green
-    Write-Host "              BUILD COMPLETE" -ForegroundColor Green
-    Write-Host "  ===========================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "  Sidecar:   $SIDECAR_FINAL"
-    Write-Host "  SHA-256:   $HASH"
     if ($installer) {
-        # Copy to root folder for easier access
+        # SEC (audit 2026-09-09 §SEC.LIC20.03): chưa chạm artifact đang bàn giao
+        # cho tới khi toàn bộ provenance và manifest mới đã chuẩn bị xong.
         $publishDir = "$ROOT\Ban_Phat_Hanh"
-        New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
         $finalInstallerPath = "$publishDir\$($installer.Name)"
-        Copy-Item -Force $installer.FullName $finalInstallerPath
-
-        Write-Host "  Installer: $finalInstallerPath"
-        Write-Host "  Size:      $([math]::Round((Get-Item $finalInstallerPath).Length / 1MB, 1)) MB"
 
         if ($Release -and $script:DIELINE_LOCKED -ne "yes") {
             throw "Release artifact is not dieline-locked. Refusing to publish installer/manifest."
@@ -2485,7 +2598,7 @@ if (-not $SkipTauri) {
             throw "Built application executable not found: $exePath"
         }
         $buildExeHash = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLower()
-        $installerHash = (Get-FileHash $finalInstallerPath -Algorithm SHA256).Hash.ToLower()
+        $installerHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLower()
         $manifestPath = "$publishDir\release-manifest.txt"
         if ([string]$env:VITE_FEATURE_GATING_ENABLED -ne "true" -or
             [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
@@ -2592,7 +2705,21 @@ if (-not $SkipTauri) {
             "DIELINE_ACTIVATION_PROBE = $(if ($script:DIELINE_ACTIVATION_PROBE) { $script:DIELINE_ACTIVATION_PROBE } else { 'skipped' })",
             "RUNTIME_VERIFIED = no"
         )
-        Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
+        $publishedPair = Publish-PrynXInstallerManifest `
+            -SourceInstaller $installer.FullName `
+            -PublishDirectory $publishDir `
+            -ManifestLines $manifestLines
+        $finalInstallerPath = $publishedPair.InstallerPath
+        $manifestPath = $publishedPair.ManifestPath
+        Write-Host ""
+        Write-Host "  ===========================================" -ForegroundColor Green
+        Write-Host "              BUILD COMPLETE" -ForegroundColor Green
+        Write-Host "  ===========================================" -ForegroundColor Green
+        Write-Host "  Sidecar:   $SIDECAR_FINAL"
+        Write-Host "  SHA-256:   $HASH"
+        Write-Host "  Installer: $finalInstallerPath"
+        Write-Host "  Size:      $([math]::Round((Get-Item -LiteralPath $finalInstallerPath).Length / 1MB, 1)) MB"
+        Write-Host "  Backup:    $($publishedPair.BackupDirectory)" -ForegroundColor DarkGray
         Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan
         Write-Host "  Build EXE SHA-256: $buildExeHash (installed payload requires smoke verification)" -ForegroundColor DarkGray
         Write-Host "  Buoc ke tiep de dien EXE_SHA256 (neo doi chieu runtime):" -ForegroundColor Yellow
