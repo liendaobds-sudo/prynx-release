@@ -120,6 +120,50 @@ def _job(**overrides):
 # ── 1. Mọi mẫu phải lên tờ, không chỉ mẫu đầu ────────────────────────────────
 
 @requires_real_source
+@pytest.mark.parametrize("tool", ["sticker", "cnc"])
+def test_sr_file_that_giu_layer_sau_ghep_cac_mau(tmp_path, monkeypatch, tool):
+    """File khách → solve/render thật → ghép S&R vẫn đủ cây boong mỗi mẫu."""
+    from app.workers.nup_true_shape_nesting import run_true_shape_nesting
+    from app.core.nesting_manifest_store import NestingManifestStore
+
+    monkeypatch.setenv("PRYNX_TRUE_SHAPE_NESTING_ENABLED", "true")
+    store = NestingManifestStore(root=tmp_path / "manifests")
+
+    settings = _settings(
+        taskMode="step_repeat",
+        layoutType="repeat",
+        imposerMode=tool,
+        targetQuantitiesByPage={"0": 1, "2" if tool == "cnc" else "1": 1},
+    )
+    settings["pontConfig"].update({
+        "isGraphtec": True,
+        "layerInfoName": "SA info PROBE",
+        "layerName": "Marks_Model_",
+        "groupName": "MarkLine",
+        "itemName": "MKLINE",
+    })
+    output = tmp_path / f"sr-{tool}.pdf"
+    run_true_shape_nesting(str(SOURCE), str(output), settings, store=store)
+    with pikepdf.open(output) as pdf:
+        assert len(pdf.pages) == 4
+        ocgs = pdf.Root.OCProperties.OCGs
+        assert [str(ref.Name) for ref in ocgs] == [
+            "SA info PROBE", "Marks_Model_", "MarkLine",
+        ] * 2
+        assert len({ref.objgen for ref in ocgs}) == 6
+        for sheet in range(2):
+            group = ocgs[sheet * 3 + 2]
+            order = pdf.Root.OCProperties.D.Order
+            assert order[sheet * 3 + 2][0].objgen == group.objgen
+            marked_pages = (sheet * 2, sheet * 2 + 1) if tool == "cnc" else (sheet * 2 + 1,)
+            for page_index in marked_pages:
+                props = pdf.pages[page_index].obj.Resources.Properties
+                assert props.MC_PONT_GROUP.objgen == group.objgen
+                assert str(props.NM_PONT_ITEM.NM) == "MKLINE"
+        assert pdf.check_pdf_syntax() == []
+
+
+@requires_real_source
 def test_tu_lap_day_to_lay_du_moi_mau():
     """13 mẫu, SL để trống ⇒ job phải có 13 mẫu.
 

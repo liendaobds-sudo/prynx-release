@@ -309,7 +309,8 @@ export default function OpenInDesignModal({
 
         // FILEIO (audit 2026-09-08 §WIN32-7B): tên nguồn có thể đến từ metadata/
         // File object chứ không phải basename Win32 sạch. Không để `:`, `\\`, `/`,
-        // `*`... lọt vào tên tạm; SetFileInformationByHandle trả 0x8007007b.
+        // `*`... lọt vào tên tạm. Đây chỉ là phòng vệ tên file; lỗi 0x8007007b
+        // với tên hợp lệ được sửa ở buffer UTF-16 native (2026-09-09).
         const base = sanitizeFilename(
             (originalName || 'khuon').replace(/\.pdf$/i, ''),
         ) || 'khuon';

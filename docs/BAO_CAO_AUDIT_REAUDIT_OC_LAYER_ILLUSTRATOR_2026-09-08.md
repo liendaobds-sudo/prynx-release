@@ -6,6 +6,8 @@
 > Phạm vi: cấu hình boong/ốc → payload → route/dispatch → writer PDF → tách “Chỉ trang khuôn” → mở Illustrator/CorelDRAW.  
 > Mức bằng chứng: `ARTIFACT` cho finding chính; `RUNTIME` chưa xác minh vì chưa thao tác được app + Illustrator/Graphtec Studio thật.
 
+> **Đính chính runtime 2026-09-09:** kết luận sanitize đã sửa `0x8007007b` ngày 08/09 bị bác bỏ. Đã tái hiện WinError 123 bằng tên hợp lệ trên Windows: buffer `FILE_RENAME_INFO.FileName` thiếu NUL cuối; padding/alignment khiến lỗi phụ thuộc độ dài tên. Đã sửa buffer native trong `desktop/src-tauri/src/lib.rs`, giữ nguyên khóa handle. Xem Lô E trong `OC_LAYER_ILLUSTRATOR_FIXES_2026-09-08.md`; không lấy test UI mock hoặc build Vite làm bằng chứng ứng dụng đã nạp bản sửa Rust.
+
 ## 1. Kết luận điều hành
 
 Đã xác nhận một lỗi mới, độc lập với bản vá `copyPages()` ngày 2026-08-07:
@@ -196,7 +198,7 @@ Chỉ bắt đầu sửa sau khi user duyệt findings/lô. Mỗi lô tối đa 
 - §PONTLAYER.RE.7: merge nhiều chunk giữ ref OCG riêng theo trang dù tên trùng.
 - §PONTLAYER.RE.4: file CUT tách riêng bật giữ OCG rỗng liên quan.
 - Hardening bổ sung: `pontType` lạ bị từ chối; guide mang `/NM` item; path native không parse blob sentinel; output không có CUT riêng vẫn mở đúng trang hiện tại.
-- Lỗi mới từ smoke người dùng `0x8007007b`: `originalName` chưa sanitize khi tạo tên PDF tạm; đã sửa tại `OpenInDesignModal` và khóa bằng regression.
+- Lỗi từ smoke người dùng `0x8007007b`: sanitize `originalName` chỉ là phòng vệ tên file, **không sửa được nguyên nhân native**. Lần 09/09 xác nhận thiếu NUL trong buffer UTF-16 và sửa ở `atomic_save_rename_info`/`publish_atomic_save_temp`; test Win32 mới đã chạy được, không còn vướng copy đè DLL runtime.
 
 Log triển khai: `docs/OC_LAYER_ILLUSTRATOR_FIXES_2026-09-08.md`.  
 Mức bằng chứng sau sửa: `AUTO + ARTIFACT`; chưa nâng `RUNTIME` vì chưa mở được artifact trong Illustrator/Graphtec Studio thật.

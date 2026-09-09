@@ -1715,6 +1715,57 @@ def _concat_pdf_pages(source_paths: list[str], output_path: str | os.PathLike) -
         )
 
 
+def _append_step_repeat_layers(output: Any, source: Any) -> None:
+    """Ghép catalog layer của từng tờ sinh bởi writer lưới/nesting."""
+    import pikepdf
+
+    source_props = source.Root.get("/OCProperties")
+    if source_props is None:
+        return
+
+    # PONTLAYER FIX (2026-09-09): chép trang không mang theo catalog OCG.
+    # copy_foreign dùng cùng bản đồ ref với pages.extend, giữ cả OCG rỗng
+    # và ref trong Form XObject; tuyệt đối không remap theo tên/objgen đích.
+    foreign = source_props if source_props.is_indirect else source.make_indirect(source_props)
+    copied = output.copy_foreign(foreign)
+    ocgs = copied.get("/OCGs", pikepdf.Array([]))
+    default = copied.get("/D", pikepdf.Dictionary())
+    on_ids = {ref.objgen for ref in default.get("/ON", [])}
+    off_ids = {ref.objgen for ref in default.get("/OFF", [])}
+    base_on = str(default.get("/BaseState", "/ON")) != "/OFF"
+    on = pikepdf.Array([])
+    off = pikepdf.Array([])
+    for ref in ocgs:
+        visible = ref.objgen not in off_ids and (base_on or ref.objgen in on_ids)
+        (on if visible else off).append(ref)
+    default["/BaseState"] = pikepdf.Name.ON
+    default["/ON"] = on
+    default["/OFF"] = off
+    if "/Order" not in default:
+        default["/Order"] = pikepdf.Array(ocgs)
+    copied["/D"] = default
+
+    merged = output.Root.get("/OCProperties")
+    if merged is None:
+        output.Root["/OCProperties"] = copied
+        return
+
+    for ref in ocgs:
+        merged["/OCGs"].append(ref)
+    for key in ("/Order", "/ON", "/OFF", "/Locked", "/RBGroups", "/AS"):
+        if key not in default:
+            continue
+        if key not in merged["/D"]:
+            merged["/D"][key] = pikepdf.Array([])
+        for value in default[key]:
+            merged["/D"][key].append(value)
+    if "/Configs" in copied:
+        if "/Configs" not in merged:
+            merged["/Configs"] = pikepdf.Array([])
+        for config in copied["/Configs"]:
+            merged["/Configs"].append(config)
+
+
 def _concat_pdf_pages_impl(
     source_paths: list[str], output_path: str | os.PathLike
 ) -> int:
@@ -1751,6 +1802,7 @@ def _concat_pdf_pages_impl(
                 sources.append(src)
                 page_count += len(src.pages)
                 output.pages.extend(src.pages)
+                _append_step_repeat_layers(output, src)
             output.save(staged_path)
         finally:
             try:

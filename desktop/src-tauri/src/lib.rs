@@ -5481,17 +5481,82 @@ struct PublishedAtomicSave {
 }
 
 #[cfg(windows)]
+struct AtomicSaveRenameInfo {
+    storage: Vec<usize>,
+    buffer_bytes: u32,
+}
+
+#[cfg(windows)]
+fn atomic_save_rename_info(
+    absolute_target: &std::path::Path,
+) -> Result<AtomicSaveRenameInfo, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::FILE_RENAME_INFO;
+
+    let mut target_wide = absolute_target
+        .as_os_str()
+        .encode_wide()
+        .collect::<Vec<_>>();
+    if target_wide.contains(&0) {
+        return Err("Đường dẫn publish chứa ký tự NUL không hợp lệ.".to_string());
+    }
+    let filename_bytes = target_wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or_else(|| "Đường dẫn publish vượt giới hạn Win32.".to_string())?;
+    let filename_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    // FILEIO (audit 2026-09-09 §WIN32-7B): FileName phải kết thúc NUL dù
+    // FileNameLength KHÔNG tính NUL (cùng cách Rust std dựng rename info).
+    // Chỉ trông chờ padding zero làm Win32 đọc quá allocation khi độ dài vừa
+    // hết một word: tên hợp lệ vẫn có thể báo ERROR_INVALID_NAME (123).
+    let buffer_bytes = filename_offset
+        .checked_add(filename_bytes as usize)
+        .and_then(|size| size.checked_add(std::mem::size_of::<u16>()))
+        .ok_or_else(|| "Kích thước cấu trúc publish không hợp lệ.".to_string())?;
+    target_wide.push(0);
+    let word_size = std::mem::size_of::<usize>();
+    let word_count = buffer_bytes
+        .checked_add(word_size - 1)
+        .map(|size| size / word_size)
+        .ok_or_else(|| "Kích thước cấu trúc publish không hợp lệ.".to_string())?;
+    let mut storage = vec![0usize; word_count];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+
+    // SAFETY:
+    // - `storage` được cấp theo `usize`, đủ alignment cho FILE_RENAME_INFO và đủ
+    //   `buffer_bytes` sau khi làm tròn; copy cả NUL nằm TRONG buffer khai với API.
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).RootDirectory = HANDLE::default();
+        (*info).FileNameLength = filename_bytes;
+        std::ptr::copy_nonoverlapping(
+            target_wide.as_ptr(),
+            storage
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(filename_offset)
+                .cast::<u16>(),
+            target_wide.len(),
+        );
+    }
+    Ok(AtomicSaveRenameInfo {
+        storage,
+        buffer_bytes: u32::try_from(buffer_bytes)
+            .map_err(|_| "Kích thước cấu trúc publish vượt giới hạn Win32.".to_string())?,
+    })
+}
+
+#[cfg(windows)]
 fn publish_atomic_save_temp(
     temp_path: &std::path::Path,
     temp_file: std::fs::File,
     target: &std::path::Path,
 ) -> Result<PublishedAtomicSave, String> {
-    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
-    };
+    use windows::Win32::Storage::FileSystem::{FileRenameInfo, SetFileInformationByHandle};
 
     let temp_identity = windows_file_identity_from_handle(&temp_file)
         .ok_or_else(|| "Không đọc được định danh handle file tạm trước khi publish.".to_string())?;
@@ -5512,52 +5577,17 @@ fn publish_atomic_save_temp(
         .file_name()
         .ok_or_else(|| "Đích publish không có tên file.".to_string())?;
     let absolute_target = canonical_parent.join(target_name);
-    let target_wide = absolute_target
-        .as_os_str()
-        .encode_wide()
-        .collect::<Vec<_>>();
-    let filename_bytes = target_wide
-        .len()
-        .checked_mul(std::mem::size_of::<u16>())
-        .and_then(|length| u32::try_from(length).ok())
-        .ok_or_else(|| "Đường dẫn publish vượt giới hạn Win32.".to_string())?;
-    let filename_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let buffer_bytes = filename_offset
-        .checked_add(filename_bytes as usize)
-        .ok_or_else(|| "Kích thước cấu trúc publish không hợp lệ.".to_string())?;
-    let word_size = std::mem::size_of::<usize>();
-    let word_count = buffer_bytes
-        .checked_add(word_size - 1)
-        .map(|size| size / word_size)
-        .ok_or_else(|| "Kích thước cấu trúc publish không hợp lệ.".to_string())?;
-    let mut storage = vec![0usize; word_count];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let mut rename_info = atomic_save_rename_info(&absolute_target)?;
 
-    // SAFETY:
-    // - `storage` được cấp theo `usize`, đủ alignment cho FILE_RENAME_INFO và đủ
-    //   `buffer_bytes` sau khi làm tròn; `target_wide` được copy đúng số byte đã khai;
-    // - `temp_file` còn sống, được mở với quyền DELETE và không share DELETE/WRITE;
-    // - API không giữ con trỏ sau lời gọi. Rename chạy trên chính handle này, không
-    //   resolve lại `temp_path`, nên không còn cửa sổ path-swap của std::fs::rename.
+    // SAFETY: buffer đã căn chỉnh, sống hết lời gọi; temp_file giữ quyền DELETE
+    // và không share WRITE/DELETE. API chỉ đổi tên chính handle đang giữ, không
+    // resolve lại temp_path hoặc thả khóa trước khi ghi lineage.
     unsafe {
-        (*info).Anonymous.ReplaceIfExists = true;
-        (*info).RootDirectory = HANDLE::default();
-        (*info).FileNameLength = filename_bytes;
-        std::ptr::copy_nonoverlapping(
-            target_wide.as_ptr(),
-            storage
-                .as_mut_ptr()
-                .cast::<u8>()
-                .add(filename_offset)
-                .cast::<u16>(),
-            target_wide.len(),
-        );
         SetFileInformationByHandle(
             HANDLE(temp_file.as_raw_handle() as _),
             FileRenameInfo,
-            info.cast::<std::ffi::c_void>(),
-            u32::try_from(buffer_bytes)
-                .map_err(|_| "Kích thước cấu trúc publish vượt giới hạn Win32.".to_string())?,
+            rename_info.storage.as_mut_ptr().cast::<std::ffi::c_void>(),
+            rename_info.buffer_bytes,
         )
         .map_err(|error| format!("Win32 từ chối publish handle file tạm: {error}"))?;
     }
@@ -5987,6 +6017,131 @@ mod disk_copy_request_tests {
         std::fs::remove_file(first_path).unwrap();
         std::fs::remove_file(second_path).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_save_rename_info_ket_thuc_nul_trong_buffer() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::FILE_RENAME_INFO;
+
+        // FILEIO (audit 2026-09-09 §WIN32-7B): quét mọi phần dư alignment,
+        // gồm UTF-16 surrogate pair. Không trông chờ zero từ padding/heap kế bên.
+        for prefix in [r"C:\Temp", r"\\?\C:\Temp", r"\\?\UNC\server\share"] {
+            for suffix_len in 0..8 {
+                let path = std::path::PathBuf::from(format!(
+                    "{prefix}\\Ốc_😀_{}.pdf",
+                    "a".repeat(suffix_len),
+                ));
+                let buffer = atomic_save_rename_info(&path).unwrap();
+                let expected: Vec<u16> = path.as_os_str().encode_wide().collect();
+                let name_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+                let name_bytes = expected.len() * 2;
+                assert!(
+                    buffer.buffer_bytes as usize >= name_offset + name_bytes + 2,
+                    "buffer API thiếu 2 byte NUL: {path:?}",
+                );
+                assert!(
+                    buffer.storage.len() * std::mem::size_of::<usize>()
+                        >= buffer.buffer_bytes as usize
+                );
+                // SAFETY: đã kiểm độ dài trong buffer trước khi đọc, Vec<usize>
+                // đảm bảo alignment cho header và FileName UTF-16.
+                unsafe {
+                    let info = &*buffer.storage.as_ptr().cast::<FILE_RENAME_INFO>();
+                    assert_eq!(info.FileNameLength as usize, name_bytes);
+                    let name = buffer
+                        .storage
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(name_offset)
+                        .cast::<u16>();
+                    assert_eq!(std::slice::from_raw_parts(name, expected.len()), expected);
+                    assert_eq!(*name.add(expected.len()), 0);
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_save_rename_info_tu_choi_nul_giua_ten() {
+        assert!(
+            atomic_save_rename_info(std::path::Path::new("C:\\Temp\\Mau\0.pdf"))
+                .err()
+                .unwrap()
+                .contains("NUL")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_save_temp_publish_ma_tran_do_dai_unicode_va_verbatim() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let root = test_dir("atomic_publish_unicode");
+        let directory = root.join("Bản bế có dấu 😀");
+        std::fs::create_dir(&directory).unwrap();
+        let canonical_dir = std::fs::canonicalize(&directory).unwrap();
+        let mut residues = std::collections::HashSet::new();
+        for verbatim in [false, true] {
+            for suffix_len in 0..8 {
+                let target = if verbatim { &canonical_dir } else { &directory }.join(format!(
+                    "prynx_khuon_Ốc_{}_tatca.pdf",
+                    "a".repeat(suffix_len)
+                ));
+                let units = canonical_dir
+                    .join(target.file_name().unwrap())
+                    .as_os_str()
+                    .encode_wide()
+                    .count();
+                residues.insert(units % 4);
+                // Cả đích mới và thay thế đích cũ đều dùng chính handle được khóa.
+                for content in [b"%PDF-new".as_slice(), b"%PDF-replaced".as_slice()] {
+                    let (temp_path, mut temp_file) =
+                        create_atomic_save_temp(target.parent().unwrap()).unwrap();
+                    std::io::Write::write_all(&mut temp_file, content).unwrap();
+                    std::io::Write::flush(&mut temp_file).unwrap();
+                    let published = publish_atomic_save_temp(&temp_path, temp_file, &target)
+                        .unwrap_or_else(|err| panic!("N={units}, verbatim={verbatim}: {err}"));
+                    assert_eq!(std::fs::read(&target).unwrap(), content);
+                    assert!(!temp_path.exists());
+                    assert!(std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&target)
+                        .is_err());
+                    assert!(
+                        std::fs::rename(&target, directory.join("khong-duoc-doi.pdf")).is_err()
+                    );
+                    drop(published);
+                }
+                std::fs::remove_file(&target).unwrap();
+            }
+        }
+        assert_eq!(residues.len(), 4, "phải kiểm đủ mọi lớp alignment UTF-16");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_save_temp_publish_duong_dan_dai() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let root = test_dir("atomic_publish_long");
+        let mut directory = std::fs::canonicalize(&root).unwrap();
+        for _ in 0..4 {
+            directory = directory.join("duong_dan_test_".repeat(4));
+            std::fs::create_dir(&directory).unwrap();
+        }
+        let target = directory.join("Bản bế dài.pdf");
+        assert!(target.as_os_str().encode_wide().count() > 260);
+        let (temp_path, mut temp_file) = create_atomic_save_temp(&directory).unwrap();
+        std::io::Write::write_all(&mut temp_file, b"%PDF-long").unwrap();
+        let published = publish_atomic_save_temp(&temp_path, temp_file, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"%PDF-long");
+        assert!(!temp_path.exists());
+        drop(published);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

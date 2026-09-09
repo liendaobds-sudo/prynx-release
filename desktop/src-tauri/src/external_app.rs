@@ -11,6 +11,10 @@ use tauri::command;
 use tauri_plugin_fs::FsExt;
 
 #[cfg(target_os = "windows")]
+#[path = "illustrator_handoff.rs"]
+mod illustrator_handoff;
+
+#[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -272,7 +276,7 @@ fn decide_app_authorization(
 
 /// Mở `file_path` (PDF) bằng ứng dụng `app_path` đích danh.
 #[command]
-pub fn launch_external_app(
+pub async fn launch_external_app(
     app: tauri::AppHandle,
     app_path: String,
     file_path: String,
@@ -310,15 +314,58 @@ pub fn launch_external_app(
     // qua hộp thoại / đã duyệt phiên trước).
     authorize_app_path(&app, &app_path)?;
 
+    // PONTLAYER (2026-09-09): chỉ bản khuôn do modal trích mới dùng bridge.
+    // Corel và đường mở cả file kết quả giữ nguyên cách khởi chạy hiện tại.
+    #[cfg(target_os = "windows")]
+    if is_illustrator_cut_handoff(&app_path, &file_path) {
+        let target_app = app_path.clone();
+        let target_pdf = file_path.clone();
+        let handled = tauri::async_runtime::spawn_blocking(move || {
+            illustrator_handoff::open(&target_app, &target_pdf)
+        })
+        .await
+        .map_err(|error| format!("Không hoàn tất bàn giao Illustrator: {error}"))??;
+        if handled {
+            return Ok(());
+        }
+    }
+
     let mut cmd = Command::new(&app_path);
     cmd.arg(&file_path);
     cmd.spawn().map_err(|e| format!("Lỗi mở ứng dụng: {}", e))?;
     Ok(())
 }
 
+fn is_illustrator_cut_handoff(app_path: &str, file_path: &str) -> bool {
+    let app_name = std::path::Path::new(app_path)
+        .file_name()
+        .and_then(|n| n.to_str());
+    let file_name = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str());
+    app_name.is_some_and(|name| name.eq_ignore_ascii_case("Illustrator.exe"))
+        && file_name.is_some_and(|name| name.to_ascii_lowercase().starts_with("prynx_khuon_"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_chi_cho_nut_mo_khuon_illustrator() {
+        assert!(is_illustrator_cut_handoff(
+            r"C:\Adobe\Illustrator.exe",
+            r"C:\Temp\prynx_khuon_order.pdf"
+        ));
+        assert!(!is_illustrator_cut_handoff(
+            r"C:\Corel\CorelDRW.exe",
+            r"C:\Temp\prynx_khuon_order.pdf"
+        ));
+        assert!(!is_illustrator_cut_handoff(
+            r"C:\Adobe\Illustrator.exe",
+            r"C:\Jobs\Imposed_order.pdf"
+        ));
+    }
 
     #[test]
     fn parse_design_apps_json_ignores_surrounding_powershell_noise() {
