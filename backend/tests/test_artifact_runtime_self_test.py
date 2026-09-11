@@ -728,7 +728,6 @@ Assert-StagingSafeToRecreate `
     ) | Out-Null
 "STAGING_CLEANUP_GUARD_OK"
 """
-    cleanup_encoded = base64.b64encode(cleanup_probe.encode("utf-16-le")).decode("ascii")
     probe = f"""
 $ErrorActionPreference = "Stop"
 . "{payload_helper}"
@@ -752,9 +751,10 @@ Assert-PayloadManifestMatchesStaging `
     -TrustedTesseractLock $trustedLock
 "PAYLOAD_GUARD_OK"
 """
-    encoded = base64.b64encode(probe.encode("utf-16-le")).decode("ascii")
 
     def run_guard() -> subprocess.CompletedProcess[str]:
+        probe_file = tmp_path / "_probe_guard.ps1"
+        probe_file.write_text(probe, encoding="utf-8-sig")
         return subprocess.run(
             [
                 powershell,
@@ -762,8 +762,8 @@ Assert-PayloadManifestMatchesStaging `
                 "-NonInteractive",
                 "-ExecutionPolicy",
                 "Bypass",
-                "-EncodedCommand",
-                encoded,
+                "-File",
+                str(probe_file),
             ],
             cwd=root,
             env=env,
@@ -774,6 +774,8 @@ Assert-PayloadManifestMatchesStaging `
         )
 
     def run_cleanup_guard() -> subprocess.CompletedProcess[str]:
+        cleanup_file = tmp_path / "_cleanup_guard.ps1"
+        cleanup_file.write_text(cleanup_probe, encoding="utf-8-sig")
         return subprocess.run(
             [
                 powershell,
@@ -781,8 +783,8 @@ Assert-PayloadManifestMatchesStaging `
                 "-NonInteractive",
                 "-ExecutionPolicy",
                 "Bypass",
-                "-EncodedCommand",
-                cleanup_encoded,
+                "-File",
+                str(cleanup_file),
             ],
             cwd=root,
             env=env,

@@ -11,6 +11,7 @@ Nếu một field ở đây thực sự cần bỏ: sửa phía desktop TRƯỚC
 import pytest
 
 from app.api.routes import imposition as imposition_routes
+from app.api.routes.imposition import ImposeJobAccessResponse
 from app.schemas.imposition import (
     ImposeJobStartResponse,
     NupJobCancelResponse,
@@ -48,9 +49,9 @@ def _response_model_of(path: str, method: str):
 @pytest.mark.parametrize(
     "path,method,expected",
     [
-        ("/impose-start", "POST", ImposeJobStartResponse),
-        ("/nup-start", "POST", ImposeJobStartResponse),
-        ("/sticker-start", "POST", ImposeJobStartResponse),
+        ("/impose-start", "POST", ImposeJobAccessResponse),
+        ("/nup-start", "POST", ImposeJobAccessResponse),
+        ("/sticker-start", "POST", ImposeJobAccessResponse),
         ("/nup-status/{job_id}", "GET", NupJobStatusResponse),
         ("/nup-cancel/{job_id}", "POST", NupJobCancelResponse),
     ],
@@ -121,6 +122,7 @@ def test_model_pdfcpu_cu_da_bi_xoa():
 
 # ── VDP (audit 2026-07-29 §A.2, lô 8b) ───────────────────────────────────────
 from app.api.routes import vdp as vdp_routes  # noqa: E402
+from app.api.routes.vdp import VdpJobAccessResponse
 from app.schemas.vdp import (  # noqa: E402
     VdpJobCancelResponse,
     VdpJobStartResponse,
@@ -154,7 +156,7 @@ def _vdp_response_model_of(path: str, method: str):
 @pytest.mark.parametrize(
     "path,method,expected",
     [
-        ("/generate", "POST", VdpJobStartResponse),
+        ("/generate", "POST", VdpJobAccessResponse),
         ("/status/{job_id}", "GET", VdpJobStatusResponse),
         ("/vdp-cancel/{job_id}", "POST", VdpJobCancelResponse),
         ("/cancel/{job_id}", "POST", VdpJobCancelResponse),
