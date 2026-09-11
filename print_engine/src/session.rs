@@ -22,6 +22,7 @@ use crate::image::sampler::SampledImage;
 use crate::page::{
     build_page_descriptors, render_page_descriptor, PageBox, PageDescriptor, PageRender, RasterClip,
 };
+use crate::page_program::FormProgram;
 
 /// Phiên bản hợp đồng cache/session. Tăng khi thay đổi semantics pixel hoặc identity.
 pub const SESSION_ENGINE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/session-1");
@@ -201,6 +202,9 @@ pub struct ResourceCacheStats {
     pub image_hits: u64,
     pub image_misses: u64,
     pub image_evictions: u64,
+    pub form_hits: u64,
+    pub form_misses: u64,
+    pub form_evictions: u64,
     pub page_hits: u64,
     pub page_misses: u64,
     pub bytes: usize,
@@ -262,22 +266,32 @@ struct CachedImage {
     last_used: u64,
 }
 
+struct CachedForm {
+    program: Arc<FormProgram>,
+    bytes: usize,
+    last_used: u64,
+}
+
 /// Ước lượng bảo thủ cho Arc, key và bucket HashMap của mỗi entry.
 const RESOURCE_CACHE_ENTRY_OVERHEAD_BYTES: usize = 64;
 
 /// Cache resource sống cùng document session.
 ///
-/// Cache này chỉ nhận ảnh mà Renderer đã chứng minh có colorspace tự chứa. Khi
+/// Cache nhận ảnh có colorspace tự chứa và chương trình Form chưa resolve resource. Khi
 /// ngân sách không đủ, entry mới bị bỏ qua; đường render vẫn giải mã lại và giữ
 /// nguyên độ chính xác. Dung lượng gồm mẫu ảnh và overhead bảo thủ của entry;
 /// eviction theo LRU. `Mutex` chỉ khóa thao tác map ngắn, không khóa lúc decode.
 pub struct ResourceCache {
     images: HashMap<ObjectId, CachedImage>,
+    forms: HashMap<ObjectId, CachedForm>,
     used_bytes: usize,
     budget_bytes: usize,
     image_hits: u64,
     image_misses: u64,
     image_evictions: u64,
+    form_hits: u64,
+    form_misses: u64,
+    form_evictions: u64,
     access_clock: u64,
 }
 
@@ -285,11 +299,15 @@ impl ResourceCache {
     pub fn new(budget_bytes: usize) -> Self {
         Self {
             images: HashMap::new(),
+            forms: HashMap::new(),
             used_bytes: 0,
             budget_bytes,
             image_hits: 0,
             image_misses: 0,
             image_evictions: 0,
+            form_hits: 0,
+            form_misses: 0,
+            form_evictions: 0,
             access_clock: 0,
         }
     }
@@ -302,6 +320,7 @@ impl ResourceCache {
         self.budget_bytes = budget_bytes;
         if budget_bytes == 0 {
             self.images.clear();
+            self.forms.clear();
             self.used_bytes = 0;
             return;
         }
@@ -310,10 +329,14 @@ impl ResourceCache {
 
     pub fn clear(&mut self) {
         self.images.clear();
+        self.forms.clear();
         self.used_bytes = 0;
         self.image_hits = 0;
         self.image_misses = 0;
         self.image_evictions = 0;
+        self.form_hits = 0;
+        self.form_misses = 0;
+        self.form_evictions = 0;
         self.access_clock = 0;
     }
 
@@ -370,11 +393,54 @@ impl ResourceCache {
             image_hits: self.image_hits,
             image_misses: self.image_misses,
             image_evictions: self.image_evictions,
+            form_hits: self.form_hits,
+            form_misses: self.form_misses,
+            form_evictions: self.form_evictions,
             page_hits,
             page_misses,
             bytes: self.used_bytes,
             budget_bytes: self.budget_bytes,
         }
+    }
+
+    /// PERF (audit 2026-09-11 §PPEBX.2): chỉ gọi với ObjectId của document
+    /// sở hữu session này; refresh/close xóa cache cùng page descriptors.
+    pub(crate) fn get_form(&mut self, key: ObjectId) -> Option<Arc<FormProgram>> {
+        let last_used = self.next_access();
+        let Some(entry) = self.forms.get_mut(&key) else {
+            self.form_misses = self.form_misses.saturating_add(1);
+            return None;
+        };
+        self.form_hits = self.form_hits.saturating_add(1);
+        entry.last_used = last_used;
+        Some(Arc::clone(&entry.program))
+    }
+
+    pub(crate) fn insert_form(&mut self, key: ObjectId, program: Arc<FormProgram>) -> bool {
+        if self.budget_bytes == 0 || self.forms.contains_key(&key) {
+            return false;
+        }
+        let bytes = program
+            .memory_bytes()
+            .saturating_add(RESOURCE_CACHE_ENTRY_OVERHEAD_BYTES);
+        if bytes > self.budget_bytes {
+            return false;
+        }
+        self.evict_until_fits(bytes);
+        if self.used_bytes.saturating_add(bytes) > self.budget_bytes {
+            return false;
+        }
+        self.used_bytes = self.used_bytes.saturating_add(bytes);
+        let last_used = self.next_access();
+        self.forms.insert(
+            key,
+            CachedForm {
+                program,
+                bytes,
+                last_used,
+            },
+        );
+        true
     }
 
     fn evict_until_fits(&mut self, required: usize) {
@@ -394,15 +460,24 @@ impl ResourceCache {
     }
 
     fn evict_lru(&mut self) -> bool {
-        let Some(key) = self
+        let image = self
             .images
             .iter()
             .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| *key)
-        else {
-            return false;
-        };
-        if let Some(entry) = self.images.remove(&key) {
+            .map(|(key, entry)| (*key, entry.last_used));
+        let form = self
+            .forms
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, entry)| (*key, entry.last_used));
+        // Hai loại chia một budget/LRU; không để cache Form chiếm RAM ngoài policy.
+        if form.is_some_and(|(_, age)| image.is_none_or(|(_, image_age)| age <= image_age)) {
+            if let Some(entry) = form.and_then(|(key, _)| self.forms.remove(&key)) {
+                self.used_bytes = self.used_bytes.saturating_sub(entry.bytes);
+                self.form_evictions = self.form_evictions.saturating_add(1);
+                return true;
+            }
+        } else if let Some(entry) = image.and_then(|(key, _)| self.images.remove(&key)) {
             self.used_bytes = self.used_bytes.saturating_sub(entry.bytes);
             self.image_evictions = self.image_evictions.saturating_add(1);
             return true;

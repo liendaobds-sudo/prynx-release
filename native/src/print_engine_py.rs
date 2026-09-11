@@ -632,6 +632,11 @@ fn cache_stats_dict(py: Python<'_>, stats: ResourceCacheStats) -> PyResult<Py<Py
     out.set_item("image_hits", stats.image_hits)?;
     out.set_item("image_misses", stats.image_misses)?;
     out.set_item("image_evictions", stats.image_evictions)?;
+    // PERF (audit 2026-09-11 §PPEBX.2): phân biệt cache chương trình Form với
+    // cache ảnh; cache hit resource không đồng nghĩa bỏ raster bitmap.
+    out.set_item("form_hits", stats.form_hits)?;
+    out.set_item("form_misses", stats.form_misses)?;
+    out.set_item("form_evictions", stats.form_evictions)?;
     out.set_item("page_hits", stats.page_hits)?;
     out.set_item("page_misses", stats.page_misses)?;
     out.set_item("bytes", stats.bytes)?;

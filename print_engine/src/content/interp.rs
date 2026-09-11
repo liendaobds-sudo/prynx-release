@@ -21,7 +21,7 @@ use crate::ink::{
     ChannelMask, InkBuffer, InkPaint, MemoryLease, SoftMask, DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
 };
 use crate::oc::{OptionalContent, OptionalContentUsage};
-use crate::page_program::PageProgram;
+use crate::page_program::{FormProgram, PageProgram};
 use crate::pdf;
 use crate::raster::mask::{rect_path, stroke_to_path, FillRule};
 use crate::raster::Rasterizer;
@@ -43,6 +43,28 @@ const SMASK_STREAM_DECODE_REASON: &str = "SMask /G (content stream chỉ phục 
 const PATTERN_STREAM_DECODE_REASON: &str = "Pattern (content stream chỉ phục hồi được)";
 const TYPE3_STREAM_DECODE_REASON: &str = "Type3 CharProc (content stream chỉ phục hồi được)";
 const STATE_DEPTH_OVERFLOW_REASON: &str = "q (vượt trần graphics-state)";
+
+enum FormSource {
+    Cached(Arc<FormProgram>),
+    Decoded {
+        key: Option<ObjectId>,
+        data: pdf::DecodedStream,
+    },
+}
+
+impl FormSource {
+    fn quality(&self) -> pdf::DecodeQuality {
+        match self {
+            Self::Cached(program) => program.quality,
+            Self::Decoded { data, .. } => data.quality,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StreamSource<'a> {
+    Form(&'a FormSource),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DeferredDiagnostic {
@@ -983,6 +1005,57 @@ impl<'a> Renderer<'a> {
         self.execute_program(&program, resources, stack, depth)
     }
 
+    fn form_source(&self, key: Option<ObjectId>, stream: &lopdf::Stream) -> PpeResult<FormSource> {
+        self.opts.check_cancelled()?;
+        if let (Some(shared), Some(key)) = (&self.shared_resource_cache, key) {
+            let cached = shared
+                .lock()
+                .map_err(|_| PpeError::Unsupported("resource cache bị khóa hỏng".into()))?
+                .get_form(key);
+            if let Some(program) = cached {
+                self.opts.check_cancelled()?;
+                return Ok(FormSource::Cached(program));
+            }
+        }
+        let data = pdf::decode_stream(self.doc, stream);
+        self.opts.check_cancelled()?;
+        Ok(FormSource::Decoded { key, data })
+    }
+
+    fn execute_source(
+        &mut self,
+        source: StreamSource<'_>,
+        resources: Option<&Dictionary>,
+        stack: &mut StateStack,
+        depth: u32,
+    ) -> PpeResult<()> {
+        let form = match source {
+            StreamSource::Form(form) => form,
+        };
+        self.opts.check_cancelled()?;
+        let program = match form {
+            FormSource::Cached(program) => Arc::clone(program),
+            FormSource::Decoded { key, data } => {
+                // PERF (audit 2026-09-11 §PPEBX.2): compile đúng tại cổng execute
+                // cũ, sau guard state/child buffer; không biến Form bị bỏ thành lỗi mới.
+                let program = Arc::new(FormProgram {
+                    program: PageProgram::compile(&data.bytes)?,
+                    quality: data.quality,
+                });
+                self.opts.check_cancelled()?;
+                if let (Some(shared), Some(key)) = (&self.shared_resource_cache, key) {
+                    shared
+                        .lock()
+                        .map_err(|_| PpeError::Unsupported("resource cache bị khóa hỏng".into()))?
+                        .insert_form(*key, Arc::clone(&program));
+                }
+                program
+            }
+        };
+        // Resource kế thừa, CTM, clip, glyph counters và warning vẫn chạy mỗi lần.
+        self.execute_program(&program.program, resources, stack, depth)
+    }
+
     fn execute_program(
         &mut self,
         program: &PageProgram,
@@ -1745,12 +1818,13 @@ impl<'a> Renderer<'a> {
                             soft.as_deref(),
                         )
                     } else {
-                        raster.fill_path(
+                        raster.fill_path_in_clip_region(
                             dev,
                             rule,
                             self.opts.anti_alias,
                             clip.as_deref(),
                             soft.as_deref(),
+                            stack.current().clip_region,
                         )
                     };
                     if let Some(cov) = coverage {
@@ -1849,12 +1923,13 @@ impl<'a> Renderer<'a> {
                             soft.as_deref(),
                         )
                     } else {
-                        raster.fill_path(
+                        raster.fill_path_in_clip_region(
                             &outline,
                             FillRule::NonZero,
                             self.opts.anti_alias,
                             clip.as_deref(),
                             soft.as_deref(),
+                            stack.current().clip_region,
                         )
                     };
                     if let Some(cov) = coverage {
@@ -1905,6 +1980,24 @@ impl<'a> Renderer<'a> {
             .clip_region
             .unwrap_or_else(|| Region::full(self.raster.width(), self.raster.height()));
         let clip_region = intersect_regions(old_region, next_region);
+        // PERF (audit 2026-09-11 §PPEBX.B3): giao thêm không thể mở clip rỗng.
+        // Giữ nguyên lệnh/state, chỉ tránh clone và raster mask toàn surface.
+        if old_region.is_empty() && stack.current().clip.is_some() {
+            return Ok(());
+        }
+        if clip_region.is_empty() {
+            let empty = Mask::new(self.raster.width(), self.raster.height()).ok_or(
+                PpeError::BadRasterSize {
+                    w: self.raster.width() as i64,
+                    h: self.raster.height() as i64,
+                    dpi: 0.0,
+                },
+            )?;
+            let gs = stack.current_mut();
+            gs.clip = Some(Arc::new(empty));
+            gs.clip_region = Some(Region::EMPTY);
+            return Ok(());
+        }
         let mut mask = match &stack.current().clip {
             Some(existing) => (**existing).clone(),
             None => self.raster.full_clip(),
@@ -2176,6 +2269,31 @@ impl<'a> Renderer<'a> {
         self.intersect_bbox_for_extent(clip, bbox, ctm, self.raster.width(), self.raster.height())
     }
 
+    fn intersect_bbox_with_region(
+        &self,
+        clip: Option<Arc<Mask>>,
+        bbox: Option<Rect>,
+        ctm: &Matrix,
+        current: Option<Region>,
+    ) -> Option<Arc<Mask>> {
+        // PERF (audit 2026-09-11 §PPEBX.B3): không cull Form hay metadata mực.
+        // Chỉ tái dùng mask đã chắc chắn rỗng, hoặc tạo mask 0 khi hai bounds rời nhau.
+        if current.is_some_and(|region| region.is_empty()) && clip.is_some() {
+            return clip;
+        }
+        let region = self.intersect_bbox_region(
+            current,
+            bbox,
+            ctm,
+            self.raster.width(),
+            self.raster.height(),
+        );
+        if region.is_empty() {
+            return Mask::new(self.raster.width(), self.raster.height()).map(Arc::new);
+        }
+        self.intersect_bbox(clip, bbox, ctm)
+    }
+
     fn intersect_bbox_for_extent(
         &self,
         clip: Option<Arc<Mask>>,
@@ -2225,6 +2343,15 @@ impl<'a> Renderer<'a> {
             ctm.apply(bbox.x0, bbox.y1),
             ctm.apply(bbox.x1, bbox.y1),
         ];
+        // PERF (audit 2026-09-11 §PPEBX.B3): f32::min/max bỏ NaN có thể tạo
+        // EMPTY giả. Với BBox/CTM tràn số, giữ vùng bảo thủ như fallback clip cũ,
+        // không dùng hint sai để bỏ pixel hữu hạn bên trong Form.
+        if corners
+            .iter()
+            .any(|(x, y)| !x.is_finite() || !y.is_finite())
+        {
+            return Region::full(width, height);
+        }
         let min_x = corners.iter().map(|point| point.0).fold(f32::MAX, f32::min);
         let max_x = corners.iter().map(|point| point.0).fold(f32::MIN, f32::max);
         let min_y = corners.iter().map(|point| point.1).fold(f32::MAX, f32::min);
@@ -2278,7 +2405,7 @@ impl<'a> Renderer<'a> {
     fn render_form_into(
         &mut self,
         child: InkBuffer,
-        data: &[u8],
+        source: StreamSource<'_>,
         resources: Option<&Dictionary>,
         initial: GraphicsState,
         exact_paint_region: bool,
@@ -2313,7 +2440,7 @@ impl<'a> Renderer<'a> {
         let saved_text_obj = self.text_obj;
         let saved_text_clip = self.text_clip.take();
         let mut sub = StateStack::new(initial);
-        let result = self.execute(data, resources, &mut sub, depth + 1);
+        let result = self.execute_source(source, resources, &mut sub, depth + 1);
         self.text_obj = saved_text_obj;
         self.text_clip = saved_text_clip;
         self.render_surface_depth = self.render_surface_depth.saturating_sub(1);
@@ -2373,17 +2500,13 @@ impl<'a> Renderer<'a> {
             .map_err(|_| PpeError::MalformedPdf("SMask thiếu /G".into()))?
             .clone();
         let stream = match pdf::deref(self.doc, &g_obj) {
-            Object::Stream(s) => s.clone(),
+            Object::Stream(s) => s,
             _ => {
                 return Err(PpeError::MalformedPdf(
                     "SMask /G không phải Form XObject".into(),
                 ))
             }
         };
-        let decoded = pdf::decode_stream(self.doc, &stream);
-        let stream_recovered = decoded.quality == pdf::DecodeQuality::Recovered;
-        let data = decoded.bytes;
-
         let form_matrix = pdf::dict_get(self.doc, &stream.dict, "Matrix")
             .and_then(|o| pdf::num_array(self.doc, o))
             .and_then(|v| (v.len() >= 6).then(|| Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5])))
@@ -2524,6 +2647,12 @@ impl<'a> Renderer<'a> {
             )));
         }
 
+        // PERF (audit 2026-09-11 §PPEBX.B): cửa sổ rỗng chỉ dùng BC/TR ở trên,
+        // không đọc/clone payload G. Cửa sổ nhìn thấy dùng cache chương trình
+        // như Form thường; event recovery vẫn tạo riêng theo lần dùng mask.
+        let source = self.form_source(pdf::ref_id(&g_obj), stream)?;
+        let stream_recovered = source.quality() == pdf::DecodeQuality::Recovered;
+
         // Nội dung form được dịch về gốc cửa sổ; CTM của mặt nạ vẫn được neo tại
         // thời điểm `gs`, chỉ thay hệ pixel cục bộ để tránh raster toàn trang.
         let local_ctm = ctm.then(&Matrix::translate(-(window.x0 as f32), -(window.y0 as f32)));
@@ -2538,8 +2667,14 @@ impl<'a> Renderer<'a> {
             self.blend_space = BlendSpace::DeviceRgb;
         }
         self.smask_depth += 1;
-        let rendered =
-            self.render_form_into(child, &data, form_res.as_ref(), initial, false, depth);
+        let rendered = self.render_form_into(
+            child,
+            StreamSource::Form(&source),
+            form_res.as_ref(),
+            initial,
+            false,
+            depth,
+        );
         self.smask_depth -= 1;
         self.blend_space = saved_blend_space;
         let (rendered, _, explicit_mask_events) = rendered?;
@@ -2652,9 +2787,8 @@ impl<'a> Renderer<'a> {
                 // CORRECTNESS (audit 2026-09-01 §PPE-E2): helper chung giữ
                 // provenance recovery; Form chỉ fail-loud khi BBox thật sự giao
                 // clip hiện hành, nên resource lỗi ngoài viewport vẫn sạch.
-                let decoded = pdf::decode_stream(self.doc, stream);
-                let decompression_failed = decoded.quality == pdf::DecodeQuality::Recovered;
-                let data = decoded.bytes;
+                let source = self.form_source(pdf::ref_id(entry_ref), stream)?;
+                let decompression_failed = source.quality() == pdf::DecodeQuality::Recovered;
                 if decompression_failed {
                     let form_ctm = form_matrix.then(&stack.current().ctm);
                     let visible_region = self.intersect_bbox_region(
@@ -2736,7 +2870,7 @@ impl<'a> Renderer<'a> {
                         self.blend_space
                     };
                     let result = self.do_transparency_group(
-                        &data,
+                        StreamSource::Form(&source),
                         form_res.as_ref(),
                         form_matrix,
                         bbox,
@@ -2770,11 +2904,19 @@ impl<'a> Renderer<'a> {
                     self.buffer.width(),
                     self.buffer.height(),
                 );
+                let next_clip =
+                    self.intersect_bbox_with_region(clip, bbox, &ctm, stack.current().clip_region);
                 let gs = stack.current_mut();
-                gs.clip = self.intersect_bbox(clip, bbox, &ctm);
+                gs.clip = next_clip;
                 gs.clip_region = Some(clip_region);
                 let saved_depth = stack.logical_depth();
-                let result = self.execute_with_ctm(&data, form_res.as_ref(), stack, depth + 1, ctm);
+                let result = self.execute_with_ctm(
+                    StreamSource::Form(&source),
+                    form_res.as_ref(),
+                    stack,
+                    depth + 1,
+                    ctm,
+                );
                 while stack.logical_depth() > saved_depth {
                     stack.restore();
                 }
@@ -2808,7 +2950,7 @@ impl<'a> Renderer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn do_transparency_group(
         &mut self,
-        data: &[u8],
+        source: StreamSource<'_>,
         resources: Option<&Dictionary>,
         form_matrix: Matrix,
         bbox: Option<Rect>,
@@ -2851,10 +2993,10 @@ impl<'a> Renderer<'a> {
             stack.current_mut().ctm = ctm;
             let clip = stack.current().clip.clone();
             let gs = stack.current_mut();
-            gs.clip = self.intersect_bbox(clip, bbox, &ctm);
+            gs.clip = self.intersect_bbox_with_region(clip, bbox, &ctm, parent_clip_region);
             gs.clip_region = Some(group_region);
             let saved_depth = stack.logical_depth();
-            let result = self.execute(data, resources, stack, depth + 1);
+            let result = self.execute_source(source, resources, stack, depth + 1);
             while stack.logical_depth() > saved_depth {
                 stack.restore();
             }
@@ -2872,7 +3014,7 @@ impl<'a> Renderer<'a> {
         initial.stroke_alpha = 1.0;
         initial.blend_mode = BlendMode::Normal;
         initial.soft_mask = None;
-        initial.clip = self.intersect_bbox(parent_clip, bbox, &ctm);
+        initial.clip = self.intersect_bbox_with_region(parent_clip, bbox, &ctm, parent_clip_region);
         initial.clip_region = Some(group_region);
 
         let rgb_group = group_blend_space == BlendSpace::DeviceRgb && self.color.is_some();
@@ -2896,7 +3038,7 @@ impl<'a> Renderer<'a> {
         self.blend_space = group_blend_space;
         let rendered = self.render_form_into(
             child,
-            data,
+            source,
             resources,
             initial,
             exact_group_paint_region,
@@ -5317,13 +5459,13 @@ impl<'a> Renderer<'a> {
     /// Chạy content lồng nhau, kế thừa trạng thái hiện hành thay vì khởi tạo mới.
     fn execute_with_ctm(
         &mut self,
-        data: &[u8],
+        source: StreamSource<'_>,
         resources: Option<&Dictionary>,
         stack: &mut StateStack,
         depth: u32,
         _ctm: Matrix,
     ) -> PpeResult<()> {
-        self.execute(data, resources, stack, depth)
+        self.execute_source(source, resources, stack, depth)
     }
 }
 
@@ -5848,6 +5990,94 @@ mod conservative_sampling_tests {
             ),
             Region::EMPTY,
         );
+    }
+
+    #[test]
+    fn empty_clip_reuses_mask_without_skipping_form_state() {
+        let doc = Document::new();
+        let buffer = InkBuffer::new(64, 64, crate::ink::InkSpace::new()).unwrap();
+        let renderer = Renderer::new(
+            &doc,
+            buffer,
+            RenderOptions::softproof(),
+            None,
+            BlendSpace::DeviceCmyk,
+        )
+        .unwrap();
+        let empty = Arc::new(Mask::new(64, 64).unwrap());
+        let bbox = Some(Rect::new(10.0, 10.0, 20.0, 20.0));
+        let kept = renderer
+            .intersect_bbox_with_region(
+                Some(Arc::clone(&empty)),
+                bbox,
+                &Matrix::IDENTITY,
+                Some(Region::EMPTY),
+            )
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&kept, &empty),
+            "mask 0 không cần clone/raster lại"
+        );
+        let mut clip = Mask::new(64, 64).unwrap();
+        clip.fill_path(
+            &rect_path(0.0, 0.0, 3.0, 3.0).unwrap(),
+            tiny_skia::FillRule::Winding,
+            true,
+            Transform::identity(),
+        );
+        let clip = Arc::new(clip);
+        let exact = renderer
+            .intersect_bbox(Some(Arc::clone(&clip)), bbox, &Matrix::IDENTITY)
+            .unwrap();
+        let fast = renderer
+            .intersect_bbox_with_region(
+                Some(clip),
+                bbox,
+                &Matrix::IDENTITY,
+                Some(Region::from_bounds(0.0, 0.0, 3.0, 3.0, 64, 64)),
+            )
+            .unwrap();
+        assert_eq!(fast.data(), exact.data());
+    }
+
+    #[test]
+    fn nonfinite_bbox_does_not_turn_inherited_clip_into_empty_mask() {
+        let doc = Document::new();
+        let buffer = InkBuffer::new(64, 64, crate::ink::InkSpace::new()).unwrap();
+        let renderer = Renderer::new(
+            &doc,
+            buffer,
+            RenderOptions::softproof(),
+            None,
+            BlendSpace::DeviceCmyk,
+        )
+        .unwrap();
+        let mut clip = Mask::new(64, 64).unwrap();
+        clip.data_mut().fill(255);
+        let clip = Arc::new(clip);
+        let bbox = Some(Rect::new(
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+        ));
+        assert_eq!(
+            renderer.bbox_region(bbox, &Matrix::IDENTITY, 64, 64),
+            Region::full(64, 64)
+        );
+        let expected = renderer
+            .intersect_bbox(Some(Arc::clone(&clip)), bbox, &Matrix::IDENTITY)
+            .unwrap();
+        let actual = renderer
+            .intersect_bbox_with_region(
+                Some(clip),
+                bbox,
+                &Matrix::IDENTITY,
+                Some(Region::full(64, 64)),
+            )
+            .unwrap();
+        assert_eq!(actual.data(), expected.data());
+        assert!(actual.data().iter().all(|value| *value == 255));
     }
 
     #[test]

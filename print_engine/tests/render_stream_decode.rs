@@ -510,6 +510,129 @@ fn decode_helper_proves_filter_chain_before_marking_exact() {
 }
 
 #[test]
+fn strict_flate_decode_handles_output_block_boundaries() {
+    let doc = Document::new();
+    // [PPE FLATE FIX 2026-09-11]: Form sau bù xén có thể gộp hàng trăm KiB
+    // operators. Kiểm cả byte sát biên, bội số block và payload khó nén.
+    for size in [
+        0,
+        1,
+        65_535,
+        65_536,
+        65_537,
+        131_072,
+        354_115,
+        356_135,
+        2 * 1024 * 1024,
+    ] {
+        for compressible in [true, false] {
+            let mut state = 0x1234_5678u32;
+            let payload: Vec<u8> = (0..size)
+                .map(|_| {
+                    if compressible {
+                        b' '
+                    } else {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        state as u8
+                    }
+                })
+                .collect();
+            let decoded = decode_stream(
+                &doc,
+                &Stream::new(dictionary! { "Filter" => "FlateDecode" }, zlib(&payload)),
+            );
+            assert_eq!(
+                decoded.quality,
+                DecodeQuality::Exact,
+                "size={size}, compressible={compressible}"
+            );
+            assert_eq!(
+                decoded.bytes, payload,
+                "size={size}, compressible={compressible}"
+            );
+        }
+    }
+}
+
+#[test]
+fn strict_flate_decode_keeps_large_corrupt_streams_recovered() {
+    let doc = Document::new();
+    let payload = b"0 0 0 1 k 0 0 10 10 re f\n".repeat(12_000);
+    let encoded = zlib(&payload);
+    let decode = |bytes: Vec<u8>| {
+        decode_stream(
+            &doc,
+            &Stream::new(dictionary! { "Filter" => "FlateDecode" }, bytes),
+        )
+    };
+    assert_eq!(decode(encoded.clone()).quality, DecodeQuality::Exact);
+
+    let mut bad_checksum = encoded.clone();
+    *bad_checksum.last_mut().unwrap() ^= 1;
+    let missing_checksum = encoded[..encoded.len() - 4].to_vec();
+    let truncated_body = encoded[..encoded.len() / 2].to_vec();
+    let mut trailing_data = encoded.clone();
+    trailing_data.push(0);
+    let mut concatenated = encoded;
+    concatenated.extend(zlib(b"q Q"));
+
+    for (kind, bytes) in [
+        ("checksum sai", bad_checksum),
+        ("thiếu checksum", missing_checksum),
+        ("thiếu thân stream", truncated_body),
+        ("dư dữ liệu", trailing_data),
+        ("hai stream nối nhau", concatenated),
+        ("không có zlib stream", Vec::new()),
+    ] {
+        assert_eq!(decode(bytes).quality, DecodeQuality::Recovered, "{kind}");
+    }
+}
+
+#[test]
+fn large_compressed_form_preserves_render_and_soundness() {
+    let mut content = b"0 1 0 0 k 5 5 20 20 re f\n%".to_vec();
+    content.resize(356_100, b' ');
+    // Vùng mực thứ hai nằm SAU nhiều block, bắt việc chỉ trả prefix 64 KiB.
+    content.extend_from_slice(b"\n1 0 0 0 k 60 60 30 30 re f\n");
+    let make_doc = |compressed: bool| {
+        let mut doc = Document::new();
+        let mut dict = dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => pdf_rect([0, 0, PAGE, PAGE]), "Resources" => dictionary! {},
+        };
+        let data = if compressed {
+            dict.set("Filter", "FlateDecode");
+            zlib(&content)
+        } else {
+            content.clone()
+        };
+        let form_id = doc.add_object(Stream::new(dict, data));
+        finish_document(
+            doc,
+            b"/Fm Do /Fm Do",
+            dictionary! { "XObject" => dictionary! { "Fm" => Object::Reference(form_id) } },
+            Vec::new(),
+        )
+    };
+    let expected = render(&make_doc(false), false);
+    let actual = render(&make_doc(true), false);
+    assert!(any_ink(&expected));
+    assert_eq!(actual.warnings.dropped_objects, 0, "{:?}", actual.warnings);
+    assert_eq!(warning_count(&actual, FORM_REASON), 0);
+    assert!(!actual.warnings.ink_unsound());
+    for channel in 0..4 {
+        assert_eq!(
+            actual.buffer.plate_u8(channel),
+            expected.buffer.plate_u8(channel)
+        );
+    }
+    assert!(actual.buffer.plate_u8(0).iter().any(|value| *value > 0));
+    assert!(actual.buffer.plate_u8(1).iter().any(|value| *value > 0));
+}
+
+#[test]
 fn strict_decode_rejects_malformed_predictor_metadata_and_rows() {
     let doc = Document::new();
     let decode = |params: Dictionary, rows: &[u8]| {

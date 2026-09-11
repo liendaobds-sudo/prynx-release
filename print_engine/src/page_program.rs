@@ -1,14 +1,30 @@
 //! Chương trình trang đã giải mã cho đường render lặp của Viewer.
 //!
-//! Lô 4A chỉ cache danh sách operator của **content stream trang** và ảnh nội tuyến.
-//! Form/Pattern/Type3 vẫn được giải mã trong đúng resource scope lúc thực thi; đưa các
-//! stream lồng vào đây khi chưa có handle/bounds bảo thủ sẽ làm sai tài nguyên kế thừa.
+//! Cache chỉ giữ operator và ảnh nội tuyến bất biến. Resource scope, CTM, clip và
+//! trạng thái màu vẫn được phân giải lại khi thực thi, kể cả với Form lồng nhau.
 
 use lopdf::content::{Content, Operation};
 use lopdf::Object;
 
 use crate::content::inline_image::extract_inline_images;
 use crate::error::{PpeError, PpeResult};
+use crate::pdf::DecodeQuality;
+
+/// PERF (audit 2026-09-11 §PPEBX.2): provenance giải nén đi cùng chương trình;
+/// cảnh báo do clip/visibility vẫn được phát riêng cho từng invocation.
+#[derive(Debug)]
+pub(crate) struct FormProgram {
+    pub program: PageProgram,
+    pub quality: DecodeQuality,
+}
+
+impl FormProgram {
+    pub fn memory_bytes(&self) -> usize {
+        self.program
+            .memory_bytes()
+            .saturating_add(std::mem::size_of::<Self>())
+    }
+}
 
 /// Content stream trang sau pha bóc ảnh nội tuyến và tokenize operator.
 #[derive(Debug)]
@@ -47,6 +63,23 @@ impl PageProgram {
         self.source_bytes
     }
 
+    /// Tính vùng nhớ sở hữu, không dùng số byte PDF nén làm kích thước cache.
+    pub(crate) fn memory_bytes(&self) -> usize {
+        let operations = self.operations.iter().fold(
+            self.operations
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Operation>()),
+            |total, op| {
+                total
+                    .saturating_add(op.operator.capacity())
+                    .saturating_add(objects_memory_bytes(&op.operands))
+            },
+        );
+        std::mem::size_of::<Self>()
+            .saturating_add(operations)
+            .saturating_add(objects_memory_bytes(&self.inline_images))
+    }
+
     pub(crate) fn operations(&self) -> &[Operation] {
         &self.operations
     }
@@ -60,9 +93,67 @@ impl PageProgram {
     }
 }
 
+fn objects_memory_bytes(objects: &Vec<Object>) -> usize {
+    objects.iter().fold(
+        objects
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Object>()),
+        |total, object| total.saturating_add(object_heap_bytes(object)),
+    )
+}
+
+fn dictionary_memory_bytes(dict: &lopdf::Dictionary) -> usize {
+    // IndexMap không công bố capacity. Dictionary vừa parse chưa xóa entry:
+    // dự trù cả tăng trưởng Vec/bucket tối thiểu, theo kích thước Object thật.
+    let slots = if dict.is_empty() {
+        0
+    } else {
+        dict.len()
+            .checked_next_power_of_two()
+            .unwrap_or(usize::MAX)
+            .saturating_mul(2)
+            .max(4)
+    };
+    let slot_bytes = std::mem::size_of::<(Vec<u8>, Object)>()
+        .saturating_add(2 * std::mem::size_of::<usize>() + 1);
+    dict.iter()
+        .fold(slots.saturating_mul(slot_bytes), |total, (key, value)| {
+            total
+                .saturating_add(key.capacity())
+                .saturating_add(object_heap_bytes(value))
+        })
+}
+
+fn object_heap_bytes(object: &Object) -> usize {
+    match object {
+        Object::Name(bytes) | Object::String(bytes, _) => bytes.capacity(),
+        Object::Array(items) => objects_memory_bytes(items),
+        Object::Dictionary(dict) => dictionary_memory_bytes(dict),
+        Object::Stream(stream) => stream
+            .content
+            .capacity()
+            .saturating_add(dictionary_memory_bytes(&stream.dict)),
+        // Reference không sở hữu object đích, không lần theo cây PDF để đếm hai lần.
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn program_memory_accounts_for_dictionary_slots_and_inline_payloads() {
+        let dict = lopdf::dictionary! { "One" => Object::Name(vec![b'x'; 300]) };
+        let bytes = dictionary_memory_bytes(&dict);
+        assert!(bytes >= 4 * std::mem::size_of::<(Vec<u8>, Object)>() + 300);
+        let nested = lopdf::dictionary! { "Child" => dict.clone() };
+        assert!(dictionary_memory_bytes(&nested) > bytes);
+        let raw = b"q BI /W 3 /H 1 /BPC 8 /CS /G ID \x01\x02\x03 EI Q";
+        let program = PageProgram::compile(raw).unwrap();
+        assert_eq!(program.inline_image_count(), 1);
+        assert!(program.memory_bytes() > program.source_bytes());
+    }
 
     #[test]
     fn compile_giu_operator_va_anh_noi_tuyen_de_replay() {

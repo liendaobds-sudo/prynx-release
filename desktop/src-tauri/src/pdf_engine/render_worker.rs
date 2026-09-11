@@ -3870,6 +3870,30 @@ mod tests {
     }
 
     #[test]
+    fn ppe_prefetch_dung_nguong_lane_cua_viewer() {
+        // PERF (audit 2026-09-11 §PPEBX.C): khóa hợp đồng với
+        // viewerPageRenderPriority; priority chỉ xếp lane, không đổi pipeline màu.
+        for priority in [0, 10, 20, 99] {
+            assert_eq!(
+                render_lane_purpose(RenderPurpose::Accurate, priority),
+                RenderPurpose::Interactive,
+                "priority {priority} vẫn thuộc lane tương tác"
+            );
+        }
+        for priority in [100, 200, 1000] {
+            assert_eq!(
+                render_lane_purpose(RenderPurpose::Accurate, priority),
+                RenderPurpose::Background,
+                "priority {priority} không được giữ lane tương tác"
+            );
+        }
+        assert_eq!(
+            render_lane_purpose(RenderPurpose::Background, 10),
+            RenderPurpose::Background
+        );
+    }
+
+    #[test]
     fn ppe_session_pool_chi_cap_may_yeu_hoac_khi_may_manh_thieu_ram() {
         const GIB: u64 = 1024 * 1024 * 1024;
         assert_eq!(
@@ -4049,6 +4073,261 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("background phải được đánh thức");
         waiter.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "probe riêng cần PRYNX_RENDER_WORKER_TEST_EXE/PDF; không chạy cùng benchmark khác"]
+    fn parent_manager_ppe_prefetch_priority_timeline() {
+        // PERF (audit 2026-09-11 §PPEBX.C): chạy đúng manager/worker riêng của test,
+        // không mở UI hay dừng phiên người dùng. Hai priority giữ cùng PDF/DPI/EXE;
+        // ghi wall ở parent vì timing worker không bao gồm chờ mutex của manager.
+        struct RuntimeWorkerCleanup;
+        impl Drop for RuntimeWorkerCleanup {
+            fn drop(&mut self) {
+                shutdown_render_worker();
+            }
+        }
+
+        fn render_probe(
+            path: &str,
+            page: i32,
+            dpi: f32,
+            priority: i32,
+            request_id: String,
+            origin: Instant,
+        ) -> Result<(WorkerRenderOutput, u128, u128), String> {
+            let context = ViewerRenderContext {
+                request_id,
+                owner_id: format!("viewer:priority-probe:page-{page}"),
+                group_key: format!("page:{page}:accurate-base"),
+                generation: 1,
+                purpose: RenderPurpose::Accurate,
+                priority,
+                pipeline_identity: RENDER_WORKER_ACCURATE_PIPELINE_ID.to_string(),
+            };
+            let started = Instant::now();
+            match render_accurate_with_policy(
+                path,
+                page,
+                dpi,
+                0,
+                None,
+                None,
+                None,
+                None,
+                "viewer:priority-probe:session",
+                Some(&context),
+            )? {
+                AccurateWorkerAttempt::Completed(output) => Ok((
+                    output,
+                    started.elapsed().as_millis(),
+                    origin.elapsed().as_millis(),
+                )),
+                AccurateWorkerAttempt::Unsupported(error) => {
+                    Err(format!("PPE unsupported: {error:?}"))
+                }
+                AccurateWorkerAttempt::FallbackBeforeStart(error) => Err(error),
+                AccurateWorkerAttempt::Disabled => Err("PPE worker bị tắt".to_string()),
+            }
+        }
+
+        let file_path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF")
+            .expect("đặt PRYNX_RENDER_WORKER_TEST_PDF là PDF thật có ít nhất 3 trang");
+        let worker_executable = std::env::var_os("PRYNX_RENDER_WORKER_TEST_EXE")
+            .map(PathBuf::from)
+            .expect("đặt PRYNX_RENDER_WORKER_TEST_EXE trỏ đúng binary đã build");
+        let read_page = |key: &str, fallback: i32| {
+            std::env::var(key)
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(fallback)
+        };
+        let active_page = read_page("PRYNX_RENDER_WORKER_TEST_PAGE", 1);
+        let prefetch_page = read_page("PRYNX_RENDER_WORKER_TEST_PREFETCH_PAGE", 3);
+        let samples = read_page("PRYNX_RENDER_WORKER_PRIORITY_SAMPLES", 1) as usize;
+        let dpi = 96.0;
+        assert_ne!(render_worker_mode(), RenderWorkerMode::Off);
+        let _cleanup = RuntimeWorkerCleanup;
+        let lanes = configured_background_lane_count();
+        let pdf_sha256 = sha256_file(Path::new(&file_path)).expect("hash PDF mẫu");
+        let worker_sha256 = sha256_file(&worker_executable).expect("hash worker trước probe");
+        let mut rows = Vec::new();
+        let mut active_reference = None;
+        let mut prefetch_reference = None;
+
+        for sample in 0..samples {
+            // Đảo thứ tự giữa các cặp để không luôn cho bản mới hưởng OS cache sau.
+            let priorities = if sample % 2 == 0 {
+                [20, 100]
+            } else {
+                [100, 20]
+            };
+            for prefetch_priority in priorities {
+                let _ = close_document_with_policy(&file_path).expect("nhả session giữa hai ca");
+                let origin = Instant::now();
+                let preemptions_before = BACKGROUND_PREEMPTION_COUNT.load(Ordering::Relaxed);
+                let prefetch_id = format!("priority-probe-{sample}-{prefetch_priority}-prefetch");
+                let background_id = prefetch_id.clone();
+                let background_path = file_path.clone();
+                let (background_tx, background_rx) = mpsc::channel();
+                let background = std::thread::spawn(move || {
+                    let result = render_probe(
+                        &background_path,
+                        prefetch_page,
+                        dpi,
+                        prefetch_priority,
+                        background_id,
+                        origin,
+                    );
+                    let _ = background_tx.send(result);
+                });
+                let prefetch_lease = loop {
+                    let lease = active_render_requests()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(&prefetch_id)
+                        .map(|lease| (lease.child_pid, lease.lane));
+                    if let Some(lease) = lease {
+                        break lease;
+                    }
+                    if let Ok(result) = background_rx.try_recv() {
+                        panic!(
+                            "prefetch đã kết thúc trước khi probe thấy lease: {}",
+                            result
+                                .err()
+                                .unwrap_or_else(|| "dùng trang mẫu phức tạp hơn".to_string())
+                        );
+                    }
+                    assert!(
+                        origin.elapsed() < Duration::from_secs(30),
+                        "prefetch không đăng ký lease"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                };
+                let prefetch_registered_ms = origin.elapsed().as_millis();
+                let expected_prefetch_lane = if prefetch_priority >= 100 && lanes > 0 {
+                    matches!(prefetch_lease.1, WorkerLane::Background(_))
+                } else {
+                    prefetch_lease.1 == WorkerLane::Interactive
+                };
+                assert!(
+                    expected_prefetch_lane,
+                    "prefetch phải vào đúng lane đã phân loại"
+                );
+
+                let active_id = format!("priority-probe-{sample}-{prefetch_priority}-active");
+                let foreground_id = active_id.clone();
+                let foreground_path = file_path.clone();
+                let active_submitted_ms = origin.elapsed().as_millis();
+                let (foreground_tx, foreground_rx) = mpsc::channel();
+                let foreground = std::thread::spawn(move || {
+                    let result = render_probe(
+                        &foreground_path,
+                        active_page,
+                        dpi,
+                        10,
+                        foreground_id,
+                        origin,
+                    );
+                    let _ = foreground_tx.send(result);
+                });
+                let mut active_registered = None;
+                let active_result = loop {
+                    if active_registered.is_none() {
+                        active_registered = active_render_requests()
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(&active_id)
+                            .map(|lease| {
+                                (lease.child_pid, lease.lane, origin.elapsed().as_millis())
+                            });
+                    }
+                    match foreground_rx.recv_timeout(Duration::from_millis(1)) {
+                        Ok(result) => break result.expect("active phải dựng thành công"),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            assert!(
+                                origin.elapsed() < Duration::from_secs(60),
+                                "active không hoàn tất"
+                            );
+                        }
+                        Err(error) => panic!("thread active không trả kết quả: {error}"),
+                    }
+                };
+                foreground.join().expect("thread active không panic");
+                let background_result = background_rx
+                    .recv_timeout(Duration::from_secs(60))
+                    .expect("prefetch phải hoàn tất hoặc retry sau preempt")
+                    .expect("prefetch phải dựng thành công");
+                background.join().expect("thread prefetch không panic");
+                if let Some((pid, lane, _)) = active_registered {
+                    assert_eq!(lane, WorkerLane::Interactive);
+                    if lanes > 0 && prefetch_priority >= 100 {
+                        assert_ne!(pid, prefetch_lease.0, "active không dùng process prefetch");
+                    }
+                }
+                let (active, active_wall_ms, active_finished_ms) = active_result;
+                let (prefetch, prefetch_wall_ms, prefetch_finished_ms) = background_result;
+                assert_eq!(active.response.soundness, RenderSoundness::ColorVerified);
+                assert_eq!(prefetch.response.soundness, RenderSoundness::ColorVerified);
+                let active_hash = hex::encode(sha2::Sha256::digest(&active.bytes));
+                let prefetch_hash = hex::encode(sha2::Sha256::digest(&prefetch.bytes));
+                assert_eq!(
+                    active_reference.get_or_insert(active_hash.clone()),
+                    &active_hash
+                );
+                assert_eq!(
+                    prefetch_reference.get_or_insert(prefetch_hash.clone()),
+                    &prefetch_hash
+                );
+                rows.push(serde_json::json!({
+                    "sample": sample,
+                    "prefetch_priority": prefetch_priority,
+                    "prefetch_page": prefetch_page,
+                    "active_page": active_page,
+                    "active_priority": 10,
+                    "dpi": dpi,
+                    "prefetch_lane": format!("{:?}", prefetch_lease.1),
+                    "prefetch_worker_pid": prefetch_lease.0,
+                    "prefetch_registered_ms": prefetch_registered_ms,
+                    "active_submitted_ms": active_submitted_ms,
+                    "active_registered_ms": active_registered.map(|value| value.2),
+                    "active_worker_pid": active_registered.map(|value| value.0),
+                    "active_lane": active_registered.map(|value| format!("{:?}", value.1)),
+                    "active_parent_wall_ms": active_wall_ms,
+                    "active_finished_ms": active_finished_ms,
+                    "prefetch_parent_wall_ms": prefetch_wall_ms,
+                    "prefetch_finished_ms": prefetch_finished_ms,
+                    "active_worker_timing": active.response.timing,
+                    "prefetch_worker_timing": prefetch.response.timing,
+                    "active_png_sha256": active_hash,
+                    "prefetch_png_sha256": prefetch_hash,
+                    "background_preemptions": BACKGROUND_PREEMPTION_COUNT.load(Ordering::Relaxed)
+                        .saturating_sub(preemptions_before),
+                }));
+            }
+        }
+        assert_eq!(
+            sha256_file(Path::new(&file_path)).expect("hash PDF sau probe"),
+            pdf_sha256
+        );
+        assert_eq!(
+            sha256_file(&worker_executable).expect("hash worker sau probe"),
+            worker_sha256
+        );
+        let report = serde_json::json!({
+            "probe": "PPEBX.C-parent-manager-priority",
+            "pdf_sha256": pdf_sha256,
+            "worker_sha256": worker_sha256,
+            "background_lanes": lanes,
+            "samples_per_priority": samples,
+            "rows": rows,
+        });
+        let report = serde_json::to_string_pretty(&report).expect("mã hóa báo cáo probe");
+        eprintln!("PPE_PRIORITY_TIMELINE {report}");
+        if let Ok(path) = std::env::var("PRYNX_RENDER_WORKER_PRIORITY_REPORT") {
+            std::fs::write(path, report).expect("ghi báo cáo probe riêng");
+        }
     }
 
     #[test]

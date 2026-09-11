@@ -180,7 +180,21 @@ impl Rasterizer {
         clip: Option<&Mask>,
         soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
-        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false)
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false, None)
+    }
+
+    /// PERF (audit 2026-09-11 §PPEBX.B2): clip_region đến từ đúng Mask của
+    /// graphics state. Chỉ thu vùng áp clip/composite, không đổi scan-convert.
+    pub(crate) fn fill_path_in_clip_region(
+        &mut self,
+        path: &Path,
+        rule: FillRule,
+        anti_alias: bool,
+        clip: Option<&Mask>,
+        soft_mask: Option<&SoftMask>,
+        clip_region: Option<Region>,
+    ) -> Option<Coverage<'_>> {
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false, clip_region)
     }
 
     /// Nhị phân hoá mọi pixel mà path chạm tới — chỉ dùng cho nét/vector đặc đục.
@@ -192,7 +206,7 @@ impl Rasterizer {
         clip: Option<&Mask>,
         soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
-        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, true)
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, true, None)
     }
 
     /// Vành fill-adjust của một path: dải rộng `2×CONSERVATIVE_FILL_ADJUST_PX`
@@ -282,7 +296,8 @@ impl Rasterizer {
             self.height,
         );
 
-        let Some(cov) = self.fill_path_impl(&ring, FillRule::NonZero, false, clip, soft_mask, true)
+        let Some(cov) =
+            self.fill_path_impl(&ring, FillRule::NonZero, false, clip, soft_mask, true, None)
         else {
             return Ok(None);
         };
@@ -325,7 +340,7 @@ impl Rasterizer {
         clip: Option<&Mask>,
         soft_mask: Option<&SoftMask>,
     ) -> Option<Coverage<'_>> {
-        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false)
+        self.fill_path_impl(path, rule, anti_alias, clip, soft_mask, false, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -337,6 +352,7 @@ impl Rasterizer {
         clip: Option<&Mask>,
         soft_mask: Option<&SoftMask>,
         binary_geometry: bool,
+        clip_region: Option<Region>,
     ) -> Option<Coverage<'_>> {
         // Xoá vết của lần vẽ trước — chỉ trong vùng nó đã chạm.
         self.clear_dirty();
@@ -353,6 +369,21 @@ impl Rasterizer {
         if region.is_empty() {
             return None;
         }
+        let visible = match (clip, clip_region) {
+            (Some(_), Some(bound)) => Region {
+                x0: region.x0.max(bound.x0),
+                y0: region.y0.max(bound.y0),
+                x1: region.x1.min(bound.x1),
+                y1: region.y1.min(bound.y1),
+            }
+            .clamped(self.width, self.height),
+            _ => region,
+        };
+        if visible.is_empty() {
+            return None;
+        }
+        // Scratch vẫn được vẽ bằng cùng path/transform trên toàn surface, nên
+        // lần sau phải xóa cả bbox này, không chỉ vùng coverage đã thu hẹp.
         self.dirty = region;
 
         // Đường đo mực vẫn cần hình học nhị phân, nhưng raster trực tiếp với
@@ -365,7 +396,7 @@ impl Rasterizer {
             anti_alias || binary_geometry,
             Transform::identity(),
         );
-        self.apply_clip(region, clip, soft_mask, binary_geometry)
+        self.apply_clip(visible, clip, soft_mask, binary_geometry)
     }
 
     /// Xoá `coverage` và `scratch_mask` trong vùng bẩn của lần vẽ trước.
@@ -490,6 +521,64 @@ mod tests {
 
     fn unit_square_at(x: f32, y: f32, size: f32) -> Path {
         rect_path(x, y, size, size).unwrap()
+    }
+
+    #[test]
+    fn bounded_clip_keeps_all_pixels_and_clears_previous_scratch() {
+        let mut baseline = Rasterizer::new(128, 128).unwrap();
+        let mut bounded = Rasterizer::new(128, 128).unwrap();
+        let full = unit_square_at(-100.0, -100.0, 400.0);
+        let owner = InkBuffer::new(128, 128, InkSpace::new()).unwrap();
+        let mut soft = owner.new_soft_mask(Region::full(128, 128), 0.0).unwrap();
+        soft.values_mut().fill(0.5);
+        for (x, y, width, height) in [
+            (0.3, 0.2, 5.3, 127.0),
+            (100.4, 110.2, 6.7, 5.2),
+            (20.0, 20.0, 0.0, 0.0),
+            (0.0, 0.0, 128.0, 128.0),
+        ] {
+            let mut mask = Mask::new(128, 128).unwrap();
+            let path = rect_path(x, y, width, height).unwrap();
+            mask.fill_path(
+                &path,
+                tiny_skia::FillRule::Winding,
+                true,
+                Transform::identity(),
+            );
+            let bound = if width == 0.0 {
+                Region::EMPTY
+            } else {
+                Region::from_bounds(x, y, x + width, y + height, 128, 128)
+            };
+            let expected = baseline
+                .fill_path(&full, FillRule::NonZero, true, Some(&mask), Some(&soft))
+                .map(|coverage| coverage.data.to_vec());
+            let actual = bounded
+                .fill_path_in_clip_region(
+                    &full,
+                    FillRule::NonZero,
+                    true,
+                    Some(&mask),
+                    Some(&soft),
+                    Some(bound),
+                )
+                .map(|coverage| {
+                    assert!(coverage.region.x1 - coverage.region.x0 <= bound.x1 - bound.x0);
+                    assert!(coverage.region.y1 - coverage.region.y0 <= bound.y1 - bound.y0);
+                    coverage.data.to_vec()
+                });
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(
+            bounded
+                .fill_path(&full, FillRule::NonZero, true, None, None)
+                .unwrap()
+                .data,
+            baseline
+                .fill_path(&full, FillRule::NonZero, true, None, None)
+                .unwrap()
+                .data
+        );
     }
 
     #[test]

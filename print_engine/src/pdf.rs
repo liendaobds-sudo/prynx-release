@@ -204,11 +204,14 @@ fn strict_flate_decode(input: &[u8]) -> Option<Vec<u8>> {
     loop {
         let input_before = decoder.total_in();
         let output_before = decoder.total_out();
+        // [PPE FLATE FIX 2026-09-11]: Finish ở lần đầu đòi output chứa trọn
+        // stream; Form >64 KiB bị miniz đánh lỗi dù dữ liệu hợp lệ. Dùng chế
+        // độ streaming, vẫn chỉ nhận Exact khi StreamEnd và đã đọc hết input.
         let status = decoder
             .decompress(
                 &input[input_offset..],
                 &mut block,
-                flate2::FlushDecompress::Finish,
+                flate2::FlushDecompress::None,
             )
             .ok()?;
         let consumed = (decoder.total_in() - input_before) as usize;
