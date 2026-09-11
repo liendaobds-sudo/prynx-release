@@ -1,0 +1,1997 @@
+{
+  "scope": "native-session-only; excludes UI, IPC, PNG encode, OS-cold and HTTP admission",
+  "utc_started": "2026-09-11T15:38:33Z",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+    "logical_cpu": 16,
+    "memory_mib_start": [
+      32527.9140625,
+      15769.1328125
+    ],
+    "memory_mib_end": [
+      32527.9140625,
+      16370.8984375
+    ]
+  },
+  "native": {
+    "path": "D:\\pdfcompare\\backend\\venv\\Lib\\site-packages\\pdfcompare_native\\pdfcompare_native.cp311-win_amd64.pyd",
+    "sha256": "7747dd5a15e05995f8951591131e71631ae99365707c759124954d50d8a36677",
+    "build_identity": "3c4741173d730385e553958d35f749c47b65d4cb853359d78ab991cc4deffbfb",
+    "source_revision": "5d4e7feca5aefbacbc621aba0857f996512c9eb3",
+    "source_dirty": true,
+    "build_profile": "release"
+  },
+  "source_hashes_before": {
+    "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+    "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf": "d68eddc487aa394b3556a2b0c72bce89ddc4d55fc938d90e02b3ebe0a230985a"
+  },
+  "production_hashes_before": {
+    "D:\\pdfcompare\\print_engine\\src\\pdf.rs": "3bddfb463f244fe59cd73fe0f53e4bb1795724da62e8f7779be72e5830df45fd",
+    "D:\\pdfcompare\\print_engine\\src\\content\\interp.rs": "05b767d99fb7f7393fff0ac1b810253588b6577c0036064ce16341c7e4e0cbe4",
+    "D:\\pdfcompare\\print_engine\\src\\session.rs": "2824049ffc8d5af8caeff689b0eced58eec3a0dafa4e2a8d2c6b33f4e95ea869",
+    "D:\\pdfcompare\\print_engine\\src\\page.rs": "a3b6e9522acca0df12161c339ae4f25d5ad6d96cb5df247cfdf670a8277d6e24",
+    "D:\\pdfcompare\\backend\\app\\workers\\sticker_engine.py": "34100956ada6b80da2a31579b41fe95c4bb0fc3880066581bc4bea7f9a242cf8",
+    "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs": "9f1ede0b0cea8b804225a326af784ea77cae81fab666fff7c9c0a7112fb1970c",
+    "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\useTileRenderer.ts": "201ce15f8b217612ba028d9b824b8f40d4c71ba1111bbbe6ca278174fb072ec2"
+  },
+  "config": {
+    "dpi": 96,
+    "profile": "fogra39",
+    "intent": 1,
+    "simulate_overprint": false,
+    "optional_content_usage": "view",
+    "render_annotations": true,
+    "cache_budget": "facade hardware default",
+    "render_budget": "facade hardware default"
+  },
+  "documents": {
+    "source": {
+      "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+      "bytes": 18059736,
+      "page_info": [
+        {
+          "page": 1,
+          "top_Do": 8,
+          "MediaBox": [
+            0.0,
+            0.0,
+            748.346,
+            561.26
+          ],
+          "forms": [
+            {
+              "name": "/Fm0",
+              "id": [
+                23,
+                0
+              ],
+              "decoded_bytes": 72
+            },
+            {
+              "name": "/Fm1",
+              "id": [
+                24,
+                0
+              ],
+              "decoded_bytes": 256
+            },
+            {
+              "name": "/Fm2",
+              "id": [
+                25,
+                0
+              ],
+              "decoded_bytes": 254
+            },
+            {
+              "name": "/Fm3",
+              "id": [
+                26,
+                0
+              ],
+              "decoded_bytes": 247
+            },
+            {
+              "name": "/Fm4",
+              "id": [
+                27,
+                0
+              ],
+              "decoded_bytes": 250
+            },
+            {
+              "name": "/Fm5",
+              "id": [
+                28,
+                0
+              ],
+              "decoded_bytes": 389
+            },
+            {
+              "name": "/Fm6",
+              "id": [
+                29,
+                0
+              ],
+              "decoded_bytes": 74
+            },
+            {
+              "name": "/Fm7",
+              "id": [
+                30,
+                0
+              ],
+              "decoded_bytes": 255
+            }
+          ]
+        },
+        {
+          "page": 2,
+          "top_Do": 34,
+          "MediaBox": [
+            0.0,
+            0.0,
+            748.346,
+            561.26
+          ],
+          "forms": [
+            {
+              "name": "/Fm0",
+              "id": [
+                520,
+                0
+              ],
+              "decoded_bytes": 255
+            },
+            {
+              "name": "/Fm1",
+              "id": [
+                521,
+                0
+              ],
+              "decoded_bytes": 304
+            },
+            {
+              "name": "/Fm10",
+              "id": [
+                522,
+                0
+              ],
+              "decoded_bytes": 27262
+            },
+            {
+              "name": "/Fm11",
+              "id": [
+                523,
+                0
+              ],
+              "decoded_bytes": 26482
+            },
+            {
+              "name": "/Fm12",
+              "id": [
+                524,
+                0
+              ],
+              "decoded_bytes": 25806
+            },
+            {
+              "name": "/Fm13",
+              "id": [
+                525,
+                0
+              ],
+              "decoded_bytes": 25905
+            },
+            {
+              "name": "/Fm14",
+              "id": [
+                526,
+                0
+              ],
+              "decoded_bytes": 25275
+            },
+            {
+              "name": "/Fm15",
+              "id": [
+                527,
+                0
+              ],
+              "decoded_bytes": 4082
+            },
+            {
+              "name": "/Fm16",
+              "id": [
+                528,
+                0
+              ],
+              "decoded_bytes": 4085
+            },
+            {
+              "name": "/Fm17",
+              "id": [
+                529,
+                0
+              ],
+              "decoded_bytes": 3802
+            },
+            {
+              "name": "/Fm18",
+              "id": [
+                530,
+                0
+              ],
+              "decoded_bytes": 3439
+            },
+            {
+              "name": "/Fm19",
+              "id": [
+                531,
+                0
+              ],
+              "decoded_bytes": 13528
+            },
+            {
+              "name": "/Fm2",
+              "id": [
+                532,
+                0
+              ],
+              "decoded_bytes": 256
+            },
+            {
+              "name": "/Fm20",
+              "id": [
+                533,
+                0
+              ],
+              "decoded_bytes": 14164
+            },
+            {
+              "name": "/Fm21",
+              "id": [
+                534,
+                0
+              ],
+              "decoded_bytes": 14202
+            },
+            {
+              "name": "/Fm22",
+              "id": [
+                535,
+                0
+              ],
+              "decoded_bytes": 14194
+            },
+            {
+              "name": "/Fm23",
+              "id": [
+                536,
+                0
+              ],
+              "decoded_bytes": 13612
+            },
+            {
+              "name": "/Fm24",
+              "id": [
+                537,
+                0
+              ],
+              "decoded_bytes": 3242
+            },
+            {
+              "name": "/Fm25",
+              "id": [
+                538,
+                0
+              ],
+              "decoded_bytes": 463
+            },
+            {
+              "name": "/Fm26",
+              "id": [
+                539,
+                0
+              ],
+              "decoded_bytes": 463
+            },
+            {
+              "name": "/Fm27",
+              "id": [
+                540,
+                0
+              ],
+              "decoded_bytes": 563
+            },
+            {
+              "name": "/Fm28",
+              "id": [
+                541,
+                0
+              ],
+              "decoded_bytes": 465
+            },
+            {
+              "name": "/Fm29",
+              "id": [
+                542,
+                0
+              ],
+              "decoded_bytes": 562
+            },
+            {
+              "name": "/Fm3",
+              "id": [
+                543,
+                0
+              ],
+              "decoded_bytes": 26218
+            },
+            {
+              "name": "/Fm30",
+              "id": [
+                544,
+                0
+              ],
+              "decoded_bytes": 461
+            },
+            {
+              "name": "/Fm31",
+              "id": [
+                545,
+                0
+              ],
+              "decoded_bytes": 455
+            },
+            {
+              "name": "/Fm4",
+              "id": [
+                546,
+                0
+              ],
+              "decoded_bytes": 27363
+            },
+            {
+              "name": "/Fm5",
+              "id": [
+                547,
+                0
+              ],
+              "decoded_bytes": 25245
+            },
+            {
+              "name": "/Fm6",
+              "id": [
+                548,
+                0
+              ],
+              "decoded_bytes": 27164
+            },
+            {
+              "name": "/Fm7",
+              "id": [
+                549,
+                0
+              ],
+              "decoded_bytes": 26145
+            },
+            {
+              "name": "/Fm8",
+              "id": [
+                550,
+                0
+              ],
+              "decoded_bytes": 309
+            },
+            {
+              "name": "/Fm9",
+              "id": [
+                551,
+                0
+              ],
+              "decoded_bytes": 27232
+            }
+          ]
+        },
+        {
+          "page": 3,
+          "top_Do": 35,
+          "MediaBox": [
+            0.0,
+            0.0,
+            888.544,
+            712.968
+          ],
+          "forms": [
+            {
+              "name": "/Fm0",
+              "id": [
+                1022,
+                0
+              ],
+              "decoded_bytes": 252
+            },
+            {
+              "name": "/Fm1",
+              "id": [
+                1023,
+                0
+              ],
+              "decoded_bytes": 256
+            },
+            {
+              "name": "/Fm10",
+              "id": [
+                1024,
+                0
+              ],
+              "decoded_bytes": 27177
+            },
+            {
+              "name": "/Fm11",
+              "id": [
+                1025,
+                0
+              ],
+              "decoded_bytes": 314
+            },
+            {
+              "name": "/Fm12",
+              "id": [
+                1026,
+                0
+              ],
+              "decoded_bytes": 26533
+            },
+            {
+              "name": "/Fm13",
+              "id": [
+                1027,
+                0
+              ],
+              "decoded_bytes": 25993
+            },
+            {
+              "name": "/Fm14",
+              "id": [
+                1028,
+                0
+              ],
+              "decoded_bytes": 25999
+            },
+            {
+              "name": "/Fm15",
+              "id": [
+                1029,
+                0
+              ],
+              "decoded_bytes": 26139
+            },
+            {
+              "name": "/Fm16",
+              "id": [
+                1030,
+                0
+              ],
+              "decoded_bytes": 4120
+            },
+            {
+              "name": "/Fm17",
+              "id": [
+                1031,
+                0
+              ],
+              "decoded_bytes": 4111
+            },
+            {
+              "name": "/Fm18",
+              "id": [
+                1032,
+                0
+              ],
+              "decoded_bytes": 4047
+            },
+            {
+              "name": "/Fm19",
+              "id": [
+                1033,
+                0
+              ],
+              "decoded_bytes": 3433
+            },
+            {
+              "name": "/Fm2",
+              "id": [
+                1034,
+                0
+              ],
+              "decoded_bytes": 308
+            },
+            {
+              "name": "/Fm20",
+              "id": [
+                1035,
+                0
+              ],
+              "decoded_bytes": 13669
+            },
+            {
+              "name": "/Fm21",
+              "id": [
+                1036,
+                0
+              ],
+              "decoded_bytes": 14195
+            },
+            {
+              "name": "/Fm22",
+              "id": [
+                1037,
+                0
+              ],
+              "decoded_bytes": 14168
+            },
+            {
+              "name": "/Fm23",
+              "id": [
+                1038,
+                0
+              ],
+              "decoded_bytes": 14196
+            },
+            {
+              "name": "/Fm24",
+              "id": [
+                1039,
+                0
+              ],
+              "decoded_bytes": 13673
+            },
+            {
+              "name": "/Fm25",
+              "id": [
+                1040,
+                0
+              ],
+              "decoded_bytes": 4323
+            },
+            {
+              "name": "/Fm26",
+              "id": [
+                1041,
+                0
+              ],
+              "decoded_bytes": 459
+            },
+            {
+              "name": "/Fm27",
+              "id": [
+                1042,
+                0
+              ],
+              "decoded_bytes": 462
+            },
+            {
+              "name": "/Fm28",
+              "id": [
+                1043,
+                0
+              ],
+              "decoded_bytes": 557
+            },
+            {
+              "name": "/Fm29",
+              "id": [
+                1044,
+                0
+              ],
+              "decoded_bytes": 462
+            },
+            {
+              "name": "/Fm3",
+              "id": [
+                1045,
+                0
+              ],
+              "decoded_bytes": 26467
+            },
+            {
+              "name": "/Fm30",
+              "id": [
+                1046,
+                0
+              ],
+              "decoded_bytes": 564
+            },
+            {
+              "name": "/Fm31",
+              "id": [
+                1047,
+                0
+              ],
+              "decoded_bytes": 461
+            },
+            {
+              "name": "/Fm32",
+              "id": [
+                1048,
+                0
+              ],
+              "decoded_bytes": 459
+            },
+            {
+              "name": "/Fm4",
+              "id": [
+                1049,
+                0
+              ],
+              "decoded_bytes": 27178
+            },
+            {
+              "name": "/Fm5",
+              "id": [
+                1050,
+                0
+              ],
+              "decoded_bytes": 25391
+            },
+            {
+              "name": "/Fm6",
+              "id": [
+                1051,
+                0
+              ],
+              "decoded_bytes": 27198
+            },
+            {
+              "name": "/Fm7",
+              "id": [
+                1052,
+                0
+              ],
+              "decoded_bytes": 27426
+            },
+            {
+              "name": "/Fm8",
+              "id": [
+                1053,
+                0
+              ],
+              "decoded_bytes": 26217
+            },
+            {
+              "name": "/Fm9",
+              "id": [
+                1054,
+                0
+              ],
+              "decoded_bytes": 27225
+            }
+          ]
+        },
+        {
+          "page": 4,
+          "top_Do": 10,
+          "MediaBox": [
+            0.0,
+            0.0,
+            748.346,
+            561.26
+          ],
+          "forms": [
+            {
+              "name": "/Fm0",
+              "id": [
+                1064,
+                0
+              ],
+              "decoded_bytes": 75
+            },
+            {
+              "name": "/Fm1",
+              "id": [
+                1065,
+                0
+              ],
+              "decoded_bytes": 253
+            },
+            {
+              "name": "/Fm2",
+              "id": [
+                1066,
+                0
+              ],
+              "decoded_bytes": 248
+            },
+            {
+              "name": "/Fm3",
+              "id": [
+                1067,
+                0
+              ],
+              "decoded_bytes": 251
+            },
+            {
+              "name": "/Fm4",
+              "id": [
+                23,
+                0
+              ],
+              "decoded_bytes": 72
+            },
+            {
+              "name": "/Fm5",
+              "id": [
+                1068,
+                0
+              ],
+              "decoded_bytes": 254
+            },
+            {
+              "name": "/Fm6",
+              "id": [
+                1069,
+                0
+              ],
+              "decoded_bytes": 254
+            },
+            {
+              "name": "/Fm7",
+              "id": [
+                1070,
+                0
+              ],
+              "decoded_bytes": 247
+            },
+            {
+              "name": "/Fm8",
+              "id": [
+                1071,
+                0
+              ],
+              "decoded_bytes": 251
+            },
+            {
+              "name": "/Fm9",
+              "id": [
+                1072,
+                0
+              ],
+              "decoded_bytes": 389
+            }
+          ]
+        }
+      ],
+      "session_open_wall_ms": 147.1668000012869,
+      "session": {
+        "engine": "ppe",
+        "session_version": "0.1.0/session-1",
+        "document_identity": "68c648f83971a219",
+        "session_generation": 1,
+        "page_count": 4,
+        "valid": true,
+        "cache": {
+          "image_hits": 0,
+          "image_misses": 0,
+          "image_evictions": 0,
+          "page_hits": 0,
+          "page_misses": 0,
+          "bytes": 0,
+          "budget_bytes": 2061500416
+        },
+        "open_timings_ms": {
+          "total": 31.9998,
+          "open": 0.14909999999999998,
+          "parse": 30.0435,
+          "resource": 0.14809999999999998,
+          "color": 1.6533,
+          "encode": 0.0
+        },
+        "session_available": true
+      }
+    },
+    "output": {
+      "path": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf",
+      "bytes": 17869708,
+      "page_info": [
+        {
+          "page": 1,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/AWu9YyHtWuv1IKT_70K2hA",
+              "id": [
+                12,
+                0
+              ],
+              "decoded_bytes": 16145
+            }
+          ]
+        },
+        {
+          "page": 2,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/HjpRPzPjkIiRtkq7v8K_yw",
+              "id": [
+                16,
+                0
+              ],
+              "decoded_bytes": 354115
+            }
+          ]
+        },
+        {
+          "page": 3,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            899.8826,
+            724.3066
+          ],
+          "forms": [
+            {
+              "name": "/Ei2XmIlFM2i6YQWJEbTPGA",
+              "id": [
+                20,
+                0
+              ],
+              "decoded_bytes": 356135
+            }
+          ]
+        },
+        {
+          "page": 4,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/pr-puSv5Q6gEa0femwsNhw",
+              "id": [
+                24,
+                0
+              ],
+              "decoded_bytes": 16105
+            }
+          ]
+        }
+      ],
+      "session_open_wall_ms": 32.196900006965734,
+      "session": {
+        "engine": "ppe",
+        "session_version": "0.1.0/session-1",
+        "document_identity": "14257f928b4b478c",
+        "session_generation": 1,
+        "page_count": 4,
+        "valid": true,
+        "cache": {
+          "image_hits": 0,
+          "image_misses": 0,
+          "image_evictions": 0,
+          "page_hits": 0,
+          "page_misses": 0,
+          "bytes": 0,
+          "budget_bytes": 2057306112
+        },
+        "open_timings_ms": {
+          "total": 31.6684,
+          "open": 0.5558,
+          "parse": 29.521700000000003,
+          "resource": 0.0266,
+          "color": 1.5621999999999998,
+          "encode": 0.0
+        },
+        "session_available": true
+      }
+    }
+  },
+  "samples": [
+    {
+      "document": "source",
+      "page": 1,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 581.8605999957072,
+      "cpu_ms": 1046.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.28669999999999995,
+        "raster": 486.6071,
+        "color": 35.203900000000004,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 1,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "90adbfbb88c15cef1ade84bab3bc5c2197a12f354e337be5e6315b2caefbc2fa",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 1,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 1174.602999992203,
+      "cpu_ms": 1828.125,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.39330000000000004,
+        "raster": 1135.2297,
+        "color": 36.5246,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 1,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "50fefb8a7b51f5b1fc9dbfda6c0d3a1c4414c13e7f6374ea6bff0cd2e2fc7ce7",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 1,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 921.2244000082137,
+      "cpu_ms": 1687.5,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.383,
+        "raster": 881.7665999999999,
+        "color": 36.5084,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 2,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 2,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "50fefb8a7b51f5b1fc9dbfda6c0d3a1c4414c13e7f6374ea6bff0cd2e2fc7ce7",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 1,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 266.49409999663476,
+      "cpu_ms": 1046.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.18450000000000003,
+        "raster": 228.61190000000002,
+        "color": 35.416799999999995,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 2,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 2,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "90adbfbb88c15cef1ade84bab3bc5c2197a12f354e337be5e6315b2caefbc2fa",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 1,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 275.898199994117,
+      "cpu_ms": 546.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1496,
+        "raster": 237.8048,
+        "color": 35.2609,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 4,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 3,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "90adbfbb88c15cef1ade84bab3bc5c2197a12f354e337be5e6315b2caefbc2fa",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 1,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 923.9436999923782,
+      "cpu_ms": 1453.125,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5368999999999999,
+        "raster": 884.1613,
+        "color": 36.8135,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 4,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 3,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "50fefb8a7b51f5b1fc9dbfda6c0d3a1c4414c13e7f6374ea6bff0cd2e2fc7ce7",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 1,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 978.0355999973835,
+      "cpu_ms": 1671.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4802,
+        "raster": 936.4072,
+        "color": 38.707699999999996,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 4,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "50fefb8a7b51f5b1fc9dbfda6c0d3a1c4414c13e7f6374ea6bff0cd2e2fc7ce7",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 1,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 281.48470001178794,
+      "cpu_ms": 812.5,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1652,
+        "raster": 243.50740000000002,
+        "color": 36.0374,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 4,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "90adbfbb88c15cef1ade84bab3bc5c2197a12f354e337be5e6315b2caefbc2fa",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 2,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 760.1952999975765,
+      "cpu_ms": 1031.25,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1596,
+        "raster": 724.4923,
+        "color": 34.020599999999995,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 5,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "edc6a4436907b32bbfe6d3f12205307c0270669aae3cd983025ec1673629950c",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 5344.148999996833,
+      "cpu_ms": 5640.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4462,
+        "raster": 5308.6259,
+        "color": 32.540800000000004,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 5,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 4288.494399996125,
+      "cpu_ms": 4500.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4948,
+        "raster": 4252.9830999999995,
+        "color": 32.7847,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 6,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 2,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 709.9167999986093,
+      "cpu_ms": 1046.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.22249999999999998,
+        "raster": 675.0527,
+        "color": 33.023700000000005,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 6,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "edc6a4436907b32bbfe6d3f12205307c0270669aae3cd983025ec1673629950c",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 2,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 712.0667999988655,
+      "cpu_ms": 1015.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2127,
+        "raster": 677.4552,
+        "color": 32.4807,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 7,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "edc6a4436907b32bbfe6d3f12205307c0270669aae3cd983025ec1673629950c",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 6519.09169999999,
+      "cpu_ms": 6265.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5159,
+        "raster": 6421.3809,
+        "color": 94.6673,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 7,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 4813.1553000130225,
+      "cpu_ms": 5031.25,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4957,
+        "raster": 4776.330800000001,
+        "color": 33.685,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 8,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 2,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 701.4501000085147,
+      "cpu_ms": 1015.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2367,
+        "raster": 667.0233,
+        "color": 31.939000000000004,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 8,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "edc6a4436907b32bbfe6d3f12205307c0270669aae3cd983025ec1673629950c",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 3,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 1159.855999998399,
+      "cpu_ms": 1562.5,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1459,
+        "raster": 1080.2549999999999,
+        "color": 76.6544,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 9,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 1185,
+      "height": 951,
+      "rgb_sha256": "5b2d23c5ade221aea41ccffe2d9e98b5fd4e72384ffff882fde8da3a211cf182",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 9780.44349999982,
+      "cpu_ms": 9828.125,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6217,
+        "raster": 9707.6425,
+        "color": 68.8333,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 9,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 7771.167400002014,
+      "cpu_ms": 8140.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4691,
+        "raster": 7709.1466,
+        "color": 57.5672,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 10,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 3,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1312.171200013836,
+      "cpu_ms": 1875.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2156,
+        "raster": 1258.9570999999999,
+        "color": 49.686099999999996,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 10,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 1185,
+      "height": 951,
+      "rgb_sha256": "5b2d23c5ade221aea41ccffe2d9e98b5fd4e72384ffff882fde8da3a211cf182",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 3,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1261.4104000094812,
+      "cpu_ms": 1671.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2872,
+        "raster": 1201.6064,
+        "color": 55.7794,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 11,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 1185,
+      "height": 951,
+      "rgb_sha256": "5b2d23c5ade221aea41ccffe2d9e98b5fd4e72384ffff882fde8da3a211cf182",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 7904.94540000509,
+      "cpu_ms": 8250.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.446,
+        "raster": 7851.5382,
+        "color": 49.8321,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 11,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 8124.342199997045,
+      "cpu_ms": 8437.5,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4845,
+        "raster": 8075.1792000000005,
+        "color": 45.455000000000005,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 12,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 3,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1135.5828999949154,
+      "cpu_ms": 1593.75,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1999,
+        "raster": 1082.6772,
+        "color": 49.3076,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 6,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 12,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 1185,
+      "height": 951,
+      "rgb_sha256": "5b2d23c5ade221aea41ccffe2d9e98b5fd4e72384ffff882fde8da3a211cf182",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 4,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 292.3968000104651,
+      "cpu_ms": 968.75,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.19790000000000002,
+        "raster": 254.30419999999998,
+        "color": 35.4351,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 8,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 13,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "d9b9f9b971abeb70dd1a6800c85541785fbe366824f3e099e40a291970193153",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 4,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 1037.876899994444,
+      "cpu_ms": 1343.75,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4152,
+        "raster": 996.452,
+        "color": 38.6493,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 8,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 13,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "f37aa5aa7947dc88d34aceb7eddc513018bf16867eb09f3fb17aa963d66dd14b",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 4,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1045.4049999971176,
+      "cpu_ms": 1796.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.3361,
+        "raster": 1004.1822000000001,
+        "color": 37.585899999999995,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 10,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 14,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "f37aa5aa7947dc88d34aceb7eddc513018bf16867eb09f3fb17aa963d66dd14b",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 4,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 290.4449000052409,
+      "cpu_ms": 640.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1729,
+        "raster": 253.57150000000001,
+        "color": 34.8989,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 10,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 14,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "d9b9f9b971abeb70dd1a6800c85541785fbe366824f3e099e40a291970193153",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 4,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 283.25259999837726,
+      "cpu_ms": 750.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1607,
+        "raster": 245.3235,
+        "color": 35.8851,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 12,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 15,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "d9b9f9b971abeb70dd1a6800c85541785fbe366824f3e099e40a291970193153",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 4,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1096.6403000056744,
+      "cpu_ms": 1640.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.44539999999999996,
+        "raster": 1055.5711999999999,
+        "color": 38.3126,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 12,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 15,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "f37aa5aa7947dc88d34aceb7eddc513018bf16867eb09f3fb17aa963d66dd14b",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 4,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1045.046100000036,
+      "cpu_ms": 1375.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4931,
+        "raster": 1005.0400999999999,
+        "color": 37.189899999999994,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 14,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 16,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2057306112
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "f37aa5aa7947dc88d34aceb7eddc513018bf16867eb09f3fb17aa963d66dd14b",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "source",
+      "page": 4,
+      "repeat": 3,
+      "state": "warm-resource-reraster",
+      "wall_ms": 290.7734000036726,
+      "cpu_ms": 1078.125,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.20149999999999998,
+        "raster": 252.0172,
+        "color": 36.684599999999996,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 14,
+        "image_misses": 2,
+        "image_evictions": 0,
+        "page_hits": 16,
+        "page_misses": 0,
+        "bytes": 98075424,
+        "budget_bytes": 2061500416
+      },
+      "width": 998,
+      "height": 748,
+      "rgb_sha256": "d9b9f9b971abeb70dd1a6800c85541785fbe366824f3e099e40a291970193153",
+      "ink_unsound": false,
+      "degraded": false
+    }
+  ],
+  "summary": [
+    {
+      "document": "source",
+      "page": 1,
+      "first_ms": 581.8605999957072,
+      "warm_n": 3,
+      "warm_median_ms": 275.898199994117,
+      "warm_range_ms": [
+        266.49409999663476,
+        281.48470001178794
+      ],
+      "warm_raster_median_ms": 237.8048,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "source",
+      "page": 2,
+      "first_ms": 760.1952999975765,
+      "warm_n": 3,
+      "warm_median_ms": 709.9167999986093,
+      "warm_range_ms": [
+        701.4501000085147,
+        712.0667999988655
+      ],
+      "warm_raster_median_ms": 675.0527,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "source",
+      "page": 3,
+      "first_ms": 1159.855999998399,
+      "warm_n": 3,
+      "warm_median_ms": 1261.4104000094812,
+      "warm_range_ms": [
+        1135.5828999949154,
+        1312.171200013836
+      ],
+      "warm_raster_median_ms": 1201.6064,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "source",
+      "page": 4,
+      "first_ms": 292.3968000104651,
+      "warm_n": 3,
+      "warm_median_ms": 290.4449000052409,
+      "warm_range_ms": [
+        283.25259999837726,
+        290.7734000036726
+      ],
+      "warm_raster_median_ms": 252.0172,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "output",
+      "page": 1,
+      "first_ms": 1174.602999992203,
+      "warm_n": 3,
+      "warm_median_ms": 923.9436999923782,
+      "warm_range_ms": [
+        921.2244000082137,
+        978.0355999973835
+      ],
+      "warm_raster_median_ms": 884.1613,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "first_ms": 5344.148999996833,
+      "warm_n": 3,
+      "warm_median_ms": 4813.1553000130225,
+      "warm_range_ms": [
+        4288.494399996125,
+        6519.09169999999
+      ],
+      "warm_raster_median_ms": 4776.330800000001,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "first_ms": 9780.44349999982,
+      "warm_n": 3,
+      "warm_median_ms": 7904.94540000509,
+      "warm_range_ms": [
+        7771.167400002014,
+        8124.342199997045
+      ],
+      "warm_raster_median_ms": 7851.5382,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "output",
+      "page": 4,
+      "first_ms": 1037.876899994444,
+      "warm_n": 3,
+      "warm_median_ms": 1045.4049999971176,
+      "warm_range_ms": [
+        1045.046100000036,
+        1096.6403000056744
+      ],
+      "warm_raster_median_ms": 1005.0400999999999,
+      "stable_rgb": true,
+      "clean": true
+    }
+  ],
+  "source_hashes_after": {
+    "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+    "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf": "d68eddc487aa394b3556a2b0c72bce89ddc4d55fc938d90e02b3ebe0a230985a"
+  },
+  "production_hashes_after": {
+    "D:\\pdfcompare\\print_engine\\src\\pdf.rs": "3bddfb463f244fe59cd73fe0f53e4bb1795724da62e8f7779be72e5830df45fd",
+    "D:\\pdfcompare\\print_engine\\src\\content\\interp.rs": "05b767d99fb7f7393fff0ac1b810253588b6577c0036064ce16341c7e4e0cbe4",
+    "D:\\pdfcompare\\print_engine\\src\\session.rs": "2824049ffc8d5af8caeff689b0eced58eec3a0dafa4e2a8d2c6b33f4e95ea869",
+    "D:\\pdfcompare\\print_engine\\src\\page.rs": "a3b6e9522acca0df12161c339ae4f25d5ad6d96cb5df247cfdf670a8277d6e24",
+    "D:\\pdfcompare\\backend\\app\\workers\\sticker_engine.py": "34100956ada6b80da2a31579b41fe95c4bb0fc3880066581bc4bea7f9a242cf8",
+    "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs": "9f1ede0b0cea8b804225a326af784ea77cae81fab666fff7c9c0a7112fb1970c",
+    "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\useTileRenderer.ts": "201ce15f8b217612ba028d9b824b8f40d4c71ba1111bbbe6ca278174fb072ec2"
+  }
+}

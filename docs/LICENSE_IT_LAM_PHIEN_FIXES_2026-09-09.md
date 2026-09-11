@@ -26,13 +26,13 @@ Các lô chức năng được chia theo phạm vi nhỏ; không đổi server, 
 - Full frontend cuối lượt: **311 test files, 3525 passed, 2 skipped**. Hai hồi quy phát hiện trong full suite đã sửa: thiếu 4 khóa i18n vi/en và collector receipt đọc `headers` trên Response giả của test upload.
 - Backend license/job receipt: **129 passed**, 2 cảnh báo deprecation; gồm token/route coverage và Compare/N-Up/VDP receipt path.
 - PrintSolutions Edge/migration contract: **104 passed** trên 6 suite, chạy fixture VM/local không mạng.
-- Native wheel build/import smoke: `maturin build --release` đã tạo wheel CPython 3.11; cài vào thư mục import tạm và `import pdfcompare_native` đạt. `dieline_engine_status` trả trạng thái plaintext dev/CI; token giả bị từ chối `Malformed license token`. Không thay extension đang bị backend dev giữ khóa.
+- Native wheel build/import smoke: `maturin build --release` đã tạo wheel CPython 3.11; sau khi dừng đúng các tiến trình PrynX đang giữ DLL, `maturin develop --release` đã cài thành công vào `backend/venv`. Import được xác nhận từ site-packages của venv thật; `dieline_engine_status` trả trạng thái plaintext dev/CI; token giả bị từ chối `Malformed license token`.
 - UI cooldown có regression **đỏ trước/xanh sau**; suite riêng 12/12.
 - Typecheck Windows và ESLint 4 file frontend sửa: đạt. `git diff --check` đạt; Cargo.lock không đổi.
 
 ## Giới hạn và phần chưa làm
 
-- Mức đạt **source + unit/integration mock + native wheel import smoke**, chưa installer/runtime. `maturin develop --release` build được nhưng pip không thay extension trong `backend/venv` vì Windows báo `Access denied` trên `pdfcompare_native-0.1.0.dist-info/direct_url.json` đang bị tiến trình backend giữ. Không restart hoặc kill dev app của người dùng, chưa package/cài lại; app đang mở có thể còn dùng native cũ cho đến lần người dùng chủ động dừng backend rồi rebuild.
+- Mức đạt **source + unit/integration mock + native extension cài trong venv dev**, chưa installer/runtime nghiệm thu. Đã dừng các tiến trình PrynX giữ DLL và cài lại native thành công; không đụng tiến trình hệ thống/ứng dụng ngoài phạm vi. Chưa package/cài installer mới và chưa chạy trên profile khách hàng sạch.
 - Typecheck và build frontend đã xanh ở lượt cuối (các lỗi cú pháp WIP của tác vụ khác đã được xử lý trong lúc làm). Lint toàn repo còn 2 lỗi ngoài phạm vi: `LayerPanel.tsx` biến `setHiddenOcgLayerIds` không dùng, `api.mergeManifest.test.ts` biến `init` không dùng; ESLint các file license/API sửa trong lô này xanh.
 - Coordinator mới đã có `commit_license_renewal`: owner/window/attempt/key/epoch/TTL được kiểm trước verify + persist + binding trong mutex chung; stale receipt không ghi credential. Client gửi AbortSignal khi timeout/hủy network. Giao dịch hai slot DPAPI có rollback khi lỗi đã bắt và giữ backup nếu rollback lỗi; **không** tuyên bố atomic khi mất điện/crash giữa hai rename, cũng không biến các IPC legacy thành protocol transaction mới.
 - Legacy V2 drain có network trong đoạn recovery vẫn dùng barrier như trước; không gọi nó là mọi luồng renewal hoàn toàn nonblocking.

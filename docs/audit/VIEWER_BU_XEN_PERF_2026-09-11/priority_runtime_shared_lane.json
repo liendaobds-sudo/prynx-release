@@ -1,0 +1,85 @@
+{
+  "background_lanes": 0,
+  "pdf_sha256": "d68eddc487aa394b3556a2b0c72bce89ddc4d55fc938d90e02b3ebe0a230985a",
+  "probe": "PPEBX.C-parent-manager-priority",
+  "rows": [
+    {
+      "active_finished_ms": 7017,
+      "active_lane": "Interactive",
+      "active_page": 1,
+      "active_parent_wall_ms": 6969,
+      "active_png_sha256": "fc2a8d47fe46716d5c0c63949198d636d6d61cbbbe68591ba3def5562944ecdf",
+      "active_priority": 10,
+      "active_registered_ms": 5031,
+      "active_submitted_ms": 46,
+      "active_worker_pid": 33212,
+      "active_worker_timing": {
+        "cache_ms": 0,
+        "encode_ms": 33,
+        "queue_ms": 0,
+        "render_ms": 1949,
+        "total_ms": 1985,
+        "wait_ms": 0
+      },
+      "background_preemptions": 0,
+      "dpi": 96.0,
+      "prefetch_finished_ms": 5030,
+      "prefetch_lane": "Interactive",
+      "prefetch_page": 3,
+      "prefetch_parent_wall_ms": 5030,
+      "prefetch_png_sha256": "44a044f0edac5b00ff5bc942ed4a5b8a1a932b22fb8ec1b646f429a1c9d43ce9",
+      "prefetch_priority": 20,
+      "prefetch_registered_ms": 46,
+      "prefetch_worker_pid": 33212,
+      "prefetch_worker_timing": {
+        "cache_ms": 0,
+        "encode_ms": 36,
+        "queue_ms": 0,
+        "render_ms": 4898,
+        "total_ms": 4984,
+        "wait_ms": 0
+      },
+      "sample": 0
+    },
+    {
+      "active_finished_ms": 1260,
+      "active_lane": "Interactive",
+      "active_page": 1,
+      "active_parent_wall_ms": 1258,
+      "active_png_sha256": "fc2a8d47fe46716d5c0c63949198d636d6d61cbbbe68591ba3def5562944ecdf",
+      "active_priority": 10,
+      "active_registered_ms": 44,
+      "active_submitted_ms": 1,
+      "active_worker_pid": 11956,
+      "active_worker_timing": {
+        "cache_ms": 0,
+        "encode_ms": 18,
+        "queue_ms": 0,
+        "render_ms": 1150,
+        "total_ms": 1218,
+        "wait_ms": 0
+      },
+      "background_preemptions": 1,
+      "dpi": 96.0,
+      "prefetch_finished_ms": 7102,
+      "prefetch_lane": "Interactive",
+      "prefetch_page": 3,
+      "prefetch_parent_wall_ms": 7101,
+      "prefetch_png_sha256": "44a044f0edac5b00ff5bc942ed4a5b8a1a932b22fb8ec1b646f429a1c9d43ce9",
+      "prefetch_priority": 100,
+      "prefetch_registered_ms": 1,
+      "prefetch_worker_pid": 33212,
+      "prefetch_worker_timing": {
+        "cache_ms": 0,
+        "encode_ms": 40,
+        "queue_ms": 0,
+        "render_ms": 5797,
+        "total_ms": 5841,
+        "wait_ms": 0
+      },
+      "sample": 0
+    }
+  ],
+  "samples_per_priority": 1,
+  "worker_sha256": "0648e48318b6d60fd74b9afb81dc7f583d039639be0c5305e16576b5d0d4dec8"
+}

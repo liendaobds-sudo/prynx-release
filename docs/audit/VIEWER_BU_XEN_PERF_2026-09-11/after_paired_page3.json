@@ -1,0 +1,1443 @@
+{
+  "pdf": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf",
+  "pdf_sha256": "d68eddc487aa394b3556a2b0c72bce89ddc4d55fc938d90e02b3ebe0a230985a",
+  "scope": "serial paired native sessions; excludes PNG/IPC/UI; shared machine",
+  "metadata": {
+    "before": {
+      "ready": true,
+      "build": "3c4741173d730385e553958d35f749c47b65d4cb853359d78ab991cc4deffbfb",
+      "library": "D:\\pdfcompare\\backend\\venv\\Lib\\site-packages\\pdfcompare_native\\pdfcompare_native.cp311-win_amd64.pyd",
+      "sha256": "7747dd5a15e05995f8951591131e71631ae99365707c759124954d50d8a36677",
+      "open": {
+        "engine": "ppe",
+        "session_version": "0.1.0/session-1",
+        "document_identity": "14257f928b4b478c",
+        "session_generation": 1,
+        "page_count": 4,
+        "valid": true,
+        "cache": {
+          "image_hits": 0,
+          "image_misses": 0,
+          "image_evictions": 0,
+          "page_hits": 0,
+          "page_misses": 0,
+          "bytes": 0,
+          "budget_bytes": 1998585856
+        },
+        "open_timings_ms": {
+          "total": 29.1814,
+          "open": 0.49129999999999996,
+          "parse": 27.0686,
+          "resource": 0.0431,
+          "color": 1.5752,
+          "encode": 0.0
+        },
+        "session_available": true
+      }
+    },
+    "after": {
+      "ready": true,
+      "build": "4246ef64eeaa650ce13003e4d02691418a0a1b402010cd944fbde554a20df6b2",
+      "library": "D:\\pdfcompare\\_tmp_ppe_probe\\native_perf_final\\pdfcompare_native\\pdfcompare_native.cp311-win_amd64.pyd",
+      "sha256": "d8bba8c060db7d68cc6f7eac7c6666502dc91a8bf7931f9acf33d1f04b618695",
+      "open": {
+        "engine": "ppe",
+        "session_version": "0.1.0/session-1",
+        "document_identity": "14257f928b4b478c",
+        "session_generation": 1,
+        "page_count": 4,
+        "valid": true,
+        "cache": {
+          "image_hits": 0,
+          "image_misses": 0,
+          "image_evictions": 0,
+          "form_hits": 0,
+          "form_misses": 0,
+          "form_evictions": 0,
+          "page_hits": 0,
+          "page_misses": 0,
+          "bytes": 0,
+          "budget_bytes": 1992294400
+        },
+        "open_timings_ms": {
+          "total": 29.7835,
+          "open": 0.4489,
+          "parse": 27.560100000000002,
+          "resource": 0.0491,
+          "color": 1.7193,
+          "encode": 0.0
+        },
+        "session_available": true
+      }
+    }
+  },
+  "samples": [
+    {
+      "wall_ms": 9134.12519999838,
+      "cpu_ms": 9328.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.54,
+        "raster": 8922.4344,
+        "color": 150.1025,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 1,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": -2,
+      "warmup": true
+    },
+    {
+      "wall_ms": 5798.696600002586,
+      "cpu_ms": 6078.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6711,
+        "raster": 5560.0739,
+        "color": 148.7094,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 272,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 1,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": -2,
+      "warmup": true
+    },
+    {
+      "wall_ms": 5871.404000004986,
+      "cpu_ms": 6093.75,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6344000000000001,
+        "raster": 5719.861,
+        "color": 147.0202,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 1072,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 2,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": -1,
+      "warmup": true
+    },
+    {
+      "wall_ms": 10749.516999989282,
+      "cpu_ms": 10890.625,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6039,
+        "raster": 10592.9053,
+        "color": 152.42680000000001,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 2,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": -1,
+      "warmup": true
+    },
+    {
+      "wall_ms": 10765.097199997399,
+      "cpu_ms": 10812.5,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6239,
+        "raster": 10605.962099999999,
+        "color": 153.9663,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 3,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 0,
+      "warmup": false
+    },
+    {
+      "wall_ms": 6015.746600009152,
+      "cpu_ms": 6203.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6602,
+        "raster": 5861.8068,
+        "color": 149.09459999999999,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 1872,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 3,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 0,
+      "warmup": false
+    },
+    {
+      "wall_ms": 5503.508099995088,
+      "cpu_ms": 5656.25,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.8406,
+        "raster": 5347.7615,
+        "color": 150.4602,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 2672,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 4,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 1,
+      "warmup": false
+    },
+    {
+      "wall_ms": 10827.335800000583,
+      "cpu_ms": 10843.75,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6674,
+        "raster": 10662.7307,
+        "color": 159.7923,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 4,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 1,
+      "warmup": false
+    },
+    {
+      "wall_ms": 10941.65459999931,
+      "cpu_ms": 10718.75,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.636,
+        "raster": 10786.857899999999,
+        "color": 150.2711,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 5,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 2,
+      "warmup": false
+    },
+    {
+      "wall_ms": 5807.9637000046205,
+      "cpu_ms": 6031.25,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6856,
+        "raster": 5651.4397,
+        "color": 150.4644,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 3472,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 5,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 2,
+      "warmup": false
+    },
+    {
+      "wall_ms": 5824.743300006958,
+      "cpu_ms": 6156.25,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6497999999999999,
+        "raster": 5674.3854,
+        "color": 145.7069,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 4272,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 6,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 3,
+      "warmup": false
+    },
+    {
+      "wall_ms": 10528.12429999176,
+      "cpu_ms": 10671.875,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6534000000000001,
+        "raster": 10368.0409,
+        "color": 155.0078,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 6,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 3,
+      "warmup": false
+    },
+    {
+      "wall_ms": 8067.816100010532,
+      "cpu_ms": 8453.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5918,
+        "raster": 8017.7588,
+        "color": 44.2406,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 7,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 4,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4000.6585999944946,
+      "cpu_ms": 4406.25,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4925,
+        "raster": 3945.8826,
+        "color": 51.1446,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 5072,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 7,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 4,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4818.215400009649,
+      "cpu_ms": 5078.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5514,
+        "raster": 4672.195000000001,
+        "color": 141.8835,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 5872,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 8,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 5,
+      "warmup": false
+    },
+    {
+      "wall_ms": 8935.954300002777,
+      "cpu_ms": 9203.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5731999999999999,
+        "raster": 8881.3496,
+        "color": 50.3288,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 8,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 5,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7671.410099996137,
+      "cpu_ms": 8000.0,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6072,
+        "raster": 7619.4476,
+        "color": 47.791,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 9,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 6,
+      "warmup": false
+    },
+    {
+      "wall_ms": 3997.6334999955725,
+      "cpu_ms": 4250.0,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5033000000000001,
+        "raster": 3931.6384,
+        "color": 62.4131,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 6672,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 9,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 6,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4092.627599995467,
+      "cpu_ms": 4562.5,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4711,
+        "raster": 4041.9716000000003,
+        "color": 46.7578,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 7472,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 10,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 7,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7395.7209999935,
+      "cpu_ms": 7765.625,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4547,
+        "raster": 7344.9932,
+        "color": 47.603899999999996,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 10,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 7,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7492.363800003659,
+      "cpu_ms": 7828.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.3907,
+        "raster": 7441.9848999999995,
+        "color": 46.8892,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 11,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 8,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4057.904299988877,
+      "cpu_ms": 4531.25,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.49269999999999997,
+        "raster": 4010.7365,
+        "color": 43.663599999999995,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 8272,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 11,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 8,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4069.9692999914987,
+      "cpu_ms": 4375.0,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.35790000000000005,
+        "raster": 4022.1112999999996,
+        "color": 44.341100000000004,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 9072,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 12,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 9,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7424.842399996123,
+      "cpu_ms": 7718.75,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.565,
+        "raster": 7376.921600000001,
+        "color": 44.0508,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 12,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 9,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7617.962800009991,
+      "cpu_ms": 8031.25,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5031,
+        "raster": 7567.6299,
+        "color": 47.0394,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 13,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 10,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4147.324200006551,
+      "cpu_ms": 4312.5,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.533,
+        "raster": 4016.4548,
+        "color": 127.02,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 9872,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 13,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 10,
+      "warmup": false
+    },
+    {
+      "wall_ms": 6122.866600009729,
+      "cpu_ms": 6390.625,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.7751,
+        "raster": 5969.6321,
+        "color": 148.0125,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 10672,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 14,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 11,
+      "warmup": false
+    },
+    {
+      "wall_ms": 8229.250600008527,
+      "cpu_ms": 8484.375,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4625,
+        "raster": 8181.485000000001,
+        "color": 43.5793,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 14,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 11,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7556.158300008974,
+      "cpu_ms": 7859.375,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5018,
+        "raster": 7497.6313,
+        "color": 54.5828,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 15,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 12,
+      "warmup": false
+    },
+    {
+      "wall_ms": 5538.911800002097,
+      "cpu_ms": 5843.75,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4874,
+        "raster": 5373.5797999999995,
+        "color": 161.0714,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 11472,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 15,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 12,
+      "warmup": false
+    },
+    {
+      "wall_ms": 6080.960399995092,
+      "cpu_ms": 6093.75,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6776,
+        "raster": 5915.6891,
+        "color": 160.5146,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 12272,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 16,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 13,
+      "warmup": false
+    },
+    {
+      "wall_ms": 10428.533700003754,
+      "cpu_ms": 10578.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6761,
+        "raster": 10278.6726,
+        "color": 145.1615,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 16,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 13,
+      "warmup": false
+    },
+    {
+      "wall_ms": 9759.158400003798,
+      "cpu_ms": 9812.5,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6893,
+        "raster": 9698.4446,
+        "color": 56.0767,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 17,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 14,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4069.673400008469,
+      "cpu_ms": 4562.5,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6582,
+        "raster": 4018.4075000000003,
+        "color": 46.5763,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 13072,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 17,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 14,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4442.613200008054,
+      "cpu_ms": 4687.5,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5719,
+        "raster": 4269.0101,
+        "color": 169.1766,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 13872,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 18,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 15,
+      "warmup": false
+    },
+    {
+      "wall_ms": 10541.476400001557,
+      "cpu_ms": 10500.0,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6206999999999999,
+        "raster": 10389.3396,
+        "color": 147.3615,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 18,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 15,
+      "warmup": false
+    },
+    {
+      "wall_ms": 12108.333700001822,
+      "cpu_ms": 11234.375,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6537000000000001,
+        "raster": 11923.826000000001,
+        "color": 179.94760000000002,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 19,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 16,
+      "warmup": false
+    },
+    {
+      "wall_ms": 6018.4847000055015,
+      "cpu_ms": 6203.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6891,
+        "raster": 5870.4418,
+        "color": 142.8166,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 14672,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 19,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 16,
+      "warmup": false
+    },
+    {
+      "wall_ms": 4961.304899989045,
+      "cpu_ms": 5328.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.48710000000000003,
+        "raster": 4904.9223,
+        "color": 52.280899999999995,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 15472,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 20,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 17,
+      "warmup": false
+    },
+    {
+      "wall_ms": 7527.911400000448,
+      "cpu_ms": 7890.625,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.5354,
+        "raster": 7478.7753999999995,
+        "color": 45.3458,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 20,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 17,
+      "warmup": false
+    },
+    {
+      "wall_ms": 8160.201200007577,
+      "cpu_ms": 8453.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.46549999999999997,
+        "raster": 7997.7104,
+        "color": 158.4694,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 21,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 18,
+      "warmup": false
+    },
+    {
+      "wall_ms": 5771.084200008772,
+      "cpu_ms": 5921.875,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6676,
+        "raster": 5623.5779,
+        "color": 143.0148,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 16272,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 21,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 18,
+      "warmup": false
+    },
+    {
+      "wall_ms": 5933.4623999893665,
+      "cpu_ms": 6203.125,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.7131000000000001,
+        "raster": 5782.7822,
+        "color": 146.2822,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "form_hits": 17072,
+        "form_misses": 528,
+        "form_evictions": 0,
+        "page_hits": 22,
+        "page_misses": 0,
+        "bytes": 22240935,
+        "budget_bytes": 1992294400
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "after",
+      "page": 3,
+      "sample": 19,
+      "warmup": false
+    },
+    {
+      "wall_ms": 10604.067599997506,
+      "cpu_ms": 10625.0,
+      "timings": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.6019000000000001,
+        "raster": 10448.398,
+        "color": 151.4481,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 22,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 1998585856
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "variant": "before",
+      "page": 3,
+      "sample": 19,
+      "warmup": false
+    }
+  ],
+  "summary": [
+    {
+      "page": 3,
+      "variant": "before",
+      "n": 20,
+      "median_ms": 8582.602450005652,
+      "p95_nearest_ms": 10941.65459999931,
+      "range_ms": [
+        7395.7209999935,
+        12108.333700001822
+      ]
+    },
+    {
+      "page": 3,
+      "variant": "after",
+      "n": 20,
+      "median_ms": 5232.4064999920665,
+      "p95_nearest_ms": 6080.960399995092,
+      "range_ms": [
+        3997.6334999955725,
+        6122.866600009729
+      ]
+    }
+  ],
+  "pdf_unchanged": true
+}

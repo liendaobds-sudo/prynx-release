@@ -1839,7 +1839,9 @@ if (-not $SkipNuitka) {
     # Fail fast before the expensive C backend. These are the runtime slices we
     # intentionally keep after removing broad SciPy/ONNX helper trees.
     Write-Host "  Verifying frozen-runtime imports..." -ForegroundColor DarkGray
-    & $VENV_PYTHON -c "import scipy.ndimage; import skimage.metrics; import skimage.measure; import onnxruntime; from fontTools import subset; from fontTools.ttLib import TTFont"
+    # BUILD (audit 2026-09-10 §FAIR.5): kiểm solver trước Nuitka, tránh bản dev
+    # làm mượt được nhưng bản đóng gói thiếu extension rồi âm thầm giữ đường cũ.
+    & $VENV_PYTHON -c "import scipy.ndimage; from scipy.optimize import least_squares; from scipy.spatial import cKDTree; from scipy.sparse import coo_matrix; assert abs(least_squares(lambda x: x - 1, [0.0]).x[0] - 1.0) < 1e-6; import skimage.metrics; import skimage.measure; import onnxruntime; from fontTools import subset; from fontTools.ttLib import TTFont"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Required runtime dependency import failed before Nuitka." -ForegroundColor Red
         Pop-Location
@@ -1943,6 +1945,9 @@ if (-not $SkipNuitka) {
         --include-package=skimage.metrics `
         --include-package=skimage.measure `
         --include-package=scipy.ndimage `
+        --include-package=scipy.optimize `
+        --include-package=scipy.spatial `
+        --include-package=scipy.sparse `
         --include-package=pdfplumber `
         --include-package=pytesseract `
         --include-package=celery `

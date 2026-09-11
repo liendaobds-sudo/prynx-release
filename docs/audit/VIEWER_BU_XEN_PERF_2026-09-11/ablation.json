@@ -1,0 +1,709 @@
+{
+  "scope": "native-session-only; excludes UI, IPC, PNG encode, OS-cold and HTTP admission",
+  "utc_started": "2026-09-11T15:40:08Z",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+    "logical_cpu": 16,
+    "memory_mib_start": [
+      32527.9140625,
+      16414.73828125
+    ],
+    "memory_mib_end": [
+      32527.9140625,
+      16386.41796875
+    ]
+  },
+  "native": {
+    "path": "D:\\pdfcompare\\backend\\venv\\Lib\\site-packages\\pdfcompare_native\\pdfcompare_native.cp311-win_amd64.pyd",
+    "sha256": "7747dd5a15e05995f8951591131e71631ae99365707c759124954d50d8a36677",
+    "build_identity": "3c4741173d730385e553958d35f749c47b65d4cb853359d78ab991cc4deffbfb",
+    "source_revision": "5d4e7feca5aefbacbc621aba0857f996512c9eb3",
+    "source_dirty": true,
+    "build_profile": "release"
+  },
+  "source_hashes_before": {
+    "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf": "d68eddc487aa394b3556a2b0c72bce89ddc4d55fc938d90e02b3ebe0a230985a",
+    "D:\\pdfcompare\\_tmp_ppe_probe\\sticker_c2f67b48_oneform_valid.pdf": "29466541729553640124b0bfc3ca3d7b19ccd2e9fb9f9baf132b51cfbbc3b548"
+  },
+  "production_hashes_before": {
+    "D:\\pdfcompare\\print_engine\\src\\pdf.rs": "3bddfb463f244fe59cd73fe0f53e4bb1795724da62e8f7779be72e5830df45fd",
+    "D:\\pdfcompare\\print_engine\\src\\content\\interp.rs": "05b767d99fb7f7393fff0ac1b810253588b6577c0036064ce16341c7e4e0cbe4",
+    "D:\\pdfcompare\\print_engine\\src\\session.rs": "2824049ffc8d5af8caeff689b0eced58eec3a0dafa4e2a8d2c6b33f4e95ea869",
+    "D:\\pdfcompare\\print_engine\\src\\page.rs": "a3b6e9522acca0df12161c339ae4f25d5ad6d96cb5df247cfdf670a8277d6e24",
+    "D:\\pdfcompare\\backend\\app\\workers\\sticker_engine.py": "34100956ada6b80da2a31579b41fe95c4bb0fc3880066581bc4bea7f9a242cf8",
+    "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs": "9f1ede0b0cea8b804225a326af784ea77cae81fab666fff7c9c0a7112fb1970c",
+    "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\useTileRenderer.ts": "201ce15f8b217612ba028d9b824b8f40d4c71ba1111bbbe6ca278174fb072ec2"
+  },
+  "config": {
+    "dpi": 96,
+    "profile": "fogra39",
+    "intent": 1,
+    "simulate_overprint": false,
+    "optional_content_usage": "view",
+    "render_annotations": true,
+    "cache_budget": "facade hardware default",
+    "render_budget": "facade hardware default"
+  },
+  "documents": {
+    "output": {
+      "path": "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf",
+      "bytes": 17869708,
+      "page_info": [
+        {
+          "page": 1,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/AWu9YyHtWuv1IKT_70K2hA",
+              "id": [
+                12,
+                0
+              ],
+              "decoded_bytes": 16145
+            }
+          ]
+        },
+        {
+          "page": 2,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/HjpRPzPjkIiRtkq7v8K_yw",
+              "id": [
+                16,
+                0
+              ],
+              "decoded_bytes": 354115
+            }
+          ]
+        },
+        {
+          "page": 3,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            899.8826,
+            724.3066
+          ],
+          "forms": [
+            {
+              "name": "/Ei2XmIlFM2i6YQWJEbTPGA",
+              "id": [
+                20,
+                0
+              ],
+              "decoded_bytes": 356135
+            }
+          ]
+        },
+        {
+          "page": 4,
+          "top_Do": 9,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/pr-puSv5Q6gEa0femwsNhw",
+              "id": [
+                24,
+                0
+              ],
+              "decoded_bytes": 16105
+            }
+          ]
+        }
+      ],
+      "session_open_wall_ms": 144.8794000025373,
+      "session": {
+        "engine": "ppe",
+        "session_version": "0.1.0/session-1",
+        "document_identity": "14257f928b4b478c",
+        "session_generation": 1,
+        "page_count": 4,
+        "valid": true,
+        "cache": {
+          "image_hits": 0,
+          "image_misses": 0,
+          "image_evictions": 0,
+          "page_hits": 0,
+          "page_misses": 0,
+          "bytes": 0,
+          "budget_bytes": 2149580800
+        },
+        "open_timings_ms": {
+          "total": 31.808799999999998,
+          "open": 0.7012,
+          "parse": 29.4459,
+          "resource": 0.0515,
+          "color": 1.6058,
+          "encode": 0.0
+        },
+        "session_available": true
+      }
+    },
+    "artwork-only": {
+      "path": "D:\\pdfcompare\\_tmp_ppe_probe\\sticker_c2f67b48_oneform_valid.pdf",
+      "bytes": 17869165,
+      "page_info": [
+        {
+          "page": 1,
+          "top_Do": 1,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/AWu9YyHtWuv1IKT_70K2hA",
+              "id": [
+                12,
+                0
+              ],
+              "decoded_bytes": 16145
+            }
+          ]
+        },
+        {
+          "page": 2,
+          "top_Do": 1,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/HjpRPzPjkIiRtkq7v8K_yw",
+              "id": [
+                16,
+                0
+              ],
+              "decoded_bytes": 354115
+            }
+          ]
+        },
+        {
+          "page": 3,
+          "top_Do": 1,
+          "MediaBox": [
+            0.0,
+            0.0,
+            899.8826,
+            724.3066
+          ],
+          "forms": [
+            {
+              "name": "/Ei2XmIlFM2i6YQWJEbTPGA",
+              "id": [
+                20,
+                0
+              ],
+              "decoded_bytes": 356135
+            }
+          ]
+        },
+        {
+          "page": 4,
+          "top_Do": 1,
+          "MediaBox": [
+            0.0,
+            0.0,
+            759.6846,
+            572.5986
+          ],
+          "forms": [
+            {
+              "name": "/pr-puSv5Q6gEa0femwsNhw",
+              "id": [
+                24,
+                0
+              ],
+              "decoded_bytes": 16105
+            }
+          ]
+        }
+      ],
+      "session_open_wall_ms": 30.751599988434464,
+      "session": {
+        "engine": "ppe",
+        "session_version": "0.1.0/session-1",
+        "document_identity": "c42499c307d2fd8f",
+        "session_generation": 1,
+        "page_count": 4,
+        "valid": true,
+        "cache": {
+          "image_hits": 0,
+          "image_misses": 0,
+          "image_evictions": 0,
+          "page_hits": 0,
+          "page_misses": 0,
+          "bytes": 0,
+          "budget_bytes": 2144337920
+        },
+        "open_timings_ms": {
+          "total": 30.479499999999998,
+          "open": 0.1851,
+          "parse": 28.8006,
+          "resource": 0.0237,
+          "color": 1.4682,
+          "encode": 0.0
+        },
+        "session_available": true
+      }
+    }
+  },
+  "samples": [
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 5398.510700004408,
+      "cpu_ms": 5484.375,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4722,
+        "raster": 5202.721399999999,
+        "color": 137.4127,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 1,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2149580800
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "artwork-only",
+      "page": 2,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 1341.8792000011308,
+      "cpu_ms": 1546.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2461,
+        "raster": 1231.3992,
+        "color": 107.4482,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 1,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2144337920
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "21fe0572500e07d89e1b77930323a72a9b0010d2f9a5ed1afb478e3b112f034e",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "artwork-only",
+      "page": 2,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1339.5183999964502,
+      "cpu_ms": 1593.75,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2845,
+        "raster": 1227.9041,
+        "color": 108.0644,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 2,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2144337920
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "21fe0572500e07d89e1b77930323a72a9b0010d2f9a5ed1afb478e3b112f034e",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 6484.993099991698,
+      "cpu_ms": 6546.875,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.8143999999999999,
+        "raster": 6383.4281,
+        "color": 97.63959999999999,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 2,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2149580800
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 2,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 6741.682699997909,
+      "cpu_ms": 6500.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.7048,
+        "raster": 6633.213299999999,
+        "color": 104.7247,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 3,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2149580800
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "3b3d70fd272924c4e8d29916aba18b21dfce172c4dafbb017dc674ae69385e76",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "artwork-only",
+      "page": 2,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1509.1171000094619,
+      "cpu_ms": 1578.125,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2672,
+        "raster": 1363.0249999999999,
+        "color": 142.7329,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 3,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2144337920
+      },
+      "width": 1013,
+      "height": 763,
+      "rgb_sha256": "21fe0572500e07d89e1b77930323a72a9b0010d2f9a5ed1afb478e3b112f034e",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 32513.88380001299,
+      "cpu_ms": 15562.5,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.8496,
+        "raster": 32286.633199999997,
+        "color": 219.23590000000002,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 4,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2149580800
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "artwork-only",
+      "page": 3,
+      "repeat": 0,
+      "state": "first-render-in-session",
+      "wall_ms": 3770.688799995696,
+      "cpu_ms": 2750.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2678,
+        "raster": 3675.7683,
+        "color": 89.8047,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 4,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2144337920
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "artwork-only",
+      "page": 3,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1985.6645999971079,
+      "cpu_ms": 2265.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.2567,
+        "raster": 1901.3081,
+        "color": 80.7618,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 5,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2144337920
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 1,
+      "state": "warm-resource-reraster",
+      "wall_ms": 8356.11140000401,
+      "cpu_ms": 8781.25,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.7571,
+        "raster": 8306.6139,
+        "color": 44.3326,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 5,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2149580800
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 7475.52559999167,
+      "cpu_ms": 7875.0,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.4706,
+        "raster": 7420.8584,
+        "color": 50.6697,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 6,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2149580800
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    },
+    {
+      "document": "artwork-only",
+      "page": 3,
+      "repeat": 2,
+      "state": "warm-resource-reraster",
+      "wall_ms": 1212.5039000093238,
+      "cpu_ms": 1640.625,
+      "timings_ms": {
+        "open": 0.0,
+        "parse": 0.0,
+        "resource": 0.1783,
+        "raster": 1158.0502,
+        "color": 51.4595,
+        "encode": 0.0
+      },
+      "cache": {
+        "image_hits": 0,
+        "image_misses": 0,
+        "image_evictions": 0,
+        "page_hits": 6,
+        "page_misses": 0,
+        "bytes": 0,
+        "budget_bytes": 2144337920
+      },
+      "width": 1200,
+      "height": 966,
+      "rgb_sha256": "32ae5748300be811a774250b6b481424c46649c7c8d107c9835df5021726daa8",
+      "ink_unsound": false,
+      "degraded": false
+    }
+  ],
+  "summary": [
+    {
+      "document": "output",
+      "page": 2,
+      "first_ms": 5398.510700004408,
+      "warm_n": 2,
+      "warm_median_ms": 6613.337899994804,
+      "warm_range_ms": [
+        6484.993099991698,
+        6741.682699997909
+      ],
+      "warm_raster_median_ms": 6508.3207,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "output",
+      "page": 3,
+      "first_ms": 32513.88380001299,
+      "warm_n": 2,
+      "warm_median_ms": 7915.81849999784,
+      "warm_range_ms": [
+        7475.52559999167,
+        8356.11140000401
+      ],
+      "warm_raster_median_ms": 7863.736150000001,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "artwork-only",
+      "page": 2,
+      "first_ms": 1341.8792000011308,
+      "warm_n": 2,
+      "warm_median_ms": 1424.317750002956,
+      "warm_range_ms": [
+        1339.5183999964502,
+        1509.1171000094619
+      ],
+      "warm_raster_median_ms": 1295.46455,
+      "stable_rgb": true,
+      "clean": true
+    },
+    {
+      "document": "artwork-only",
+      "page": 3,
+      "first_ms": 3770.688799995696,
+      "warm_n": 2,
+      "warm_median_ms": 1599.0842500032159,
+      "warm_range_ms": [
+        1212.5039000093238,
+        1985.6645999971079
+      ],
+      "warm_raster_median_ms": 1529.67915,
+      "stable_rgb": true,
+      "clean": true
+    }
+  ],
+  "source_hashes_after": {
+    "C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\PrynX-dev\\results\\sticker_c2f67b48.pdf": "d68eddc487aa394b3556a2b0c72bce89ddc4d55fc938d90e02b3ebe0a230985a",
+    "D:\\pdfcompare\\_tmp_ppe_probe\\sticker_c2f67b48_oneform_valid.pdf": "29466541729553640124b0bfc3ca3d7b19ccd2e9fb9f9baf132b51cfbbc3b548"
+  },
+  "production_hashes_after": {
+    "D:\\pdfcompare\\print_engine\\src\\pdf.rs": "3bddfb463f244fe59cd73fe0f53e4bb1795724da62e8f7779be72e5830df45fd",
+    "D:\\pdfcompare\\print_engine\\src\\content\\interp.rs": "05b767d99fb7f7393fff0ac1b810253588b6577c0036064ce16341c7e4e0cbe4",
+    "D:\\pdfcompare\\print_engine\\src\\session.rs": "2824049ffc8d5af8caeff689b0eced58eec3a0dafa4e2a8d2c6b33f4e95ea869",
+    "D:\\pdfcompare\\print_engine\\src\\page.rs": "a3b6e9522acca0df12161c339ae4f25d5ad6d96cb5df247cfdf670a8277d6e24",
+    "D:\\pdfcompare\\backend\\app\\workers\\sticker_engine.py": "34100956ada6b80da2a31579b41fe95c4bb0fc3880066581bc4bea7f9a242cf8",
+    "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs": "9f1ede0b0cea8b804225a326af784ea77cae81fab666fff7c9c0a7112fb1970c",
+    "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\useTileRenderer.ts": "201ce15f8b217612ba028d9b824b8f40d4c71ba1111bbbe6ca278174fb072ec2"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "baseline_pdf": "D:\\pdfcompare\\output\\pdf\\Binder2-page12-global-final-2026-09-10\\Binder2_page12_offset2_B3.pdf",
+  "baseline_sha256": "c73cc2e66f536b6ed852bee9b23174bdd58467773485ded638888865e59c9526",
+  "candidate_npy": "D:\\pdfcompare\\tmp\\curvefit-nd-research-20260910\\free-anchor\\free_g1_60_fair0.3.npy",
+  "candidate_npy_sha256": "9e2270b155157bedf3722c0551feb3c460d8658b21f393d1133f47e7393bba2f",
+  "source_nodes": 122,
+  "candidate_nodes": 60,
+  "quantization": "4 decimal places PDF points, then SVG 9 decimals mm reread",
+  "metrics": {
+    "sampled_two_way_max_mm": 0.08841113451197594,
+    "source_to_candidate_mm": 0.08841113451197594,
+    "candidate_to_source_mm": 0.08832956787774385,
+    "simple": true,
+    "closed_error_mm": 0.0,
+    "area_ratio": 1.0000464938257099,
+    "perimeter_ratio": 0.9955823021428936,
+    "samples": 37213
+  },
+  "source_curvature": {
+    "curvature_total_variation_per_mm": 2890.2141008818166,
+    "join_curvature_jump_p95_per_mm": 21.044997139647165,
+    "join_curvature_jump_max_per_mm": 37.623574781070694,
+    "abs_curvature_weighted_p95_per_mm": 1.1281510144811515
+  },
+  "candidate_curvature": {
+    "curvature_total_variation_per_mm": 336.49123179323993,
+    "join_curvature_jump_p95_per_mm": 1.2688107039797294,
+    "join_curvature_jump_max_per_mm": 1.6985836300070556,
+    "abs_curvature_weighted_p95_per_mm": 0.9134980492970496
+  },
+  "max_source_chord_mm": 0.009999912044887321,
+  "max_candidate_chord_mm": 0.009999808761716203,
+  "flatten_control_hull_mm": 5e-05,
+  "conservative_hausdorff_upper_mm": 0.0935110905344196,
+  "scope": "C\u1eadn so v\u1edbi PDF B3 b\u1ea5t bi\u1ebfn, KH\u00d4NG ph\u1ea3i so alpha g\u1ed1c, kh\u00f4ng ch\u1ee9ng nh\u1eadn dao th\u1eadt/topology li\u00ean t\u1ee5c/g\u00f3c th\u1eadt."
+}
