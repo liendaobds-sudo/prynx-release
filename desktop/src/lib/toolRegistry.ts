@@ -514,7 +514,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   },
   {
     id: 'nup',
-    title: 'Bình Cắt Xén (N-Up)',
+    title: 'Bình Cắt Xén',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🎴',
     description: 'Nhân bản, ghép nhiều trang vô 1 tờ',
