@@ -319,6 +319,108 @@ def _path_items_to_polygon(path_items, *, keep_holes=False):
 
     return final_poly
 
+def _select_page_die_cut_paths(src_page, *, allow_page_fallback=True):
+    """Chọn đúng drawing tạo nên đường bế semantic của một trang.
+
+    Bộ chọn này dùng chung cho polygon solver và path cubic renderer. Nếu mỗi
+    tầng tự chọn ``largest_path`` riêng, solver có thể né một đường còn writer
+    lại vẽ đường khác lên file CUT.
+    """
+
+    try:
+        paths = src_page.extract_vector_paths()
+        if not paths:
+            return (), None
+
+        valid_paths = [
+            path for path in paths
+            if path.get('rect')
+            and path['rect'].width > 5
+            and path['rect'].height > 5
+        ]
+        filtered = []
+        for path in valid_paths:
+            rect = path['rect']
+            if (
+                abs(rect.width - src_page.rect.width) <= 2
+                and abs(rect.height - src_page.rect.height) <= 2
+            ):
+                continue
+            filtered.append(path)
+        if filtered:
+            valid_paths = filtered
+        elif not allow_page_fallback:
+            # Nét phủ kín trang thường chỉ là artwork nguồn, không chứng minh
+            # đó là CutContour. Ngoại lệ là kênh spot có tên: bước tiền xử lý
+            # có thể làm mượt contour sát tới mép trang, vẫn phải giữ cubic.
+            def _is_cut_spot(path):
+                raw_spot = str(path.get("spot_name") or "")
+                names = {
+                    token.strip().lstrip("/").lower()
+                    for token in raw_spot.split("+")
+                    if token.strip()
+                }
+                return "cutcontour" in names
+
+            if not any(_is_cut_spot(path) for path in valid_paths):
+                return (), None
+        if not valid_paths:
+            return (), None
+
+        filtered = [
+            path for path in valid_paths
+            if (
+                abs(path['rect'].width - src_page.rect.width) > 2
+                or abs(path['rect'].height - src_page.rect.height) > 2
+            )
+        ]
+        if not filtered:
+            filtered = valid_paths
+        stroke_paths = [
+            path for path in filtered
+            if path.get('type') == 's'
+            or (path.get('fill') is None and path.get('color') is not None)
+        ]
+        target_paths = stroke_paths if stroke_paths else filtered
+        if not target_paths:
+            return (), None
+        largest_path = max(
+            target_paths,
+            key=lambda path: path['rect'].width * path['rect'].height,
+        )
+        target_color = largest_path.get('color')
+        return tuple(
+            path for path in target_paths
+            if path.get('color') == target_color
+        ), target_color
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Error selecting page die cut paths: %s", exc,
+        )
+        return (), None
+
+
+def extract_page_die_cut_path_items(src_page):
+    """Trả path items gốc của đường bế đã chọn, giữ nguyên Bézier cubic.
+
+    Solver vẫn dùng :func:`extract_page_die_cut_polygon` để có polygon cho
+    collision/NFP. Writer production dùng hàm này song song để không dựng lại
+    CUT từ các đỉnh polygon đã lấy mẫu, vốn làm đường cong phình node.
+    """
+
+    paths, _target_color = _select_page_die_cut_paths(
+        src_page,
+        allow_page_fallback=False,
+    )
+    return tuple(
+        tuple(path.get('items') or ())
+        for path in paths
+        if path.get('items')
+    )
+
+
 def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
 
     """Extract page's spot color cutline polygon.
@@ -334,49 +436,9 @@ def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
 
     try:
 
-        paths = src_page.extract_vector_paths()
-
-        if not paths:
-
-            return None
-
-        valid_paths = [p for p in paths if p.get('rect') and p['rect'].width > 5 and p['rect'].height > 5]
-
-        filtered = []
-
-        for p in valid_paths:
-
-            r = p['rect']
-
-            if abs(r.width - src_page.rect.width) <= 2 and abs(r.height - src_page.rect.height) <= 2:
-
-                continue
-
-            filtered.append(p)
-
-        if filtered:
-
-            valid_paths = filtered
-
-        if not valid_paths:
-
-            return None
-
-        filtered = [p for p in valid_paths if abs(p['rect'].width - src_page.rect.width) > 2 or abs(p['rect'].height - src_page.rect.height) > 2]
-
-        if not filtered: filtered = valid_paths
-
-        stroke_paths = [p for p in filtered if p.get('type') == 's' or (p.get('fill') is None and p.get('color') is not None)]
-
-        target_paths = stroke_paths if stroke_paths else filtered
-
+        target_paths, target_color = _select_page_die_cut_paths(src_page)
         if not target_paths:
-
             return None
-
-        largest_path = max(target_paths, key=lambda p: p['rect'].width * p['rect'].height)
-
-        target_color = largest_path.get('color')
 
         polys = []
 

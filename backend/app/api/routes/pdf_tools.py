@@ -1641,6 +1641,14 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         if cutline_denoise_raw is None or str(cutline_denoise_raw).strip() == ""
         else cutline_denoise
     )
+    from app.workers.cutline_cubic_simplify import CUTLINE_SIMPLIFY_MAX_MM
+
+    # QUALITY (audit 2026-09-10 §FAIR.4): dùng cùng trần với lõi neo tự do;
+    # thiếu/0 chỉ tắt bước giảm node bổ sung, không tự đổi đường đã duyệt.
+    cutline_simplify_mm = _sticker_float_param(
+        form, "cutline_simplify_mm", default=0.0, low=0.0, high=CUTLINE_SIMPLIFY_MAX_MM
+    )
+    cutline_simplify_auto = str(form.get("cutline_simplify_auto", "false")).lower() in {"true", "1", "yes"}
 
     # Resize chỉ dịch điểm lấy màu vào trong; không dùng tham số này để clip artwork.
     try:
@@ -1765,6 +1773,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 fill_holes=do_fill_holes,
                 curve_tension=curve_tension,
                 cutline_denoise=legacy_cutline_denoise,
+                cutline_simplify_mm=cutline_simplify_mm,
+                classic_force_contour=shape_mode == "contour",
             )
         except StickerCanonicalPreviewConflict as exc:
             _cleanup_owned_sticker_source()
@@ -1811,13 +1821,13 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             engine_started = time.perf_counter()
             approved_contour_overrides = (
                 {canonical_preview_page - 1: canonical_preview_override}
-                if canonical_preview_override is not None
+                if canonical_preview_override is not None and canonical_preview_override.get("kind") != "whole-page-memo-v1"
                 else None
             )
             if canonical_preview_override is not None:
                 logger.info(
                     "[STICKER] page=%d tái dùng canonical preview %s; "
-                    "không detect/fit lần hai",
+                    "không giải lại phần hình học đã lưu",
                     canonical_preview_page,
                     str(canonical_preview_override.get("preview_fingerprint", ""))[:12],
                 )
@@ -1839,6 +1849,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                         corner_style=corner_style,
                         curve_tension=curve_tension,
                         cutline_denoise=legacy_cutline_denoise,
+                        cutline_simplify_mm=cutline_simplify_mm,
                         fill_holes=do_fill_holes,
                     )
                 except (
@@ -1892,6 +1903,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 curve_tension=curve_tension,
                 approved_contour_overrides=approved_contour_overrides,
                 cutline_denoise=cutline_denoise,
+                cutline_simplify_mm=cutline_simplify_mm,
+                _simplify_memo=(canonical_preview_override.get("simplify_memo")
+                    if canonical_preview_override and canonical_preview_override.get("kind") == "whole-page-memo-v1" else None),
+                cutline_simplify_auto=cutline_simplify_auto,
             )
             engine_seconds = time.perf_counter() - engine_started
             if not success or not os.path.exists(output_path):

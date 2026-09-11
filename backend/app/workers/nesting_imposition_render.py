@@ -20,8 +20,10 @@ writer chỉ đổi hệ đơn vị và ghi toán tử PDF.
 - ``front``/``back`` là **artwork**: đi qua ``render_manifest_artwork`` →
   ``paint_manifest_page_form``, clip theo ``artworkClipPath`` (chỉ vòng ngoài, vùng
   lỗ vẫn in mực — quyết định cổng Chặng 0 §7.2).
-- ``cut`` là **vector CUT**: stroke ``cutContour`` đầy đủ outer + holes, vì dao
-  phải cắt cả cửa sổ. Không paint artwork lên trang CUT.
+- ``cut`` là **vector CUT**: ưu tiên path semantic từ snapshot nguồn để giữ các
+  đoạn Bézier, rồi fallback về ``cutContour`` polygon cho nguồn không có vector;
+  cả outer + holes đều được stroke vì dao phải cắt cả cửa sổ. Không paint artwork
+  lên trang CUT.
 """
 
 from __future__ import annotations
@@ -47,6 +49,9 @@ from app.core.perf_sampler import (
     start_perf_stage,
 )
 from app.workers.imposition_pdf_form import DIE_STRIPPED_FORM_VARIANT, PT_PER_MM
+from app.workers.imposition_affine import compose_render_ctm_mm
+from app.workers import pdf_wrapper as pdf_lib
+from app.workers.nup_diecut import extract_page_die_cut_path_items
 from app.workers.nup_artwork import (
     ManifestArtworkContractError,
     ManifestPartContext,
@@ -60,7 +65,10 @@ from app.workers.nup_clip_shape import transform_manifest_polygon_rings
 
 ARTWORK_SIDES: frozenset[str] = frozenset({"front", "back"})
 CUT_SIDE = "cut"
-PRODUCTION_WRITER_VERSION = "nesting-manifest-writer-v6-unique-recipes"
+# V7 ghi CUT bằng path vector semantic của snapshot (khi có), thay vì flatten
+# cubic thành polygon; version đi vào artifact fingerprint để không tái dùng
+# metadata của artifact được viết bởi writer cũ.
+PRODUCTION_WRITER_VERSION = "nesting-manifest-writer-v7-cubic-cut-path"
 
 _SheetRecipeCellKey = tuple[str, str, str, str]
 _SheetRecipeKey = tuple[str, tuple[_SheetRecipeCellKey, ...]]
@@ -524,6 +532,159 @@ def _cut_rings_stream(
             )
         operations.append("h")
     # Một lệnh S cho toàn bộ subpath: nét bế là một đường liên tục của dao.
+    operations.append("S")
+    return "\n".join(operations) + "\n"
+
+
+def _cut_path_items_stream(
+    path_groups: Sequence[Sequence[Any]],
+    *,
+    placement: Any,
+) -> str:
+    """Vẽ CUT từ path vector nguồn, giữ nguyên các đoạn Bézier ``c``.
+
+    ``cutContour`` trong RenderBundle là polygon để solver/NFP làm việc. Nếu
+    writer lấy lại polygon đó, mọi cubic đã bị lấy mẫu thành nhiều đoạn ``l``.
+    Sticker có thể đọc lại snapshot đã pin nên writer dùng đúng path semantic
+    đã chọn từ nguồn, đổi sang canonical mm rồi áp pose; polygon vẫn là fallback
+    cho nguồn không còn path vector.
+    """
+
+    if not path_groups:
+        return ""
+    binding = placement.page_binding
+    output_ctm = compose_render_ctm_mm(
+        sheet_frame=placement.sheet_frame,
+        pose=placement.pose,
+        reference_point_mm=placement.reference_point_mm,
+        source_page_to_canonical=binding.source_page_to_canonical,
+    )
+    scale = binding.user_unit * (25.4 / 72.0)
+    media_box = binding.media_box_mm
+    media_height_user = (media_box[3] - media_box[1]) / scale
+
+    def transform_source_point(point: Any) -> tuple[float, float]:
+        try:
+            x_user = float(point.x)
+            y_user = float(point.y)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ManifestRenderContractError(
+                "cut path chứa điểm nguồn không hợp lệ."
+            ) from exc
+        # pdf_content_parser trả tọa độ top-down; canonical affine nhận mm
+        # bottom-up trước khi pose/SheetFrame được áp dụng.
+        return output_ctm.apply((
+            x_user * scale,
+            (media_height_user - y_user) * scale,
+        ))
+
+    def emit_point(point: tuple[float, float], verb: str) -> str:
+        return (
+            f"{_format_number(point[0] * PT_PER_MM)} "
+            f"{_format_number(point[1] * PT_PER_MM)} {verb}"
+        )
+
+    operations: list[str] = []
+    for group_index, group in enumerate(path_groups):
+        if not isinstance(group, Sequence):
+            raise ManifestRenderContractError(
+                f"cut path group[{group_index}] không phải mảng."
+            )
+        current: tuple[float, float] | None = None
+        subpath_open = False
+        for item_index, item in enumerate(group):
+            if not isinstance(item, Sequence) or not item:
+                raise ManifestRenderContractError(
+                    f"cut path group[{group_index}][{item_index}] không hợp lệ."
+                )
+            command = item[0]
+            if command == "l":
+                if len(item) != 3:
+                    raise ManifestRenderContractError(
+                        "cut path l phải có hai điểm."
+                    )
+                start = transform_source_point(item[1])
+                end = transform_source_point(item[2])
+                if current is None or (
+                    abs(current[0] - start[0]) > 1e-7
+                    or abs(current[1] - start[1]) > 1e-7
+                ):
+                    if subpath_open:
+                        # Parser không giữ toán tử `h` trong nhóm item khi nguồn
+                        # dùng `S` viết hoa; đóng subpath trước khi bắt đầu nhánh
+                        # rời kế tiếp để CUT không bị hở trong Illustrator.
+                        operations.append("h")
+                    operations.append(emit_point(start, "m"))
+                    subpath_open = True
+                operations.append(emit_point(end, "l"))
+                current = end
+            elif command == "c":
+                if len(item) != 5:
+                    raise ManifestRenderContractError(
+                        "cut path c phải có bốn điểm."
+                    )
+                points = [transform_source_point(point) for point in item[1:5]]
+                start = points[0]
+                if current is None or (
+                    abs(current[0] - start[0]) > 1e-7
+                    or abs(current[1] - start[1]) > 1e-7
+                ):
+                    if subpath_open:
+                        operations.append("h")
+                    operations.append(emit_point(start, "m"))
+                    subpath_open = True
+                operations.append(
+                    " ".join(
+                        [
+                            _format_number(point[0] * PT_PER_MM)
+                            + " "
+                            + _format_number(point[1] * PT_PER_MM)
+                            for point in points[1:]
+                        ]
+                    )
+                    + " c"
+                )
+                current = points[3]
+            elif command == "re":
+                if len(item) != 2:
+                    raise ManifestRenderContractError(
+                        "cut path re phải có một Rect."
+                    )
+                rect = item[1]
+                try:
+                    corners = (
+                        (float(rect.x0), float(rect.y0)),
+                        (float(rect.x1), float(rect.y0)),
+                        (float(rect.x1), float(rect.y1)),
+                        (float(rect.x0), float(rect.y1)),
+                    )
+                    points = [
+                        output_ctm.apply((
+                            x_user * scale,
+                            (media_height_user - y_user) * scale,
+                        ))
+                        for x_user, y_user in corners
+                    ]
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise ManifestRenderContractError(
+                        "cut path re chứa Rect không hợp lệ."
+                    ) from exc
+                operations.append(emit_point(points[0], "m"))
+                operations.extend(emit_point(point, "l") for point in points[1:])
+                operations.append("h")
+                # `re` đã tự đóng path; một item sau đó phải mở subpath mới.
+                current = None
+                subpath_open = False
+            else:
+                raise ManifestRenderContractError(
+                    f"cut path command {command!r} không được hỗ trợ."
+                )
+        if subpath_open:
+            # `closePath` không nằm trong path items của parser; mọi đường bế
+            # semantic đều là vòng kín nên đóng rõ ràng trước khi stroke.
+            operations.append("h")
+    if not operations:
+        return ""
     operations.append("S")
     return "\n".join(operations) + "\n"
 
@@ -1527,6 +1688,10 @@ def render_production_nesting(
     # PERF (audit 2026-09-07 §TEMPERF.3): context bất biến chỉ sống trong job.
     # Chuẩn hóa lazily theo khuôn/mặt để không siết side/part không được render.
     part_contexts: dict[tuple[str, str], ManifestPartContext] = {}
+    # CUT của true-shape cần giữ các lệnh Bézier gốc. Mở mỗi snapshot tối đa một
+    # lần trong job; nguồn không có vector semantic sẽ rơi về polygon manifest.
+    source_documents: dict[str, Any] = {}
+    source_cut_paths: dict[tuple[str, int], tuple[tuple[Any, ...], ...]] = {}
 
     def _part_context(part: Mapping[str, Any], side: str) -> ManifestPartContext:
         key = (part["partId"], side)
@@ -1535,6 +1700,19 @@ def render_production_nesting(
                 part=part, side=side, render_bundle_hash=render_bundle_hash,
             )
         return part_contexts[key]
+
+    def _cut_path_groups(locator_id: str, page_index: int) -> tuple[tuple[Any, ...], ...]:
+        key = (locator_id, page_index)
+        cached = source_cut_paths.get(key)
+        if cached is not None:
+            return cached
+        source_document = source_documents.get(locator_id)
+        if source_document is None:
+            source_document = pdf_lib.open(str(source_paths[locator_id]))
+            source_documents[locator_id] = source_document
+        groups = extract_page_die_cut_path_items(source_document[page_index])
+        source_cut_paths[key] = groups
+        return groups
 
     output = pikepdf.Pdf.new()
     # OCG phải đăng ký trên chính tài liệu đích, không trên tài liệu tạm.
@@ -1587,8 +1765,16 @@ def render_production_nesting(
                             reference_point_mm=resolved.reference_point_mm,
                             field="cutContour",
                         )
+                        path_groups = ()
+                        if flow.get("tool") == "sticker_imposer":
+                            path_groups = _cut_path_groups(
+                                resolved.locator_id,
+                                resolved.page_binding.page_index,
+                            )
                         stream_parts.append(
-                            _cut_rings_stream(rings, origin=(0.0, 0.0))
+                            _cut_path_items_stream(path_groups, placement=resolved)
+                            if path_groups
+                            else _cut_rings_stream(rings, origin=(0.0, 0.0))
                         )
                         instance_ids.append(resolved.instance_id)
                     stream_parts.append("Q\n")
@@ -1706,6 +1892,11 @@ def render_production_nesting(
     except ManifestArtworkContractError as exc:
         raise ManifestRenderContractError(str(exc)) from exc
     finally:
+        for source_document in source_documents.values():
+            try:
+                source_document.close()
+            except Exception:
+                pass
         output.close()
 
     # FIX (audit 2026-08-28 §NEST-WRITER-REPORT): report vẽ SAU khi lưu, vì nó là overlay

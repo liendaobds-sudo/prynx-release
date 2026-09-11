@@ -13,8 +13,10 @@ import os
 
 import pikepdf
 import pytest
+from pydantic import ValidationError
 
 from app.core.page_boxes import PageBoxesEngine
+from app.schemas.preflight import AddBleedRequest, MirrorBleedRequest
 from app.workers.pdf_ops import Rect, show_pdf_page
 
 PT_PER_MM = 2.834645669
@@ -237,6 +239,110 @@ def test_render_does_not_recurse(mirrored):
         assert doc[0].render(scale=0.5) is not None
     finally:
         doc.close()
+
+
+def test_mirror_edge_bite_overlays_inside_trim_without_changing_boxes(src_pdf):
+    out = PageBoxesEngine().add_mirror_bleed(src_pdf, BLEED_MM, edge_bite_mm=1.0)
+    try:
+        raw = _raw_content(out)
+        core_x0 = PT_PER_MM
+        core_w = TRIM_W - 2 * PT_PER_MM
+        assert f"{core_x0:.4f} {core_x0:.4f} {core_w:.4f}" in raw
+        assert f"{2 * core_x0:.4f}" in raw
+        assert _boxes(out)["/TrimBox"] == pytest.approx(
+            [BLEED_PT, BLEED_PT, BLEED_PT + TRIM_W, BLEED_PT + TRIM_H], abs=1e-4
+        )
+    finally:
+        os.remove(out)
+
+
+def test_mirror_edge_bite_adds_internal_seam_overlap(src_pdf):
+    out = PageBoxesEngine().add_mirror_bleed(src_pdf, BLEED_MM, edge_bite_mm=1.0)
+    try:
+        raw = _raw_content(out)
+        # Mép clip trái/phải phải vượt core đúng 0,25 pt để viewer không nội suy
+        # thành một hàng trắng giữa hai dải liền kề.
+        assert f"{BLEED_PT + PT_PER_MM + 0.25:.4f}" in raw
+    finally:
+        os.remove(out)
+
+
+def test_mirror_without_edge_bite_also_seals_clip_seam(src_pdf):
+    out = PageBoxesEngine().add_mirror_bleed(src_pdf, BLEED_MM, edge_bite_mm=0.0)
+    try:
+        raw = _raw_content(out)
+        assert f"{BLEED_PT + 0.25:.4f}" in raw
+    finally:
+        os.remove(out)
+
+
+def test_mirror_edge_bite_respects_disabled_sides(src_pdf):
+    out = PageBoxesEngine().add_mirror_bleed(
+        src_pdf, BLEED_MM, sides=["left"], edge_bite_mm=1.0
+    )
+    try:
+        raw = _raw_content(out)
+        assert f"{PT_PER_MM:.4f} 0.0000 {TRIM_W - PT_PER_MM:.4f} {TRIM_H:.4f}" in raw
+        assert f"{2 * PT_PER_MM:.4f}" in raw
+        boxes = _boxes(out)
+        assert boxes["/MediaBox"][2] - boxes["/MediaBox"][0] == pytest.approx(
+            TRIM_W + BLEED_PT, abs=1e-4
+        )
+        assert boxes["/MediaBox"][3] - boxes["/MediaBox"][1] == pytest.approx(
+            TRIM_H, abs=1e-4
+        )
+    finally:
+        os.remove(out)
+
+
+def test_mirror_edge_bite_rejects_core_collapse(tmp_path):
+    source = str(tmp_path / "tiny.pdf")
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(10.0, 10.0))
+    pdf.save(source)
+    pdf.close()
+
+    with pytest.raises(ValueError, match="triệt tiêu"):
+        PageBoxesEngine().add_mirror_bleed(source, BLEED_MM, edge_bite_mm=5.0)
+
+
+def test_mirror_edge_bite_is_ignored_when_bleed_is_zero(src_pdf):
+    baseline = PageBoxesEngine().add_mirror_bleed(src_pdf, 0.0)
+    bitten = PageBoxesEngine().add_mirror_bleed(src_pdf, 0.0, edge_bite_mm=5.0)
+    try:
+        assert _raw_content(bitten) == _raw_content(baseline)
+        assert _boxes(bitten) == _boxes(baseline)
+    finally:
+        os.remove(baseline)
+        os.remove(bitten)
+
+
+def test_mirror_edge_bite_uses_physical_mm_with_user_unit(tmp_path):
+    source = str(tmp_path / "unit2-mirror-bite.pdf")
+    _make_user_unit_source(source)
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+
+    output = engine.add_mirror_bleed(source, BLEED_MM, edge_bite_mm=1.0)
+    try:
+        with pikepdf.Pdf.open(output) as pdf:
+            raw = bytes(pdf.pages[0].obj["/Contents"].read_bytes()).decode("latin-1")
+            unit = float(pdf.pages[0].obj["/UserUnit"])
+        # One physical millimetre is half as many raw page units at /UserUnit=2.
+        bite_raw = PT_PER_MM / unit
+        assert f"{bite_raw:.4f} {bite_raw:.4f}" in raw
+    finally:
+        os.remove(output)
+
+
+def test_mirror_request_has_private_bite_contract():
+    assert "edge_bite_mm" not in AddBleedRequest.model_fields
+    assert MirrorBleedRequest(file_id="f").edge_bite_mm == 0.0
+    assert MirrorBleedRequest(file_id="f", edge_bite_mm=5).edge_bite_mm == 5.0
+    with pytest.raises(ValidationError):
+        MirrorBleedRequest(file_id="f", edge_bite_mm=5.1)
+    with pytest.raises(ValidationError):
+        MirrorBleedRequest(file_id="f", edge_bite_mm=float("nan"))
 
 
 @pytest.mark.parametrize("rotate", [90, 180, 270])

@@ -396,6 +396,18 @@ class AddBleedRequest(BaseModel):
     # (mặc định cũ) để client/recipe cũ không đổi kết quả.
     bleed_sides: Optional[List[str]] = None
 
+
+class MirrorBleedRequest(AddBleedRequest):
+    """Tham số riêng cho bù xén lật gương."""
+
+    edge_bite_mm: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=5.0,
+        allow_inf_nan=False,
+        description="Độ lẹm mép vào vùng TrimBox, đơn vị mm (0–5).",
+    )
+
 class FixHairlinesRequest(BaseModel):
     file_id: str
     threshold_pt: float = 0.1

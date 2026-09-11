@@ -223,9 +223,18 @@ class StickerSheetPageExportRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
+    # QUALITY (audit 2026-09-09 §NODE.1): bỏ field thì kế thừa global;
+    # null = tự động theo nguồn, 0 = tắt, số dương = mức đã xem trước.
+    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
+    # QUALITY (audit 2026-09-10 §FAIR.4): sai số bổ sung tối đa 0,10 mm;
+    # chỉ mở miền lựa chọn, thiếu/0 vẫn giữ đường hiện có.
+    cutline_simplify_mm: float = Field(default=0.0, ge=0.0, le=0.1, allow_inf_nan=False)
 
 
 class StickerCutlinePreviewRequest(BaseModel):
+    # QUALITY (2026-09-10 §CUTPREVIEW.MULTI): opt-in classic, không đổi tách tem.
+    classic_whole_page: bool = False
+    classic_force_contour: bool = False
     base_revision: int = Field(ge=1)
     page_number: int = Field(default=1, ge=1)
     edits: list[StickerSheetEdit] = Field(default_factory=list, max_length=2000)
@@ -243,6 +252,16 @@ class StickerCutlinePreviewRequest(BaseModel):
     # §CUTJAG.3: thanh "Khử răng cưa". `None` = để cổng tự động theo nguồn biên quyết
     # định (hành vi Lô J); 0 = tắt hẳn; > 0 = mức người dùng chọn.
     cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
+    cutline_simplify_mm: float = Field(default=0.0, ge=0.0, le=0.1, allow_inf_nan=False)
+
+
+class StickerCutlineSimplificationResponse(BaseModel):
+    """Số đoạn và cận sai số bổ sung so với đường vector trước đơn giản hóa."""
+
+    before_segments: int = Field(ge=0)
+    after_segments: int = Field(ge=0)
+    maximum_error_bound_mm: float = Field(ge=0.0, allow_inf_nan=False)
+    changed: bool
 
 
 class StickerCutlineQualityResponse(BaseModel):
@@ -270,6 +289,7 @@ class StickerCutlineQualityResponse(BaseModel):
     )
     minimum_wedge_width_mm: float | None = Field(default=None, ge=0.0)
     cutline_hook_tolerated: bool = False
+    simplification: StickerCutlineSimplificationResponse | None = None
 
 
 class StickerCutlinePreviewPathResponse(BaseModel):
@@ -280,6 +300,7 @@ class StickerCutlinePreviewPathResponse(BaseModel):
 
 
 class StickerCutlinePreviewResponse(BaseModel):
+    classic_whole_page: bool = False
     page_number: int = Field(ge=1)
     mask_revision: int = Field(ge=1)
     preview_width_px: int = Field(gt=0)
@@ -288,6 +309,32 @@ class StickerCutlinePreviewResponse(BaseModel):
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     segment_count: int = Field(ge=0)
     quality: StickerCutlineQualityResponse | None = None
+
+
+class StickerCutlinePreviewJobRequest(StickerCutlinePreviewRequest):
+    """Thiết lập preview kèm lượt đơn điệu để worker bỏ việc cũ an toàn."""
+
+    generation: int = Field(ge=0, le=2_147_483_647)
+
+
+class StickerCutlinePreviewJobResponse(BaseModel):
+    """Snapshot công khai của job preview, không chứa cache hay đường dẫn nội bộ."""
+
+    job_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    generation: int = Field(ge=0)
+    page_number: int = Field(ge=1)
+    base_revision: int = Field(ge=1)
+    target_simplify_mm: float = Field(ge=0.0, le=0.1, allow_inf_nan=False)
+    status: Literal["preparing", "simplifying", "ready", "cancelled", "failed"]
+    draft: StickerCutlinePreviewResponse | None = None
+    result: StickerCutlinePreviewResponse | None = None
+    error: str | None = Field(default=None, max_length=500)
+
+
+class StickerCutlinePreviewJobCancelResponse(BaseModel):
+    """Xác nhận tombstone hủy đến đúng lượt preview đã yêu cầu."""
+
+    cancelled: bool
 
 
 class StickerSheetExportRequest(BaseModel):
@@ -300,6 +347,10 @@ class StickerSheetExportRequest(BaseModel):
     cutline_fidelity: float = Field(default=50.0, ge=0.0, le=100.0)
     curve_tension: float = Field(default=50.0, ge=0.0, le=100.0)
     min_detail_area_mm2: float = Field(default=1.0, ge=0.0, le=25.0)
+    # QUALITY (audit 2026-09-09 §NODE.1): cùng ngữ nghĩa với preview;
+    # caller cũ không truyền tiếp tục dùng chế độ tự động theo nguồn.
+    cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
+    cutline_simplify_mm: float = Field(default=0.0, ge=0.0, le=0.1, allow_inf_nan=False)
     offset_mm: float = Field(default=0.0, ge=-10.0, le=10.0)
     bleed_mm: float = Field(default=2.0, ge=0.0, le=10.0)
     cut_mode: StickerCutMode = "original"

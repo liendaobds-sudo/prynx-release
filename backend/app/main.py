@@ -275,6 +275,15 @@ async def lifespan(app: FastAPI):
             app.state.cleanup_task.cancel()  # Application runs here
         if getattr(app.state, "edit_session_sweep_task", None):
             app.state.edit_session_sweep_task.cancel()
+        try:
+            # PERF (audit 2026-09-11 §PREWARM.CANCEL): future preview có thể
+            # còn giữ shared-memory token/process PDFium. Hủy hợp tác và đợi
+            # worker nhả chúng trước khi sidecar kết thúc.
+            from app.workers.sticker_cutline_jobs import shutdown_preview_jobs
+
+            await asyncio.to_thread(shutdown_preview_jobs)
+        except Exception as exc:  # noqa: BLE001 - shutdown không được treo cả sidecar
+            logger.warning("Không dừng được worker preview đường bế: %s", exc)
         ppe_sweep_task = getattr(app.state, "ppe_viewer_session_sweep_task", None)
         if ppe_sweep_task:
             ppe_sweep_task.cancel()

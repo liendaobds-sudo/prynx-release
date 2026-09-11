@@ -56,6 +56,23 @@ class StickerSheetExportResult:
     sticker_count: int
 
 
+def _cutline_simplify_tolerance(value: float) -> float:
+    """Kiểm cùng miền mm tại các entry worker không đi qua schema HTTP."""
+    from app.workers.cutline_cubic_simplify import CUTLINE_SIMPLIFY_MAX_MM
+
+    try:
+        tolerance = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise StickerSheetExportError(
+            "Đơn giản hóa đường bế chỉ nhận sai số từ 0 đến 0,10 mm."
+        ) from exc
+    if not math.isfinite(tolerance) or not 0.0 <= tolerance <= CUTLINE_SIMPLIFY_MAX_MM:
+        raise StickerSheetExportError(
+            "Đơn giản hóa đường bế chỉ nhận sai số từ 0 đến 0,10 mm."
+        )
+    return tolerance
+
+
 def _cutline_export_cache_key(
     *,
     page_number: int,
@@ -73,6 +90,7 @@ def _cutline_export_cache_key(
     curve_tension: float,
     min_detail_area_mm2: float,
     cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
 ) -> str:
     """Khóa chung để preview và export chỉ chia sẻ đúng cùng một hình học."""
     normalized_cut_mode = str(cut_mode).strip().lower()
@@ -101,6 +119,16 @@ def _cutline_export_cache_key(
             None if cutline_denoise is None else float(cutline_denoise)
         ),
     }
+    # QUALITY (audit 2026-09-09 §SIMPLIFY.1): khóa mức dương để không đọc lại
+    # frame cũ; thiếu/0 giữ nguyên hash legacy và quỹ đạo đã được nghiệm thu.
+    simplify_mm = _cutline_simplify_tolerance(cutline_simplify_mm)
+    if simplify_mm > 0.0:
+        from app.workers.cutline_cubic_simplify import CUTLINE_SIMPLIFY_ALGORITHM
+
+        payload["cutline_simplify_mm"] = simplify_mm
+        # QUALITY (audit 2026-09-10 §FAIR.4): không tái dùng vector của lõi
+        # cũ cho cùng một mức mm. Zero giữ hash và đường baseline legacy.
+        payload["cutline_simplify_algorithm"] = CUTLINE_SIMPLIFY_ALGORITHM
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -261,6 +289,8 @@ def snapshot_classic_cutline_preview(
     cutline_smoothness: float = 50.0,
     cutline_fidelity: float = 50.0,
     min_detail_area_mm2: float = 1.0,
+    cutline_simplify_mm: float = 0.0,
+    classic_force_contour: bool = False,
 ) -> dict[str, object]:
     """Chụp nguyên tử Alpha + Bézier đang hiển thị cho execute classic.
 
@@ -292,6 +322,48 @@ def snapshot_classic_cutline_preview(
             raise StickerCanonicalPreviewConflict(
                 "Artifact preview đường bế đã hết hạn. Hãy cập nhật preview rồi thử lại."
             )
+        # PERF (audit 2026-09-11 §SIMPLIFY.CACHE): UI có thể hiển thị A từ
+        # cache trong lúc backend vừa hoàn tất B. Snapshot chọn đúng fingerprint
+        # đã xem, không mặc định artifact cuối cùng là artifact được duyệt.
+        if cache.get("kind") != "whole-page-memo-v1":
+            from app.workers.sticker_cutline_preview import _preview_source_key, restore_preview_history
+
+            try:
+                if cache.get("source_key") is not None and cache["source_key"] != _preview_source_key(session, page):
+                    raise StickerCanonicalPreviewConflict("File nguồn/mask đã đổi; hãy cập nhật đường xem trước.")
+                if str(cache.get("fingerprint", "")) != str(expected_fingerprint):
+                    historical = restore_preview_history(session, page, str(expected_fingerprint))
+                    if historical is not None:
+                        cache = historical
+            except OSError as exc:
+                raise StickerCanonicalPreviewConflict("Dữ liệu preview đã hết hạn; hãy nhận diện lại trang.") from exc
+        if cache.get("kind") == "whole-page-memo-v1":
+            from app.workers.sticker_classic_page_preview import source_digest, whole_page_key
+            geometry = dict(offset_mm=offset_mm, bleed_mm=bleed_mm, cut_mode=cut_mode,
+                corner_style=corner_style, fill_holes=fill_holes, curve_tension=curve_tension,
+                cutline_denoise=0.0 if cutline_denoise is None else cutline_denoise,
+                cutline_simplify_mm=cutline_simplify_mm, cutline_smoothness=cutline_smoothness,
+                cutline_fidelity=cutline_fidelity, min_detail_area_mm2=min_detail_area_mm2,
+                shape_mode="contour" if classic_force_contour else "auto_safe")
+            digest = source_digest(source_path)
+            expected_key = whole_page_key(digest, page_number, expected_revision,
+                geometry, (int(page.preview_width_px), int(page.preview_height_px)))
+            if (cache.get("key") != expected_key
+                    or cache.get("preview", {}).get("fingerprint") != expected_fingerprint):
+                history = getattr(page, "_classic_preview_history", None)
+                if isinstance(history, dict) and history.get("identity") == (digest, page_number, expected_revision):
+                    historical = history.get("entries", {}).get(expected_key)
+                    if historical is not None and historical.get("preview", {}).get("fingerprint") == expected_fingerprint:
+                        cache = historical
+            if (cache.get("source_digest") != digest or cache.get("page_number") != page_number
+                    or cache.get("revision") != expected_revision
+                    or cache.get("preview", {}).get("fingerprint") != expected_fingerprint
+                    or cache.get("key") != expected_key):
+                raise StickerCanonicalPreviewConflict("Đường xem trước toàn trang đã cũ; hãy chờ cập nhật.")
+            # Chỉ chuyển memo thuần Simplify đã được worker tạo và giữ trong
+            # RAM session; không giả Alpha/instance để đi vào nhánh mask khác.
+            return {"kind": "whole-page-memo-v1", "simplify_memo": copy.deepcopy(cache["memo"]),
+                    "preview_fingerprint": expected_fingerprint}
         if (
             int(cache.get("page_number", -1)) != int(page_number)
             or int(cache.get("revision", -1)) != revision
@@ -332,8 +404,11 @@ def snapshot_classic_cutline_preview(
             curve_tension=curve_tension,
             min_detail_area_mm2=min_detail_area_mm2,
             cutline_denoise=cutline_denoise,
+            cutline_simplify_mm=cutline_simplify_mm,
         )
         if str(cache.get("key", "")) != expected_key:
+            # QUALITY (audit 2026-09-10 §FAIR.4): key bao cả phiên bản lõi
+            # khi Simplify bật; snapshot cũ không được lách qua fingerprint.
             raise StickerCanonicalPreviewConflict(
                 "Thiết lập đường bế đã đổi sau preview. Hãy chờ đường mới cập nhật."
             )
@@ -780,9 +855,10 @@ def _can_preserve_existing_cut(
     crop_to_sticker: bool,
     draw_cut_contour: bool,
     preserve_existing_cut: bool,
+    cutline_simplify_mm: float = 0.0,
 ) -> bool:
     reference = session.manifest.get("vector_geometry_ref")
-    return bool(
+    can_preserve = bool(
         preserve_existing_cut
         and output_format == "pdf"
         and session.source_kind == "pdf"
@@ -798,6 +874,13 @@ def _can_preserve_existing_cut(
         and not crop_to_sticker
         and draw_cut_contour
     )
+    if can_preserve and _cutline_simplify_tolerance(cutline_simplify_mm) > 0.0:
+        # §SIMPLIFY.1: copy nguyên PDF không thể thực hiện mức giảm node đã chọn.
+        raise StickerSheetExportError(
+            "Chưa hỗ trợ đơn giản hóa CutContour có sẵn. "
+            "Hãy đưa Đơn giản hóa đường bế về 0 để giữ nguyên đường gốc."
+        )
+    return can_preserve
 
 
 def _copy_preserved_pdf_page(
@@ -882,6 +965,8 @@ def _cutline_overrides_with_preview_fallback(
     cutline_fidelity: float,
     curve_tension: float,
     min_detail_area_mm2: float,
+    cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
 ) -> list[dict[str, object]] | None:
     """Bảo đảm export trực tiếp cũng dùng đúng preview exact-geometry.
 
@@ -889,6 +974,8 @@ def _cutline_overrides_with_preview_fallback(
     gọi trực tiếp hoặc cache bị dọn; khi đó dựng cùng preview worker một lần rồi
     đọc lại cache, tránh âm thầm fit lại từ PNG điểm ảnh.
     """
+    # QUALITY (audit 2026-09-09 §NODE.1): cả hit lẫn rebuild phải giữ mức
+    # Khử răng cưa đã duyệt; None và 0 là hai quỹ đạo khác nhau.
     cache_key = _cutline_export_cache_key(
         page_number=page_number,
         revision=revision,
@@ -904,6 +991,8 @@ def _cutline_overrides_with_preview_fallback(
         cutline_fidelity=cutline_fidelity,
         curve_tension=curve_tension,
         min_detail_area_mm2=min_detail_area_mm2,
+        cutline_denoise=cutline_denoise,
+        cutline_simplify_mm=cutline_simplify_mm,
     )
     overrides = _cutline_overrides_from_preview_cache(
         page,
@@ -936,6 +1025,8 @@ def _cutline_overrides_with_preview_fallback(
         cutline_fidelity=cutline_fidelity,
         curve_tension=curve_tension,
         min_detail_area_mm2=min_detail_area_mm2,
+        cutline_denoise=cutline_denoise,
+        cutline_simplify_mm=cutline_simplify_mm,
     )
     return _cutline_overrides_from_preview_cache(
         page,
@@ -967,9 +1058,12 @@ def _build_cutline_pdf_from_pngs(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
+    cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
     presmooth_alpha: bool = False,
     alpha_path_override_sequence: list[dict[str, object] | None] | None = None,
 ) -> Path:
+    cutline_simplify_mm = _cutline_simplify_tolerance(cutline_simplify_mm)
     source_pdf = work_dir / f"tem_alpha_{uuid.uuid4().hex[:8]}.pdf"
     output_path = work_dir / f"tem_cutcontour_{uuid.uuid4().hex[:8]}.pdf"
     _png_pages_to_pdf(png_paths, source_pdf, dpi, dpi_y)
@@ -1039,7 +1133,11 @@ def _build_cutline_pdf_from_pngs(
                     cutline_fidelity=cutline_fidelity,
                     curve_tension=curve_tension,
                     min_detail_area_mm2=min_detail_area_mm2,
-                    presmooth_alpha=presmooth_alpha,
+                    # §NODE.1: 0 tắt cả lọc tự động; None giữ policy nguồn.
+                    presmooth_alpha=presmooth_alpha if cutline_denoise is None else False,
+                    cutline_denoise=0.0 if cutline_denoise is None else cutline_denoise,
+                    cutline_simplify_mm=cutline_simplify_mm,
+                    simplify_fast=True,
                 )
             except UnsafeCutlineGeometryError as exc:
                 raise StickerSheetExportError(str(exc)) from exc
@@ -1075,6 +1173,7 @@ def _build_cutline_pdf_from_pngs(
             cutline_fidelity=cutline_fidelity,
             curve_tension=curve_tension,
             min_detail_area_mm2=min_detail_area_mm2,
+            cutline_simplify_mm=cutline_simplify_mm,
             alpha_path_overrides=alpha_path_overrides,
         )
 
@@ -1151,8 +1250,11 @@ def export_sticker_sheet_document(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
+    cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
 ) -> StickerSheetExportResult:
     """Xuất nhiều trang atomically; mask keyed theo trang, thứ tự có thể lặp/đổi."""
+    cutline_simplify_mm = _cutline_simplify_tolerance(cutline_simplify_mm)
     configs = {int(item["source_page"]): item for item in pages}
     if not configs:
         raise StickerSheetExportError("Chưa có trang nào được chọn để xuất.")
@@ -1196,7 +1298,7 @@ def export_sticker_sheet_document(
             segment_paths: list[Path] = []
             segment_overrides: list[dict[str, object] | None] = []
             segment_key: tuple[
-                str, float, float, float, float, float, float, bool,
+                str, float, float, float, float, float, float, float | None, float, bool,
             ] | None = None
             sticker_count = 0
 
@@ -1212,6 +1314,8 @@ def export_sticker_sheet_document(
                     segment_fidelity,
                     segment_tension,
                     segment_min_detail,
+                    segment_denoise,
+                    segment_simplify_mm,
                     segment_presmooth,
                 ) = segment_key
                 fragments.append(_build_cutline_pdf_from_pngs(
@@ -1233,6 +1337,8 @@ def export_sticker_sheet_document(
                     cutline_fidelity=segment_fidelity,
                     curve_tension=segment_tension,
                     min_detail_area_mm2=segment_min_detail,
+                    cutline_denoise=segment_denoise,
+                    cutline_simplify_mm=segment_simplify_mm,
                     presmooth_alpha=segment_presmooth,
                     alpha_path_override_sequence=segment_overrides,
                 ))
@@ -1245,6 +1351,10 @@ def export_sticker_sheet_document(
                 config = configs[page_number]
                 edits = list(config.get("edits") or [])
                 page_view = _page_session_view(session, page)
+                # §SIMPLIFY.1: field thiếu kế thừa global; 0 của trang phải được giữ.
+                page_simplify_mm = _cutline_simplify_tolerance(
+                    config.get("cutline_simplify_mm", cutline_simplify_mm)
+                )
                 can_preserve = _can_preserve_existing_cut(
                     page_view,
                     edits=edits,
@@ -1256,6 +1366,7 @@ def export_sticker_sheet_document(
                     crop_to_sticker=crop_to_sticker,
                     draw_cut_contour=draw_cut_contour,
                     preserve_existing_cut=preserve_existing_cut,
+                    cutline_simplify_mm=page_simplify_mm,
                 )
                 if can_preserve:
                     flush_raster_segment()
@@ -1306,6 +1417,9 @@ def export_sticker_sheet_document(
                 page_min_detail = float(
                     config.get("min_detail_area_mm2", min_detail_area_mm2)
                 )
+                # QUALITY (audit 2026-09-09 §NODE.1): field thiếu kế thừa,
+                # null chọn tự động và 0 tắt; tuyệt đối không dùng `or`.
+                page_denoise = config.get("cutline_denoise", cutline_denoise)
                 instance_ids = sorted(
                     int(value) for value in np.unique(labels) if int(value) > 0
                 )
@@ -1330,6 +1444,8 @@ def export_sticker_sheet_document(
                         cutline_fidelity=page_fidelity,
                         curve_tension=page_tension,
                         min_detail_area_mm2=page_min_detail,
+                        cutline_denoise=page_denoise,
+                        cutline_simplify_mm=page_simplify_mm,
                     )
                 if page_overrides is None or len(page_overrides) != len(png_paths):
                     page_overrides = [None] * len(png_paths)
@@ -1348,6 +1464,8 @@ def export_sticker_sheet_document(
                     page_fidelity,
                     page_tension,
                     page_min_detail,
+                    page_denoise,
+                    page_simplify_mm,
                     # §CUTJAG.1: nguồn biên quyết định có khử răng cưa Alpha hay
                     # không, nên hai trang khác nguồn KHÔNG được gộp cùng segment.
                     should_presmooth_cutline_alpha(page.boundary_source),
@@ -1411,8 +1529,11 @@ def export_sticker_sheet(
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
     min_detail_area_mm2: float = 1.0,
+    cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
 ) -> StickerSheetExportResult:
     """Xuất artifact vào session; caller chịu trách nhiệm phục vụ file."""
+    cutline_simplify_mm = _cutline_simplify_tolerance(cutline_simplify_mm)
     if _can_preserve_existing_cut(
         session,
         edits=edits,
@@ -1424,6 +1545,7 @@ def export_sticker_sheet(
         crop_to_sticker=crop_to_sticker,
         draw_cut_contour=draw_cut_contour,
         preserve_existing_cut=preserve_existing_cut,
+        cutline_simplify_mm=cutline_simplify_mm,
     ):
         output_path = session.directory / f"tem_cutcontour_goc_{uuid.uuid4().hex[:8]}.pdf"
         _copy_preserved_pdf_page(session, output_path)
@@ -1505,6 +1627,8 @@ def export_sticker_sheet(
                 cutline_fidelity=cutline_fidelity,
                 curve_tension=curve_tension,
                 min_detail_area_mm2=min_detail_area_mm2,
+                cutline_denoise=cutline_denoise,
+                cutline_simplify_mm=cutline_simplify_mm,
             )
             if (
                 preview_override_sequence is not None
@@ -1566,9 +1690,15 @@ def export_sticker_sheet(
                         cutline_fidelity=cutline_fidelity,
                         curve_tension=curve_tension,
                         min_detail_area_mm2=min_detail_area_mm2,
-                        presmooth_alpha=should_presmooth_cutline_alpha(
-                            page.boundary_source if page is not None else None
+                        presmooth_alpha=(
+                            should_presmooth_cutline_alpha(
+                                page.boundary_source if page is not None else None
+                            )
+                            if cutline_denoise is None else False
                         ),
+                        cutline_denoise=0.0 if cutline_denoise is None else cutline_denoise,
+                        cutline_simplify_mm=cutline_simplify_mm,
+                        simplify_fast=True,
                     )
                 except UnsafeCutlineGeometryError as exc:
                     raise StickerSheetExportError(str(exc)) from exc
@@ -1613,6 +1743,7 @@ def export_sticker_sheet(
                 cutline_fidelity=cutline_fidelity,
                 curve_tension=curve_tension,
                 min_detail_area_mm2=min_detail_area_mm2,
+                cutline_simplify_mm=cutline_simplify_mm,
                 alpha_path_overrides=alpha_path_overrides,
             )
 

@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path as ApiPath, UploadFile
 from fastapi.responses import FileResponse, Response
 from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
 
@@ -33,6 +33,9 @@ from app.core.sticker_sheet_session import (
 from app.schemas.sticker_sheet import (
     StickerCutlinePreviewRequest,
     StickerCutlinePreviewResponse,
+    StickerCutlinePreviewJobCancelResponse,
+    StickerCutlinePreviewJobRequest,
+    StickerCutlinePreviewJobResponse,
     StickerSourceConfirmResponse,
     StickerSourceConfirmRequest,
     StickerSourceDetectRequest,
@@ -53,6 +56,13 @@ from app.workers.sticker_sheet_export import (
     export_sticker_sheet_document,
 )
 from app.workers.sticker_cutline_preview import build_sticker_cutline_preview
+from app.workers.sticker_cutline_jobs import (
+    PreviewJobConflict,
+    PreviewJobNotFound,
+    cancel_preview_job,
+    read_preview_job,
+    start_preview_job,
+)
 from app.workers.sticker_source_inspector import (
     StickerSourceInspectionError,
     inspect_sticker_source,
@@ -424,8 +434,14 @@ async def preview_sticker_cutline_endpoint(
             detail="Phiên nguồn tem đã hết hạn. Hãy chọn lại file.",
         )
     try:
+        preview_builder = build_sticker_cutline_preview
+        classic_options = {}
+        if request.classic_whole_page:
+            from app.workers.sticker_classic_page_preview import build_classic_page_preview
+            preview_builder = build_classic_page_preview
+            classic_options["classic_force_contour"] = request.classic_force_contour
         return await run_in_threadpool(
-            build_sticker_cutline_preview,
+            preview_builder,
             session,
             page_number=request.page_number,
             base_revision=request.base_revision,
@@ -442,6 +458,8 @@ async def preview_sticker_cutline_endpoint(
             curve_tension=request.curve_tension,
             min_detail_area_mm2=request.min_detail_area_mm2,
             cutline_denoise=request.cutline_denoise,
+            cutline_simplify_mm=request.cutline_simplify_mm,
+            **classic_options,
         )
     except StickerSheetSessionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -453,6 +471,77 @@ async def preview_sticker_cutline_endpoint(
             status_code=500,
             detail=f"Không cập nhật được đường bế xem trước ({type(exc).__name__}).",
         ) from exc
+
+
+@router.post(
+    "/{session_id}/cutline-preview/jobs",
+    response_model=StickerCutlinePreviewJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_feature("prepress.cutline"))],
+)
+async def start_sticker_cutline_preview_job_endpoint(
+    session_id: str,
+    request: StickerCutlinePreviewJobRequest,
+):
+    """Nhận preview không chặn route; worker chỉ giữ công việc mới nhất của phiên."""
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Phiên nguồn tem đã hết hạn. Hãy chọn lại file.",
+        )
+    try:
+        # PERF (audit 2026-09-11 §PREWARM.CANCEL): generation không thuộc hình
+        # học CUT; không cho nó lọt vào cache/fingerprint của builder canonical.
+        return start_preview_job(
+            session,
+            request.model_dump(exclude={"generation"}),
+            request.generation,
+        )
+    except PreviewJobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/{session_id}/cutline-preview/jobs/{job_id}",
+    response_model=StickerCutlinePreviewJobResponse,
+    dependencies=[Depends(require_feature("prepress.cutline"))],
+)
+async def read_sticker_cutline_preview_job_endpoint(session_id: str, job_id: str):
+    """Đọc snapshot mới, không dựng lại CUT trong lượt polling."""
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Phiên nguồn tem đã hết hạn. Hãy chọn lại file.",
+        )
+    try:
+        return read_preview_job(session, job_id)
+    except PreviewJobNotFound as exc:
+        raise HTTPException(status_code=404, detail="Không còn công việc xem trước này.") from exc
+
+
+@router.post(
+    "/{session_id}/cutline-preview/jobs/cancel/{generation}",
+    response_model=StickerCutlinePreviewJobCancelResponse,
+    dependencies=[Depends(require_feature("prepress.cutline"))],
+)
+async def cancel_sticker_cutline_preview_job_endpoint(
+    session_id: str,
+    generation: int = ApiPath(ge=0, le=2_147_483_647),
+):
+    """Đặt tombstone để POST đến trễ không hồi sinh lượt slider đã bỏ."""
+    session = get_session(session_id)
+    if session is None:
+        # PERF (audit 2026-09-11 §PREWARM.CANCEL): cleanup của React có thể
+        # phát hai lượt hủy gần như đồng thời; lượt thứ hai đôi khi đến sau
+        # DELETE session. Khi đó không còn worker nào để hủy, nên coi như
+        # đã hoàn tất thay vì phát 404 giả vào console của WebView.
+        return {"cancelled": False}
+    try:
+        return {"cancelled": cancel_preview_job(session, generation)}
+    except PreviewJobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(
@@ -694,12 +783,26 @@ async def export_sticker_sheet_endpoint(
             "cutline_fidelity": request.cutline_fidelity,
             "curve_tension": request.curve_tension,
             "min_detail_area_mm2": request.min_detail_area_mm2,
+            "cutline_denoise": request.cutline_denoise,
+            "cutline_simplify_mm": request.cutline_simplify_mm,
         }
         if request.pages:
+            # QUALITY (audit 2026-09-09 §NODE.1): model_dump() tự thêm None
+            # cho field thiếu; chỉ bỏ denoise chưa gửi để worker kế thừa global.
+            # Giữ nguyên null/0 tường minh và mọi default của hợp đồng cũ.
+            page_options = []
+            for page in request.pages:
+                options = page.model_dump()
+                if "cutline_denoise" not in page.model_fields_set:
+                    options.pop("cutline_denoise", None)
+                # §SIMPLIFY.1: default 0 do model thêm không được đè mức global.
+                if "cutline_simplify_mm" not in page.model_fields_set:
+                    options.pop("cutline_simplify_mm", None)
+                page_options.append(options)
             result = await run_heavy_in_threadpool(
                 export_sticker_sheet_document,
                 session,
-                pages=[page.model_dump() for page in request.pages],
+                pages=page_options,
                 page_order=request.page_order or [page.source_page for page in request.pages],
                 **common_options,
             )

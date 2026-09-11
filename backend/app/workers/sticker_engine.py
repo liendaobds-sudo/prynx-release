@@ -11,6 +11,7 @@ import zlib
 import math
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from app.workers.cutline_simplify_memo import with_simplify_memo, current_simplify_memo
 from concurrent.futures.process import BrokenProcessPool
 from typing import Optional, Tuple
 from shapely.geometry import Polygon, MultiPolygon
@@ -1193,17 +1194,34 @@ def _infer_document_image_pixel_mm(
 
 def _page_defines_cut_contour(page) -> bool:
     """Nhận diện tài nguyên CutContour có sẵn để giữ hành vi legacy."""
-    try:
-        resources = page.resources
-        color_spaces = resources.get("/ColorSpace") if resources is not None else None
-        if color_spaces is not None:
-            for name, definition in color_spaces.items():
-                if (
-                    str(name).lower() == "/cutcontour"
-                    or "/cutcontour" in str(definition).lower()
-                ):
-                    return True
+    visited: set[tuple[int, int]] = set()
+
+    def walk_resources(resources) -> bool:
+        if resources is None:
+            return False
+        try:
+            key = tuple(getattr(resources, "objgen", (0, 0)))
+            if key != (0, 0):
+                if key in visited:
+                    return False
+                visited.add(key)
+            color_spaces = resources.get("/ColorSpace")
+            if color_spaces is not None:
+                for name, definition in color_spaces.items():
+                    if str(name).lower() == "/cutcontour" or "/cutcontour" in str(definition).lower():
+                        return True
+            xobjects = resources.get("/XObject")
+            if xobjects is not None:
+                for reference in xobjects.values():
+                    form = reference.resolve() if hasattr(reference, "resolve") else reference
+                    if str(form.get("/Subtype", "")) == "/Form" and walk_resources(form.get("/Resources")):
+                        return True
+        except (AttributeError, KeyError, TypeError, ValueError, pikepdf.PdfError):
+            return False
         return False
+
+    try:
+        return walk_resources(page.resources)
     except (AttributeError, KeyError, TypeError, ValueError, pikepdf.PdfError):
         return False
 
@@ -6162,6 +6180,45 @@ def fit_prepared_alpha_cutline_geometry(
     )
 
 
+def simplify_alpha_cutline_result(
+    cutline, prepared, *, tolerance_mm=0.0, offset_x_points=0.0,
+    offset_y_points=0.0, page_height=0.0, preview_fast=False,
+):
+    """Giảm thêm trên baseline đã fit; mỗi tick luôn bắt đầu từ baseline này."""
+    if not cutline or float(tolerance_mm) <= 0:
+        return cutline
+    from app.workers.cutline_cubic_simplify import simplify_cubic_path_groups
+
+    groups, stats = simplify_cubic_path_groups(
+        cutline["path_groups"], tolerance_mm=tolerance_mm, mm_to_units=_PT_PER_MM,
+        offset_x_points=offset_x_points, offset_y_points=offset_y_points,
+        page_height=page_height, preview_fast=preview_fast,
+    )
+    result = dict(cutline)
+    result["quality"] = {**cutline.get("quality", {}), "simplification": stats}
+    if not stats["changed"]:
+        return result
+    paths = [ring for group in groups for ring in [group["exterior"], *group.get("interiors", [])]]
+    geometry = _sampled_geometry_from_alpha_paths_like(cutline["geometry"], paths)
+    quality = _alpha_final_cutline_quality(
+        paths, reference_geometry=prepared["ideal_geometry"], fitted_geometry=geometry,
+        alpha_geometry=prepared["base_geometry"], total_offset_pts=prepared["total_offset_pts"],
+        mm_to_pts=_PT_PER_MM, source_pixel_mm=prepared["source_pixel_mm"],
+        fit_mode=cutline["fit_mode"],
+    )
+    if not quality["machine_safe"] or _cutline_hook_is_severe(quality):
+        # Không thay đường đã duyệt nếu giảm node làm mất khoảng lùi/độ an toàn.
+        result["quality"]["simplification"] = {
+            **stats, "changed": False, "after_segments": stats["before_segments"],
+            "maximum_error_bound_mm": 0.0,
+        }
+        return result
+    quality["dropped_component_count"] = cutline.get("dropped_contours", 0)
+    quality["simplification"] = stats
+    result.update(path_groups=groups, paths=paths, geometry=geometry, quality=quality)
+    return result
+
+
 def build_alpha_cutline_geometry(
     alpha_mask: np.ndarray,
     *,
@@ -6178,6 +6235,11 @@ def build_alpha_cutline_geometry(
     min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
     presmooth_alpha: bool = False,
     cutline_denoise: float | int = 0.0,
+    cutline_simplify_mm: float = 0.0,
+    simplify_offset_x_points: float = 0.0,
+    simplify_offset_y_points: float = 0.0,
+    simplify_page_height: float = 0.0,
+    simplify_fast: bool = False,
 ):
     """Tạo geometry CutContour trực tiếp từ Alpha nguồn cho preview và export.
 
@@ -6199,11 +6261,16 @@ def build_alpha_cutline_geometry(
     )
     if prepared is None:
         return None
-    return fit_prepared_alpha_cutline_geometry(
+    fitted = fit_prepared_alpha_cutline_geometry(
         prepared,
         cutline_smoothness=cutline_smoothness,
         cutline_fidelity=cutline_fidelity,
         curve_tension=curve_tension,
+    )
+    return simplify_alpha_cutline_result(
+        fitted, prepared, tolerance_mm=cutline_simplify_mm,
+        offset_x_points=simplify_offset_x_points, offset_y_points=simplify_offset_y_points,
+        page_height=simplify_page_height, preview_fast=simplify_fast,
     )
 
 
@@ -8612,6 +8679,23 @@ def _cap_sticker_workers(
     return max(1, cap)
 
 
+def _automatic_simplify_mm(page, document, page_number, *, alpha_source=False, approved=None):
+    """AUTO chỉ dành đường mới từ raster/Alpha; không suy từ trang đang xem."""
+    if _page_defines_cut_contour(page):
+        return 0.0
+    if alpha_source or (isinstance(approved, dict) and approved.get("boundary_source") in {"alpha", "simple-bg", "ai"}):
+        return 0.1
+    from app.workers.sticker_source_inspector import _inspect_pdf_page
+    try:
+        inspection = _inspect_pdf_page(page, document, page_number)
+    except Exception:
+        # AUTO là tiện ích chất lượng, không được biến lỗi metadata thành lỗi
+        # xuất PDF. Khi không chứng minh được nguồn raster, giữ mức 0 và đường
+        # xử lý legacy; người dùng vẫn có thể bật thủ công sau khi kiểm tra.
+        return 0.0
+    return 0.1 if inspection.has_raster and not inspection.has_vector else 0.0
+
+
 def _process_sticker_chunk(args: dict):
     """Worker top-level (BẮT BUỘC picklable + importable cho Windows spawn).
 
@@ -8667,6 +8751,8 @@ def _process_sticker_chunk(args: dict):
             alpha_source_mode=args.get("alpha_source_mode", False),
             cutline_smoothness=args.get("cutline_smoothness", 50),
             cutline_denoise=args.get("cutline_denoise", 0),
+            cutline_simplify_mm=args.get("cutline_simplify_mm", 0.0),
+            cutline_simplify_auto=args.get("cutline_simplify_auto", False),
             cutline_fidelity=args.get("cutline_fidelity", 50),
             curve_tension=args.get("curve_tension", 50),
             min_detail_area_mm2=args.get(
@@ -8676,6 +8762,7 @@ def _process_sticker_chunk(args: dict):
             alpha_path_overrides=args.get("alpha_path_overrides"),
             approved_contour_overrides=args.get("approved_contour_overrides"),
             _page_subset=args["page_indices"],
+            _simplify_memo=args.get("simplify_memo"),
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
         logger.debug(
@@ -8702,6 +8789,7 @@ class StickerEngine:
             bool(debug) or development_diagnostic_enabled("STICKER_DEBUG")
         )
 
+    @with_simplify_memo
     def process_pdf(
         self,
         input_path: str,
@@ -8733,6 +8821,8 @@ class StickerEngine:
         curve_tension: float | int = _CUTLINE_TUNING_DEFAULT,
         # §CUTJAG.3: 0 = tắt để mọi caller cũ giữ nguyên kết quả từng byte.
         cutline_denoise: float | int = 0.0,
+        cutline_simplify_mm: float = 0.0,
+        cutline_simplify_auto: bool = False,
         min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
         alpha_path_overrides: dict[int, dict] | None = None,
         approved_contour_overrides: dict[int, dict] | None = None,
@@ -8764,6 +8854,11 @@ class StickerEngine:
                 alpha_source_pixel_mm = None
         except (TypeError, ValueError):
             alpha_source_pixel_mm = None
+        from app.workers.cutline_cubic_simplify import CUTLINE_SIMPLIFY_MAX_MM
+
+        cutline_simplify_mm = float(cutline_simplify_mm)
+        if not math.isfinite(cutline_simplify_mm) or not 0.0 <= cutline_simplify_mm <= CUTLINE_SIMPLIFY_MAX_MM:
+            raise ValueError("Sai số đơn giản hóa thêm phải nằm trong 0–0,10 mm")
         cutline_smoothness = _clamp_cutline_percent(cutline_smoothness)
         cutline_fidelity = _clamp_cutline_percent(cutline_fidelity)
         curve_tension = _clamp_cutline_percent(curve_tension)
@@ -9027,6 +9122,11 @@ class StickerEngine:
                     alpha_source_pixel_mm=alpha_source_pixel_mm,
                     alpha_source_mode=alpha_source_contour,
                     cutline_smoothness=cutline_smoothness,
+                    # QUALITY (audit 2026-09-09 §BINDER2.1): đừng để worker
+                    # trở về 0 khi người dùng đã chọn mức Khử răng cưa khác.
+                    cutline_denoise=cutline_denoise,
+                    cutline_simplify_mm=cutline_simplify_mm,
+                    cutline_simplify_auto=cutline_simplify_auto,
                     cutline_fidelity=cutline_fidelity,
                     curve_tension=curve_tension,
                     min_detail_area_mm2=min_detail_area_mm2,
@@ -9139,6 +9239,15 @@ class StickerEngine:
                 selection_page_mode = page_idx in selection_targets
                 approved_payload = approved_contour_overrides.get(page_idx)
                 alpha_path_payload = alpha_path_overrides.get(page_idx)
+                # QUALITY (2026-09-10 §SIMPLIFY.AUTO): mặc định mới là opt-in
+                # từ UI. Tài liệu lẫn vector/ảnh xét từng trang; recipe/API cũ
+                # thiếu flag giữ chính xác scalar cũ, đặc biệt explicit 0.
+                page_simplify_mm = cutline_simplify_mm
+                if cutline_simplify_auto:
+                    page_simplify_mm = _automatic_simplify_mm(
+                        page_in_pike, doc_in_pike, page_idx + 1,
+                        alpha_source=alpha_source_contour, approved=approved_payload,
+                    ) if not rectangle_mode and not selection_page_mode else 0.0
                 alpha_background = _approved_edge_background(alpha_path_payload)
                 if alpha_background is not None:
                     (
@@ -9180,6 +9289,40 @@ class StickerEngine:
                     )
                 except Exception:
                     source_pixel_mm_page = None
+                if (
+                    approved_payload is None
+                    and alpha_path_payload is None
+                    and not rectangle_mode
+                    and not selection_page_mode
+                    and remove_white_bg
+                    and not alpha_source_contour
+                    and cut_mode in {"original", "bleed"}
+                    and shape_mode in {"auto_safe", "contour"}
+                ):
+                    # QUALITY (audit 2026-09-09 §BINDER2.2–3): trang Alpha
+                    # đủ điều kiện dùng chính ROI/fitter classic, dù không phải
+                    # trang Viewer đang xem. Không thay snapshot đã duyệt.
+                    from app.workers.sticker_source_pipeline import (
+                        build_classic_alpha_page_contour,
+                    )
+                    classic_alpha = build_classic_alpha_page_contour(
+                        input_path, page_idx, page_in_pike,
+                        cut_mode=cut_mode, offset_mm=offset_mm, bleed_mm=bleed_mm,
+                        corner_style=corner_style, fill_holes=fill_holes,
+                        cutline_smoothness=cutline_smoothness,
+                        cutline_fidelity=cutline_fidelity, curve_tension=curve_tension,
+                        cutline_denoise=cutline_denoise,
+                        cutline_simplify_mm=page_simplify_mm,
+                        min_detail_area_mm2=min_detail_area_mm2,
+                    )
+                    if classic_alpha is not None:
+                        approved_payload = {
+                            "alpha": classic_alpha.alpha,
+                            "dpi": classic_alpha.dpi,
+                            "source_pixel_mm": classic_alpha.source_pixel_mm,
+                            "boundary_source": classic_alpha.boundary_source,
+                            "path_groups": classic_alpha.path_groups,
+                        }
                 approved_boundary_source = (
                     str(approved_payload.get("boundary_source") or "").lower()
                     if isinstance(approved_payload, dict)
@@ -11138,8 +11281,84 @@ class StickerEngine:
                 # cắt → file nhiều loại tem CÙNG khuôn, trang 1 mang khuôn master để
                 # tool Bình tem bế/CNC (chế độ đồng nhất) lấy làm dieline chung.
                 _cut_page_ok = (not cut_first_page_only) or (page_idx == 0)
+                polyline_reduction = None
+                additional_simplification = None
                 if _cut_page_ok and draw_cut_contour and cut_mode != "none" and cut_poly is not None and not getattr(cut_poly, 'is_empty', True):
                     debug_step = "Draw Cut Contour"
+                    if (
+                        cut_fitted_paths is None
+                        and cut_draw_style == "preserve"
+                        and alpha_corner_policy == "adaptive"
+                        and shape_mode in {"auto_safe", "contour"}
+                        and cut_mode in {"original", "bleed"}
+                        and not approved_contour_page
+                        and not alpha_source_contour
+                        and not rectangle_mode
+                        and not selection_page_mode
+                        # Lô B2 chỉ đổi PDF ảnh phủ trang; Form/vector/annotation
+                        # có thể chứa dao có sẵn trong resource lồng, phải giữ.
+                        and source_pixel_mm_page is not None
+                        and not page_in_pike.get("/Annots")
+                        and not _page_defines_cut_contour(page_in_pike)
+                    ):
+                        # QUALITY (audit 2026-09-09 §BINDER2.4): nén chính
+                        # polyline đã dựng, không nắn mask/màu hoặc thay offset.
+                        # Mọi span qua cận sai số liên tục 0,02 mm và kiểm
+                        # giao cắt sau .4f; không đạt thì giữ nguyên đường cũ.
+                        from app.workers.cutline_polyline_reduction import (
+                            reduce_cut_polyline, reduction_path_stream,
+                        )
+                        polyline_reduction = reduce_cut_polyline(
+                            cut_poly, mm_to_units=_PT_PER_MM,
+                            tolerance_mm=0.02, page_height=page_in_height,
+                        )
+                    if (
+                        page_simplify_mm > 0
+                        and not approved_contour_page
+                        and not (isinstance(alpha_path_payload, dict) and alpha_path_payload.get("path_groups"))
+                        and not rectangle_mode and not selection_page_mode
+                        and shape_mode in {"auto_safe", "contour"}
+                        and not _page_defines_cut_contour(page_in_pike)
+                    ):
+                        from app.workers.cutline_cubic_simplify import simplify_cubic_path_groups
+
+                        baseline_paths = cut_fitted_paths
+                        writer_round_baseline = False
+                        if polyline_reduction is not None:
+                            baseline_paths = [[(s.p0, s.p1, s.p2, s.p3) for s in path]
+                                              for path in polyline_reduction.paths]
+                        if baseline_paths is None and cut_draw_style in {"preserve", "miter"}:
+                            baseline_paths = _paths_for_alpha_geometry(cut_poly)
+                        elif baseline_paths is None and cut_draw_style in {"round", "alpha_smooth"}:
+                            writer_round_baseline = True
+                            # QUALITY (2026-09-10 §SIMPLIFY.ROUND): nhánh Góc tròn
+                            # từng chỉ tạo cubic ở writer, nên Simplify không thấy
+                            # baseline và bị bỏ qua dù slider >0. Dùng CHÍNH cubic
+                            # writer sẽ ghi, không fit lại polygon thành đường khác.
+                            from app.workers.cutline_geometry import _catmull_rom_bezier_segments
+                            baseline_paths = [
+                                _catmull_rom_bezier_segments(
+                                    [segment[0] for segment in path] + [path[-1][3]],
+                                    tension=cut_draw_tension,
+                                ) for path in _paths_for_alpha_geometry(cut_poly) if path
+                            ]
+                        if baseline_paths:
+                            groups = _group_alpha_paths_like(cut_poly, baseline_paths)
+                            if groups:
+                                simplified, additional_simplification = simplify_cubic_path_groups(
+                                    groups, tolerance_mm=page_simplify_mm,
+                                    page_height=page_in_height,
+                                    prefer_conservative=writer_round_baseline,
+                                    # Góc tròn dùng baseline Catmull của writer;
+                                    # giữ đầy đủ vòng tìm kiếm để không làm rơi
+                                    # quá nhiều cung ở các đường cong ngắn. Nhánh
+                                    # bảo toàn mép ảnh mới dùng đường nhanh.
+                                    preview_fast=not writer_round_baseline,
+                                )
+                                if additional_simplification["changed"]:
+                                    cut_fitted_paths = [ring for group in simplified
+                                                        for ring in [group["exterior"], *group.get("interiors", [])]]
+                                    polyline_reduction = None
                     
                     page_content_stream.append("q")
                     cut_origin_x = crop_x0 if selection_page_mode else exp_left
@@ -11150,7 +11369,10 @@ class StickerEngine:
                     page_content_stream.append("1.0 SCN")
                     page_content_stream.append("1.0 w")
 
-                    if cut_fitted_paths is not None:
+                    if polyline_reduction is not None:
+                        for path in polyline_reduction.paths:
+                            page_content_stream.extend(reduction_path_stream(path, page_in_height))
+                    elif cut_fitted_paths is not None:
                         for segments in cut_fitted_paths:
                             page_content_stream.extend(
                                 build_bezier_segments_path_stream(
@@ -11403,6 +11625,14 @@ class StickerEngine:
                 page_meta["raster_height_px"] = int(img.shape[0])
                 page_meta["raster_seconds"] = round(raster_seconds, 4)
                 page_meta["find_contours_seconds"] = round(contour_seconds, 4)
+                if polyline_reduction is not None:
+                    page_meta["cutline_reduction"] = {
+                        "before_segments": polyline_reduction.original_segments,
+                        "after_segments": polyline_reduction.reduced_segments,
+                        "maximum_error_bound_mm": polyline_reduction.maximum_error_mm,
+                    }
+                if additional_simplification is not None:
+                    page_meta["cutline_simplification"] = additional_simplification
                 if selected_peel_px is not None:
                     page_meta["edge_sample_peel_px"] = int(selected_peel_px)
                 resolved_edge_background_rgb = (
@@ -11757,6 +11987,8 @@ class StickerEngine:
                 "alpha_source_mode": kw.get("alpha_source_mode", False),
                 "cutline_smoothness": kw.get("cutline_smoothness", 50),
                 "cutline_denoise": kw.get("cutline_denoise", 0),
+                "cutline_simplify_mm": kw.get("cutline_simplify_mm", 0.0),
+                "cutline_simplify_auto": kw.get("cutline_simplify_auto", False),
                 "cutline_fidelity": kw.get("cutline_fidelity", 50),
                 "curve_tension": kw.get("curve_tension", 50),
                 "min_detail_area_mm2": kw.get(
@@ -11767,6 +11999,7 @@ class StickerEngine:
                 "approved_contour_overrides": kw.get(
                     "approved_contour_overrides"
                 ),
+                "simplify_memo": current_simplify_memo(),
                 # Tuple 4 bool — picklable, worker không phải parse lại chuỗi.
                 "bleed_sides": kw.get("bleed_sides"),
             })

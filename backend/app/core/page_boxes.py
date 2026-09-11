@@ -22,6 +22,10 @@ PT_PER_MM = 72 / 25.4
 MAX_CROP_REGIONS = 64
 MIN_CROP_SIZE_PT = 1.0
 MAX_CROP_DETECT_PIXELS = 20_000_000
+# MIRROR (audit 2026-09-12 §MIRROR.BITE.SEAM): clip cạnh liền nhau có thể lộ
+# một hàng/cột trắng do anti-alias của viewer khi artwork là raster/transparency.
+# Chồng mí vào phía nội dung, không nở page box và không thay đổi lượng bleed.
+MIRROR_SEAM_OVERLAP_PT = 0.25
 
 
 def _pike_box_to_list(box):
@@ -1791,6 +1795,7 @@ class PageBoxesEngine:
         bleed_mm: float = 3,
         pages: list[int] | None = None,
         sides=None,
+        edge_bite_mm: float = 0.0,
     ) -> str:
         """
         Tạo vùng bù xén bằng cách LẬT GƯƠNG (mirror/reflect) nội dung sát mép trang
@@ -1807,7 +1812,17 @@ class PageBoxesEngine:
         Trim box lấy theo CropBox (kết quả auto_trim) → TrimBox → MediaBox.
         Trang có /Rotate được bake về hệ hiển thị trước khi tạo mirror để mọi cạnh
         đều có mực, không còn nhánh chỉ nới box tạo vùng giấy trắng.
+
+        ``edge_bite_mm`` dời trục phản chiếu vào trong TrimBox và cho dải mirror
+        chồng vào đúng phần nội dung sát mép đó. Mặc định 0 giữ nguyên hành vi cũ.
         """
+        try:
+            edge_bite_mm = float(edge_bite_mm or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Độ lẹm mép phải là số hữu hạn trong khoảng 0–5 mm") from exc
+        if not math.isfinite(edge_bite_mm) or not 0.0 <= edge_bite_mm <= 5.0:
+            raise ValueError("Độ lẹm mép phải là số hữu hạn trong khoảng 0–5 mm")
+
         doc = pikepdf.Pdf.open(file_path)
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
         side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
@@ -1820,6 +1835,7 @@ class PageBoxesEngine:
             if not (side_l or side_r or side_b or side_t):
                 # Không chọn cạnh nào = không bù xén → rơi vào nhánh fallback chỉ set box.
                 bleed_pt = 0.0
+                edge_bite_mm = 0.0
             if bleed_pt > 0:
                 _canonicalize_rotated_page_for_mirror(doc, page)
 
@@ -1833,6 +1849,17 @@ class PageBoxesEngine:
             b_r = b if side_r else 0.0
             b_b = b if side_b else 0.0
             b_t = b if side_t else 0.0
+            # Bleed bằng 0 không được biến thành một phép cắt nội dung. Lượng
+            # lẹm dùng cùng hệ đơn vị vật lý với bleed, có tính /UserUnit.
+            bite = (
+                edge_bite_mm * PT_PER_MM / _page_user_unit(page)
+                if bleed_pt > 0 and edge_bite_mm > 0
+                else 0.0
+            )
+            bite_l = bite if side_l else 0.0
+            bite_r = bite if side_r else 0.0
+            bite_b = bite if side_b else 0.0
+            bite_t = bite if side_t else 0.0
 
             # Bleed 0 giữ nguyên hành vi cũ, không rewrite content hoặc /Rotate.
             if bleed_pt <= 0:
@@ -1846,6 +1873,13 @@ class PageBoxesEngine:
                 page[pikepdf.Name("/BleedBox")] = pikepdf.Array(bleed_rect)
                 page[pikepdf.Name("/TrimBox")] = pikepdf.Array(trim)
                 continue
+
+            trim_w = x1 - x0
+            trim_h = y1 - y0
+            if bite_l + bite_r >= trim_w or bite_b + bite_t >= trim_h:
+                raise ValueError(
+                    "Độ lẹm mép quá lớn, làm triệt tiêu vùng nội dung trung tâm của trang"
+                )
 
             # Snapshot nội dung GỐC của trang thành Form XObject ĐỘC LẬP.
             # QUAN TRỌNG (chống đệ quy vô hạn): KHÔNG dùng page.as_form_xobject() —
@@ -1894,20 +1928,28 @@ class PageBoxesEngine:
                     "Q",
                 ]
 
+            core_x0 = x0 + bite_l
+            core_x1 = x1 - bite_r
+            core_y0 = y0 + bite_b
+            core_y1 = y1 - bite_t
+            core_w = core_x1 - core_x0
+            core_h = core_y1 - core_y0
+            seam = MIRROR_SEAM_OVERLAP_PT
+
             ops = []
-            # 1) Nội dung gốc (identity), clip trong trim để không đè dải mirror.
-            ops += _draw((x0, y0, x1 - x0, y1 - y0), (1, 0, 0, 1, 0, 0))
+            # 1) Nội dung gốc chỉ giữ ở lõi; dải sát mép được thay bằng mirror.
+            ops += _draw((core_x0, core_y0, core_w, core_h), (1, 0, 0, 1, 0, 0))
             # 2) Các cạnh được chọn — phản chiếu qua trục cạnh tương ứng.
-            ops += _draw((x0 - b_l, y0, b_l, y1 - y0), (-1, 0, 0, 1, 2 * x0, 0))   # trái  (x=x0)
-            ops += _draw((x1, y0, b_r, y1 - y0),       (-1, 0, 0, 1, 2 * x1, 0))   # phải  (x=x1)
-            ops += _draw((x0, y0 - b_b, x1 - x0, b_b), (1, 0, 0, -1, 0, 2 * y0))   # dưới  (y=y0)
-            ops += _draw((x0, y1, x1 - x0, b_t),       (1, 0, 0, -1, 0, 2 * y1))   # trên  (y=y1)
+            ops += _draw((x0 - b_l, core_y0, b_l + bite_l + seam, core_h), (-1, 0, 0, 1, 2 * core_x0, 0))   # trái
+            ops += _draw((core_x1 - seam, core_y0, b_r + bite_r + seam, core_h), (-1, 0, 0, 1, 2 * core_x1, 0))   # phải
+            ops += _draw((core_x0, y0 - b_b, core_w, b_b + bite_b + seam), (1, 0, 0, -1, 0, 2 * core_y0))   # dưới
+            ops += _draw((core_x0, core_y1 - seam, core_w, b_t + bite_t + seam), (1, 0, 0, -1, 0, 2 * core_y1))   # trên
             # 3) Góc — chỉ tồn tại khi CẢ HAI cạnh kề đều được bù xén (_draw tự bỏ
             #    qua khi một trong hai chiều = 0).
-            ops += _draw((x0 - b_l, y0 - b_b, b_l, b_b), (-1, 0, 0, -1, 2 * x0, 2 * y0))  # BL
-            ops += _draw((x1, y0 - b_b, b_r, b_b),       (-1, 0, 0, -1, 2 * x1, 2 * y0))  # BR
-            ops += _draw((x0 - b_l, y1, b_l, b_t),       (-1, 0, 0, -1, 2 * x0, 2 * y1))  # TL
-            ops += _draw((x1, y1, b_r, b_t),             (-1, 0, 0, -1, 2 * x1, 2 * y1))  # TR
+            ops += _draw((x0 - b_l, y0 - b_b, b_l + bite_l + seam, b_b + bite_b + seam), (-1, 0, 0, -1, 2 * core_x0, 2 * core_y0))  # BL
+            ops += _draw((core_x1 - seam, y0 - b_b, b_r + bite_r + seam, b_b + bite_b + seam), (-1, 0, 0, -1, 2 * core_x1, 2 * core_y0))  # BR
+            ops += _draw((x0 - b_l, core_y1 - seam, b_l + bite_l + seam, b_t + bite_t + seam), (-1, 0, 0, -1, 2 * core_x0, 2 * core_y1))  # TL
+            ops += _draw((core_x1 - seam, core_y1 - seam, b_r + bite_r + seam, b_t + bite_t + seam), (-1, 0, 0, -1, 2 * core_x1, 2 * core_y1))  # TR
 
             # [MIRROR-ORIGIN 2026-07-28] Dịch toàn bộ nội dung để gốc trang về (0,0).
             #
@@ -1927,8 +1969,6 @@ class PageBoxesEngine:
             # (trước phép dịch) nên phải giữ nguyên mb gốc.
             dx = b_l - x0
             dy = b_b - y0
-            trim_w = x1 - x0
-            trim_h = y1 - y0
             shifted_ops = [
                 "q",
                 f"1 0 0 1 {dx:.4f} {dy:.4f} cm",

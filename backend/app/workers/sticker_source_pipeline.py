@@ -560,6 +560,112 @@ def _analysis_from_alpha(
     )
 
 
+def build_classic_alpha_page_contour(
+    source_path: str,
+    page_index: int,
+    page: pikepdf.Page,
+    *,
+    cut_mode: str,
+    offset_mm: float,
+    bleed_mm: float,
+    corner_style: str,
+    fill_holes: bool,
+    cutline_smoothness: float,
+    cutline_fidelity: float,
+    curve_tension: float,
+    cutline_denoise: float,
+    min_detail_area_mm2: float,
+    cutline_simplify_mm: float = 0.0,
+) -> LegacyApprovedContour | None:
+    """Dựng một vùng Alpha đúng như preview classic, không tạo session/gọi AI.
+
+    QUALITY (audit 2026-09-09 §BINDER2.2–3): trang đang xem dùng ROI Alpha,
+    trang khác từng dò RGB rồi fallback polyline. Chỉ nối ca PDF một ảnh Alpha
+    phủ trang và một vùng tem; vector/CutContour/nhiều vùng vẫn giữ hợp đồng cũ.
+    """
+    from app.workers.sticker_engine import (
+        UnsafeCutlineGeometryError,
+        _page_defines_cut_contour,
+        build_alpha_cutline_geometry,
+    )
+    from app.workers.sticker_cutline_preview import _cutline_instance_alpha_jobs
+    from app.workers.sticker_sheet_export import _translate_cutline_path_groups
+    from app.workers.sticker_source_inspector import _page_size_mm
+
+    if cut_mode not in {"original", "bleed"} or _page_defines_cut_contour(page):
+        return None
+    resources = page.get("/Resources")
+    objects = resources.get("/XObject") if isinstance(resources, pikepdf.Dictionary) else None
+    if not isinstance(objects, pikepdf.Dictionary) or not any(
+        str(obj.get("/Subtype", "")) == "/Image" and "/SMask" in obj
+        for obj in objects.values()
+        if isinstance(obj, (pikepdf.Stream, pikepdf.Dictionary))
+    ):
+        return None
+    if page.get("/Annots") or _full_page_raster_scale_limit(source_path, page_index) is None:
+        return None
+
+    # Manifest preview làm tròn mm 4 số trước render; lấy DPI THỰC hai trục
+    # từ bitmap để cả vị trí node lẫn ngưỡng pixel khớp sau lượng tử hóa PDF.
+    physical_size = tuple(round(value, 4) for value in _page_size_mm(page))
+    source_image, dpi = _render_pdf_page(source_path, page_index, physical_size)
+    raw_alpha = np.asarray(source_image.getchannel("A"), dtype=np.uint8)
+    if not has_meaningful_alpha(raw_alpha, DEFAULT_ALPHA_THRESHOLD):
+        return None
+    # Chốt trên biên CHƯA lọc: _analysis_from_alpha có thể bỏ đảo nhỏ theo
+    # tỷ lệ diện tích trang. Không lấy việc đã mất đảo làm bằng chứng "một tem".
+    binary = np.where(raw_alpha >= DEFAULT_ALPHA_THRESHOLD, 255, 0).astype(np.uint8)
+    raw_components, _raw_labels = cv2.connectedComponents(binary, connectivity=8)
+    del _raw_labels, binary
+    if raw_components != 2:
+        return None
+    analysis = _analysis_from_alpha(
+        source_image, raw_alpha, model=DEFAULT_MODEL, alpha_threshold=DEFAULT_ALPHA_THRESHOLD,
+    )
+    if len(analysis.instances) != 1:
+        # Không lọc/gộp các phần rời chỉ để ép thành một tem như UI classic.
+        return None
+    jobs = _cutline_instance_alpha_jobs(
+        analysis.labels, analysis.alpha, dpi=float(dpi[0]), dpi_y=float(dpi[1]),
+    )
+    if len(jobs) != 1:
+        raise StickerSourcePipelineError("Không xác định được ROI Alpha của vùng tem classic.")
+    _instance_id, left, top, local_alpha, _exact_shape = jobs[0]
+    try:
+        cutline = build_alpha_cutline_geometry(
+            local_alpha, dpi=float(dpi[0]), dpi_y=float(dpi[1]),
+            cut_mode=cut_mode, offset_mm=offset_mm, bleed_mm=bleed_mm,
+            corner_style=corner_style, fill_holes=fill_holes,
+            cutline_smoothness=cutline_smoothness, cutline_fidelity=cutline_fidelity,
+            curve_tension=curve_tension, cutline_denoise=cutline_denoise,
+            min_detail_area_mm2=min_detail_area_mm2, presmooth_alpha=False,
+            cutline_simplify_mm=cutline_simplify_mm,
+            simplify_offset_x_points=left * 72.0 / dpi[0],
+            simplify_offset_y_points=top * 72.0 / dpi[1],
+            simplify_page_height=abs(float(page.cropbox[3]) - float(page.cropbox[1])),
+            simplify_fast=True,
+        )
+    except UnsafeCutlineGeometryError as exc:
+        # Nguồn đã qua chốt Alpha một vùng thì phải giữ cùng fail-closed như
+        # preview, không quay lại đường polyline mà oracle vừa từ chối.
+        raise StickerSourcePipelineError(f"Trang {page_index + 1}: {exc}") from exc
+    if cutline is None or not cutline.get("path_groups"):
+        raise StickerSourcePipelineError(
+            f"Trang {page_index + 1}: không tạo được đường bế Alpha an toàn."
+        )
+    full_alpha = np.zeros(analysis.alpha.shape, dtype=np.uint8)
+    full_alpha[top:top + local_alpha.shape[0], left:left + local_alpha.shape[1]] = local_alpha
+    path_groups = _translate_cutline_path_groups(
+        cutline["path_groups"],
+        offset_x_points=left * 72.0 / dpi[0], offset_y_points=top * 72.0 / dpi[1],
+    )
+    return LegacyApprovedContour(
+        alpha=full_alpha, dpi=(float(dpi[0]), float(dpi[1])),
+        path_groups=path_groups, boundary_source="alpha", instance_count=1,
+        source_pixel_mm=max(25.4 / dpi[0], 25.4 / dpi[1]),
+    )
+
+
 def _page_box_detection(
     source_image: Image.Image,
     *,
@@ -749,6 +855,7 @@ def build_legacy_single_page_approved_contour(
     curve_tension: float = 50.0,
     # §CUTJAG.PARITY1: None = cổng tự động cũ; 0 = người dùng tắt hẳn.
     cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
     min_detail_area_mm2: float = 1.0,
 ) -> LegacyApprovedContour | None:
     """Dùng cùng Alpha/path của chế độ AI cho đúng một tem raster trong PDF.
@@ -783,6 +890,20 @@ def build_legacy_single_page_approved_contour(
     page = inspection.pages[0]
     if page.width_mm is None or page.height_mm is None:
         return None
+    if cutline_simplify_mm > 0 and page.has_alpha:
+        # RECIPE (audit 2026-09-09 §CUTSIMPLIFY.3): phát lại không có session
+        # vẫn dùng cùng ROI/DPI/đường cơ sở classic, không đổi qua fit toàn ảnh.
+        with pikepdf.Pdf.open(source_path) as source_pdf:
+            shared = build_classic_alpha_page_contour(
+                source_path, 0, source_pdf.pages[0], cut_mode=cut_mode,
+                offset_mm=offset_mm, bleed_mm=bleed_mm, corner_style=corner_style,
+                fill_holes=fill_holes, cutline_smoothness=cutline_smoothness,
+                cutline_fidelity=cutline_fidelity, curve_tension=curve_tension,
+                cutline_denoise=0.0 if cutline_denoise is None else cutline_denoise,
+                min_detail_area_mm2=min_detail_area_mm2, cutline_simplify_mm=cutline_simplify_mm,
+            )
+        if shared is not None:
+            return shared
     source_image, dpi = _render_pdf_page(
         source_path,
         0,
@@ -935,6 +1056,9 @@ def build_legacy_single_page_approved_contour(
                 use_automatic_presmooth
                 and should_presmooth_cutline_alpha(boundary_source)
             ),
+            cutline_simplify_mm=cutline_simplify_mm,
+            simplify_page_height=analysis.height * 72.0 / float(dpi[1]),
+            simplify_fast=True,
         )
     except UnsafeCutlineGeometryError as exc:
         raise StickerSourcePipelineError(str(exc)) from exc

@@ -89,6 +89,31 @@ def _make_full_ink_source(path: Path, *, page_count: int = 1) -> None:
     pdf.close()
 
 
+def _make_cubic_cut_source(path: Path) -> None:
+    """Nguồn có đường CutContour cubic để kiểm writer không flatten thành line."""
+
+    pdf = pikepdf.Pdf.new()
+    size = SRC_MM * PT_PER_MM
+    page = pdf.add_blank_page(page_size=(size, size))
+    left = 5.0 * PT_PER_MM
+    top = 5.0 * PT_PER_MM
+    right = 35.0 * PT_PER_MM
+    bottom = 35.0 * PT_PER_MM
+    # Bốn cubic tạo một hình bo góc, chỉ dùng m/c/l trong content stream.
+    handle = 0.5522847498 * 5.0 * PT_PER_MM
+    stream = (
+        f"q 0 0 0 rg 0 0 {size} {size} re f Q\n"
+        f"q 0 1 0 0 K 0.5 w {left} {top} m "
+        f"{right - handle} {top} {right} {top + handle} {right} {top + 5 * PT_PER_MM} c "
+        f"{right} {bottom - handle} {right - handle} {bottom} {right - 5 * PT_PER_MM} {bottom} c "
+        f"{left + handle} {bottom} {left} {bottom - handle} {left} {bottom - 5 * PT_PER_MM} c "
+        f"{left} {top + handle} {left + handle} {top} {left} {top} c S Q\n"
+    )
+    page.contents_add(pikepdf.Stream(pdf, stream.encode("ascii")))
+    pdf.save(str(path))
+    pdf.close()
+
+
 def _source_revision(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -480,6 +505,23 @@ def test_trang_cut_co_du_vong_ngoai_va_vong_lo(workdir: Path) -> None:
     # Chỉ stroke, không fill: giữa lỗ và giữa vật liệu đều phải trắng.
     assert _probe_mm(array, scale, 20.0, 20.0) > 250
     assert _probe_mm(array, scale, 10.0, 20.0) > 250
+
+
+def test_trang_cut_giu_nguyen_cubic_tu_nguon(workdir: Path) -> None:
+    """Nguồn cubic phải ra toán tử `c`, không bị polygon hóa thành nhiều `l`."""
+
+    source = workdir / "nguon.pdf"
+    _make_cubic_cut_source(source)
+    result, _, _ = _render(
+        workdir,
+        poses=[_pose(20.0, 20.0)],
+        bundle=_bundle(source),
+    )
+    cut_stream = _raw(result.output_path, 1)
+
+    assert cut_stream.count(" c\n") == 4
+    assert cut_stream.count(" l\n") == 0
+    assert cut_stream.count("h\n") == 1
 
 
 def test_trang_cut_khong_paint_artwork(workdir: Path) -> None:

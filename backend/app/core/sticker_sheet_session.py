@@ -220,6 +220,11 @@ def _restore_session_from_disk(session_id: str) -> StickerSheetSession | None:
         directory = _safe_session_dir(session_id)
     except ValueError:
         return None
+    # PERF (audit 2026-09-11 §PREWARM.CANCEL): close đã gỡ session khỏi store
+    # nhưng worker CUT có thể đang nhả PDF/source. Không hồi sinh session từ đĩa
+    # trong khoảng đó, nếu không request đến trễ sẽ đụng artifact sắp bị xóa.
+    if (directory / ".cutline-closing").exists():
+        return None
     root_manifest_path = directory / "manifest.json"
     root_manifest = _read_manifest(root_manifest_path)
     if root_manifest is None or root_manifest.get("session_id") != session_id:
@@ -1219,8 +1224,18 @@ def close_session(session_id: str) -> bool:
         with _STORE_LOCK:
             if _SESSIONS.get(session_id) is not session:
                 return False
+            # PERF (audit 2026-09-11 §PREWARM.CANCEL): đặt marker trước khi gỡ
+            # registry. Giữ store lock xuyên suốt để request đến sát thời điểm
+            # đóng không phục hồi session từ artifact đĩa đang được worker đọc.
+            from app.workers.sticker_cutline_jobs import defer_preview_cleanup
+
+            deferred = defer_preview_cleanup(
+                session,
+                lambda: _remove_directory(session.directory),
+            )
             _SESSIONS.pop(session_id, None)
-        _remove_directory(session.directory)
+        if not deferred:
+            _remove_directory(session.directory)
         return True
 
 
@@ -1242,7 +1257,17 @@ def sweep_expired(now: float | None = None) -> int:
                     or current_time - current.last_access <= SESSION_TTL_SECONDS
                 ):
                     continue
+                # Check freshness và đặt closing marker dưới cùng store lock;
+                # nếu không một get_session chen giữa có thể làm session còn hạn
+                # bị đánh dấu đóng mà sweep lại không xóa nó.
+                from app.workers.sticker_cutline_jobs import defer_preview_cleanup
+
+                deferred = defer_preview_cleanup(
+                    session,
+                    lambda: _remove_directory(session.directory),
+                )
                 _SESSIONS.pop(session_id, None)
-            _remove_directory(session.directory)
+            if not deferred:
+                _remove_directory(session.directory)
             removed += 1
     return removed

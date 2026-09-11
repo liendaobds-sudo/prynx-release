@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 from app.schemas.preflight import (  # noqa: F401
     ActionLogResponse,
     AddBleedRequest,
+    MirrorBleedRequest,
     AutoTrimRequest,
     ChannelReportResponse,
     ConvertColorsRequest,
@@ -1246,7 +1247,7 @@ def _safe_watermark_preflight(pdf_path: str, license_info: dict | None) -> None:
 
 
 @router.post("/preflight/mirror-bleed", response_model=FixFileResponse)
-async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(require_license)):
+async def mirror_bleed(req: MirrorBleedRequest, license_info: dict = Depends(require_license)):
     """Tạo bù xén bằng cách LẬT GƯƠNG nội dung mép ra vùng bleed (giữ vector)."""
     file_path = _get_file_path(req.file_id)
     from app.core.page_boxes import PageBoxesEngine
@@ -1260,6 +1261,7 @@ async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(requir
             req.bleed_mm,
             req.pages,
             req.bleed_sides,
+            edge_bite_mm=req.edge_bite_mm,
         )
         _safe_watermark_preflight(output, license_info)
         return {"success": True, "output_filename": Path(output).name}
