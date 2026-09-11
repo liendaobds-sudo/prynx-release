@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -13,7 +15,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from app.core.system_memory import plan_worker_count
+from app.core.system_memory import plan_worker_count, read_memory_status_mb
+from app.workers.cutline_preview_cancel import check_preview_cancelled
 from app.core.sticker_sheet_session import (
     StickerSheetPageState,
     StickerSheetSession,
@@ -27,6 +30,7 @@ from app.workers.sticker_engine import (
     _cutline_round_radius_mm,
     compute_cut_bleed_offsets,
     fit_prepared_alpha_cutline_geometry,
+    simplify_alpha_cutline_result,
     prepare_alpha_cutline_geometry,
     should_presmooth_cutline_alpha,
 )
@@ -136,9 +140,24 @@ def _preview_executor() -> ThreadPoolExecutor:
 
 
 def _map_preview_jobs(function, items: list[object]) -> list[object]:
+    check_preview_cancelled()
     if len(items) <= 1:
         return [function(item) for item in items]
-    return list(_preview_executor().map(function, items))
+    # PERF (audit 2026-09-11 §PREWARM.CANCEL): mỗi task cần context riêng;
+    # cùng một Context không thể chạy đồng thời. Đợi các task thực sự dừng
+    # trước khi caller được phép đóng token dùng chung với process.
+    futures = [_preview_executor().submit(copy_context().run, function, item) for item in items]
+    try:
+        return [future.result() for future in futures]
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        for future in futures:
+            try:
+                future.result()
+            except BaseException:
+                pass
+        raise
 
 
 def _number(value: float) -> str:
@@ -146,6 +165,145 @@ def _number(value: float) -> str:
     if abs(rounded) < 0.00005:
         rounded = 0.0
     return f"{rounded:.4f}".rstrip("0").rstrip(".") or "0"
+
+
+def _preview_fit_cache_key(
+    *,
+    geometry_key: str,
+    cutline_smoothness: float,
+    requested_cutline_fidelity: float,
+    requested_curve_tension: float,
+    requested_cutline_denoise: float | None,
+    effective_cutline_fidelity: float,
+    effective_curve_tension: float,
+    cutline_simplify_mm: float,
+    simplify_height: float,
+    source_kind: str,
+    preview_size: tuple[int, int] = (0, 0),
+) -> str:
+    """Khóa tầng fit/Simplify, tách khỏi contour nền đã chuẩn bị.
+
+    PERF (audit 2026-09-11 §SIMPLIFY.CACHE): offset/bleed/denoise và mask nằm
+    trong ``geometry_key``; các thanh chỉ tác động lên Bézier/Simplify dùng
+    lại đúng working-set đó. Phiên bản thuật toán vẫn nằm trong khóa để không
+    trộn frame cũ sau khi nâng cấp lõi.
+    """
+    from app.workers.cutline_cubic_simplify import CUTLINE_SIMPLIFY_ALGORITHM
+
+    payload = {
+        "geometry_key": geometry_key,
+        "cutline_smoothness": float(cutline_smoothness),
+        # Giữ cả giá trị người dùng gửi: composite có thể nâng fidelity/
+        # hạ tension nội bộ nhưng fingerprint/export key vẫn phải phân biệt
+        # hai lựa chọn khác nhau.
+        "requested_cutline_fidelity": float(requested_cutline_fidelity),
+        "requested_curve_tension": float(requested_curve_tension),
+        "requested_cutline_denoise": (
+            None if requested_cutline_denoise is None
+            else float(requested_cutline_denoise)
+        ),
+        "effective_cutline_fidelity": float(effective_cutline_fidelity),
+        "effective_curve_tension": float(effective_curve_tension),
+        "cutline_simplify_mm": float(cutline_simplify_mm),
+        "simplify_height": float(simplify_height),
+        "source_kind": str(source_kind),
+        "preview_size": preview_size,
+        "algorithm": CUTLINE_SIMPLIFY_ALGORITHM,
+    }
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def _preview_cache_limit():
+    """Chỉ thu hẹp baseline tùy chọn trên máy yếu; >=16 GB giữ đầy đủ."""
+    total_mb, _available_mb = read_memory_status_mb()
+    if total_mb is not None and total_mb < 8 * 1024:
+        return 2
+    if total_mb is not None and total_mb < 16 * 1024:
+        return 8
+    return None
+
+
+def _remember_preview(entries, key, value, limit):
+    """LRU theo RAM, không giảm số node, dung sai hay công suất worker."""
+    entries.pop(key, None)
+    entries[key] = value
+    if limit is not None:
+        while len(entries) > limit:
+            entries.pop(next(iter(entries)))
+
+
+def _preview_source_key(session, page):
+    """Ràng cache với byte nguồn/mask, không tin riêng đường dẫn hoặc mtime.
+
+    PERF (audit 2026-09-11 §SIMPLIFY.CACHE): digest dùng luồng đọc, không giữ
+    thêm raster; sửa file nhưng giữ mtime/size cũng không nhận lại CUT cũ.
+    """
+    digests = []
+    for path in (session.source_path, page.directory / "labels.npy", page.directory / "rgba.png"):
+        with open(path, "rb") as stream:
+            digests.append(hashlib.file_digest(stream, "sha256").hexdigest())
+    return hashlib.sha256(json.dumps({
+        "digests": digests, "page": page.page_number,
+        "revision": page.manifest.get("mask_revision"),
+        "boundary_source": page.boundary_source,
+    }, sort_keys=True).encode()).hexdigest()
+
+
+def restore_preview_history(session, page, fingerprint):
+    """Chọn frame đã xem khi UI quay về A nhưng request B đã xong sau đó.
+
+    Chỉ phục hồi artifact còn trong RAM, đúng nguồn/revision. Builder dùng
+    lại path đã kiểm và gắn Alpha qua luồng cũ; không nhận path từ client.
+    Caller vẫn kiểm toàn bộ thiết lập và fingerprint trước khi xuất.
+    """
+    history = getattr(page, "cutline_preview_fit_cache", None)
+    if not isinstance(history, dict) or history.get("source_key") != _preview_source_key(session, page):
+        return None
+    for frame in list(history.get("entries", {}).values()):
+        if frame.get("response", {}).get("fingerprint") == fingerprint:
+            response = build_sticker_cutline_preview(session, **deepcopy(frame["options"]))
+            return page.cutline_export_cache if response["fingerprint"] == fingerprint else None
+    return None
+
+
+def _cache_instances_without_alpha(instances):
+    """Bỏ buffer Alpha lớn trước khi lưu frame phụ trong RAM."""
+    return [
+        deepcopy({key: value for key, value in instance.items() if key != "alpha"})
+        for instance in instances
+    ]
+
+
+def _restore_cached_instances(instances, prepared_instances):
+    """Gắn lại Alpha từ contour working-set cho cache export canonical."""
+    if not isinstance(instances, (list, tuple)):
+        return None
+    alpha_by_id = {
+        int(item[0]): item
+        for item in prepared_instances
+    }
+    restored = []
+    for raw in instances:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            instance_id = int(raw["instance_id"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        prepared = alpha_by_id.get(instance_id)
+        if prepared is None or (raw.get("left"), raw.get("top")) != (prepared[1], prepared[2]):
+            return None
+        alpha = np.ascontiguousarray(prepared[4], dtype=np.uint8)
+        if hashlib.sha256(alpha.tobytes(order="C")).hexdigest() != raw.get("alpha_sha256"):
+            return None
+        item = deepcopy(raw)
+        # Chỉ frame active có Alpha riêng; lịch sử không giữ raster. Consumer
+        # xuất sửa buffer này cũng không được làm hỏng working-set của fitter.
+        item["alpha"] = alpha.copy()
+        restored.append(item)
+    return restored
 
 
 _EXACT_ELLIPSE_KAPPA = 0.5522847498307936
@@ -801,6 +959,71 @@ def _exact_path_quality(
     }
 
 
+def _cutline_instance_alpha_jobs(
+    labels: np.ndarray,
+    alpha: np.ndarray,
+    *,
+    dpi: float,
+    dpi_y: float,
+    exact_shapes: dict[int, dict[str, object]] | None = None,
+    preserve_alpha_fringe: bool = False,
+) -> list[tuple[int, int, int, np.ndarray, dict[str, object] | None]]:
+    """Cắt Alpha từng tem theo cùng ROI cho preview và worker PDF."""
+    # QUALITY (audit 2026-09-09 §BINDER2.3): dùng chung padding và mask theo nhãn
+    # để đường bế classic không fit trên biên khác với preview đã duyệt.
+    analysis_height, analysis_width = labels.shape
+    shapes = exact_shapes if exact_shapes is not None else {}
+    fringe_padding = _CUTLINE_ALPHA_FRINGE_PX if preserve_alpha_fringe else 1
+    padding_x = max(
+        fringe_padding,
+        round(STICKER_PAGE_PADDING_MM * dpi / 25.4),
+    )
+    padding_y = max(
+        fringe_padding,
+        round(STICKER_PAGE_PADDING_MM * dpi_y / 25.4),
+    )
+    jobs = []
+    instance_ids = sorted(
+        int(value) for value in np.unique(labels) if int(value) > 0
+    )
+    for instance_id in instance_ids:
+        ys, xs = np.where(labels == instance_id)
+        if xs.size == 0:
+            continue
+        left = max(0, int(xs.min()) - padding_x)
+        top = max(0, int(ys.min()) - padding_y)
+        right = min(
+            analysis_width,
+            int(xs.max()) + padding_x + 1,
+        )
+        bottom = min(
+            analysis_height,
+            int(ys.max()) + padding_y + 1,
+        )
+        exact_shape = shapes.get(instance_id)
+        local_labels = labels[top:bottom, left:right]
+        local_mask = local_labels == instance_id
+        if preserve_alpha_fringe:
+            fringe_mask = cv2.dilate(
+                local_mask.astype(np.uint8),
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE,
+                    (
+                        _CUTLINE_ALPHA_FRINGE_PX * 2 + 1,
+                        _CUTLINE_ALPHA_FRINGE_PX * 2 + 1,
+                    ),
+                ),
+            ).astype(bool)
+            # Không lấy dải alpha của tem kế bên khi hai bbox gần nhau.
+            fringe_mask &= (local_labels == 0) | local_mask
+        else:
+            fringe_mask = local_mask
+        local_alpha = alpha[top:bottom, left:right].copy()
+        local_alpha[~fringe_mask] = 0
+        jobs.append((instance_id, left, top, local_alpha, exact_shape))
+    return jobs
+
+
 def build_sticker_cutline_preview(
     session: StickerSheetSession,
     *,
@@ -820,13 +1043,24 @@ def build_sticker_cutline_preview(
     min_detail_area_mm2: float,
     # §CUTJAG.3: None = để cổng tự động theo nguồn biên quyết định.
     cutline_denoise: float | None = None,
+    cutline_simplify_mm: float = 0.0,
 ) -> dict[str, object]:
     """Trả SVG path theo hệ preview; không ghi hay thay revision của session."""
+    check_preview_cancelled()
+    from app.workers.cutline_cubic_simplify import (
+        CUTLINE_SIMPLIFY_ALGORITHM,
+        CUTLINE_SIMPLIFY_MAX_MM,
+    )
+
     page = session.pages.get(page_number)
+    cutline_simplify_mm = float(cutline_simplify_mm)
+    if not math.isfinite(cutline_simplify_mm) or not 0 <= cutline_simplify_mm <= CUTLINE_SIMPLIFY_MAX_MM:
+        raise StickerSheetExportError("Sai số đơn giản hóa thêm phải nằm trong 0–0,10 mm.")
     if page is None:
         raise StickerSheetSessionConflict("Trang nguồn để xem đường bế không tồn tại.")
 
     with page.operation_lock:
+        check_preview_cancelled()
         if page.stage not in {"mask-review", "mask-ready"}:
             raise StickerSheetSessionConflict(
                 "Vùng tem chưa sẵn sàng để xem đường bế."
@@ -914,7 +1148,9 @@ def build_sticker_cutline_preview(
                 "simple-bg thô mà không gọi mô hình nặng",
                 denoise_amount,
             )
+        source_key = _preview_source_key(session, page)
         geometry_key_payload = {
+            "source_key": source_key,
             "page": page_number,
             "revision": revision,
             "edits": edits,
@@ -962,56 +1198,17 @@ def build_sticker_cutline_preview(
                 preserve_alpha_fringe=preserve_alpha_fringe,
             )
             analysis_height, analysis_width = labels.shape
-            fringe_padding = _CUTLINE_ALPHA_FRINGE_PX if preserve_alpha_fringe else 1
-            padding_x = max(
-                fringe_padding,
-                round(STICKER_PAGE_PADDING_MM * dpi_x / 25.4),
+            prepare_jobs = _cutline_instance_alpha_jobs(
+                labels,
+                rgba[:, :, 3],
+                dpi=dpi_x,
+                dpi_y=dpi_y_resolved,
+                exact_shapes=exact_shapes,
+                preserve_alpha_fringe=preserve_alpha_fringe,
             )
-            padding_y = max(
-                fringe_padding,
-                round(STICKER_PAGE_PADDING_MM * dpi_y_resolved / 25.4),
-            )
-            prepare_jobs = []
-            instance_ids = sorted(
-                int(value) for value in np.unique(labels) if int(value) > 0
-            )
-            for instance_id in instance_ids:
-                ys, xs = np.where(labels == instance_id)
-                if xs.size == 0:
-                    continue
-                left = max(0, int(xs.min()) - padding_x)
-                top = max(0, int(ys.min()) - padding_y)
-                right = min(
-                    analysis_width,
-                    int(xs.max()) + padding_x + 1,
-                )
-                bottom = min(
-                    analysis_height,
-                    int(ys.max()) + padding_y + 1,
-                )
-                exact_shape = exact_shapes.get(instance_id)
-                local_labels = labels[top:bottom, left:right]
-                local_mask = local_labels == instance_id
-                if preserve_alpha_fringe:
-                    fringe_mask = cv2.dilate(
-                        local_mask.astype(np.uint8),
-                        cv2.getStructuringElement(
-                            cv2.MORPH_ELLIPSE,
-                            (
-                                _CUTLINE_ALPHA_FRINGE_PX * 2 + 1,
-                                _CUTLINE_ALPHA_FRINGE_PX * 2 + 1,
-                            ),
-                        ),
-                    ).astype(bool)
-                    # Không lấy dải alpha của tem kế bên khi hai bbox gần nhau.
-                    fringe_mask &= (local_labels == 0) | local_mask
-                else:
-                    fringe_mask = local_mask
-                alpha = rgba[top:bottom, left:right, 3].copy()
-                alpha[~fringe_mask] = 0
-                prepare_jobs.append((instance_id, left, top, alpha, exact_shape))
 
             def prepare_instance(item):
+                check_preview_cancelled()
                 instance_id, left, top, alpha, exact_shape = item
                 if exact_shape is not None:
                     return instance_id, left, top, {"exact_shape": exact_shape}, alpha
@@ -1051,7 +1248,64 @@ def build_sticker_cutline_preview(
 
         scale_x = preview_width / max(1, analysis_width)
         scale_y = preview_height / max(1, analysis_height)
+        simplify_height = analysis_height * 72.0 / dpi_y_resolved
+        if cutline_simplify_mm > 0 and session.source_kind == "pdf":
+            import pikepdf
+
+            with pikepdf.Pdf.open(session.source_path) as source_pdf:
+                box = source_pdf.pages[page_number - 1].cropbox
+                simplify_height = abs(float(box[3]) - float(box[1]))
+
+        # PERF (audit 2026-09-11 §SIMPLIFY.CACHE): giữ riêng Bézier TRƯỚC
+        # Simplify và các frame SAU kiểm. Đổi dung sai không fit lại, không
+        # simplify chồng lên nghiệm cũ; đổi offset vẫn có thể trở lại frame cũ.
+        fit_options = dict(
+            geometry_key=geometry_key,
+            cutline_smoothness=cutline_smoothness,
+            requested_cutline_fidelity=cutline_fidelity,
+            requested_curve_tension=curve_tension,
+            requested_cutline_denoise=requested_denoise_value,
+            effective_cutline_fidelity=effective_cutline_fidelity,
+            effective_curve_tension=effective_curve_tension,
+            source_kind=session.source_kind,
+        )
+        fit_cache_key = _preview_fit_cache_key(
+            **fit_options, cutline_simplify_mm=cutline_simplify_mm,
+            simplify_height=simplify_height, preview_size=(preview_width, preview_height),
+        )
+        baseline_key = _preview_fit_cache_key(
+            **fit_options, cutline_simplify_mm=0.0, simplify_height=0.0,
+        )
+        cache_limit = _preview_cache_limit()
+        fit_cache = getattr(page, "cutline_preview_fit_cache", None)
+        if (
+            not isinstance(fit_cache, dict)
+            or fit_cache.get("source_key") != source_key
+            or not isinstance(fit_cache.get("entries"), dict)
+        ):
+            fit_cache = {"source_key": source_key, "entries": {}, "baselines": {}}
+            page.cutline_preview_fit_cache = fit_cache
+        cached_fit = fit_cache["entries"].get(fit_cache_key)
+        if isinstance(cached_fit, dict):
+            cached_export = cached_fit.get("export_cache")
+            cached_instances = _restore_cached_instances(
+                cached_export.get("instances") if isinstance(cached_export, dict) else None,
+                prepared_instances,
+            )
+            cached_response = cached_fit.get("response")
+            if (
+                cached_instances is not None
+                and isinstance(cached_response, dict)
+                and isinstance(cached_export, dict)
+            ):
+                export_cache = deepcopy(cached_export)
+                export_cache["instances"] = cached_instances
+                page.cutline_export_cache = export_cache
+                return deepcopy(cached_response)
+
+        baseline_instances = dict(fit_cache["baselines"].get(baseline_key, {}))
         def fit_instance(item):
+            check_preview_cancelled()
             instance_id, left, top, prepared, local_alpha = item
             exact_shape = prepared.get("exact_shape")
             if isinstance(exact_shape, dict):
@@ -1103,12 +1357,17 @@ def build_sticker_cutline_preview(
                     )
             else:
                 try:
-                    cutline = fit_prepared_alpha_cutline_geometry(
-                        prepared,
-                        cutline_smoothness=cutline_smoothness,
-                        cutline_fidelity=effective_cutline_fidelity,
-                        curve_tension=effective_curve_tension,
-                    )
+                    if instance_id in baseline_instances:
+                        cutline = deepcopy(baseline_instances[instance_id])
+                    else:
+                        cutline = fit_prepared_alpha_cutline_geometry(
+                            prepared,
+                            cutline_smoothness=cutline_smoothness,
+                            cutline_fidelity=effective_cutline_fidelity,
+                            curve_tension=effective_curve_tension,
+                        )
+                        if cutline is not None:
+                            baseline_instances[instance_id] = deepcopy(cutline)
                 except UnsafeCutlineGeometryError as exc:
                     # QUALITY (audit 2026-08-10 §CUTSMOOTH.4): đổi lỗi hình học thành
                     # lỗi nghiệp vụ 422, không để route báo 500 khó hiểu.
@@ -1119,6 +1378,19 @@ def build_sticker_cutline_preview(
                     raise StickerSheetExportError(
                         f"Không tạo được đường bế xem trước cho tem {instance_id}."
                     )
+                cutline = simplify_alpha_cutline_result(
+                    cutline, prepared, tolerance_mm=cutline_simplify_mm,
+                    offset_x_points=left * 72.0 / dpi_x,
+                    offset_y_points=top * 72.0 / dpi_y_resolved,
+                    page_height=simplify_height,
+                    preview_fast=True,
+                )
+            if cutline_simplify_mm > 0 and "simplification" not in cutline.get("quality", {}):
+                count = sum(len(r) for g in cutline["path_groups"] for r in [g["exterior"], *g.get("interiors", [])])
+                cutline["quality"] = {**cutline.get("quality", {}), "simplification": {
+                    "before_segments": count, "after_segments": count,
+                    "maximum_error_bound_mm": 0.0, "changed": False,
+                }}
             path_groups = cutline["path_groups"]
             if not path_groups:
                 return None
@@ -1157,9 +1429,10 @@ def build_sticker_cutline_preview(
                     "quality": quality,
                 },
                 fingerprint_instance,
-                # Dùng cùng buffer với prepared working-set; tránh nhân đôi vài
-                # MB cho mỗi tem chỉ để dựng cache canonical.
-                {**fingerprint_instance, "alpha": alpha_value},
+                # PERF (audit 2026-09-11 §SIMPLIFY.CACHE): chỉ một Alpha cho
+                # frame active; các frame lịch sử chỉ giữ hash/path. Tách copy
+                # ở biên này để consumer không sửa mask trong working-set.
+                {**fingerprint_instance, "alpha": alpha_value.copy()},
                 segment_count,
                 quality,
             )
@@ -1203,6 +1476,11 @@ def build_sticker_cutline_preview(
             "effective_cutline_denoise": denoise_amount,
             "paths": fingerprint_paths,
         }
+        if cutline_simplify_mm > 0:
+            fingerprint_payload["cutline_simplify_mm"] = cutline_simplify_mm
+            # QUALITY (audit 2026-09-10 §FAIR.4): phân biệt lõi neo tự do với
+            # frame cũ dù số mm và đường sau fallback có thể trùng nhau.
+            fingerprint_payload["cutline_simplify_algorithm"] = CUTLINE_SIMPLIFY_ALGORITHM
         fingerprint = hashlib.sha256(json.dumps(
             fingerprint_payload,
             ensure_ascii=False,
@@ -1213,7 +1491,17 @@ def build_sticker_cutline_preview(
         # hiện trên màn hình. Cache chỉ có một bản mới nhất/trang và khóa bao phủ
         # toàn bộ revision, edit, DPI cùng các tham số quỹ đạo.
         aggregate_quality = _aggregate_cutline_quality(quality_items)
+        if cutline_simplify_mm > 0:
+            summaries = [item.get("simplification") or {} for item in quality_items]
+            aggregate_quality["simplification"] = {
+                "before_segments": sum(int(item.get("before_segments", 0)) for item in summaries),
+                "after_segments": total_segments,
+                "maximum_error_bound_mm": max((float(item.get("maximum_error_bound_mm", 0.0)) for item in summaries), default=0.0),
+                "changed": any(bool(item.get("changed")) for item in summaries),
+            }
+        check_preview_cancelled()
         page.cutline_export_cache = {
+            "source_key": source_key,
             "key": _cutline_export_cache_key(
                 page_number=page_number,
                 revision=revision,
@@ -1230,6 +1518,7 @@ def build_sticker_cutline_preview(
                 curve_tension=curve_tension,
                 min_detail_area_mm2=min_detail_area_mm2,
                 cutline_denoise=requested_denoise_value,
+                cutline_simplify_mm=cutline_simplify_mm,
             ),
             "page_number": page_number,
             "revision": revision,
@@ -1242,11 +1531,12 @@ def build_sticker_cutline_preview(
             "requested_cutline_denoise": requested_denoise_value,
             "effective_cutline_denoise": denoise_amount,
             "quality": aggregate_quality,
+            "cutline_simplify_mm": cutline_simplify_mm,
             "analysis_width": analysis_width,
             "analysis_height": analysis_height,
             "instances": cache_instances,
         }
-        return {
+        response = {
             "page_number": page_number,
             "mask_revision": revision,
             "preview_width_px": preview_width,
@@ -1256,3 +1546,25 @@ def build_sticker_cutline_preview(
             "segment_count": total_segments,
             "quality": aggregate_quality,
         }
+        # Cache phụ chỉ giữ path/metadata; Alpha được gắn lại từ
+        # ``prepared_instances`` khi hit để không làm phình RAM theo số lần kéo.
+        _remember_preview(fit_cache["baselines"], baseline_key, baseline_instances, cache_limit)
+        # Frame cuối là artifact UI còn tham chiếu, không phải baseline có thể
+        # loại tùy ý. Giữ vector nhẹ đến hết revision/session; nếu loại frame A
+        # trên máy yếu, UI quay lại A sẽ bị kẹt 409 dù vẫn hiển thị đã sẵn sàng.
+        fit_cache["entries"][fit_cache_key] = {
+            "response": deepcopy(response),
+            "export_cache": deepcopy({
+                key: value for key, value in page.cutline_export_cache.items()
+                if key != "instances"
+            }) | {"instances": _cache_instances_without_alpha(cache_instances)},
+            "options": dict(
+                page_number=page_number, base_revision=revision, edits=deepcopy(edits),
+                dpi=dpi_x, dpi_y=dpi_y_resolved, offset_mm=offset_mm, bleed_mm=bleed_mm,
+                cut_mode=cut_mode, corner_style=corner_style, fill_holes=fill_holes,
+                cutline_smoothness=cutline_smoothness, cutline_fidelity=cutline_fidelity,
+                curve_tension=curve_tension, min_detail_area_mm2=min_detail_area_mm2,
+                cutline_denoise=requested_denoise_value, cutline_simplify_mm=cutline_simplify_mm,
+            ),
+        }
+        return response

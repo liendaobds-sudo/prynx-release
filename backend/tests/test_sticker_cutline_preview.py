@@ -748,6 +748,333 @@ def test_preview_tra_svg_bezier_va_tai_su_dung_geometry_khi_keo_tuning(
     assert prepare_calls == 1
 
 
+def test_preview_cache_lai_frame_fit_simplify_khi_quay_lai_thiet_lap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Đổi lại đúng bộ thanh kéo không được gọi lại solver Simplify."""
+    session = _session(tmp_path)
+    original_simplify = cutline_preview_module.simplify_alpha_cutline_result
+    simplify_calls = 0
+
+    def counted_simplify(*args, **kwargs):
+        nonlocal simplify_calls
+        simplify_calls += 1
+        return original_simplify(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cutline_preview_module,
+        "simplify_alpha_cutline_result",
+        counted_simplify,
+    )
+    options = dict(
+        page_number=1,
+        base_revision=3,
+        edits=[],
+        dpi=100.0,
+        dpi_y=100.0,
+        offset_mm=0.0,
+        bleed_mm=2.0,
+        cut_mode="original",
+        corner_style="preserve",
+        fill_holes=True,
+        cutline_smoothness=50.0,
+        cutline_fidelity=50.0,
+        curve_tension=50.0,
+        min_detail_area_mm2=1.0,
+        cutline_denoise=0.0,
+        cutline_simplify_mm=0.1,
+    )
+
+    first = build_sticker_cutline_preview(session, **options)
+    second = build_sticker_cutline_preview(session, **options)
+    changed_fit = build_sticker_cutline_preview(
+        session,
+        **{**options, "curve_tension": 90.0},
+    )
+
+    assert first["paths"] == second["paths"]
+    assert first["fingerprint"] == second["fingerprint"]
+    assert changed_fit["fingerprint"] != first["fingerprint"]
+    assert simplify_calls == 2
+
+
+def test_preview_cache_khong_alias_denoise_thieu_field_va_tat_tuong_minh(
+    tmp_path,
+) -> None:
+    """None và 0 có thể cùng hình học nhưng vẫn là hai contract export."""
+    session = _session(tmp_path)
+    # Vector đã có biên chuyển tiếp riêng nên None/0 chỉ khác metadata,
+    # không kích hoạt cổng presmooth làm thay đổi geometry_key.
+    session.boundary_source = "vector"
+    session.pages[1].boundary_source = "vector"
+    options = dict(
+        page_number=1,
+        base_revision=3,
+        edits=[],
+        dpi=100.0,
+        dpi_y=100.0,
+        offset_mm=0.0,
+        bleed_mm=2.0,
+        cut_mode="original",
+        corner_style="preserve",
+        fill_holes=True,
+        cutline_smoothness=50.0,
+        cutline_fidelity=50.0,
+        curve_tension=50.0,
+        min_detail_area_mm2=1.0,
+        cutline_simplify_mm=0.1,
+    )
+    implicit = build_sticker_cutline_preview(
+        session, **options, cutline_denoise=None,
+    )
+    explicit = build_sticker_cutline_preview(
+        session, **options, cutline_denoise=0.0,
+    )
+
+    assert implicit["paths"] == explicit["paths"]
+    assert implicit["fingerprint"] != explicit["fingerprint"]
+    assert (
+        session.pages[1].cutline_export_cache["requested_cutline_denoise"]
+        == 0.0
+    )
+
+
+def _cached_preview_options(**overrides):
+    return dict(
+        page_number=1, base_revision=3, edits=[], dpi=100.0, dpi_y=100.0,
+        offset_mm=0.0, bleed_mm=2.0, cut_mode="original", corner_style="preserve",
+        fill_holes=True, cutline_smoothness=50.0, cutline_fidelity=50.0,
+        curve_tension=50.0, min_detail_area_mm2=1.0, cutline_denoise=0.0,
+        cutline_simplify_mm=0.1,
+    ) | overrides
+
+
+def test_cache_simplify_doi_mm_khong_fit_lai_va_khong_cong_don_sai_so(tmp_path, monkeypatch):
+    """Mỗi dung sai bắt đầu từ cùng Bézier gốc, không fit hoặc simplify chồng."""
+    from copy import deepcopy
+    session = _session(tmp_path)
+    fit = cutline_preview_module.fit_prepared_alpha_cutline_geometry
+    seen, sources = [], []
+
+    def spy_fit(*args, **kwargs):
+        seen.append(kwargs)
+        return fit(*args, **kwargs)
+
+    def spy_simplify(cutline, prepared, **options):
+        sources.append(deepcopy(cutline["path_groups"]))
+        return cutline
+
+    monkeypatch.setattr(cutline_preview_module, "fit_prepared_alpha_cutline_geometry", spy_fit)
+    monkeypatch.setattr(cutline_preview_module, "simplify_alpha_cutline_result", spy_simplify)
+    for amount in (0.0, 0.05, 0.1, 0.05, 0.0):
+        build_sticker_cutline_preview(session, **_cached_preview_options(cutline_simplify_mm=amount))
+    assert len(seen) == 1
+    assert len(sources) == 3 and sources[0] == sources[1] == sources[2]
+
+
+def test_cache_quay_lai_offset_cu_khong_simplify_lai(tmp_path, monkeypatch):
+    session = _session(tmp_path)
+    calls = []
+
+    def spy(cutline, prepared, **options):
+        calls.append(options)
+        return cutline
+
+    monkeypatch.setattr(cutline_preview_module, "simplify_alpha_cutline_result", spy)
+    first = build_sticker_cutline_preview(session, **_cached_preview_options())
+    build_sticker_cutline_preview(session, **_cached_preview_options(offset_mm=1.0))
+    again = build_sticker_cutline_preview(session, **_cached_preview_options())
+    assert first == again and len(calls) == 2
+
+
+@pytest.mark.parametrize("ram_mb", [4096, 32768])
+def test_cache_snapshot_frame_a_sau_khi_da_hien_b(tmp_path, monkeypatch, ram_mb):
+    from copy import deepcopy
+    from app.workers.sticker_sheet_export import snapshot_classic_cutline_preview
+    session, source, first = _prime_classic_preview_artifact(tmp_path, monkeypatch)
+    monkeypatch.setattr(cutline_preview_module, "read_memory_status_mb", lambda: (ram_mb, 1024))
+    cached = deepcopy(session.pages[1].cutline_export_cache)
+    _preview(session, tension=90.0)
+    _preview(session, tension=70.0)
+    _preview(session, tension=60.0)
+    result = snapshot_classic_cutline_preview(
+        session, source_path=source, page_number=1, expected_revision=3,
+        expected_fingerprint=first["fingerprint"], offset_mm=0.0, bleed_mm=2.0,
+        cut_mode="original", corner_style="preserve", fill_holes=True,
+        curve_tension=50.0, cutline_denoise=None,
+    )
+    expected = _translate_cutline_path_groups(
+        cached["instances"][0]["path_groups"],
+        offset_x_points=cached["instances"][0]["left"] * 72 / 100,
+        offset_y_points=cached["instances"][0]["top"] * 72 / 100,
+    )
+    assert result["path_groups"] == expected
+
+
+def test_cache_tra_ban_sao_khong_de_export_sua_path_da_luu(tmp_path):
+    from copy import deepcopy
+    session = _session(tmp_path)
+    first = build_sticker_cutline_preview(session, **_cached_preview_options())
+    saved = deepcopy(session.pages[1].cutline_export_cache["instances"][0]["path_groups"])
+    session.pages[1].cutline_export_cache["instances"][0]["path_groups"].clear()
+    second = build_sticker_cutline_preview(session, **_cached_preview_options())
+    assert second == first
+    assert session.pages[1].cutline_export_cache["instances"][0]["path_groups"] == saved
+
+
+def test_cache_alpha_active_khong_lam_hong_working_set_hoac_frame_cu(tmp_path, monkeypatch):
+    session = _session(tmp_path)
+    first = build_sticker_cutline_preview(session, **_cached_preview_options())
+    alpha = session.pages[1].cutline_export_cache["instances"][0]["alpha"].copy()
+    monkeypatch.setattr(cutline_preview_module, "fit_prepared_alpha_cutline_geometry",
+                        lambda *_a, **_k: pytest.fail("Alpha active không được làm mất baseline"))
+    for _ in range(2):
+        session.pages[1].cutline_export_cache["instances"][0]["alpha"].fill(0)
+        again = build_sticker_cutline_preview(session, **_cached_preview_options())
+        assert again == first
+        assert np.array_equal(session.pages[1].cutline_export_cache["instances"][0]["alpha"], alpha)
+
+
+def test_cache_doi_kich_thuoc_preview_chi_doi_ty_le_khong_fit(tmp_path, monkeypatch):
+    import re
+    session = _session(tmp_path)
+    first = build_sticker_cutline_preview(session, **_cached_preview_options())
+    monkeypatch.setattr(cutline_preview_module, "fit_prepared_alpha_cutline_geometry",
+                        lambda *_a, **_k: pytest.fail("Đổi tỉ lệ preview không được fit lại"))
+    session.pages[1].preview_width_px *= 2
+    session.pages[1].preview_height_px *= 2
+    second = build_sticker_cutline_preview(session, **_cached_preview_options())
+    points = lambda response: [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", response["paths"][0]["d"])]
+    assert np.allclose(np.asarray(points(first)) * 2, points(second), atol=0.0002)
+    assert second["preview_width_px"] == first["preview_width_px"] * 2
+
+
+def test_cache_nguon_doi_byte_du_cung_size_mtime_phai_tu_choi_snapshot(tmp_path, monkeypatch):
+    from app.workers.sticker_sheet_export import snapshot_classic_cutline_preview, StickerCanonicalPreviewConflict
+    session, source, first = _prime_classic_preview_artifact(tmp_path, monkeypatch)
+    original_stat = source.stat()
+    source.write_bytes(source.read_bytes().replace(b"fixture", b"changed"))
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    with pytest.raises(StickerCanonicalPreviewConflict, match="nguồn/mask"):
+        snapshot_classic_cutline_preview(
+            session, source_path=source, page_number=1, expected_revision=3,
+            expected_fingerprint=first["fingerprint"], offset_mm=0, bleed_mm=2,
+            cut_mode="original", corner_style="preserve", fill_holes=True,
+            curve_tension=50, cutline_denoise=None,
+        )
+
+
+@pytest.mark.parametrize("ram_mb, expected", [(4096, 2), (12288, 8), (16384, None), (32768, None), (None, None)])
+def test_cache_chi_thu_hep_lich_su_khi_ram_thap(monkeypatch, ram_mb, expected):
+    monkeypatch.setattr(cutline_preview_module, "read_memory_status_mb", lambda: (ram_mb, 1024))
+    assert cutline_preview_module._preview_cache_limit() == expected
+    entries = {}
+    for index in range(12):
+        cutline_preview_module._remember_preview(entries, index, index, expected)
+    assert len(entries) == (expected or 12)
+    assert entries[11] == 11
+
+
+@pytest.mark.parametrize("ram_mb", [4096, 32768])
+def test_cache_classic_toan_trang_chon_dung_frame_a_va_memo(tmp_path, monkeypatch, ram_mb):
+    from threading import RLock
+    from types import SimpleNamespace
+    from app.workers import sticker_classic_page_preview as worker
+    from app.workers.sticker_sheet_export import snapshot_classic_cutline_preview, StickerCanonicalPreviewConflict
+
+    source = tmp_path / "source.pdf"
+    monkeypatch.setattr(cutline_preview_module, "read_memory_status_mb", lambda: (ram_mb, 1024))
+    source.write_bytes(b"source-v1")
+    page = SimpleNamespace(stage="mask-review", boundary_source="alpha", operation_lock=RLock(),
+                           manifest={"mask_revision": 3}, preview_width_px=600, preview_height_px=600,
+                           cutline_export_cache=None)
+    session = SimpleNamespace(source_kind="pdf", source_path=source, pages={12: page})
+    calls = []
+
+    def render(path, page_number, preview_size, geometry):
+        calls.append(geometry.copy())
+        return (f'M 0 0 L {geometry["offset_mm"]} 0 L 1 1 Z', 2, {}, {"memo": geometry.copy()})
+
+    monkeypatch.setattr(worker, "_submit_classic_page_render", render)
+    options = _cached_preview_options(page_number=12, offset_mm=2)
+    first = worker.build_classic_page_preview(session, **options)
+    worker.build_classic_page_preview(session, **dict(options, offset_mm=3))
+    worker.build_classic_page_preview(session, **dict(options, offset_mm=4))
+    worker.build_classic_page_preview(session, **dict(options, offset_mm=5))
+    snapshot_options = {name: options[name] for name in (
+        "offset_mm", "bleed_mm", "cut_mode", "corner_style", "fill_holes",
+        "curve_tension", "cutline_denoise", "cutline_simplify_mm")}
+    snapshot = snapshot_classic_cutline_preview(
+        session, source_path=source, page_number=12, expected_revision=3,
+        expected_fingerprint=first["fingerprint"], **snapshot_options,
+    )
+    assert snapshot["simplify_memo"]["memo"]["offset_mm"] == 2
+    again = worker.build_classic_page_preview(session, **options)
+    assert again == first and len(calls) == 4
+    source.write_bytes(b"source-v2")
+    with pytest.raises(StickerCanonicalPreviewConflict):
+        snapshot_classic_cutline_preview(
+            session, source_path=source, page_number=12, expected_revision=3,
+            expected_fingerprint=first["fingerprint"], **snapshot_options,
+        )
+
+
+@pytest.mark.parametrize("mode, corner, offset, bleed", [
+    ("original", "preserve", 2, 0), ("bleed", "round", 0, 2),
+])
+@pytest.mark.parametrize("ram_mb", [4096, 32768])
+def test_cache_binder2_simplify_preview_bang_cut_pdf_va_execute_khong_giai_lai(
+    monkeypatch, mode, corner, offset, bleed, ram_mb,
+):
+    """Đo đường CUT thật trang 12, tuần tự; không tạo ProcessPool hoặc GUI."""
+    from io import BytesIO
+    from pathlib import Path
+    import pikepdf
+    from app.workers import sticker_classic_page_preview as worker
+    from app.workers import cutline_cubic_simplify as simplifier
+    from app.workers.sticker_engine import StickerEngine
+
+    source = Path(__file__).resolve().parents[2] / "test/Binder2.pdf"
+    if not source.is_file():
+        pytest.skip("Corpus Binder2 riêng")
+    monkeypatch.setattr(cutline_preview_module, "read_memory_status_mb", lambda: (ram_mb, 1024))
+    monkeypatch.setattr(worker, "_classic_baseline_cache", {})
+    geometry = dict(cut_mode=mode, corner_style=corner, offset_mm=offset, bleed_mm=bleed,
+                    curve_tension=100 if corner == "round" else 50, cutline_denoise=30,
+                    fill_holes=True, cutline_smoothness=50, cutline_fidelity=50,
+                    min_detail_area_mm2=1, cutline_simplify_mm=0.1, shape_mode="auto_safe")
+    started = time.perf_counter()
+    cold = worker._render_classic_page(str(source), 12, (600, 600), geometry, True)
+    cold_s = time.perf_counter() - started
+    assert cold[3]
+    monkeypatch.setattr(simplifier, "_simplify_cubic_path_groups_impl",
+                        lambda *_a, **_k: pytest.fail("Cache nóng/Execute đã giải lại Simplify"))
+    started = time.perf_counter()
+    warm = worker._render_classic_page(str(source), 12, (600, 600), geometry, True)
+    warm_s = time.perf_counter() - started
+    assert warm == cold
+    resized = worker._render_classic_page(str(source), 12, (1200, 1200), geometry, True)
+    started = time.perf_counter()
+    exported = StickerEngine(dpi=300).process_pdf(
+        str(source), "", _page_subset=[11], remove_white_bg=True,
+        draw_cut_contour=True, alpha_corner_policy="adaptive", _simplify_memo=warm[3], **geometry,
+    )
+    export_s = time.perf_counter() - started
+    with pikepdf.Pdf.open(source) as pdf:
+        box = pdf.pages[11].cropbox
+        width, height = float(box[2]-box[0]), float(box[3]-box[1])
+    with pikepdf.Pdf.open(BytesIO(exported[0])) as pdf:
+        assert worker._pdf_cut_svg(pdf.pages[0], width, height, 600, 600) == cold[:2]
+        assert worker._pdf_cut_svg(pdf.pages[0], width, height, 1200, 1200) == resized[:2]
+    stats = cold[2]["simplification"]
+    assert stats["changed"] and stats["after_segments"] == cold[1]
+    assert stats["maximum_error_bound_mm"] <= 0.1
+    print(f"\nCACHE Binder2 p12 {mode}/{corner} cache_ram={ram_mb}MiB: cold={cold_s:.4f}s warm={warm_s:.4f}s "
+          f"execute={export_s:.4f}s nodes={stats['before_segments']}->{stats['after_segments']} "
+          f"bound={stats['maximum_error_bound_mm']:.8f}mm")
+
+
 def test_do_bo_cong_phai_thay_doi_ca_tem_hinh_loi(tmp_path) -> None:
     """Closing ra–vào không bo được góc lồi nên từng làm slider chỉ đổi hash."""
     session = _session(tmp_path, convex=True)
