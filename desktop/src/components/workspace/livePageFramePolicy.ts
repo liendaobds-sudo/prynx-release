@@ -33,7 +33,10 @@ export function viewerPageRenderPriority(
 ): number {
     if (!viewerIsActive) return 1000;
     if (isActiveFrame) return 10;
-    return prefetchPage ? 20 : 100;
+    // PERF (audit 2026-09-11 §PPEBX.C): ngưỡng lane của cả native/HTTP là 100.
+    // Priority 20 từng đưa trang tải trước vào mutex tương tác, giữ trang active
+    // sau nó dù active có số nhỏ hơn. Dùng lane nền sẵn có, không giảm DPI/worker.
+    return prefetchPage ? 100 : 200;
 }
 
 export function shouldCompositeViewerTile(

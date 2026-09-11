@@ -4,6 +4,61 @@ export const ToolSectionLabel = ({ children }: { children: React.ReactNode }) =>
     <label className="text-[13px] font-bold text-slate-800 dark:text-zinc-100 tracking-wide block mb-3 uppercase">{children}</label>
 );
 
+// UIUX (2026-09-10 §COMPACT.SECTION): section thu/mở riêng biệt, lưu trạng thái
+// vào localStorage để user không phải mở lại mỗi lần chuyển tab/mở tool.
+interface ToolCollapsibleSectionProps {
+    /** Tiêu đề section — hiển thị UPPERCASE như ToolSectionLabel. */
+    title: string;
+    /** Key duy nhất để lưu state mở/đóng vào localStorage. */
+    storageKey: string;
+    /** Mở mặc định lần đầu. Sau đó lấy từ localStorage. */
+    defaultOpen?: boolean;
+    children: React.ReactNode;
+}
+
+export const ToolCollapsibleSection = ({
+    title,
+    storageKey,
+    defaultOpen = true,
+    children,
+}: ToolCollapsibleSectionProps) => {
+    const fullKey = `ps_section_${storageKey}`;
+    const [isOpen, setIsOpen] = useState(() => {
+        try {
+            const saved = localStorage.getItem(fullKey);
+            if (saved !== null) return saved === 'true';
+        } catch { /* localStorage có thể bị block */ }
+        return defaultOpen;
+    });
+
+    useEffect(() => {
+        try { localStorage.setItem(fullKey, String(isOpen)); } catch { /* bỏ qua */ }
+    }, [fullKey, isOpen]);
+
+    return (
+        <div>
+            <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setIsOpen(o => !o)}
+                className="group/sec flex w-full items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-200/80 dark:border-zinc-700/60 transition-colors hover:border-slate-300 dark:hover:border-zinc-600"
+            >
+                <span className="text-[13px] font-bold text-slate-800 dark:text-zinc-100 tracking-wide uppercase select-none">
+                    {title}
+                </span>
+                <svg
+                    aria-hidden="true"
+                    className={`h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-zinc-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+                >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+            {isOpen && <div className="animate-in fade-in duration-150">{children}</div>}
+        </div>
+    );
+};
+
 export const ToolDivider = () => (
     <div className="h-px bg-slate-200 dark:bg-white/10 w-full my-4" />
 );

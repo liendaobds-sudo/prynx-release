@@ -47,7 +47,7 @@ import i18n from '../../i18n';
 
 type JsonRecord = Record<string, unknown>;
 interface OptimizeRecipeParams extends JsonRecord { preset?: string; image_dpi?: number | string; strip_metadata?: boolean; grayscale?: boolean; }
-interface StickerDielineRecipeParams extends JsonRecord { productType?: string; cutMode?: string; cornerStyle?: string; bleedColorType?: string; bleedColorHex?: string; cropToSticker?: boolean; forceContour?: boolean; fillHoles?: boolean; removeWhiteBg?: boolean; cutFirstPageOnly?: boolean; bleedMm?: unknown; offsetMm?: unknown; curveTension?: unknown; edgeBiteMm?: unknown; cutlineDenoise?: unknown; bleedSides?: unknown; }
+interface StickerDielineRecipeParams extends JsonRecord { productType?: string; cutMode?: string; cornerStyle?: string; bleedColorType?: string; bleedColorHex?: string; cropToSticker?: boolean; forceContour?: boolean; fillHoles?: boolean; removeWhiteBg?: boolean; cutFirstPageOnly?: boolean; bleedMm?: unknown; offsetMm?: unknown; curveTension?: unknown; edgeBiteMm?: unknown; mirrorEdgeBiteMm?: unknown; cutlineDenoise?: unknown; cutlineSimplifyMm?: unknown; cutlineSimplifyAuto?: boolean; bleedSides?: unknown; }
 function isRecord(value: unknown): value is JsonRecord { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 function asRecord(value: unknown): JsonRecord { return isRecord(value) ? value : {}; }
 function describeError(error: unknown): string { if (error instanceof Error && error.message) return error.message; if (isRecord(error) && typeof error.message === 'string' && error.message) return error.message; return String(error); }
@@ -365,6 +365,9 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                     bleed_mm: clampStickerMm(p.bleedMm, STICKER_PARAM_LIMITS.bleedMm),
                     pages: null,
                     bleed_sides: recipeBleedSideNames(p.bleedSides),
+                    // MIRROR (audit 2026-09-11 §MIRROR.BITE.4): field riêng; recipe
+                    // cũ có thể có edgeBiteMm ẩn của mode ảnh nhưng không được dùng.
+                    edge_bite_mm: clampStickerMm(p.mirrorEdgeBiteMm, STICKER_PARAM_LIMITS.edgeBiteMm),
                 }),
             });
             const bleedData = asRecord(await bleedRes.json());
@@ -409,6 +412,10 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
                 // §CUTJAG.3: recipe cũ không có field này → `undefined` → 0 (tắt),
                 // đúng hành vi của bản ghi đã duyệt trước khi có thanh kéo.
                 cutlineDenoise: p.cutlineDenoise,
+                cutlineSimplifyMm: p.cutlineSimplifyMm,
+                // AUTO mới phải được phát lại theo từng trang; nếu bỏ cờ này,
+                // recipe của tài liệu lẫn raster/vector sẽ áp .10 mm lên cả vector.
+                cutlineSimplifyAuto: p.cutlineSimplifyAuto === true,
             });
             for (const [field, value] of Object.entries(dielineFields)) {
                 fd.append(field, value);

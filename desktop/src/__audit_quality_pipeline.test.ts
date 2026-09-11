@@ -5,6 +5,8 @@ import { resolve } from 'node:path';
 import { imageBytesToPdfDoc } from './lib/imageNormalizer';
 
 describe('audit quality pipeline artifact', () => {
+  // Đọc/nhúng JPG lớn có thể vượt timeout mặc định khi chạy full suite
+  // đồng thời; đây là artifact audit nặng, không phải test UI realtime.
   it('writes current JPG-to-PDF artifact', async () => {
     const input = resolve(process.cwd(), '..', 'test', 'Tem thuc pham sach Duc An.jpg');
     const outDir = resolve(process.cwd(), '..', 'tmp', 'quality_audit');
@@ -13,5 +15,5 @@ describe('audit quality pipeline artifact', () => {
     const doc = await imageBytesToPdfDoc(new Uint8Array(bytes), 'Tem thuc pham sach Duc An.jpg');
     const pdfBytes = await doc.save({ useObjectStreams: false });
     await writeFile(resolve(outDir, 'current_image_normalizer.pdf'), pdfBytes);
-  });
+  }, 15_000);
 });

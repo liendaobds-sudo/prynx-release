@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, CircleDot, Square } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
-import { ToolSectionLabel, ToolCheckboxOption, ToolNumberInput } from './ToolUI';
+import { ToolCollapsibleSection, ToolCheckboxOption, ToolNumberInput, ToolSectionLabel } from './ToolUI';
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import {
     useWorkspaceStore,
@@ -12,9 +12,7 @@ import {
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
-import { computeStickerBleedGeometry, formatSignedMm } from '../../lib/stickerBleedGeometry';
 import {
-    ALPHA_CONTOUR_INSET_MM,
     BLEED_COLOR_MODES_STICKER,
     CUT_MODES_RICH,
     DEFAULT_CROP_TO_STICKER,
@@ -114,7 +112,7 @@ const STICKER_STORAGE_PREFIX = 'ps_sticker_';
 const STICKER_PREFERENCE_KEYS = [
     'productType', 'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
     'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
-    'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly', 'cropToSticker', 'bleedSides',
+    'edgeBiteMm', 'edgeBiteVersion', 'mirrorEdgeBiteMm', 'cutFirstPageOnly', 'cropToSticker', 'bleedSides',
     'cutlineDenoise', 'curveTension',
 ] as const;
 // AUDIT (2026-08-16 §BX.F15): trước đây là `let` toàn cục nên tab thứ hai không bao giờ
@@ -331,6 +329,7 @@ export default function StickerTool({
         if (version !== '2' && saved === 0.4) return 0.0;
         return saved;
     };
+    const getSavedMirrorEdgeBite = () => readStickerNumber('mirrorEdgeBiteMm', 0.0, 0, 5);
 
     // UI State for Sticker
     const [cutMode, setCutMode] = useState(() => readStickerEnum('cutMode', 'original', ['original', 'alpha', 'bleed', 'none']));
@@ -398,6 +397,10 @@ export default function StickerTool({
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
     const [edgeBiteMm, setEdgeBiteMm] = useState<number>(getSavedEdgeBite);
+    // UIUX (audit 2026-09-11 §MIRROR.BITE.1/.4): mirror có tham số lẹm riêng.
+    // Không dùng lại edgeBiteMm cũ vì recipe trước đây có thể lưu giá trị ẩn của
+    // các mode ảnh; thiếu field mới phải tiếp tục giữ hành vi mirror = 0 mm.
+    const [mirrorEdgeBiteMm, setMirrorEdgeBiteMm] = useState<number>(getSavedMirrorEdgeBite);
     // Cạnh được bù xén (chỉ Xén vuông góc). Mặc định cả 4 cạnh = hành vi cũ.
     // Dùng khi bài đã có sẵn lề một phía: tem cắt cuộn (chỉ bù trái/phải), mép dán
     // hộp, gáy sách — bù thêm cạnh đó là lệch khổ thành phẩm.
@@ -447,11 +450,12 @@ export default function StickerTool({
         writeStickerPreference('bleedColorHex', bleedColorHex);
         writeStickerPreference('edgeBiteMm', edgeBiteMm);
         try { getStickerStorage()?.setItem(`${STICKER_STORAGE_PREFIX}edgeBiteVersion`, '2'); } catch (error) { warnStickerStorage(error); }
+        writeStickerPreference('mirrorEdgeBiteMm', mirrorEdgeBiteMm);
         writeStickerPreference('cutFirstPageOnly', cutFirstPageOnly);
         writeStickerPreference('cropToSticker', cropToSticker);
         writeStickerPreference('bleedSides', bleedSides);
         writeStickerPreference('cutlineDenoise', cutlineDenoise);
-    }, [productType, cutMode, offsetMm, cornerStyle, curveTension, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise]);
+    }, [productType, cutMode, offsetMm, cornerStyle, curveTension, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, mirrorEdgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -476,6 +480,12 @@ export default function StickerTool({
         && !activeObjectSelection
         && (!cutFirstPageOnly || resolvedPreviewPage === 1)
     );
+    // UIUX (audit 2026-09-11 §SIMPLIFY.DEFAULT): Simplify là mặc định nội bộ.
+    // Hook tự chọn 0,10 mm sau khi nhận diện nguồn raster đủ điều kiện; nguồn
+    // vector/CUT sẵn và trạng thái local vẫn giữ 0 mm theo chính sách an toàn.
+    // Không để tuỳ chọn này trong UI để luồng bù xén ngắn và nhất quán hơn.
+    const cutlineSimplifyAuto = true;
+    const requestedSimplifyMm = 0;
     const classicPreviewEnabled = Boolean(
         isActive
         && settingsOpen
@@ -500,9 +510,12 @@ export default function StickerTool({
         fillHoles,
         curveTension,
         cutlineDenoise,
+        cutlineSimplifyMm: requestedSimplifyMm,
+        autoSimplify: cutlineSimplifyAuto,
         forceContour,
         removeWhiteBg,
     });
+    const cutlineSimplifyMm = cutlinePreview.effectiveSimplifyMm;
     const canonicalPreviewStale = Boolean(
         cutlinePreview.preview
         && !cutlinePreview.canonicalReference
@@ -522,7 +535,19 @@ export default function StickerTool({
             || canonicalPreviewStale
         )
     );
-
+    // QUALITY (audit 2026-09-10 §FAIR.5): chỉ PDF Alpha nhiều mảng đã nhận
+    // diện xong mới được áp trực tiếp; lỗi/chưa nhận diện vẫn giữ chốt preview.
+    const directSimplifyReady = Boolean(
+        cutlinePreview.directSimplifyOnly
+        && !cutlinePreview.isPreparing && !cutlinePreview.isUpdating
+    );
+    const simplifyPreviewPending = cutlineSimplifyMm > 0 && (
+        cutlinePreview.isPreparing || cutlinePreview.isUpdating
+        || (!directSimplifyReady && (
+            !cutlinePreview.canonicalReference
+            || cutlinePreview.canonicalReference.simplifyMm !== cutlineSimplifyMm
+        ))
+    );
     // UIUX (feedback 2026-08-19 §CUTPREVIEW.VIEWER1): preview classic phải phủ
     // trực tiếp lên trang Acrobat Viewer như chế độ nhiều tem. Workspace store là
     // riêng từng tab; ownerId ngăn cleanup của component cũ xóa overlay mới.
@@ -601,6 +626,7 @@ export default function StickerTool({
                 bleed_mm: bleedMm,
                 pages: null,
                 bleed_sides: BLEED_SIDE_KEYS.filter(side => bleedSides[side]),
+                edge_bite_mm: Math.min(5, Math.max(0, Number.isFinite(mirrorEdgeBiteMm) ? mirrorEdgeBiteMm : 0)),
             }),
         });
         // AUDIT (2026-08-16 §BX.F04): sidecar chết trả HTML → `json()` reject và message
@@ -667,6 +693,10 @@ export default function StickerTool({
             bleedSides,
             forceContour: requestedForceContour,
             cutlineDenoise,
+            // Lượt "Giữ mép ảnh" thay đổi nguồn hình học nên không tái dùng
+            // Simplify/canonical của lượt auto trước đó.
+            cutlineSimplifyMm: overrides ? 0 : cutlineSimplifyMm,
+            ...(!overrides && cutlineSimplifyAuto ? { cutlineSimplifyAuto: true } : {}),
         });
         for (const [field, value] of Object.entries(dielineFields)) {
             formData.append(field, value);
@@ -748,6 +778,7 @@ export default function StickerTool({
 
     const handleRun = async (overrides?: CutlineRunOverrides) => {
         if (!pdfFile) return;
+        if (simplifyPreviewPending) return;
         if (!overrides && canonicalPreviewPending) {
             // Viewer cố ý giữ frame cũ trong lúc cập nhật/lỗi. Không cho request
             // rơi về detector legacy rồi tạo một CutContour khác frame đó khi
@@ -762,6 +793,8 @@ export default function StickerTool({
         }
         const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
         const requestedForceContour = overrides?.forceContour ?? forceContour;
+        const executionSimplifyMm = overrides ? 0 : cutlineSimplifyMm;
+        const executionSimplifyAuto = !overrides && cutlineSimplifyAuto;
 
         // AUDIT (2026-08-16 §BX.F05): lượt mới huỷ lượt cũ. Trước đây bấm hai lần (hoặc
         // bấm "Hình cắt sai?" khi lượt đầu chưa xong) sinh hai job PDFium song song.
@@ -795,8 +828,10 @@ export default function StickerTool({
         recipeTicket = recordingThisTab
             ? recipeRecorder.noteOperation('sticker_dieline', {
                 productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, curveTension, fillHoles,
-                bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
+                bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, mirrorEdgeBiteMm,
                 cutlineDenoise,
+                cutlineSimplifyMm: executionSimplifyMm,
+                ...(executionSimplifyAuto ? { cutlineSimplifyAuto: true } : {}),
                 cutFirstPageOnly, cropToSticker,
                 bleedSides: { ...bleedSides },
                 // AUDIT (2026-08-16 §BX.F01): ghi ĐÚNG giá trị vừa gửi. Công thức cũ
@@ -900,16 +935,38 @@ export default function StickerTool({
         // Removing the aggressive override when switching to rectangle to preserve user choice
     };
 
-    // UIUX (rollback 2026-08-08 §STICKER.UI1): khôi phục đúng phần tóm tắt
-    // hình học của commit chốt trước hợp nhất, nhưng vẫn dùng engine hiện tại.
-    const bleedGeometry = computeStickerBleedGeometry(
-        cutMode,
-        cutMode === 'alpha' ? offsetMm - ALPHA_CONTOUR_INSET_MM : offsetMm,
-        bleedMm,
-    );
-
     return (
         <div className="flex flex-col gap-4">
+            {showProductTypeSelector && <div
+                role="group"
+                aria-label={tv('Kiểu xử lý bù xén')}
+                className="grid grid-cols-2 gap-1 border-b border-slate-200 pb-1 dark:border-zinc-700 relative z-10"
+            >
+                <button
+                    onClick={() => handleProductTypeChange('sticker')}
+                    aria-pressed={productType === 'sticker'}
+                    className={`flex min-h-11 flex-row items-center justify-center gap-1.5 rounded-md border px-3 text-[11px] font-semibold leading-none transition-all relative z-10 ${
+                        productType === 'sticker'
+                            ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm dark:border-indigo-800/60 dark:bg-indigo-950/30 dark:text-indigo-300'
+                            : 'border-transparent text-slate-500 hover:border-slate-200 hover:bg-slate-50 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:bg-zinc-800/60'
+                    }`}
+                >
+                    <CircleDot aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2} />
+                    {t('preprocess.sticker:be_tem_nhan')}
+                </button>
+                <button
+                    onClick={() => handleProductTypeChange('rectangle')}
+                    aria-pressed={productType === 'rectangle'}
+                    className={`flex min-h-11 flex-row items-center justify-center gap-1.5 rounded-md border px-3 text-[11px] font-semibold leading-none transition-all relative z-10 ${
+                        productType === 'rectangle'
+                            ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm dark:border-indigo-800/60 dark:bg-indigo-950/30 dark:text-indigo-300'
+                            : 'border-transparent text-slate-500 hover:border-slate-200 hover:bg-slate-50 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:bg-zinc-800/60'
+                    }`}
+                >
+                    <Square aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2} />
+                    {t('preprocess.sticker:xen_vuong_goc')}
+                </button>
+            </div>}
             <div className="rounded-xl border border-slate-200 bg-white/70 dark:border-zinc-700 dark:bg-zinc-900/40">
                 <button
                     type="button"
@@ -935,43 +992,15 @@ export default function StickerTool({
                 {settingsOpen && (
                     <div
                         id={settingsPanelId}
-                        className="flex flex-col gap-4 border-t border-slate-200 px-3 pb-3 pt-3 dark:border-zinc-700"
+                        className="flex flex-col gap-3 border-t border-slate-200 px-3 pb-3 pt-3 dark:border-zinc-700"
                     >
-            {/* TABS SELECTOR */}
-            {showProductTypeSelector && <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl shadow-inner border border-slate-200 dark:border-white/5 relative z-10">
-                <button
-                    onClick={() => handleProductTypeChange('sticker')}
-                    aria-pressed={productType === 'sticker'}
-                    className={`flex-1 flex flex-row items-center justify-center gap-2 py-2.5 rounded-lg text-[11px] font-bold transition-all relative z-10 ${
-                        productType === 'sticker'
-                            ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-indigo-400 shadow-md ring-1 ring-indigo-100 dark:ring-indigo-500/30'
-                            : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300 hover:bg-slate-200/50 dark:hover:bg-zinc-700/50'
-                    }`}
-                >
-                    <span className="text-lg">🔵</span>
-                    {t('preprocess.sticker:be_tem_nhan')}
-                </button>
-                <button
-                    onClick={() => handleProductTypeChange('rectangle')}
-                    aria-pressed={productType === 'rectangle'}
-                    className={`flex-1 flex flex-row items-center justify-center gap-2 py-2.5 rounded-lg text-[11px] font-bold transition-all relative z-10 ${
-                        productType === 'rectangle'
-                            ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-indigo-400 shadow-md ring-1 ring-indigo-100 dark:ring-indigo-500/30'
-                            : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300 hover:bg-slate-200/50 dark:hover:bg-zinc-700/50'
-                    }`}
-                >
-                    <span className="text-lg">🟦</span>
-                    {t('preprocess.sticker:xen_vuong_goc')}
-                </button>
-            </div>}
-
             {/* --- TAB 1: BẾ TEM NHÃN --- */}
             {productType === 'sticker' && (
-                <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-4">
-                    <div className={`rounded-xl border px-3 py-2 transition-colors ${
+                <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-3">
+                    <div className={`border-b pb-3 transition-colors ${
                         isObjectEditMode
-                            ? 'border-emerald-500 bg-emerald-500/10'
-                            : 'border-slate-200 bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900'
+                            ? 'border-emerald-500/70'
+                            : 'border-slate-200 dark:border-zinc-700'
                     }`}>
                         <div className="flex items-center justify-between gap-2">
                             <div className="flex min-w-0 items-center gap-1.5">
@@ -1009,7 +1038,7 @@ export default function StickerTool({
                                     }
                                 }}
                                 aria-pressed={isObjectEditMode}
-                                className={`h-8 shrink-0 rounded-lg border px-3 text-[11px] font-bold transition-colors ${
+                                className={`h-8 shrink-0 rounded-md border px-3 text-[11px] font-bold transition-colors ${
                                     isObjectEditMode
                                         ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
                                         : 'border-emerald-500 bg-white text-emerald-700 hover:bg-emerald-50 dark:bg-zinc-950 dark:text-emerald-300'
@@ -1026,10 +1055,10 @@ export default function StickerTool({
 
                     {objectSelectionContext?.objectIds.length ? (
                         <label
-                            className={`flex items-center gap-2.5 rounded-xl border px-3 py-2 cursor-pointer select-none transition-colors ${
+                            className={`flex items-center gap-2.5 border-b px-1 py-2 cursor-pointer select-none transition-colors ${
                                 useObjectSelection
-                                    ? 'border-teal-500 bg-teal-500/10 text-teal-800 dark:text-teal-200'
-                                    : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400'
+                                    ? 'border-teal-500/70 text-teal-800 dark:text-teal-200'
+                                    : 'border-slate-200 text-slate-600 dark:border-zinc-700 dark:text-zinc-400'
                             }`}
                         >
                             <input
@@ -1070,9 +1099,9 @@ export default function StickerTool({
                             </span>
                         </label>
                     ) : null}
-                    {/* UIUX (rollback 2026-08-08 §STICKER.UI1): bố cục nguyên bản
-                        của commit 89a9048, tách rõ đường cắt và tràn lề. */}
-                    <div>
+                    {/* UIUX (audit 2026-09-12 §FLAT-PANEL): nhóm chính luôn hiện để giảm
+                        khung thu/mở lồng nhau; chỉ phần Nâng cao còn thu gọn. */}
+                    <section className="pt-1">
                         <ToolSectionLabel>{t('preprocess.sticker:1_duong_cat_dieline')}</ToolSectionLabel>
                         <div className="flex flex-col gap-1.5 mb-4 relative z-[60]">
                             <RichSelect
@@ -1151,7 +1180,6 @@ export default function StickerTool({
                                         </span>
                                     </label>
                                 </div>
-                                <p className="text-[10px] text-slate-400 mt-1">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
                                 {cutMode !== 'alpha' && (
                                     <div className="mt-2 mb-4 space-y-2.5">
                                         <div className="flex gap-1.5">
@@ -1178,37 +1206,6 @@ export default function StickerTool({
                                                 </button>
                                             ))}
                                         </div>
-                                        {cornerStyle === 'round' && (
-                                            <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-2.5 py-2 dark:border-white/10 dark:bg-zinc-800/50">
-                                                <div className="mb-1 flex items-center justify-between gap-2">
-                                                    <label
-                                                        htmlFor="sticker-curve-tension"
-                                                        className="text-xs font-bold text-slate-700 dark:text-zinc-300"
-                                                    >
-                                                        {t('preprocess.stickerSheet:cutline_tension')}
-                                                    </label>
-                                                    <span className="text-xs font-bold text-teal-600 dark:text-teal-400 tabular-nums">
-                                                        {Math.round(curveTension)}%
-                                                    </span>
-                                                </div>
-                                                <input
-                                                    id="sticker-curve-tension"
-                                                    type="range"
-                                                    aria-label={t('preprocess.stickerSheet:cutline_tension_aria')}
-                                                    min={0}
-                                                    max={100}
-                                                    step={5}
-                                                    value={curveTension}
-                                                    disabled={isProcessing}
-                                                    onChange={(event) => setCurveTension(Number(event.target.value))}
-                                                    className="w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
-                                                />
-                                                <div className="mt-0.5 flex justify-between text-[9px] text-slate-500 dark:text-zinc-400">
-                                                    <span>{t('preprocess.stickerSheet:cutline_tension_low')}</span>
-                                                    <span>{t('preprocess.stickerSheet:cutline_tension_high')}</span>
-                                                </div>
-                                            </div>
-                                        )}
                                     </div>
                                 )}
                                 {/* UIUX (audit 2026-08-21 §RECOGNITION-GUARD.1): người dùng
@@ -1219,12 +1216,30 @@ export default function StickerTool({
                                     thay đổi hợp đồng tách nhiều tem của StickerSheet. */}
                                 <div
                                     data-testid="sticker-shape-recognition-control"
-                                    className="mt-2 mb-4 rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-2 dark:border-white/10 dark:bg-zinc-800/50"
+                                    className="mt-3 pt-1"
                                 >
-                                    <div className="mb-1 flex items-center justify-between gap-2">
-                                        <span className="text-xs font-bold text-slate-700 dark:text-zinc-300">
-                                            {t('preprocess.sticker:hinh_hoc_duong_cat')}
-                                        </span>
+                                    {/* UIUX (2026-09-10 §COMPACT.DESC): hint chuyển vào icon ? cạnh title */}
+                                    <div className="mb-2 flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                                {t('preprocess.sticker:hinh_hoc_duong_cat')}
+                                            </span>
+                                            <span
+                                                role="note"
+                                                tabIndex={0}
+                                                aria-label={t('preprocess.sticker:hinh_hoc_duong_cat_hint')}
+                                                className="group/hintShape relative flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white text-[9px] font-bold leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 cursor-help"
+                                            >
+                                                ?
+                                                <span
+                                                    role="tooltip"
+                                                    className="pointer-events-none absolute bottom-full left-0 z-[100] mb-2 w-max max-w-[260px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[11px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/hintShape:visible group-hover/hintShape:opacity-100 group-focus-within/hintShape:visible group-focus-within/hintShape:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                                >
+                                                    {t('preprocess.sticker:hinh_hoc_duong_cat_hint')}
+                                                    <span aria-hidden="true" className="absolute top-full left-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700" />
+                                                </span>
+                                            </span>
+                                        </div>
                                         <span className={`text-[10px] font-semibold ${
                                             forceContour
                                                 ? 'text-amber-600 dark:text-amber-400'
@@ -1235,9 +1250,6 @@ export default function StickerTool({
                                                 : t('preprocess.sticker:hinh_hoc_duong_cat_auto_state')}
                                         </span>
                                     </div>
-                                    <p className="mb-2 text-[10.5px] leading-snug text-slate-500 dark:text-zinc-400">
-                                        {t('preprocess.sticker:hinh_hoc_duong_cat_hint')}
-                                    </p>
                                     <div className="grid grid-cols-2 gap-1.5">
                                         <button
                                             type="button"
@@ -1284,9 +1296,9 @@ export default function StickerTool({
                                 )}
                             </>
                         )}
-                    </div>
+                    </section>
 
-                    <div>
+                    <section className="pt-1">
                         <ToolSectionLabel>{t('preprocess.sticker:2_tran_le_dac_ruot')}</ToolSectionLabel>
                         {/* UIUX (feedback 2026-09-07 §STICKER.WRAP): panel hẹp phải
                             xuống dòng theo chiều rộng thật, không cắt nhãn hoặc đẩy nút ra ngoài. */}
@@ -1333,22 +1345,8 @@ export default function StickerTool({
                             </div>
                         </div>
 
-                        {(cutMode === 'original' || cutMode === 'alpha') && bleedMm > 0 && (
-                            <div
-                                role="note"
-                                data-testid="sticker-bleed-geometry-summary"
-                                className="-mt-2 mb-4 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-[10px] leading-relaxed text-sky-800 dark:border-sky-800/60 dark:bg-sky-950/30 dark:text-sky-200"
-                            >
-                                ℹ️ {t('preprocess.sticker:tom_tat_hinh_hoc_bu_xen', {
-                                    cut: formatSignedMm(bleedGeometry.cutOffsetMm ?? 0),
-                                    outer: formatSignedMm(bleedGeometry.outerOffsetMm),
-                                    bleed: Number((bleedGeometry.bleedOutsideCutMm ?? 0).toFixed(2)),
-                                })}
-                            </div>
-                        )}
-
                         {(cutMode === 'bleed' || cutMode === 'none' || bleedMm > 0) && (
-                            <div className="mt-6 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
+                            <div className="mt-4 pt-1">
                                 <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>
                                 <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
                                     <RichSelect
@@ -1358,7 +1356,7 @@ export default function StickerTool({
                                     />
                                 </div>
                                 {bleedColorType === 'solid' && (
-                                    <div className="mt-2 flex flex-col gap-2 bg-white dark:bg-zinc-800 p-3 rounded-lg border border-slate-200 dark:border-zinc-700">
+                                    <div className="mt-2 flex flex-col gap-2">
                                         <div className="grid grid-cols-4 gap-2">
                                             {['C', 'M', 'Y', 'K'].map((channel, index) => {
                                                 const value = bleedColorHex.split(',').length === 4
@@ -1390,14 +1388,78 @@ export default function StickerTool({
                                 )}
                             </div>
                         )}
-                    </div>
+                    </section>
                 </div>
             )}
 
-            {/* --- TAB 2: XÉN VUÔNG GÓC --- */}
+            {/* UIUX (audit 2026-09-11 §SIMPLIFY.DEFAULT): Simplify chạy mặc định
+                trong preview/xuất, không chiếm thêm một control trong Nâng cao. */}
+            {productType === 'sticker' && cutMode !== 'none' && (
+                <>
+                <ToolCollapsibleSection
+                    title={t('preprocess.sticker:cutline_tuning_title')}
+                    storageKey="sticker_tinh_chinh"
+                    defaultOpen={false}
+                >
+                <section
+                    data-testid="sticker-cutline-tuning"
+                    className="pt-1"
+                >
+                    <div className="divide-y divide-slate-200/80 dark:divide-zinc-700/60">
+                        {cutMode !== 'alpha' && cornerStyle === 'round' && (
+                            <div className="py-3 first:pt-0">
+                                <div className="mb-1.5 flex items-center justify-between gap-2">
+                                    <label htmlFor="sticker-curve-tension" className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                        {t('preprocess.stickerSheet:cutline_tension')}
+                                    </label>
+                                    <span className="shrink-0 text-xs font-bold tabular-nums text-teal-600 dark:text-teal-400">
+                                        {Math.round(curveTension)}%
+                                    </span>
+                                </div>
+                                <input
+                                    id="sticker-curve-tension"
+                                    type="range"
+                                    aria-label={t('preprocess.stickerSheet:cutline_tension_aria')}
+                                    min={0}
+                                    max={100}
+                                    step={5}
+                                    value={curveTension}
+                                    disabled={isProcessing}
+                                    onChange={(event) => setCurveTension(Number(event.target.value))}
+                                    className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                />
+                            </div>
+                        )}
+                        <div className="py-3 first:pt-0">
+                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                                <label htmlFor="sticker-cutline-denoise" className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                    {t('preprocess.sticker:khu_rang_cua')}
+                                </label>
+                                <span className="shrink-0 text-xs font-bold tabular-nums text-teal-600 dark:text-teal-400">
+                                    {cutlineDenoise === 0 ? t('preprocess.sticker:khu_rang_cua_tat') : `${cutlineDenoise}%`}
+                                </span>
+                            </div>
+                            <input
+                                id="sticker-cutline-denoise"
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={5}
+                                value={cutlineDenoise}
+                                onChange={(event) => setCutlineDenoise(Number(event.target.value))}
+                                disabled={isProcessing}
+                                className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                            />
+                        </div>
+                    </div>
+                </section>
+                </ToolCollapsibleSection>
+                </>
+            )}
             {productType === 'rectangle' && (
-                <div className="animate-in slide-in-from-right-4 fade-in duration-300 space-y-4">
-                    <div>
+                <div className="animate-in slide-in-from-right-4 fade-in duration-300 space-y-3">
+                    <section className="pt-1">
+                        <ToolSectionLabel>{t('preprocess.sticker:do_day_bleed')}</ToolSectionLabel>
                         <div className="flex items-end gap-3 mb-4">
                             <ToolNumberInput
                                 label={t('preprocess.sticker:do_day_bleed')}
@@ -1409,6 +1471,18 @@ export default function StickerTool({
                                 max={10}
                                 className="flex-1 min-w-0"
                             />
+                            {bleedColorType === 'mirror' && (
+                                <ToolNumberInput
+                                    label={t('preprocess.sticker:do_lem_mep')}
+                                    value={mirrorEdgeBiteMm}
+                                    onChange={setMirrorEdgeBiteMm}
+                                    suffix="mm"
+                                    step={0.1}
+                                    min={0}
+                                    max={5}
+                                    className="flex-1 min-w-0"
+                                />
+                            )}
                             {(bleedColorType === 'image' || bleedColorType === 'trajectory' || bleedColorType === 'inpaint') && (
                                 <ToolNumberInput
                                     label={t('preprocess.sticker:do_lem_mep')}
@@ -1423,51 +1497,31 @@ export default function StickerTool({
                             )}
                         </div>
 
-                        {/* Khử răng cưa (§CUTJAG.3): chỉ có nghĩa khi thực sự dò đường
-                            cắt. Xén vuông góc lấy khuôn từ khổ trang nên không dò contour. */}
-                        {productType !== 'rectangle' && cutMode !== 'none' && (
-                            <div className="mb-4">
-                                <div className="flex items-center justify-between gap-2 mb-1.5">
-                                    <label
-                                        htmlFor="sticker-cutline-denoise"
-                                        className="text-xs font-bold text-slate-700 dark:text-zinc-300"
-                                    >
-                                        {t('preprocess.sticker:khu_rang_cua')}
-                                    </label>
-                                    <span className="text-xs font-bold text-teal-600 dark:text-teal-400 tabular-nums">
-                                        {cutlineDenoise === 0
-                                            ? t('preprocess.sticker:khu_rang_cua_tat')
-                                            : `${cutlineDenoise}%`}
-                                    </span>
-                                </div>
-                                <input
-                                    id="sticker-cutline-denoise"
-                                    type="range"
-                                    min={0}
-                                    max={100}
-                                    step={5}
-                                    value={cutlineDenoise}
-                                    onChange={(event) => setCutlineDenoise(Number(event.target.value))}
-                                    disabled={isProcessing}
-                                    aria-describedby="sticker-cutline-denoise-desc"
-                                    className="w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
-                                />
-                                <p
-                                    id="sticker-cutline-denoise-desc"
-                                    className="mt-1 text-[10.5px] leading-snug text-slate-500 dark:text-zinc-400"
-                                >
-                                    {t('preprocess.sticker:khu_rang_cua_desc')}
-                                </p>
-                            </div>
-                        )}
-
                         {/* Cạnh bù xén: bài đã có sẵn lề một phía (tem cắt cuộn, mép dán
                             hộp, gáy sách) thì bù thêm cạnh đó là lệch khổ thành phẩm.
                             Chỉ hiện khi thực sự có bù xén để không làm rối panel. */}
                         {bleedMm > 0 && (
-                            <div className="mb-4 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
-                                <div className="flex items-center justify-between gap-2 mb-1">
-                                    <label className="text-xs font-bold text-slate-700 dark:text-zinc-300">{t('preprocess.sticker:canh_bu_xen')}</label>
+                            <div className="mb-4 pt-1">
+                                {/* UIUX (2026-09-10 §COMPACT.DESC): mô tả chuyển vào icon ? cạnh label */}
+                                <div className="flex items-center justify-between gap-2 mb-2.5">
+                                    <div className="flex items-center gap-1.5">
+                                        <label className="text-xs font-bold text-slate-700 dark:text-zinc-300">{t('preprocess.sticker:canh_bu_xen')}</label>
+                                        <span
+                                            role="note"
+                                            tabIndex={0}
+                                            aria-label={t('preprocess.sticker:canh_bu_xen_mo_ta')}
+                                            className="group/hintSide relative flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white text-[9px] font-bold leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 cursor-help"
+                                        >
+                                            ?
+                                            <span
+                                                role="tooltip"
+                                                className="pointer-events-none absolute bottom-full left-0 z-[100] mb-2 w-max max-w-[260px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[11px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/hintSide:visible group-hover/hintSide:opacity-100 group-focus-within/hintSide:visible group-focus-within/hintSide:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                            >
+                                                {t('preprocess.sticker:canh_bu_xen_mo_ta')}
+                                                <span aria-hidden="true" className="absolute top-full left-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700" />
+                                            </span>
+                                        </span>
+                                    </div>
                                     <button
                                         type="button"
                                         onClick={() => setBleedSides({ ...ALL_BLEED_SIDES })}
@@ -1477,9 +1531,6 @@ export default function StickerTool({
                                         {t('preprocess.sticker:canh_bu_xen_ca_4')}
                                     </button>
                                 </div>
-                                <p className="text-[10.5px] text-slate-500 dark:text-zinc-400 leading-snug mb-2.5">
-                                    {t('preprocess.sticker:canh_bu_xen_mo_ta')}
-                                </p>
                                 <div className="grid grid-cols-3 gap-1.5 w-full max-w-[250px] mx-auto">
                                     <span />
                                     <BleedSideToggle
@@ -1497,7 +1548,7 @@ export default function StickerTool({
                                         lockHint={activeBleedSideCount === 1 && bleedSides.left ? t('preprocess.sticker:canh_bu_xen_giu_it_nhat_mot') : undefined}
                                         onToggle={() => toggleBleedSide('left')}
                                     />
-                                    <div className="h-9 rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex flex-col items-center justify-center leading-none">
+                                    <div className="h-9 flex flex-col items-center justify-center leading-none">
                                         <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">{bleedMm} mm</span>
                                         <span className="text-[9.5px] text-slate-400 dark:text-zinc-500">{activeBleedSideCount}/4</span>
                                     </div>
@@ -1520,8 +1571,11 @@ export default function StickerTool({
                                 </div>
                             </div>
                         )}
+                    </section>
 
-                        <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
+                    <section className="pt-1">
+                        <ToolSectionLabel>{t('preprocess.sticker:mau_nen_bu_xen')}</ToolSectionLabel>
+                        <div>
                             <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>
                             <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
                                 <RichSelect
@@ -1531,17 +1585,9 @@ export default function StickerTool({
                                 />
                             </div>
 
-                            {bleedColorType === 'mirror' && (
-                                <div className="flex items-start gap-2 mb-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
-                                    <span className="text-amber-500 text-sm leading-none mt-0.5">⚠️</span>
-                                    <p className="text-[10.5px] text-amber-700 dark:text-amber-300 leading-snug">
-                                        {t('preprocess.sticker:lat_guong')} <strong>{t('preprocess.sticker:soi_nguoc_noi_dung_sat_mep')}</strong> {t('preprocess.sticker:ra_vung_bu_xen_vd_chu_n_m')} <strong>{t('preprocess.sticker:sai_noi_dung')}</strong>{t('preprocess.sticker:chi_nen_dung_cho_nen_truu_tuong_hoa_van')} <strong>{t('preprocess.sticker:keo_gian_mep_anh_quoted')}</strong>.
-                                    </p>
-                                </div>
-                            )}
-                            
+
                             {bleedColorType === 'solid' && (
-                                <div className="mt-3 flex flex-col gap-2 bg-white dark:bg-zinc-800 p-3 rounded-lg border border-slate-200 dark:border-zinc-700">
+                                <div className="mt-3 flex flex-col gap-2">
                                     <div className="grid grid-cols-4 gap-2">
                                         {['C', 'M', 'Y', 'K'].map((ch, idx) => {
                                             const val = bleedColorHex.split(',').length === 4 ? bleedColorHex.split(',')[idx] : (ch === 'K' ? '0' : '0');
@@ -1567,15 +1613,15 @@ export default function StickerTool({
                             )}
                         </div>
 
-                    </div>
+                    </section>
                 </div>
             )}
             {/* Execute */}
             <button
                 onClick={() => { void handleRun(); }}
-                disabled={isProcessing || !pdfFile || canonicalPreviewPending}
+                disabled={isProcessing || !pdfFile || canonicalPreviewPending || simplifyPreviewPending}
                 className={`w-full h-12 rounded-xl text-[14px] font-bold transition-all mt-2 flex items-center justify-center gap-2 ${
-                    isProcessing || !pdfFile || canonicalPreviewPending
+                    isProcessing || !pdfFile || canonicalPreviewPending || simplifyPreviewPending
                         ? 'bg-slate-300 dark:bg-zinc-700 text-slate-500 cursor-not-allowed'
                         : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                 }`}
@@ -1701,7 +1747,7 @@ export default function StickerTool({
                         {/* Rule in ấn: Xén vuông góc = cắt thẳng → bình guillotine (Booklet/N-Up).
                             Bế tem nhãn = có đường bế contour → Bình Bế Tem.
                             Route theo productType (KHÔNG theo cutMode vì cutMode dùng chung 2 tab). */}
-                        {productType === 'rectangle' && (
+            {productType === 'rectangle' && (
                             <>
                                 <ToolItem 
                                     icon="📚" label={t('preprocess.sticker:binh_sach_tap_chi')} desc={t('preprocess.sticker:khau_chi_long_doi_bu_gay')}

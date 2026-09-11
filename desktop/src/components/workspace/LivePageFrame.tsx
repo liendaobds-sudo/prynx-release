@@ -2012,8 +2012,8 @@ export const LivePageFrame = (props: any) => {
         isActiveFrame,
         prefetchPage === true,
     );
-    // UIUX (feedback 2026-08-14 §VIEW.PAGE): target active vẫn thắng ở mức 10;
-    // underlay đọc được của trang kế bên đứng ở mức 20, trước atlas runway mức 100.
+    // PERF (audit 2026-09-11 §PPEBX.C): active mức 10 dùng lane tương tác;
+    // trang kế bên mức 100 dùng lane nền cùng atlas, không giữ mutex của active.
     const shouldRenderBasePage = shouldRenderViewerBasePage(
         viewerIsActive,
         isActiveFrame,

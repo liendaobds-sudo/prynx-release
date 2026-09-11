@@ -15,6 +15,9 @@ import {
     exportStickerSheet,
     inspectStickerSourceManifest,
     previewStickerCutline,
+    readStickerCutlinePreviewJob,
+    startStickerCutlinePreviewJob,
+    cancelStickerCutlinePreviewJob,
     refineStickerSource,
     type StickerSourceDetection,
 } from './stickerSheetApi';
@@ -231,6 +234,19 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
         });
     });
 
+    it('preview toàn trang gửi mode riêng cùng số trang và mức Simplify', async () => {
+        apiMocks.authenticatedFetch.mockResolvedValue(responseJson({ classic_whole_page: true }));
+        await previewStickerCutline('0123456789abcdef0123456789abcdef', {
+            baseRevision: 4, pageNumber: 12, edits: [], dpi: 300, offsetMm: 0, bleedMm: 2,
+            cutMode: 'bleed', cornerStyle: 'round', cutlineSmoothness: 50, cutlineFidelity: 50,
+            curveTension: 100, minDetailAreaMm2: 1, cutlineDenoise: 30, cutlineSimplifyMm: .1,
+            classicWholePage: true, classicForceContour: true,
+        });
+        const body = JSON.parse(String(apiMocks.authenticatedFetch.mock.calls[0][1].body));
+        expect(body).toMatchObject({ page_number: 12, classic_whole_page: true,
+            classic_force_contour: true, cutline_simplify_mm: .1, corner_style: 'round' });
+    });
+
     it('preview CutContour gửi đủ tuning và edit đang hiển thị', async () => {
         apiMocks.authenticatedFetch.mockResolvedValue(responseJson({
             page_number: 2,
@@ -280,5 +296,50 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
                 kind: 'stroke', id: 'stroke-1', tool: 'erase', instance_id: 1,
             }],
         });
+    });
+
+    it('job preview giữ payload canonical, phân biệt start/read/cancel và truyền AbortSignal', async () => {
+        const sessionId = '0123456789abcdef0123456789abcdef';
+        const controller = new AbortController();
+        apiMocks.authenticatedFetch
+            .mockResolvedValueOnce(responseJson({
+                job_id: 'a'.repeat(32), generation: 7, page_number: 2,
+                base_revision: 4, target_simplify_mm: .1, status: 'simplifying',
+                draft: null, result: null, error: null,
+            }))
+            .mockResolvedValueOnce(responseJson({
+                job_id: 'a'.repeat(32), generation: 7, page_number: 2,
+                base_revision: 4, target_simplify_mm: .1, status: 'ready',
+                draft: null, result: {
+                    page_number: 2, mask_revision: 4, preview_width_px: 120,
+                    preview_height_px: 80, paths: [], fingerprint: 'b'.repeat(64), segment_count: 0,
+                }, error: null,
+            }))
+            .mockResolvedValueOnce(responseJson({ cancelled: true }));
+
+        const started = await startStickerCutlinePreviewJob(sessionId, 7, {
+            baseRevision: 4, pageNumber: 2, edits: [], dpi: 300, dpiY: 150,
+            offsetMm: -0.2, bleedMm: 2, cutMode: 'bleed', cornerStyle: 'round',
+            cutlineSmoothness: 72, cutlineFidelity: 84, curveTension: 36,
+            minDetailAreaMm2: 1.4, cutlineDenoise: 65, cutlineSimplifyMm: .1,
+            classicWholePage: true, classicForceContour: true, signal: controller.signal,
+        });
+        expect(started.status).toBe('simplifying');
+        const startInit = apiMocks.authenticatedFetch.mock.calls[0][1] as RequestInit;
+        expect(apiMocks.authenticatedFetch.mock.calls[0][0]).toContain('/cutline-preview/jobs');
+        expect(startInit.signal).toBe(controller.signal);
+        expect(JSON.parse(String(startInit.body))).toMatchObject({
+            generation: 7, page_number: 2, dpi_y: 150, cutline_simplify_mm: .1,
+            classic_whole_page: true, classic_force_contour: true,
+        });
+
+        const ready = await readStickerCutlinePreviewJob(sessionId, started.job_id, controller.signal);
+        expect(ready.result?.fingerprint).toBe('b'.repeat(64));
+        expect(apiMocks.authenticatedFetch.mock.calls[1][0]).toContain(`/jobs/${started.job_id}`);
+        expect((apiMocks.authenticatedFetch.mock.calls[1][1] as RequestInit).signal).toBe(controller.signal);
+
+        await expect(cancelStickerCutlinePreviewJob(sessionId, 7)).resolves.toBe(true);
+        expect(apiMocks.authenticatedFetch.mock.calls[2][0]).toContain('/jobs/cancel/7');
+        expect((apiMocks.authenticatedFetch.mock.calls[2][1] as RequestInit).method).toBe('POST');
     });
 });

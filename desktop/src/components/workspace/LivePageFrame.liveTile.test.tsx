@@ -12,6 +12,7 @@ import {
     shouldRequestViewerAccurateBase,
     shouldUseViewerDirectFullPageSurface,
     viewerPanGridRenderPolicy,
+    viewerPageRenderPriority,
     VIEWER_RASTER_IMAGE_RENDERING,
     viewerSurfaceSwapMs,
 } from './livePageFramePolicy';
@@ -455,6 +456,7 @@ describe('LiveTile — cold-open màu chính xác', () => {
 
     it('mở cổng trang kế tiếp ngay khi underlay prefetch đã hiện', async () => {
         const getTileUrl = vi.fn();
+        const cancelAccurateGroup = vi.fn();
         const cachedUrl = 'blob:http://localhost/adjacent-underlay';
         cacheTileUrl(
             'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_0.75_0_0_0_0_0',
@@ -463,9 +465,10 @@ describe('LiveTile — cold-open màu chính xác', () => {
         );
         const baseProps = makeProps({
             getTileUrl,
+            cancelAccurateGroup,
             accurateOnly: true,
             zoom: 0.75,
-            renderPriority: 20,
+            renderPriority: viewerPageRenderPriority(true, false, true),
         });
         const view = render(<LiveTile {...baseProps} />);
 
@@ -473,10 +476,14 @@ describe('LiveTile — cold-open màu chính xác', () => {
         const image = view.container.querySelector('img')!;
         fireEvent.load(image);
         const onRenderReady = vi.fn();
-        view.rerender(<LiveTile {...baseProps} onRenderReady={onRenderReady} />);
+        view.rerender(<LiveTile {...baseProps}
+            renderPriority={viewerPageRenderPriority(true, true, false)}
+            onRenderReady={onRenderReady}
+        />);
 
         await waitFor(() => expect(onRenderReady).toHaveBeenCalledTimes(1));
         expect(getTileUrl).not.toHaveBeenCalled();
+        expect(cancelAccurateGroup).not.toHaveBeenCalled();
         expect(image.src).toBe(cachedUrl);
     });
 
@@ -518,23 +525,39 @@ describe('LiveTile — cold-open màu chính xác', () => {
     });
 
     it('không hủy và dựng lại base đang chạy khi trang prefetch trở thành active', async () => {
-        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        let resolveRender!: (source: TileUrlSource) => void;
+        const getTileUrl = vi.fn(() => new Promise<TileUrlSource>(resolve => {
+            resolveRender = resolve;
+        }));
+        const preloadImage = document.createElement('img');
+        vi.spyOn(globalThis, 'Image').mockImplementation(function () { return preloadImage; });
+        const cancelAccurateGroup = vi.fn();
         const onRenderReady = vi.fn();
         const baseProps = makeProps({
             getTileUrl,
+            cancelAccurateGroup,
+            renderOwnerId: 'viewer:prefetch:accurate-base:page-1',
             accurateOnly: true,
         });
         const view = render(
             <LiveTile {...baseProps}
-                renderPriority={100}
+                renderPriority={viewerPageRenderPriority(true, false, true)}
                 showLoadStatus={false}
             />,
         );
         await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+        expect(getTileUrl).toHaveBeenCalledWith(
+            1, 0, 1, 0, 0, 0, 0,
+            expect.objectContaining({
+                priority: 100,
+                ownerId: 'viewer:prefetch:accurate-base:page-1',
+                colorStage: 'accurate',
+            }),
+        );
 
         view.rerender(
             <LiveTile {...baseProps}
-                renderPriority={10}
+                renderPriority={viewerPageRenderPriority(true, true, false)}
                 showLoadStatus={true}
                 onRenderReady={onRenderReady}
             />,
@@ -544,7 +567,21 @@ describe('LiveTile — cold-open màu chính xác', () => {
         });
 
         expect(getTileUrl).toHaveBeenCalledTimes(1);
+        expect(cancelAccurateGroup).not.toHaveBeenCalled();
         expect(onRenderReady).not.toHaveBeenCalled();
+
+        // PERF (audit 2026-09-11 §PPEBX.C): đổi lane của request tương lai không
+        // được làm mất kết quả đang chạy hoặc tạo bitmap thứ hai cùng pixel.
+        await act(async () => {
+            resolveRender({ url: 'blob:http://localhost/promoted-prefetch', byteLength: 64 });
+            await Promise.resolve();
+        });
+        fireEvent.load(preloadImage);
+        await waitFor(() => expect(view.container.querySelector('img')?.src)
+            .toBe('blob:http://localhost/promoted-prefetch'));
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+        expect(cancelAccurateGroup).not.toHaveBeenCalled();
+        expect(onRenderReady).toHaveBeenCalledTimes(1);
     });
 
     it('cold-open xin thẳng PPE target nét, không phát coarse 24 DPI', async () => {

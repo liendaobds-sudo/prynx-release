@@ -181,9 +181,11 @@ describe('Viewer — policy ghép tile progressive', () => {
         expect(viewerAccurateBaseScaleForRole(1.5, screenScale, false, false, false)).toBe(1.5);
 
         expect(viewerPageRenderPriority(true, true, false)).toBe(10);
-        expect(viewerPageRenderPriority(true, false, true)).toBe(20);
-        expect(viewerPageRenderPriority(true, false, false)).toBe(100);
+        expect(viewerPageRenderPriority(true, true, true)).toBe(10);
+        expect(viewerPageRenderPriority(true, false, true)).toBe(100);
+        expect(viewerPageRenderPriority(true, false, false)).toBe(200);
         expect(viewerPageRenderPriority(false, true, true)).toBe(1000);
+        expect(viewerPageRenderPriority(false, false, true)).toBe(1000);
     });
 
     it('chỉ hiện atlas trong một lần swap sau khi đã phủ kín viewport', () => {

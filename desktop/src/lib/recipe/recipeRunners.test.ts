@@ -429,6 +429,30 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         expect(fd.get('cut_first_page_only')).toBe('false');
     });
 
+    it('phát lại mirror dùng mirrorEdgeBiteMm riêng và recipe cũ mặc định 0', async () => {
+        const blob = new Blob([new Uint8Array([3])], { type: 'application/pdf' });
+        vi.mocked(authenticatedFetch)
+            .mockResolvedValueOnce(mockResponse({ ok: true, json: async () => ({ success: true, output_filename: 'mirror.pdf' }) }))
+            .mockResolvedValueOnce(mockResponse({ ok: true, blob: async () => blob }));
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx(),
+            { productType: 'rectangle', bleedMm: 3, bleedColorType: 'mirror', edgeBiteMm: 4, mirrorEdgeBiteMm: 1.4 },
+            null,
+        );
+        const body = JSON.parse(String(vi.mocked(authenticatedFetch).mock.calls[0][1]?.body));
+        expect(body.edge_bite_mm).toBe(1.4);
+
+        vi.clearAllMocks();
+        vi.mocked(authenticatedFetch)
+            .mockResolvedValueOnce(mockResponse({ ok: true, json: async () => ({ success: true, output_filename: 'mirror.pdf' }) }))
+            .mockResolvedValueOnce(mockResponse({ ok: true, blob: async () => blob }));
+        await RECIPE_RUNNERS.sticker_dieline!(makeCtx(), {
+            productType: 'rectangle', bleedMm: 3, bleedColorType: 'mirror', edgeBiteMm: 4,
+        }, null);
+        const legacyBody = JSON.parse(String(vi.mocked(authenticatedFetch).mock.calls[0][1]?.body));
+        expect(legacyBody.edge_bite_mm).toBe(0);
+    });
+
     // Hai helper có kiểu để test mới không thêm cast lỏng vào ngân sách lint.
     function queueDielinePdfResponse(): void {
         const blob = new Blob([new Uint8Array([3])], { type: 'application/pdf' });
@@ -507,6 +531,30 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
             null,
         );
         expect(firstRequestForm().get('cutline_denoise')).toBe('45');
+    });
+
+    it('phát lại đúng dung sai Simplify đã ghi theo mm', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'sticker', cutMode: 'original', cutlineSimplifyMm: 0.035 },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_simplify_mm')).toBe('0.035');
+    });
+
+    it('phát lại cờ Simplify tự động để backend xét từng trang', async () => {
+        queueDielinePdfResponse();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            {
+                productType: 'sticker', cutMode: 'original',
+                cutlineSimplifyMm: 0.1, cutlineSimplifyAuto: true,
+            },
+            null,
+        );
+        expect(firstRequestForm().get('cutline_simplify_mm')).toBe('0.1');
+        expect(firstRequestForm().get('cutline_simplify_auto')).toBe('true');
     });
 
     it('mức khử răng cưa ngoài khoảng bị kẹp về 100 (§CUTJAG.3)', async () => {

@@ -1,4 +1,5 @@
 import { authenticatedFetch, formatApiErrorDetail, getApiUrl } from './api';
+import { resolveStickerCutlineSimplifyMm } from '../components/preprocess-tools/stickerToolPolicy';
 
 
 export type StickerSheetModel = 'birefnet-lite' | 'birefnet-full' | 'isnet';
@@ -148,13 +149,27 @@ export interface StickerSheetPageExport {
     minDetailAreaMm2?: number;
 }
 
+export interface StickerCutlineSimplification {
+    before_segments: number;
+    after_segments: number;
+    /** Sai số bổ sung so đường trước Simplify, không phải tổng sai số so Alpha. */
+    maximum_error_bound_mm: number;
+    changed: boolean;
+}
+
+export interface StickerCutlinePreviewQuality {
+    simplification?: StickerCutlineSimplification | null;
+}
+
 export interface StickerCutlinePreviewPath {
     instance_id: number;
     d: string;
     segment_count: number;
+    quality?: StickerCutlinePreviewQuality | null;
 }
 
 export interface StickerCutlinePreview {
+    classic_whole_page?: boolean;
     page_number: number;
     mask_revision: number;
     preview_width_px: number;
@@ -162,6 +177,51 @@ export interface StickerCutlinePreview {
     paths: StickerCutlinePreviewPath[];
     fingerprint: string;
     segment_count: number;
+    quality?: StickerCutlinePreviewQuality | null;
+}
+
+export type StickerCutlinePreviewJobStatus =
+    | 'preparing'
+    | 'simplifying'
+    | 'ready'
+    | 'cancelled'
+    | 'failed';
+
+export interface StickerCutlinePreviewJob {
+    job_id: string;
+    generation: number;
+    page_number: number;
+    base_revision: number;
+    target_simplify_mm: number;
+    status: StickerCutlinePreviewJobStatus;
+    draft: StickerCutlinePreview | null;
+    result: StickerCutlinePreview | null;
+    error: string | null;
+}
+
+export interface StickerCutlinePreviewOptions {
+    baseRevision: number;
+    pageNumber?: number;
+    edits: StickerSheetExportEdit[];
+    dpi: number;
+    dpiY?: number;
+    offsetMm: number;
+    bleedMm: number;
+    cutMode?: 'original' | 'alpha' | 'bleed' | 'none';
+    cornerStyle?: 'preserve' | 'round' | 'miter';
+    fillHoles?: boolean;
+    cutlineSmoothness: number;
+    cutlineFidelity: number;
+    curveTension: number;
+    minDetailAreaMm2: number;
+    /** §CUTJAG.3 — thanh "Khử răng cưa" 0–100. */
+    cutlineDenoise: number;
+    /** Dung sai đơn giản hóa bổ sung; mặc định tắt để giữ caller cũ. */
+    cutlineSimplifyMm?: number;
+    /** §MULTI-ALPHA.WHOLE: dùng engine toàn trang cho nhiều mảng alpha. */
+    classicWholePage?: boolean;
+    classicForceContour?: boolean;
+    signal?: AbortSignal;
 }
 
 function serializeStickerSheetEdit(edit: StickerSheetExportEdit) {
@@ -349,53 +409,90 @@ export async function refineStickerSource(
 
 export async function previewStickerCutline(
     sessionId: string,
-    options: {
-        baseRevision: number;
-        pageNumber?: number;
-        edits: StickerSheetExportEdit[];
-        dpi: number;
-        dpiY?: number;
-        offsetMm: number;
-        bleedMm: number;
-        cutMode?: 'original' | 'alpha' | 'bleed' | 'none';
-        cornerStyle?: 'preserve' | 'round' | 'miter';
-        fillHoles?: boolean;
-        cutlineSmoothness: number;
-        cutlineFidelity: number;
-        curveTension: number;
-        minDetailAreaMm2: number;
-        /** §CUTJAG.3 — thanh "Khử răng cưa" 0–100. */
-        cutlineDenoise: number;
-        signal?: AbortSignal;
-    },
+    options: StickerCutlinePreviewOptions,
 ): Promise<StickerCutlinePreview> {
     const response = await authenticatedFetch(
         `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/cutline-preview`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                base_revision: options.baseRevision,
-                page_number: options.pageNumber ?? 1,
-                edits: options.edits.map(serializeStickerSheetEdit),
-                dpi: options.dpi,
-                dpi_y: options.dpiY ?? options.dpi,
-                offset_mm: options.offsetMm,
-                bleed_mm: options.bleedMm,
-                cut_mode: options.cutMode || 'original',
-                corner_style: options.cornerStyle || 'preserve',
-                fill_holes: options.fillHoles ?? true,
-                cutline_smoothness: options.cutlineSmoothness,
-                cutline_fidelity: options.cutlineFidelity,
-                curve_tension: options.curveTension,
-                min_detail_area_mm2: options.minDetailAreaMm2,
-                cutline_denoise: options.cutlineDenoise,
-            }),
+            body: JSON.stringify(serializeCutlinePreviewOptions(options)),
             signal: options.signal,
         },
     );
     if (!response.ok) throw await apiError(response, 'Không cập nhật được đường bế xem trước.');
     return response.json() as Promise<StickerCutlinePreview>;
+}
+
+function serializeCutlinePreviewOptions(options: StickerCutlinePreviewOptions) {
+    return {
+        base_revision: options.baseRevision,
+        page_number: options.pageNumber ?? 1,
+        edits: options.edits.map(serializeStickerSheetEdit),
+        dpi: options.dpi,
+        dpi_y: options.dpiY ?? options.dpi,
+        offset_mm: options.offsetMm,
+        bleed_mm: options.bleedMm,
+        cut_mode: options.cutMode || 'original',
+        corner_style: options.cornerStyle || 'preserve',
+        fill_holes: options.fillHoles ?? true,
+        cutline_smoothness: options.cutlineSmoothness,
+        cutline_fidelity: options.cutlineFidelity,
+        curve_tension: options.curveTension,
+        min_detail_area_mm2: options.minDetailAreaMm2,
+        cutline_denoise: options.cutlineDenoise,
+        cutline_simplify_mm: resolveStickerCutlineSimplifyMm(options.cutlineSimplifyMm),
+        ...(options.classicWholePage ? {
+            classic_whole_page: true,
+            classic_force_contour: options.classicForceContour ?? false,
+        } : {}),
+    };
+}
+
+export async function startStickerCutlinePreviewJob(
+    sessionId: string,
+    generation: number,
+    options: StickerCutlinePreviewOptions,
+): Promise<StickerCutlinePreviewJob> {
+    const response = await authenticatedFetch(
+        `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/cutline-preview/jobs`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                generation,
+                ...serializeCutlinePreviewOptions(options),
+            }),
+            signal: options.signal,
+        },
+    );
+    if (!response.ok) throw await apiError(response, 'Không khởi động được preview đường bế.');
+    return response.json() as Promise<StickerCutlinePreviewJob>;
+}
+
+export async function readStickerCutlinePreviewJob(
+    sessionId: string,
+    jobId: string,
+    signal?: AbortSignal,
+): Promise<StickerCutlinePreviewJob> {
+    const response = await authenticatedFetch(
+        `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/cutline-preview/jobs/${encodeURIComponent(jobId)}`,
+        { signal },
+    );
+    if (!response.ok) throw await apiError(response, 'Không đọc được preview đường bế.');
+    return response.json() as Promise<StickerCutlinePreviewJob>;
+}
+
+export async function cancelStickerCutlinePreviewJob(
+    sessionId: string,
+    generation: number,
+): Promise<boolean> {
+    const response = await authenticatedFetch(
+        `${getApiUrl()}/sticker-sheet/${encodeURIComponent(sessionId)}/cutline-preview/jobs/cancel/${generation}`,
+        { method: 'POST' },
+    );
+    if (!response.ok) throw await apiError(response, 'Không hủy được preview đường bế cũ.');
+    return Boolean((await response.json() as { cancelled?: boolean }).cancelled);
 }
 
 export async function confirmStickerSource(

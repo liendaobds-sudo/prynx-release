@@ -69,11 +69,32 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
                 className={`w-full text-left border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${compact ? 'px-2.5 h-8 rounded-md flex items-center' : 'p-3 rounded-lg'} ${isOpen ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 hover:border-slate-400 dark:hover:border-white/30'}`}
             >
                 <div className={`flex justify-between items-center gap-2 ${compact ? 'w-full' : ''}`}>
-                    <div>
-                        <div className={`font-semibold text-slate-900 dark:text-white ${compact ? 'text-[12px]' : 'text-[13px]'}`}>{tv(selected.title)}</div>
-                        {!compact && selected.desc && <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">{tv(selected.desc)}</div>}
+                    <div className={`font-semibold text-slate-900 dark:text-white min-w-0 ${compact ? 'text-[12px]' : 'text-[13px]'}`}>{tv(selected.title)}</div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                        {/* UIUX (2026-09-10 §COMPACT.DESC): desc chuyển từ inline sang tooltip ẩn, giảm visual noise */}
+                        {!compact && selected.desc && (
+                            // Tooltip icon là điều khiển trợ giúp, không phải một ghi chú
+                            // độc lập; dùng img để không làm trùng role note của panel.
+                            <span
+                                role="img"
+                                tabIndex={0}
+                                aria-label={tv(selected.desc)}
+                                onClick={(e) => e.stopPropagation()}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
+                                className="group/desc relative flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] font-bold leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 cursor-help"
+                            >
+                                ?
+                                <span
+                                    role="tooltip"
+                                    className="pointer-events-none absolute bottom-full right-0 z-[120] mb-2 w-max max-w-[280px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[11px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/desc:visible group-hover/desc:opacity-100 group-focus-within/desc:visible group-focus-within/desc:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                >
+                                    {tv(selected.desc)}
+                                    <span aria-hidden="true" className="absolute top-full right-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700" />
+                                </span>
+                            </span>
+                        )}
+                        <svg className={`shrink-0 w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                     </div>
-                    <svg className={`shrink-0 w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                 </div>
             </button>
             
@@ -86,7 +107,7 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
                             onClick={() => { onChange(opt.value); setIsOpen(false); }}
                             // UIUX (audit 2026-07-27 §B-19): mục đang highlight bằng bàn phím
                             data-highlight={idx === highlightIdx || undefined}
-                            className={`text-left p-3 transition-colors hover:bg-slate-50 dark:hover:bg-zinc-800 focus:outline-none border-b border-slate-100 dark:border-white/5 last:border-0 ${opt.value === value ? 'bg-indigo-50/50 dark:bg-indigo-500/10' : ''} ${idx === highlightIdx ? 'bg-app-accent-soft' : ''}`}
+                            className={`group/opt text-left p-3 transition-colors hover:bg-slate-50 dark:hover:bg-zinc-800 focus:outline-none border-b border-slate-100 dark:border-white/5 last:border-0 ${opt.value === value ? 'bg-indigo-50/50 dark:bg-indigo-500/10' : ''} ${idx === highlightIdx ? 'bg-app-accent-soft' : ''}`}
                         >
                             <div className="flex items-center gap-2">
                                 <div className={`shrink-0 flex items-center justify-center w-3 h-3 rounded-full border ${opt.value === value ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300 dark:border-zinc-500 bg-white dark:bg-zinc-800'}`}>
@@ -94,7 +115,12 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
                                 </div>
                                 <div className={`font-semibold text-[13px] ${opt.value === value ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-zinc-200'}`}>{tv(opt.title)}</div>
                             </div>
-                            {opt.desc && <div className="text-[11px] text-slate-500 mt-0.5 ml-5 leading-snug">{tv(opt.desc)}</div>}
+                            {/* UIUX (2026-09-10 §COMPACT.DESC): desc ẩn, hover mới mở ra */}
+                            {opt.desc && (
+                                <div className="ml-5 max-h-0 overflow-hidden text-[11px] text-slate-500 leading-snug opacity-0 transition-all duration-150 ease-out group-hover/opt:max-h-16 group-hover/opt:opacity-100 group-hover/opt:mt-1">
+                                    {tv(opt.desc)}
+                                </div>
+                            )}
                         </button>
                     ))}
                 </div>

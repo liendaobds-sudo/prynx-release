@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { FileCheck2, Layers3 } from 'lucide-react';
 
 import { tv } from '../../i18n';
 import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
@@ -220,9 +221,14 @@ export default function StickerCutlineTool({
 
     return (
         <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 dark:border-zinc-700 dark:bg-zinc-800/60">
+            <div
+                role="group"
+                aria-label={tv('Nguồn đầu vào', 'preprocess.stickerSheet')}
+                className="grid grid-cols-2 gap-1 border-b border-slate-200 pb-1 dark:border-zinc-700"
+            >
                 {MODES.map(option => {
                     const tooltipId = `${modeHelpId}-${option.id}`;
+                    const ModeIcon = option.id === 'existing' ? FileCheck2 : Layers3;
                     return (
                         <div key={option.id} className="group/mode-help relative min-w-0">
                             <button
@@ -237,17 +243,18 @@ export default function StickerCutlineTool({
                                     setCompletedExport(null);
                                     actions.setMode(tabId, option.id);
                                 }}
-                                className={`min-h-11 w-full rounded-lg px-2 text-[10px] font-bold leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                className={`flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold leading-none transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                                     mode === option.id
-                                        ? 'bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
-                                        : 'text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                        ? 'border-violet-200 bg-violet-50 text-violet-700 shadow-sm dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300'
+                                        : 'border-transparent text-slate-500 hover:border-slate-200 hover:bg-slate-50 hover:text-slate-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-200'
                                 }`}
                             >
-                                <span className="inline-flex items-center justify-center gap-1">
+                                <span className="inline-flex min-w-0 items-center justify-center gap-1.5">
+                                    <ModeIcon aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2} />
                                     {tv(option.label, 'preprocess.stickerSheet')}
                                     <span
                                         aria-hidden="true"
-                                        className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-current text-[9px] font-extrabold opacity-70"
+                                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-current text-[9px] font-bold opacity-70"
                                     >
                                         ?
                                     </span>

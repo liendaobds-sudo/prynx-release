@@ -2,6 +2,9 @@
 // Fast Refresh không phải nạp lại toàn bộ công cụ Bế tem.
 export const ALPHA_CONTOUR_INSET_MM = 0.15;
 export const DEFAULT_CROP_TO_STICKER = true;
+// QUALITY (2026-09-10 §SIMPLIFY.AUTO): chỉ UI mới chọn tự động cho biên raster;
+// builder/recipe cũ vẫn mặc định 0, không âm thầm đổi khuôn đã có.
+export const DEFAULT_AUTO_CUTLINE_SIMPLIFY_MM = 0.1;
 
 export const CUT_MODES_RICH = [
     { value: 'original', title: '✂️ Theo hình gốc', desc: 'Cắt bám theo viền ảnh hoặc vector.' },
@@ -57,6 +60,9 @@ export const STICKER_PARAM_LIMITS = {
     bleedMm: { min: 0, max: 10 },
     offsetMm: { min: -10, max: 10 },
     edgeBiteMm: { min: 0, max: 5 },
+    // QUALITY (audit 2026-09-10 §FAIR.1): trần thử gia công đã duyệt;
+    // mặc định vẫn tắt, nguồn/recipe cũ không tự tăng dung sai.
+    cutlineSimplifyMm: { min: 0, max: 0.1 },
 } as const;
 
 /** Ép về số hữu hạn trong khoảng cho phép. Recipe sửa tay / build cũ có thể mang NaN. */
@@ -159,6 +165,17 @@ export interface StickerDielineFormInput {
      * `undefined` phải giữ đúng hành vi cũ: 0 = tắt.
      */
     cutlineDenoise?: unknown;
+    /** Dung sai bổ sung so đường bế trước Simplify; thiếu/0 giữ nguyên đường. */
+    cutlineSimplifyMm?: unknown;
+    /** Opt-in mới: backend tự chọn dung sai cho từng trang raster, giữ CUT/vector. */
+    cutlineSimplifyAuto?: boolean;
+}
+
+/** SIMPLIFY (audit 2026-09-09 §NODE.C): cùng dung sai cho preview, xuất và recipe. */
+export function resolveStickerCutlineSimplifyMm(value: unknown): number {
+    if (typeof value !== 'number' && typeof value !== 'string') return 0;
+    if (typeof value === 'string' && value.trim() === '') return 0;
+    return clampStickerMm(value, STICKER_PARAM_LIMITS.cutlineSimplifyMm);
 }
 
 /** Kẹp thanh khử răng cưa về 0–100; giá trị lạ hoặc thiếu trả 0 (tắt). */
@@ -242,5 +259,12 @@ export function buildStickerDielineFields(
         cutline_denoise: (isRectangle || cutMode === 'none')
             ? '0'
             : String(resolveStickerCutlineDenoise(input.cutlineDenoise)),
+        cutline_simplify_mm: (isRectangle || cutMode === 'none')
+            ? '0'
+            : String(resolveStickerCutlineSimplifyMm(input.cutlineSimplifyMm)),
+        // QUALITY (2026-09-10 §SIMPLIFY.AUTO): scalar là frame trang đang xem;
+        // cờ riêng để trang vector trong tài liệu hỗn hợp không bị áp mức của Alpha.
+        ...(!isRectangle && cutMode !== 'none' && input.cutlineSimplifyAuto === true
+            ? { cutline_simplify_auto: 'true' } : {}),
     };
 }

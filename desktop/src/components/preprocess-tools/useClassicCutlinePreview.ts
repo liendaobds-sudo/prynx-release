@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+    cancelStickerCutlinePreviewJob,
     closeStickerSheetSession,
     detectStickerSourceManifest,
     inspectStickerSourceManifest,
-    previewStickerCutline,
+    readStickerCutlinePreviewJob,
+    startStickerCutlinePreviewJob,
     type StickerCutlinePreview,
+    type StickerCutlinePreviewJob,
+    type StickerCutlinePreviewOptions,
     type StickerDetectionStrategy,
     type StickerSourceDetection,
     type StickerSourceInspection,
 } from '../../lib/stickerSheetApi';
 import i18n from '../../i18n';
 import { computeStickerBleedGeometry } from '../../lib/stickerBleedGeometry';
+import {
+    DEFAULT_AUTO_CUTLINE_SIMPLIFY_MM,
+    resolveStickerCutlineSimplifyMm,
+} from './stickerToolPolicy';
 import {
     useWorkspaceStore,
     type ViewerActivePagePhysical,
@@ -20,6 +28,7 @@ import {
 
 const SOURCE_DEBOUNCE_MS = 220;
 const TUNING_DEBOUNCE_MS = 40;
+const PREVIEW_JOB_POLL_MS = 100;
 const POINT_TO_MM = 25.4 / 72;
 /** Phải khớp `_CUTLINE_ROUND_RADIUS_MAX_MM` phía backend. */
 const CUTLINE_ROUND_RADIUS_MAX_MM = 3;
@@ -31,11 +40,21 @@ type CornerStyle = 'preserve' | 'round' | 'miter';
 interface PreviewSource {
     sessionId: string;
     manifest: StickerSourceDetection;
+    generation: number;
+    documentIdentity: string;
+    pageNumber: number;
+    pageInstanceId: string | null;
+    autoSimplifyEligible: boolean;
+    /** UIUX (2026-09-10 §MULTI-ALPHA.WHOLE): nhiều mảng alpha → engine toàn trang. */
+    classicWholePage: boolean;
+    forceContour: boolean;
 }
 
 interface PreviewRequest {
     key: string;
+    /** Vòng đời tài liệu/tab, khác lượt job tăng theo mỗi lần kéo thanh. */
     generation: number;
+    jobGeneration: number;
     source: PreviewSource;
     pageNumber: number;
     cutMode: CutMode;
@@ -45,15 +64,36 @@ interface PreviewRequest {
     fillHoles: boolean;
     curveTension: number;
     cutlineDenoise: number;
+    cutlineSimplifyMm: number;
+}
+
+interface PreviewSession {
+    sessionId: string;
+    inspection: StickerSourceInspection;
+    generation: number;
+}
+
+interface CachedPreviewFrame {
+    preview: StickerCutlinePreview;
+    canonicalReference: ClassicCutlinePreviewState['canonicalReference'];
 }
 
 export interface ClassicCutlinePreviewState {
+    canSimplify?: boolean;
+    /** Mức đang yêu cầu cho đúng trang; không lấy mức của frame cũ đang hiển thị. */
+    effectiveSimplifyMm: number;
+    /** PDF Alpha nhiều mảng: áp khi xuất, không có vector canonical để duyệt trước. */
+    directSimplifyOnly?: boolean;
     preview: StickerCutlinePreview | null;
     canonicalReference: {
         sessionId: string;
         pageNumber: number;
         maskRevision: number;
         fingerprint: string;
+        /** Mức Simplify thật sự đã gửi cho frame này; caller cũ coi thiếu là 0. */
+        simplifyMm?: number;
+        /** Đã xem lệnh CUT từ writer toàn trang, không phải snapshot một tem. */
+        wholePage?: boolean;
     } | null;
     isPreparing: boolean;
     isUpdating: boolean;
@@ -74,11 +114,16 @@ interface UseClassicCutlinePreviewOptions {
     fillHoles: boolean;
     curveTension: number;
     cutlineDenoise: number;
+    cutlineSimplifyMm?: number;
+    /** Opt-in riêng của UI mới; false giữ nguyên cả lựa chọn thủ công 0. */
+    autoSimplify?: boolean;
     forceContour: boolean;
     removeWhiteBg: boolean;
 }
 
-const EMPTY_STATE: ClassicCutlinePreviewState = {
+type ClassicCutlinePreviewFrameState = Omit<ClassicCutlinePreviewState, 'effectiveSimplifyMm'>;
+
+const EMPTY_STATE: ClassicCutlinePreviewFrameState = {
     preview: null,
     canonicalReference: null,
     isPreparing: false,
@@ -88,7 +133,34 @@ const EMPTY_STATE: ClassicCutlinePreviewState = {
 };
 
 function isAbortError(error: unknown): boolean {
-    return error instanceof Error && error.name === 'AbortError';
+    return Boolean(
+        error
+        && typeof error === 'object'
+        && 'name' in error
+        && (error as { name?: unknown }).name === 'AbortError',
+    );
+}
+
+function cancelPreviewJobSilently(sessionId: string, generation: number): void {
+    void cancelStickerCutlinePreviewJob(sessionId, generation).catch(() => undefined);
+}
+
+function waitForPreviewJobPoll(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+            reject(new DOMException('Preview đường bế đã bị hủy.', 'AbortError'));
+            return;
+        }
+        const abort = () => {
+            window.clearTimeout(timer);
+            reject(new DOMException('Preview đường bế đã bị hủy.', 'AbortError'));
+        };
+        const timer = window.setTimeout(() => {
+            signal.removeEventListener('abort', abort);
+            resolve();
+        }, PREVIEW_JOB_POLL_MS);
+        signal.addEventListener('abort', abort, { once: true });
+    });
 }
 
 function pageInspection(
@@ -305,6 +377,8 @@ export function useClassicCutlinePreview({
     fillHoles,
     curveTension,
     cutlineDenoise,
+    cutlineSimplifyMm = 0,
+    autoSimplify = false,
     forceContour,
     removeWhiteBg,
 }: UseClassicCutlinePreviewOptions): ClassicCutlinePreviewState {
@@ -357,28 +431,55 @@ export function useClassicCutlinePreview({
         viewerPagePhysical,
     ]);
     const [source, setSource] = useState<PreviewSource | null>(null);
-    const [state, setState] = useState<ClassicCutlinePreviewState>(EMPTY_STATE);
+    const [sessionVersion, setSessionVersion] = useState(0);
+    const [state, setState] = useState<ClassicCutlinePreviewFrameState>(EMPTY_STATE);
     const [pumpVersion, setPumpVersion] = useState(0);
     const generationRef = useRef(0);
     const mountedRef = useRef(true);
+    const sessionRef = useRef<PreviewSession | null>(null);
+    const pageSourceCacheRef = useRef<Map<string, PreviewSource>>(new Map());
+    const previewCacheRef = useRef<Map<string, CachedPreviewFrame>>(new Map());
+    const activePageKeyRef = useRef('');
     const desiredRef = useRef<PreviewRequest | null>(null);
     const latestKeyRef = useRef('');
-    const runningRef = useRef(false);
+    const jobGenerationRef = useRef(0);
+    const activePreviewJobRef = useRef<{
+        sessionId: string;
+        generation: number;
+    } | null>(null);
     const previewAbortRef = useRef<AbortController | null>(null);
+    // PERF/QUALITY (2026-09-10 §SIMPLIFY.AUTO): chốt sau detection, TRƯỚC fit đầu
+    // tiên; không fit 0 rồi mới bật 0,10. Không suy quyền từ canSimplify (có vector).
+    const sourceIsCurrent = Boolean(source
+        && source.generation === generationRef.current
+        && source.documentIdentity === documentIdentity
+        && source.pageNumber === pageNumber
+        && source.pageInstanceId === pageInstanceId);
+    const resolvedSimplifyMm = autoSimplify
+        ? (enabled && !usesLocalPageBox && resolvedCutMode !== 'none'
+            && sourceIsCurrent && source?.autoSimplifyEligible
+            ? DEFAULT_AUTO_CUTLINE_SIMPLIFY_MM : 0)
+        : resolveStickerCutlineSimplifyMm(cutlineSimplifyMm);
 
     useEffect(() => {
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
             previewAbortRef.current?.abort();
+            const active = activePreviewJobRef.current;
+            if (active) cancelPreviewJobSilently(active.sessionId, active.generation);
         };
     }, []);
 
-    // Tạo session theo file/trang đúng một lần. Debounce tránh mở session cho tab
-    // vừa lướt qua; cleanup đóng ngay khi đổi file, đổi trang hoặc tab thành nền.
+    // Session sống theo tài liệu/tab. Đổi trang chỉ đổi cache entry; không đóng
+    // session vì backend đã giữ artifact độc lập cho từng trang.
     useEffect(() => {
         const generation = generationRef.current + 1;
         generationRef.current = generation;
+        sessionRef.current = null;
+        pageSourceCacheRef.current.clear();
+        previewCacheRef.current.clear();
+        activePageKeyRef.current = '';
         desiredRef.current = null;
         latestKeyRef.current = '';
         previewAbortRef.current?.abort();
@@ -410,33 +511,6 @@ export function useClassicCutlinePreview({
                     }
                     const inspection = await inspectStickerSourceManifest(file, controller.signal);
                     sessionId = inspection.session_id;
-                    const strategy = previewDetectionStrategy(
-                        inspection,
-                        pageNumber,
-                        detectionCutMode,
-                        forceContour,
-                        removeWhiteBg,
-                    );
-                    if (!strategy) {
-                        throw new Error(i18n.t(
-                            'preprocess.stickerSheet:classic_preview_no_boundary',
-                        ));
-                    }
-                    const manifest = await detectStickerSourceManifest(sessionId, {
-                        strategy,
-                        pageNumber,
-                        // PERF/QUALITY (feedback 2026-08-21 §CUTPREVIEW.GATE2):
-                        // nền phẳng sạch đi fast path; mask có răng cưa/halo vẫn
-                        // được backend nâng Alpha AI một lần rồi dùng chung cho
-                        // preview và xuất file qua canonical reference.
-                        previewOnly: true,
-                        signal: controller.signal,
-                    });
-                    if (manifest.instances.length !== 1) {
-                        throw new Error(i18n.t(
-                            'preprocess.stickerSheet:classic_preview_single_only',
-                        ));
-                    }
                     if (
                         disposed
                         || generationRef.current !== generation
@@ -446,15 +520,8 @@ export function useClassicCutlinePreview({
                         sessionId = null;
                         return;
                     }
-                    setSource({ sessionId, manifest });
-                    setState(current => ({
-                        ...current,
-                        canonicalReference: null,
-                        isPreparing: false,
-                        isUpdating: true,
-                        warning: recognitionWarning(manifest),
-                        error: '',
-                    }));
+                    sessionRef.current = { sessionId, inspection, generation };
+                    setSessionVersion(version => version + 1);
                 } catch (error) {
                     if (sessionId) {
                         void closeStickerSheetSession(sessionId);
@@ -487,7 +554,11 @@ export function useClassicCutlinePreview({
             desiredRef.current = null;
             latestKeyRef.current = '';
             previewAbortRef.current?.abort();
-            if (sessionId) void closeStickerSheetSession(sessionId);
+            if (sessionRef.current?.generation === generation) sessionRef.current = null;
+            if (sessionId) {
+                cancelPreviewJobSilently(sessionId, jobGenerationRef.current);
+                void closeStickerSheetSession(sessionId);
+            }
             if (generationRef.current === generation) generationRef.current += 1;
         };
     }, [
@@ -495,23 +566,190 @@ export function useClassicCutlinePreview({
         detectionCutMode,
         enabled,
         forceContour,
-        pageNumber,
-        pageInstanceId,
         removeWhiteBg,
         resolveSourceFile,
         usesLocalPageBox,
     ]);
 
-    // Mỗi thay đổi hình học chỉ thay desired request. Timer cũ bị hủy nếu người dùng
-    // tiếp tục kéo trong 40 ms; request đang chạy vẫn hoàn tất trước khi chạy frame mới.
+    // Detect đúng trang khi cần. Kết quả manifest được giữ lại theo page instance
+    // để lướt qua lại không chạy nhận diện lần nữa trong cùng tab.
     useEffect(() => {
-        if (!enabled || usesLocalPageBox || !source) return undefined;
+        const pageKey = `${documentIdentity}|${pageNumber}:${pageInstanceId ?? ''}`;
+        activePageKeyRef.current = pageKey;
+        desiredRef.current = null;
+        latestKeyRef.current = '';
+        previewAbortRef.current?.abort();
+        setSource(null);
+
+        const session = sessionRef.current;
+        if (
+            !enabled
+            || usesLocalPageBox
+            || !session
+            || session.generation !== generationRef.current
+        ) return undefined;
+
+        const cachedSource = pageSourceCacheRef.current.get(pageKey);
+        if (cachedSource) {
+            setSource(cachedSource);
+            const cachedFrame = [...previewCacheRef.current.entries()]
+                .find(([, frame]) => (
+                    frame.preview.page_number === pageNumber
+                    && frame.canonicalReference?.sessionId === cachedSource.sessionId
+                    && frame.canonicalReference?.maskRevision === (cachedSource.manifest.mask_revision ?? 1)
+                    && frame.preview.paths.length > 0
+                ))?.[1];
+            setState(cachedFrame ? {
+                canSimplify: !['existing-cut', 'page-box'].includes(cachedSource.manifest.boundary_source),
+                preview: cachedFrame.preview,
+                canonicalReference: cachedFrame.canonicalReference,
+                isPreparing: false,
+                isUpdating: false,
+                warning: recognitionWarning(cachedSource.manifest),
+                error: '',
+            } : {
+                canSimplify: !['existing-cut', 'page-box'].includes(cachedSource.manifest.boundary_source),
+                preview: null,
+                canonicalReference: null,
+                isPreparing: false,
+                isUpdating: true,
+                warning: recognitionWarning(cachedSource.manifest),
+                error: '',
+            });
+            return undefined;
+        }
+
+        setState({
+            preview: null,
+            canonicalReference: null,
+            isPreparing: true,
+            isUpdating: false,
+            warning: '',
+            error: '',
+        });
+        let disposed = false;
+        const controller = new AbortController();
+        void (async () => {
+            try {
+                const strategy = previewDetectionStrategy(
+                    session.inspection,
+                    pageNumber,
+                    detectionCutMode,
+                    forceContour,
+                    removeWhiteBg,
+                );
+                if (!strategy) {
+                    throw new Error(i18n.t(
+                        'preprocess.stickerSheet:classic_preview_no_boundary',
+                    ));
+                }
+                const manifest = await detectStickerSourceManifest(session.sessionId, {
+                    strategy,
+                    pageNumber,
+                    // PERF/QUALITY (feedback 2026-08-21 §CUTPREVIEW.GATE2):
+                    // chỉ detect khi trang chưa có manifest trong cache session.
+                    previewOnly: true,
+                    signal: controller.signal,
+                });
+                const current = (
+                    !disposed
+                    && mountedRef.current
+                    && sessionRef.current === session
+                    && generationRef.current === session.generation
+                    && activePageKeyRef.current === pageKey
+                    && !controller.signal.aborted
+                );
+                if (manifest.instances.length === 0) {
+                    throw new Error(i18n.t(
+                        'preprocess.stickerSheet:classic_preview_single_only',
+                    ));
+                }
+                // UIUX (2026-09-10 §MULTI-ALPHA.WHOLE): nhiều mảng alpha
+                // trên PDF → dùng engine toàn trang như lượt Thực thi.
+                const useWholePage = Boolean(
+                    manifest.instances.length > 1
+                    && session.inspection.source_kind === 'pdf'
+                    && manifest.boundary_source === 'alpha'
+                    && !pageInspection(session.inspection, pageNumber)?.has_existing_cut
+                );
+                if (manifest.instances.length !== 1 && !useWholePage) {
+                    throw new Error(i18n.t(
+                        'preprocess.stickerSheet:classic_preview_single_only',
+                    ));
+                }
+                const nextSource: PreviewSource = {
+                    sessionId: session.sessionId,
+                    manifest,
+                    generation: session.generation,
+                    documentIdentity,
+                    pageNumber,
+                    pageInstanceId,
+                    classicWholePage: useWholePage,
+                    forceContour,
+                    autoSimplifyEligible: ['alpha', 'simple-bg', 'ai'].includes(manifest.boundary_source)
+                        && pageInspection(session.inspection, pageNumber)?.has_existing_cut === false,
+                };
+                pageSourceCacheRef.current.set(pageKey, nextSource);
+                if (!current) return;
+                setSource(nextSource);
+                setState(currentState => ({
+                    ...currentState,
+                    canSimplify: !['existing-cut', 'page-box'].includes(manifest.boundary_source),
+                    canonicalReference: null,
+                    isPreparing: false,
+                    isUpdating: true,
+                    warning: recognitionWarning(manifest),
+                    error: '',
+                }));
+            } catch (error) {
+                if (
+                    disposed
+                    || controller.signal.aborted
+                    || isAbortError(error)
+                    || sessionRef.current !== session
+                    || generationRef.current !== session.generation
+                    || activePageKeyRef.current !== pageKey
+                ) return;
+                setState({
+                    preview: null,
+                    canonicalReference: null,
+                    isPreparing: false,
+                    isUpdating: false,
+                    warning: '',
+                    error: error instanceof Error
+                        ? error.message
+                        : i18n.t('preprocess.stickerSheet:classic_preview_error'),
+                });
+            }
+        })();
+        return () => {
+            disposed = true;
+            controller.abort();
+        };
+    }, [
+        detectionCutMode,
+        documentIdentity,
+        enabled,
+        forceContour,
+        pageInstanceId,
+        pageNumber,
+        removeWhiteBg,
+        sessionVersion,
+        usesLocalPageBox,
+    ]);
+
+    // Mỗi thay đổi hình học chỉ thay desired request. Timer cũ bị hủy nếu người dùng
+    // tiếp tục kéo trong 40 ms; job đang chạy nhận tombstone để worker ưu tiên frame mới.
+    useEffect(() => {
+        if (!enabled || usesLocalPageBox || !source
+            || source.generation !== generationRef.current || !sourceIsCurrent) return undefined;
         // Parity với builder xuất: Alpha luôn giữ nguyên góc dù trước đó người dùng
         // từng chọn Góc tròn; thanh lúc này cũng đang ẩn.
         const request: PreviewRequest = {
             key: JSON.stringify({
                 sessionId: source.sessionId,
                 pageNumber,
+                pageInstanceId,
                 revision: source.manifest.mask_revision ?? 1,
                 offsetMm,
                 bleedMm,
@@ -520,8 +758,12 @@ export function useClassicCutlinePreview({
                 fillHoles,
                 curveTension: resolvedCornerStyle === 'round' ? curveTension : 50,
                 cutlineDenoise,
+                cutlineSimplifyMm: resolvedSimplifyMm,
             }),
             generation: generationRef.current,
+            // PERF (audit 2026-09-11 §PREWARM.CANCEL): mỗi slider tick là một
+            // lượt mới cho worker; generation của session không đủ phân biệt.
+            jobGeneration: jobGenerationRef.current + 1,
             source,
             pageNumber,
             cutMode: resolvedCutMode,
@@ -531,7 +773,9 @@ export function useClassicCutlinePreview({
             fillHoles,
             curveTension: resolvedCornerStyle === 'round' ? curveTension : 50,
             cutlineDenoise,
+            cutlineSimplifyMm: resolvedSimplifyMm,
         };
+        jobGenerationRef.current = request.jobGeneration;
         latestKeyRef.current = request.key;
         // QUALITY (audit 2026-08-21 §CANONICAL.4): vẫn giữ SVG cũ để Viewer
         // không chớp, nhưng reference phải stale NGAY khi thông số đổi.
@@ -542,11 +786,37 @@ export function useClassicCutlinePreview({
             isUpdating: true,
             error: '',
         }));
+        const cachedFrame = previewCacheRef.current.get(request.key);
+        if (cachedFrame) {
+            setState(current => ({
+                ...current,
+                preview: cachedFrame.preview,
+                canonicalReference: cachedFrame.canonicalReference,
+                isPreparing: false,
+                isUpdating: false,
+                error: '',
+            }));
+            return undefined;
+        }
         const timer = window.setTimeout(() => {
             desiredRef.current = request;
             setPumpVersion(version => version + 1);
         }, TUNING_DEBOUNCE_MS);
-        return () => window.clearTimeout(timer);
+        return () => {
+            window.clearTimeout(timer);
+            // Tombstone cả request chưa kịp POST: nếu timer/network cũ tới trễ,
+            // backend vẫn từ chối nó và không làm hàng preview mới chậm đi.
+            cancelPreviewJobSilently(request.source.sessionId, request.jobGeneration);
+            const active = activePreviewJobRef.current;
+            if (
+                active
+                && active.sessionId === request.source.sessionId
+                && active.generation <= request.jobGeneration
+            ) {
+                previewAbortRef.current?.abort();
+                activePreviewJobRef.current = null;
+            }
+        };
     }, [
         bleedMm,
         cornerStyle,
@@ -558,21 +828,26 @@ export function useClassicCutlinePreview({
         offsetMm,
         pageNumber,
         source,
+        sourceIsCurrent,
         resolvedCornerStyle,
         resolvedCutMode,
+        resolvedSimplifyMm,
         usesLocalPageBox,
     ]);
 
-    // Pump nối tiếp: không bao giờ có hai fit cùng lúc cho một StickerTool.
+    // Job POST trả nhanh; pool backend hủy/coalesce lượt cũ thay vì để UI chờ
+    // toàn bộ fitter. Poll nối tiếp nên mỗi job chỉ có tối đa một GET đang bay.
     useEffect(() => {
         const requested = desiredRef.current;
-        if (!requested || runningRef.current) return;
+        if (!requested) return;
         desiredRef.current = null;
-        runningRef.current = true;
         const controller = new AbortController();
         previewAbortRef.current = controller;
-
-        void previewStickerCutline(requested.source.sessionId, {
+        activePreviewJobRef.current = {
+            sessionId: requested.source.sessionId,
+            generation: requested.jobGeneration,
+        };
+        const options: StickerCutlinePreviewOptions = {
             baseRevision: requested.source.manifest.mask_revision ?? 1,
             pageNumber: requested.pageNumber,
             edits: [],
@@ -588,13 +863,46 @@ export function useClassicCutlinePreview({
             curveTension: requested.curveTension,
             minDetailAreaMm2: 1,
             cutlineDenoise: requested.cutlineDenoise,
+            cutlineSimplifyMm: requested.cutlineSimplifyMm,
+            classicWholePage: requested.source.classicWholePage,
+            classicForceContour: requested.source.forceContour,
             signal: controller.signal,
-        }).then(payload => {
-            const stale = (
-                requested.generation !== generationRef.current
-                || requested.key !== latestKeyRef.current
-                || desiredRef.current !== null
-            );
+        };
+        const isStale = () => (
+            controller.signal.aborted
+            || requested.generation !== generationRef.current
+            || requested.key !== latestKeyRef.current
+            || desiredRef.current !== null
+            || activePreviewJobRef.current?.sessionId !== requested.source.sessionId
+            || activePreviewJobRef.current?.generation !== requested.jobGeneration
+        );
+        const acceptReady = (payload: StickerCutlinePreview) => {
+            if (requested.source.classicWholePage && (
+                payload.classic_whole_page !== true
+                || payload.page_number !== requested.pageNumber
+                || payload.mask_revision !== (requested.source.manifest.mask_revision ?? 1)
+            )) {
+                // Backend cũ không hiểu mode này có thể trả các mảng tách;
+                // không được hiển thị chúng như đường bế toàn trang đã duyệt.
+                throw new Error(i18n.t('preprocess.stickerSheet:classic_preview_update_error'));
+            }
+            const stale = isStale();
+            if (
+                sessionRef.current?.generation === requested.generation
+                && sessionRef.current.sessionId === requested.source.sessionId
+            ) {
+                previewCacheRef.current.set(requested.key, {
+                    preview: payload,
+                    canonicalReference: {
+                        sessionId: requested.source.sessionId,
+                        pageNumber: payload.page_number,
+                        maskRevision: payload.mask_revision,
+                        fingerprint: payload.fingerprint,
+                        simplifyMm: requested.cutlineSimplifyMm,
+                        ...(requested.source.classicWholePage ? { wholePage: true } : {}),
+                    },
+                });
+            }
             if (!stale && mountedRef.current) {
                 setState(current => ({
                     ...current,
@@ -604,18 +912,60 @@ export function useClassicCutlinePreview({
                         pageNumber: payload.page_number,
                         maskRevision: payload.mask_revision,
                         fingerprint: payload.fingerprint,
+                        simplifyMm: requested.cutlineSimplifyMm,
+                        ...(requested.source.classicWholePage ? { wholePage: true } : {}),
                     },
                     isPreparing: false,
                     isUpdating: false,
                     error: '',
                 }));
             }
-        }).catch(error => {
-            const stale = (
-                requested.generation !== generationRef.current
-                || requested.key !== latestKeyRef.current
-                || desiredRef.current !== null
-            );
+        };
+        const settleTerminal = (job: StickerCutlinePreviewJob) => {
+            if (job.status === 'ready') {
+                if (!job.result) {
+                    throw new Error(i18n.t('preprocess.stickerSheet:classic_preview_update_error'));
+                }
+                acceptReady(job.result);
+                return;
+            }
+            if (job.status === 'failed') {
+                throw new Error(job.error || i18n.t('preprocess.stickerSheet:classic_preview_update_error'));
+            }
+            if (!isStale() && mountedRef.current) {
+                // Hủy chỉ có nghĩa frame này không còn canonical; giữ SVG cũ
+                // để user so sánh, nhưng không mở lại quyền Execute.
+                setState(current => ({
+                    ...current,
+                    canonicalReference: null,
+                    isPreparing: false,
+                    isUpdating: false,
+                    error: '',
+                }));
+            }
+        };
+
+        void (async () => {
+            try {
+                let job = await startStickerCutlinePreviewJob(
+                    requested.source.sessionId,
+                    requested.jobGeneration,
+                    options,
+                );
+                while (job.status === 'preparing' || job.status === 'simplifying') {
+                    if (isStale()) return;
+                    await waitForPreviewJobPoll(controller.signal);
+                    if (isStale()) return;
+                    job = await readStickerCutlinePreviewJob(
+                        requested.source.sessionId,
+                        job.job_id,
+                        controller.signal,
+                    );
+                }
+                if (isStale()) return;
+                settleTerminal(job);
+            } catch (error) {
+                const stale = isStale();
             if (!stale && mountedRef.current && !isAbortError(error)) {
                 setState(current => ({
                     ...current,
@@ -626,17 +976,21 @@ export function useClassicCutlinePreview({
                         : i18n.t('preprocess.stickerSheet:classic_preview_update_error'),
                 }));
             }
-        }).finally(() => {
+            } finally {
             if (previewAbortRef.current === controller) previewAbortRef.current = null;
-            runningRef.current = false;
-            if (mountedRef.current && desiredRef.current) {
-                setPumpVersion(version => version + 1);
+            if (
+                activePreviewJobRef.current?.sessionId === requested.source.sessionId
+                && activePreviewJobRef.current?.generation === requested.jobGeneration
+            ) {
+                activePreviewJobRef.current = null;
             }
-        });
+            }
+        })();
     }, [pumpVersion]);
 
     if (usesLocalPageBox) {
         return {
+            effectiveSimplifyMm: 0,
             preview: localPageBoxPreview,
             canonicalReference: null,
             isPreparing: false,
@@ -645,5 +999,5 @@ export function useClassicCutlinePreview({
             error: '',
         };
     }
-    return state;
+    return { ...state, effectiveSimplifyMm: resolvedSimplifyMm };
 }
