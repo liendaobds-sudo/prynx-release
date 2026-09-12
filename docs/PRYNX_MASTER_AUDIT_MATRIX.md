@@ -1,5 +1,7 @@
 # PrynX Master Audit Matrix
 
+> Audit delta 2026-09-12 · `W8-U05-LICENSE-RECOVERY`: **TRACED + ARTIFACT-PARTIAL · LÔ 1 APPLIED · ROOT CAUSE HOLD**. Profile lỗi ghi activation server 1/1 nhưng desktop native commit thất bại; HWID/DPAPI profile đạt kiểm an toàn, EXE đang chạy không khớp `BUILD_EXE_SHA256` trong manifest (`GIT_DIRTY=yes`, `RUNTIME_VERIFIED=no`). Lô 1 đã thêm mã phase diagnostics an toàn ở desktop; typecheck + 124 test auth/protocol/token đạt. Installer 2.0.1 đã tạo nhưng verifier smoke bị chặn đúng thiết kế bởi process PrynX đang chạy; chưa nâng `RUNTIME_VERIFIED`. Remote signing-secret parity, live Edge bundle và good-vs-bad artifact vẫn `[EXTERNAL]`. Xem `BAO_CAO_AUDIT_LICENSE_RECOVERY_RUNTIME_2026-09-12.md`.
+
 > Audit 2026-09-11 · `W2-U03-PPE-PERF / W7-U04-CMNM`: **TRACED + PROBE, CHỜ DUYỆT**.
 > Xén vuông góc 2 mm/bite 0,5 mm/inpaint trên CMNM tạo vector fallback cùng Form
 > 9 lần/trang. Native đang cài: trang 2/3 output lần đầu 5,344/9,780 s, reraster nóng

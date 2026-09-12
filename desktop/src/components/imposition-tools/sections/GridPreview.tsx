@@ -2733,6 +2733,24 @@ export default function GridPreview(props: GridPreviewProps) {
             try {
               const parsed = JSON.parse(errText);
               if (typeof parsed?.detail === "string") message = parsed.detail;
+              else if (Array.isArray(parsed?.detail)) {
+                // UIUX (audit 2026-09-13 §PREVIEW-422): FastAPI trả lỗi schema
+                // dưới dạng mảng; giữ lại loc/msg để người dùng biết chính xác
+                // field nào bị từ chối thay vì chỉ thấy mã 422 chung chung.
+                const details = parsed.detail
+                  .map((item: unknown) => {
+                    if (!item || typeof item !== "object") return "";
+                    const value = item as { loc?: unknown; msg?: unknown };
+                    const loc = Array.isArray(value.loc)
+                      ? value.loc.filter((part) => typeof part === "string" || typeof part === "number").join(".")
+                      : "";
+                    const msg = typeof value.msg === "string" ? value.msg : "Dữ liệu không hợp lệ";
+                    return loc ? `${loc}: ${msg}` : msg;
+                  })
+                  .filter(Boolean)
+                  .join("; ");
+                if (details) message = details;
+              }
               else if (typeof parsed?.error === "string") message = parsed.error;
             } catch {
               if (errText.trim()) message = errText.trim();

@@ -160,6 +160,47 @@ def test_giu_bleed_tran_ra_le_ngoai_block():
     assert outer_band.difference(poly).area <= 1e-3
 
 
+def test_tem_be_bien_khong_them_dai_chu_nhat_full_bleed():
+    """Tem bế ở biên vẫn giữ contour tròn; không nối dải chữ nhật ngoài block."""
+    from shapely.geometry import box
+
+    r = 20 * MM
+    bleed = 3 * MM
+    die = Rect(0, 0, 2 * r, 2 * r)
+    bound = Rect(-bleed, -bleed, 2 * r + bleed, 2 * r + bleed)
+    rings = build_die_clip_rings(
+        _circle_items(r, r, r), die, 0.0, 0.0,
+        offset_pt=1 * MM,
+        bound_rect=bound,
+        block_rect=None,
+    )
+    assert rings
+    poly = _polygon(rings)
+    outer_band = box(bound.x0, bound.y0, bound.x1, bound.y1).difference(
+        box(0.0, 0.0, 2 * r, 2 * r)
+    )
+    # Dải ngoài bbox không được tự động nhập vào clip (đặc biệt ở góc).
+    assert outer_band.intersection(poly).area < outer_band.area * 0.2
+
+
+def test_cum_tem_be_duoc_can_theo_bbox_thuc_te():
+    from app.workers.nup_process_chunk import _recenter_die_cut_placements
+
+    placements = [
+        {'abs_x': 10.0, 'original_cell_y': 20.0, 'abs_y': 80.0, 'width': 20.0, 'height': 20.0},
+        {'abs_x': 32.0, 'original_cell_y': 45.0, 'abs_y': 55.0, 'width': 20.0, 'height': 20.0},
+    ]
+    dx, dy = _recenter_die_cut_placements(
+        placements, sheet_w=100.0, sheet_h=100.0,
+        sheet_usable_w=100.0, sheet_usable_h=100.0,
+        margin_left=0.0, margin_bottom=0.0, align='center',
+    )
+    assert dx == pytest.approx(19.0)
+    assert dy == pytest.approx(7.5)
+    assert (min(p['abs_x'] for p in placements) + max(p['abs_x'] + p['width'] for p in placements)) / 2 == pytest.approx(50.0)
+    assert (min(p['original_cell_y'] for p in placements) + max(p['original_cell_y'] + p['height'] for p in placements)) / 2 == pytest.approx(50.0)
+
+
 # ─── Chế độ ĐỒNG NHẤT (bình tem chung khuôn) ─────────────────────────────────
 
 

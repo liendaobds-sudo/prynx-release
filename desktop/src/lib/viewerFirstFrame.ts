@@ -42,7 +42,10 @@ type StoredViewerFirstFrame = ViewerFirstFrame & {
   expiryTimer: ReturnType<typeof setTimeout> | null;
 };
 
-const requestsByFile = new WeakMap<File, Promise<ViewerFirstFrame | null>>();
+// Dedupe theo identity vật lý thay vì object File. Cùng một PDF thường đi qua
+// incoming-dispatcher và ImpositionTab bằng hai object File khác nhau trong cùng
+// lượt mở; WeakMap cũ không nhận ra nên prime/bootstrap lặp nhiều lần.
+const requestsByIdentity = new Map<string, Promise<ViewerFirstFrame | null>>();
 const framesByPath = new Map<string, StoredViewerFirstFrame>();
 
 function normalizedPath(path: string): string {
@@ -185,9 +188,6 @@ function retireUnusedFrame(frame: StoredViewerFirstFrame): void {
  * rồi mới bắt đầu render. Hàm chỉ chạy cho PDF path-backed trong Tauri/PPE Viewer.
  */
 export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | null> {
-  const existingRequest = requestsByFile.get(file);
-  if (existingRequest) return existingRequest;
-
   const nativePath = (file as File & { path?: string }).path;
   const isPdf = file.type === 'application/pdf' || file.name.toLocaleLowerCase().endsWith('.pdf');
   if (
@@ -198,6 +198,10 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
   ) {
     return Promise.resolve(null);
   }
+
+  const requestIdentity = `${normalizedPath(nativePath)}:${file.size}:${file.lastModified}`;
+  const existingRequest = requestsByIdentity.get(requestIdentity);
+  if (existingRequest) return existingRequest;
 
   const request = (async (): Promise<ViewerFirstFrame | null> => {
     const tracePath = viewerTraceHash(nativePath);
@@ -349,7 +353,7 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
       return null;
     }
   })();
-  requestsByFile.set(file, request);
+  requestsByIdentity.set(requestIdentity, request);
   return request;
 }
 

@@ -12,6 +12,7 @@ import {
     clearTileUrlCache,
     releaseTileUrlCacheOwner,
 } from '../../lib/tileUrlCache';
+import { viewerTraceHash, viewerTraceLog } from '../../lib/previewPerfLog';
 
 export const PDF_LOAD_SLOW_NOTICE_MS = 10_000;
 export type PdfLoadStatus = 'idle' | 'loading' | 'slow' | 'ready' | 'error' | 'cancelled';
@@ -414,6 +415,21 @@ export function usePdfLoader({
         let releasePdfJsThumbnailDocument: (() => void) | null = null;
         let slowTimer: number | undefined;
         const startedAt = performance.now();
+        const loaderTraceId = viewerTraceHash(`${sourceKey}:${generation}`);
+        const traceLoad = (event: string, extra: Record<string, unknown> = {}) => {
+            void viewerTraceLog(event, {
+                loader_id: loaderTraceId,
+                generation,
+                source_kind: file?.path ? 'native' : 'memory',
+                elapsed_ms: Math.round(performance.now() - startedAt),
+                ...extra,
+            });
+        };
+        traceLoad('pdf-load-start', {
+            has_pdf_url: Boolean(pdfUrl),
+            has_native_path: Boolean(file?.path),
+            revision: loadRevision + 1,
+        });
         const logBase = {
             fileName: file?.name || '',
             fileSize: file?.size || 0,
@@ -435,6 +451,7 @@ export function usePdfLoader({
             if (cancelled || generation !== loadGenerationRef.current) return;
             clearSlowTimer();
             setLoadStatus('ready');
+            traceLoad('pdf-load-ready');
         };
         const markError = (error: unknown, stage: string) => {
             if (cancelled || generation !== loadGenerationRef.current) return;
@@ -442,6 +459,10 @@ export function usePdfLoader({
             const normalized = normalizeLoadError(error);
             setLoadError(normalized);
             setLoadStatus('error');
+            traceLoad('pdf-load-error', {
+                stage,
+                error_name: normalized.name,
+            });
             console.error('[PDF-LOAD]', {
                 ...logBase,
                 stage,
@@ -452,6 +473,7 @@ export function usePdfLoader({
         };
         const cleanupLoad = () => {
             cancelled = true;
+            traceLoad('pdf-load-cleanup', { cancelled: true });
             clearSlowTimer();
             releasePdfJsThumbnailDocument?.();
             releasePdfJsThumbnailDocument = null;
@@ -574,13 +596,21 @@ export function usePdfLoader({
                     };
 
                     const loadFullMetadata = async (expectedIdentity?: string) => {
+                        const metadataStartedAt = performance.now();
+                        traceLoad('pdf-metadata-start', {
+                            expected_identity: Boolean(expectedIdentity),
+                        });
                         try {
-                            const __t0 = performance.now();
                             const meta = await invoke<PdfMetadata>('get_pdf_metadata', expectedIdentity
                                 ? { filePath, expectedIdentity }
                                 : { filePath });
+                            traceLoad('pdf-metadata-done', {
+                                phase: 'full',
+                                num_pages: Number(meta.numPages) || 0,
+                                metadata_ms: Math.round(performance.now() - metadataStartedAt),
+                            });
                             if (typeof localStorage !== 'undefined' && localStorage.perfDebug === '1') {
-                                console.log(`[PERF-META] full=${(performance.now() - __t0).toFixed(0)}ms | numPages=${meta.numPages}`);
+                                console.log(`[PERF-META] full=${(performance.now() - metadataStartedAt).toFixed(0)}ms | numPages=${meta.numPages}`);
                             }
                             return meta;
                         } catch (rustErr) {
@@ -589,7 +619,13 @@ export function usePdfLoader({
                             // Không được lấy HTTP metadata của file mới để hydrate vào Viewer cũ.
                             if (expectedIdentity) throw rustErr;
                             console.warn('[PERF-META] Rust get_pdf_metadata FAILED → fallback HTTP:', rustErr);
-                            return fetchHttpMetadata();
+                            const fallback = await fetchHttpMetadata();
+                            traceLoad('pdf-metadata-done', {
+                                phase: 'http-fallback',
+                                num_pages: Number(fallback.numPages) || 0,
+                                metadata_ms: Math.round(performance.now() - metadataStartedAt),
+                            });
+                            return fallback;
                         }
                     };
 
@@ -641,11 +677,17 @@ export function usePdfLoader({
                             filePath,
                             ownerId: tileCacheOwnerIdRef.current,
                         });
+                        traceLoad('pdf-bootstrap-ready', {
+                            num_pages: Number(bootstrap.numPages) || 0,
+                            has_color_risk: Boolean(bootstrap.colorRisk),
+                            bootstrap_ms: Math.round(performance.now() - __t0),
+                        });
                         if (typeof localStorage !== 'undefined' && localStorage.perfDebug === '1') {
                             console.log(`[PERF-META] bootstrap=${(performance.now() - __t0).toFixed(0)}ms | numPages=${bootstrap.numPages}`);
                         }
                     } catch (bootstrapError) {
                         if (!isCurrentGeneration()) return;
+                        traceLoad('pdf-bootstrap-error', { fallback_to_full_metadata: true });
                         // Tương thích lỗi command/bản dev cũ: full metadata vẫn giữ đường HTTP fallback.
                         console.warn('[PERF-META] Viewer bootstrap FAILED → dùng metadata đầy đủ:', bootstrapError);
                         bootstrap = await loadFullMetadata();
@@ -661,6 +703,10 @@ export function usePdfLoader({
                             : undefined;
                         bootstrap = await loadFullMetadata(expectedIdentity);
                         bootstrapContainsFullMetadata = true;
+                        traceLoad('pdf-metadata-ready', {
+                            phase: 'pre-first-pixel',
+                            num_pages: Number(bootstrap.numPages) || 0,
+                        });
                     }
 
                     if (!isCurrentGeneration()) return;

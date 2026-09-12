@@ -11,7 +11,7 @@ import {
 } from './licenseToken';
 import { hasFeatureAccess, normalizePlan, type LicensePlan } from '../lib/license/features';
 import { normalizeLicenseKey } from '../lib/licenseKey';
-import { APP_VERSION } from '../lib/uiErrorDiagnostics';
+import { APP_VERSION, reportUiError } from '../lib/uiErrorDiagnostics';
 import { clearJobCompletionAccess } from '../lib/jobCompletionAccess';
 import {
   LICENSE_PROTOCOL_V3,
@@ -216,6 +216,24 @@ function licenseProtocolV3ErrorCode(error: unknown): string {
   return typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)
     ? error.code
     : 'UNKNOWN';
+}
+
+// SEC (audit 2026-09-12 §SEC.LICRT.03): native commit trước đây bị catch rỗng,
+// khiến support không phân biệt được coordinator, token/proof hay DPAPI. Chỉ
+// ghi một mã phase cố định qua cầu diagnostics đã whitelist; tuyệt đối không
+// đẩy nguyên văn lỗi native (có thể chứa path hoặc credential) vào log/UI.
+function reportLicenseCommitFailure(error: unknown): void {
+  const raw = error instanceof Error ? error.message : String(error);
+  const code = /owner|attempt|epoch|lượt xác minh|key đã thay đổi|hết hạn/i.test(raw)
+    ? 'license_commit_transaction'
+    : /challenge|proof|cng|device|biên nhận/i.test(raw)
+      ? 'license_commit_proof'
+      : /token|signature|chữ ký|ký license/i.test(raw)
+        ? 'license_commit_token'
+        : /dpapi|credential|encrypt|persist|atomic|ghi|lưu/i.test(raw)
+          ? 'license_commit_storage'
+          : 'license_commit_native';
+  reportUiError('license_commit', code, new Error('Native license commit failed'));
 }
 
 /**
@@ -1919,7 +1937,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             ...(current ? { replaceLicenseKey: current } : {}),
           });
           set({ licenseProtocolRecoveryRequired: false });
-        } catch {
+        } catch (error) {
+          reportLicenseCommitFailure(error);
           return { ok: false, reason: 'token', message: 'Không thể hoàn tất giao dịch bản quyền. Thông tin cũ được giữ để khôi phục.' };
         }
       } else {
@@ -1960,7 +1979,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           current || null,
         );
       } catch (nativeErr) {
-        console.error('[AUTH] changeLicenseKey: ensureKeyRegisteredInRust failed:', nativeErr);
+        reportLicenseCommitFailure(nativeErr);
+        if (import.meta.env.DEV) {
+          console.error('[AUTH] changeLicenseKey: ensureKeyRegisteredInRust failed:', nativeErr);
+        }
         const restored = await rollbackCredentials();
         if (!restored && isNativeRuntime()) {
           set({

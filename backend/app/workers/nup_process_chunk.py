@@ -47,6 +47,36 @@ def _should_recompute_repeat_layout(layout_type, precalculated_placements):
     return layout_type == 'repeat' and precalculated_placements is None
 
 
+def _recenter_die_cut_placements(placements, *, sheet_w, sheet_h,
+                                 sheet_usable_w, sheet_usable_h,
+                                 margin_left, margin_bottom, align):
+    """Căn bbox placement thực tế của cụm tem bế vào tâm vùng sử dụng.
+
+    Tọa độ ``original_cell_y`` là top-down; ``abs_y`` là bottom-up nên hai
+    trường nhận dấu dịch ngược nhau. Chỉ căn các trục được yêu cầu bởi align.
+    """
+    if not placements or str(align or '').lower() not in {
+        'center', 'top-center', 'bottom-center', 'center-left', 'center-right',
+    }:
+        return (0.0, 0.0)
+    _min_x = min(float(p['abs_x']) for p in placements)
+    _max_x = max(float(p['abs_x']) + float(p['width']) for p in placements)
+    _min_y = min(float(p['original_cell_y']) for p in placements)
+    _max_y = max(float(p['original_cell_y']) + float(p['height']) for p in placements)
+    _dx = (float(margin_left) + float(sheet_usable_w) / 2.0
+           - (_min_x + _max_x) / 2.0
+           if str(align).lower() in {'center', 'top-center', 'bottom-center'} else 0.0)
+    _dy = (float(sheet_h) - float(margin_bottom) - float(sheet_usable_h) / 2.0
+           - (_min_y + _max_y) / 2.0
+           if str(align).lower() in {'center', 'center-left', 'center-right'} else 0.0)
+    for _p in placements:
+        _p['abs_x'] = float(_p['abs_x']) + _dx
+        _p['original_cell_y'] = float(_p['original_cell_y']) + _dy
+        if 'abs_y' in _p:
+            _p['abs_y'] = float(_p['abs_y']) - _dy
+    return (_dx, _dy)
+
+
 def _strip_color_from_stream(page_or_xobj, target_color):
     import pikepdf
     try:
@@ -733,6 +763,25 @@ def process_chunk(args):
             except (KeyError, IndexError, TypeError, ValueError):
                 # Invalid legacy mapping: preserve the old full-sheet behavior.
                 pass
+
+        # [IMPOSE FIX 2026-09-13 §CENTER.1] Với tem bế, số lượng thực tế trên
+        # tờ cuối hoặc layout sole có thể làm bbox placement nhỏ/lệch so với
+        # ``widthUsed/heightUsed`` danh nghĩa của solver. Căn theo bbox THỰC
+        # sau khi cắt số lượng, thay vì căn theo grid lý thuyết; giữ đồng nhất
+        # giữa preview và PDF xuất vì đây là tọa độ cuối cùng writer sử dụng.
+        if is_die_cut and placements:
+            try:
+                _dx, _dy = _recenter_die_cut_placements(
+                    placements, sheet_w=sheet_w, sheet_h=sheet_h,
+                    sheet_usable_w=sheet_usable_w, sheet_usable_h=sheet_usable_h,
+                    margin_left=margin_left, margin_bottom=margin_bottom, align=align,
+                )
+                if abs(_dx) > 1e-7 or abs(_dy) > 1e-7:
+                    logger.debug(
+                        "[CENTER] die-cut sheet=%d shift=(%.3f,%.3f)", sheet_idx, _dx, _dy,
+                    )
+            except (KeyError, TypeError, ValueError):
+                logger.debug("[CENTER] die-cut recenter bỏ qua placement không hợp lệ")
 
         if sheet_idx == start_sheet:
             # Đây là danh sách thật sẽ đi qua collision rồi dựng PDF, không phải

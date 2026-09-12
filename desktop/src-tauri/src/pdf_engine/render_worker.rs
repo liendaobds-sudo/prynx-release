@@ -1745,7 +1745,7 @@ fn render_response(
         ),
         RenderRaster::Dpi { .. } => unreachable!("PPE DPI đã tách ở nhánh accurate"),
     };
-    let render_result = crate::render_tile_png_in_process(
+    let render_result = crate::render_tile_png_with_timing(
         &path,
         request.page,
         zoom,
@@ -1756,7 +1756,7 @@ fn render_response(
         clip.and_then(|value| value.3),
     );
     match render_result {
-        Ok(bytes) => {
+        Ok((bytes, breakdown)) => {
             let (width, height) = png_dimensions(&bytes);
             (
                 base(
@@ -1766,6 +1766,9 @@ fn render_response(
                     width,
                     height,
                     RenderTiming {
+                        render_ms: Some(breakdown.pdfium_render_ms + breakdown.convert_ms),
+                        encode_ms: Some(breakdown.encode_ms),
+                        cache_ms: Some(breakdown.cache_ms),
                         total_ms: started.elapsed().as_millis() as u64,
                         ..Default::default()
                     },

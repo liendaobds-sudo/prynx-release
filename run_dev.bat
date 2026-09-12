@@ -26,6 +26,11 @@ if /I "%~2"=="--gated" set "PRYNX_DEV_GATED_MODE=true"
 if /I "%~2"=="--rebuild-native" set "PRYNX_FORCE_NATIVE_BUILD_MODE=true"
 if /I "%~1"=="--license-test" set "PRYNX_LICENSE_TEST_MODE=true"
 if /I "%~2"=="--license-test" set "PRYNX_LICENSE_TEST_MODE=true"
+:: PERF (audit 2026-09-13 §VIEWLOAD): vòng dev luôn bật telemetry Viewer để
+:: người dùng chỉ cần chạy run_dev.bat là có log đo; bản release vẫn khóa cờ này.
+if not defined PRYNX_PERF set "PRYNX_PERF=1"
+if /I "%~1"=="--perf" set "PRYNX_PERF=1"
+if /I "%~2"=="--perf" set "PRYNX_PERF=1"
 if /I "%PRYNX_LICENSE_TEST_MODE%"=="true" set "PRYNX_DEV_GATED_MODE=true"
 
 if /I "%PRYNX_DEV_GATED_MODE%"=="true" (
@@ -123,6 +128,7 @@ echo - Context Menu OK.
 
 echo.
 echo [4/4] Dang khoi dong he thong...
+if "%PRYNX_PERF%"=="1" echo - PERF: bat telemetry Viewer; log: %USERPROFILE%\Desktop\PrynX_RenderPerf.log
 echo - Don dep cong 8321 truoc khi chay (tranh loi bong ma tien trinh)
 powershell -NoProfile -Command "Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*uvicorn app.main:app*' } | Stop-Process -Force"
 

@@ -466,6 +466,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     const displayedColorRankRef = useRef(0);
     const displayedSurfaceRef = useRef('');
     const cancelledRetryRef = useRef({ params: '', count: 0 });
+    const tileTimingRef = useRef<{ params: string; startedAt: number } | null>(null);
     
     const currentParams = `${fileKey}_${pageNum}_${zoom}_${rot}_${clipX}_${clipY}_${clipW}_${clipH}`;
     const surfaceParams = `${fileKey}_${pageNum}_${rot}_${clipX}_${clipY}_${clipW}_${clipH}`;
@@ -676,6 +677,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
             }
             const attempt = ++loadAttemptRef.current;
+            tileTimingRef.current = { params: paramsAtRequest, startedAt: performance.now() };
             effectRequestAttempt = attempt;
             inFlightRequestRef.current = { params: paramsAtRequest, attempt };
             const clearInFlightRequest = () => {
@@ -835,6 +837,14 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                 bytes: source.byteLength,
                                 cacheable: source.cacheable !== false,
                                 ...readTileDomRect(),
+                            });
+                            traceTileEvent('tile-first-pixel', {
+                                attempt,
+                                scale,
+                                color_stage: colorStage || 'display',
+                                native_to_decode_ms: tileTimingRef.current?.params === paramsAtRequest
+                                    ? Math.round(performance.now() - tileTimingRef.current.startedAt)
+                                    : null,
                             });
                             // PERF (audit 2026-08-08 §RENDER.1): chỉ mở metadata pha B
                             // sau khi bitmap trang active đã render + decode + hiện lên DOM.
@@ -1036,6 +1046,14 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         hasLoadedOnce.current = true;
         setHasVisibleTile(true);
         dispatchLoadState({ type: 'ready', attempt: loadAttemptRef.current });
+        traceTileEvent('tile-dom-image-ready', {
+            attempt: loadAttemptRef.current,
+            display_decode_ms: tileTimingRef.current?.params === loadedParamsRef.current
+                ? Math.round(performance.now() - tileTimingRef.current.startedAt)
+                : null,
+            natural_w: imgEl.naturalWidth,
+            natural_h: imgEl.naturalHeight,
+        });
         onTileReadyRef.current?.({ scale: displayedScaleRef.current });
         // PERF (audit 2026-08-08 §RENDER.5): cache hit chỉ mở metadata pha B
         // sau khi trình duyệt đã load/decode đúng bitmap của generation hiện tại.

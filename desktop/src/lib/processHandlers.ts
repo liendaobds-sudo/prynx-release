@@ -872,12 +872,6 @@ export async function runShuffle(ctx: ProcessContext, settings: ProcessHandlerSe
 export async function runResize(ctx: ProcessContext, rawSettings: unknown): Promise<ProcessOutcome> {
     const settings = rawSettings as ProcessHandlerSettings<PageResizerSettings>;
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
-    const perfStarted = perfNow();
-    const roundMs = (value: number) => Math.round(value * 10) / 10;
-    const logResizePerf = (payload: Record<string, unknown>) =>
-        console.info(`[ResizePerf] ${JSON.stringify(payload)}`);
-    let perfRoute = 'frontend_pdf_lib';
     // UIUX (audit 2026-08-01 §R.10): Resize chỉ dùng một thông báo chờ ổn định.
     const processingStatus = i18n.t('lib.processHandlers:dang_xu_ly', {
         defaultValue: 'Đang xử lý...',
@@ -900,17 +894,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
         ? 'fit'
         : scaleMode;
     const newFileName = `Resized_${file.name}`;
-    // PERF (audit 2026-08-01 §RT.12): log mốc đầu để ca bị treo vẫn cho biết
-    // đã vào handler với đường xử lý nào; không ghi tên/path của file khách hàng.
-    logResizePerf({
-        stage: 'handler_start',
-        inputBytes: file.size,
-        scaleMode: effectiveScaleMode,
-        pageSizeMode,
-        bgFillMode: settings.bgFillMode || 'mirror',
-        resizeByContent: settings.resizeByContent === true,
-        targetDpi: typeof settings.targetDpi === 'number' ? settings.targetDpi : 0,
-    });
     // pdf-lib nạp CẢ file vào RAM rồi embedPages (nhân bản nội dung trang thành Form
     // XObject) + save (dựng Uint8Array mới) → đỉnh RAM ~3-4× kích thước file. File
     // lớn/nhiều ảnh vượt trần cấp phát ArrayBuffer của V8 → "Array buffer allocation
@@ -919,7 +902,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
     const FE_SIZE_LIMIT = 50 * 1024 * 1024;
 
     const emit = async (blob: Blob) => {
-        const commitStarted = perfNow();
         const destination = settings.spawnNewTab && onSpawnTab ? 'new_tab' : 'working_file';
         const nativeBlob = blob as Blob & { path?: string; nativeSize?: number };
         const nativeOutputPath = typeof nativeBlob.path === 'string' && nativeBlob.path
@@ -928,13 +910,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
         const outputBytes = Number.isFinite(nativeBlob.nativeSize)
             ? Number(nativeBlob.nativeSize)
             : blob.size;
-        logResizePerf({
-            stage: 'commit_start',
-            route: perfRoute,
-            destination,
-            processingMs: roundMs(commitStarted - perfStarted),
-            outputBytes,
-        });
         if (settings.spawnNewTab && onSpawnTab) {
             const outputFile = new File([blob], newFileName, { type: 'application/pdf' });
             if (nativeOutputPath) {
@@ -948,16 +923,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
             await commitWorkingFile(blob, newFileName, nativeOutputPath);
             ctx.setReportMsg('');
         }
-        const finished = perfNow();
-        logResizePerf({
-            stage: 'handler_done',
-            route: perfRoute,
-            destination,
-            processingMs: roundMs(commitStarted - perfStarted),
-            commitMs: roundMs(finished - commitStarted),
-            totalMs: roundMs(finished - perfStarted),
-            outputBytes,
-        });
     };
 
 
@@ -1026,11 +991,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
         };
 
 
-        console.log('[resize] pipeline start', {
-            scaleMode: effectiveScaleMode, pageSizeMode, fillMode,
-            wantEdgeFill, wantSolidFill,
-        });
-
         let sourcePath: string | undefined;
         try { sourcePath = await ctx.getWorkingSourcePath?.(); }
         catch { sourcePath = undefined; }
@@ -1040,7 +1000,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
             // contentBox, fit, lấp vùng trống và đặt lại artwork vector.
             setProcessStatus(processingStatus);
             const { backendResizePages } = await import('../lib/api');
-            perfRoute = sourcePath ? 'backend_path' : 'backend_upload';
 
             let inputFile = file;
             let inputBytes: Uint8Array | undefined;
@@ -1123,7 +1082,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
             // PERF (audit 2026-08-15 §PLAY.PATH): đây vẫn là nhánh backend cũ,
             // chỉ quyết định trước khi gọi getWorkingBytes để tránh bản sao 50–500 MB.
             const { backendResizePages } = await import('../lib/api');
-            perfRoute = 'backend_path';
             const targetDpi = typeof settings.targetDpi === 'number'
                 ? settings.targetDpi
                 : ((autoDownsizeFromPath || await isDownsizingByProbe(sourcePath)) ? 300 : 0);
@@ -1147,7 +1105,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
             // REVISION (audit 2026-08-25 §REV.09): backing `file` không chứng
             // minh tương đương Viewer khi materialize order/rotation thất bại.
             // Dừng tường minh thay vì tạo output "thành công" từ revision cũ.
-            perfRoute = 'working_bytes_failed';
             const failure = new Error(i18n.t('lib.processHandlers:khong_doc_duoc_pdf_lam_viec', {
                 defaultValue: 'Không thể tạo PDF làm việc từ thứ tự hoặc góc xoay trang hiện tại.',
             }));
@@ -1184,7 +1141,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
 
         const runBackend = async (): Promise<Blob> => {
             const { backendResizePages } = await import('../lib/api');
-            perfRoute = 'backend_upload';
             const workingFile = new File([asBlobPart(workingBytes)], file.name, { type: 'application/pdf' });
             return backendResizePages(
                 workingFile, targetW, targetH, effectiveScaleMode,
@@ -1199,7 +1155,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
 
         let resizedBlob: Blob;
         if (wantDownsample || !canUseFrontend || totalPages > 1000 || (file.size || workingBytes.byteLength) > FE_SIZE_LIMIT) {
-            console.log('[resize] bước 2: đi backend');
             resizedBlob = await runBackend();
         } else {
             try {
@@ -1229,13 +1184,6 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
         return PROCESS_COMPLETED;
     } catch (err: unknown) {
         const canceled = isCanceled(err);
-        logResizePerf({
-            stage: 'handler_error',
-            route: perfRoute,
-            totalMs: roundMs(perfNow() - perfStarted),
-            canceled,
-            errorType: err instanceof Error ? err.name : typeof err,
-        });
         // UIUX (audit 2026-07-27 §D-15): formatError + im lặng khi user Hủy
         if (canceled) return PROCESS_CANCELED;
         const message = formatError(err, i18n.t('lib.processHandlers:khong_doi_duoc_kho_trang', { defaultValue: 'Không đổi được khổ trang' }));

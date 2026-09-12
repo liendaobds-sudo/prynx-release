@@ -1390,12 +1390,6 @@ export async function backendResizePages(
   pageSizeMode: string = 'fixed',
   resizeByContent: boolean = false,
 ): Promise<Blob> {
-  // PERF (audit 2026-08-01 §RT.12): mốc end-to-end để tách chuẩn bị payload,
-  // chờ backend và tải response; không đổi nội dung request.
-  const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
-  const perfStarted = perfNow();
-  const logResizePerf = (payload: Record<string, unknown>) =>
-    console.info(`[ResizePerf] ${JSON.stringify(payload)}`);
   const formData = new FormData();
   const useNativeResultPath = typeof window !== 'undefined'
     && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -1421,36 +1415,12 @@ export async function backendResizePages(
   formData.append('resize_by_content', String(resizeByContent));
   if (useNativeResultPath) formData.append('return_path', 'true');
 
-  const payloadReady = perfNow();
-  const roundMs = (value: number) => Math.round(value * 10) / 10;
-  logResizePerf({
-    stage: 'api_request',
-    source: sourcePath ? 'path' : 'upload',
-    payloadMs: roundMs(payloadReady - perfStarted),
-    inputBytes: file.size,
-    targetW,
-    targetH,
-    scaleMode,
-    bgFillMode,
-    pageSizeMode,
-    resizeByContent,
-    targetDpi,
-  });
-
   const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/resize`, {
     method: 'POST',
     body: formData,
   });
-  const headersReady = perfNow();
   if (!res.ok) throw new Error('Đổi khổ trang thất bại: ' + await res.text()); // UIUX (audit 2026-07-27 §D-13)
 
-  const backendTimingRaw = res.headers.get('X-PrynX-Resize-Timing');
-  let backendTiming: unknown = null;
-  if (backendTimingRaw) {
-    try { backendTiming = JSON.parse(backendTimingRaw); }
-    catch { backendTiming = backendTimingRaw; }
-  }
-  const downloadStarted = perfNow();
   const contentType = (res.headers.get('content-type') || '').toLowerCase();
   if (useNativeResultPath && contentType.includes('application/json')) {
     const payload = await res.json() as {
@@ -1470,34 +1440,9 @@ export async function backendResizePages(
         configurable: true,
       },
     });
-    const finished = perfNow();
-    logResizePerf({
-      stage: 'api_done',
-      source: sourcePath ? 'path' : 'upload',
-      transport: 'native_path',
-      payloadMs: roundMs(payloadReady - perfStarted),
-      waitHeadersMs: roundMs(headersReady - payloadReady),
-      downloadMs: roundMs(finished - downloadStarted),
-      totalMs: roundMs(finished - perfStarted),
-      inputBytes: file.size,
-      outputBytes: Number.isFinite(nativeSize) ? nativeSize : 0,
-      backend: payload.timing ?? backendTiming,
-    });
     return blob;
   }
   const blob = await res.blob();
-  const finished = perfNow();
-  logResizePerf({
-    stage: 'api_done',
-    source: sourcePath ? 'path' : 'upload',
-    payloadMs: roundMs(payloadReady - perfStarted),
-    waitHeadersMs: roundMs(headersReady - payloadReady),
-    downloadMs: roundMs(finished - downloadStarted),
-    totalMs: roundMs(finished - perfStarted),
-    inputBytes: file.size,
-    outputBytes: blob.size,
-    backend: backendTiming,
-  });
   return blob;
 }
 

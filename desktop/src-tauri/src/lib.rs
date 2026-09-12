@@ -1965,6 +1965,7 @@ struct CachedDocument {
     // first-pixel. Viewer bootstrap để trống và pha metadata nền mới điền một lần.
     color_risk: Mutex<Option<pdf_color_risk::PdfColorRiskSummary>>,
     file_identity: PdfFileIdentity,
+    cached_bytes: Arc<Vec<u8>>,
     next: AtomicUsize, // Round-robin index
 }
 
@@ -2092,10 +2093,12 @@ fn lopdf_load_options_for_total_ram(total_bytes: Option<u64>) -> lopdf::LoadOpti
 
 #[derive(Debug)]
 struct ParsedPdfStructure {
+    #[allow(dead_code)]
     user_units: Vec<f32>,
     color_risk: pdf_color_risk::PdfColorRiskSummary,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct ParsedPdfBootstrapStructure {
     user_units: Vec<f32>,
@@ -2124,6 +2127,7 @@ fn parse_pdf_structure(
     })
 }
 
+#[allow(dead_code)]
 fn parse_pdf_bootstrap_structure(
     bytes: &[u8],
     total_bytes: Option<u64>,
@@ -2273,6 +2277,14 @@ pub fn run_print_worker(job_path: &str, result_path: &str) -> i32 {
 
 /// Entry display worker dài hạn (gọi từ main khi --prynx-render-worker).
 pub fn run_render_worker_stdio() -> i32 {
+    if PERF_LOG_PATH.get().is_none() {
+        if let Some(desktop_dir) = std::env::var_os("USERPROFILE")
+            .map(|p| std::path::PathBuf::from(p).join("Desktop"))
+            .or_else(|| std::env::var_os("HOMEPATH").map(|p| std::path::PathBuf::from(p).join("Desktop")))
+        {
+            let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
+        }
+    }
     pdf_engine::render_worker::run_worker_stdio()
 }
 
@@ -2797,21 +2809,68 @@ fn build_cached_document(
 ) -> Result<Arc<CachedDocument>, String> {
     // I/O và parse không giữ cache/PDFium mutex. Cùng buffer này được đọc đúng một
     // lần, parse bằng lopdf, drop parser rồi mới move vào PDFium để giảm peak RAM.
-    let bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
-    let (user_units, bootstrap_color_risk, color_risk) = if include_color_risk {
-        let ParsedPdfStructure {
-            user_units,
-            color_risk,
-        } = parse_pdf_structure(&bytes, system_total_memory_bytes())?;
-        (user_units, color_risk.clone(), Some(color_risk))
+    let mut bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
+    let total_ram = system_total_memory_bytes();
+    let opt_t0 = std::time::Instant::now();
+
+    let mut lopdf_doc = load_lopdf_structure(&bytes, total_ram)?;
+    let user_units = collect_pdf_user_units(&lopdf_doc);
+    let (bootstrap_color_risk, color_risk) = if include_color_risk {
+        let color_risk = pdf_color_risk::analyze_pdf_color_risk(&lopdf_doc);
+        (color_risk.clone(), Some(color_risk))
     } else {
-        let ParsedPdfBootstrapStructure {
-            user_units,
-            bootstrap_color_risk,
-        } = parse_pdf_bootstrap_structure(&bytes, system_total_memory_bytes())?;
-        (user_units, bootstrap_color_risk, None)
+        let bootstrap = pdf_color_risk::analyze_pdf_color_risk_bootstrap(&lopdf_doc);
+        (bootstrap, None)
     };
-    let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
+
+    // Tự động giải nén in-memory cho các ảnh lớn (>=1MB) bị nén FlateDecode để tránh
+    // PDFium decompress lặp lại nhiều lần khi cùng một Form XObject được đặt nhiều lần trên trang bình.
+    let mut decompressed_images = 0usize;
+    for (_id, object) in lopdf_doc.objects.iter_mut() {
+        if let lopdf::Object::Stream(ref mut stream) = object {
+            let is_image = stream
+                .dict
+                .get(b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|n| n == b"Image")
+                .unwrap_or(false);
+            if is_image && stream.content.len() >= 1_000_000 {
+                let has_flate = stream
+                    .dict
+                    .get(b"Filter")
+                    .map(|f| match f {
+                        lopdf::Object::Name(name) => name == b"FlateDecode",
+                        lopdf::Object::Array(arr) => arr
+                            .iter()
+                            .any(|item| item.as_name().map(|n| n == b"FlateDecode").unwrap_or(false)),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if has_flate && stream.decompress().is_ok() {
+                    decompressed_images += 1;
+                }
+            }
+        }
+    }
+
+    if decompressed_images > 0 {
+        let orig_len = bytes.len();
+        let mut optimized = Vec::new();
+        if lopdf_doc.save_to(&mut optimized).is_ok() {
+            perf_log(&format!(
+                "PDF_STREAM_OPTIMIZE decompressed_images={} orig_len={} opt_len={} elapsed_ms={}",
+                decompressed_images,
+                orig_len,
+                optimized.len(),
+                opt_t0.elapsed().as_millis()
+            ));
+            bytes = optimized;
+        }
+    }
+    drop(lopdf_doc);
+
+    let cached_bytes = Arc::new(bytes);
+    let doc = load_pdf_document_from_bytes(pdfium, (*cached_bytes).clone())?;
     let page_count = {
         let _pdfium_guard = lock_mutex(&RENDER_LOCK);
         doc.pages().len() as usize
@@ -2841,6 +2900,7 @@ fn build_cached_document(
         bootstrap_color_risk,
         color_risk: Mutex::new(color_risk),
         file_identity,
+        cached_bytes,
         next: AtomicUsize::new(0),
     }))
 }
@@ -2856,9 +2916,7 @@ fn ensure_cached_color_risk(
         return Ok(summary.clone());
     }
 
-    let bytes = read_pdf_bytes_for_identity(file_path, document.file_identity)?;
-    let ParsedPdfStructure { color_risk, .. } =
-        parse_pdf_structure(&bytes, system_total_memory_bytes())?;
+    let ParsedPdfStructure { color_risk, .. } = parse_pdf_structure(&document.cached_bytes, system_total_memory_bytes())?;
     if pdf_file_identity(file_path)? != document.file_identity {
         return Err(
             "File PDF đã thay đổi trong lúc phân tích màu; vui lòng thử lại để tải bản mới."
@@ -3778,6 +3836,17 @@ pub(crate) fn pdf_metadata_in_process(
 }
 
 // ═══ Shared tile rendering core (used by both IPC command and protocol handler) ═══
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TileRenderTimingBreakdown {
+    pub open_ms: u64,
+    pub lock_wait_ms: u64,
+    pub pdfium_render_ms: u64,
+    pub convert_ms: u64,
+    pub encode_ms: u64,
+    pub cache_ms: u64,
+    pub total_ms: u64,
+}
+
 fn encode_viewer_png(rgba_image: &image::RgbaImage) -> Result<Vec<u8>, String> {
     let mut buffer = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
@@ -3792,7 +3861,7 @@ fn encode_viewer_png(rgba_image: &image::RgbaImage) -> Result<Vec<u8>, String> {
     Ok(buffer)
 }
 
-pub(crate) fn render_tile_png_in_process(
+pub fn render_tile_png_with_timing(
     file_path: &str,
     page: i32,
     zoom: f32,
@@ -3801,7 +3870,7 @@ pub(crate) fn render_tile_png_in_process(
     clip_y: Option<i32>,
     clip_w: Option<i32>,
     clip_h: Option<i32>,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
     // Guard: render là ĐỌC file tùy path do renderer truyền (IPC render_pdf_page + protocol
     // tile://). Nếu không chặn, renderer bị chèn mã có thể render → lấy nội dung file nhạy
     // cảm (khoá/credential) ra ảnh. Luồng thật chỉ render PDF trong thư mục người dùng.
@@ -3848,7 +3917,7 @@ pub(crate) fn render_tile_png_in_process(
                     total_ms,
                     data.len()
                 ));
-                return Ok(data);
+                return Ok((data, TileRenderTimingBreakdown { total_ms: total_ms as u64, ..Default::default() }));
             }
         }
     }
@@ -3868,10 +3937,11 @@ pub(crate) fn render_tile_png_in_process(
             if let Ok(mut cache) = cache_lock.lock() {
                 cache.insert(cache_key.clone(), bytes.clone());
             }
-            return Ok(bytes);
+            return Ok((bytes, TileRenderTimingBreakdown { total_ms: total_ms as u64, ..Default::default() }));
         }
     }
 
+    let open_t0 = std::time::Instant::now();
     let pdfium = ensure_pdfium()?;
     let document_arc =
         get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)?;
@@ -3884,7 +3954,7 @@ pub(crate) fn render_tile_png_in_process(
     // bị xoá/khoá/hỏng giữa phiên). Khởi tạo thủ công + propagate lỗi sạch (§15.7).
     let cell = &document_arc.pool[pool_idx];
     if cell.get().is_none() {
-        let bytes = read_pdf_bytes_for_identity(file_path, document_arc.file_identity)?;
+        let bytes = (*document_arc.cached_bytes).clone();
         let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
         let page_count = {
             let _pdfium_guard = lock_mutex(&RENDER_LOCK);
@@ -3915,7 +3985,7 @@ pub(crate) fn render_tile_png_in_process(
 
     // Đo thật (perf_log): trả ảnh và timing cùng lúc để log sau khi nhả khóa,
     // không kéo dài vùng khóa chỉ vì instrumentation.
-    let (rgba_image, lock_wait_ms, render_ms, bitmap_wh) = {
+    let (rgba_image, open_ms, lock_wait_ms, pdfium_render_ms, convert_ms, bitmap_wh) = {
         let _guard = lock_mutex(&handle.lock);
         let page_index = (page - 1) as u16;
         if page_index >= handle.doc.pages().len() {
@@ -3953,6 +4023,7 @@ pub(crate) fn render_tile_png_in_process(
             .map
             .get(&page_index)
             .ok_or_else(|| "Page cache miss after insert".to_string())?;
+        let open_ms = open_t0.elapsed().as_millis() as u64;
 
         // PAGEBOX (audit 2026-08-04 §W1.PB6): clip của frontend và metadata đều ở
         // kích thước vật lý; nhân /UserUnit để bitmap/tile khớp đúng hệ tọa độ đó.
@@ -4004,15 +4075,17 @@ pub(crate) fn render_tile_png_in_process(
         // PDFium không thread-safe kể cả trên doc khác nhau.
         let _lock_t0 = std::time::Instant::now();
         let _render_guard = lock_mutex(&RENDER_LOCK);
-        let lock_wait_ms = _lock_t0.elapsed().as_millis();
+        let lock_wait_ms = _lock_t0.elapsed().as_millis() as u64;
         let _render_t0 = std::time::Instant::now();
         let bitmap = pdf_page
             .render_with_config(&render_config)
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
+        let pdfium_render_ms = _render_t0.elapsed().as_millis() as u64;
+        let _convert_t0 = std::time::Instant::now();
         let img = bitmap.as_image().to_rgba8();
-        let render_ms = _render_t0.elapsed().as_millis();
+        let convert_ms = _convert_t0.elapsed().as_millis() as u64;
         let bitmap_wh = (img.width() as i32, img.height() as i32);
-        (img, lock_wait_ms, render_ms, bitmap_wh)
+        (img, open_ms, lock_wait_ms, pdfium_render_ms, convert_ms, bitmap_wh)
     };
 
     // COLOR (audit 2026-08-07 §GV.1/§GV.4): trang chính và tile dùng PNG lossless
@@ -4021,7 +4094,7 @@ pub(crate) fn render_tile_png_in_process(
     // theo phần cứng nên không hạ chất lượng vô điều kiện trên máy >=16GB.
     let _encode_t0 = std::time::Instant::now();
     let buffer = encode_viewer_png(&rgba_image)?;
-    let encode_ms = _encode_t0.elapsed().as_millis();
+    let encode_ms = _encode_t0.elapsed().as_millis() as u64;
     // LƯU Ý: block ghi PrynX_Performance.log kiểu cũ dùng chrono::Local::now() và PANIC
     // ở release. perf_log() thay bằng SystemTime epoch (không chrono) + chỉ ghi khi
     // perf_enabled() → an toàn. Ghi SAU khi encode xong, NGOÀI mọi vùng khóa.
@@ -4049,16 +4122,40 @@ pub(crate) fn render_tile_png_in_process(
         }
     }
 
-    let cache_ms = _cache_t0.elapsed().as_millis();
-    let total_ms = _total_t0.elapsed().as_millis();
+    let cache_ms = _cache_t0.elapsed().as_millis() as u64;
+    let total_ms = _total_t0.elapsed().as_millis() as u64;
     // Tag "tile" (clip) vs "page" (full-page) để tách chi phí 2 loại render.
     perf_log(&format!(
-        "RENDER kind={} page={} zoom={:.3} wh={}x{} lock_wait_ms={} render_ms={} encode_ms={} cache_ms={} total_ms={} bytes={}",
+        "RENDER kind={} page={} zoom={:.3} wh={}x{} open_ms={} lock_wait_ms={} pdfium_ms={} convert_ms={} encode_ms={} cache_ms={} total_ms={} bytes={}",
         kind, page, zoom, bitmap_wh.0, bitmap_wh.1,
-        lock_wait_ms, render_ms, encode_ms, cache_ms, total_ms, buffer.len()
+        open_ms, lock_wait_ms, pdfium_render_ms, convert_ms, encode_ms, cache_ms, total_ms, buffer.len()
     ));
 
-    Ok(buffer)
+    let breakdown = TileRenderTimingBreakdown {
+        open_ms,
+        lock_wait_ms,
+        pdfium_render_ms,
+        convert_ms,
+        encode_ms,
+        cache_ms,
+        total_ms,
+    };
+
+    Ok((buffer, breakdown))
+}
+
+pub fn render_tile_png_in_process(
+    file_path: &str,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+) -> Result<Vec<u8>, String> {
+    render_tile_png_with_timing(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h)
+        .map(|(bytes, _)| bytes)
 }
 
 // PERF (audit 2026-08-08 §RENDER.2): một semaphore dùng chung cho IPC và tile://.
@@ -4316,6 +4413,10 @@ async fn render_pdf_page(
         .as_ref()
         .map(|context| context.purpose)
         .unwrap_or(pdf_engine::render_worker::RenderPurpose::Interactive);
+    let request_id = request_context
+        .as_ref()
+        .map(|context| context.request_id.clone())
+        .unwrap_or_else(|| "legacy".to_string());
     // PERF (audit 2026-08-08 §RENDER.2): đăng ký request trước khi chờ quota. Nếu user
     // đổi zoom trong lúc hàng đợi đang kín, cancel_pdf_render phải đánh dấu được request
     // ngay; sau khi lấy permit nó bị loại trước khi chiếm worker/PDFium.
@@ -4332,6 +4433,7 @@ async fn render_pdf_page(
     }
     let sem_wait_ms = sem_t0.elapsed().as_millis();
     let submitted_t0 = std::time::Instant::now();
+    let worker_request_id = request_id.clone();
     let (result, worker_queue_ms, core_ms) = tauri::async_runtime::spawn_blocking(move || {
         let worker_queue_ms = submitted_t0.elapsed().as_millis();
         let core_t0 = std::time::Instant::now();
@@ -4356,7 +4458,8 @@ async fn render_pdf_page(
         let render_result = match worker_attempt {
             Ok(pdf_engine::render_worker::WorkerAttempt::Completed(output)) => {
                 perf_log(&format!(
-                    "RENDER_WORKER_RESULT page={} zoom={:.3} total_ms={} bytes={}",
+                    "RENDER_WORKER_RESULT request_id={} page={} zoom={:.3} total_ms={} bytes={}",
+                    worker_request_id,
                     page,
                     zoom,
                     output.response.timing.total_ms,
@@ -4406,7 +4509,8 @@ async fn render_pdf_page(
     match result {
         Ok(data) => {
             perf_log(&format!(
-                "IPC_RENDER kind={} page={} zoom={:.3} sem_wait_ms={} worker_queue_ms={} core_ms={} command_ms={} bytes={}",
+                "IPC_RENDER request_id={} kind={} page={} zoom={:.3} sem_wait_ms={} worker_queue_ms={} core_ms={} command_ms={} bytes={}",
+                request_id,
                 kind, page, zoom, sem_wait_ms, worker_queue_ms, core_ms, command_ms, data.len()
             ));
             Ok(tauri::ipc::Response::new(data))
@@ -4433,6 +4537,7 @@ async fn render_ppe_page(
         request_context.purpose,
         request_context.priority,
     );
+    let request_id = request_context.request_id.clone();
     // PERF/COLOR (audit 2026-08-09 §L3C): đăng ký trước quota để wheel/unmount
     // hủy được request PPE cả khi nó còn đang chờ lane vật lý.
     let pending_worker_lease =
@@ -4444,6 +4549,7 @@ async fn render_ppe_page(
     }
     let sem_wait_ms = sem_t0.elapsed().as_millis();
     let submitted_t0 = std::time::Instant::now();
+    let worker_request_id = request_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let worker_queue_ms = submitted_t0.elapsed().as_millis();
         let attempt = pdf_engine::render_worker::render_accurate_with_reserved_policy(
@@ -4462,7 +4568,8 @@ async fn render_ppe_page(
         match attempt {
             Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Completed(output)) => {
                 perf_log(&format!(
-                    "PPE_NATIVE_RESULT page={} dpi={:.1} total_ms={} sem_wait_ms={} worker_queue_ms={} bytes={}",
+                    "PPE_NATIVE_RESULT request_id={} page={} dpi={:.1} total_ms={} sem_wait_ms={} worker_queue_ms={} bytes={}",
+                    worker_request_id,
                     page,
                     dpi,
                     output.response.timing.total_ms,
@@ -4503,7 +4610,8 @@ async fn render_ppe_page(
     match result {
         Ok(data) => {
             perf_log(&format!(
-                "IPC_PPE page={} dpi={:.1} command_ms={} bytes={}",
+                "IPC_PPE request_id={} page={} dpi={:.1} command_ms={} bytes={}",
+                request_id,
                 page,
                 dpi,
                 command_t0.elapsed().as_millis(),
@@ -7248,6 +7356,7 @@ mod doc_cache_tests {
             bootstrap_color_risk: pdf_color_risk::PdfColorRiskSummary::empty(),
             color_risk: Mutex::new(Some(pdf_color_risk::PdfColorRiskSummary::empty())),
             file_identity: identity,
+            cached_bytes: Arc::new(Vec::new()),
             next: AtomicUsize::new(0),
         })
     }
@@ -7270,6 +7379,7 @@ mod doc_cache_tests {
             bootstrap_color_risk: bootstrap.clone(),
             color_risk: Mutex::new(None),
             file_identity: identity,
+            cached_bytes: Arc::new(Vec::new()),
             next: AtomicUsize::new(0),
         };
 
@@ -7916,6 +8026,7 @@ pub fn run() {
             // ký đường dẫn không tạo file và release không có đường bật lại.
             if let Ok(desktop_dir) = app.handle().path().desktop_dir() {
                 let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
+                perf_log("PERF_ENABLED viewer telemetry initialized");
             }
 
             // ══════════════════════════════════════════════════════════════

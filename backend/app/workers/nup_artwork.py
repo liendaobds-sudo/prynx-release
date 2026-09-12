@@ -1108,12 +1108,23 @@ def place_one_artwork(
         )
         return trim_rect, src_page_idx
 
-    # out_clip legacy của tem bế: bleed đầy ở mép ngoài block, nửa gap ở mép trong.
+    # [IMPOSE FIX 2026-09-13 §CLIPOWN.2] Tem bế luôn clipmask đồng nhất trên cả
+    # bốn cạnh. Full bleed theo mép block chỉ là hợp đồng của bình bài xén;
+    # áp dụng nó cho die-cut làm tem biên nhận bleed khác tem bên trong.
     _bb = block_bbox.get((cluster_idx, cell.get('blockId', 0)))
     if output_clip is not _OUTPUT_CLIP_UNSET:
         # IMPOSE (audit 2026-09-01 §CLIPOWN.1): Bình cắt xén thường nhận quyền
         # clip đã giải theo láng giềng toàn tờ; identity block không được nới seam.
         cell_out_clip = output_clip
+    elif is_die_cut:
+        _die_clip_x = max(0.0, float(clip_off_x))
+        _die_clip_y = max(0.0, float(clip_off_y))
+        cell_out_clip = pdf_lib.Rect(
+            trim_rect.x0 - _die_clip_x,
+            trim_rect.y0 - _die_clip_y,
+            trim_rect.x1 + _die_clip_x,
+            trim_rect.y1 + _die_clip_y,
+        )
     elif _bb is not None and bleed_pt > 0:
         _is_left = abs(trim_rect.x0 - _bb[0]) <= 0.5
         _is_right = abs(trim_rect.x1 - _bb[2]) <= 0.5
@@ -1325,7 +1336,8 @@ def place_one_artwork(
         # target_rect map CẢ trang nguồn lên (vis = page rect), die box căn vào trim_rect
         # → nội dung NGOÀI đường bế (crop-mark, color-bar, slug ở lề MediaBox) vẽ tràn
         # quanh tem, ĐÈ tem hàng xóm khi xếp lồng sát. Clip vùng vẽ về quanh tem + bleed:
-        # cell_out_clip (bleed mép ngoài block, nửa gap mép trong) hoặc bleed_rect (fallback).
+        # cell_out_clip: tem bế dùng clip đều bốn cạnh; bình bài xén dùng
+        # ownership theo mép ngoài/láng giềng; hoặc bleed_rect (fallback).
         # out_clip chỉ giới hạn vùng trên trang ĐÍCH, KHÔNG đổi scale/vị trí → hình học giữ
         # nguyên (audit bảo toàn nội dung 2026-07-07). GIỚI HẠN: clip là bbox chữ nhật, tem
         # hình lồng phức tạp vẫn có thể chồng nhẹ ở vùng bleed — nhưng marks/slug ở xa bị loại hẳn.
@@ -1359,7 +1371,10 @@ def place_one_artwork(
                     trim_rect.x0, trim_rect.y0,
                     offset_pt=_shape_off,
                     bound_rect=_die_clip,
-                    block_rect=_bb,
+                    # [IMPOSE FIX 2026-09-13 §CLIPOWN.2] Tem bế không có dải
+                    # chữ nhật bổ sung ở mép block; contour tròn/đa giác là
+                    # biên clip duy nhất cho mọi placement.
+                    block_rect=None,
                     is_rotated=cell.get('isRotated', False),
                     is_rotated_180=cell.get('isRotated180', False),
                     cache_key=cache_key,
