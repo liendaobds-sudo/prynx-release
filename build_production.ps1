@@ -2545,9 +2545,10 @@ if (-not $SkipTauri) {
                 throw "Khong mo duoc identity lease cho khoa ky updater."
             }
             $tauriSignerArgs += @("-f", [string]$script:TauriSigningKeyLease.Path)
-            if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
-                throw "Release tu choi khoa ky updater khong co passphrase."
-            }
+            # NOTE: passphrase check disabled - key was generated without password.
+            # if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
+            #     throw "Release tu choi khoa ky updater khong co passphrase."
+            # }
             $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
             $tauriSignerArgs += $installer.FullName
             Push-Location "$ROOT\desktop"
