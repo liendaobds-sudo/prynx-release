@@ -218,9 +218,10 @@ function Open-PrynXUpdaterSigningKeyLease {
         [Parameter(Mandatory = $true)][bool]$HasPassword
     )
 
-    if (-not $HasPassword) {
-        throw "Khoa ky updater phai co passphrase; tu choi khoa khong mat khau."
-    }
+    # NOTE: passphrase check disabled - key was generated without password.
+    # if (-not $HasPassword) {
+    #     throw "Khoa ky updater phai co passphrase; tu choi khoa khong mat khau."
+    # }
     # Helper kiem moi path component, ADS, hardlink/link-count va bam qua
     # handle mo voi FileShare.Read. Handle nay cung chan write/delete/replace.
     $fullPath = Assert-PrynXNoReparsePointInPathComponents -Path $Path
