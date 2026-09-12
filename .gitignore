@@ -49,6 +49,7 @@ desktop/src-tauri/THIRD_PARTY_NOTICES.md
 Thumbs.db
 
 # Test Outputs
+output/
 test_modified.pdf
 test_original.pdf
 backend/uploads/
