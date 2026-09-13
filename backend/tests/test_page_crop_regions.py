@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pikepdf
+from pypdf import PdfReader
 import pypdfium2 as pdfium
 import pytest
 from reportlab.lib.colors import HexColor, white

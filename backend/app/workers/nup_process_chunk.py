@@ -69,6 +69,12 @@ def _recenter_die_cut_placements(placements, *, sheet_w, sheet_h,
     _dy = (float(sheet_h) - float(margin_bottom) - float(sheet_usable_h) / 2.0
            - (_min_y + _max_y) / 2.0
            if str(align).lower() in {'center', 'center-left', 'center-right'} else 0.0)
+    if abs(_dx) < 1e-4:
+        _dx = 0.0
+    if abs(_dy) < 1e-4:
+        _dy = 0.0
+    if _dx == 0.0 and _dy == 0.0:
+        return (0.0, 0.0)
     for _p in placements:
         _p['abs_x'] = float(_p['abs_x']) + _dx
         _p['original_cell_y'] = float(_p['original_cell_y']) + _dy
@@ -609,13 +615,15 @@ def process_chunk(args):
 
         if chunk_precalc_placements is not None:
 
-            placements = chunk_precalc_placements.get(sheet_idx, [])
+            raw_placements = chunk_precalc_placements.get(sheet_idx, [])
 
             # Convert dict keys from string to int if necessary (JSON serialization might change it)
 
-            if not placements and str(sheet_idx) in chunk_precalc_placements:
+            if not raw_placements and str(sheet_idx) in chunk_precalc_placements:
 
-                placements = chunk_precalc_placements[str(sheet_idx)]
+                raw_placements = chunk_precalc_placements[str(sheet_idx)]
+
+            placements = [dict(p) for p in raw_placements]
 
             logger.debug(
                 "[ROT-AUDIT][phase1][sheet=%d] source=PRECALC n=%d layout=%s",

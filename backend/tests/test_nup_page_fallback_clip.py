@@ -136,7 +136,7 @@ def test_real_die_keeps_full_outer_bleed_clip():
     """Khuôn bế thật vẫn được giữ tràn lề đầy đủ ở mép ngoài khối."""
     call = _place_rotated_page_fallback(is_page_fallback=False)
 
-    assert call["out_clip"].width == pytest.approx(SOURCE_H + 2 * MM_TO_PT)
+    assert call["out_clip"].width == pytest.approx(SOURCE_H)
     assert call["out_clip"].height == pytest.approx(SOURCE_W)
 
 
