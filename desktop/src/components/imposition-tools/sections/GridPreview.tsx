@@ -3,6 +3,7 @@ import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
 import { previewPerfLog } from "../../../lib/previewPerfLog";
 import { getFileArrayBuffer } from "../../../lib/utils";
 import type { ActiveToolType, CutBorderConfig, NupSettings, PontConfig } from "../types";
+import { DEFAULT_PONT_CONFIG } from "../pontConfigDefaults";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
 import { materializePreviewViewerPdf, parsePreviewViewerState, previewViewerStateRequiresMaterialization, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
 import { canUseCutBorder } from "../cutBorderPolicy";
@@ -2428,8 +2429,12 @@ export default function GridPreview(props: GridPreviewProps) {
           rows: rows || 0,
           shape_type: pageSheetMode ? "RECTANGLE" : _reqShapeType,
           shape_props: pageSheetMode ? {} : _reqShapeProps,
-          pont_type: pontType || "none",
-          pont_config: pontType && pontType !== "none" ? pontConfig : null,
+          pont_type: (pontType && !['none', 'corner', '5mm', 'custom'].includes(pontType))
+            ? (pontType.startsWith('preset_') ? 'custom' : 'none')
+            : (pontType || "none"),
+          pont_config: (pontType && pontType !== "none" && pontConfig)
+            ? { ...DEFAULT_PONT_CONFIG, ...pontConfig }
+            : null,
           sheet_w: sheetWidth * MM_TO_PT,
           sheet_h: sheetHeight * MM_TO_PT,
           margin_left: marginLeft * MM_TO_PT,

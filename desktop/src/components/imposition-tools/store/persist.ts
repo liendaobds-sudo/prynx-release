@@ -260,6 +260,21 @@ function migrate(persistedValue: unknown, version: number): Partial<ImposerSetti
         }
         persistedState = { ...migrated, toolProfiles: profiles };
     }
+    // PONT-PRESET (2026-09-13): pontType từng bị lưu chuỗi 'preset_...' khi chọn mẫu,
+    // làm backend API từ chối HTTP 422. Dọn về 'custom'.
+    const migratePresetPontType = <T,>(value: T): T => {
+        if (!isRecord(value)) return value;
+        if (typeof value.pontType === 'string' && value.pontType.startsWith('preset_')) {
+            return { ...value, pontType: 'custom' };
+        }
+        return value;
+    };
+    const cleaned = migratePresetPontType(persistedState);
+    const cleanedProfiles = { ...(cleaned.toolProfiles || {}) };
+    for (const tool of Object.keys(cleanedProfiles)) {
+        cleanedProfiles[tool] = migratePresetPontType(cleanedProfiles[tool]);
+    }
+    persistedState = { ...cleaned, toolProfiles: cleanedProfiles };
     return persistedState;
 }
 
@@ -273,7 +288,18 @@ export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<Impose
         for (const k of PARTIALIZE_KEYS) out[k] = Reflect.get(state, k) as unknown;
         return out as Partial<ImposerSettingsState>;
     },
-    onRehydrateStorage: () => () => {
-        // Silently rehydrate
+    onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        if (typeof state.pontType === 'string' && state.pontType.startsWith('preset_')) {
+            state.pontType = 'custom';
+        }
+        if (state.toolProfiles) {
+            for (const tool of Object.keys(state.toolProfiles)) {
+                const prof = state.toolProfiles[tool];
+                if (prof && typeof prof.pontType === 'string' && prof.pontType.startsWith('preset_')) {
+                    prof.pontType = 'custom';
+                }
+            }
+        }
     },
 };

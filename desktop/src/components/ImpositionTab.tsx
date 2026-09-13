@@ -1674,14 +1674,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const cropUploadCache = useMemo(() => createRevisionScopedPdfUploadCache({
         resolver: getCropWorkingFile,
         upload: uploadPDF,
-        publish: (fileId) => setSelectionFileId(fileId),
         missingFileError: () => new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho')),
-    }), [getCropWorkingFile, setSelectionFileId, t]);
+    }), [getCropWorkingFile, t]);
+    const lastCropRevisionRef = useRef(renderedDocumentRevision);
     useEffect(() => {
-        // REVISION (audit 2026-08-25 §REV.02): page order/instance/rotation hoặc
-        // edit generation đổi phải hủy upload cũ và bỏ file_id của revision trước.
-        cropUploadCache.invalidate();
-    }, [cropUploadCache, renderedDocumentRevision]);
+        // REVISION: Chỉ invalidate khi revision trong workspace thực sự thay đổi khác với revision trước
+        if (!isWorkspaceDocumentRevisionCurrent(lastCropRevisionRef.current, store.getState())) {
+            lastCropRevisionRef.current = renderedDocumentRevision;
+            cropUploadCache.invalidate();
+        }
+    }, [cropUploadCache, renderedDocumentRevision, store]);
     useEffect(() => () => cropUploadCache.dispose(), [cropUploadCache]);
     const ensureCropFileId = useCallback(
         (signal?: AbortSignal) => cropUploadCache.ensure(signal),

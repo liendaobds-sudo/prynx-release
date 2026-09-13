@@ -1966,6 +1966,8 @@ struct CachedDocument {
     color_risk: Mutex<Option<pdf_color_risk::PdfColorRiskSummary>>,
     file_identity: PdfFileIdentity,
     cached_bytes: Arc<Vec<u8>>,
+    proxy_handle: OnceLock<DocHandle>,
+    proxy_bytes: Option<Arc<Vec<u8>>>,
     next: AtomicUsize, // Round-robin index
 }
 
@@ -2801,6 +2803,97 @@ fn drop_pdf_document_safely(document: PdfDocument<'static>) {
     drop(document);
 }
 
+fn generate_proxy_pdf(lopdf_doc: &lopdf::Document) -> Option<Vec<u8>> {
+    let mut proxy_doc = lopdf_doc.clone();
+    let mut modified = false;
+
+    for (_id, object) in proxy_doc.objects.iter_mut() {
+        if let lopdf::Object::Stream(ref mut stream) = object {
+            let is_image = stream
+                .dict
+                .get(b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|n| n == b"Image")
+                .unwrap_or(false);
+
+            if !is_image {
+                continue;
+            }
+
+            let width = stream.dict.get(b"Width").and_then(|w| w.as_i64()).unwrap_or(0) as usize;
+            let height = stream.dict.get(b"Height").and_then(|h| h.as_i64()).unwrap_or(0) as usize;
+
+            let is_rgb = stream
+                .dict
+                .get(b"ColorSpace")
+                .map(|cs| cs.as_name().map(|n| n == b"DeviceRGB").unwrap_or(false))
+                .unwrap_or(false);
+            let is_8bit = stream
+                .dict
+                .get(b"BitsPerComponent")
+                .map(|b| b.as_i64().map(|v| v == 8).unwrap_or(false))
+                .unwrap_or(false);
+            let has_mask = stream.dict.has(b"Mask") || stream.dict.has(b"SMask");
+
+            // Chỉ tạo proxy cho ảnh RGB 8-bit cực lớn (>= 2048px) không có SMask
+            if width >= 2048
+                && height >= 2048
+                && is_rgb
+                && is_8bit
+                && !has_mask
+                && stream.content.len() == width * height * 3
+            {
+                let factor = if width >= 4096 { 8usize } else { 4usize };
+                let target_w = width / factor;
+                let target_h = height / factor;
+                let count_pixels_in_block = (factor * factor) as u32;
+
+                let mut out_data = Vec::with_capacity(target_w * target_h * 3);
+                let raw = &stream.content;
+
+                for y in 0..target_h {
+                    let src_y_start = y * factor;
+                    for x in 0..target_w {
+                        let src_x_start = x * factor;
+                        let mut sum_r = 0u32;
+                        let mut sum_g = 0u32;
+                        let mut sum_b = 0u32;
+
+                        for dy in 0..factor {
+                            let src_y = src_y_start + dy;
+                            let row_offset = src_y * width * 3;
+                            for dx in 0..factor {
+                                let src_x = src_x_start + dx;
+                                let idx = row_offset + src_x * 3;
+                                sum_r += raw[idx] as u32;
+                                sum_g += raw[idx + 1] as u32;
+                                sum_b += raw[idx + 2] as u32;
+                            }
+                        }
+
+                        out_data.push((sum_r / count_pixels_in_block) as u8);
+                        out_data.push((sum_g / count_pixels_in_block) as u8);
+                        out_data.push((sum_b / count_pixels_in_block) as u8);
+                    }
+                }
+
+                stream.content = out_data;
+                stream.dict.set("Width", target_w as i64);
+                stream.dict.set("Height", target_h as i64);
+                modified = true;
+            }
+        }
+    }
+
+    if modified {
+        let mut out_bytes = Vec::new();
+        if proxy_doc.save_to(&mut out_bytes).is_ok() {
+            return Some(out_bytes);
+        }
+    }
+    None
+}
+
 fn build_cached_document(
     pdfium: &'static Pdfium,
     file_path: &str,
@@ -2853,7 +2946,7 @@ fn build_cached_document(
         }
     }
 
-    if decompressed_images > 0 {
+    let proxy_bytes = if decompressed_images > 0 {
         let orig_len = bytes.len();
         let mut optimized = Vec::new();
         if lopdf_doc.save_to(&mut optimized).is_ok() {
@@ -2866,7 +2959,10 @@ fn build_cached_document(
             ));
             bytes = optimized;
         }
-    }
+        generate_proxy_pdf(&lopdf_doc).map(Arc::new)
+    } else {
+        None
+    };
     drop(lopdf_doc);
 
     let cached_bytes = Arc::new(bytes);
@@ -2901,6 +2997,8 @@ fn build_cached_document(
         color_risk: Mutex::new(color_risk),
         file_identity,
         cached_bytes,
+        proxy_handle: OnceLock::new(),
+        proxy_bytes,
         next: AtomicUsize::new(0),
     }))
 }
@@ -3128,6 +3226,23 @@ fn preview_perf_logging_enabled() -> bool {
 // chrono::Local::now() (đã PANIC ở release trong render_tile_png_in_process — xem note ~:609)
 // → dùng epoch millis từ SystemTime (không timezone, không panic). Chỉ bật khi
 // binary dev đồng thời có env PRYNX_PERF=1; release bị khóa ở compile policy.
+static GLOBAL_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+pub fn is_tile_refinement_active() -> bool {
+    let in_flight = lock_mutex(refinement_in_flight());
+    !in_flight.is_empty()
+}
+
+fn refinement_in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
+    static SET: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct TileRefinedPayload {
+    pub file_path: String,
+    pub page: i32,
+    pub zoom: f32,
+}
 static PERF_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 fn perf_enabled() -> bool {
@@ -3861,7 +3976,7 @@ fn encode_viewer_png(rgba_image: &image::RgbaImage) -> Result<Vec<u8>, String> {
     Ok(buffer)
 }
 
-pub fn render_tile_png_with_timing(
+pub fn render_tile_png_with_options(
     file_path: &str,
     page: i32,
     zoom: f32,
@@ -3870,6 +3985,7 @@ pub fn render_tile_png_with_timing(
     clip_y: Option<i32>,
     clip_w: Option<i32>,
     clip_h: Option<i32>,
+    force_full_res: bool,
 ) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
     // Guard: render là ĐỌC file tùy path do renderer truyền (IPC render_pdf_page + protocol
     // tile://). Nếu không chặn, renderer bị chèn mã có thể render → lấy nội dung file nhạy
@@ -3904,7 +4020,7 @@ pub fn render_tile_png_with_timing(
     } else {
         "page"
     };
-    {
+    if !force_full_res {
         let cache_lock = tile_cache();
         if let Ok(mut cache) = cache_lock.lock() {
             if let Some(data) = cache.get(&cache_key) {
@@ -3922,8 +4038,7 @@ pub fn render_tile_png_with_timing(
         }
     }
 
-    // Cache ĐĨA: nếu tile đã từng render (mở lại/cuộn lại/zoom cũ) → đọc thẳng, khỏi render.
-    {
+        if !force_full_res {
         let dpath = tile_disk_path(&cache_key);
         let _disk_t0 = std::time::Instant::now();
         if let Some(bytes) = tile_disk_cache::read_valid_tile_png(&dpath) {
@@ -3946,15 +4061,21 @@ pub fn render_tile_png_with_timing(
     let document_arc =
         get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)?;
 
-    let pool_size = document_arc.pool.len();
-    let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
+        let use_proxy = !force_full_res && zoom <= 1.5 && document_arc.proxy_bytes.is_some();
+    let cell = if use_proxy {
+        &document_arc.proxy_handle
+    } else {
+        let pool_size = document_arc.pool.len();
+        let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
+        &document_arc.pool[pool_idx]
+    };
 
-    // LAZY INITIALIZATION of the DocHandle. KHÔNG dùng get_or_init + .expect():
-    // .expect() panic trong spawn_blocking → "Task panicked" che lỗi thật (file PDF
-    // bị xoá/khoá/hỏng giữa phiên). Khởi tạo thủ công + propagate lỗi sạch (§15.7).
-    let cell = &document_arc.pool[pool_idx];
     if cell.get().is_none() {
-        let bytes = (*document_arc.cached_bytes).clone();
+        let bytes = if use_proxy {
+            (*document_arc.proxy_bytes.as_ref().unwrap()).as_ref().clone()
+        } else {
+            (*document_arc.cached_bytes).clone()
+        };
         let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
         let page_count = {
             let _pdfium_guard = lock_mutex(&RENDER_LOCK);
@@ -3972,7 +4093,6 @@ pub fn render_tile_png_with_timing(
             lock: Mutex::new(()),
             doc,
         };
-        // Race-safe: doc thừa phải đóng dưới khóa PDFium, không drop trần cạnh render khác.
         if let Err(unused) = cell.set(candidate) {
             let _load_guard = lock_mutex(&LOAD_LOCK);
             let _render_guard = lock_mutex(&RENDER_LOCK);
@@ -4118,7 +4238,48 @@ pub fn render_tile_png_with_timing(
     {
         let cache_lock = tile_cache();
         if let Ok(mut cache) = cache_lock.lock() {
-            cache.insert(cache_key, buffer.clone());
+            cache.insert(cache_key.clone(), buffer.clone());
+        }
+    }
+
+    if use_proxy {
+        let refinement_key = cache_key.clone();
+        let mut in_flight = lock_mutex(refinement_in_flight());
+        if in_flight.insert(refinement_key.clone()) {
+            drop(in_flight);
+            let fp = file_path.to_string();
+            let r_key = refinement_key.clone();
+            let _ = std::thread::Builder::new()
+                .name("tile-auto-refinement".to_string())
+                .spawn(move || {
+                    perf_log(&format!("TILE_REFINEMENT_START path={} page={} zoom={:.3}", fp, page, zoom));
+                    let _ = render_tile_png_with_options(
+                        &fp,
+                        page,
+                        zoom,
+                        rotation,
+                        clip_x,
+                        clip_y,
+                        clip_w,
+                        clip_h,
+                        true,
+                    );
+                    let mut in_flight = lock_mutex(refinement_in_flight());
+                    in_flight.remove(&r_key);
+                    drop(in_flight);
+                    perf_log(&format!("TILE_REFINEMENT_COMPLETE path={} page={} zoom={:.3}", fp, page, zoom));
+                    if let Some(app) = GLOBAL_APP_HANDLE.get() {
+                        use tauri::Emitter;
+                        let _ = app.emit(
+                            "tile-refined",
+                            TileRefinedPayload {
+                                file_path: fp,
+                                page,
+                                zoom,
+                            },
+                        );
+                    }
+                });
         }
     }
 
@@ -4142,6 +4303,19 @@ pub fn render_tile_png_with_timing(
     };
 
     Ok((buffer, breakdown))
+}
+
+pub fn render_tile_png_with_timing(
+    file_path: &str,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
+    render_tile_png_with_options(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false)
 }
 
 pub fn render_tile_png_in_process(
@@ -7357,6 +7531,8 @@ mod doc_cache_tests {
             color_risk: Mutex::new(Some(pdf_color_risk::PdfColorRiskSummary::empty())),
             file_identity: identity,
             cached_bytes: Arc::new(Vec::new()),
+            proxy_handle: OnceLock::new(),
+            proxy_bytes: None,
             next: AtomicUsize::new(0),
         })
     }
@@ -7380,6 +7556,8 @@ mod doc_cache_tests {
             color_risk: Mutex::new(None),
             file_identity: identity,
             cached_bytes: Arc::new(Vec::new()),
+            proxy_handle: OnceLock::new(),
+            proxy_bytes: None,
             next: AtomicUsize::new(0),
         };
 
@@ -7976,6 +8154,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let _ = GLOBAL_APP_HANDLE.set(app.handle().clone());
             // SEC/DATA (audit 2026-08-25 §NW.8): dọn snapshot cửa sổ tài liệu
             // còn sót từ lần chạy bị crash; file đang sống được registry giữ riêng.
             document_window_registry::schedule_startup_cleanup(app.handle().clone());

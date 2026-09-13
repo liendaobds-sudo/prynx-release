@@ -4,6 +4,7 @@ import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { Divider, inputCls, Checkbox } from '../SharedUI';
 import { DEFAULT_MATERIALS, DEFAULT_REPORT_CONFIG, LAMINATION_OPTIONS, PREDEFINED_SIZES, type NupSettings, type PontConfig, type ReportDisplayConfig, type ReportFieldKey } from '../types';
+import { DEFAULT_PONT_CONFIG } from '../pontConfigDefaults';
 import type { SavePrintConfig } from '../store/slices/cncSlice';
 import { buildReportPreview } from '../../../lib/reportPreview';
 import { impositionDimensionTrace } from '../../../lib/previewPerfLog';
@@ -547,75 +548,79 @@ export default function AdvancedSettingsSection({
                         <CollapsibleGroup title={t('imposition.advancedSettings:dinh_vi_cat')} defaultOpen>
 
                         {/* === BOONG ĐỊNH VỊ (Bế tem & CNC) === */}
-                        {pontSettingsMode && (
-                            <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:boong_dinh_vi')}</label>
-                                <div className="flex flex-1 items-center gap-2 min-w-0">
-                                    <select
-                                        value={s.pontType}
-                                        onChange={e => {
-                                            const val = e.target.value;
-                                            s.setPontType(val as 'none' | 'corner' | '5mm' | 'custom');
-                                            if (val === 'custom') {
-                                                s.setShowPontModal(true);
-                                            } else if (val === 'corner') {
-                                                s.setPontConfig((prev) => ({ ...prev, shape: 'l_corner' }));
-                                            } else if (val === '5mm') {
-                                                s.setPontConfig((prev) => ({ ...prev, shape: 'circle', size: 5.0 }));
-                                            } else if (val.startsWith('preset_')) {
-                                                try {
-                                                    const saved = localStorage.getItem('ps_pont_presets');
-                                                    if (saved) {
-                                                        const parsed: unknown = JSON.parse(saved);
-                                                         const presets: PontPreset[] = Array.isArray(parsed)
-                                                             ? parsed.filter((item): item is PontPreset => (
-                                                                 typeof item === 'object' && item !== null &&
-                                                                 'name' in item && typeof item.name === 'string'
-                                                             ))
-                                                             : [];
-                                                        const p = presets.find((x) => 'preset_' + x.name === val);
-                                                        if (p && p.config) s.setPontConfig(p.config);
+                        {pontSettingsMode && (() => {
+                            let savedPresets: PontPreset[] = [];
+                            try {
+                                const raw = localStorage.getItem('ps_pont_presets');
+                                if (raw) {
+                                    const parsed: unknown = JSON.parse(raw);
+                                    savedPresets = Array.isArray(parsed)
+                                        ? parsed.filter((item): item is PontPreset => (
+                                            typeof item === 'object' && item !== null &&
+                                            'name' in item && typeof item.name === 'string'
+                                        ))
+                                        : [];
+                                }
+                            } catch {
+                                savedPresets = [];
+                            }
+
+                            // Xác định giá trị hiển thị trên dropdown:
+                            // Nếu đang là custom và cấu hình khớp với một preset thì chọn preset đó
+                            let currentSelectVal: string = s.pontType;
+                            if (s.pontType === 'custom') {
+                                const matched = savedPresets.find(p => p.config && JSON.stringify(p.config) === JSON.stringify(s.pontConfig));
+                                currentSelectVal = matched ? ('preset_' + matched.name) : 'custom';
+                            } else if (s.pontType.startsWith('preset_')) {
+                                currentSelectVal = s.pontType;
+                            }
+
+                            return (
+                                <div className="flex items-center gap-3 relative z-[20] pb-1">
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:boong_dinh_vi')}</label>
+                                    <div className="flex flex-1 items-center gap-2 min-w-0">
+                                        <select
+                                            value={currentSelectVal}
+                                            onChange={e => {
+                                                const val = e.target.value;
+                                                if (val === 'none') {
+                                                    s.setPontType('none');
+                                                } else if (val === 'corner') {
+                                                    s.setPontType('corner');
+                                                    s.setPontConfig((prev) => ({ ...DEFAULT_PONT_CONFIG, ...prev, shape: 'l_corner' }));
+                                                } else if (val === '5mm') {
+                                                    s.setPontType('5mm');
+                                                    s.setPontConfig((prev) => ({ ...DEFAULT_PONT_CONFIG, ...prev, shape: 'circle', size: 5.0 }));
+                                                } else if (val === 'custom') {
+                                                    s.setPontType('custom');
+                                                    s.setShowPontModal(true);
+                                                } else if (val.startsWith('preset_')) {
+                                                    s.setPontType('custom');
+                                                    const p = savedPresets.find((x) => 'preset_' + x.name === val);
+                                                    if (p && p.config) {
+                                                        s.setPontConfig({ ...DEFAULT_PONT_CONFIG, ...p.config });
                                                     }
-                                                } catch {
-                                                    // Preset lỗi định dạng: giữ lựa chọn hiện tại.
                                                 }
-                                            }
-                                        }}
-                                        className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                                    >
-                                        <option value="none">{t('imposition.advancedSettings:khong')}</option>
-                                        <option value="corner">{t('imposition.advancedSettings:boong_goc_vuong')}</option>
-                                        <option value="5mm">Boong 5mm</option>
-                                        {(() => {
-                                            try {
-                                                const raw = localStorage.getItem('ps_pont_presets');
-                                                if (raw) {
-                                                    const parsed: unknown = JSON.parse(raw);
-                                                     const presets: PontPreset[] = Array.isArray(parsed)
-                                                         ? parsed.filter((item): item is PontPreset => (
-                                                             typeof item === 'object' && item !== null &&
-                                                             'name' in item && typeof item.name === 'string'
-                                                         ))
-                                                         : [];
-                                                    return presets.map((p) => (
-                                                        <option key={p.name} value={'preset_' + p.name}>{p.name}</option>
-                                                    ));
-                                                }
-                                            } catch {
-                                                // Preset lỗi định dạng: không làm gián đoạn dialog.
-                                            }
-                                            return null;
-                                        })()}
-                                        <option value="custom">{t('imposition.advancedSettings:tuy_chinh')}</option>
-                                    </select>
-                                    {s.pontType !== 'none' && (
-                                        <button onClick={() => s.setShowPontModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 p-1" title={t('imposition.advancedSettings:tuy_chinh_boong_dinh_vi')}>
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                                        </button>
-                                    )}
+                                            }}
+                                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                        >
+                                            <option value="none">{t('imposition.advancedSettings:khong')}</option>
+                                            <option value="corner">{t('imposition.advancedSettings:boong_goc_vuong')}</option>
+                                            <option value="5mm">Boong 5mm</option>
+                                            {savedPresets.map((p) => (
+                                                <option key={p.name} value={'preset_' + p.name}>{p.name}</option>
+                                            ))}
+                                            <option value="custom">{t('imposition.advancedSettings:tuy_chinh')}</option>
+                                        </select>
+                                        {s.pontType !== 'none' && (
+                                            <button onClick={() => s.setShowPontModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 p-1" title={t('imposition.advancedSettings:tuy_chinh_boong_dinh_vi')}>
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
-                            </div>
-                        )}
+                            );
+                        })()}
 
                         {/* === ĐƯỜNG CẮT (chỉ Bế tem) === */}
                         {stickerGeometryMode && (

@@ -320,13 +320,22 @@ pub async fn launch_external_app(
     if is_illustrator_cut_handoff(&app_path, &file_path) {
         let target_app = app_path.clone();
         let target_pdf = file_path.clone();
-        let handled = tauri::async_runtime::spawn_blocking(move || {
+        let handoff_res = tauri::async_runtime::spawn_blocking(move || {
             illustrator_handoff::open(&target_app, &target_pdf)
         })
-        .await
-        .map_err(|error| format!("Không hoàn tất bàn giao Illustrator: {error}"))??;
-        if handled {
-            return Ok(());
+        .await;
+
+        match handoff_res {
+            Ok(Ok(true)) => return Ok(()),
+            Ok(Ok(false)) => {
+                // Không có boong đặc thù cần bridge dựng layer -> tiếp tục mở trực tiếp bình thường
+            }
+            Ok(Err(err)) => {
+                log::warn!("Bàn giao layer Illustrator không hoàn tất ({err}). Tự động fallback mở file trực tiếp.");
+            }
+            Err(join_err) => {
+                log::warn!("Tiến trình bàn giao Illustrator lỗi ({join_err}). Tự động fallback mở file trực tiếp.");
+            }
         }
     }
 

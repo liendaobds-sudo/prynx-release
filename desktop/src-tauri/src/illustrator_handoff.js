@@ -1,8 +1,10 @@
 (function (payload) {
     // PONTLAYER (2026-09-09): chỉ sửa tài liệu mới do chính lượt bàn giao mở.
-    var expected = new File(payload.appPath).fsName.toLowerCase();
-    var actual = new File(app.path.fsName + "/Support Files/Contents/Windows/Illustrator.exe").fsName;
-    if (actual.toLowerCase() !== expected) {
+    var expected = new File(payload.appPath).fsName.toLowerCase().replace(/\\/g, "/");
+    var aiBasePath = app.path.fsName.replace(/\\/g, "/").toLowerCase();
+    var cand1 = (aiBasePath + "/support files/contents/windows/illustrator.exe").toLowerCase();
+    var cand2 = (aiBasePath + "/illustrator.exe").toLowerCase();
+    if (cand1 !== expected && cand2 !== expected && expected.indexOf(aiBasePath) === -1) {
         throw new Error("Illustrator dang chay khong khop ung dung da duyet.");
     }
     var document = null;

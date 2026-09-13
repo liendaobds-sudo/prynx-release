@@ -15,6 +15,7 @@ import {
 import { imposeCatalogBatchViaBackend, ImpositionMode, type DieCutSettings, type GuillotineSettings, type OffsetSettings, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability, type SavePrintConfig } from '../components/imposition-tools/types';
+import { DEFAULT_PONT_CONFIG } from '../components/imposition-tools/pontConfigDefaults';
 // NEST (audit 2026-08-29 §GRIDSTRATEGY-LEAK): chuẩn hoá gridStrategy trước khi gửi backend
 // để giá trị `true_shape_nesting` (canary die-cut/CNC) đã lưu không rò sang Bình cắt xén.
 import { TRUE_SHAPE_NESTING_ENABLED, resolveGridStrategy } from '../components/imposition-tools/trueShapeNestingRollout';
@@ -345,8 +346,10 @@ export async function runProcessEngine(
                 // 1 Dao: khuôn theo trang + offset co/mở (khớp resolve_one_dao_trim backend).
                 dieSizeMode: isDieCut ? settings.dieSizeMode : undefined,
                 dieOffsetMm: isDieCut ? settings.dieOffsetMm : undefined,
-                pontType: pontSettingsMode ? settings.pontType : undefined,
-                pontConfig: pontSettingsMode ? settings.pontConfig : undefined,
+                pontType: pontSettingsMode ? (settings.pontType?.startsWith('preset_') ? 'custom' : settings.pontType) : undefined,
+                pontConfig: (pontSettingsMode && settings.pontType && settings.pontType !== 'none' && settings.pontConfig)
+                    ? { ...DEFAULT_PONT_CONFIG, ...settings.pontConfig }
+                    : undefined,
                 detectedShapesByPage: isDieCut || isCnc ? settings.detectedShapesByPage : undefined,
                 detectedShapeParamsByPage: isDieCut || isCnc ? settings.detectedShapeParamsByPage : undefined,
                 targetQuantity: settings.targetQuantity || 0,

@@ -7,7 +7,6 @@ import pytest
 from reportlab.lib.colors import HexColor, white
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-from pypdf import PdfReader
 from PIL import Image, ImageDraw
 
 from app.core.page_boxes import (

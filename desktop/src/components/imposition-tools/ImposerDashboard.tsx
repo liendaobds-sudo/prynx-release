@@ -45,6 +45,7 @@ import { previewPerfLog } from '../../lib/previewPerfLog';
 import type { MergeSettings } from '../preprocess-tools/MergeTool';
 import { defaultMergeSettings } from '../preprocess-tools/mergeDefaults';
 import MergeTool from '../preprocess-tools/MergeTool';
+import { DEFAULT_PONT_CONFIG } from './pontConfigDefaults';
 
 // Section components
 import BookletSettingsSection from './sections/BookletSettingsSection';
@@ -1437,7 +1438,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     task_mode: s.taskMode,
                     is_die_cut: dieGeometryMode,
                     page_sheet_mode: pageSheetMode,
-                    pont_config: pontSettingsMode && s.pontType !== 'none' ? s.pontConfig : null,
+                    pont_config: pontSettingsMode && s.pontType !== 'none' && s.pontConfig ? { ...DEFAULT_PONT_CONFIG, ...s.pontConfig } : null,
                     sheet_w: press.w * MM_TO_PT,
                     sheet_h: press.h * MM_TO_PT,
                     margin_left: effMarginLeft * MM_TO_PT,
@@ -1734,8 +1735,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 dieSizeMode: dieGeometryMode ? effectiveDieSizeMode : undefined,
                 dieOffsetMm: dieGeometryMode ? s.dieOffsetMm : undefined,
                 fillBlockGap: dieGeometryMode ? effectiveFillBlockGap : undefined,
-                pontType: pontSettingsMode ? s.pontType : 'none',
-                pontConfig: pontSettingsMode ? s.pontConfig : undefined,
+                pontType: pontSettingsMode ? (s.pontType?.startsWith('preset_') ? 'custom' : s.pontType) : 'none',
+                pontConfig: (pontSettingsMode && s.pontType !== 'none' && s.pontConfig) ? { ...DEFAULT_PONT_CONFIG, ...s.pontConfig } : undefined,
                 separateCutPage: pageSheetMode ? true : (stickerGeometryMode ? s.separateCutPage : false),
                 // FIX (audit 2026-08-05 §OC.3): renderer CNC luôn vẽ ốc Front + Cut.
                 ...((stickerGeometryMode || pageSheetMode) ? {
@@ -2268,7 +2269,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                         ? previewDetectedShapeParamsByPage : undefined
                                 }
                                 isDetectingShape={stickerLike && isDetectingShape}
-                                pontType={pontSettingsMode ? s.pontType : 'none'} pontConfig={(pontSettingsMode && s.pontType !== 'none') ? s.pontConfig : undefined}
+                                pontType={pontSettingsMode ? (s.pontType?.startsWith('preset_') ? 'custom' : s.pontType) : 'none'} pontConfig={(pontSettingsMode && s.pontType !== 'none' && s.pontConfig) ? { ...DEFAULT_PONT_CONFIG, ...s.pontConfig } : undefined}
                                 separateCutPage={
                                     pageSheetMode
                                         ? true
@@ -2365,7 +2366,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             {/* SEC/UIUX (audit 2026-08-04 re-audit UI): tab nền vẫn mounted, vì vậy
                 mọi portal phải đóng theo isActive để không nổi trên tab hiện tại. */}
             <MarksSettingsDialog isOpen={isActive !== false && s.showMarksModal} onClose={() => s.setShowMarksModal(false)} config={s.marksConfig} onSave={(cfg) => { s.setMarksConfig(cfg); }} />
-            <PontSettingsDialog isOpen={isActive !== false && s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); }} />
+            <PontSettingsDialog isOpen={isActive !== false && s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); s.setPontType('custom'); }} />
             <PresetSelector isOpen={isActive !== false && s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
             <FlipbookDialog isOpen={isActive !== false && s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} blankPlacement={s.blankPlacement} />
             <SheetViewerDialog isOpen={isActive !== false && s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.paperClassification === 'offset' ? s.foldPattern : ''} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.paperClassification === 'offset' ? s.gripperMargin : 0} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} marginBottom={s.marginBottom} blankPlacement={s.blankPlacement} separateCover={s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread')} coverPageCount={s.coverPageCount} />

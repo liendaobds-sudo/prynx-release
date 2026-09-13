@@ -1164,6 +1164,13 @@ export const createWorkspaceStore = (
             state.selectionFileId === id
             && state.selectionDocumentIdentity === boundIdentity
         ) return state;
+        const currentIdentity = workspaceDocumentIdentity(
+            state.file,
+            state.viewerPageOrder,
+            state.viewerPageRotations,
+        );
+        const sameDocument = (boundIdentity && boundIdentity === currentIdentity)
+            || (state.selectionDocumentIdentity && state.selectionDocumentIdentity === boundIdentity);
         return {
             selectionFileId: id,
             selectionDocumentIdentity: boundIdentity,
@@ -1174,13 +1181,15 @@ export const createWorkspaceStore = (
             objectSelectionContext: id && state.objectSelectionContext
                 ? { ...state.objectSelectionContext, fileId: id }
                 : null,
-            // Cây/ID OCG được đọc qua backend file ID; đổi owner phải seed lại.
-            pdfOcgLayers: [],
-            hiddenOcgLayerIds: [],
-            ocgVisibilityProvenance: createEmptyOcgVisibilityProvenance(),
-            lockedOcgLayerIds: [],
-            expandedOcgLayerIds: [],
-            ocgPreviewUrl: null,
+            // Cây/ID OCG được đọc qua backend file ID; chỉ khi đổi sang file khác mới seed lại.
+            pdfOcgLayers: sameDocument ? state.pdfOcgLayers : [],
+            hiddenOcgLayerIds: sameDocument ? state.hiddenOcgLayerIds : [],
+            ocgVisibilityProvenance: sameDocument
+                ? state.ocgVisibilityProvenance
+                : createEmptyOcgVisibilityProvenance(),
+            lockedOcgLayerIds: sameDocument ? state.lockedOcgLayerIds : [],
+            expandedOcgLayerIds: sameDocument ? state.expandedOcgLayerIds : [],
+            ocgPreviewUrl: sameDocument ? state.ocgPreviewUrl : null,
         };
     }),
     setFontInspectionCache: (cache) => set({ fontInspectionCache: cache }),

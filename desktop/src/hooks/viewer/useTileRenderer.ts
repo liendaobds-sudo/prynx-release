@@ -280,10 +280,33 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         return `viewer:${tabId || 'local'}:${nonce}`;
     });
     const nativePath = (file as { path?: string } | null)?.path;
+    const [refinementVersion, setRefinementVersion] = useState(0);
+
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+        if (!nativePath) return;
+
+        const normalizedCurrentPath = nativePath.replaceAll('/', '\\').toLowerCase();
+
+        import('@tauri-apps/api/event').then(({ listen }) => {
+            listen<{ file_path: string; page: number; zoom: number }>('tile-refined', (event) => {
+                const eventPath = (event.payload.file_path || '').replaceAll('/', '\\').toLowerCase();
+                if (eventPath === normalizedCurrentPath) {
+                    setRefinementVersion((v) => v + 1);
+                }
+            }).then((cleanup) => {
+                unlisten = cleanup;
+            }).catch(() => undefined);
+        }).catch(() => undefined);
+
+        return () => {
+            unlisten?.();
+        };
+    }, [nativePath]);
     const nativeDocumentIdentity = useMemo(() => (
         nativePath ? renderDocumentIdentity(nativePath, file, loaderDocumentToken) : null
     ), [file, loaderDocumentToken, nativePath]);
-    const documentToken = nativeDocumentIdentity?.token ?? 'memory';
+    const documentToken = `${nativeDocumentIdentity?.token ?? 'memory'}${refinementVersion > 0 ? `:r${refinementVersion}` : ''}`;
     const fileIdentity = `${nativePath || pdfUrl || 'memory'}|${documentToken}`;
     const normalizedProfileId = (accurateColorProfileId || 'fogra39').trim().toLowerCase();
     const normalizedIntent = (accurateColorIntent || 'relative').trim().toLowerCase();

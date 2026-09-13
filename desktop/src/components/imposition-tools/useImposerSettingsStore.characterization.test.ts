@@ -437,4 +437,19 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         st().switchToolProfile('sticker_imposer', 'nup');
         expect(st().clusterMode).toBe('row');
     });
+
+    it('dọn sạch pontType preset_ rò rỉ từ localStorage về custom', () => {
+        localStorage.clear();
+        localStorage.setItem(PERSIST_KEY, JSON.stringify({
+            state: {
+                pontType: 'preset_MyOldPont',
+                toolProfiles: {
+                    sticker_imposer: { pontType: 'preset_OldStickerPont' },
+                },
+            },
+            version: 12,
+        }));
+        const store = createImposerSettingsStore();
+        expect(store.getState().pontType).toBe('custom');
+    });
 });

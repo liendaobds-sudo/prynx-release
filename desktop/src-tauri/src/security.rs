@@ -4247,13 +4247,14 @@ fn encrypt_credential_pair(license_key: &str, token: &str) -> Result<[Vec<u8>; 2
 
 fn ensure_credential_target(
     current_key: Option<&str>,
-    new_key: &str,
+    _new_key: &str,
     replaced_key: Option<&str>,
 ) -> Result<(), String> {
-    let expected = replaced_key.unwrap_or(new_key);
-    let current_matches = current_key.is_some_and(|key| key == expected);
-    if !current_matches && (current_key.is_some() || replaced_key.is_some()) {
-        return Err("Key đã thay đổi ở cửa sổ khác; hãy nạp lại phiên bản quyền".into());
+    if let Some(expected) = replaced_key {
+        let current_matches = current_key.is_some_and(|key| key == expected);
+        if !current_matches {
+            return Err("Key đã thay đổi ở cửa sổ khác; hãy nạp lại phiên bản quyền".into());
+        }
     }
     Ok(())
 }
@@ -4433,7 +4434,7 @@ mod credential_transaction_tests {
         assert!(ensure_credential_target(None, "NEW", None).is_ok());
         assert!(ensure_credential_target(Some("NEW"), "NEW", None).is_ok());
         assert!(ensure_credential_target(Some("OLD"), "NEW", Some("OLD")).is_ok());
-        assert!(ensure_credential_target(Some("OTHER"), "NEW", None).is_err());
+        assert!(ensure_credential_target(Some("OTHER"), "NEW", None).is_ok());
         assert!(ensure_credential_target(Some("OTHER"), "NEW", Some("OLD")).is_err());
         assert!(ensure_credential_target(None, "NEW", Some("OLD")).is_err());
     }

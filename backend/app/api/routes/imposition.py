@@ -1432,7 +1432,7 @@ async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
         background=BackgroundTask(_cleanup_job_temp, job_id),
     )
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from typing import Dict, Any, Optional, List, Literal
 class PreviewLayoutRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -1534,6 +1534,13 @@ class PreviewLayoutRequest(BaseModel):
     # PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): telemetry tùy chọn, không đổi layout.
     diagnostic_trace_id: Optional[str] = Field(default=None, max_length=96)
     diagnostic_request_id: Optional[str] = Field(default=None, max_length=96)
+
+    @field_validator("pont_type", mode="before")
+    @classmethod
+    def _normalize_pont_type_field(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip().lower().startswith("preset_"):
+            return "custom"
+        return v
 
 def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h: float, req: Any, overall_w: float = 0, overall_h: float = 0, base_poly=None) -> List[Dict[str, Any]]:
     """

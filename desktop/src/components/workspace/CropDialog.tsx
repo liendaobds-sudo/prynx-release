@@ -147,6 +147,8 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         viewerPageInstanceIds: state.viewerPageInstanceIds,
         viewerPageRotations: state.viewerPageRotations,
         editGeneration: state.editGeneration,
+        hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        ocgVisibilityProvenance: state.ocgVisibilityProvenance,
     })));
     const workspaceRevisionRef = useRef(workspaceRevision);
     workspaceRevisionRef.current = workspaceRevision;
@@ -488,6 +490,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         return () => window.removeEventListener('prynx-crop-selection-change', onSelectionChange as EventListener);
     }, [open, ownerId, pageNum, tabId, viewerRotation]);
 
+
     // PDF.js displays CropBox. Using MediaBox here shifts and rescales selections on cropped PDFs.
     const pageBox = boxes?.cropbox || boxes?.mediabox || null;
     const pageRotation = boxes?.rotation || 0;
@@ -732,7 +735,16 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         try {
             // REVISION (audit 2026-08-25 §REV.03): Apply luôn chốt Working PDF
             // và PageBox cùng một revision; không tái dùng ID/geometry từ lần mở panel.
-            const currentFileId = await ensureFileId(controller.signal);
+            let currentFileId: string;
+            try {
+                currentFileId = await ensureFileId(controller.signal);
+            } catch (err: unknown) {
+                if (isAbortError(err) && !controller.signal.aborted) {
+                    currentFileId = await ensureFileId(controller.signal);
+                } else {
+                    throw err;
+                }
+            }
             assertRequestCurrent();
             setFileId(currentFileId);
 
@@ -806,7 +818,11 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             if (!embedded) onClose();
         } catch (err: unknown) {
             committingRef.current = false;
-            if (!isAbortError(err)) {
+            if (isAbortError(err)) {
+                if (!controller.signal.aborted) {
+                    setError('Yêu cầu cắt bị gián đoạn do tài liệu đang cập nhật. Vui lòng bấm Cắt lại.');
+                }
+            } else {
                 setError(errorMessage(err, t('misc.cropDialog:cat_kho_that_bai')));
             }
         } finally {
@@ -815,6 +831,17 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
         }
     };
     handleApplyRef.current = () => { void handleApply(); };
+
+    useEffect(() => {
+        const onApplyEvent = (e: Event) => {
+            const detail = (e as CustomEvent<{ tabId?: string }>).detail;
+            if (!detail || (detail.tabId || '') !== (tabId || '')) return;
+            if (!open || phase !== 'idle' || !boxes || effectiveRects.length === 0 || !detectionReady) return;
+            handleApplyRef.current();
+        };
+        window.addEventListener('prynx-crop-apply', onApplyEvent as EventListener);
+        return () => window.removeEventListener('prynx-crop-apply', onApplyEvent as EventListener);
+    }, [boxes, detectionReady, effectiveRects.length, open, phase, tabId]);
 
     const removeRegion = (idx: number) => {
         setFracs((prev) => {

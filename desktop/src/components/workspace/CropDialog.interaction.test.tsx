@@ -615,4 +615,31 @@ describe('CropDialog interaction safety', () => {
         expect(vi.mocked(authenticatedFetch).mock.calls.some(([url]) =>
             String(url).includes('/download/stale.pdf'))).toBe(false);
     });
+    it('kích hoạt crop khi nhận sự kiện prynx-crop-apply từ canvas', async () => {
+        let cropExecuted = false;
+        vi.mocked(authenticatedFetch).mockImplementation((url) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
+            if (target.includes('/crop-regions')) {
+                cropExecuted = true;
+                return Promise.resolve(fakeJsonResponse({ success: true, output_filename: 'cropped.pdf' }));
+            }
+            if (target.includes('/download/cropped.pdf')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        render(<CropDialog tabId="test-tab" embedded ensureFileId={async () => 'fid'} onApplied={onApplied} onClose={vi.fn()} />);
+        openCropDialog({ tabId: 'test-tab', totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+
+        await screen.findByRole('dialog');
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('prynx-crop-apply', {
+                detail: { tabId: 'test-tab' }
+            }));
+        });
+
+        await waitFor(() => expect(cropExecuted).toBe(true));
+        await waitFor(() => expect(onApplied).toHaveBeenCalled());
+    });
 });

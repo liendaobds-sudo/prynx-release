@@ -132,6 +132,8 @@ def normalize_pont_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(pont_type, str):
         raise ValueError("Cấu hình ốc: 'pontType' phải là chuỗi hợp lệ.")
     pont_type = pont_type.strip().lower()
+    if pont_type.startswith("preset_"):
+        pont_type = "custom"
     if pont_type not in _VALID_PONT_TYPES:
         allowed = ", ".join(sorted(_VALID_PONT_TYPES))
         raise ValueError(f"Cấu hình ốc: 'pontType' chỉ nhận một trong: {allowed}.")

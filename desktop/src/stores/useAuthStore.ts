@@ -1838,7 +1838,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!newKey) {
       return { ok: false, reason: 'empty', message: 'Vui lòng nhập license key.' };
     }
-    const previousKey = get().licenseKey;
+    const previousKey = get().licenseKey || (isNativeRuntime() ? await loadFromDPAPI() : null);
     const current = normalizeLicenseKey(previousKey || '');
     if (current && current === newKey) {
       return { ok: false, reason: 'same', message: 'Đây đã là key đang dùng trên máy này.' };

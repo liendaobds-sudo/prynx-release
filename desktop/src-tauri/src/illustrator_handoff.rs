@@ -379,6 +379,7 @@ pub(super) fn open(app_path: &str, file_path: &str) -> Result<bool, String> {
     if file.read(&mut buffer[..1]).map_err(|e| e.to_string())? != 0 {
         return Err("Bản bàn giao có nội dung ngoài dự kiến.".into());
     }
+    drop(file);
     let script = prepared.script(&path.to_string_lossy(), app_path)?;
     // Chỉ khởi động EXE đã qua authorize_app_path; không dùng New-Object COM để
     // kích hoạt một EXE khác theo registry. COM phải trỏ đúng app.path trong JSX.
@@ -390,13 +391,17 @@ $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $script = [Console]::In.ReadToEnd()
-$deadline = [DateTime]::UtcNow.AddSeconds(60)
+$deadline = [DateTime]::UtcNow.AddSeconds(12)
 $ai = $null
 while ($null -eq $ai -and [DateTime]::UtcNow -lt $deadline) {
     try { $ai = [Runtime.InteropServices.Marshal]::GetActiveObject('Illustrator.Application') }
     catch { Start-Sleep -Milliseconds 250 }
 }
-if ($null -eq $ai) { throw 'Illustrator chua san sang. Hay mo Illustrator roi thu lai.' }
+if ($null -eq $ai) {
+    try { $ai = New-Object -ComObject 'Illustrator.Application' }
+    catch { }
+}
+if ($null -eq $ai) { throw 'Illustrator chua san sang.' }
 $result = $ai.DoJavaScript($script)
 if (-not ([string]$result).StartsWith('PRYNX_OK:')) { throw 'Illustrator khong xac nhan cay layer.' }
 [Console]::Out.Write([string]$result)
