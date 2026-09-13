@@ -339,10 +339,126 @@ pub async fn launch_external_app(
         }
     }
 
+    #[cfg(target_os = "windows")]
+    let launch_file = if is_corel_app(&app_path)
+        && file_path.to_ascii_lowercase().ends_with(".pdf")
+    {
+        sanitize_pdf_for_corel(&file_path).unwrap_or_else(|err| {
+            log::warn!("Không thể làm sạch PDF cho Corel ({err}), tiếp tục với file gốc.");
+            file_path.clone()
+        })
+    } else {
+        file_path.clone()
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let launch_file = file_path;
+
     let mut cmd = Command::new(&app_path);
-    cmd.arg(&file_path);
+    cmd.arg(&launch_file);
     cmd.spawn().map_err(|e| format!("Lỗi mở ứng dụng: {}", e))?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn is_corel_app(app_path: &str) -> bool {
+    let app_name = std::path::Path::new(app_path)
+        .file_name()
+        .and_then(|n| n.to_str());
+    app_name.is_some_and(|name| {
+        name.eq_ignore_ascii_case("CorelDRW.exe") || name.eq_ignore_ascii_case("CorelDraw.exe")
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn sanitize_pdf_for_corel(file_path: &str) -> Result<String, String> {
+    use lopdf::{content::Content, Object};
+
+    let bytes = std::fs::read(file_path).map_err(|e| e.to_string())?;
+    let mut doc = crate::load_lopdf_structure(&bytes, crate::system_total_memory_bytes())?;
+    let mut modified = false;
+
+    for (_, page_id) in doc.get_pages() {
+        let content_bytes = doc.get_page_content(page_id);
+        if let Ok(content) = Content::decode(&content_bytes) {
+            let mut in_watermark = false;
+            let mut new_ops = Vec::new();
+            let mut page_modified = false;
+
+            for mut op in content.operations {
+                if op.operator == "BT" {
+                    in_watermark = false;
+                }
+                if op.operator == "Tf"
+                    && op
+                        .operands
+                        .first()
+                        .and_then(|o| o.as_name().ok())
+                        .map_or(false, |n| n.starts_with(b"FW"))
+                {
+                    in_watermark = true;
+                }
+                if in_watermark {
+                    if op.operator == "ET" {
+                        in_watermark = false;
+                        page_modified = true;
+                    }
+                    continue;
+                }
+                if op.operator == "BDC"
+                    && op
+                        .operands
+                        .first()
+                        .and_then(|o| o.as_name().ok())
+                        .map_or(false, |n| n == b"Span")
+                {
+                    op.operands[0] = Object::Name(b"Item".to_vec());
+                    page_modified = true;
+                }
+                new_ops.push(op);
+            }
+
+            if page_modified {
+                if let Ok(encoded) = (Content { operations: new_ops }).encode() {
+                    let _ = doc.change_page_content(page_id, encoded);
+                    modified = true;
+                }
+            }
+        }
+
+        if let Ok(page_dict) = doc.get_dictionary_mut(page_id) {
+            if let Ok(resources) = page_dict.get_mut(b"Resources").and_then(Object::as_dict_mut) {
+                if let Ok(fonts) = resources.get_mut(b"Font").and_then(Object::as_dict_mut) {
+                    let fw_keys: Vec<_> = fonts
+                        .iter()
+                        .filter(|(k, _)| k.starts_with(b"FW"))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for k in fw_keys {
+                        fonts.remove(&k);
+                        modified = true;
+                    }
+                    if fonts.is_empty() {
+                        resources.remove(b"Font");
+                    }
+                }
+            }
+        }
+    }
+
+    if !modified {
+        return Ok(file_path.to_string());
+    }
+
+    let temp_name = format!(
+        "prynx_corel_{}.pdf",
+        hex::encode(rand::random::<[u8; 12]>())
+    );
+    let temp_path = std::env::temp_dir().join(temp_name);
+    let mut out_bytes = Vec::new();
+    doc.save_to(&mut out_bytes).map_err(|e| e.to_string())?;
+    std::fs::write(&temp_path, out_bytes).map_err(|e| e.to_string())?;
+    Ok(temp_path.to_string_lossy().to_string())
 }
 
 fn is_illustrator_cut_handoff(app_path: &str, file_path: &str) -> bool {

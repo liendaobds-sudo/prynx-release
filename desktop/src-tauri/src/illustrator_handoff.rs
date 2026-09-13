@@ -391,15 +391,43 @@ $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $script = [Console]::In.ReadToEnd()
-$deadline = [DateTime]::UtcNow.AddSeconds(12)
+$candidates = @('Illustrator.Application')
+try {
+    $reg = Get-ChildItem -Path 'Registry::HKEY_CLASSES_ROOT\Illustrator.Application*' -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.PSChildName }
+    if ($reg) { $candidates = @($reg) + $candidates }
+} catch { }
+$candidates = @($candidates) + @(
+    'Illustrator.Application.24',
+    'Illustrator.Application.25',
+    'Illustrator.Application.26',
+    'Illustrator.Application.27',
+    'Illustrator.Application.28',
+    'Illustrator.Application.29',
+    'Illustrator.Application.30',
+    'Illustrator.Application.23',
+    'Illustrator.Application.22',
+    'Illustrator.Application.21',
+    'Illustrator.Application.16'
+) | Select-Object -Unique
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
 $ai = $null
 while ($null -eq $ai -and [DateTime]::UtcNow -lt $deadline) {
-    try { $ai = [Runtime.InteropServices.Marshal]::GetActiveObject('Illustrator.Application') }
-    catch { Start-Sleep -Milliseconds 250 }
+    foreach ($p in $candidates) {
+        try {
+            $ai = [Runtime.InteropServices.Marshal]::GetActiveObject($p)
+            if ($null -ne $ai) { break }
+        } catch { }
+    }
+    if ($null -eq $ai) { Start-Sleep -Milliseconds 250 }
 }
 if ($null -eq $ai) {
-    try { $ai = New-Object -ComObject 'Illustrator.Application' }
-    catch { }
+    foreach ($p in $candidates) {
+        try {
+            $ai = New-Object -ComObject $p
+            if ($null -ne $ai) { break }
+        } catch { }
+    }
 }
 if ($null -eq $ai) { throw 'Illustrator chua san sang.' }
 $result = $ai.DoJavaScript($script)

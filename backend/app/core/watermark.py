@@ -70,6 +70,23 @@ def _ensure_font(pike_page: pikepdf.Page, pdf: pikepdf.Pdf) -> str:
     return font_key
 
 
+def _is_cut_page(page: pikepdf.Page) -> bool:
+    """Check if page is a die-cut / finishing page (skip text watermark to prevent Corel/plotter crash)."""
+    try:
+        if "/PSHomogCut" in page:
+            return True
+        resources = page.get("/Resources")
+        if resources and "/Properties" in resources:
+            props = resources["/Properties"]
+            for _, val in props.items():
+                name = str(val.get("/Name", ""))
+                if any(k in name for k in ("Cutline", "cut_page", "MarkLine", "Marks_Model_")):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def embed_watermark(doc, license_key: str, hwid: str = "") -> bool:
     """
     Embed invisible watermark into a pikepdf.Pdf or pdf_wrapper.Document.
@@ -111,6 +128,8 @@ def embed_watermark(doc, license_key: str, hwid: str = "") -> bool:
         # ── Layer 2: Invisible text on each page ──
         for page in pdf.pages:
             try:
+                if _is_cut_page(page):
+                    continue
                 mb = page.mediabox
                 page_h = float(mb[3] - mb[1])
 
