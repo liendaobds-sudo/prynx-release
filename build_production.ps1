@@ -2549,9 +2549,6 @@ if (-not $SkipTauri) {
             # if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
             #     throw "Release tu choi khoa ky updater khong co passphrase."
             # }
-            if ($null -ne $script:CapturedTauriSigningPrivateKeyPassword) {
-                $tauriSignerArgs += @("-p", [string]$script:CapturedTauriSigningPrivateKeyPassword)
-            }
             $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
             $tauriSignerArgs += $installer.FullName
             Push-Location "$ROOT\desktop"
