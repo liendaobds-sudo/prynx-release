@@ -2558,7 +2558,7 @@ if (-not $SkipTauri) {
             $signerLocationPushed = $true
             # Chi process Node da ky + bo Tauri CLI exact-path dang lease moi
             # nhan passphrase. Khong qua npx/npm shim hay PATH.
-            & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs < $null
+            & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs
             $signerExit = $LASTEXITCODE
         } finally {
             Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease
