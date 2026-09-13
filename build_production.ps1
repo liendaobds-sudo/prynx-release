@@ -2549,13 +2549,16 @@ if (-not $SkipTauri) {
             # if ([string]::IsNullOrEmpty($script:CapturedTauriSigningPrivateKeyPassword)) {
             #     throw "Release tu choi khoa ky updater khong co passphrase."
             # }
+            if ($null -ne $script:CapturedTauriSigningPrivateKeyPassword) {
+                $tauriSignerArgs += @("-p", [string]$script:CapturedTauriSigningPrivateKeyPassword)
+            }
             $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $script:CapturedTauriSigningPrivateKeyPassword
             $tauriSignerArgs += $installer.FullName
             Push-Location "$ROOT\desktop"
             $signerLocationPushed = $true
             # Chi process Node da ky + bo Tauri CLI exact-path dang lease moi
             # nhan passphrase. Khong qua npx/npm shim hay PATH.
-            & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs
+            & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs < $null
             $signerExit = $LASTEXITCODE
         } finally {
             Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease
