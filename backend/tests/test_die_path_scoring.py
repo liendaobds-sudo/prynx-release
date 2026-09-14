@@ -54,8 +54,11 @@ def test_color_match_default_die_palette():
     assert _color_matches_die((1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)
     # Dung sai: gần K100 vẫn khớp
     assert _color_matches_die((0.02, 0.0, 0.0, 0.98), CFG.die_colors, CFG.die_color_tol)
+    # Đỏ CMYK và RGB nay đã thuộc bảng màu bế chuẩn (prepress VN)
+    assert _color_matches_die((0.0, 1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)  # đỏ CMYK
+    assert _color_matches_die((1.0, 0.0, 0.0), CFG.die_colors, CFG.die_color_tol)  # đỏ RGB
     # Không khớp màu hỗn hợp / trắng / thiếu
-    assert not _color_matches_die((0.0, 1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)  # đỏ process
+    assert not _color_matches_die((1.0, 0.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)  # xanh lá C100 Y100
     assert not _color_matches_die((1.0, 1.0, 1.0), CFG.die_colors, CFG.die_color_tol)
     assert not _color_matches_die(None, CFG.die_colors, CFG.die_color_tol)
     # [DIE-TINT 2026-07-28] Bảng màu bế KHÔNG còn mục 1 thành phần. DeviceGray đen đi
