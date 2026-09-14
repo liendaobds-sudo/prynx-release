@@ -181,6 +181,28 @@ def test_wavy_sticker_outline_is_not_trapezoid():
     assert classified["shape_type"] is ShapeType.CUSTOM
 
 
+def test_mango_tapered_sticker_is_not_trapezoid():
+    """Tem có thân phình/phẳng kéo dài và chỉ thon nhọn ở chóp đuôi (như quả xoài) không phải hình thang."""
+    # Profile 50 lát đo từ contour tem quả xoài thật (test xoai.pdf)
+    widths = [
+        109.5, 110.1, 111.2, 112.5, 113.8, 114.2, 114.5, 114.8, 115.0, 115.1,
+        115.1, 114.9, 114.8, 114.7, 114.6, 114.7, 114.6, 114.5, 114.4, 114.4,
+        114.4, 114.3, 114.2, 114.2, 114.2, 114.2, 115.0, 116.2, 117.5, 118.3,
+        119.0, 119.4, 119.5, 119.6, 119.6, 119.6, 119.2, 118.5, 117.8, 117.0,
+        116.3, 111.8, 110.4, 109.6, 108.0, 106.5, 102.7, 91.4, 44.5, 39.8,
+    ]
+    top = []
+    bottom = []
+    for index, width in enumerate(widths):
+        x = (index + 0.5) * 4.0
+        # Thêm độ lệch tâm đường cong tự nhiên như contour xoài
+        drift = 15.0 * math.sin(math.pi * index / len(widths))
+        top.append((x, 60.0 + drift - width / 2.0))
+        bottom.append((x, 60.0 + drift + width / 2.0))
+    classified = classify_shape(lines(top + bottom[::-1]))
+    assert classified["shape_type"] is ShapeType.CUSTOM, f"Expected CUSTOM, got {classified['shape_type']}"
+
+
 def test_broad_middle_bulge_is_not_hammer():
     """Bướu giữa với hai đầu gần bằng nhau phải là Đặc biệt, không phải Búa."""
     widths = [

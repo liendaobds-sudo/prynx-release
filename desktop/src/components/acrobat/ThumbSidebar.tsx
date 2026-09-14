@@ -20,6 +20,11 @@ import {
     sameEditPreviewSequence,
     ThumbnailEditPreviewLayer,
 } from './thumbnailEditPreview';
+import {
+    ThumbnailCutlinePreviewLayer,
+    sameCutlinePreview,
+    type ThumbnailCutlinePreviewItem,
+} from './thumbnailCutlinePreview';
 import { pageHeightPtFromDim, pageWidthPtFromDim } from '../workspace/editGeometry';
 import type { ViewerContextMenuState } from './ViewerContextMenu';
 import { stickerSheetWorkflowStatusAtViewerPosition } from '../stickerSheetTabSelector';
@@ -114,6 +119,7 @@ interface MemoThumbItemProps {
     onContextMenu: (event: React.MouseEvent, index: number, label: number) => void;
     workflowStatus?: ThumbPageWorkflowStatus;
     editPreviews?: readonly SessionPreview[];
+    cutlinePreview?: ThumbnailCutlinePreviewItem | null;
 };
 
 interface ThumbSidebarProps {
@@ -156,6 +162,7 @@ interface ThumbSidebarProps {
     pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
     /** Preview in-memory theo trang; thumbnail dùng lại, không render PDF thêm. */
     editSessionPreviews?: readonly SessionPreview[];
+    cutlinePreviews?: Partial<Record<number, ThumbnailCutlinePreviewItem>>;
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
@@ -165,7 +172,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
         pdfUrl, file, thumbRev, pageCount, isLoadable, isViewerActive, registerRef,
-        handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews,
+        handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews, cutlinePreview,
     } = props;
     const { t } = useTranslation();
     const isBlankDoc = file?.isBlank === true;
@@ -407,6 +414,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                                 pageWidthPt={pageWidthPtFromDim(localDim?.w)}
                                 pageHeightPt={pageHeightPtFromDim(localDim?.h)}
                             />
+                            <ThumbnailCutlinePreviewLayer item={cutlinePreview} />
                         </div>
                         {/* Indicator trên footprint (cùng hệ toạ độ AABB với main page outer box).
                             Không gắn trong khối CSS-rotate — % left/top map thẳng từ updateViewportRect. */}
@@ -457,7 +465,8 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         prev.thumbRev === next.thumbRev &&
         prev.pageCount === next.pageCount &&
         prev.workflowStatus === next.workflowStatus &&
-        sameEditPreviewSequence(prev.editPreviews, next.editPreviews);
+        sameEditPreviewSequence(prev.editPreviews, next.editPreviews) &&
+        sameCutlinePreview(prev.cutlinePreview, next.cutlinePreview);
 });
 
 // Cổng tải thumbnail: hoãn render thumbnail (qua cache ảnh phụ) cho đến khi trang chính
@@ -756,6 +765,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
                                         isViewerActive={isViewerActive}
                                         workflowStatus={stickerSheetWorkflowStatusAtViewerPosition(pageWorkflowStatuses, index)}
+                                        cutlinePreview={props.cutlinePreviews?.[logicalPageLabel]}
                                         editPreviews={editPreviewsBySourcePage.get(originalPageNum)}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}

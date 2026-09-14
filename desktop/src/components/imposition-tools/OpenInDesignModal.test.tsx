@@ -470,4 +470,37 @@ describe('OpenInDesignModal', () => {
         expect(targetName).not.toMatch(/[\\/:*?"<>|]/);
         expect(targetPath.toLowerCase()).toContain('don-hang-mau');
     });
+it('nhận diện tất cả các trang là trang khuôn khi mở file đã lưu có tên chứa (cut)', async () => {
+        const source = await PDFDocument.create();
+        source.addPage([500, 500]);
+        source.addPage([500, 500]);
+        const sourceBytes = await source.save();
+        const resultBlob = {
+            arrayBuffer: async () => sourceBytes.buffer.slice(
+                sourceBytes.byteOffset,
+                sourceBytes.byteOffset + sourceBytes.byteLength,
+            ),
+        } as Blob;
+
+        mocks.invoke.mockImplementation((command: string) => {
+            if (command === 'detect_design_apps') {
+                return Promise.resolve({ illustrator: ILLUSTRATOR, corel: null });
+            }
+            return Promise.resolve();
+        });
+
+        renderModal({
+            resultBlob,
+            resultFilePath: undefined,
+            separateCut: true, // dù separateCut=true nhưng file đã là file cut-only
+            originalName: '1 - Tem_decal (cut).pdf',
+        });
+
+        await screen.findByText(ILLUSTRATOR);
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+
+        // Cả 2 trang đều là tờ khuôn (Tờ 1 và Tờ 2)
+        expect(screen.getByText('Tờ 1')).toBeTruthy();
+        expect(screen.getByText('Tờ 2')).toBeTruthy();
+    });
 });

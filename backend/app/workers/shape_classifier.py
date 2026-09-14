@@ -988,7 +988,51 @@ def _is_steady_width_ramp(widths: List[float]) -> bool:
         abs(smoothed[index] - smoothed[index - 1])
         for index in range(1, len(smoothed))
     )
-    return total_variation <= net_change * _MAX_RAMP_VARIATION_RATIO
+    if total_variation > net_change * _MAX_RAMP_VARIATION_RATIO:
+        return False
+
+    # [SHAPE-RAMP FIX 2026-09-15]: Kiểm tra tính đơn điệu thực sự theo 3 phân đoạn
+    # (1/3 đầu, 1/3 giữa, 1/3 cuối). Hình thang bắt buộc phải tăng hoặc giảm đều,
+    # KHÔNG được phình ở giữa (như quả xoài, giọt nước, quả lê, elip lệch).
+    n = len(smoothed)
+    seg1 = smoothed[:n // 3]
+    seg2 = smoothed[n // 3: 2 * n // 3]
+    seg3 = smoothed[2 * n // 3:]
+    w1 = sum(seg1) / len(seg1)
+    w2 = sum(seg2) / len(seg2)
+    w3 = sum(seg3) / len(seg3)
+
+    span = max(smoothed) - min(smoothed)
+    if span <= 0:
+        return False
+
+    is_mono = (w1 < w2 < w3) or (w1 > w2 > w3)
+    if not is_mono:
+        return False
+
+    # Cả hai nửa profile đều phải có độ dốc hữu hình (loại trừ trường hợp phẳng
+    # 85-90% rồi chỉ thụt đột ngột ở 1 chóp đuôi nhỏ).
+    step1 = abs(w2 - w1)
+    step2 = abs(w3 - w2)
+    if step1 < 0.08 * span or step2 < 0.08 * span:
+        return False
+
+    # Kiểm tra độ tuyến tính R^2 >= 0.45 (hình thang thật có R^2 >= 0.65-0.95;
+    # contour cong gợn hoặc uốn tự do có R^2 rất thấp ~0.10).
+    mean_y = sum(smoothed) / n
+    ss_tot = sum((y - mean_y) ** 2 for y in smoothed)
+    if ss_tot > 0:
+        mean_x = (n - 1) / 2.0
+        ss_xx = sum((x - mean_x) ** 2 for x in range(n))
+        ss_xy = sum((x - mean_x) * (y - mean_y) for x, y in enumerate(smoothed))
+        slope = ss_xy / ss_xx if ss_xx > 0 else 0
+        intercept = mean_y - slope * mean_x
+        ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in enumerate(smoothed))
+        r2 = 1.0 - (ss_res / ss_tot)
+        if r2 < 0.45:
+            return False
+
+    return True
 
 
 def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h, edges=None, force=False):
@@ -1087,6 +1131,13 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
     min_w = min(widths)
     ramp_ratio = abs(last_w - first_w) / max_w if max_w > 0 else 0
 
+    # Kiểm tra độ lệch tâm (centerline drift): hình thang đối xứng/thẳng
+    # không được có đường tâm cong võng (như hình quả xoài, quả chuối, trăng khuyết).
+    centers = [wp['center'] for wp in width_profile]
+    center_drift = max(centers) - min(centers)
+    cross_dim = total_h if is_horizontal else total_w
+    is_curved = cross_dim > 0 and (center_drift / cross_dim) > 0.15
+
     # CỔNG "THUÔN VỀ MŨI NHỌN" (audit tam giác bo tròn → HAMMER): nếu hình thu gần về
     # MỘT ĐIỂM ở mút (min_w/max_w rất nhỏ) thì đây là tam giác/nón/giọt nước (contour
     # bù-xén ngôi sao + chữ cũng vào đây), KHÔNG phải búa/tạ (cán có bề rộng hữu hạn).
@@ -1103,11 +1154,18 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
         and min_w > max_w * 0.2
         and _is_steady_width_ramp(widths)
     ):
+        # Kiểm tra độ lệch tâm (centerline drift): hình thang đối xứng/thẳng
+        # không được có đường tâm cong võng (như hình quả xoài, quả chuối, trăng khuyết).
+        centers = [wp['center'] for wp in width_profile]
+        center_drift = max(centers) - min(centers)
+        cross_dim = total_h if is_horizontal else total_w
+        is_curved = cross_dim > 0 and (center_drift / cross_dim) > 0.15
+
         # Before concluding trapezoid, check if there's a clear waist (= hammer).
         # A true trapezoid ramps smoothly; a hammer has a sudden narrow section.
         # If waist_width / max_peak is < 0.85, it's hammer territory — skip ramp.
         has_waist = waist_width < float('inf') and max_peak_width > 0 and (waist_width / max_peak_width) < 0.85
-        if not has_waist:
+        if not has_waist and not is_curved:
             # Width ramps steadily → trapezoid (not triangle, which has min near 0)
             # Compute overhang from width profile
             is_horizontal_trap = is_horizontal
@@ -1130,7 +1188,7 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
                 'bbH': round(total_h, 2),
                 'rampRatio': round(ramp_ratio, 4),
             }
-        # else: has waist → fall through to hammer/dumbbell detection below
+        # else: has waist or is curved → fall through to hammer/dumbbell detection below
 
     # Validation: waist must be clearly narrower than peaks
     if max_peak_width <= 0:

@@ -155,6 +155,8 @@ export default function OpenInDesignModal({
                 const { PDFDocument } = await import('pdf-lib');
                 const doc = await PDFDocument.load(await readResultBytes(resultFilePath, resultBlob));
                 const pageCount = doc.getPageCount();
+                const fileName = (originalName || '').toLowerCase();
+                const isCutOnlyFile = fileName.includes('(cut)') || fileName.includes('_cut.') || fileName.includes('- cut.');
                 const per = pagesPerUnit(cncMode, cncTwoSided, separateCut);
                 // Sticker homogeneous/single-mold có [in_0..in_N, CUT_chung] nên
                 // tổng trang lẻ; trang CUT thật nằm cuối, không theo cặp xen kẽ.
@@ -170,13 +172,18 @@ export default function OpenInDesignModal({
                     includeOrderCode: false, includeDate: false, originalName, cncMode, cncTwoSided,
                 };
                 const plan = buildSavePlan(types, { ...cfg, sharedMasterCut });
-                const pages: CutPage[] = sharedMasterCut
-                    ? [{ sheetNum: 1, pageIndex: pageCount - 1 }]
-                    : !cncMode && !separateCut
-                        ? Array.from({ length: count }, (_, i) => ({ sheetNum: i + 1, pageIndex: i }))
-                        : plan
-                            .filter(it => it.kind === 'cut' && it.pageIndex < pageCount)
-                            .map((it, i) => ({ sheetNum: i + 1, pageIndex: it.pageIndex }));
+                let pages: CutPage[] = isCutOnlyFile
+                    ? Array.from({ length: pageCount }, (_, i) => ({ sheetNum: i + 1, pageIndex: i }))
+                    : sharedMasterCut
+                        ? [{ sheetNum: 1, pageIndex: pageCount - 1 }]
+                        : !cncMode && !separateCut
+                            ? Array.from({ length: count }, (_, i) => ({ sheetNum: i + 1, pageIndex: i }))
+                            : plan
+                                .filter(it => it.kind === 'cut' && it.pageIndex < pageCount)
+                                .map((it, i) => ({ sheetNum: i + 1, pageIndex: it.pageIndex }));
+                if (pages.length === 0 && pageCount > 0) {
+                    pages = Array.from({ length: pageCount }, (_, i) => ({ sheetNum: i + 1, pageIndex: i }));
+                }
                 if (!active) return;
                 setCutPages(pages);
                 // Chọn sẵn tờ chứa trang đang xem (viewer 1-indexed → pageIndex 0-indexed).

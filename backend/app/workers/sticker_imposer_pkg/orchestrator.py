@@ -145,10 +145,58 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             configs = [candidates[0]]
         elif shape_type == 'TRAPEZOID':
             tr_opt = solve_illustrator_trapezoid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props)
-            configs = [(tr_opt, tr_opt.get('_main_rotated', False), 'trapezoid_illustrator')]
+            tr_orig_n = tr_opt['totalItems']
+            if base_poly is not None and tr_opt.get('items'):
+                tr_opt['items'] = resolve_layout_collisions(
+                    tr_opt['items'], base_poly, max(gap_x, gap_y)
+                )
+                tr_opt['totalItems'] = len(tr_opt['items'])
+                if tr_opt['items']:
+                    tr_opt['widthUsed'] = max(it['x'] + it['width'] for it in tr_opt['items'])
+                    tr_opt['heightUsed'] = max(it['y'] + it['height'] for it in tr_opt['items'])
+                else:
+                    tr_opt['widthUsed'] = tr_opt['heightUsed'] = 0
+
+            # Anti-fragmentation: nếu rụng > 20% ô sau va chạm (chồng đè do hình bất quy tắc)
+            is_fragmented = tr_orig_n > 0 and (tr_opt['totalItems'] < tr_orig_n * 0.80)
+
+            tg1 = solve_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            tg2 = solve_grid_layout(usable_w, usable_h, item_h, item_w, gap_x, gap_y)
+            tl_shape = solve_l_shape_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, secondary_gap)
+            configs = [
+                (tg1, False, 'grid'),
+                (tg2, True, 'grid'),
+                (tl_shape, False, 'l_shape'),
+            ]
+            if not is_fragmented:
+                configs.insert(0, (tr_opt, tr_opt.get('_main_rotated', False), 'trapezoid_illustrator'))
+
         elif shape_type == 'PARALLELOGRAM':
             pr_opt = solve_illustrator_parallelogram_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props)
-            configs = [(pr_opt, pr_opt.get('_main_rotated', False), 'parallelogram_illustrator')]
+            pr_orig_n = pr_opt['totalItems']
+            if base_poly is not None and pr_opt.get('items'):
+                pr_opt['items'] = resolve_layout_collisions(
+                    pr_opt['items'], base_poly, max(gap_x, gap_y)
+                )
+                pr_opt['totalItems'] = len(pr_opt['items'])
+                if pr_opt['items']:
+                    pr_opt['widthUsed'] = max(it['x'] + it['width'] for it in pr_opt['items'])
+                    pr_opt['heightUsed'] = max(it['y'] + it['height'] for it in pr_opt['items'])
+                else:
+                    pr_opt['widthUsed'] = pr_opt['heightUsed'] = 0
+
+            is_fragmented = pr_orig_n > 0 and (pr_opt['totalItems'] < pr_orig_n * 0.80)
+
+            pg1 = solve_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            pg2 = solve_grid_layout(usable_w, usable_h, item_h, item_w, gap_x, gap_y)
+            pl_shape = solve_l_shape_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, secondary_gap)
+            configs = [
+                (pg1, False, 'grid'),
+                (pg2, True, 'grid'),
+                (pl_shape, False, 'l_shape'),
+            ]
+            if not is_fragmented:
+                configs.insert(0, (pr_opt, pr_opt.get('_main_rotated', False), 'parallelogram_illustrator'))
         elif shape_type in ('PENTAGON', 'ARROW'):
             # Try all 4 combinations for pentagon
             p_up1 = solve_advanced_pentagon_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props, False, False)
@@ -285,6 +333,8 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             bonus = 0
             if shape_type in ('HAMMER', 'DUMBBELL') and strategy in ('hammer_illustrator', 'dumbbell_illustrator'):
                 bonus = 0.2
+            elif shape_type in ('TRAPEZOID', 'PARALLELOGRAM') and strategy in ('trapezoid_illustrator', 'parallelogram_illustrator'):
+                bonus = 0.15
             elif strategy == 'grid':
                 bonus = 0.1
             elif strategy == 'head_to_tail':
@@ -322,7 +372,7 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
         winner_msg = "[LAYOUT_WINNER] >>> %s (rot=%s) items=%d shape=%s" % (best_strategy, is_rotated, best_config['totalItems'], shape_type)
         _logger.debug(winner_msg)
         
-        if is_rotated and best_strategy not in ('head_to_tail', 'l_shape', 'hammer_illustrator', 'dumbbell_illustrator', 'trapezoid_illustrator'):
+        if is_rotated and best_strategy not in ('head_to_tail', 'l_shape', 'hammer_illustrator', 'dumbbell_illustrator', 'trapezoid_illustrator', 'parallelogram_illustrator'):
             for item in best_config['items']:
                 item['isRotated'] = True
         

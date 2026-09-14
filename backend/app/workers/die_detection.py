@@ -65,6 +65,14 @@ class DetectionConfig:
         # nên không có màu bế nào được khai báo dạng 1 thành phần.
         (0.0, 0.0, 0.0, 1.0),  # CMYK K100
         (0.0, 0.0, 0.0),       # RGB black
+        # Illustrator Rich Black: K100 xuất RGB khi bật Appearance of Black ("Output All Blacks as Rich Black")
+        # R:35, G:31, B:32 -> (35/255, 31/255, 32/255) = (0.137, 0.122, 0.125)
+        (0.137, 0.122, 0.125),
+        # Đỏ (Red) — nét vẽ bế phổ biến nhất trong prepress VN:
+        # CMYK Red thuần (C0 M100 Y100 K0) và màu Đỏ mặc định của Illustrator swatch (C0 M90 Y85 K0)
+        (0.0, 1.0, 1.0, 0.0),  # CMYK Red
+        (0.0, 0.9, 0.85, 0.0), # Illustrator Default Red swatch
+        (1.0, 0.0, 0.0),       # RGB Red
         # Xanh dương (process cyan / RGB blue)
         (1.0, 0.0, 0.0, 0.0),  # CMYK C100
         (0.0, 0.0, 1.0),       # RGB blue

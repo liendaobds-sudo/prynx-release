@@ -21,6 +21,7 @@ import { uploadPDF, getApiUrl, authenticatedFetch } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
 import type { ThumbPageWorkflowStatus } from './acrobat/ThumbSidebar';
+import type { ThumbnailCutlinePreviewItem } from './acrobat/thumbnailCutlinePreview';
 import { editPreviewDocumentChanged } from './acrobat/thumbnailEditPreview';
 import { StatusBar } from './acrobat/StatusBar'; // UIUX (audit 2026-07-27 §M-1+C-05)
 import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/CrossFileInsertModal';
@@ -214,6 +215,7 @@ interface Props {
     pageOverlayRenderer?: PageOverlayRenderer;
     /** Trạng thái nghiệp vụ theo số trang nguồn, hiển thị trên thumbnail. */
     pageWorkflowStatuses?: Partial<Record<number, ThumbPageWorkflowStatus>>;
+    cutlinePreviews?: Partial<Record<number, ThumbnailCutlinePreviewItem>>;
     /** Revision Undo vừa hydrate vốn đã dirty trước tool; giữ cờ này sau khi xóa stack nội bộ. */
     restoredHistoryDirty?: boolean;
     /** PHIÊN chỉnh sửa trong bộ nhớ (spec `pdf-edit-session`) — sở hữu bởi ImpositionTab,
@@ -228,7 +230,7 @@ interface Props {
 }
 
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, cutlinePreviews, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated }: Props) {
   const { t } = useTranslation();
     const {
         scale: physicalDisplayScale,
@@ -2642,6 +2644,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                              file={file} pdfUrl={pdfUrl} isViewerActive={isActive}
                              editSessionPreviews={editSession?.previews}
                              pageWorkflowStatuses={pageWorkflowStatuses}
+                             cutlinePreviews={cutlinePreviews}
                         />
                     )}
 

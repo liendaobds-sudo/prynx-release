@@ -5,6 +5,7 @@ import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolByUniqueKey, getToolsByCategory
 
 import PDFUploader from './PDFUploader';
 import AcrobatViewer, { type PageOverlayRenderContext } from './AcrobatViewer';
+import type { ThumbnailCutlinePreviewItem } from './acrobat/thumbnailCutlinePreview';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession, type UseEditSession } from '../hooks/useEditSession';
 import { useWorkingPdf } from '../hooks/useWorkingPdf';
@@ -32,7 +33,6 @@ import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
 import { createRevisionScopedPdfUploadCache } from '../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../lib/recipe/RecipeRecorder';
 import { shouldBlockUnrecordedCommit } from '../lib/recipe/unrecordedCommit';
-import { isImposedOutputFile } from '../lib/constants';
 import { isRestoredDocumentDirty } from '../lib/dirtySession';
 import {
     createRecoveryHistoryEntry,
@@ -903,6 +903,33 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         && classicCutlineViewerPreview?.viewerPage === viewerActivePage
         && classicCutlineViewerPreview.documentIdentity === currentViewerDocumentIdentity
     ) ? classicCutlineViewerPreview : null;
+    const thumbnailCutlinePreviews = useMemo<Partial<Record<number, ThumbnailCutlinePreviewItem>> | undefined>(() => {
+        if (isActive !== true || activeDashboardTool !== 'sticker') return undefined;
+        if (stickerSheetMode === 'ai-sheet' && stickerSheetSourceVisible) {
+            const result: Partial<Record<number, ThumbnailCutlinePreviewItem>> = {};
+            let hasAny = false;
+            for (const [posStr, pageState] of Object.entries(stickerSheetPages)) {
+                const pos = Number(posStr);
+                if (pageState?.manifest && (pageState.cutlinePreview || pageState.previewUrl)) {
+                    result[pos] = {
+                        cutlinePreview: pageState.cutlinePreview,
+                        previewUrl: pageState.previewUrl,
+                    };
+                    hasAny = true;
+                }
+            }
+            return hasAny ? result : undefined;
+        }
+        if (stickerSheetMode === 'existing' && classicCutlineOverlay?.preview && classicCutlineOverlay.viewerPage) {
+            return {
+                [classicCutlineOverlay.viewerPage]: {
+                    cutlinePreview: classicCutlineOverlay.preview,
+                    previewUrl: null,
+                },
+            };
+        }
+        return undefined;
+    }, [isActive, activeDashboardTool, stickerSheetMode, stickerSheetSourceVisible, stickerSheetPages, classicCutlineOverlay]);
     const renderStickerSheetPageOverlay = useCallback((context: PageOverlayRenderContext) => {
         const workingPosition = context.viewerPagePosition;
         const pageState = stickerSheetPages[workingPosition];
@@ -4235,6 +4262,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         && stickerSheetSourceVisible
                                         ? stickerSheetPageStatuses
                                         : undefined}
+                                    cutlinePreviews={thumbnailCutlinePreviews}
                                     pendingHistoryEntry={pendingHistoryEntry}
                                     onHistoryEntryHydrated={handleHistoryEntryHydrated}
                                     restoredHistoryDirty={restoredHistoryDirtyFile === file}
@@ -4265,15 +4293,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             >
                                                 <Printer className="w-4 h-4" /> {t('tabs.imposition:in')}
                                             </button>
-                                            {isImposedOutputFile(file.name) && (
-                                                <button
-                                                    onClick={() => setShowOpenInDesign(true)}
-                                                    className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-                                                    title={t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel')}
-                                                >
-                                                    <Scissors className="w-4 h-4" /> {t('tabs.imposition:be')}
-                                                </button>
-                                            )}
+                                            {/* Bế: luôn hiện khi có file (mở trang khuôn/file bằng Illustrator hoặc CorelDRAW).
+                                                Trước chỉ hiện với file Imposed_* → lưu file ra đĩa rồi mở lại bị mất nút. */}
+                                            <button
+                                                onClick={() => setShowOpenInDesign(true)}
+                                                className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                                                title={t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel')}
+                                            >
+                                                <Scissors className="w-4 h-4" /> {t('tabs.imposition:be')}
+                                            </button>
                                         </div>
                                     ) : undefined}
                                     rightPanel={(
