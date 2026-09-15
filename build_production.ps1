@@ -1917,6 +1917,7 @@ if (-not $SkipNuitka) {
         --jobs=$NuitkaJobs `
         --no-prefer-source-code `
         --onefile `
+        --onefile-no-compression `
         --onefile-cache-mode=temporary `
         --onefile-tempdir-spec="{TEMP}\PrynX\sidecar-{PID}-{TIME_US}-{RANDOM}" `
         --output-filename="$SIDECAR_NAME.exe" `
