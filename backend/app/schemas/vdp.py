@@ -61,6 +61,11 @@ class VdpField(BaseModel):
     imageShape: Optional[str] = 'rectangle'  # rectangle | rounded | circle | polygon | star
     imageBaseDir: Optional[str] = None       # thư mục gốc khi cột chứa TÊN file ảnh
     imagePath: Optional[str] = None           # ảnh tĩnh (dùng khi cột rỗng/không map)
+    # Quỹ đạo vòm (Type on a Path / Text on Arc)
+    curveMode: Optional[str] = 'none'         # 'none' | 'arc_top' | 'arc_bottom'
+    curveRadius: Optional[float] = None       # Bán kính cong (mm)
+    curveOrientation: Optional[str] = 'outward' # 'outward' | 'inward'
+    curveTracking: Optional[float] = 0.0      # Độ giãn ký tự trên cung tròn (pt)
     # Logic điều kiện (Req 2) — mặc định None để bảo toàn hành vi cũ (Req 7.2, 7.3)
     conditions: Optional[List[VdpFieldCondition]] = None  # điều kiện ẩn/hiện (Req 2.1, 2.2)
     rules: Optional[List[VdpRule]] = None                 # bảng rule first-match (Req 2.5, 2.6)

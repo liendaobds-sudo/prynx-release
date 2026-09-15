@@ -498,6 +498,7 @@ export default function DataMergeTool({
     const [manualText, setManualText] = useState('');
     const [manualColName, setManualColName] = useState('Noidung');
     const [statusMessage, setStatusMessage] = useState("");
+    const [showCurveSettings, setShowCurveSettings] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
     const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
@@ -1966,6 +1967,82 @@ export default function DataMergeTool({
                                             value={selectedField.fontColor || '#000000'}
                                             onChange={(hex) => updateSelectedField({ fontColor: hex })}
                                         />
+                                    </div>
+
+                                    {/* Quỹ đạo vòm (Type on a Path) — Accordion thu gọn / xổ ra */}
+                                    <div className="col-span-2 mt-1 border border-slate-200 dark:border-zinc-700 rounded-lg overflow-hidden bg-slate-50/50 dark:bg-zinc-800/40">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowCurveSettings(prev => !prev)}
+                                            className="w-full flex items-center justify-between p-2.5 text-left hover:bg-slate-100 dark:hover:bg-zinc-700/50 transition-colors"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <svg className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16c4-8 12-8 16 0" />
+                                                </svg>
+                                                <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">
+                                                    Quỹ đạo vòm (Type on a Path)
+                                                </span>
+                                                {selectedField.curveMode && selectedField.curveMode !== 'none' && (
+                                                    <span className="text-[10px] px-1.5 py-0.5 bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 rounded-full font-medium">
+                                                        {selectedField.curveMode === 'arc_top' ? 'Vòm trên' : 'Vòm dưới'}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <svg className={`w-4 h-4 text-slate-400 transition-transform ${showCurveSettings ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                            </svg>
+                                        </button>
+
+                                        {showCurveSettings && (
+                                            <div className="p-3 pt-1 border-t border-slate-200 dark:border-zinc-700 flex flex-col gap-2.5">
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="text-[10px] font-medium text-slate-500">Kiểu quỹ đạo</span>
+                                                    <select
+                                                        value={selectedField.curveMode || 'none'}
+                                                        onChange={(e) => updateSelectedField({ curveMode: e.target.value as 'none' | 'arc_top' | 'arc_bottom' })}
+                                                        className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
+                                                    >
+                                                        <option value="none">Thẳng (Mặc định)</option>
+                                                        <option value="arc_top">Vòm trên (Top Arc - tiêu đề / vòm trên)</option>
+                                                        <option value="arc_bottom">Vòm dưới (Bottom Arc - số nhảy / vòm dưới)</option>
+                                                    </select>
+                                                </div>
+
+                                                {selectedField.curveMode && selectedField.curveMode !== 'none' && (
+                                                    <>
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <ToolNumberInput
+                                                                label="Bán kính cong (R)"
+                                                                value={selectedField.curveRadius ?? Math.round((selectedField.width || 50) * 0.75 * 10) / 10}
+                                                                onChange={(val) => updateSelectedField({ curveRadius: Math.max(1, val) })}
+                                                                suffix="mm" step={0.5} min={1}
+                                                            />
+                                                            <ToolNumberInput
+                                                                label="Giãn chữ (Tracking)"
+                                                                value={selectedField.curveTracking ?? 0}
+                                                                onChange={(val) => updateSelectedField({ curveTracking: val })}
+                                                                suffix="pt" step={0.5}
+                                                            />
+                                                        </div>
+                                                        <div className="flex flex-col gap-1">
+                                                            <span className="text-[10px] font-medium text-slate-500">Hướng mặt chữ</span>
+                                                            <select
+                                                                value={selectedField.curveOrientation || 'outward'}
+                                                                onChange={(e) => updateSelectedField({ curveOrientation: e.target.value as 'outward' | 'inward' })}
+                                                                className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
+                                                            >
+                                                                <option value="outward">Hướng ra ngoài (Chuẩn đọc từ trái sang phải)</option>
+                                                                <option value="inward">Hướng vào tâm</option>
+                                                            </select>
+                                                        </div>
+                                                        <p className="text-[10px] text-slate-400 italic leading-snug">
+                                                            Chữ giữ nguyên hình dạng font, xoay tiếp tuyến theo quỹ đạo cung tròn (Type on a Path).
+                                                        </p>
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 )}

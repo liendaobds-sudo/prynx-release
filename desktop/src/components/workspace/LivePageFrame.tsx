@@ -1831,6 +1831,89 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
     );
 };
 
+const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: number; text: string }) => {
+    const fontPx = (field.fontSize || 10) * scale * (96 / 72);
+    const boxW = Math.max(1, ((field.width ?? 0) / 25.4 * 72) * scale);
+    const boxH = Math.max(1, ((field.height ?? 0) / 25.4 * 72) * scale);
+    const pathId = `curved-path-${field.id}`;
+
+    // curveRadius in mm -> convert to display px
+    const rawR = typeof field.curveRadius === 'number' && field.curveRadius > 0
+        ? field.curveRadius
+        : ((field.width || 50) * 0.75);
+    const radiusPx = Math.max(10, (rawR / 25.4 * 72) * scale);
+    const mode = field.curveMode || 'arc_bottom';
+    const isTop = mode === 'arc_top';
+    const orientation = field.curveOrientation || 'outward';
+
+    const cx = boxW / 2;
+    const halfChord = Math.min(boxW / 2 - 2, radiusPx * 0.98);
+    const halfAngle = Math.asin(Math.max(0, Math.min(1, halfChord / Math.max(radiusPx, 1))));
+    const sagitta = radiusPx * (1 - Math.cos(halfAngle));
+
+    let pathD = '';
+    if (isTop) {
+        const baseY = boxH / 2 + sagitta;
+        const x0 = cx - halfChord;
+        const x1 = cx + halfChord;
+        if (orientation === 'inward') {
+            pathD = `M ${x1} ${baseY} A ${radiusPx} ${radiusPx} 0 0 0 ${x0} ${baseY}`;
+        } else {
+            pathD = `M ${x0} ${baseY} A ${radiusPx} ${radiusPx} 0 0 1 ${x1} ${baseY}`;
+        }
+    } else {
+        const baseY = boxH / 2 - sagitta;
+        const x0 = cx - halfChord;
+        const x1 = cx + halfChord;
+        if (orientation === 'inward') {
+            pathD = `M ${x1} ${baseY} A ${radiusPx} ${radiusPx} 0 0 1 ${x0} ${baseY}`;
+        } else {
+            pathD = `M ${x0} ${baseY} A ${radiusPx} ${radiusPx} 0 0 0 ${x1} ${baseY}`;
+        }
+    }
+
+    const tracking = field.curveTracking ? `${field.curveTracking * scale * (96 / 72)}px` : 'normal';
+    const fontFamily = field.fontName === 'Helvetica'
+        ? 'Arial, sans-serif'
+        : field.fontName === 'Times-Roman'
+        ? '"Times New Roman", serif'
+        : field.fontName === 'Courier'
+        ? 'Courier, monospace'
+        : (field.fontName ? `"${field.fontName}", sans-serif` : 'inherit');
+    const fontWeight = field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal';
+    const fontStyle = field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal';
+
+    return (
+        <svg
+            className="w-full h-full overflow-visible pointer-events-none select-none"
+            viewBox={`0 0 ${boxW} ${boxH}`}
+        >
+            <defs>
+                <path id={pathId} d={pathD} fill="none" />
+            </defs>
+            <path
+                d={pathD}
+                fill="none"
+                stroke="rgba(59, 130, 246, 0.35)"
+                strokeDasharray="3 3"
+                strokeWidth={1}
+            />
+            <text
+                fill={field.fontColor || '#1e293b'}
+                fontSize={`${fontPx}px`}
+                fontFamily={fontFamily}
+                fontWeight={fontWeight}
+                fontStyle={fontStyle}
+                letterSpacing={tracking}
+            >
+                <textPath href={`#${pathId}`} startOffset="50%" textAnchor="middle">
+                    {text}
+                </textPath>
+            </text>
+        </svg>
+    );
+};
+
 // Một DÒNG text vô hình để QUÉT + COPY (như Acrobat). Đặt span đúng vị trí bbox
 // (point → px qua scale), fontSize theo CHIỀU CAO dòng, rồi NÉN NGANG (scaleX) cho
 // bề rộng render KHỚP bề rộng thật của dòng trên trang. KHÔNG overflow:hidden/width
@@ -5836,11 +5919,19 @@ export const LivePageFrame = (props: any) => {
                                              onPointerDown={(e) => e.stopPropagation()}
                                          />
                                      ) : (
-                                         <VdpAutoFitText
-                                             field={field}
-                                             scale={scale}
-                                             text={field.textContent ?? `{${field.name}}`}
-                                         />
+                                         field.curveMode && field.curveMode !== 'none' ? (
+                                             <VdpCurvedText
+                                                 field={field}
+                                                 scale={scale}
+                                                 text={field.textContent ?? `{${field.name}}`}
+                                             />
+                                         ) : (
+                                             <VdpAutoFitText
+                                                 field={field}
+                                                 scale={scale}
+                                                 text={field.textContent ?? `{${field.name}}`}
+                                             />
+                                         )
                                      )
                                  )}
                              </div>

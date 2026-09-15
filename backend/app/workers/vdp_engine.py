@@ -402,6 +402,96 @@ def render_2d(c, field, value, rect):
     c.restoreState()
 
 
+def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, text_color, need_faux_bold=False, need_faux_italic=False):
+    """Vẽ text chạy theo quỹ đạo cung tròn (Type on a Path) — giữ nguyên hình dạng từng ký tự."""
+    curve_mode = (field.get('curveMode') or 'none').lower()
+    if curve_mode not in ('arc_top', 'arc_bottom'):
+        return False
+    val_str = str(text or '')
+    if not val_str:
+        return True
+
+    raw_radius_mm = field.get('curveRadius')
+    if raw_radius_mm is not None and float(raw_radius_mm) > 0:
+        radius = float(raw_radius_mm) * MM_TO_PTS
+    else:
+        radius = max(w, h) * 0.75
+
+    tracking = float(field.get('curveTracking') or field.get('characterSpacing') or 0.0)
+    orientation = (field.get('curveOrientation') or 'outward').lower()
+
+    c.saveState()
+    c.setFillColor(text_color)
+    c.setFont(font_name, fontsize)
+
+    char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
+    total_length = sum(char_widths)
+    if total_length <= 0 or radius <= 0:
+        c.restoreState()
+        return True
+
+    total_angle = total_length / radius  # radians
+    cx = rl_x + w / 2.0
+
+    if curve_mode == 'arc_top':
+        cy = (rl_y + h / 2.0) - radius
+        theta_start = math.pi / 2.0 + total_angle / 2.0
+        current_theta = theta_start
+        for i, ch in enumerate(val_str):
+            cw = char_widths[i]
+            d_theta = cw / radius
+            char_theta = current_theta - d_theta / 2.0
+
+            x = cx + radius * math.cos(char_theta)
+            y = cy + radius * math.sin(char_theta)
+            alpha_deg = math.degrees(char_theta) - 90.0
+            if orientation == 'inward':
+                alpha_deg += 180.0
+
+            c.saveState()
+            c.translate(x, y)
+            c.rotate(alpha_deg)
+            if need_faux_italic:
+                c.transform(1, 0, 0.21, 1, 0, 0)
+            actual_w = c.stringWidth(ch, font_name, fontsize)
+            c.drawString(-actual_w / 2.0, 0, ch)
+            if need_faux_bold:
+                c.drawString(-actual_w / 2.0 + 0.35, 0, ch)
+            c.restoreState()
+
+            current_theta -= d_theta
+    else:  # arc_bottom
+        cy = (rl_y + h / 2.0) + radius
+        theta_start = 1.5 * math.pi - total_angle / 2.0
+        current_theta = theta_start
+        for i, ch in enumerate(val_str):
+            cw = char_widths[i]
+            d_theta = cw / radius
+            char_theta = current_theta + d_theta / 2.0
+
+            x = cx + radius * math.cos(char_theta)
+            y = cy + radius * math.sin(char_theta)
+            alpha_deg = math.degrees(char_theta) - 270.0
+            if orientation == 'inward':
+                alpha_deg += 180.0
+
+            c.saveState()
+            c.translate(x, y)
+            c.rotate(alpha_deg)
+            if need_faux_italic:
+                c.transform(1, 0, 0.21, 1, 0, 0)
+            actual_w = c.stringWidth(ch, font_name, fontsize)
+            c.drawString(-actual_w / 2.0, 0, ch)
+            if need_faux_bold:
+                c.drawString(-actual_w / 2.0 + 0.35, 0, ch)
+            c.restoreState()
+
+            current_theta += d_theta
+
+    c.restoreState()
+    return True
+
+
 def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, error_sink=None):
     """Vẽ TẤT CẢ field của một record lên canvas ReportLab ``c``.
 
@@ -709,63 +799,65 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                     font_name = variants['bold']; need_faux_bold = False
                 elif want_italic and variants.get('italic'):
                     font_name = variants['italic']; need_faux_italic = False
-                # Map frontend alignment to ReportLab alignment
-                align_map = {'left': TA_LEFT, 'center': TA_CENTER, 'right': TA_RIGHT}
-                raw_align = field.get('alignment', 'left')
-                text_align = align_map.get(raw_align, TA_LEFT)
+                # Quỹ đạo vòm (Type on a Path): nếu bật curveMode ('arc_top' / 'arc_bottom') thì vẽ theo cung tròn
+                if not _draw_curved_text(c, field, val, rl_x, rl_y, f_rect['w'], f_rect['h'], font_name, fontsize, text_color, need_faux_bold, need_faux_italic):
+                    # Map frontend alignment to ReportLab alignment
+                    align_map = {'left': TA_LEFT, 'center': TA_CENTER, 'right': TA_RIGHT}
+                    raw_align = field.get('alignment', 'left')
+                    text_align = align_map.get(raw_align, TA_LEFT)
 
-                style = ParagraphStyle(
-                    name='VDP',
-                    fontName=font_name,
-                    fontSize=fontsize,
-                    textColor=text_color,
-                    leading=fontsize * line_h,
-                    alignment=text_align
-                )
-
-                # Escape XML đặc biệt (& < >) TRƯỚC khi chèn <br/>, nếu không
-                # dữ liệu chứa các ký tự này sẽ làm vỡ parser của ReportLab Paragraph.
-                text_html = xml_escape(str(val)).replace('\n', '<br/>')
-                p = Paragraph(text_html, style)
-                w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
-
-                # AUTO-FIT = NÉN BỀ RỘNG (horizontal scale), GIỮ NGUYÊN cỡ chữ/chiều
-                # cao. KHÔNG cho tự xuống dòng — chỉ ngắt ở '\n' người dùng gõ. Tính
-                # sx = bề ngang khung / bề rộng dòng DÀI NHẤT (đo bằng stringWidth); nếu
-                # chữ tràn ngang thì nén ngang cho vừa. Vẽ bằng canvas scale(sx, 1) để
-                # chỉ co chiều rộng. Parity với preview (whitespace:pre + scaleX).
-                auto_fit = field.get('autoFit', True)
-                sx = 1.0
-                if auto_fit:
-                    raw_lines = str(val).split('\n') or ['']
-                    maxw = max(
-                        (c.stringWidth(ln, font_name, fontsize) for ln in raw_lines if ln),
-                        default=0.0,
+                    style = ParagraphStyle(
+                        name='VDP',
+                        fontName=font_name,
+                        fontSize=fontsize,
+                        textColor=text_color,
+                        leading=fontsize * line_h,
+                        alignment=text_align
                     )
-                    if maxw > f_rect['w'] and maxw > 0:
-                        sx = max(0.05, f_rect['w'] / maxw)
 
-                # Wrap với bề rộng khả dụng = f_rect['w']/sx (không gian TRƯỚC khi nén)
-                # để Paragraph không tự xuống dòng — sau khi scale(sx,1) chiều rộng thật
-                # đúng bằng f_rect['w'].
-                avail_w = f_rect['w'] / sx if sx > 0 else f_rect['w']
-                w, h = p.wrapOn(c, avail_w, f_rect['h'])
+                    # Escape XML đặc biệt (& < >) TRƯỚC khi chèn <br/>, nếu không
+                    # dữ liệu chứa các ký tự này sẽ làm vỡ parser của ReportLab Paragraph.
+                    text_html = xml_escape(str(val)).replace('\n', '<br/>')
+                    p = Paragraph(text_html, style)
+                    w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
 
-                # Canh GIỮA theo chiều dọc trong khung: chừa đều trên/dưới.
-                # #7: dùng font Bold/Italic THẬT khi có (need_faux_* = False);
-                # chỉ faux phần thiếu (bold = double-strike, italic = nghiêng shear).
-                ty = rl_y + (f_rect['h'] - h) / 2.0
-                c.saveState()
-                c.translate(rl_x, ty)
-                if sx != 1.0:
-                    c.scale(sx, 1)  # nén ngang, giữ nguyên chiều cao
-                if need_faux_italic:
-                    c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
-                p.drawOn(c, 0, 0)
-                if need_faux_bold:
-                    # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
-                    p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
-                c.restoreState()
+                    # AUTO-FIT = NÉN BỀ RỘNG (horizontal scale), GIỮ NGUYÊN cỡ chữ/chiều
+                    # cao. KHÔNG cho tự xuống dòng — chỉ ngắt ở '\n' người dùng gõ. Tính
+                    # sx = bề ngang khung / bề rộng dòng DÀI NHẤT (đo bằng stringWidth); nếu
+                    # chữ tràn ngang thì nén ngang cho vừa. Vẽ bằng canvas scale(sx, 1) để
+                    # chỉ co chiều rộng. Parity với preview (whitespace:pre + scaleX).
+                    auto_fit = field.get('autoFit', True)
+                    sx = 1.0
+                    if auto_fit:
+                        raw_lines = str(val).split('\n') or ['']
+                        maxw = max(
+                            (c.stringWidth(ln, font_name, fontsize) for ln in raw_lines if ln),
+                            default=0.0,
+                        )
+                        if maxw > f_rect['w'] and maxw > 0:
+                            sx = max(0.05, f_rect['w'] / maxw)
+
+                    # Wrap với bề rộng khả dụng = f_rect['w']/sx (không gian TRƯỚC khi nén)
+                    # để Paragraph không tự xuống dòng — sau khi scale(sx,1) chiều rộng thật
+                    # đúng bằng f_rect['w'].
+                    avail_w = f_rect['w'] / sx if sx > 0 else f_rect['w']
+                    w, h = p.wrapOn(c, avail_w, f_rect['h'])
+
+                    # Canh GIỮA theo chiều dọc trong khung: chừa đều trên/dưới.
+                    # #7: dùng font Bold/Italic THẬT khi có (need_faux_* = False);
+                    # chỉ faux phần thiếu (bold = double-strike, italic = nghiêng shear).
+                    ty = rl_y + (f_rect['h'] - h) / 2.0
+                    c.saveState()
+                    c.translate(rl_x, ty)
+                    if sx != 1.0:
+                        c.scale(sx, 1)  # nén ngang, giữ nguyên chiều cao
+                    if need_faux_italic:
+                        c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
+                    p.drawOn(c, 0, 0)
+                    if need_faux_bold:
+                        # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
+                        p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
+                    c.restoreState()
         except Exception as e:
             c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
             c.setFont("Helvetica", 7)
