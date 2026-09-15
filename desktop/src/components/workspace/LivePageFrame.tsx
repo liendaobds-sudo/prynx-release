@@ -1849,11 +1849,22 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     const cx = boxW / 2;
     const halfChord = Math.min(boxW / 2 - 2, radiusPx * 0.98);
     const halfAngle = Math.asin(Math.max(0, Math.min(1, halfChord / Math.max(radiusPx, 1))));
-    const sagitta = radiusPx * (1 - Math.cos(halfAngle));
+    const sagittaChord = radiusPx * (1 - Math.cos(halfAngle));
+
+    // Tính độ võng thực tế của chuỗi ký tự (thay vì toàn bộ dây cung khung)
+    const trackingPx = field.curveTracking ? field.curveTracking * scale * (96 / 72) : 0;
+    const approxCharWidth = fontPx * 0.55 + trackingPx;
+    const textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
+    const textAngle = textLen / Math.max(radiusPx, 1);
+    const halfTextAngle = Math.min(Math.PI / 2, textAngle / 2);
+    const textSagitta = radiusPx * (1 - Math.cos(halfTextAngle));
 
     let pathD = '';
     if (isTop) {
-        const baseY = boxH / 2 + sagitta;
+        // Căn giữa chính xác phong bì văn bản vào giữa khung boxH
+        const baseY = orientation === 'inward'
+            ? boxH / 2 - (textSagitta + fontPx) / 2 + sagittaChord
+            : boxH / 2 - (textSagitta - fontPx) / 2 + sagittaChord;
         const x0 = cx - halfChord;
         const x1 = cx + halfChord;
         if (orientation === 'inward') {
@@ -1862,7 +1873,10 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
             pathD = `M ${x0} ${baseY} A ${radiusPx} ${radiusPx} 0 0 1 ${x1} ${baseY}`;
         }
     } else {
-        const baseY = boxH / 2 - sagitta;
+        // Căn giữa chính xác phong bì văn bản vào giữa khung boxH
+        const baseY = orientation === 'inward'
+            ? boxH / 2 + (textSagitta - fontPx) / 2 - sagittaChord
+            : boxH / 2 + (textSagitta + fontPx) / 2 - sagittaChord;
         const x0 = cx - halfChord;
         const x1 = cx + halfChord;
         if (orientation === 'inward') {
@@ -5864,9 +5878,10 @@ export const LivePageFrame = (props: any) => {
                              } : {
                                  transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
                              });
+                             const isCurved = field.type === 'text' && field.curveMode && field.curveMode !== 'none';
                              return (
                              <div
-                                 className={`absolute flex items-center justify-center pointer-events-none overflow-hidden ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')} ${field.type === 'text' ? 'p-1' : ''}`}
+                                 className={`absolute flex items-center justify-center pointer-events-none ${isCurved ? 'overflow-visible' : 'overflow-hidden'} ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')} ${field.type === 'text' && !isCurved ? 'p-1' : ''}`}
                                  style={rotStyle}
                              >
                                  {(field.type === 'qrcode' || field.type === 'barcode') && (

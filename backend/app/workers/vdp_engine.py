@@ -432,9 +432,15 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
 
     total_angle = total_length / radius  # radians
     cx = rl_x + w / 2.0
+    half_text_angle = min(math.pi / 2.0, total_angle / 2.0)
+    text_sagitta = radius * (1.0 - math.cos(half_text_angle))
 
     if curve_mode == 'arc_top':
-        cy = (rl_y + h / 2.0) - radius
+        # Căn giữa toàn bộ độ cao thực tế của chữ (text_sagitta + fontsize) vào chính giữa khung h
+        if orientation == 'inward':
+            cy = rl_y + h / 2.0 + (text_sagitta + fontsize) / 2.0 - radius
+        else:
+            cy = rl_y + h / 2.0 + (text_sagitta - fontsize) / 2.0 - radius
         theta_start = math.pi / 2.0 + total_angle / 2.0
         current_theta = theta_start
         for i, ch in enumerate(val_str):
@@ -461,7 +467,11 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
 
             current_theta -= d_theta
     else:  # arc_bottom
-        cy = (rl_y + h / 2.0) + radius
+        # Căn giữa toàn bộ độ cao thực tế của chữ (text_sagitta + fontsize) vào chính giữa khung h
+        if orientation == 'inward':
+            cy = rl_y + h / 2.0 - (text_sagitta - fontsize) / 2.0 + radius
+        else:
+            cy = rl_y + h / 2.0 - (text_sagitta + fontsize) / 2.0 + radius
         theta_start = 1.5 * math.pi - total_angle / 2.0
         current_theta = theta_start
         for i, ch in enumerate(val_str):
