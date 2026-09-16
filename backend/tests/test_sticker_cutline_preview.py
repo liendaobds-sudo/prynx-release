@@ -950,6 +950,39 @@ def test_cache_doi_kich_thuoc_preview_chi_doi_ty_le_khong_fit(tmp_path, monkeypa
     assert second["preview_width_px"] == first["preview_width_px"] * 2
 
 
+def test_same_source_bytes_pdf_metadata_khac_nhung_hinh_giong_nhau(tmp_path):
+    from app.workers.sticker_sheet_export import _same_source_bytes
+    import pikepdf
+
+    # Tạo 2 file PDF có metadata/ID khác nhau nhưng cùng kích thước, nội dung và góc xoay
+    p1 = pikepdf.new()
+    page1 = p1.add_blank_page(page_size=(200, 200))
+    page1.Rotate = 90
+    p1.docinfo["/Title"] = "Doc 1"
+    p1.docinfo["/CreationDate"] = "D:20260101"
+    path1 = tmp_path / "doc1.pdf"
+    p1.save(path1)
+
+    p2 = pikepdf.new()
+    page2 = p2.add_blank_page(page_size=(200, 200))
+    page2.Rotate = 90
+    p2.docinfo["/Title"] = "Doc 2"
+    p2.docinfo["/CreationDate"] = "D:20260916"
+    path2 = tmp_path / "doc2.pdf"
+    p2.save(path2)
+
+    assert path1.read_bytes() != path2.read_bytes()
+    assert _same_source_bytes(path1, path2) is True
+
+    # Nếu xoay góc khác -> phải trả về False
+    p3 = pikepdf.new()
+    page3 = p3.add_blank_page(page_size=(200, 200))
+    page3.Rotate = 180
+    path3 = tmp_path / "doc3.pdf"
+    p3.save(path3)
+    assert _same_source_bytes(path1, path3) is False
+
+
 def test_cache_nguon_doi_byte_du_cung_size_mtime_phai_tu_choi_snapshot(tmp_path, monkeypatch):
     from app.workers.sticker_sheet_export import snapshot_classic_cutline_preview, StickerCanonicalPreviewConflict
     session, source, first = _prime_classic_preview_artifact(tmp_path, monkeypatch)

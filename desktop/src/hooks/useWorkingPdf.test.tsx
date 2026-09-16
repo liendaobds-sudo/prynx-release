@@ -529,4 +529,41 @@ describe('useWorkingPdf', () => {
         );
         expect(store.getState().hiddenOcgLayerIds).toEqual([]);
     });
+
+    it('tái sử dụng đúng instance File khi xoay trang và gọi liên tiếp giữa preview và execute', async () => {
+        const file = await sourcePdf();
+        const store = createWorkspaceStore();
+        store.getState().setFile(file);
+        store.getState().setViewerPageRotations([90, 0, 0]);
+
+        const { result } = renderHook(() => useWorkingPdf(), {
+            wrapper: ({ children }: { children: React.ReactNode }) => (
+                <WorkspaceContext.Provider value={store}>
+                    {children}
+                </WorkspaceContext.Provider>
+            ),
+        });
+
+        // 1. Preview gọi resolveUnprepared
+        const previewFile = await result.current.resolveUnprepared();
+        expect(previewFile).not.toBeNull();
+        expect(previewFile).not.toBe(file);
+
+        // 2. Execute gọi resolve (barrier commit) trong khi revision không đổi
+        const executeFile = await result.current();
+        expect(executeFile).toBe(previewFile); // Bắt buộc trùng instance và cùng SHA256 bytes
+
+        // 3. Gọi trực tiếp qua materialize(snapshot) cũng phải tái dùng cache
+        const snapshot = result.current.capture()!;
+        const directFile = await result.current.materialize(snapshot);
+        expect(directFile).toBe(previewFile);
+
+        // 4. Khi người dùng xoay tiếp sang 180 độ, snapshot đổi -> cache invalidate và sinh File mới
+        store.getState().setViewerPageRotations([180, 0, 0]);
+        const updatedSnapshot = result.current.capture()!;
+        const nextFile = await result.current.materialize(updatedSnapshot);
+        expect(nextFile).not.toBe(previewFile);
+        const nextDoc = await PDFDocument.load(await readBlob(nextFile));
+        expect(nextDoc.getPage(0).getRotation().angle).toBe(180);
+    });
 });

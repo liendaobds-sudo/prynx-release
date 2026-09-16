@@ -144,13 +144,41 @@ def _same_source_bytes(first: Path, second: Path) -> bool:
     try:
         if first.resolve() == second.resolve():
             return True
-        if first.stat().st_size != second.stat().st_size:
-            return False
-        with first.open("rb") as first_stream, second.open("rb") as second_stream:
-            return (
-                hashlib.file_digest(first_stream, "sha256").digest()
-                == hashlib.file_digest(second_stream, "sha256").digest()
-            )
+        if first.stat().st_size == second.stat().st_size:
+            with first.open("rb") as first_stream, second.open("rb") as second_stream:
+                if (
+                    hashlib.file_digest(first_stream, "sha256").digest()
+                    == hashlib.file_digest(second_stream, "sha256").digest()
+                ):
+                    return True
+        # Hỗ trợ trường hợp cả hai là PDF:
+        # Nếu cùng số trang, cùng kích thước, cùng góc xoay và nội dung trang trực quan
+        # giống nhau (phòng ngừa chênh lệch metadata/ID do client serialization).
+        if first.suffix.lower() == ".pdf" and second.suffix.lower() == ".pdf":
+            try:
+                import pypdfium2 as pdfium
+                doc1 = pdfium.PdfDocument(str(first))
+                doc2 = pdfium.PdfDocument(str(second))
+                try:
+                    if len(doc1) == len(doc2) and len(doc1) > 0:
+                        for pno in range(len(doc1)):
+                            p1 = doc1[pno]
+                            p2 = doc2[pno]
+                            if p1.get_size() != p2.get_size() or p1.get_rotation() != p2.get_rotation():
+                                return False
+                            bm1 = p1.render(scale=0.5)
+                            bm2 = p2.render(scale=0.5)
+                            h1 = hashlib.md5(bm1.to_pil().tobytes()).digest()
+                            h2 = hashlib.md5(bm2.to_pil().tobytes()).digest()
+                            if h1 != h2:
+                                return False
+                        return True
+                finally:
+                    doc1.close()
+                    doc2.close()
+            except Exception:
+                pass
+        return False
     except OSError:
         return False
 

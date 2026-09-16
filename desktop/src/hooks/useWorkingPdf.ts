@@ -43,6 +43,24 @@ function resolveSourcePageCount(f: File): Promise<number> {
     return pending;
 }
 
+interface MaterializedPdfCacheEntry {
+    readonly key: string;
+    readonly promise: Promise<File>;
+}
+
+const materializedPdfCache = new WeakMap<File, MaterializedPdfCacheEntry>();
+
+function buildWorkingPdfRevisionKey(snapshot: WorkingPdfRevisionSnapshot): string {
+    const order = snapshot.viewerPageOrder ? snapshot.viewerPageOrder.join(',') : '';
+    const rots = snapshot.viewerPageRotations ? snapshot.viewerPageRotations.join(',') : '';
+    const instances = snapshot.viewerPageInstanceIds ? snapshot.viewerPageInstanceIds.join(',') : '';
+    const ocg = snapshot.hiddenOcgLayerIds ? snapshot.hiddenOcgLayerIds.join(',') : '';
+    const intent = snapshot.ocgVisibilityProvenance?.intent ?? '';
+    const ocgGen = snapshot.ocgVisibilityProvenance?.sourceEditGeneration ?? '';
+    const gen = snapshot.editGeneration;
+    return `${gen}|${order}|${rots}|${instances}|${intent}|${ocgGen}|${ocg}`;
+}
+
 export interface WorkingPdfRevisionSnapshot extends WorkspaceDocumentRevisionToken {
     readonly file: File;
 }
@@ -108,57 +126,74 @@ export async function materializeWorkingPdfRevision(
         // kể cả `[]`, vì đó là ý định show-all chứ không phải "không thay đổi".
         if (!hasOrderEdits && !hasRotEdits && !hasExplicitOcgVisibility) return activeFile;
 
-        const rotations = viewerPageRotations || [];
-        const arrayBuffer = await getFileArrayBuffer(activeFile);
-        const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-        const newDoc = await PDFDocument.create();
-
-        // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties ở catalog trong khi content vẫn
-        // còn /OC … BDC → layer thợ đã ẩn trong Illustrator hiện lại hết ngay trên khung xem
-        // và lọt vào bản in. srcDoc là bản load cục bộ nên không cần try/finally dọn dấu.
-        const ocTransfer = beginOptionalContentTransfer(
-            [srcDoc],
-            hasExplicitOcgVisibility
-                ? {
-                    visibilityOverrides: [{
-                        source: srcDoc,
-                        hiddenOcgObjectIds: snapshot.hiddenOcgLayerIds ?? [],
-                    }],
-                }
-                : {},
-        );
-
-        const order = (viewerPageOrder && viewerPageOrder.length > 0)
-            ? viewerPageOrder
-            : srcDoc.getPageIndices().map(i => i + 1);
-
-        // rotations là number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i) — khớp
-        // per-instance rotation (bản nhân bản xoay độc lập). Đọc theo index vòng lặp,
-        // KHÔNG theo số trang gốc pIdx (nhiều vị trí có thể cùng pIdx). Fallback: nếu
-        // Snapshot mới luôn lưu rotation theo vị trí/instance.
-        const rotAt = (i: number): number => rotations[i] || 0;
-        for (let i = 0; i < order.length; i++) {
-            const pIdx = order[i];
-            if (pIdx === -1) {
-                const firstPage = srcDoc.getPages()[0];
-                const dim = firstPage
-                    ? { w: firstPage.getSize().width, h: firstPage.getSize().height }
-                    : { w: 595.28, h: 841.89 };
-                newDoc.addPage([dim.w, dim.h]);
-            } else {
-                const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                const rot = rotAt(i);
-                if (rot) {
-                    const currentRot = copiedPage.getRotation().angle;
-                    copiedPage.setRotation(degrees(currentRot + rot));
-                }
-                newDoc.addPage(copiedPage);
-            }
+        const cacheKey = buildWorkingPdfRevisionKey(snapshot);
+        const cached = materializedPdfCache.get(activeFile);
+        if (cached && cached.key === cacheKey) {
+            return cached.promise;
         }
 
-        finishOptionalContentTransfer(ocTransfer, newDoc);
-        const pdfBytes = await newDoc.save();
-        return new File([new Uint8Array(pdfBytes)], activeFile.name, { type: 'application/pdf' });
+        const bakePromise = (async (): Promise<File> => {
+            const rotations = viewerPageRotations || [];
+            const arrayBuffer = await getFileArrayBuffer(activeFile);
+            const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const newDoc = await PDFDocument.create();
+
+            // [OCG FIX 2026-07-28] copyPages bỏ /OCProperties ở catalog trong khi content vẫn
+            // còn /OC … BDC → layer thợ đã ẩn trong Illustrator hiện lại hết ngay trên khung xem
+            // và lọt vào bản in. srcDoc là bản load cục bộ nên không cần try/finally dọn dấu.
+            const ocTransfer = beginOptionalContentTransfer(
+                [srcDoc],
+                hasExplicitOcgVisibility
+                    ? {
+                        visibilityOverrides: [{
+                            source: srcDoc,
+                            hiddenOcgObjectIds: snapshot.hiddenOcgLayerIds ?? [],
+                        }],
+                    }
+                    : {},
+            );
+
+            const order = (viewerPageOrder && viewerPageOrder.length > 0)
+                ? viewerPageOrder
+                : srcDoc.getPageIndices().map(i => i + 1);
+
+            // rotations là number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i) — khớp
+            // per-instance rotation (bản nhân bản xoay độc lập). Đọc theo index vòng lặp,
+            // KHÔNG theo số trang gốc pIdx (nhiều vị trí có thể cùng pIdx). Fallback: nếu
+            // Snapshot mới luôn lưu rotation theo vị trí/instance.
+            const rotAt = (i: number): number => rotations[i] || 0;
+            for (let i = 0; i < order.length; i++) {
+                const pIdx = order[i];
+                if (pIdx === -1) {
+                    const firstPage = srcDoc.getPages()[0];
+                    const dim = firstPage
+                        ? { w: firstPage.getSize().width, h: firstPage.getSize().height }
+                        : { w: 595.28, h: 841.89 };
+                    newDoc.addPage([dim.w, dim.h]);
+                } else {
+                    const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
+                    const rot = rotAt(i);
+                    if (rot) {
+                        const currentRot = copiedPage.getRotation().angle;
+                        copiedPage.setRotation(degrees(currentRot + rot));
+                    }
+                    newDoc.addPage(copiedPage);
+                }
+            }
+
+            finishOptionalContentTransfer(ocTransfer, newDoc);
+            const pdfBytes = await newDoc.save();
+            return new File([new Uint8Array(pdfBytes)], activeFile.name, { type: 'application/pdf' });
+        })();
+
+        materializedPdfCache.set(activeFile, { key: cacheKey, promise: bakePromise });
+        void bakePromise.catch(() => {
+            if (materializedPdfCache.get(activeFile)?.key === cacheKey) {
+                materializedPdfCache.delete(activeFile);
+            }
+        });
+
+        return bakePromise;
 }
 
 export function useWorkingPdf(): WorkingPdfResolver {
