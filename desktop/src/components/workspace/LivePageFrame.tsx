@@ -1835,29 +1835,36 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     const fontPx = (field.fontSize || 10) * scale * (96 / 72);
     const boxW = Math.max(1, ((field.width ?? 0) / 25.4 * 72) * scale);
     const boxH = Math.max(1, ((field.height ?? 0) / 25.4 * 72) * scale);
-    const pathId = `curved-path-${field.id}`;
 
-    // curveRadius in mm -> convert to display px
+    // curveRadius in mm -> convert to display px (96 DPI screen)
     const rawR = typeof field.curveRadius === 'number' && field.curveRadius > 0
         ? field.curveRadius
         : ((field.width || 50) * 0.75);
-    const radiusPx = Math.max(10, (rawR / 25.4 * 72) * scale);
+    const radiusPx = Math.max(10, (rawR / 25.4 * 96) * scale);
     const mode = field.curveMode || 'arc_bottom';
     const isTop = mode === 'arc_top';
     const orientation = field.curveOrientation || 'outward';
 
-    const cx = boxW / 2;
-    const halfChord = Math.min(boxW / 2 - 2, radiusPx * 0.98);
-    const halfAngle = Math.asin(Math.max(0, Math.min(1, halfChord / Math.max(radiusPx, 1))));
-    const sagittaChord = radiusPx * (1 - Math.cos(halfAngle));
+    // Unique key & pathId để React và Chromium huỷ cache SVG layout và tính toán lại tức thì khi thay đổi R
+    const curveKey = `${Math.round(rawR * 10)}_${mode}_${orientation}_${Math.round((field.curveTracking || 0) * 10)}_${Math.round(boxW)}_${Math.round(boxH)}`;
+    const pathId = `curved-path-${field.id}-${curveKey}`;
 
-    // Tính độ võng thực tế của chuỗi ký tự (thay vì toàn bộ dây cung khung)
+    const cx = boxW / 2;
+
+    // Tính độ võng thực tế của chuỗi ký tự
     const trackingPx = field.curveTracking ? field.curveTracking * scale * (96 / 72) : 0;
     const approxCharWidth = fontPx * 0.55 + trackingPx;
     const textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
     const textAngle = textLen / Math.max(radiusPx, 1);
-    const halfTextAngle = Math.min(Math.PI / 2, textAngle / 2);
+    const halfTextAngle = Math.min(Math.PI * 0.48, textAngle / 2);
     const textSagitta = radiusPx * (1 - Math.cos(halfTextAngle));
+
+    // Dây cung đường dẫn bao phủ tối thiểu toàn bộ chuỗi text để text không bị tràn ra ngoài path
+    const boxHalfChord = Math.max(1, boxW / 2 - 2);
+    const boxHalfAngle = Math.asin(Math.min(0.98, boxHalfChord / Math.max(radiusPx, 1)));
+    const pathHalfAngle = Math.min(Math.PI * 0.49, Math.max(halfTextAngle * 1.15, boxHalfAngle));
+    const pathHalfChord = radiusPx * Math.sin(pathHalfAngle);
+    const sagittaChord = radiusPx * (1 - Math.cos(pathHalfAngle));
 
     let pathD = '';
     if (isTop) {
@@ -1865,8 +1872,8 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
         const baseY = orientation === 'inward'
             ? boxH / 2 - (textSagitta + fontPx) / 2 + sagittaChord
             : boxH / 2 - (textSagitta - fontPx) / 2 + sagittaChord;
-        const x0 = cx - halfChord;
-        const x1 = cx + halfChord;
+        const x0 = cx - pathHalfChord;
+        const x1 = cx + pathHalfChord;
         if (orientation === 'inward') {
             pathD = `M ${x1} ${baseY} A ${radiusPx} ${radiusPx} 0 0 0 ${x0} ${baseY}`;
         } else {
@@ -1877,8 +1884,8 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
         const baseY = orientation === 'inward'
             ? boxH / 2 + (textSagitta - fontPx) / 2 - sagittaChord
             : boxH / 2 + (textSagitta + fontPx) / 2 - sagittaChord;
-        const x0 = cx - halfChord;
-        const x1 = cx + halfChord;
+        const x0 = cx - pathHalfChord;
+        const x1 = cx + pathHalfChord;
         if (orientation === 'inward') {
             pathD = `M ${x1} ${baseY} A ${radiusPx} ${radiusPx} 0 0 1 ${x0} ${baseY}`;
         } else {
@@ -1899,6 +1906,7 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
 
     return (
         <svg
+            key={pathId}
             className="w-full h-full overflow-visible pointer-events-none select-none"
             viewBox={`0 0 ${boxW} ${boxH}`}
         >
@@ -1913,6 +1921,7 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
                 strokeWidth={1}
             />
             <text
+                key={pathId}
                 fill={field.fontColor || '#1e293b'}
                 fontSize={`${fontPx}px`}
                 fontFamily={fontFamily}
@@ -1920,7 +1929,7 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
                 fontStyle={fontStyle}
                 letterSpacing={tracking}
             >
-                <textPath href={`#${pathId}`} startOffset="50%" textAnchor="middle">
+                <textPath key={pathId} href={`#${pathId}`} startOffset="50%" textAnchor="middle">
                     {text}
                 </textPath>
             </text>

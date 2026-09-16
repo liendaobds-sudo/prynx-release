@@ -2000,7 +2000,11 @@ export default function DataMergeTool({
                                                     <span className="text-[10px] font-medium text-slate-500">Kiểu quỹ đạo</span>
                                                     <select
                                                         value={selectedField.curveMode || 'none'}
-                                                        onChange={(e) => updateSelectedField({ curveMode: e.target.value as 'none' | 'arc_top' | 'arc_bottom' })}
+                                                        onChange={(e) => {
+                                                            const newMode = e.target.value as 'none' | 'arc_top' | 'arc_bottom';
+                                                            const defaultR = selectedField.curveRadius ?? Math.round((selectedField.width || 50) * 0.75 * 10) / 10;
+                                                            updateSelectedField({ curveMode: newMode, curveRadius: defaultR });
+                                                        }}
                                                         className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
                                                     >
                                                         <option value="none">Thẳng (Mặc định)</option>
@@ -2016,7 +2020,7 @@ export default function DataMergeTool({
                                                                 label="Bán kính cong (R)"
                                                                 value={selectedField.curveRadius ?? Math.round((selectedField.width || 50) * 0.75 * 10) / 10}
                                                                 onChange={(val) => updateSelectedField({ curveRadius: Math.max(1, val) })}
-                                                                suffix="mm" step={0.5} min={1}
+                                                                suffix="mm" step={1} min={1}
                                                             />
                                                             <ToolNumberInput
                                                                 label="Giãn chữ (Tracking)"
