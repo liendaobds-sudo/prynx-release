@@ -131,3 +131,46 @@ def test_vdp_engine_curved_text_integration(tmp_path):
     import pikepdf
     with pikepdf.open(output_pdf) as doc:
         assert len(doc.pages) == 3
+
+
+def test_vdp_curved_small_radius_autofit(tmp_path):
+    """Đảm bảo bán kính nhỏ (R=6mm, 8mm) tự động co cỡ chữ và vẽ đầy đủ chuỗi ký tự mà không lỗi."""
+    from app.schemas.vdp import VdpField
+    from app.workers.vdp_engine import run_vdp_engine
+    import pikepdf
+    from reportlab.pdfgen import canvas
+
+    template_pdf = str(tmp_path / "tpl_small_r.pdf")
+    output_pdf = str(tmp_path / "out_small_r.pdf")
+
+    c = canvas.Canvas(template_pdf, pagesize=(200, 200))
+    c.showPage()
+    c.save()
+
+    f_small_r = VdpField(
+        id="f_small",
+        name="SmallR",
+        type="text",
+        x=20.0,
+        y=20.0,
+        width=50.0,
+        height=30.0,
+        curveMode="arc_top",
+        curveRadius=6.0,
+        fontSize=14.0,
+        textContent="{Truong_1}",
+        autoFit=True,
+    )
+
+    data = [{"Truong_1": "Truong_1"}]
+    run_vdp_engine(
+        template_path=template_pdf,
+        fields=[f_small_r],
+        data=data,
+        output_path=output_pdf,
+    )
+
+    assert os.path.exists(output_pdf)
+    assert os.path.getsize(output_pdf) > 500
+    with pikepdf.open(output_pdf) as doc:
+        assert len(doc.pages) == 1

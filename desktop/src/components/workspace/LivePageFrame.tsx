@@ -1832,7 +1832,7 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
 };
 
 const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: number; text: string }) => {
-    const fontPx = (field.fontSize || 10) * scale * (96 / 72);
+    const rawFontPx = (field.fontSize || 10) * scale * (96 / 72);
     const boxW = Math.max(1, ((field.width ?? 0) / 25.4 * 72) * scale);
     const boxH = Math.max(1, ((field.height ?? 0) / 25.4 * 72) * scale);
 
@@ -1844,53 +1844,60 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     const mode = field.curveMode || 'arc_bottom';
     const isTop = mode === 'arc_top';
     const orientation = field.curveOrientation || 'outward';
-
-    // Unique key & pathId để React và Chromium huỷ cache SVG layout và tính toán lại tức thì khi thay đổi R
-    const curveKey = `${Math.round(rawR * 10)}_${mode}_${orientation}_${Math.round((field.curveTracking || 0) * 10)}_${Math.round(boxW)}_${Math.round(boxH)}`;
-    const pathId = `curved-path-${field.id}-${curveKey}`;
+    const autoFit = field.autoFit !== false;
 
     const cx = boxW / 2;
-
-    // Tính độ võng thực tế của chuỗi ký tự
     const trackingPx = field.curveTracking ? field.curveTracking * scale * (96 / 72) : 0;
-    const approxCharWidth = fontPx * 0.55 + trackingPx;
-    const textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
-    const textAngle = textLen / Math.max(radiusPx, 1);
-    const halfTextAngle = Math.min(Math.PI * 0.48, textAngle / 2);
-    const textSagitta = radiusPx * (1 - Math.cos(halfTextAngle));
 
-    // Dây cung đường dẫn bao phủ tối thiểu toàn bộ chuỗi text để text không bị tràn ra ngoài path
-    const boxHalfChord = Math.max(1, boxW / 2 - 2);
-    const boxHalfAngle = Math.asin(Math.min(0.98, boxHalfChord / Math.max(radiusPx, 1)));
-    const pathHalfAngle = Math.min(Math.PI * 0.49, Math.max(halfTextAngle * 1.15, boxHalfAngle));
-    const pathHalfChord = radiusPx * Math.sin(pathHalfAngle);
-    const sagittaChord = radiusPx * (1 - Math.cos(pathHalfAngle));
+    // Ước tính kích thước chữ và góc quét của text
+    let approxCharWidth = rawFontPx * 0.55 + trackingPx;
+    let textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
+    let textAngle = textLen / Math.max(radiusPx, 1);
+
+    // Khi bật 'Tự bóp chữ vừa khung' (autoFit) hoặc khi góc vượt quá cung vòm tự nhiên (~190 độ)
+    let effectiveFontPx = rawFontPx;
+    const maxSafeAngle = Math.PI * 1.05;
+    if (autoFit && textAngle > maxSafeAngle) {
+        const scaleFactor = maxSafeAngle / textAngle;
+        effectiveFontPx = Math.max(7 * scale * (96 / 72), rawFontPx * scaleFactor);
+        approxCharWidth = effectiveFontPx * 0.55 + trackingPx;
+        textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
+        textAngle = textLen / Math.max(radiusPx, 1);
+    }
+
+    // Unique key & pathId để React và Chromium huỷ cache SVG layout và render tức thì
+    const curveKey = `${Math.round(rawR * 10)}_${mode}_${orientation}_${Math.round(effectiveFontPx * 10)}_${Math.round(boxW)}_${Math.round(boxH)}`;
+    const pathId = `curved-path-${field.id}-${curveKey}`;
+
+    const halfTextAngle = textAngle / 2;
+    // Đường dẫn bao phủ toàn bộ text với dự phòng an toàn ít nhất 40% để không bao giờ bị cụt ký tự
+    const pathHalfAngle = Math.min(Math.PI * 0.95, Math.max(halfTextAngle * 1.4, Math.PI * 0.45));
+    const largeArc = (2 * pathHalfAngle > Math.PI) ? 1 : 0;
 
     let pathD = '';
+    let side: 'left' | 'right' = 'left';
     if (isTop) {
-        // Căn giữa chính xác phong bì văn bản vào giữa khung boxH
-        const baseY = orientation === 'inward'
-            ? boxH / 2 - (textSagitta + fontPx) / 2 + sagittaChord
-            : boxH / 2 - (textSagitta - fontPx) / 2 + sagittaChord;
-        const x0 = cx - pathHalfChord;
-        const x1 = cx + pathHalfChord;
-        if (orientation === 'inward') {
-            pathD = `M ${x1} ${baseY} A ${radiusPx} ${radiusPx} 0 0 0 ${x0} ${baseY}`;
-        } else {
-            pathD = `M ${x0} ${baseY} A ${radiusPx} ${radiusPx} 0 0 1 ${x1} ${baseY}`;
-        }
+        side = orientation === 'outward' ? 'left' : 'right';
+        let cy = boxH / 2 + (radiusPx + radiusPx * Math.cos(halfTextAngle)) / 2;
+        cy += (orientation === 'outward' ? effectiveFontPx / 2 : -effectiveFontPx / 2);
+
+        const x0 = cx - radiusPx * Math.sin(pathHalfAngle);
+        const y0 = cy - radiusPx * Math.cos(pathHalfAngle);
+        const x1 = cx + radiusPx * Math.sin(pathHalfAngle);
+        const y1 = cy - radiusPx * Math.cos(pathHalfAngle);
+
+        pathD = `M ${x0} ${y0} A ${radiusPx} ${radiusPx} 0 ${largeArc} 1 ${x1} ${y1}`;
     } else {
-        // Căn giữa chính xác phong bì văn bản vào giữa khung boxH
-        const baseY = orientation === 'inward'
-            ? boxH / 2 + (textSagitta - fontPx) / 2 - sagittaChord
-            : boxH / 2 + (textSagitta + fontPx) / 2 - sagittaChord;
-        const x0 = cx - pathHalfChord;
-        const x1 = cx + pathHalfChord;
-        if (orientation === 'inward') {
-            pathD = `M ${x1} ${baseY} A ${radiusPx} ${radiusPx} 0 0 1 ${x0} ${baseY}`;
-        } else {
-            pathD = `M ${x0} ${baseY} A ${radiusPx} ${radiusPx} 0 0 0 ${x1} ${baseY}`;
-        }
+        side = orientation === 'outward' ? 'right' : 'left';
+        let cy = boxH / 2 - (radiusPx + radiusPx * Math.cos(halfTextAngle)) / 2;
+        cy += (orientation === 'outward' ? -effectiveFontPx / 2 : effectiveFontPx / 2);
+
+        const x0 = cx - radiusPx * Math.sin(pathHalfAngle);
+        const y0 = cy + radiusPx * Math.cos(pathHalfAngle);
+        const x1 = cx + radiusPx * Math.sin(pathHalfAngle);
+        const y1 = cy + radiusPx * Math.cos(pathHalfAngle);
+
+        pathD = `M ${x0} ${y0} A ${radiusPx} ${radiusPx} 0 ${largeArc} 0 ${x1} ${y1}`;
     }
 
     const tracking = field.curveTracking ? `${field.curveTracking * scale * (96 / 72)}px` : 'normal';
@@ -1923,13 +1930,19 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
             <text
                 key={pathId}
                 fill={field.fontColor || '#1e293b'}
-                fontSize={`${fontPx}px`}
+                fontSize={`${effectiveFontPx}px`}
                 fontFamily={fontFamily}
                 fontWeight={fontWeight}
                 fontStyle={fontStyle}
                 letterSpacing={tracking}
             >
-                <textPath key={pathId} href={`#${pathId}`} startOffset="50%" textAnchor="middle">
+                <textPath
+                    key={pathId}
+                    href={`#${pathId}`}
+                    startOffset="50%"
+                    textAnchor="middle"
+                    {...(side !== 'left' ? { side } : {})}
+                >
                     {text}
                 </textPath>
             </text>

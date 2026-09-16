@@ -431,6 +431,18 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
         return True
 
     total_angle = total_length / radius  # radians
+
+    # Đồng bộ với frontend preview: tự co cỡ chữ khi bật autoFit nếu góc vượt quá cung vòm tự nhiên (~190 độ)
+    auto_fit = field.get('autoFit', True)
+    max_safe_angle = math.pi * 1.05
+    if auto_fit and total_angle > max_safe_angle:
+        scale_factor = max_safe_angle / total_angle
+        fontsize = max(5.0, fontsize * scale_factor)
+        c.setFont(font_name, fontsize)
+        char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
+        total_length = sum(char_widths)
+        total_angle = total_length / radius
+
     cx = rl_x + w / 2.0
     half_text_angle = min(math.pi / 2.0, total_angle / 2.0)
     text_sagitta = radius * (1.0 - math.cos(half_text_angle))
