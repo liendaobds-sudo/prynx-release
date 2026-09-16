@@ -414,8 +414,10 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                                 pageWidthPt={pageWidthPtFromDim(localDim?.w)}
                                 pageHeightPt={pageHeightPtFromDim(localDim?.h)}
                             />
-                            <ThumbnailCutlinePreviewLayer item={cutlinePreview} />
                         </div>
+                        {/* Cutline preview nằm trên footprint (sau xoay) khớp hệ toạ độ của working PDF,
+                            không nằm trong khối inner CSS-rotate để tránh bị bóp méo và xoay lần 2. */}
+                        <ThumbnailCutlinePreviewLayer item={cutlinePreview} />
                         {/* Indicator trên footprint (cùng hệ toạ độ AABB với main page outer box).
                             Không gắn trong khối CSS-rotate — % left/top map thẳng từ updateViewportRect. */}
                         {isActive && (
