@@ -403,12 +403,83 @@ def render_2d(c, field, value, rect):
 
 
 def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, text_color, need_faux_bold=False, need_faux_italic=False):
-    """Vẽ text chạy theo quỹ đạo cung tròn (Type on a Path) — giữ nguyên hình dạng từng ký tự."""
+    """Vẽ text chạy theo quỹ đạo cung tròn hoặc lượn sóng (Type on a Path) — giữ nguyên hình dạng từng ký tự."""
     curve_mode = (field.get('curveMode') or 'none').lower()
-    if curve_mode not in ('arc_top', 'arc_bottom'):
+    if curve_mode not in ('arc_top', 'arc_bottom', 'wave'):
         return False
     val_str = str(text or '')
     if not val_str:
+        return True
+
+    tracking = float(field.get('curveTracking') or field.get('characterSpacing') or 0.0)
+    orientation = (field.get('curveOrientation') or 'outward').lower()
+    auto_fit = field.get('autoFit', True)
+
+    c.saveState()
+    c.setFillColor(text_color)
+    c.setFont(font_name, fontsize)
+
+    if curve_mode == 'wave':
+        raw_amp_mm = field.get('curveRadius')
+        if raw_amp_mm is not None and float(raw_amp_mm) > 0:
+            amp = float(raw_amp_mm) * MM_TO_PTS
+        else:
+            amp = h * 0.25
+        amp = min(amp, h * 0.35)
+        # ReportLab trục Y hướng lên: orientation outward = lượn lên trước rồi xuống
+        sign = -1.0 if orientation == 'inward' else 1.0
+        amp *= sign
+
+        char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
+        total_length = sum(char_widths)
+
+        # Tự co cỡ chữ nếu chữ quá dài so với khung
+        if auto_fit and total_length > w * 0.9 and total_length > 0:
+            scale_factor = (w * 0.9) / total_length
+            fontsize = max(5.0, fontsize * scale_factor)
+            c.setFont(font_name, fontsize)
+            char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
+            total_length = sum(char_widths)
+
+        if total_length <= 0 or w <= 0:
+            c.restoreState()
+            return True
+
+        # Bước sóng thích ứng theo độ dài chuỗi chữ để chữ luôn uốn đủ đỉnh và đáy chữ S
+        span_w = min(w - 4.0, max(total_length * 1.35, w * 0.6))
+        x_start = rl_x + (w - span_w) / 2.0
+
+        # Đặt chữ cân đối ở giữa dải sóng span_w
+        start_ratio = max(0.04, (1.0 - (total_length / span_w)) / 2.0)
+        current_u = start_ratio
+        delta_u_per_pt = 1.0 / max(span_w, 1.0)
+
+        for i, ch in enumerate(val_str):
+            cw = char_widths[i]
+            mid_u = current_u + (cw * delta_u_per_pt) / 2.0
+            mid_u = min(0.98, max(0.02, mid_u))
+
+            x = x_start + mid_u * span_w
+            y = rl_y + h / 2.0 + amp * math.sin(2.0 * math.pi * mid_u)
+
+            dx = span_w
+            dy = amp * 2.0 * math.pi * math.cos(2.0 * math.pi * mid_u)
+            alpha_deg = math.degrees(math.atan2(dy, dx))
+
+            c.saveState()
+            c.translate(x, y)
+            c.rotate(alpha_deg)
+            if need_faux_italic:
+                c.transform(1, 0, 0.21, 1, 0, 0)
+            actual_w = c.stringWidth(ch, font_name, fontsize)
+            c.drawString(-actual_w / 2.0, -fontsize * 0.35, ch)
+            if need_faux_bold:
+                c.drawString(-actual_w / 2.0 + 0.35, -fontsize * 0.35, ch)
+            c.restoreState()
+
+            current_u += cw * delta_u_per_pt
+
+        c.restoreState()
         return True
 
     raw_radius_mm = field.get('curveRadius')
@@ -416,13 +487,6 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
         radius = float(raw_radius_mm) * MM_TO_PTS
     else:
         radius = max(w, h) * 0.75
-
-    tracking = float(field.get('curveTracking') or field.get('characterSpacing') or 0.0)
-    orientation = (field.get('curveOrientation') or 'outward').lower()
-
-    c.saveState()
-    c.setFillColor(text_color)
-    c.setFont(font_name, fontsize)
 
     char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
     total_length = sum(char_widths)

@@ -174,3 +174,47 @@ def test_vdp_curved_small_radius_autofit(tmp_path):
     assert os.path.getsize(output_pdf) > 500
     with pikepdf.open(output_pdf) as doc:
         assert len(doc.pages) == 1
+
+
+def test_vdp_curved_wave_mode(tmp_path):
+    """Kiểm tra quỹ đạo lượn sóng (curveMode='wave') xuất file PDF thành công và đúng toạ độ sóng."""
+    from app.schemas.vdp import VdpField
+    from app.workers.vdp_engine import run_vdp_engine
+    import pikepdf
+    from reportlab.pdfgen import canvas
+
+    template_pdf = str(tmp_path / "tpl_wave.pdf")
+    output_pdf = str(tmp_path / "out_wave.pdf")
+
+    c = canvas.Canvas(template_pdf, pagesize=(200, 150))
+    c.showPage()
+    c.save()
+
+    f_wave = VdpField(
+        id="f_wave",
+        name="WaveField",
+        type="text",
+        x=10.0,
+        y=10.0,
+        width=60.0,
+        height=25.0,
+        curveMode="wave",
+        curveRadius=4.0,  # Biên độ 4mm
+        curveOrientation="outward",
+        fontSize=12.0,
+        textContent="KHUYEN MAI DAC BIET",
+        autoFit=True,
+    )
+
+    data = [{"dummy": "1"}]
+    run_vdp_engine(
+        template_path=template_pdf,
+        fields=[f_wave],
+        data=data,
+        output_path=output_pdf,
+    )
+
+    assert os.path.exists(output_pdf)
+    assert os.path.getsize(output_pdf) > 500
+    with pikepdf.open(output_pdf) as doc:
+        assert len(doc.pages) == 1

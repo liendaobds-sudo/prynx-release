@@ -22,7 +22,7 @@ export interface VdpToolField {
     alignment?: string;
     fontColor?: string;
     rotation?: number;
-    curveMode?: 'none' | 'arc_top' | 'arc_bottom';
+    curveMode?: 'none' | 'arc_top' | 'arc_bottom' | 'wave';
     curveRadius?: number;
     curveOrientation?: 'outward' | 'inward';
     curveTracking?: number;

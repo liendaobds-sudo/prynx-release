@@ -62,7 +62,7 @@ class VdpField(BaseModel):
     imageBaseDir: Optional[str] = None       # thư mục gốc khi cột chứa TÊN file ảnh
     imagePath: Optional[str] = None           # ảnh tĩnh (dùng khi cột rỗng/không map)
     # Quỹ đạo vòm (Type on a Path / Text on Arc)
-    curveMode: Optional[str] = 'none'         # 'none' | 'arc_top' | 'arc_bottom'
+    curveMode: Optional[str] = 'none'         # 'none' | 'arc_top' | 'arc_bottom' | 'wave'
     curveRadius: Optional[float] = None       # Bán kính cong (mm)
     curveOrientation: Optional[str] = 'outward' # 'outward' | 'inward'
     curveTracking: Optional[float] = 0.0      # Độ giãn ký tự trên cung tròn (pt)

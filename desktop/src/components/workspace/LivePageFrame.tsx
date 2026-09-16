@@ -1836,69 +1836,106 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     const boxW = Math.max(1, ((field.width ?? 0) / 25.4 * 72) * scale);
     const boxH = Math.max(1, ((field.height ?? 0) / 25.4 * 72) * scale);
 
-    // curveRadius in mm -> convert to display px (96 DPI screen)
-    const rawR = typeof field.curveRadius === 'number' && field.curveRadius > 0
-        ? field.curveRadius
-        : ((field.width || 50) * 0.75);
-    const radiusPx = Math.max(10, (rawR / 25.4 * 96) * scale);
     const mode = field.curveMode || 'arc_bottom';
+    const isWave = mode === 'wave';
     const isTop = mode === 'arc_top';
     const orientation = field.curveOrientation || 'outward';
     const autoFit = field.autoFit !== false;
 
     const cx = boxW / 2;
+    const cy = boxH / 2;
     const trackingPx = field.curveTracking ? field.curveTracking * scale * (96 / 72) : 0;
 
-    // Ước tính kích thước chữ và góc quét của text
     let approxCharWidth = rawFontPx * 0.55 + trackingPx;
     let textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
-    let textAngle = textLen / Math.max(radiusPx, 1);
-
-    // Khi bật 'Tự bóp chữ vừa khung' (autoFit) hoặc khi góc vượt quá cung vòm tự nhiên (~190 độ)
-    let effectiveFontPx = rawFontPx;
-    const maxSafeAngle = Math.PI * 1.05;
-    if (autoFit && textAngle > maxSafeAngle) {
-        const scaleFactor = maxSafeAngle / textAngle;
-        effectiveFontPx = Math.max(7 * scale * (96 / 72), rawFontPx * scaleFactor);
-        approxCharWidth = effectiveFontPx * 0.55 + trackingPx;
-        textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
-        textAngle = textLen / Math.max(radiusPx, 1);
-    }
-
-    // Unique key & pathId để React và Chromium huỷ cache SVG layout và render tức thì
-    const curveKey = `${Math.round(rawR * 10)}_${mode}_${orientation}_${Math.round(effectiveFontPx * 10)}_${Math.round(boxW)}_${Math.round(boxH)}`;
-    const pathId = `curved-path-${field.id}-${curveKey}`;
-
-    const halfTextAngle = textAngle / 2;
-    // Đường dẫn bao phủ toàn bộ text với dự phòng an toàn ít nhất 40% để không bao giờ bị cụt ký tự
-    const pathHalfAngle = Math.min(Math.PI * 0.95, Math.max(halfTextAngle * 1.4, Math.PI * 0.45));
-    const largeArc = (2 * pathHalfAngle > Math.PI) ? 1 : 0;
 
     let pathD = '';
     let side: 'left' | 'right' = 'left';
-    if (isTop) {
-        side = orientation === 'outward' ? 'left' : 'right';
-        let cy = boxH / 2 + (radiusPx + radiusPx * Math.cos(halfTextAngle)) / 2;
-        cy += (orientation === 'outward' ? effectiveFontPx / 2 : -effectiveFontPx / 2);
+    let effectiveFontPx = rawFontPx;
+    let rawR = 0;
 
-        const x0 = cx - radiusPx * Math.sin(pathHalfAngle);
-        const y0 = cy - radiusPx * Math.cos(pathHalfAngle);
-        const x1 = cx + radiusPx * Math.sin(pathHalfAngle);
-        const y1 = cy - radiusPx * Math.cos(pathHalfAngle);
+    if (isWave) {
+        // Quỹ đạo lượn sóng (Wave / S-curve)
+        rawR = typeof field.curveRadius === 'number' && field.curveRadius > 0
+            ? field.curveRadius
+            : Math.round(((field.height || 20) * 0.25) * 10) / 10;
+        const ampPx = Math.min((boxH / 2) * 0.7, Math.max(2, (rawR / 25.4 * 96) * scale));
+        const amp = orientation === 'inward' ? -ampPx : ampPx;
 
-        pathD = `M ${x0} ${y0} A ${radiusPx} ${radiusPx} 0 ${largeArc} 1 ${x1} ${y1}`;
+        // Tự co cỡ chữ nếu chữ quá dài so với khung
+        if (autoFit && textLen > boxW * 0.9) {
+            const scaleFactor = (boxW * 0.9) / textLen;
+            effectiveFontPx = Math.max(7 * scale * (96 / 72), rawFontPx * scaleFactor);
+            approxCharWidth = effectiveFontPx * 0.55 + trackingPx;
+            textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
+        }
+
+        // Bước sóng thích ứng theo độ dài chuỗi chữ để chữ luôn uốn đủ đỉnh và đáy chữ S
+        const spanW = Math.min(boxW - 4, Math.max(textLen * 1.35, boxW * 0.6));
+        const xStart = cx - spanW / 2;
+        const xEnd = cx + spanW / 2;
+
+        const cp1x = xStart + spanW * 0.15;
+        const cp1y = cy - amp * 1.6;
+        const cp2x = xStart + spanW * 0.35;
+        const cp2y = cy - amp * 1.6;
+        const midX = cx;
+
+        const cp3x = xStart + spanW * 0.65;
+        const cp3y = cy + amp * 1.6;
+        const cp4x = xStart + spanW * 0.85;
+        const cp4y = cy + amp * 1.6;
+
+        pathD = `M ${xStart} ${cy} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${midX} ${cy} C ${cp3x} ${cp3y}, ${cp4x} ${cp4y}, ${xEnd} ${cy}`;
+        side = 'left';
     } else {
-        side = orientation === 'outward' ? 'right' : 'left';
-        let cy = boxH / 2 - (radiusPx + radiusPx * Math.cos(halfTextAngle)) / 2;
-        cy += (orientation === 'outward' ? -effectiveFontPx / 2 : effectiveFontPx / 2);
+        // Quỹ đạo vòm trên / vòm dưới (Arc Top / Arc Bottom)
+        rawR = typeof field.curveRadius === 'number' && field.curveRadius > 0
+            ? field.curveRadius
+            : ((field.width || 50) * 0.75);
+        const radiusPx = Math.max(10, (rawR / 25.4 * 96) * scale);
 
-        const x0 = cx - radiusPx * Math.sin(pathHalfAngle);
-        const y0 = cy + radiusPx * Math.cos(pathHalfAngle);
-        const x1 = cx + radiusPx * Math.sin(pathHalfAngle);
-        const y1 = cy + radiusPx * Math.cos(pathHalfAngle);
+        let textAngle = textLen / Math.max(radiusPx, 1);
+        const maxSafeAngle = Math.PI * 1.05;
+        if (autoFit && textAngle > maxSafeAngle) {
+            const scaleFactor = maxSafeAngle / textAngle;
+            effectiveFontPx = Math.max(7 * scale * (96 / 72), rawFontPx * scaleFactor);
+            approxCharWidth = effectiveFontPx * 0.55 + trackingPx;
+            textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
+            textAngle = textLen / Math.max(radiusPx, 1);
+        }
 
-        pathD = `M ${x0} ${y0} A ${radiusPx} ${radiusPx} 0 ${largeArc} 0 ${x1} ${y1}`;
+        const halfTextAngle = textAngle / 2;
+        const pathHalfAngle = Math.min(Math.PI * 0.95, Math.max(halfTextAngle * 1.4, Math.PI * 0.45));
+        const largeArc = (2 * pathHalfAngle > Math.PI) ? 1 : 0;
+
+        if (isTop) {
+            side = orientation === 'outward' ? 'left' : 'right';
+            let arcCy = boxH / 2 + (radiusPx + radiusPx * Math.cos(halfTextAngle)) / 2;
+            arcCy += (orientation === 'outward' ? effectiveFontPx / 2 : -effectiveFontPx / 2);
+
+            const x0 = cx - radiusPx * Math.sin(pathHalfAngle);
+            const y0 = arcCy - radiusPx * Math.cos(pathHalfAngle);
+            const x1 = cx + radiusPx * Math.sin(pathHalfAngle);
+            const y1 = arcCy - radiusPx * Math.cos(pathHalfAngle);
+
+            pathD = `M ${x0} ${y0} A ${radiusPx} ${radiusPx} 0 ${largeArc} 1 ${x1} ${y1}`;
+        } else {
+            side = orientation === 'outward' ? 'right' : 'left';
+            let arcCy = boxH / 2 - (radiusPx + radiusPx * Math.cos(halfTextAngle)) / 2;
+            arcCy += (orientation === 'outward' ? -effectiveFontPx / 2 : effectiveFontPx / 2);
+
+            const x0 = cx - radiusPx * Math.sin(pathHalfAngle);
+            const y0 = arcCy + radiusPx * Math.cos(pathHalfAngle);
+            const x1 = cx + radiusPx * Math.sin(pathHalfAngle);
+            const y1 = arcCy + radiusPx * Math.cos(pathHalfAngle);
+
+            pathD = `M ${x0} ${y0} A ${radiusPx} ${radiusPx} 0 ${largeArc} 0 ${x1} ${y1}`;
+        }
     }
+
+    const curveKey = `${Math.round(rawR * 10)}_${mode}_${orientation}_${Math.round(effectiveFontPx * 10)}_${Math.round(boxW)}_${Math.round(boxH)}`;
+    const pathId = `curved-path-${field.id}-${curveKey}`;
 
     const tracking = field.curveTracking ? `${field.curveTracking * scale * (96 / 72)}px` : 'normal';
     const fontFamily = field.fontName === 'Helvetica'

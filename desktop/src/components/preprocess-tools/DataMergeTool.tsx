@@ -1985,7 +1985,7 @@ export default function DataMergeTool({
                                                 </span>
                                                 {selectedField.curveMode && selectedField.curveMode !== 'none' && (
                                                     <span className="text-[10px] px-1.5 py-0.5 bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 rounded-full font-medium">
-                                                        {selectedField.curveMode === 'arc_top' ? 'Vòm trên' : 'Vòm dưới'}
+                                                        {selectedField.curveMode === 'arc_top' ? 'Vòm trên' : selectedField.curveMode === 'wave' ? 'Lượn sóng' : 'Vòm dưới'}
                                                     </span>
                                                 )}
                                             </div>
@@ -2001,8 +2001,8 @@ export default function DataMergeTool({
                                                     <select
                                                         value={selectedField.curveMode || 'none'}
                                                         onChange={(e) => {
-                                                            const newMode = e.target.value as 'none' | 'arc_top' | 'arc_bottom';
-                                                            const defaultR = selectedField.curveRadius ?? Math.round((selectedField.width || 50) * 0.75 * 10) / 10;
+                                                            const newMode = e.target.value as 'none' | 'arc_top' | 'arc_bottom' | 'wave';
+                                                            const defaultR = selectedField.curveRadius ?? (newMode === 'wave' ? Math.round((selectedField.height || 20) * 0.25 * 10) / 10 : Math.round((selectedField.width || 50) * 0.75 * 10) / 10);
                                                             updateSelectedField({ curveMode: newMode, curveRadius: defaultR });
                                                         }}
                                                         className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
@@ -2010,6 +2010,7 @@ export default function DataMergeTool({
                                                         <option value="none">Thẳng (Mặc định)</option>
                                                         <option value="arc_top">Vòm trên (Top Arc - tiêu đề / vòm trên)</option>
                                                         <option value="arc_bottom">Vòm dưới (Bottom Arc - số nhảy / vòm dưới)</option>
+                                                        <option value="wave">Lượn sóng (Wave / S-curve - chữ S dải lụa)</option>
                                                     </select>
                                                 </div>
 
@@ -2017,10 +2018,10 @@ export default function DataMergeTool({
                                                     <>
                                                         <div className="grid grid-cols-2 gap-2">
                                                             <ToolNumberInput
-                                                                label="Bán kính cong (R)"
-                                                                value={selectedField.curveRadius ?? Math.round((selectedField.width || 50) * 0.75 * 10) / 10}
-                                                                onChange={(val) => updateSelectedField({ curveRadius: Math.max(1, val) })}
-                                                                suffix="mm" step={1} min={1}
+                                                                label={selectedField.curveMode === 'wave' ? "Biên độ sóng (A)" : "Bán kính cong (R)"}
+                                                                value={selectedField.curveRadius ?? (selectedField.curveMode === 'wave' ? Math.round((selectedField.height || 20) * 0.25 * 10) / 10 : Math.round((selectedField.width || 50) * 0.75 * 10) / 10)}
+                                                                onChange={(val) => updateSelectedField({ curveRadius: Math.max(0.5, val) })}
+                                                                suffix="mm" step={selectedField.curveMode === 'wave' ? 0.5 : 1} min={0.5}
                                                             />
                                                             <ToolNumberInput
                                                                 label="Giãn chữ (Tracking)"
@@ -2030,14 +2031,23 @@ export default function DataMergeTool({
                                                             />
                                                         </div>
                                                         <div className="flex flex-col gap-1">
-                                                            <span className="text-[10px] font-medium text-slate-500">Hướng mặt chữ</span>
+                                                            <span className="text-[10px] font-medium text-slate-500">Hướng lượn / mặt chữ</span>
                                                             <select
                                                                 value={selectedField.curveOrientation || 'outward'}
                                                                 onChange={(e) => updateSelectedField({ curveOrientation: e.target.value as 'outward' | 'inward' })}
                                                                 className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
                                                             >
-                                                                <option value="outward">Hướng ra ngoài (Chuẩn đọc từ trái sang phải)</option>
-                                                                <option value="inward">Hướng vào tâm</option>
+                                                                {selectedField.curveMode === 'wave' ? (
+                                                                    <>
+                                                                        <option value="outward">Lượn lên trước rồi xuống (Mặc định)</option>
+                                                                        <option value="inward">Lượn xuống trước rồi lên</option>
+                                                                    </>
+                                                                ) : (
+                                                                    <>
+                                                                        <option value="outward">Hướng ra ngoài (Chuẩn đọc từ trái sang phải)</option>
+                                                                        <option value="inward">Hướng vào tâm</option>
+                                                                    </>
+                                                                )}
                                                             </select>
                                                         </div>
                                                         <p className="text-[10px] text-slate-400 italic leading-snug">
