@@ -2339,6 +2339,25 @@ def _encode_with_original_font(
         return None
 
 
+def _resolve_font_file(path_or_name: str | None) -> str | None:
+    if not path_or_name:
+        return None
+    if os.path.exists(path_or_name):
+        return path_or_name
+    fonts_dir = os.path.join(os.environ.get('WINDIR', 'C:\Windows'), 'Fonts')
+    clean = path_or_name.strip()
+    candidates = [
+        os.path.join(fonts_dir, clean),
+        os.path.join(fonts_dir, f"{clean}.ttf"),
+        os.path.join(fonts_dir, f"{clean}.otf"),
+        os.path.join(fonts_dir, f"{clean.lower()}.ttf"),
+        os.path.join(fonts_dir, f"{clean.lower()}.otf"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
 def edit_text(
     page,
     obj_meta,
@@ -2346,6 +2365,11 @@ def edit_text(
     pdf: pikepdf.Pdf,
     fallback_font_path: str = DEFAULT_FALLBACK_FONT_PATH,
     chosen_font_path: str | None = None,
+    remove_metas: list | None = None,
+    new_size_pt: float | None = None,
+    new_color: list | None = None,
+    bold: bool | None = None,
+    italic: bool | None = None,
 ) -> EditTextResult:
     """
     Sửa nội dung MỘT cụm text (xóa cụm cũ + chèn lại nội dung mới), GIỮ NGUYÊN
@@ -2412,6 +2436,17 @@ def edit_text(
     target_index = info["target_index"]
     cluster = info["cluster"]  # [{index, tm, ctm}]
 
+    # Tập hợp các chỉ số show-op của các ký tự thừa trong cụm cần xóa
+    remove_indices = set()
+    if remove_metas:
+        for rm in remove_metas:
+            try:
+                rm_info = text_show_op_for_move(pg, rm, pdf=pdf)
+                if rm_info and "target_index" in rm_info:
+                    remove_indices.add(rm_info["target_index"])
+            except Exception:
+                pass
+
     instructions = parse_page_ops(pg)
     n = len(instructions)
     if not (0 <= target_index < n):
@@ -2445,8 +2480,9 @@ def edit_text(
     # gốc thiếu glyph nên không giữ được — người dùng chọn font thay thế gần giống).
     embed_path = fallback_font_path
     force_embed = False
-    if chosen_font_path and os.path.exists(chosen_font_path):
-        embed_path = chosen_font_path
+    resolved_chosen = _resolve_font_file(chosen_font_path)
+    if resolved_chosen and os.path.exists(resolved_chosen):
+        embed_path = resolved_chosen
         force_embed = True
 
     # ── Quyết định đường mã hóa ─────────────────────────────────────────────
@@ -2524,26 +2560,94 @@ def edit_text(
                 [pikepdf.String(bytes(gid_bytes))], pikepdf.Operator("Tj")
             )
 
+    if new_size_pt is not None and float(new_size_pt) > 0:
+        font_size = float(new_size_pt)
+
+    # Quét active fill color trước target_index để khôi phục sau op nếu đổi màu
+    active_color_instr = None
+    for j in range(target_index - 1, -1, -1):
+        op_j = str(instructions[j].operator)
+        if op_j in ("rg", "g", "k"):
+            active_color_instr = instructions[j]
+            break
+
+    color_instrs: list[pikepdf.ContentStreamInstruction] = []
+    stroke_color_instrs: list[pikepdf.ContentStreamInstruction] = []
+    if new_color is not None:
+        try:
+            raw_vals = [float(v) for v in new_color]
+            if any(v > 1.0 for v in raw_vals):
+                raw_vals = [v / 255.0 for v in raw_vals]
+            color_instrs = _fill_color_instructions(raw_vals)
+            if len(raw_vals) == 3:
+                stroke_color_instrs = [pikepdf.ContentStreamInstruction(raw_vals, pikepdf.Operator("RG"))]
+            elif len(raw_vals) == 4:
+                stroke_color_instrs = [pikepdf.ContentStreamInstruction(raw_vals, pikepdf.Operator("K"))]
+            elif len(raw_vals) == 1:
+                stroke_color_instrs = [pikepdf.ContentStreamInstruction(raw_vals, pikepdf.Operator("G"))]
+        except Exception as exc:
+            logger.warning("Không phân tích được new_color %s: %s", new_color, exc)
+
+    cluster_tm: dict[int, list[float]] = {c["index"]: c["tm"] for c in cluster}
+    if italic and target_index in cluster_tm:
+        orig_tm = list(cluster_tm[target_index])
+        orig_tm[2] += 0.2126 * (orig_tm[3] if len(orig_tm) > 3 else 1.0)
+        cluster_tm[target_index] = orig_tm
+
     # ── Dựng instruction list MỚI: GHIM Tm tuyệt đối mọi show-op trong cụm để
     # không xê dịch khi đổi bề rộng text; CHỈ thay nội dung show-op MỤC TIÊU,
     # GIỮ NGUYÊN các run khác (KHÔNG gộp/xoá cụm). ──────────────────────────
-    cluster_tm: dict[int, list[float]] = {c["index"]: c["tm"] for c in cluster}
     new_instructions: list = []
     for i, instr in enumerate(instructions):
+        if i in remove_indices:
+            continue
         # Ghim vị trí tuyệt đối cho mọi show-op trong cụm (gồm cả mục tiêu).
         if i in cluster_tm:
             new_instructions.append(_Tm_instruction(cluster_tm[i]))
         if i == target_index:
-            # Fallback đổi font → đặt Tf mới NGAY TRƯỚC show-op mục tiêu, rồi
-            # KHÔI PHỤC font gốc NGAY SAU để các run kế tiếp không bị đổi font.
+            # 1. Đổi màu chữ trước show-op
+            if color_instrs:
+                new_instructions.extend(color_instrs)
+
+            # 2. Xử lý Faux Bold (Tr=2 Fill & Stroke)
+            if bold:
+                w_val = max(0.2, font_size * 0.035)
+                new_instructions.append(pikepdf.ContentStreamInstruction([w_val], pikepdf.Operator("w")))
+                if stroke_color_instrs:
+                    new_instructions.extend(stroke_color_instrs)
+                elif active_color_instr is not None:
+                    ac_op = str(active_color_instr.operator)
+                    stroke_op = "RG" if ac_op == "rg" else ("K" if ac_op == "k" else "G")
+                    new_instructions.append(pikepdf.ContentStreamInstruction(list(active_color_instr.operands), pikepdf.Operator(stroke_op)))
+                new_instructions.append(pikepdf.ContentStreamInstruction([2], pikepdf.Operator("Tr")))
+
+            # 3. Đổi Font hoặc Cỡ chữ
             if new_tf_name is not None:
                 new_instructions.append(pikepdf.ContentStreamInstruction(
                     [pikepdf.Name("/" + new_tf_name), font_size], pikepdf.Operator("Tf")))
+            elif orig_font_name and new_size_pt is not None:
+                new_instructions.append(pikepdf.ContentStreamInstruction(
+                    [pikepdf.Name("/" + orig_font_name), font_size], pikepdf.Operator("Tf")))
+
+            # 4. Hiển thị text mới
             new_instructions.append(new_show_instr)
+
+            # 5. Khôi phục text state: Tr, Tf, Color
+            if bold:
+                new_instructions.append(pikepdf.ContentStreamInstruction([0], pikepdf.Operator("Tr")))
+
             if new_tf_name is not None and orig_font_name:
                 new_instructions.append(pikepdf.ContentStreamInstruction(
                     [pikepdf.Name("/" + orig_font_name), orig_size if orig_size > 0 else font_size],
                     pikepdf.Operator("Tf")))
+            elif orig_font_name and new_size_pt is not None and orig_size > 0:
+                new_instructions.append(pikepdf.ContentStreamInstruction(
+                    [pikepdf.Name("/" + orig_font_name), orig_size],
+                    pikepdf.Operator("Tf")))
+
+            if color_instrs and active_color_instr is not None:
+                new_instructions.append(active_color_instr)
+
             continue
         new_instructions.append(instr)
 

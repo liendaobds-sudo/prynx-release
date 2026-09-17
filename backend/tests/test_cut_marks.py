@@ -4,13 +4,18 @@ Unit tests cho draw_tile_cut_marks — kiểm chứng logic vẽ dấu xén:
   - Nét đôi kiểu Nhật (japanese) sinh gấp đôi số nét cạnh biên
   - Độ dày nét (mark_thickness) được truyền đúng vào shape.finish
   - bleed_pt <= 0 thì japanese tự fallback về nét đơn
+  - Đường nét đứt (dashed line) phân ranh giới xuyên suốt giữa các cụm
 
 Không cần render PDF thật: dùng mock page/shape để bắt lời gọi draw_line.
 """
 import math
 import pytest
 
-from app.workers.cluster_tile_engine import draw_tile_cut_marks
+from app.workers.cluster_tile_engine import draw_tile_cut_marks, draw_segment_cut_marks
+
+
+def _pt(p):
+    return (p.x, p.y) if hasattr(p, 'x') else (float(p[0]), float(p[1]))
 
 
 class FakeShape:
@@ -20,7 +25,7 @@ class FakeShape:
         self.committed = False
 
     def draw_line(self, p1, p2):
-        self.lines.append(((p1.x, p1.y), (p2.x, p2.y)))
+        self.lines.append((_pt(p1), _pt(p2)))
 
     def finish(self, **kwargs):
         self.finish_kwargs = kwargs
@@ -31,10 +36,16 @@ class FakeShape:
 
 class FakePage:
     def __init__(self):
-        self.shape = FakeShape()
+        self.shapes = []
 
     def new_shape(self):
-        return self.shape
+        s = FakeShape()
+        self.shapes.append(s)
+        return s
+
+    @property
+    def shape(self):
+        return self.shapes[0] if self.shapes else None
 
 
 # Lưới 3×3 → có đúng 1 đường cắt nội bộ mỗi chiều
@@ -56,7 +67,6 @@ def _run(style='default', bleed_pt=0.0, thickness=0.71):
 def test_skips_outer_corners_on_edges():
     """Nét cạnh biên không được xuất phát tại 4 góc ngoài cùng."""
     shape = _run('default')
-    # Nét cạnh trên (y < 0) và dưới (y > 100) tại x là góc → không tồn tại
     for (x1, y1), (x2, y2) in shape.lines:
         # nét dọc ra biên trên/dưới
         if x1 == x2 and (y1 < 0 or y2 < 0 or y1 > 100 or y2 > 100):
@@ -116,4 +126,40 @@ def test_insufficient_cuts_is_noop():
     """Lưới thiếu đường cắt (<2) → không vẽ gì, không lỗi."""
     page = FakePage()
     draw_tile_cut_marks(page, {'v': {0.0}, 'h': {0.0}})
-    assert page.shape.lines == []
+    assert page.shape is None or page.shape.lines == []
+
+
+def test_dashed_lines_between_tiles():
+    """Vẽ đường nét đứt xuyên suốt giữa các cụm theo trục cắt dọc và ngang."""
+    page = FakePage()
+    draw_tile_cut_marks(page, GRID_3x3, mark_thickness=0.71)
+    assert len(page.shapes) == 2, "Cần 2 shape: 1 cho tick marks, 1 cho dashed lines"
+    tick_shape = page.shapes[0]
+    dash_shape = page.shapes[1]
+
+    # Kiểm tra shape nét đứt
+    assert dash_shape.finish_kwargs is not None
+    assert dash_shape.finish_kwargs.get('dashes') == [4, 4]
+    assert dash_shape.finish_kwargs.get('color') == (1, 1, 1, 1)
+    assert dash_shape.committed is True
+
+    # Lưới 3x3 có v={0, 50, 100}, h={0, 50, 100}
+    # Đường cắt nội bộ: 1 trục x=50 từ y=0 đến 100; 1 trục y=50 từ x=0 đến 100
+    assert len(dash_shape.lines) == 2
+    v_line = next(l for l in dash_shape.lines if l[0][0] == l[1][0])
+    h_line = next(l for l in dash_shape.lines if l[0][1] == l[1][1])
+
+    assert v_line == ((50.0, 0.0), (50.0, 100.0))
+    assert h_line == ((0.0, 50.0), (100.0, 50.0))
+
+
+def test_segment_cut_marks_endpoints():
+    """draw_segment_cut_marks vẽ 2 endpoint ticks cho mỗi segment."""
+    page = FakePage()
+    segments = [
+        {'axis': 'x', 'coordinate': 150.0, 'start': 20.0, 'end': 200.0},
+        {'axis': 'y', 'coordinate': 110.0, 'start': 10.0, 'end': 150.0},
+    ]
+    draw_segment_cut_marks(page, {'segments': segments}, mark_thickness=0.8)
+    assert len(page.shapes) == 1
+    assert len(page.shape.lines) == 4

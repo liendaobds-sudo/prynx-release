@@ -340,10 +340,15 @@ def resolve_field_content(
     if not is_visible(norm_conds, row):
         return ResolvedField(visible=False, content="")
 
+    field_name = _field_get(field, "name", "")
     # Nội dung gốc của field: textContent, mặc định {name} như engine hiện tại.
     base_content = _field_get(field, "textContent", None)
     if base_content is None:
-        base_content = f"{{{_field_get(field, 'name', '')}}}"
+        base_content = f"{{{field_name}}}"
+    elif field_name in row and "{" not in str(base_content):
+        # Nếu field_name có trong row nhưng textContent không chứa bất kỳ placeholder '{' nào
+        # (ví dụ: field tạo từ Pick text hoặc text tĩnh), ta coi đây là biến lấy từ row[field_name].
+        base_content = f"{{{field_name}}}"
 
     # (2) Bảng rule first-match — kiểm cột tồn tại trước (Req 2.7), rồi áp dụng.
     content = base_content

@@ -87,15 +87,21 @@ class ShapeBuilder:
             return False
         return abs(float(a.x) - float(b.x)) <= 0.0001 and abs(float(a.y) - float(b.y)) <= 0.0001
 
-    def _move_to_if_needed(self, point: Point) -> None:
+    def _move_to_if_needed(self, point) -> None:
         """Mở subpath mới hoặc tiếp tục subpath hiện tại tại endpoint trùng."""
+        if not hasattr(point, 'x'):
+            point = Point(float(point[0]), float(point[1]))
         if self._same_point(self._path_current, point):
             self._path_joins += 1
             return
         self.stream.append(f"{point.x:.4f} {self.page_height - point.y:.4f} m")
         self._path_subpaths += 1
 
-    def draw_line(self, p1: Point, p2: Point):
+    def draw_line(self, p1, p2):
+        if not hasattr(p1, 'x'):
+            p1 = Point(float(p1[0]), float(p1[1]))
+        if not hasattr(p2, 'x'):
+            p2 = Point(float(p2[0]), float(p2[1]))
         self._move_to_if_needed(p1)
         self.stream.append(f"{p2.x:.4f} {self.page_height - p2.y:.4f} l")
         self._path_current = p2

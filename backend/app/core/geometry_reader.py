@@ -367,6 +367,21 @@ def _list_objects_locked(pdf_path: str, page_index: int, include_text_props: boo
                 pass
 
 
+def _extract_font_size(obj) -> float | None:
+    """Lấy cỡ chữ gốc (pt) của text-object qua FPDFTextObj_GetFontSize."""
+    try:
+        get_size = getattr(pdfium_c, "FPDFTextObj_GetFontSize", None)
+        if get_size is None:
+            return None
+        size = ctypes.c_float(0.0)
+        ok = get_size(obj, ctypes.byref(size))
+        if ok and size.value > 0:
+            return round(float(size.value), 2)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def get_text_object_props(pdf_path: str, page_index: int, draw_index: int) -> dict:
     """Bọc `_get_text_object_props_locked` trong `pdfium_guard` (audit 2026-07-29 §C.1)."""
     from app.core.pdfium_lock import pdfium_guard
@@ -386,7 +401,7 @@ def _get_text_object_props_locked(pdf_path: str, page_index: int, draw_index: in
     """
     pdf = None
     text_page_raw = None
-    out = {"content": None, "color": None, "fontName": None}
+    out = {"content": None, "color": None, "fontName": None, "fontSize": None}
     try:
         pdf = pdfium.PdfDocument(pdf_path)
         if page_index < 0 or page_index >= len(pdf):
@@ -408,6 +423,7 @@ def _get_text_object_props_locked(pdf_path: str, page_index: int, draw_index: in
         out["content"] = _extract_text(obj, text_page_raw)
         out["color"] = _extract_fill_color(obj)
         out["fontName"] = _extract_font_name(obj)
+        out["fontSize"] = _extract_font_size(obj)
         return out
     except Exception:  # noqa: BLE001 - best-effort
         return out

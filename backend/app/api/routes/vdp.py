@@ -34,9 +34,7 @@ from app.workers.vdp_validate import (
     build_error_report_csv,
 )
 from app.workers.vdp_preview import render_record_preview
-from app.core.license_guard import enforce_feature, require_license, require_feature
-from app.core.job_access import issue_job_access
-from app.schemas.job import JobAccessResponse
+from app.core.license_guard import enforce_feature, require_license, require_feature, require_feature_any
 from app.core.artifact_lease import artifact_delete_guard, create_artifact_lease
 from app.core.heavy_job_scheduler import scheduled_job
 from app.config import settings
@@ -46,10 +44,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-class VdpJobAccessResponse(VdpJobStartResponse, JobAccessResponse):
-    """Không đổi field cũ; receipt chỉ cấp quyền nhận/hủy tác vụ đã nhận."""
 
 # SEC (audit 2026-08-04 §BE.01): ba công cụ dùng chung engine VDP, nhưng quyền
 # phải theo đúng capability mà cửa vào UI đã chọn. Không chấp nhận FeatureId
@@ -501,7 +495,7 @@ def vdp_background_task_spooled(
                     pass
             _VDP_SUBMISSION_SLOTS.release()
 
-@router.post("/generate", response_model=VdpJobAccessResponse)
+@router.post("/generate", response_model=VdpJobStartResponse)
 async def start_vdp_job(
     fields: str = Form(...),
     data_file: UploadFile = File(...),
@@ -604,18 +598,7 @@ async def start_vdp_job(
         with _VDP_JOBS_LOCK:
             vdp_jobs[job_id]["future"] = future
         submitted = True
-        # SEC (audit 2026-09-09 §LICUX.JOB): không mint receipt trước enqueue.
-        from app.core import license_guard
-        access = issue_job_access(
-            family="vdp", job_id=job_id, license_info=license_info,
-            session_token=license_guard._SIDECAR_TOKEN,
-        )
-        return {
-            "job_id": job_id,
-            "job_access_token": access.token if access else None,
-            "job_access_expires_at": access.expires_at if access else None,
-            "job_access_paths": list(access.paths) if access else None,
-        }
+        return {"job_id": job_id}
     except HTTPException:
         raise
     except ValueError as exc:
@@ -759,8 +742,19 @@ async def upload_file_for_processing(file: UploadFile = File(...), license_info:
         f.write(content)
     return {"path": os.path.abspath(file_path)}
 
+_SYSTEM_FONTS_CACHE: list[dict[str, str]] | None = None
+
+
 @router.get("/fonts")
 def get_system_fonts(license_info: dict = Depends(require_license)):
+    global _SYSTEM_FONTS_CACHE
+    import time
+    t0 = time.perf_counter()
+    if _SYSTEM_FONTS_CACHE is not None:
+        logger.warning(f"[PERF-BACKEND-FONT] get_system_fonts cache hit: {len(_SYSTEM_FONTS_CACHE)} fonts")
+        return {"fonts": _SYSTEM_FONTS_CACHE}
+
+    logger.warning(f"[PERF-BACKEND-FONT] Reading system fonts from OS registry...")
     import platform
     fonts = []
     os_name = platform.system()
@@ -794,6 +788,9 @@ def get_system_fonts(license_info: dict = Depends(require_license)):
                         fonts.append({"name": clean_name, "path": os.path.join(d, f)})
     
     fonts.sort(key=lambda x: x["name"].lower())
+    _SYSTEM_FONTS_CACHE = fonts
+    elapsed = (time.perf_counter() - t0) * 1000
+    logger.warning(f"[PERF-BACKEND-FONT] get_system_fonts completed in {elapsed:.1f}ms: found {len(fonts)} fonts")
     return {"fonts": fonts}
 
 
@@ -1061,7 +1058,7 @@ async def preview_vdp(
     columns: Optional[str] = Form(None),
     rows_file: Optional[UploadFile] = File(None),
     scale: float = Form(2.0),
-    license_info: dict = Depends(require_feature("vdp.datamerge")),
+    license_info: dict = Depends(require_feature_any("vdp.datamerge", "vdp.numbering", "vdp.cover_numbering")),
 ):
     """Render bản xem trước record thứ N → PNG (base64) + field_errors (Req 4.1–4.6, 4.10).
 
@@ -1205,3 +1202,156 @@ async def error_report_vdp(
             "Content-Disposition": "attachment; filename=vdp_error_report.csv"
         },
     )
+
+
+# ─── VDP Text Picker & Auto-Detect (Click-to-Convert) ─────────────────────────
+from app.workers.vdp_text_picker import pick_text_to_vdp_field, auto_detect_vdp_tags
+from app.database import SessionLocal
+from app.models.job import UploadedFile
+from app.core.license_guard import result_access_url
+from datetime import datetime, timezone, timedelta
+
+
+class VdpPickTextFieldRequest(BaseModel):
+    fid: str
+    page: int
+    drawIndex: int
+    removeOriginal: bool = True
+
+
+class VdpAutoDetectTagsRequest(BaseModel):
+    fid: str
+    page: int
+    removeOriginal: bool = True
+
+
+_VDP_CLEANED_TEMPLATES: dict[str, tuple[str, str]] = {}
+
+def _resolve_vdp_template_file(fid_or_path: str) -> tuple[str, str]:
+    if fid_or_path in _VDP_CLEANED_TEMPLATES:
+        cand_path, cand_name = _VDP_CLEANED_TEMPLATES[fid_or_path]
+        if os.path.isfile(cand_path):
+            return os.path.abspath(cand_path), cand_name
+    import urllib.parse
+    unquoted = urllib.parse.unquote(fid_or_path)
+    if os.path.isfile(unquoted):
+        return os.path.abspath(unquoted), os.path.basename(unquoted)
+    if os.path.isfile(fid_or_path):
+        return os.path.abspath(fid_or_path), os.path.basename(fid_or_path)
+    try:
+        db = SessionLocal()
+        try:
+            row = db.query(UploadedFile).filter(UploadedFile.id == fid_or_path).first()
+            if row and os.path.isfile(row.file_path):
+                return os.path.abspath(row.file_path), row.original_name or row.filename
+        finally:
+            db.close()
+    except Exception:
+        pass
+    raise HTTPException(status_code=404, detail=f"Không tìm thấy file PDF mẫu: {fid_or_path}")
+
+
+def _register_cleaned_template(cleaned_path: str, original_name: str) -> tuple[str, str, str]:
+    filename = os.path.basename(cleaned_path)
+    fid = f"cleaned_{uuid.uuid4().hex[:12]}"
+    lease = None
+    try:
+        from app.core.artifact_lease import create_artifact_lease
+        lease = create_artifact_lease("vdp", cleaned_path, fid=fid)
+    except Exception:
+        pass
+
+    try:
+        db = SessionLocal()
+        try:
+            row = UploadedFile(
+                filename=filename,
+                original_name=f"Cleaned_{original_name}",
+                file_path=cleaned_path,
+                file_size=os.path.getsize(cleaned_path),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            )
+            db.add(row)
+            db.flush()
+            fid = str(row.id)
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Không thể lưu DB cho cleaned template (bỏ qua nếu chạy standalone không DB): %s", exc)
+
+    _VDP_CLEANED_TEMPLATES[fid] = (os.path.abspath(cleaned_path), original_name)
+    url = result_access_url(f"/results/vdp_templates/{filename}")
+    return fid, url, lease
+
+
+@router.post("/pick-text-field")
+async def vdp_pick_text_field(req: VdpPickTextFieldRequest):
+    pdf_path, original_name = _resolve_vdp_template_file(req.fid)
+    cleaned_path = None
+    if req.removeOriginal:
+        templates_dir = os.path.join(RESULTS_DIR, "vdp_templates")
+        os.makedirs(templates_dir, exist_ok=True)
+        cleaned_filename = f"vdp_clean_{uuid.uuid4().hex[:10]}.pdf"
+        cleaned_path = os.path.abspath(os.path.join(templates_dir, cleaned_filename))
+
+    try:
+        res = pick_text_to_vdp_field(
+            pdf_path=pdf_path,
+            page_index=req.page,
+            draw_index=req.drawIndex,
+            remove_original=req.removeOriginal,
+            output_path=cleaned_path,
+        )
+    except Exception as exc:
+        logger.exception("pick_text_to_vdp_field thất bại")
+        raise HTTPException(status_code=400, detail=f"Không thể trích xuất chữ: {exc}")
+
+    working_fid, working_url, artifact_lease = None, None, None
+    if req.removeOriginal and cleaned_path and os.path.isfile(cleaned_path):
+        working_fid, working_url, artifact_lease = _register_cleaned_template(cleaned_path, original_name)
+
+    return {
+        "success": True,
+        "field": res["field"],
+        "working_fid": working_fid,
+        "working_pdf_url": working_url,
+        "working_pdf_path": cleaned_path if req.removeOriginal else None,
+        "artifact_lease": artifact_lease,
+    }
+
+
+@router.post("/auto-detect-tags")
+async def vdp_auto_detect_tags(req: VdpAutoDetectTagsRequest):
+    pdf_path, original_name = _resolve_vdp_template_file(req.fid)
+    cleaned_path = None
+    if req.removeOriginal:
+        templates_dir = os.path.join(RESULTS_DIR, "vdp_templates")
+        os.makedirs(templates_dir, exist_ok=True)
+        cleaned_filename = f"vdp_tags_{uuid.uuid4().hex[:10]}.pdf"
+        cleaned_path = os.path.abspath(os.path.join(templates_dir, cleaned_filename))
+
+    try:
+        res = auto_detect_vdp_tags(
+            pdf_path=pdf_path,
+            page_index=req.page,
+            remove_original=req.removeOriginal,
+            output_path=cleaned_path,
+        )
+    except Exception as exc:
+        logger.exception("auto_detect_vdp_tags thất bại")
+        raise HTTPException(status_code=400, detail=f"Không thể quét tag: {exc}")
+
+    working_fid, working_url, artifact_lease = None, None, None
+    if req.removeOriginal and cleaned_path and os.path.isfile(cleaned_path) and res.get("detectedCount", 0) > 0:
+        working_fid, working_url, artifact_lease = _register_cleaned_template(cleaned_path, original_name)
+
+    return {
+        "success": True,
+        "fields": res["fields"],
+        "detected_count": res["detectedCount"],
+        "working_fid": working_fid,
+        "working_pdf_url": working_url,
+        "working_pdf_path": cleaned_path if req.removeOriginal else None,
+        "artifact_lease": artifact_lease,
+    }

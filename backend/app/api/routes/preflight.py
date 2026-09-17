@@ -254,7 +254,13 @@ def _action_result_to_fix_response(result) -> "FixResponse":
 # ── Helper ──
 
 def _get_file_path(file_id: str) -> str:
-    """Resolve file_id to actual file path from DB."""
+    """Resolve file_id to actual file path from DB or native disk path."""
+    import urllib.parse
+    unquoted = urllib.parse.unquote(file_id)
+    if os.path.isfile(unquoted):
+        return os.path.abspath(unquoted)
+    if os.path.isfile(file_id):
+        return os.path.abspath(file_id)
     db = SessionLocal()
     try:
         uploaded = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
@@ -267,7 +273,13 @@ def _get_file_path(file_id: str) -> str:
         db.close()
 
 def _get_file_info(file_id: str) -> tuple[str, str]:
-    """Resolve file_id to (file_path, original_name) from DB."""
+    """Resolve file_id to (file_path, original_name) from DB or native disk path."""
+    import urllib.parse
+    unquoted = urllib.parse.unquote(file_id)
+    if os.path.isfile(unquoted):
+        return os.path.abspath(unquoted), os.path.basename(unquoted)
+    if os.path.isfile(file_id):
+        return os.path.abspath(file_id), os.path.basename(file_id)
     db = SessionLocal()
     try:
         uploaded = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
@@ -465,18 +477,14 @@ from app.core.pdf_object_ops import merge_rects as _merge_rects, expand_bbox as 
 async def get_page_svg(file_id: str, page: int):
     """Render a PDF page as SVG vector graphics using MuPDF C++ engine."""
     from fastapi.responses import Response
-    db = SessionLocal()
+    file_path = _get_file_path(file_id)
     try:
-        uploaded = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
-        if not uploaded or not os.path.exists(uploaded.file_path):
-            raise HTTPException(status_code=404, detail="File không tồn tại.")
-        
         import pypdfium2 as pdfium
         from app.core.pdfium_lock import pdfium_guard
         # KIENTRUC (audit 2026-07-29 §C.1): endpoint async nhưng PDFium là code C đồng bộ —
         # nhiều request preview cùng lúc vẫn chạm PDFium song song qua event loop + threadpool.
         with pdfium_guard("preflight_page_svg"):
-            pdf_doc = pdfium.PdfDocument(uploaded.file_path)
+            pdf_doc = pdfium.PdfDocument(file_path)
             if page < 1 or page > len(pdf_doc):
                 pdf_doc.close()
                 raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
@@ -503,8 +511,6 @@ async def get_page_svg(file_id: str, page: int):
         )
     except Exception as e:
         raise_http(e, "Lỗi render SVG")
-    finally:
-        db.close()
 
 
 @router.get("/preflight/svg-by-path")
@@ -547,13 +553,9 @@ async def get_page_svg_by_path(file_path: str, page: int):
 @router.get("/preflight/objects/{file_id}/{page}", response_model=PageObjectsResponse)
 async def get_page_objects(file_id: str, page: int):
     """Trích xuất toàn bộ object (Text, Image, Drawing) của một trang cụ thể."""
-    db = SessionLocal()
+    file_path = _get_file_path(file_id)
     try:
-        uploaded = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
-        if not uploaded or not os.path.exists(uploaded.file_path):
-            raise HTTPException(status_code=404, detail="File không tồn tại.")
-        
-        doc = pikepdf.Pdf.open(uploaded.file_path)
+        doc = pikepdf.Pdf.open(file_path)
         if page < 1 or page > len(doc.pages):
             raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
             
@@ -628,8 +630,6 @@ async def get_page_objects(file_id: str, page: int):
         return {"objects": objects}
     except Exception as e:
         raise_http(e, "Lỗi khi trích xuất object")
-    finally:
-        db.close()
 
 
 def _delete_images_by_ref(page, image_objs) -> int:
@@ -672,13 +672,9 @@ def _delete_images_by_ref(page, image_objs) -> int:
 @router.post("/preflight/delete-object", response_model=FixFileResponse)
 async def delete_pdf_object(req: DeleteObjectRequest):
     """Xóa nhiều objects khỏi PDF sử dụng Redaction thông minh."""
-    db = SessionLocal()
+    file_path, orig_name = _get_file_info(req.file_id)
     try:
-        uploaded = db.query(UploadedFile).filter(UploadedFile.id == req.file_id).first()
-        if not uploaded or not os.path.exists(uploaded.file_path):
-            raise HTTPException(status_code=404, detail="File không tồn tại.")
-            
-        doc = pikepdf.Pdf.open(uploaded.file_path)
+        doc = pikepdf.Pdf.open(file_path)
         if req.page < 1 or req.page > len(doc.pages):
             raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
             
@@ -708,7 +704,7 @@ async def delete_pdf_object(req: DeleteObjectRequest):
         # Save
         output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
         output_dir.mkdir(parents=True, exist_ok=True)
-        original_stem = Path(uploaded.original_name).stem if uploaded.original_name else Path(uploaded.file_path).stem
+        original_stem = Path(orig_name).stem if orig_name else Path(file_path).stem
         output_name = f"{original_stem}_erased_{uuid.uuid4().hex[:6]}.pdf"
         output_path = output_dir / output_name
         
@@ -721,19 +717,14 @@ async def delete_pdf_object(req: DeleteObjectRequest):
         }
     except Exception as e:
         raise_http(e, "Lỗi khi xóa object")
-    finally:
-        db.close()
 
 
 @router.post("/preflight/preview-hide", response_model=PreviewImageResponse)
 async def preview_hide_pdf_object(req: DeleteObjectRequest):
     """Tạo ảnh preview Base64 của trang với các objects đã bị xóa tạm (tắt mắt)."""
     import io as _io
-    db = SessionLocal()
+    file_path, orig_name = _get_file_info(req.file_id)
     try:
-        uploaded = db.query(UploadedFile).filter(UploadedFile.id == req.file_id).first()
-        if not uploaded or not os.path.exists(uploaded.file_path):
-            raise HTTPException(status_code=404, detail="File không tồn tại.")
             
         import pypdfium2 as pdfium
         
@@ -817,10 +808,8 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
         }
     except Exception as e:
         raise_http(e, "Lỗi khi tạo ảnh preview tắt mắt")
-    finally:
-        db.close()
 
-@router.get("/preflight/layers/{file_id}", response_model=OcgLayerTreeResponse)
+@router.get("/preflight/layers/{file_id:path}", response_model=OcgLayerTreeResponse)
 async def get_ocg_layers(file_id: str, original_only: bool = False):
     """Đọc cây OCG từ live session nếu đang sửa, nếu không đọc file đã upload."""
     from app.core.layer_engine import LayerEngine

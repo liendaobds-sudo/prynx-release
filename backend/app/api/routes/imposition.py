@@ -1,3 +1,13 @@
+
+def _cluster_dbg(tag: str, data: dict):
+    try:
+        import os, tempfile, time, json
+        p = os.path.join(tempfile.gettempdir(), 'cluster_debug.log')
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(f"[{ts}] [{tag}] {json.dumps(data, ensure_ascii=False, default=str)}\n")
+    except Exception:
+        pass
 import os
 import shutil
 import tempfile
@@ -406,18 +416,27 @@ async def _detect_on_canonical(
     )
     return to_legacy_response(result)
 
+@router.post("/pdf-text")
+async def get_imposition_pdf_text_alias(body: dict):
+    from app.api.routes.document_tools import _get_pdf_text
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(_get_pdf_text, body)
+
 @router.post("/perf-beacon")
 async def preview_perf_beacon(body: dict, license_info: dict = Depends(require_license)):
-    """Nhận timeline chỉ trong runtime dev đã opt-in; release luôn no-op."""
-    if not development_diagnostic_enabled("PRYNX_PERF"):
-        return {"ok": True}
-    from app.utils.preview_perf_log import log as _perf
+    """Ghi log đo timeline ra terminal console để người vận hành kiểm tra tức thì."""
     msg = str((body or {}).get("msg") or "beacon")[:200]
     fields = {
         k: v for k, v in (body or {}).items()
         if k != "msg" and isinstance(v, (str, int, float, bool))
     }
-    _perf("FE", msg, **fields)
+    field_str = " ".join(f"{k}={v}" for k, v in fields.items())
+    logging.getLogger("app.perf").warning(f"[PERF-BEACON][FE] {msg} {field_str}".strip())
+    try:
+        from app.utils.preview_perf_log import log as _perf
+        _perf("FE", msg, **fields)
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -968,6 +987,13 @@ def _nup_process_worker(
     job_id: str,
     source_fingerprint: SourceFingerprint | None = None,
 ):
+    try:
+        import os, tempfile, time, json
+        p = os.path.join(tempfile.gettempdir(), 'cluster_debug.log')
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [PROCESS_WORKER_START] job_id={job_id} groupingStrategy={settings.get('groupingStrategy')} layoutType={settings.get('layoutType')} isDieCutMode={settings.get('isDieCutMode')}\n")
+    except Exception:
+        pass
     import tempfile
     import os
     from app.workers.nup_engine import run_nup_engine
@@ -1108,6 +1134,21 @@ def _prepare_and_queue_nup_process(
 
 
 def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> dict:
+    _cluster_dbg("API_LAUNCH_JOB", {
+        "prefix": prefix,
+        "source_path": body.get("source_path"),
+        "groupingStrategy": (body.get("settings") or {}).get("groupingStrategy"),
+        "grouping_strategy": (body.get("settings") or {}).get("grouping_strategy"),
+        "taskMode": (body.get("settings") or {}).get("taskMode"),
+        "layoutType": (body.get("settings") or {}).get("layoutType"),
+        "isDieCutMode": (body.get("settings") or {}).get("isDieCutMode"),
+        "clusterTileW": (body.get("settings") or {}).get("clusterTileW"),
+        "clusterTileH": (body.get("settings") or {}).get("clusterTileH"),
+        "clusterCols": (body.get("settings") or {}).get("clusterCols"),
+        "clusterRows": (body.get("settings") or {}).get("clusterRows"),
+        "clusterCombineMode": (body.get("settings") or {}).get("clusterCombineMode"),
+        "gridStrategy": (body.get("settings") or {}).get("gridStrategy"),
+    })
     """
     Helper chung cho N-Up & Sticker (Task 18 / Req 9.3).
     Hai chế độ chỉ khác tiền tố tên file; mode thực do settings['isDieCutMode'].
@@ -2340,7 +2381,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             # cắt xén, nest grid solve_optimal_layout). _cluster_is_die phân nhánh nest.
             _is_cluster_req = (
                 getattr(req, 'grouping_strategy', None) == 'cluster_tile'
-                and _lt != 'repeat'
             )
             _cluster_is_die = bool(getattr(req, 'is_die_cut', False))
             is_nup_multi = (
@@ -2606,6 +2646,12 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 else:
                     _cw = (req.cluster_w or 148.0 * MM)
                     _ch = (req.cluster_h or 210.0 * MM)
+
+                if _lt == 'repeat':
+                    _view_pi = getattr(req, 'view_page_idx', 0) or 0
+                    _matched_info = [info for info in page_infos_c if info[0] == _view_pi]
+                    page_infos_c = _matched_info if _matched_info else page_infos_c[:1]
+                    combine_mode = 'replicate_mixed'
 
                 # replicate_mixed cần full_layouts (nest ở kích thước cụm) — dựng như export.
                 full_layouts_c = {}
@@ -4512,7 +4558,6 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
     is_cluster = (
         req.grouping_strategy == 'cluster_tile'
         and bool(req.is_die_cut)
-        and req.task_mode != 'step_repeat'
     )
     compute_w = req.usable_w
     compute_h = req.usable_h

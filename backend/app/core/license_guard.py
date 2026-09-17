@@ -28,7 +28,7 @@ import json
 import base64
 import stat as stat_mod
 from typing import Optional
-from app.core.feature_entitlements import assert_feature
+from app.core.feature_entitlements import assert_feature, can_use_feature
 from fastapi import Request, HTTPException, Depends
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
@@ -1941,6 +1941,18 @@ def require_feature(feature_id: str):
     """FastAPI dependency enforcing a named entitlement after signed-token validation."""
     async def dependency(license_info: dict = Depends(require_license)) -> dict:
         return enforce_feature(feature_id, license_info)
+    return dependency
+
+
+def require_feature_any(*feature_ids: str):
+    """FastAPI dependency cho phép người dùng có ÍT NHẤT 1 trong các feature_ids."""
+    async def dependency(license_info: dict = Depends(require_license)) -> dict:
+        plan = license_info.get("plan", "free")
+        features = license_info.get("features", [])
+        for fid in feature_ids:
+            if can_use_feature(fid, plan, features):
+                return license_info
+        return enforce_feature(feature_ids[0] if feature_ids else "", license_info)
     return dependency
 
 

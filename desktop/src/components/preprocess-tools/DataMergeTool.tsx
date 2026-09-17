@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
-import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, autoDetectVdpTags, type VdpFieldError, type VdpIssue, type VdpGating, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
 import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-04)
 import { confirmDialog } from '../ui/confirmDialog'; // UIUX (audit 2026-07-27 §D-06)
 import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
@@ -470,7 +470,7 @@ interface Props {
   pdfFile: File | null;
   getWorkingFile?: () => Promise<File>;
   vdpFields?: DataMergeField[];
-  setVdpFields?: (updater: never) => void;
+  setVdpFields?: (updater: any) => void;
   selectedFieldIds?: string[];
   onSelectField?: (ids: string[]) => void;
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
@@ -498,8 +498,44 @@ export default function DataMergeTool({
     const [manualText, setManualText] = useState('');
     const [manualColName, setManualColName] = useState('Noidung');
     const [statusMessage, setStatusMessage] = useState("");
-    const [showCurveSettings, setShowCurveSettings] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [isScanningTags, setIsScanningTags] = useState(false);
+    const isPickingVdpText = useWorkspaceStore((s) => s.isPickingVdpText);
+    const setIsPickingVdpText = useWorkspaceStore((s) => s.setIsPickingVdpText);
+    const selectionFileId = useWorkspaceStore((s) => s.selectionFileId);
+
+    const handleAutoDetectTags = async () => {
+        const fid = selectionFileId || (pdfFile as any)?.path;
+        if (!fid) {
+            toast.error(t('Chưa có file PDF mẫu để quét thẻ.'));
+            return;
+        }
+        try {
+            setIsScanningTags(true);
+            const res = await autoDetectVdpTags(fid, 0, true);
+            if (!res.detected_count || res.detected_count === 0) {
+                toast.info(t('Không tìm thấy thẻ dạng {{...}} hoặc [[...]] trên trang 1.'));
+                return;
+            }
+            if (setVdpFields && Array.isArray(res.fields)) {
+                setVdpFields?.(((prev: any) => [...(Array.isArray(prev) ? prev : []), ...(res.fields || [])]) as any);
+            }
+            toast.success(t(`Đã quét tự động ${res.detected_count} trường dữ liệu và làm sạch phôi in!`));
+            if (res.working_fid && res.working_pdf_url) {
+                window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
+                    detail: {
+                        workingFid: res.working_fid,
+                        workingPdfUrl: res.working_pdf_url,
+                        workingPdfPath: res.working_pdf_path
+                    }
+                }));
+            }
+        } catch (err: any) {
+            toast.error(err.message || 'Lỗi khi quét thẻ tự động');
+        } finally {
+            setIsScanningTags(false);
+        }
+    };
     // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
     const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
 
@@ -1579,6 +1615,44 @@ export default function DataMergeTool({
 
             {/* Drag and Drop Toolbar */}
             <VdpSection step="2" title={t('preprocess.dataMerge:keo_tha_vao_pdf')} defaultOpen>
+        {/* Quick Pick from Design & Auto-Detect buttons */}
+        <div className="grid grid-cols-2 gap-2 mb-2">
+            <button
+                type="button"
+                onClick={() => {
+                    const next = !isPickingVdpText;
+                    setIsPickingVdpText(next);
+                    if (next) {
+                        toast.info(t('Nhấp vào bất kỳ đoạn chữ nào trên bản thiết kế để tự động chọn làm trường VDP.'));
+                    }
+                }}
+                className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
+                    isPickingVdpText
+                        ? 'bg-teal-500 text-white border-teal-600 ring-2 ring-teal-400 ring-offset-1 animate-pulse'
+                        : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/50 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
+                }`}
+                title={t('Bật chế độ chọn trường trực tiếp từ chữ trên bản thiết kế')}
+            >
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                <span>{isPickingVdpText ? t('Đang chọn trường...') : t('Chọn trường')}</span>
+            </button>
+
+            <button
+                type="button"
+                disabled={isScanningTags}
+                onClick={handleAutoDetectTags}
+                className="p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700 disabled:opacity-50"
+                title={t('Tự động quét các thẻ {{...}} hoặc [[...]] có sẵn trong bản thiết kế')}
+            >
+                <svg className="w-4 h-4 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span>{isScanningTags ? t('Đang quét...') : t('Quét thẻ {{...}}')}</span>
+            </button>
+        </div>
+
         <div className="grid grid-cols-2 gap-2">
             <div 
                 onPointerDown={(e) => startVdpDrag(e, 'text', t('preprocess.dataMerge:chu_text'))}
@@ -1967,96 +2041,6 @@ export default function DataMergeTool({
                                             value={selectedField.fontColor || '#000000'}
                                             onChange={(hex) => updateSelectedField({ fontColor: hex })}
                                         />
-                                    </div>
-
-                                    {/* Quỹ đạo vòm (Type on a Path) — Accordion thu gọn / xổ ra */}
-                                    <div className="col-span-2 mt-1 border border-slate-200 dark:border-zinc-700 rounded-lg overflow-hidden bg-slate-50/50 dark:bg-zinc-800/40">
-                                        <button
-                                            type="button"
-                                            onClick={() => setShowCurveSettings(prev => !prev)}
-                                            className="w-full flex items-center justify-between p-2.5 text-left hover:bg-slate-100 dark:hover:bg-zinc-700/50 transition-colors"
-                                        >
-                                            <div className="flex items-center gap-2">
-                                                <svg className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16c4-8 12-8 16 0" />
-                                                </svg>
-                                                <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">
-                                                    Quỹ đạo vòm (Type on a Path)
-                                                </span>
-                                                {selectedField.curveMode && selectedField.curveMode !== 'none' && (
-                                                    <span className="text-[10px] px-1.5 py-0.5 bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 rounded-full font-medium">
-                                                        {selectedField.curveMode === 'arc_top' ? 'Vòm trên' : selectedField.curveMode === 'wave' ? 'Lượn sóng' : 'Vòm dưới'}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <svg className={`w-4 h-4 text-slate-400 transition-transform ${showCurveSettings ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                            </svg>
-                                        </button>
-
-                                        {showCurveSettings && (
-                                            <div className="p-3 pt-1 border-t border-slate-200 dark:border-zinc-700 flex flex-col gap-2.5">
-                                                <div className="flex flex-col gap-1">
-                                                    <span className="text-[10px] font-medium text-slate-500">Kiểu quỹ đạo</span>
-                                                    <select
-                                                        value={selectedField.curveMode || 'none'}
-                                                        onChange={(e) => {
-                                                            const newMode = e.target.value as 'none' | 'arc_top' | 'arc_bottom' | 'wave';
-                                                            const defaultR = selectedField.curveRadius ?? (newMode === 'wave' ? Math.round((selectedField.height || 20) * 0.25 * 10) / 10 : Math.round((selectedField.width || 50) * 0.75 * 10) / 10);
-                                                            updateSelectedField({ curveMode: newMode, curveRadius: defaultR });
-                                                        }}
-                                                        className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
-                                                    >
-                                                        <option value="none">Thẳng (Mặc định)</option>
-                                                        <option value="arc_top">Vòm trên (Top Arc - tiêu đề / vòm trên)</option>
-                                                        <option value="arc_bottom">Vòm dưới (Bottom Arc - số nhảy / vòm dưới)</option>
-                                                        <option value="wave">Lượn sóng (Wave / S-curve - chữ S dải lụa)</option>
-                                                    </select>
-                                                </div>
-
-                                                {selectedField.curveMode && selectedField.curveMode !== 'none' && (
-                                                    <>
-                                                        <div className="grid grid-cols-2 gap-2">
-                                                            <ToolNumberInput
-                                                                label={selectedField.curveMode === 'wave' ? "Biên độ sóng (A)" : "Bán kính cong (R)"}
-                                                                value={selectedField.curveRadius ?? (selectedField.curveMode === 'wave' ? Math.round((selectedField.height || 20) * 0.25 * 10) / 10 : Math.round((selectedField.width || 50) * 0.75 * 10) / 10)}
-                                                                onChange={(val) => updateSelectedField({ curveRadius: Math.max(0.5, val) })}
-                                                                suffix="mm" step={selectedField.curveMode === 'wave' ? 0.5 : 1} min={0.5}
-                                                            />
-                                                            <ToolNumberInput
-                                                                label="Giãn chữ (Tracking)"
-                                                                value={selectedField.curveTracking ?? 0}
-                                                                onChange={(val) => updateSelectedField({ curveTracking: val })}
-                                                                suffix="pt" step={0.5}
-                                                            />
-                                                        </div>
-                                                        <div className="flex flex-col gap-1">
-                                                            <span className="text-[10px] font-medium text-slate-500">Hướng lượn / mặt chữ</span>
-                                                            <select
-                                                                value={selectedField.curveOrientation || 'outward'}
-                                                                onChange={(e) => updateSelectedField({ curveOrientation: e.target.value as 'outward' | 'inward' })}
-                                                                className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
-                                                            >
-                                                                {selectedField.curveMode === 'wave' ? (
-                                                                    <>
-                                                                        <option value="outward">Lượn lên trước rồi xuống (Mặc định)</option>
-                                                                        <option value="inward">Lượn xuống trước rồi lên</option>
-                                                                    </>
-                                                                ) : (
-                                                                    <>
-                                                                        <option value="outward">Hướng ra ngoài (Chuẩn đọc từ trái sang phải)</option>
-                                                                        <option value="inward">Hướng vào tâm</option>
-                                                                    </>
-                                                                )}
-                                                            </select>
-                                                        </div>
-                                                        <p className="text-[10px] text-slate-400 italic leading-snug">
-                                                            Chữ giữ nguyên hình dạng font, xoay tiếp tuyến theo quỹ đạo cung tròn (Type on a Path).
-                                                        </p>
-                                                    </>
-                                                )}
-                                            </div>
-                                        )}
                                     </div>
                                 </div>
                                 )}

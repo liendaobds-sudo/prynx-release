@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
-import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
+import { ProgressBar } from '../ui/ProgressBar';
+import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-07)
 import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
 import { startVdpDrag } from '../../utils/vdpDrag';
 import { useVdpTool, type SetVdpFields, type VdpToolField } from '@/hooks/useVdpTool';
@@ -9,6 +10,7 @@ import {
     type InnerMode, type Distribution, type SortMethod,
 } from '@/lib/coverNumberingEngine';
 import { planCoverLayout, resolveCoverPageIndices, type Cluster } from '@/lib/coverNumberingPlanner';
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useNumberingJobStore, DEFAULT_SHARED_JOB, type SharedJob } from '@/stores/useNumberingJobStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '@/i18n';
@@ -49,6 +51,8 @@ export default function CoverNumberingTool({
     selectedFieldIds = [], onSelectField, onSpawnTab, onApplyResult, isActive = true,
 }: Props) {
   const { t } = useTranslation();
+    const isPickingVdpText = useWorkspaceStore(s => s.isPickingVdpText);
+    const setIsPickingVdpText = useWorkspaceStore(s => s.setIsPickingVdpText);
     // PA1: job dùng chung xuyên-tab. Khi "linked", ruột & bìa đọc/ghi cùng nguồn → khớp dải.
     const { linked, setLinked, job: sharedJob, setJob: setSharedJob } = useNumberingJobStore();
     const [localJob, setLocalJob] = useState<SharedJob>({ ...DEFAULT_SHARED_JOB });
@@ -301,6 +305,27 @@ export default function CoverNumberingTool({
                     <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:y_ruot_dau'), '{Y}')} className="bg-sky-50 border-2 border-sky-200 dark:bg-sky-900/20 dark:border-sky-800 p-2 rounded cursor-grab text-center text-xs font-bold text-sky-700 dark:text-sky-300">{'{Y}'} {t('preprocess.coverNumbering:ruot_dau')}</div>
                     <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:z_ruot_cuoi'), '{Z}')} className="bg-rose-50 border-2 border-rose-200 dark:bg-rose-900/20 dark:border-rose-800 p-2 rounded cursor-grab text-center text-xs font-bold text-rose-700 dark:text-rose-300">{'{Z}'} {t('preprocess.coverNumbering:ruot_cuoi')}</div>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => {
+                        const next = !isPickingVdpText;
+                        setIsPickingVdpText(next);
+                        if (next) {
+                            toast.info(t('Nhấp vào chữ hoặc số trên bản thiết kế bìa để chọn làm trường VDP.'));
+                        }
+                    }}
+                    className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
+                        isPickingVdpText
+                            ? 'bg-teal-500 text-white border-teal-600 ring-2 ring-teal-400 ring-offset-1 animate-pulse'
+                            : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/50 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
+                    }`}
+                    title={t('Bật chế độ chọn trường trực tiếp từ chữ/số trên trang bìa')}
+                >
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                    </svg>
+                    <span>{isPickingVdpText ? t('Đang chọn trường...') : t('Chọn trường')}</span>
+                </button>
                 <div className="flex gap-2 items-center text-[11px]">
                     <span className="text-slate-500">{t('preprocess.coverNumbering:n_cum_n_truong', { clusters: clusters.length, fields: vdpFields.length })}</span>
                     {selectedFieldIds.length > 1 && <button onClick={handleGroupFields} className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded font-medium">Group</button>}

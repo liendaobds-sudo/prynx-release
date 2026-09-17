@@ -187,12 +187,14 @@ def _invalidate_object_cache(fid: str, page: int | None = None):
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _get_file_info(file_id: str) -> tuple[str, str]:
     """
-    Resolve `file_id` → (file_path, original_name) từ DB — TÁI DÙNG đúng cơ chế
-    của `preflight` route (bảng `UploadedFile`).
-
-    Raises:
-        HTTPException 404: nếu file_id không tồn tại hoặc file đã bị xóa khỏi đĩa.
+    Resolve `file_id` → (file_path, original_name) từ DB hoặc đường dẫn đĩa trực tiếp.
     """
+    import urllib.parse
+    unquoted = urllib.parse.unquote(file_id)
+    if os.path.isfile(unquoted):
+        return os.path.abspath(unquoted), os.path.basename(unquoted)
+    if os.path.isfile(file_id):
+        return os.path.abspath(file_id), os.path.basename(file_id)
     db = SessionLocal()
     try:
         uploaded = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
@@ -547,11 +549,14 @@ def _apply_edit_op(pdf, op: EditOp, pdf_path: str):
         if op.text is None:
             raise ValueError("Thao tác editText yêu cầu trường 'text'.")
         metas = _resolve_targets(pdf_path, op.page, op.targetIds)
+        if not metas:
+            raise ValueError("Không tìm thấy đối tượng text mục tiêu.")
         new_text = op.text.content
         # `op.text.font` = ĐƯỜNG DẪN file font người dùng chọn (nếu có) → nhúng font đó.
         chosen = op.text.font or None
-        results = [edit_text(pg, meta, new_text, pdf, chosen_font_path=chosen) for meta in metas]
-        return results[0] if len(results) == 1 else results
+        primary_meta = metas[0]
+        remove_metas = metas[1:] if len(metas) > 1 else None
+        return edit_text(pg, primary_meta, new_text, pdf, chosen_font_path=chosen, remove_metas=remove_metas)
 
     if kind == "add":
         if op.text is None and op.image is None:
@@ -671,7 +676,7 @@ def _render_clip_blocking_locked(
 
         width, height = img.size
         out = BytesIO()
-        img.save(out, format="PNG")
+        img.save(out, format="PNG", compress_level=1)
         b64 = base64.b64encode(out.getvalue()).decode("ascii")
     finally:
         render_doc.close()
@@ -916,13 +921,21 @@ async def _execute_session(blocking_fn, timeout_seconds: float = EDIT_TIMEOUT_SE
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Thao tác phiên thất bại")
-        raise HTTPException(status_code=500, detail=f"Thao tác phiên chỉnh sửa thất bại: {exc}")
+        import traceback
+        tb = traceback.format_exc()
+        print("ERROR IN SESSION OP:", tb, flush=True)
+        logger.exception("Thao tác phiên thất bại: %s", tb)
+        raise HTTPException(status_code=500, detail=f"Thao tác phiên chỉnh sửa thất bại: {exc}\n{tb}")
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
+@router.get("/edit/objects", response_model=PageObjectsPayload)
 @router.get("/edit/objects/{fid}/{page}", response_model=PageObjectsPayload)
 async def list_page_objects(fid: str, page: int):
+    import urllib.parse
+    fid = urllib.parse.unquote(fid)
+    import time
+    t_obj_start = time.perf_counter()
     """
     Liệt kê object (text/image/vector) của một trang (PDFium read-only).
     Ưu tiên dùng Live EditSession (nếu đang mở) để:
@@ -942,6 +955,8 @@ async def list_page_objects(fid: str, page: int):
     # 2. Thử lấy từ session đang sống (nhanh + state mới nhất)
     try:
         session = edit_session.get_active_session(fid)
+        page_box = None
+        hidden_ids = []
         if session:
             with session.lock:
                 objects_list = edit_session.list_objects_from_session(
@@ -950,6 +965,14 @@ async def list_page_objects(fid: str, page: int):
                 object_mapper.enrich_object_ocg_memberships(
                     session.pdf.pages[page], objects_list, session.pdf
                 )
+                hidden_ids = edit_session.hidden_object_ids(session.pdf, page)
+                if 0 <= page < len(session.pdf.pages):
+                    _pg = session.pdf.pages[page]
+                    try:
+                        _b = _pg.cropbox
+                    except Exception:
+                        _b = _pg.mediabox
+                    page_box = [float(_b[0]), float(_b[1]), float(_b[2]), float(_b[3])]
         else:
             objects_list = geometry_reader.list_objects(
                 pdf_path, page, include_text_props=False
@@ -959,38 +982,19 @@ async def list_page_objects(fid: str, page: int):
                 object_mapper.enrich_object_ocg_memberships(
                     source_pdf.pages[page], objects_list, source_pdf
                 )
+                hidden_ids = edit_session.hidden_object_ids(source_pdf, page)
+                if 0 <= page < len(source_pdf.pages):
+                    _pg = source_pdf.pages[page]
+                    try:
+                        _b = _pg.cropbox
+                    except Exception:
+                        _b = _pg.mediabox
+                    page_box = [float(_b[0]), float(_b[1]), float(_b[2]), float(_b[3])]
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Liệt kê object thất bại")
         raise HTTPException(status_code=500, detail=f"Liệt kê object thất bại: {exc}")
-
-    # 3. Lấy pageBox (CropBox) từ đĩa (nhẹ, chỉ cần metadata)
-    page_box: list[float] | None = None
-    try:
-        import pikepdf
-        with pikepdf.open(pdf_path) as _pdf:
-            if 0 <= page < len(_pdf.pages):
-                _pg = _pdf.pages[page]
-                try:
-                    _b = _pg.cropbox  # pikepdf: fallback MediaBox nếu không có CropBox
-                except Exception:  # noqa: BLE001
-                    _b = _pg.mediabox
-                page_box = [float(_b[0]), float(_b[1]), float(_b[2]), float(_b[3])]
-    except Exception:  # noqa: BLE001 - đọc box best-effort
-        page_box = None
-
-    hidden_ids: list[str] = []
-    try:
-        if session:
-            with session.lock:
-                hidden_ids = edit_session.hidden_object_ids(session.pdf, page)
-        else:
-            import pikepdf
-            with pikepdf.Pdf.open(pdf_path) as source_pdf:
-                hidden_ids = edit_session.hidden_object_ids(source_pdf, page)
-    except Exception:  # visibility metadata is best-effort; object listing still succeeds
-        hidden_ids = []
 
     payload = {
         "objects": [o.model_dump() for o in objects_list],
@@ -1001,12 +1005,24 @@ async def list_page_objects(fid: str, page: int):
     return payload
 
 
+@router.get("/edit/text-props", response_model=TextObjectPropsResponse)
 @router.get("/edit/text-props/{fid}/{page}/{index}", response_model=TextObjectPropsResponse)
 async def get_text_props(fid: str, page: int, index: int):
+    import urllib.parse
+    fid = urllib.parse.unquote(fid)
     """
     LAZY: nội dung/màu/font của MỘT text-object (theo drawIndex) — gọi khi mở
     editor sửa text. Tách khỏi /edit/objects để liệt kê trang nhanh.
     """
+    # PERF: Ưu tiên đọc trực tiếp từ in-memory session (2ms, không đọc đĩa)
+    try:
+        session = edit_session.get_active_session(fid)
+        if session and session.live_bytes:
+            props = geometry_reader.get_text_object_props(session.live_bytes, page, index)
+            return props
+    except Exception:
+        pass
+
     pdf_path, _ = _get_file_info(fid)
     try:
         props = geometry_reader.get_text_object_props(pdf_path, page, index)

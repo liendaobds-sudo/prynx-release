@@ -18,13 +18,16 @@ export function editPreviewDocumentChanged(
  */
 export function shouldLoadEditObjectsForFrame(input: {
     isObjectEditMode: boolean;
+    isPickingVdpText?: boolean;
     isActiveFrame: boolean;
     originalPageNum: number;
     selectionFileId: string;
     hasPageHeight: boolean;
 }): boolean {
-    return input.isObjectEditMode
-        && input.isActiveFrame
+    const isModeActive = input.isObjectEditMode || Boolean(input.isPickingVdpText);
+    if (!isModeActive) return false;
+    // PERF: Chỉ nạp cho frame active, tuyệt đối không để frame ảo/overscan đồng loạt gọi API
+    return input.isActiveFrame
         && input.originalPageNum !== -1
         && input.selectionFileId.length > 0
         && input.hasPageHeight;

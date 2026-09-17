@@ -370,7 +370,7 @@ export async function runProcessEngine(
                 clusterCols: settings.clusterCols || 2,
                 clusterRows: settings.clusterRows || 2,
                 clusterSizingMode: settings.clusterSizingMode || 'dims',
-                clusterCombineMode: settings.clusterCombineMode || 'replicate_mixed',
+                clusterCombineMode: settings.taskMode === 'step_repeat' ? 'replicate_mixed' : (settings.clusterCombineMode || 'replicate_mixed'),
                 clusterNesting: settings.clusterNesting !== false,
                 tileGapX: settings.tileGapX || 0,
                 tileGapY: settings.tileGapY || 0,
@@ -427,6 +427,7 @@ export async function runProcessEngine(
                 bleed_mm: settings.bleed || 0,
                 split_gap_mm: Number(settings.splitGap ?? 0),
             });
+            console.warn('[CLUSTER-DEBUG-PROCESS] Sending backendSettings to backend:', JSON.stringify(backendSettings));
             const jobId = await startNupJobBackend(serverPath, backendSettings);
             void previewPerfLog('nup-export ACCEPTED', {
                 trace_id: settings.diagnosticTraceId || '',

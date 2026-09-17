@@ -342,14 +342,23 @@ describe('PV26.1: grouping hiệu lực thống nhất preview, bảng sức ch�
         const capacities = store.getState().previewCapacities;
         const requestCount = batchBodies().length;
 
-        act(() => store.getState().setGroupingStrategy('cluster_tile'));
+        act(() => store.getState().setGroupingStrategy('strict_ratio'));
         await settleDashboard();
 
         expect(lastPreview().groupingStrategy).toBe('none');
         expect(store.getState().fetchEpoch).toBe(epoch);
         expect(store.getState().previewCapacities).toEqual(capacities);
         expect(batchBodies()).toHaveLength(requestCount);
-        expect(store.getState().groupingStrategy).toBe('cluster_tile');
+        expect(store.getState().groupingStrategy).toBe('strict_ratio');
+    });
+
+    it('Bình trang với cluster_tile áp dụng grouping cluster_tile vào preview và export', async () => {
+        const { store, onStartNup } = mountDashboard('sticker_imposer', 'step_repeat', 'cluster_tile');
+        await settleDashboard();
+
+        expect(lastPreview().groupingStrategy).toBe('cluster_tile');
+        executeWithAppliedPreview();
+        expect(onStartNup).toHaveBeenCalledWith(expect.objectContaining({ groupingStrategy: 'cluster_tile' }));
     });
 });
 

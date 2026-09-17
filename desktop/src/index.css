@@ -668,3 +668,28 @@ html.perf-low .animate-progress-indeterminate {
   animation-duration: 2.5s !important;
   animation-iteration-count: infinite !important;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * PDF TEXT SELECTION LAYER (Acrobat / Chrome standard)
+ * Giữ nguyên văn bản trong suốt khi quét chọn (color: transparent !important),
+ * chỉ hiện nền highlight xanh trong suốt đè lên vector glyph gốc của PDF.
+ * Người dùng nhìn thấy chữ gốc sắc nét của PDF thay vì font web ảo bị lệch,
+ * trong khi chức năng Copy (Ctrl+C) vẫn sao chép đầy đủ nội dung.
+ * ────────────────────────────────────────────────────────────────────────── */
+.selectable-text-layer,
+.selectable-text-layer * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.selectable-text-layer ::selection,
+.selectable-text-layer *::selection {
+  background: rgba(37, 99, 235, 0.35) !important;
+  color: transparent !important;
+}
+
+.selectable-text-layer ::-moz-selection,
+.selectable-text-layer *::-moz-selection {
+  background: rgba(37, 99, 235, 0.35) !important;
+  color: transparent !important;
+}

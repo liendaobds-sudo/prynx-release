@@ -64,6 +64,9 @@ export interface EditTextPayload {
     font?: string;
     sizePt?: number;
     bbox?: BBox;
+    color?: number[] | null;
+    bold?: boolean;
+    italic?: boolean;
 }
 
 /** Tham số ảnh cho thao tác `add`. */

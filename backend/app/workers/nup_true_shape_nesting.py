@@ -29,6 +29,16 @@ phân loại phải thoát ra để không che regression bằng một artifact 
 
 from __future__ import annotations
 
+def _cluster_ts_dbg(tag: str, **kwargs):
+    try:
+        import os, tempfile, time, json
+        p = os.path.join(tempfile.gettempdir(), 'cluster_debug.log')
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(f"[{ts}] [{tag}] {json.dumps(kwargs, ensure_ascii=False, default=str)}\n")
+    except Exception:
+        pass
+
 import logging
 import math
 import os
@@ -1187,6 +1197,13 @@ def run_true_shape_nesting(
     store=None,
     cancel_event=None,
 ) -> str:
+    _cluster_ts_dbg("RUN_TRUE_SHAPE_ENTRY",
+        job_id=job_id,
+        is_step_repeat=_is_step_repeat(settings),
+        groupingStrategy=settings.get("groupingStrategy"),
+        taskMode=settings.get("taskMode"),
+        layoutType=settings.get("layoutType")
+    )
     """Chạy một lượt nesting theo đường bế. Trả chuỗi report như `run_nup_engine`.
 
     Hợp đồng trả về phải là **chuỗi**: `_spawn_nup_process` ghi thẳng giá trị này

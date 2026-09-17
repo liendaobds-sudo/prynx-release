@@ -1102,7 +1102,8 @@ def process_chunk(args):
             shape.commit()
         # MARKS (audit 2026-08-01 §DXM.1/§DXM.2): `none` phải tắt mọi dấu.
         # Mixed dùng segment tách zone thật; cluster_tile cũ vẫn dùng lưới {v,h}.
-        if mark_type != 'none' and sheet_idx in chunk_cluster_tile_cuts:
+        _should_draw_cluster_marks = sheet_idx in chunk_cluster_tile_cuts and (mark_type != 'none' or grouping_strategy == 'cluster_tile')
+        if _should_draw_cluster_marks:
             _ctcl = chunk_cluster_tile_cuts[sheet_idx]
             _draw_cluster_marks = (
                 draw_segment_cut_marks
@@ -1557,6 +1558,8 @@ def process_chunk(args):
                 )
                 
                 draw_one_dao_cuts(out_page_cut, cut_segs_cut, color=global_die_color, stroke_width=global_die_width, oc=ocg_xref)
+
+
 
             # Draw pont marks on the cut page with SEPARATE OCG (child of Marks_Model_ group)
             if pont_config and ponts_on_cut_file:

@@ -142,7 +142,13 @@ def _collect_field_columns(field: Union[Mapping[str, Any], object]) -> set[str]:
     ftype = (_field_get(field, "type", "") or "").lower()
     text = _field_get(field, "textContent", None)
     if text:
-        cols |= _extract_referenced_columns(text)
+        extracted = _extract_referenced_columns(text)
+        if extracted:
+            cols |= extracted
+        elif ftype != "image":
+            name = _field_get(field, "name", None)
+            if name:
+                cols.add(str(name))
     elif ftype != "image":
         # Field động không có textContent ⇒ ngầm dùng cột trùng tên field.
         name = _field_get(field, "name", None)

@@ -1777,3 +1777,74 @@ export async function listVdpSheets(file: File): Promise<string[]> {
   const data = await res.json();
   return data.sheets as string[];
 }
+
+
+export interface VdpPickFieldResult {
+  success: boolean;
+  field: {
+    id: string;
+    name: string;
+    type?: string;
+    textContent?: string | null;
+    pageNum?: number;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    fontSize?: number;
+    fontColor?: string;
+    fontName?: string;
+    alignment?: string;
+    autoFit?: boolean;
+    [key: string]: unknown;
+  };
+  removedDrawIndices?: number[];
+  working_fid?: string | null;
+  working_pdf_url?: string | null;
+  working_pdf_path?: string | null;
+  artifact_lease?: string | null;
+}
+
+export async function pickVdpTextField(
+  fid: string,
+  page: number,
+  drawIndex: number,
+  removeOriginal = true
+): Promise<VdpPickFieldResult> {
+  const res = await authenticatedFetch(API_BASE + '/api/vdp/pick-text-field', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fid, page, drawIndex, removeOriginal }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi trích xuất chữ' }));
+    throw new Error(err.detail || 'Lỗi trích xuất chữ');
+  }
+  return res.json();
+}
+
+export async function autoDetectVdpTags(
+  fid: string,
+  page: number,
+  removeOriginal = true
+): Promise<{
+  success: boolean;
+  fields: VdpPickFieldResult['field'][];
+  detected_count: number;
+  removedDrawIndices?: number[];
+  working_fid?: string | null;
+  working_pdf_url?: string | null;
+  working_pdf_path?: string | null;
+  artifact_lease?: string | null;
+}> {
+  const res = await authenticatedFetch(API_BASE + '/api/vdp/auto-detect-tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fid, page, removeOriginal }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi quét tag tự động' }));
+    throw new Error(err.detail || 'Lỗi quét tag tự động');
+  }
+  return res.json();
+}

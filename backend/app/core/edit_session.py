@@ -103,6 +103,7 @@ class EditSession:
     live_bytes: bytes | None = None  # BYTES post-op gần nhất của Live_Document — cache
                                      # để `render_clip` (task 3.2) TÁI DÙNG, tránh
                                      # save lại lần nữa (design: "save 1 lần/op").
+    page_objects_cache: dict[int, dict[str, ObjMeta]] = field(default_factory=dict)  # PERF: cache objects theo trang
 
 
 # ── Store toàn cục ───────────────────────────────────────────────────────────
@@ -122,14 +123,15 @@ SESSION_TTL: float = 30 * 60.0  # 1800 giây
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _resolve_source_path(fid: str) -> str:
     """
-    Resolve `fid` → đường dẫn file gốc trên đĩa (bảng `UploadedFile`), TÁI DÙNG
-    đúng cơ chế của `edit` route nhưng raise lỗi DOMAIN (không phải HTTP) để lớp
-    core độc lập với FastAPI.
-
-    Raises:
-        FileNotFoundError: nếu `fid` không tồn tại hoặc file đã bị xóa khỏi đĩa
-            (Yêu cầu 1.3) — KHÔNG tạo phiên.
+    Resolve `fid` → đường dẫn file gốc trên đĩa (bảng `UploadedFile` hoặc native disk path),
+    TÁI DÙNG đúng cơ chế của `edit` route nhưng raise lỗi DOMAIN (không phải HTTP).
     """
+    import urllib.parse
+    unquoted = urllib.parse.unquote(fid)
+    if os.path.isfile(unquoted):
+        return os.path.abspath(unquoted)
+    if os.path.isfile(fid):
+        return os.path.abspath(fid)
     db = SessionLocal()
     try:
         uploaded = db.query(UploadedFile).filter(UploadedFile.id == fid).first()
@@ -474,10 +476,21 @@ def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta],
         if op.text is None:
             raise ValueError("Thao tác editText yêu cầu trường 'text'.")
         metas = _resolve_targets(by_id, op.page, op.targetIds)
+        if not metas:
+            raise ValueError("Không tìm thấy đối tượng text mục tiêu.")
         new_text = op.text.content
         chosen = op.text.font or None
-        results = [edit_text(pg, meta, new_text, pdf, chosen_font_path=chosen) for meta in metas]
-        return results[0] if len(results) == 1 else results
+        primary_meta = metas[0]
+        remove_metas = metas[1:] if len(metas) > 1 else None
+        return edit_text(
+            pg, primary_meta, new_text, pdf,
+            chosen_font_path=chosen,
+            remove_metas=remove_metas,
+            new_size_pt=op.text.sizePt,
+            new_color=op.text.color,
+            bold=op.text.bold,
+            italic=op.text.italic,
+        )
 
     if kind == "paste":
         if op.delta is None:
@@ -621,8 +634,25 @@ def _compute_new_bbox(op: EditOp, op_result, post_bytes: bytes,
         new_bboxes = [normalize_bbox(list(meta.bbox)) for meta in old_metas]
         return (new_bboxes[0] if new_bboxes else None), new_bboxes
 
-    # editText có thể đổi metrics/font nên vẫn re-resolve trên post-op bytes.
-    # move / resize / rotate / editText → re-resolve target trên post-op bytes.
+    if kind == "editText":
+        # PERF: Triệt tiêu quét PDFium toàn trang lặp lại (tiết kiệm 200-500ms).
+        # Bbox mới được tính toán tức thì từ old_metas, cỡ chữ và độ dài text mới.
+        old_union = _union_bbox([list(m.bbox) for m in old_metas])
+        if old_union:
+            x0, y0, x1, y1 = old_union
+            old_w = max(1.0, x1 - x0)
+            orig_h = max(8.0, y1 - y0)
+            target_h = float(op.text.sizePt) if (op.text and op.text.sizePt and op.text.sizePt > 0) else orig_h
+            font_h = max(orig_h, target_h)
+            new_text_content = op.text.content if (op.text and op.text.content) else ""
+            new_len = len(new_text_content)
+            est_w = max(old_w, new_len * font_h * 0.65)
+            new_y1 = max(y1, y0 + target_h * 1.2)
+            new_bbox = [x0, y0, x0 + est_w, new_y1]
+            return new_bbox, [new_bbox]
+        return None, []
+
+    # move / resize / rotate / fallback → re-resolve target trên post-op bytes.
     try:
         post_by_id = _list_objects_from_bytes(post_bytes, op.page)
     except Exception:  # noqa: BLE001 - re-resolve best-effort, fallback bbox cũ
@@ -846,9 +876,19 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
             if op.kind in LAYER_EDIT_KINDS:
                 by_id = {}
             else:
-                by_id = _list_objects_from_bytes(pre_bytes, op.page)
+                if op.page in session.page_objects_cache:
+                    by_id = session.page_objects_cache[op.page]
+                else:
+                    by_id = _list_objects_from_bytes(pre_bytes, op.page)
+                    session.page_objects_cache[op.page] = by_id
                 if op.kind not in ("add", "paste"):
-                    old_metas = _resolve_targets(by_id, op.page, op.targetIds)
+                    try:
+                        old_metas = _resolve_targets(by_id, op.page, op.targetIds)
+                    except ObjectMapError:
+                        # Cache stale: nạp lại từ bytes hiện tại
+                        by_id = _list_objects_from_bytes(pre_bytes, op.page)
+                        session.page_objects_cache[op.page] = by_id
+                        old_metas = _resolve_targets(by_id, op.page, op.targetIds)
 
             if op.kind in _EDIT_DEBUG_TRANSFORM_KINDS and edit_bug_log_enabled():
                 debug_before = _debug_transform_snapshot(
@@ -904,6 +944,7 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
         session.pdf.save(post_buf, compress_streams=False)
         post_bytes = post_buf.getvalue()
         session.live_bytes = post_bytes
+        session.page_objects_cache.pop(op.page, None)
 
         primary_bbox, new_bboxes = _compute_new_bbox(op, op_result, post_bytes, old_metas)
         old_bboxes = [normalize_bbox(list(m.bbox)) for m in old_metas]
@@ -1853,6 +1894,7 @@ def undo(session: EditSession, scale: float = 2.0, clip_pad: float = 8.0) -> dic
         session.op_log.pop()
         session.redo_stack.append(undone_op)
         session.live_bytes = post_bytes
+        session.page_objects_cache.clear()
         session.dirty = True
         session.last_access = time.monotonic()
 
@@ -1971,6 +2013,7 @@ def redo(session: EditSession, scale: float = 2.0, clip_pad: float = 8.0) -> dic
         # Chuyển op từ redo_stack → op_log.
         session.redo_stack.pop()
         session.op_log.append(op)
+        session.page_objects_cache.clear()
         session.dirty = True
         session.last_access = time.monotonic()
 

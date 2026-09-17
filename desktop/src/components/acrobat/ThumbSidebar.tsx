@@ -588,6 +588,10 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         // Danh sách quan sát thuộc tài liệu cũ; xóa khi URL tài liệu đổi để IntersectionObserver đăng ký lại.
         // eslint-disable-next-line react-hooks/set-state-in-effect -- đồng bộ cache quan sát với PDF ngoại vi.
         setVisibleThumbs(new Set());
+        if (thumbObserverRef.current) {
+            thumbObserverRef.current.disconnect();
+            thumbObserverRef.current = null;
+        }
     }, [file, pdfUrl]);
 
     useEffect(() => () => thumbObserverRef.current?.disconnect(), []);
@@ -764,7 +768,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         thumbRev={thumbRev}
                                         pageCount={numPages}
                                         file={file}
-                                        isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
+                                        isLoadable={thumbsGateOpen && (index < 12 || visibleThumbs.has(index))}
                                         isViewerActive={isViewerActive}
                                         workflowStatus={stickerSheetWorkflowStatusAtViewerPosition(pageWorkflowStatuses, index)}
                                         cutlinePreview={props.cutlinePreviews?.[logicalPageLabel]}

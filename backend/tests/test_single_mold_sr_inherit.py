@@ -88,7 +88,9 @@ def test_repeat_worker_skips_recompute_when_precalculated():
 def test_repeat_rejects_cluster_grouping_but_multi_nup_keeps_it():
     from app.workers.nup_engine import _effective_diecut_grouping
 
-    assert _effective_diecut_grouping('repeat', True, 'cluster_tile') == 'none'
+    assert _effective_diecut_grouping('repeat', True, 'cluster_tile') == 'cluster_tile'
+    assert _effective_diecut_grouping('repeat', True, 'maximize_area') == 'none'
+    assert _effective_diecut_grouping('repeat', True, 'strict_ratio') == 'none'
     assert (
         _effective_diecut_grouping('sequential', True, 'cluster_tile')
         == 'cluster_tile'
@@ -174,7 +176,7 @@ def test_repeat_master_in_middle_nests_once_and_reuses_cut_master(monkeypatch):
         settings = {
             "isDieCutMode": True,
             "layoutType": "repeat",
-            "groupingStrategy": "cluster_tile",
+            "groupingStrategy": "none",
             "sheetWidth": 320, "sheetHeight": 450,
             "targetQuantitiesByPage": {"0": 4, "1": 4, "2": 4},
             "detectedShapesByPage": {
@@ -196,3 +198,80 @@ def test_repeat_master_in_middle_nests_once_and_reuses_cut_master(monkeypatch):
     assert sorted(captured["precalc"]) == [0, 1, 2]
     assert all(len(captured["precalc"][sheet]) == 4 for sheet in range(3))
     assert [captured["precalc"][sheet][0]["src_page_idx"] for sheet in range(3)] == [0, 1, 2]
+
+
+
+def test_repeat_with_cluster_tile_partitions_each_page_into_clusters(monkeypatch):
+    class _Stop(RuntimeError):
+        pass
+
+    find_calls = {"n": 0}
+
+    def _fake_find(_page):
+        idx = find_calls["n"]
+        find_calls["n"] += 1
+        return {
+            "rect": pdf_lib.Rect(10, 10, 60, 60),
+            "items": [],
+            "color": (0, 1, 1, 0),
+            "width": 0.5,
+        }
+
+    layout_calls = {"n": 0}
+
+    def _layout(*args, **kwargs):
+        layout_calls["n"] += 1
+        items = [
+            {"x": i * 50.0, "y": 0.0, "width": 50.0, "height": 50.0,
+             "isRotated": False, "isRotated180": False}
+            for i in range(4)
+        ]
+        return {
+            "items": items, "totalItems": 4,
+            "widthUsed": 200.0, "heightUsed": 50.0,
+            "shapeType": "CIRCLE_ELLIPSE", "shapeProps": {},
+            "trimW": 50.0, "trimH": 50.0,
+        }
+
+    captured = {}
+
+    def _capture(args):
+        captured["precalc"] = args[37]
+        captured["cuts"] = args[38] if len(args) > 38 else {}
+        raise _Stop()
+
+    monkeypatch.setattr(nup_engine, "_find_largest_die_path", _fake_find)
+    monkeypatch.setattr(sh, "page_has_die", lambda _p: True)
+    monkeypatch.setattr(nup_engine, "compute_sticker_layout_for_page", _layout)
+    monkeypatch.setattr(nup_engine, "process_chunk", _capture)
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+
+    with tempfile.TemporaryDirectory() as td:
+        source = os.path.join(td, "repeat-cluster.pdf")
+        output = os.path.join(td, "out.pdf")
+        doc = pdf_lib.open()
+        for _ in range(2):
+            doc.new_page(width=300, height=300)
+        doc.save(source)
+        doc.close()
+
+        settings = {
+            "isDieCutMode": True,
+            "layoutType": "repeat",
+            "groupingStrategy": "cluster_tile",
+            "clusterTileW": 148, "clusterTileH": 210,
+            "sheetWidth": 320, "sheetHeight": 450,
+            "targetQuantitiesByPage": {"0": 16, "1": 16},
+            "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE", "1": "CIRCLE_ELLIPSE"},
+            "detectedShapeParamsByPage": {"0": {"diameter": 50}, "1": {"diameter": 50}},
+            "gridStrategy": "optimal_auto", "pontType": "none",
+        }
+        with pytest.raises(_Stop):
+            nup_engine.run_nup_engine(source, output, settings, job_id="repeat-cluster")
+
+    assert sorted(captured["precalc"]) == [0, 1]
+    # Each page generates 1 sheet with clusters (16 items per sheet)
+    assert all(len(captured["precalc"][sheet]) == 16 for sheet in range(2))
+    # Sheet 0 contains only page 0 items, Sheet 1 contains only page 1 items (no mixing!)
+    assert all(it["src_page_idx"] == 0 for it in captured["precalc"][0])
+    assert all(it["src_page_idx"] == 1 for it in captured["precalc"][1])

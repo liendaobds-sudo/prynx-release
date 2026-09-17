@@ -235,3 +235,47 @@ async def test_unlock_route_failure_is_terminal_and_cleans(
     uploads, results = isolated_result_dirs
     assert list(uploads.iterdir()) == []
     assert list(results.iterdir()) == []
+
+
+def test_get_pdf_text_empty_path_returns_empty_blocks():
+    """Khi path rỗng (file chưa nạp hoặc in-memory), trả về blocks rỗng thay vì 400 Bad Request."""
+    res = routes._get_pdf_text({})
+    assert res == {"blocks": [], "page_width_pt": 0.0, "page_height_pt": 0.0}
+
+    res_none = routes._get_pdf_text({"path": ""})
+    assert res_none == {"blocks": [], "page_width_pt": 0.0, "page_height_pt": 0.0}
+
+
+def test_get_pdf_text_resolves_vdp_cleaned_template_fid(tmp_path, monkeypatch):
+    """Khi truyền fid của VDP cleaned template, tự resolve ra file PDF thật trên đĩa."""
+    source = tmp_path / "vdp_clean_12345.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    with source.open("wb") as stream:
+        writer.write(stream)
+
+    from app.api.routes import vdp
+    monkeypatch.setitem(vdp._VDP_CLEANED_TEMPLATES, "cleaned_test_fid", (str(source), "original.pdf"))
+
+    res = routes._get_pdf_text({"path": "cleaned_test_fid", "page": 1})
+    assert res["page_width_pt"] == 100.0
+    assert res["page_height_pt"] == 100.0
+    assert isinstance(res["blocks"], list)
+
+
+def test_get_pdf_text_preserves_spaces_between_words(tmp_path):
+    """Đảm bảo các từ cách nhau bởi dấu cách được gom chung và không bị nuốt dấu cách."""
+    from reportlab.pdfgen import canvas
+    source = tmp_path / "spaced_text.pdf"
+    c = canvas.Canvas(str(source))
+    c.drawString(100, 500, "nguyen van A")
+    c.save()
+
+    res = routes._get_pdf_text({"path": str(source), "page": 1})
+    assert len(res["blocks"]) > 0
+    lines = res["blocks"][0]["lines"]
+    assert len(lines) == 1
+    extracted_text = "".join(ch["c"] for ch in lines[0]["chars"])
+    assert extracted_text == "nguyen van A"
+
+

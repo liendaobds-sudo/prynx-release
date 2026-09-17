@@ -302,7 +302,7 @@ export default function AdvancedSettingsSection({
     })));
 
     useEffect(() => {
-        if (s.taskMode === 'step_repeat' && s.groupingStrategy !== 'none') {
+        if (s.taskMode === 'step_repeat' && s.groupingStrategy !== 'none' && s.groupingStrategy !== 'cluster_tile') {
             s.setGroupingStrategy('none');
         }
     }, [s, s.taskMode, s.groupingStrategy, s.setGroupingStrategy]);
@@ -1233,21 +1233,22 @@ export default function AdvancedSettingsSection({
                                 className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
                                 <option value="none">{t('imposition.advancedSettings:khong_chia_cum')}</option>
+                                <option value="cluster_tile">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</option>
                                 {s.taskMode !== 'step_repeat' && (
                                     <>
                                         {/* PARITY (audit 2026-08-29 MAP-NEST-04): free gang và chia đều diện tích là hai intent khác nhau. */}
                                         <option value="free_gang">{t('imposition.advancedSettings:xep_tu_do')}</option>
                                         <option value="maximize_area">{t('imposition.advancedSettings:chia_deu_dien_tich')}</option>
                                         <option value="strict_ratio">{t('imposition.advancedSettings:chia_deu_so_luong')}</option>
-                                        <option value="cluster_tile">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</option>
                                     </>
                                 )}
                             </select>
 
                             {/* Cluster Tile Settings */}
-                            {s.taskMode !== 'step_repeat' && s.groupingStrategy === 'cluster_tile' && (
+                            {s.groupingStrategy === 'cluster_tile' && (
                                 <div className="mt-2 flex flex-col gap-3 p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg">
-                                    {/* Kiểu ghép cụm */}
+                                    {/* Kiểu ghép cụm - chỉ hiển thị khi Dàn nhiều mẫu; S&R cố định replicate_mixed */}
+                                    {s.taskMode !== 'step_repeat' && (
                                     <div className="flex items-center gap-2">
                                         <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide shrink-0 w-[65px]">{t('imposition.advancedSettings:kieu_ghep')}</label>
                                         <select
@@ -1284,6 +1285,7 @@ export default function AdvancedSettingsSection({
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                         </div>
                                     </div>
+                                    )}
 
                                     {/* Số cột × số hàng vùng — cho kiểu 'mỗi loại một vùng' / 'theo tỉ lệ SL' */}
                                     {(s.clusterCombineMode === 'zone_per_type' || s.clusterCombineMode === 'zone_ratio') && (
@@ -1299,8 +1301,8 @@ export default function AdvancedSettingsSection({
                                     </div>
                                     )}
 
-                                    {/* Định cỡ cụm — chỉ cho kiểu 'cụm trộn nhân bản' (zone modes chia tự động) */}
-                                    {s.clusterCombineMode === 'replicate_mixed' && (
+                                    {/* Định cỡ cụm — cho kiểu 'cụm trộn nhân bản' hoặc S&R */}
+                                    {(s.taskMode === 'step_repeat' || s.clusterCombineMode === 'replicate_mixed') && (
                                     <div className="flex items-center gap-2">
                                         <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide shrink-0 w-[65px]">{t('imposition.advancedSettings:dinh_co')}</label>
                                         <select
@@ -1340,7 +1342,7 @@ export default function AdvancedSettingsSection({
                                     </div>
                                     )}
 
-                                    {s.clusterCombineMode === 'replicate_mixed' && s.clusterSizingMode === 'dims' ? (
+                                    {(s.taskMode === 'step_repeat' || s.clusterCombineMode === 'replicate_mixed') && s.clusterSizingMode === 'dims' ? (
                                         <div className="flex flex-col gap-2 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div className="flex items-center gap-3">
                                                 <label className="text-[11px] text-slate-500 shrink-0 w-[65px]">{t('imposition.advancedSettings:kho_chuan')}</label>
@@ -1370,14 +1372,14 @@ export default function AdvancedSettingsSection({
                                                 </div>
                                             </div>
                                         </div>
-                                    ) : s.clusterCombineMode === 'replicate_mixed' && s.clusterSizingMode === 'split_cols' ? (
+                                    ) : (s.taskMode === 'step_repeat' || s.clusterCombineMode === 'replicate_mixed') && s.clusterSizingMode === 'split_cols' ? (
                                         <div className="grid grid-cols-1 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div>
                                                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_cot_doc')}</label>
                                                 <input type="number" min={1} max={20} step={1} value={s.clusterCols} onChange={(e) => s.setClusterCols(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                             </div>
                                         </div>
-                                    ) : s.clusterCombineMode === 'replicate_mixed' && s.clusterSizingMode === 'split_rows' ? (
+                                    ) : (s.taskMode === 'step_repeat' || s.clusterCombineMode === 'replicate_mixed') && s.clusterSizingMode === 'split_rows' ? (
                                         <div className="grid grid-cols-1 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div>
                                                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_hang_ngang')}</label>

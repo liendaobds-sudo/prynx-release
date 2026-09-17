@@ -146,6 +146,9 @@ class TextPayload(BaseModel):
     font: str | None = None
     sizePt: float | None = Field(default=None, gt=0)
     bbox: list[float] | None = None
+    color: list[float] | None = None
+    bold: bool | None = None
+    italic: bool | None = None
 
     @field_validator("bbox")
     @classmethod
@@ -375,6 +378,7 @@ class TextObjectPropsResponse(BaseModel):
     content: Optional[str] = None
     color: Optional[list[int]] = Field(default=None, description="RGB 0..255")
     fontName: Optional[str] = Field(default=None, description="BaseFont, đã bỏ tiền tố subset")
+    fontSize: Optional[float] = Field(default=None, description="Cỡ chữ gốc (pt)")
 
 
 class OcgVisibilityResponse(BaseModel):

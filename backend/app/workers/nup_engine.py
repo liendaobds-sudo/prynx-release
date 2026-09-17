@@ -1,3 +1,13 @@
+
+def _cluster_engine_dbg(tag: str, **kwargs):
+    try:
+        import os, tempfile, time, json
+        p = os.path.join(tempfile.gettempdir(), 'cluster_debug.log')
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        with open(p, 'a', encoding='utf-8') as f:
+            f.write(f"[{ts}] [{tag}] {json.dumps(kwargs, ensure_ascii=False, default=str)}\n")
+    except Exception:
+        pass
 """
 
 High-Performance N-Up Imposition Engine (pikepdf).
@@ -185,8 +195,10 @@ def canonical_page_space(source_path: str, job_id: str = None):
 
 
 def _effective_diecut_grouping(layout_type, is_die_cut, grouping_strategy):
-    """Repeat is a hard mode boundary: cluster cannot turn S&R into mixed N-up."""
-    if is_die_cut and layout_type == 'repeat' and grouping_strategy == 'cluster_tile':
+    """Repeat mode supports cluster_tile for sub-sheet partitioning per page."""
+    if layout_type == 'repeat':
+        if grouping_strategy == 'cluster_tile':
+            return 'cluster_tile'
         return 'none'
     return grouping_strategy
 
@@ -318,6 +330,22 @@ def _run_nup_engine_impl(
     _diagnostic_trace_id = sanitize_diagnostic_id(settings.get("_diagnosticTraceId"))
     _diagnostic_job_id = sanitize_diagnostic_id(job_id)
 
+    _cluster_engine_dbg("ENGINE_IMPL_ENTRY",
+        job_id=job_id,
+        source_path=source_path,
+        output_path=output_path,
+        taskMode=settings.get("taskMode"),
+        layoutType=settings.get("layoutType"),
+        groupingStrategy=settings.get("groupingStrategy"),
+        grouping_strategy=settings.get("grouping_strategy"),
+        isDieCutMode=settings.get("isDieCutMode"),
+        clusterTileW=settings.get("clusterTileW"),
+        clusterTileH=settings.get("clusterTileH"),
+        clusterCols=settings.get("clusterCols"),
+        clusterRows=settings.get("clusterRows"),
+        clusterCombineMode=settings.get("clusterCombineMode"),
+        gridStrategy=settings.get("gridStrategy")
+    )
     page_sheet_mode = settings.get("page_sheet_mode", False) is True
     _mixed_mode_requested = settings.get("layoutType") == "mixed_guillotine"
     if _mixed_mode_requested:
@@ -383,6 +411,17 @@ def _run_nup_engine_impl(
         bool(settings.get("isDieCutMode", False)),
         settings.get("gridStrategy"),
         settings.get("layoutType"),
+    )
+    _cluster_engine_dbg("ENGINE_DISPATCH_CHECK",
+        job_id=job_id,
+        selected_route=_selected_route,
+        manual_true_shape=_manual_true_shape,
+        auto_true_shape=_auto_true_shape,
+        gridStrategy=settings.get("gridStrategy"),
+        groupingStrategy=settings.get("groupingStrategy"),
+        taskMode=settings.get("taskMode"),
+        layoutType=settings.get("layoutType"),
+        isDieCutMode=settings.get("isDieCutMode")
     )
     if _manual_true_shape or _auto_true_shape:
         try:
@@ -721,7 +760,7 @@ def _run_nup_engine_impl(
     ):
         alternate_rotation = 'none'
 
-    grouping_strategy = settings.get('groupingStrategy', 'maximize_area')
+    grouping_strategy = settings.get('groupingStrategy') or settings.get('grouping_strategy') or 'maximize_area'
     # Bình trang là S&R từng source page. Grouping cũ trong preset/UI không được
     # phép đổi mode thành cluster mixed hoặc làm skip full_layouts.
     _requested_grouping_strategy = grouping_strategy
@@ -730,12 +769,14 @@ def _run_nup_engine_impl(
     )
     if grouping_strategy != _requested_grouping_strategy:
         logger.info(
-            "   [MODE-GUARD] layoutType=repeat: ignore groupingStrategy=cluster_tile"
+            f"   [MODE-GUARD] layoutType={layout_type}: changed groupingStrategy from {_requested_grouping_strategy} to {grouping_strategy}"
         )
-    cluster_combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
+    cluster_combine_mode = settings.get('clusterCombineMode') or settings.get('cluster_combine_mode') or 'replicate_mixed'
+    if layout_type == 'repeat':
+        cluster_combine_mode = 'replicate_mixed'
     logger.debug("   ZONE-DEBUG grouping_strategy=%r combine=%r" % (grouping_strategy, cluster_combine_mode))
-    cluster_tile_w_mm = settings.get('clusterTileW', 148.0)   # mm, default A5 width
-    cluster_tile_h_mm = settings.get('clusterTileH', 210.0)   # mm, default A5 height
+    cluster_tile_w_mm = float(settings.get('clusterTileW') or settings.get('cluster_tile_w') or 148.0)   # mm, default A5 width
+    cluster_tile_h_mm = float(settings.get('clusterTileH') or settings.get('cluster_tile_h') or 210.0)   # mm, default A5 height
 
     precalculated_placements = None
     cluster_tile_cuts = {}
@@ -1047,27 +1088,30 @@ def _run_nup_engine_impl(
             # Zone modes (zone_per_type/zone_ratio) re-nest theo kích thước VÙNG
             # trong dispatch → full_layouts ở đây chỉ cần full-sheet. Chỉ replicate_mixed
             # mới nest sẵn theo kích thước cụm.
-            if (grouping_strategy == 'cluster_tile' and settings.get('clusterNesting', True)
+            _cluster_nesting_val = settings.get('clusterNesting') if 'clusterNesting' in settings else settings.get('cluster_nesting', True)
+            if (grouping_strategy == 'cluster_tile' and (_cluster_nesting_val is not False)
                     and cluster_combine_mode == 'replicate_mixed'):
-                cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
+                cluster_sizing_mode = settings.get('clusterSizingMode') or settings.get('cluster_sizing_mode') or 'dims'
                 MM = 2.83465
-                tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
-                tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
+                tile_gap_x_pt = float(settings.get('tileGapX') if 'tileGapX' in settings else settings.get('tile_gap_x', 0.0)) * MM
+                tile_gap_y_pt = float(settings.get('tileGapY') if 'tileGapY' in settings else settings.get('tile_gap_y', 0.0)) * MM
                 if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
+                    _c_cols = int(settings.get('clusterCols') or settings.get('cluster_cols') or 2)
+                    _c_rows = int(settings.get('clusterRows') or settings.get('cluster_rows') or 2)
                     if cluster_sizing_mode == 'split_cols':
-                        cluster_cols = max(1, int(settings.get('clusterCols', 2)))
+                        cluster_cols = max(1, _c_cols)
                         cluster_rows = 1
                     elif cluster_sizing_mode == 'split_rows':
                         cluster_cols = 1
-                        cluster_rows = max(1, int(settings.get('clusterRows', 2)))
+                        cluster_rows = max(1, _c_rows)
                     else:
-                        cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                        cluster_rows = max(1, int(settings.get('clusterRows', 2)))
+                        cluster_cols = max(1, _c_cols)
+                        cluster_rows = max(1, _c_rows)
                     w_for_nfp = (usable_w - (cluster_cols - 1) * tile_gap_x_pt) / cluster_cols
                     h_for_nfp = (usable_h - (cluster_rows - 1) * tile_gap_y_pt) / cluster_rows
                 else:
-                    w_for_nfp = float(settings.get('clusterTileW', 148.0)) * MM
-                    h_for_nfp = float(settings.get('clusterTileH', 210.0)) * MM
+                    w_for_nfp = float(settings.get('clusterTileW') or settings.get('cluster_tile_w') or 148.0) * MM
+                    h_for_nfp = float(settings.get('clusterTileH') or settings.get('cluster_tile_h') or 210.0) * MM
 
             logger.debug(
                 f"   [ZONE DEBUG] p={p_idx} w_for_nfp={w_for_nfp} h_for_nfp={h_for_nfp} "
@@ -1465,14 +1509,22 @@ def _run_nup_engine_impl(
                 p['abs_y'] = y_off + (total_content_h_s - cell['y'] - cell['height'])
                 p['original_cell_y'] = usable_h + margin_bottom + margin_top - p['abs_y'] - cell['height']
 
-        if is_die_cut and layout_type != 'repeat' and grouping_strategy == 'cluster_tile':
+        _cluster_engine_dbg("ENGINE_BRANCH_DECISION",
+            is_die_cut=is_die_cut,
+            grouping_strategy=grouping_strategy,
+            layout_type=layout_type,
+            will_enter_cluster=(is_die_cut and grouping_strategy == 'cluster_tile')
+        )
+        if is_die_cut and grouping_strategy == 'cluster_tile':
             # ══ CHIA CỤM (cluster_tile) — ARM ĐẦU TIÊN, chạy bất kể layout_type / số lượng ══
             # Trước đây cluster chỉ chạy ở nhánh repeat / auto_fill; layout 'sequential' +
             # nhập số lượng rơi vào 'else' (bin-pack) → cluster BỊ BỎ. Nay xử lý tập trung
             # tại đây qua SSOT compute_cluster_sheets (dùng CHUNG với preview).
             from app.workers.cluster_tile_engine import compute_cluster_sheets
             MM = MM_TO_PTS
-            combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
+            combine_mode = settings.get('clusterCombineMode') or settings.get('cluster_combine_mode') or 'replicate_mixed'
+            if layout_type == 'repeat':
+                combine_mode = 'replicate_mixed'
             try:
                 from app.workers.rot_audit_log import get_logger as _rot_get_logger
                 _rot_get_logger().warning(
@@ -1688,6 +1740,56 @@ def _run_nup_engine_impl(
                     f"   [CLUSTER] mode={combine_mode} lưới → {_n_out_sheets} tờ "
                     f"(cần in {_sheets_needed} tờ, exportUnique={_export_unique_ct}, "
                     f"{len(page_infos)} loại, {total_items_placed} con output)"
+                )
+            elif layout_type == 'repeat':
+                _cluster_engine_dbg("ENGINE_CLUSTER_REPEAT_BRANCH",
+                    page_infos_count=len(page_infos),
+                    cw_pt=cw_pt,
+                    ch_pt=ch_pt,
+                    usable_w=usable_w,
+                    usable_h=usable_h
+                )
+                # ── Step & Repeat (Bình trang) có chia cụm: mỗi trang là 1 bộ tờ in riêng, KHÔNG trộn ──
+                _sheet_out_idx = 0
+                for p_idx, qty, tw, th in page_infos:
+                    _single_fl = {p_idx: full_layouts.get(p_idx)} if full_layouts else {}
+                    _single_cs = compute_cluster_sheets(
+                        page_infos=[(p_idx, qty, tw, th)],
+                        full_layouts=_single_fl,
+                        zone_layout_fn=_zone_layout_fn,
+                        sheet_w=usable_w,
+                        sheet_h=usable_h,
+                        cluster_w=cw_pt,
+                        cluster_h=ch_pt,
+                        gap_x=gap_x,
+                        gap_y=gap_y,
+                        tile_gap_x=tile_gap_x_pt,
+                        tile_gap_y=tile_gap_y_pt,
+                        combine_mode='replicate_mixed',
+                        cluster_nesting=cluster_nesting,
+                        is_die_cut=is_die_cut,
+                        doc=None,
+                        shape_type=(_single_fl.get(p_idx, {}).get('shapeType', 'CUSTOM') if _single_fl.get(p_idx) else 'CUSTOM'),
+                        shape_props=(_single_fl.get(p_idx, {}).get('shapeProps', {}) if _single_fl.get(p_idx) else {}),
+                        strategy=strategy,
+                        zone_cols=max(1, int(settings.get('clusterCols') or settings.get('cluster_cols') or 2)),
+                        zone_rows=max(1, int(settings.get('clusterRows') or settings.get('cluster_rows') or 2)),
+                    )
+                    _ct_pls = _single_cs[0][0] if _single_cs else []
+                    _tile_cuts = _single_cs[0][1] if _single_cs else None
+                    items_per_sheet = len(_ct_pls)
+                    sheets_needed = math.ceil(qty / items_per_sheet) if (not is_auto_fill and items_per_sheet > 0 and qty > 0) else 1
+                    repeat_count = 1 if _export_unique_ct else max(1, sheets_needed)
+                    for _ in range(repeat_count):
+                        precalculated_placements[_sheet_out_idx] = _shift_cluster_placements(_ct_pls)
+                        _scl = _shift_cut_lines(_tile_cuts)
+                        if _scl:
+                            cluster_tile_cuts[_sheet_out_idx] = _scl
+                        _sheet_out_idx += 1
+                total_items_placed = sum(len(p) for p in precalculated_placements.values())
+                logger.info(
+                    f"   [CLUSTER-S&R] Hoàn tất bình trang chia cụm: {len(page_infos)} trang, "
+                    f"{len(precalculated_placements)} tờ in, {total_items_placed} con tem."
                 )
             else:
                 # ── replicate_mixed: 1 tờ mẫu, nhân theo số lượng như cũ ──

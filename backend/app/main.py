@@ -370,6 +370,7 @@ async def protect_result_artifacts(request, call_next):
 results_path = Path(settings.RESULTS_DIR)
 results_path.mkdir(parents=True, exist_ok=True)
 app.mount("/results", StaticFiles(directory=str(results_path)), name="results")
+app.mount("/api/results", StaticFiles(directory=str(results_path)), name="api_results")
 
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(compare.router, prefix="/api", tags=["Compare"])

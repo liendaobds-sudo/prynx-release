@@ -598,6 +598,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         [stickerSheetTabSummary, stickerSheetWorkingPageCount],
     );
     const previousDashboardToolRef = useRef<string | null>(null);
+    const previousIsCropModeRef = useRef<boolean>(isCropMode);
     const suppressDedicatedToolRestoreRef = useRef(false);
     const syncedStickerSourceRef = useRef<File | null>(null);
 
@@ -684,11 +685,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Selecting Crop from the panel enables drawing; C/toolbar toggles promote the
     // same mode into the panel without opening a separate modal.
     useLayoutEffect(() => {
-        const previous = previousDashboardToolRef.current;
+        const prevTool = previousDashboardToolRef.current;
+        const prevCrop = previousIsCropModeRef.current;
         previousDashboardToolRef.current = activeDashboardTool;
+        previousIsCropModeRef.current = isCropMode;
         if (
-            previous !== null
-            && previous !== activeDashboardTool
+            prevTool !== null
+            && prevTool !== activeDashboardTool
             && activeDashboardTool !== 'none'
             && activeDashboardTool !== 'sticker'
             && isObjectEditMode
@@ -704,7 +707,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 });
             }
         }
-        if (previous === null) {
+        if (prevTool === null) {
             if (activeDashboardTool === 'crop' && !isCropMode) {
                 setIsCropMode(true);
                 setIsObjectEditMode(false);
@@ -712,9 +715,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
             return;
         }
-        if (previous !== activeDashboardTool) {
+        if (prevTool !== activeDashboardTool) {
             if (activeDashboardTool === 'crop') {
-                setIsCropMode(true);
+                if (!isCropMode) setIsCropMode(true);
                 setIsObjectEditMode(false);
                 setViewerToolMode('pointer');
             } else if (isCropMode) {
@@ -722,10 +725,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
             return;
         }
-        if (isCropMode && activeDashboardTool !== 'crop') {
-            setActiveDashboardTool('crop');
-        } else if (!isCropMode && activeDashboardTool === 'crop') {
-            setActiveDashboardTool('none');
+        // UIUX: Chỉ đồng bộ activeDashboardTool khi isCropMode THAY ĐỔI do tương tác ngoài (phím tắt C / nút toolbar Acrobat)
+        if (prevCrop !== isCropMode) {
+            if (isCropMode && activeDashboardTool !== 'crop') {
+                setActiveDashboardTool('crop');
+            } else if (!isCropMode && activeDashboardTool === 'crop') {
+                setActiveDashboardTool('none');
+            }
         }
     }, [activeDashboardTool, isCropMode, isObjectEditMode, runEditTransitionBarrier,
         setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode]);
@@ -829,6 +835,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // năng cần (lúc đó mới chịu chi phí, không treo lúc mở).
     useEffect(() => {
         if (file && !selectionFileId && file.name.toLowerCase().endsWith('.pdf')) {
+            const nativePath = (file as WorkspaceFileLike)?.path;
+            if (nativePath) {
+                const identity = workspaceDocumentIdentity(
+                    file,
+                    viewerPageOrder,
+                    viewerPageRotations,
+                );
+                console.info('[PERF-MEASURE] Instant bind nativePath to selectionFileId (0ms):', nativePath);
+                setSelectionFileId(nativePath, identity);
+                return;
+            }
             const sz = (file as WorkspaceFileLike)?.size || 0;
             // History/native stub có path nhưng chưa biết size: coi là file lớn
             // cho pre-upload. Tác vụ cần file_id sẽ đăng ký path khi người dùng mở nó.
@@ -1071,10 +1088,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     setIsSaved(false);
                 }
                 setOriginalFileName(openedFile.name);
+                if (nativePath) {
+                    const docId = workspaceDocumentIdentity(openedFile, undefined, undefined);
+                    setSelectionFileId(nativePath, docId);
+                } else {
+                    setSelectionFileId('');
+                }
                 setFileSizeStr((openedFile.size / (1024 * 1024)).toFixed(2) + ' MB');
                 setPdfUrl(objUrl);
                 setPhase('workspace');
                 settleFileOpeningAttempt(attempt, 'idle');
+                console.info(`[PERF-MEASURE][INITIAL-FILE] Opened ${openedFile.name} ready in workspace`);
                 onTitleChange?.(openedFile.name);
 
                 // Chỉ cập nhật tiêu đề màu sau first tile để không tranh tài nguyên lúc mở.
@@ -1126,9 +1150,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         applyLockedMode(lockedMode);
     }, [applyLockedMode, lockedMode, setActiveDashboardTool]);
 
+    const appliedLaunchFeatureRef = useRef<string | null>(null);
     // Công cụ mở từ Home hoặc snapshot khôi phục dùng cùng một hợp đồng panel phải.
+    // Chỉ kích hoạt một lần duy nhất lúc khởi tạo tab — không ghi đè khi user đã chủ động chuyển công cụ hoặc khi switch tab.
     useEffect(() => {
-        if (launchFeature) {
+        if (launchFeature && appliedLaunchFeatureRef.current !== launchFeature) {
+            appliedLaunchFeatureRef.current = launchFeature;
             if (launchFeature === 'logo_rebuild' && !LOGO_REBUILD_ENABLED) {
                 setActiveDashboardTool('none');
                 return;
@@ -1741,15 +1768,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         if (openInNewTab && onSpawnTab) {
             const resultFile = new File([blob], filename, { type: 'application/pdf' });
-            onSpawnTab(markGeneratedWorkspaceFile(resultFile), { focusFeature: 'crop' });
+            onSpawnTab(markGeneratedWorkspaceFile(resultFile));
         } else {
             await commitToolWorkingFile(blob, filename);
             setViewerPageInstanceIds(undefined);
         }
 
         commitCropSelection(null);
-        setIsCropMode(true);
-        setActiveDashboardTool('crop');
+        setIsCropMode(false);
+        setActiveDashboardTool('none');
     }, [onSpawnTab, commitToolWorkingFile, recipeOwnerTabId, t, setViewerPageInstanceIds, commitCropSelection, setIsCropMode, setActiveDashboardTool]);
 
     const handleCropClose = useCallback(() => {
@@ -1927,6 +1954,40 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setPdfOcgLayers,
         tabId,
     ]);
+
+    // Auto-update workspace template whenever a VDP text object is picked/cleaned
+    useEffect(() => {
+        const handleTemplateCleaned = async (event: Event) => {
+            const detail = (event as CustomEvent)?.detail;
+            if (!detail?.workingPdfUrl) return;
+            try {
+                const apiBase = getApiUrl().replace(/\/api\/?$/, '');
+                const url = detail.workingPdfUrl.startsWith('http')
+                    ? detail.workingPdfUrl
+                    : `${apiBase}${detail.workingPdfUrl.startsWith('/') ? '' : '/'}${detail.workingPdfUrl}`;
+                const res = await authenticatedFetch(url);
+                if (!res.ok) return;
+                const blob = await res.blob();
+                const originalName = file?.name || 'template.pdf';
+                const currentVdp = store.getState().vdpFields;
+                const currentSelected = store.getState().selectedVdpFieldIds;
+                await commitWorkingFile(blob, originalName, detail.workingPdfPath, null, null);
+                // Preserve VDP fields & selected field on the clean template
+                store.getState().setVdpFields(currentVdp);
+                store.getState().setSelectedVdpFieldIds(currentSelected);
+                const nextFileId = detail.workingPdfPath || detail.workingFid;
+                if (nextFileId) {
+                    store.getState().setSelectionFileId(nextFileId);
+                }
+            } catch (err) {
+                console.warn('Failed to commit cleaned VDP template:', err);
+            }
+        };
+        window.addEventListener('vdp-template-cleaned', handleTemplateCleaned);
+        return () => {
+            window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
+        };
+    }, [commitWorkingFile, file]);
 
 
     const handleDeleteObjects = useCallback(async (objs: PdfObject[], pageNum: number) => {
@@ -2467,6 +2528,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
         syncedStickerSourceRef.current = selectedFile;
         setSourceImageFile(isSupportedImageFileName(selectedFile.name) ? selectedFile : null);
+        const tSelectStart = performance.now();
+        console.info(`[PERF-MEASURE][FILE-OPEN] START: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(2)} MB)`);
         const attempt = beginFileOpeningAttempt(false);
         try {
             selectedFile = await imageFileToPdfIfNeeded(selectedFile, getFileArrayBuffer);
@@ -2487,11 +2550,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (fileOpeningAttemptRef.current !== attempt) return;
         // Đổi file dùng stale-while-revalidate nhưng chỉ nhường grace ngắn;
         // frame đến muộn vẫn được cache cho Viewer sau khi Workspace đã mở.
+        const tBeforePrime = performance.now();
         await waitForViewerFirstFrameGrace(primeViewerFirstFrame(selectedFile));
+        console.info(`[PERF-MEASURE][FILE-OPEN] primeViewerFirstFrame: ${Math.round(performance.now() - tBeforePrime)}ms`);
         if (fileOpeningAttemptRef.current !== attempt) return;
         setFile(selectedFile);
         setOriginalFileName(selectedFile.name);
-        setSelectionFileId(''); // Reset — will be re-uploaded by the useEffect above
+        const selNativePath = (selectedFile as File & { path?: string }).path;
+        if (selNativePath) {
+            const docId = workspaceDocumentIdentity(selectedFile, undefined, undefined);
+            console.info('[PERF-MEASURE] Instant bind nativePath to selectionFileId (0ms):', selNativePath);
+            setSelectionFileId(selNativePath, docId);
+        } else {
+            setSelectionFileId('');
+        }
         setFileSizeStr(formatSize(selectedFile.size));
         
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
@@ -2507,6 +2579,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setPdfUrl(objUrl);
         setPhase('workspace');
         settleFileOpeningAttempt(attempt, 'idle');
+        console.info(`[PERF-MEASURE][FILE-OPEN] TOTAL workspace ready: ${Math.round(performance.now() - tSelectStart)}ms`);
         
         setHistory([]);
         // Reset undo/redo edit-object khi đổi file (tránh khôi phục file cũ).

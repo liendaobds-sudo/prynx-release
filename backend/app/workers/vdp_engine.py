@@ -433,10 +433,10 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
         char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
         total_length = sum(char_widths)
 
-        # Tự co cỡ chữ nếu chữ quá dài so với khung
+        # Tự co cỡ chữ nếu chữ quá dài so với khung (chỉ co, không phóng to)
         if auto_fit and total_length > w * 0.9 and total_length > 0:
-            scale_factor = (w * 0.9) / total_length
-            fontsize = max(5.0, fontsize * scale_factor)
+            scale_factor = min(1.0, (w * 0.9) / total_length)
+            fontsize = max(5.0, min(fontsize, fontsize * scale_factor))
             c.setFont(font_name, fontsize)
             char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
             total_length = sum(char_widths)
@@ -498,10 +498,13 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
 
     # Đồng bộ với frontend preview: tự co cỡ chữ khi bật autoFit nếu góc vượt quá cung vòm tự nhiên (~190 độ)
     auto_fit = field.get('autoFit', True)
+    # Giữ nguyên cỡ chữ gốc nếu là nội dung mẫu; chỉ co khi dữ liệu gộp VDP dài hơn mẫu
+    base_len = len(str(field.get('textContent') or '').strip()) or 1
+    current_len = len(val_str.strip()) or 1
     max_safe_angle = math.pi * 1.05
-    if auto_fit and total_angle > max_safe_angle:
-        scale_factor = max_safe_angle / total_angle
-        fontsize = max(5.0, fontsize * scale_factor)
+    if auto_fit and current_len > base_len and total_angle > max_safe_angle:
+        scale_factor = min(1.0, base_len / current_len)
+        fontsize = max(5.0, min(fontsize, fontsize * scale_factor))
         c.setFont(font_name, fontsize)
         char_widths = [c.stringWidth(ch, font_name, fontsize) + tracking for ch in val_str]
         total_length = sum(char_widths)
@@ -921,7 +924,7 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                             default=0.0,
                         )
                         if maxw > f_rect['w'] and maxw > 0:
-                            sx = max(0.05, f_rect['w'] / maxw)
+                            sx = max(0.05, min(1.0, f_rect['w'] / maxw))
 
                     # Wrap với bề rộng khả dụng = f_rect['w']/sx (không gian TRƯỚC khi nén)
                     # để Paragraph không tự xuống dòng — sau khi scale(sx,1) chiều rộng thật

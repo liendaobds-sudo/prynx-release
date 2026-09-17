@@ -845,7 +845,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         (async () => {
             try {
                 if (nativePath) {
-                    const res = await fetch(`${getApiUrl()}/imposition/pdf-text`, {
+                    const res = await authenticatedFetch(`${getApiUrl()}/imposition/pdf-text`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ path: nativePath, page: sourcePage }),

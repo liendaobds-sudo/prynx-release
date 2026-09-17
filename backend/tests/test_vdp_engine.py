@@ -252,3 +252,17 @@ class TestKnownBugs:
                        job_id=uuid.uuid4().hex)
         bw2, bh2 = _dark_bbox_size(_render_page_pixels(out2, 0))
         assert bh2 > bw2, f"rotation=90 phải cao hơn rộng, được {bw2}x{bh2}"
+
+    def test_literal_text_content_substitutes_when_field_name_in_row(self, template_1page, out_path):
+        """Field tạo từ picker có textContent là text gốc ('ten') không có ngoặc nhọn.
+        Khi row có key 'ten', engine phải thay thế giá trị từ row thay vì giữ nguyên 'ten'."""
+        tf = VdpField(id="f_pick", name="ten", type="text",
+                      x=10, y=10, width=80, height=30,
+                      fontSize=20, fontColor="#000000",
+                      textContent="ten")
+        data = [{"ten": "No.00001"}]
+        run_vdp_engine(template_1page, [tf], data, out_path,
+                       job_id=uuid.uuid4().hex)
+        txt = _render_page_text(out_path, 0)
+        assert "No.00001" in txt
+

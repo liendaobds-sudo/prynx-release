@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMe
 import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
 import { localFileUrl } from '../../lib/localFileTransport';
-import { authenticatedFetch, getApiUrl, getSystemFonts } from '../../lib/api';
+import { authenticatedFetch, getApiUrl, getSystemFonts, pickVdpTextField } from '../../lib/api';
+import { toast } from '../ui/Toast';
 import { adjustCropRegion, cropDragToFrac, cropFracToPixels, type CropAdjustMode, type CropRegionFrac } from '../../lib/cropGeometry';
 import {
     getOutputPreviewOverlayOpacity,
@@ -41,6 +42,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp, ImageClipShape } from './editTypes';
 import type { SessionOpOutcome } from '../../hooks/useEditSession';
 import { FontSelector } from '../preprocess-tools/FontSelector';
+import { FloatingTextToolbar } from './FloatingTextToolbar';
 import { Lock, Check, X, RotateCcw, RotateCw, AlertTriangle, ImageUp, Trash2, Type, Shapes, Square, Circle, Triangle, Diamond, Pentagon, Hexagon, Octagon, Star, Heart, Plus } from 'lucide-react';
 import {
     pageWidthPtFromDim,
@@ -1795,14 +1797,25 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
         const avail = el.clientWidth;
         const sx = natural > avail && natural > 0 ? Math.max(0.05, avail / natural) : 1;
         setScaleX(sx);
-    }, [text, fontPx, field.width, field.height, field.autoFit, field.fontName, field.fontStyle, field.lineHeight, align]);
+
+        if (typeof document !== 'undefined' && document.fonts && field.fontFile) {
+            document.fonts.ready.then(() => {
+                const el2 = ref.current;
+                if (!el2) return;
+                const nat = el2.scrollWidth;
+                const av = el2.clientWidth;
+                const sx2 = nat > av && nat > 0 ? Math.max(0.05, av / nat) : 1;
+                setScaleX(sx2);
+            });
+        }
+    }, [text, fontPx, field.width, field.height, field.autoFit, field.fontName, field.fontFile, field.fontStyle, field.lineHeight, align]);
 
     // Nén từ mép TRÁI để khớp backend (canvas scale(sx,1) sau translate về mép trái
     // khung, map [0, bề_rộng_tự_nhiên] → [0, bề_ngang_khung]). Text-align vẫn xử lý
     // vị trí chữ trong khung khi KHÔNG nén (sx=1).
     return (
         <span
-            className="overflow-hidden w-full h-full"
+            className="w-full h-full overflow-visible"
             style={{ display: 'flex', alignItems: 'center' }}
         >
             <span
@@ -1813,7 +1826,9 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
                     width: '100%',
                     color: field.fontColor || '#1e293b',
                     fontSize: `${fontPx}px`,
-                    fontFamily: field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName}", sans-serif` : 'inherit'),
+                    fontFamily: field.fontFile
+                        ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
+                        : (field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit')),
                     fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
                     fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
                     lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
@@ -1862,8 +1877,11 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
         const ampPx = Math.min((boxH / 2) * 0.7, Math.max(2, (rawR / 25.4 * 96) * scale));
         const amp = orientation === 'inward' ? -ampPx : ampPx;
 
-        // Tự co cỡ chữ nếu chữ quá dài so với khung
-        if (autoFit && textLen > boxW * 0.9) {
+        const baseLen = (field.textContent || '').trim().length || 1;
+        const currentLen = (text || '').trim().length || 1;
+
+        // Tự co cỡ chữ nếu dữ liệu gộp VDP dài hơn nội dung mẫu và chữ quá dài so với khung
+        if (autoFit && currentLen > baseLen && textLen > boxW * 0.9) {
             const scaleFactor = (boxW * 0.9) / textLen;
             effectiveFontPx = Math.max(7 * scale * (96 / 72), rawFontPx * scaleFactor);
             approxCharWidth = effectiveFontPx * 0.55 + trackingPx;
@@ -1895,15 +1913,20 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
             : ((field.width || 50) * 0.75);
         const radiusPx = Math.max(10, (rawR / 25.4 * 96) * scale);
 
+        const baseLen = (field.textContent || '').trim().length || 1;
+        const currentLen = (text || '').trim().length || 1;
+
         let textAngle = textLen / Math.max(radiusPx, 1);
         const maxSafeAngle = Math.PI * 1.05;
-        if (autoFit && textAngle > maxSafeAngle) {
+        // Giữ nguyên cỡ chữ gốc nếu là nội dung mẫu; chỉ co khi dữ liệu gộp VDP dài hơn mẫu
+        if (autoFit && currentLen > baseLen && textAngle > maxSafeAngle) {
             const scaleFactor = maxSafeAngle / textAngle;
             effectiveFontPx = Math.max(7 * scale * (96 / 72), rawFontPx * scaleFactor);
             approxCharWidth = effectiveFontPx * 0.55 + trackingPx;
             textLen = Math.max(1, (text?.length || 1)) * approxCharWidth;
             textAngle = textLen / Math.max(radiusPx, 1);
         }
+
 
         const halfTextAngle = textAngle / 2;
         const pathHalfAngle = Math.min(Math.PI * 0.95, Math.max(halfTextAngle * 1.4, Math.PI * 0.45));
@@ -1938,13 +1961,15 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     const pathId = `curved-path-${field.id}-${curveKey}`;
 
     const tracking = field.curveTracking ? `${field.curveTracking * scale * (96 / 72)}px` : 'normal';
-    const fontFamily = field.fontName === 'Helvetica'
+    const fontFamily = field.fontFile
+        ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
+        : (field.fontName === 'Helvetica'
         ? 'Arial, sans-serif'
         : field.fontName === 'Times-Roman'
         ? '"Times New Roman", serif'
         : field.fontName === 'Courier'
         ? 'Courier, monospace'
-        : (field.fontName ? `"${field.fontName}", sans-serif` : 'inherit');
+        : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit'));
     const fontWeight = field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal';
     const fontStyle = field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal';
 
@@ -1992,23 +2017,17 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
 // bề rộng render KHỚP bề rộng thật của dòng trên trang. KHÔNG overflow:hidden/width
 // cứng (bản cũ cắt mất chữ tràn + lệch). scaleX đo 1 lần qua offsetWidth (bỏ qua
 // transform nên không lặp vô hạn). transformOrigin top-left để neo đúng mép trái-trên.
-const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale, gapPt }: { line: TextLine; scale: number; gapPt: number }) {
+const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale }: { line: TextLine; scale: number }) {
     const ref = useRef<HTMLSpanElement>(null);
     const [scaleX, setScaleX] = useState(1);
     const text = line.chars?.map((c: TextChar) => c.c).join('') || '';
     const targetW = (line.bbox.w || 0) * scale;
-    const h = (line.bbox.h || 0) * scale;
-    // KẸP chiều cao khung click ≤ khe tới dòng kế → span KHÔNG chồng mép Y với dòng
-    // dưới → kéo 1 dòng không chạm span dòng kề → hết nhảy selection. fontSize vẫn
-    // theo h (glyph khớp cỡ chữ gốc); chỉ khung click (height) bị kẹp + overflow ẩn.
-    const capH = Math.min(h, gapPt * scale);
+    const h = Math.max(1, (line.bbox.h || 0) * scale);
 
     useLayoutEffect(() => {
         const el = ref.current;
-        // Giá trị phụ thuộc phép đo DOM nên phải cập nhật trong layout effect.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         if (!el || targetW <= 0) { setScaleX(1); return; }
-        const natural = el.offsetWidth; // bề rộng tự nhiên (chưa tính transform)
+        const natural = el.offsetWidth;
         setScaleX(natural > 0 ? targetW / natural : 1);
     }, [text, h, targetW]);
 
@@ -2017,22 +2036,19 @@ const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale,
             ref={ref}
             style={{
                 position: 'absolute',
-                left: line.bbox.x * scale,
-                top: line.bbox.y * scale,
-                // fontSize = CHIỀU CAO dòng, lineHeight = 1 (KHÔNG px riêng): line-box
-                // đúng bằng fontSize nên KHÔNG có "half-leading" đẩy chữ xuống ~9% như
-                // bản cũ (fontSize 0.82h < lineHeight h). Đây là cách pdf.js đặt glyph.
+                left: `${line.bbox.x * scale}px`,
+                top: `${line.bbox.y * scale}px`,
                 fontSize: `${h}px`,
                 lineHeight: 1,
-                // Khung click kẹp ≤ khe dòng kế (capH), overflow ẩn phần thừa → span
-                // không lấn dòng dưới (fix nhảy dòng 2026-07-07). block để height ăn.
-                display: 'block',
-                height: capH,
-                overflow: 'hidden',
+                height: `${h}px`,
                 color: 'transparent',
                 whiteSpace: 'pre',
                 transform: `scaleX(${scaleX})`,
                 transformOrigin: 'left top',
+                pointerEvents: 'auto',
+                userSelect: 'text',
+                WebkitUserSelect: 'text',
+                cursor: 'text',
             }}
         >
             {text}
@@ -2053,19 +2069,29 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
         () => (Array.isArray(textBlocks) ? textBlocks : (textBlocks?.blocks || []))
             .flatMap((block: TextBlock) => block.lines || [])
             .filter((line: TextLine) => line?.bbox)
-            .sort((a: TextLine, b: TextLine) => a.bbox.y - b.bbox.y),
+            .sort((a: TextLine, b: TextLine) => {
+                const dy = a.bbox.y - b.bbox.y;
+                if (Math.abs(dy) > 3) return dy;
+                return a.bbox.x - b.bbox.x;
+            }),
         [textBlocks],
     );
     const pageWidthPt = pageWidthPx ? pageWidthPx * 72 / 96 : 595;
     const scale = displayWidth / pageWidthPt;
 
     return (
-        <div className="absolute inset-0 z-[12] select-text cursor-text" style={{ pointerEvents: 'auto' }}>
-            {allLines.map((line: TextLine, index: number) => {
-                const next = allLines[index + 1];
-                const gap = next ? (next.bbox.y - line.bbox.y) : Infinity;
-                return <SelectableTextLine key={index} line={line} scale={scale} gapPt={gap} />;
-            })}
+        <div
+            className="selectable-text-layer absolute inset-0 z-[30] select-text cursor-text"
+            style={{
+                pointerEvents: 'auto',
+                userSelect: 'text',
+                WebkitUserSelect: 'text',
+                lineHeight: 1,
+            }}
+        >
+            {allLines.map((line: TextLine, index: number) => (
+                <SelectableTextLine key={index} line={line} scale={scale} />
+            ))}
         </div>
     );
 });
@@ -2112,20 +2138,21 @@ export const LivePageFrame = (props: any) => {
     const isActiveFrame = isActivePage === true;
 
     const {
-        isObjectEditMode, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds, ocgVisibilityIntent,
+        isObjectEditMode, isPickingVdpText, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds, ocgVisibilityIntent,
         showOutputPreview,
-        separationPlates, vdpFields, selectedVdpFieldIds,
+        separationPlates, vdpFields, setVdpFields, selectedVdpFieldIds, setSelectedVdpFieldIds, setIsPickingVdpText,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         outputPreviewWarningOpacity, outputPreviewOverprintDiagnosticActive,
         outputPreviewActiveViewerPage,
         outputPreviewPageBoxes, outputPreviewShowPageBoxes,
-        pdfUrl, setSelectedVdpFieldIds, selectedObjectIds, setSelectedObjectIds,
+        pdfUrl, selectedObjectIds, setSelectedObjectIds,
         setObjectSelectionContext,
         isCropMode, cropSelection, setCropSelection, commitCropSelection,
         recordCropSelectionSnapshot, viewerToolMode, editAddMode, setEditAddMode,
         editClipboard, setEditClipboard
     } = useWorkspaceStore(useShallow(state => ({
         isObjectEditMode: state.isObjectEditMode,
+        isPickingVdpText: state.isPickingVdpText,
         editAddMode: state.editAddMode,
         setEditAddMode: state.setEditAddMode,
         setCurrentEditObjects: state.setCurrentEditObjects,
@@ -2143,7 +2170,9 @@ export const LivePageFrame = (props: any) => {
         showOutputPreview: state.showOutputPreview,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields,
+        setVdpFields: state.setVdpFields,
         selectedVdpFieldIds: state.selectedVdpFieldIds,
+        setIsPickingVdpText: state.setIsPickingVdpText,
         softProofImageUrl: state.softProofImageUrl,
         gamutWarningUrl: state.gamutWarningUrl,
         tacHeatmapUrl: state.tacHeatmapUrl,
@@ -2162,6 +2191,7 @@ export const LivePageFrame = (props: any) => {
         recordCropSelectionSnapshot: state.recordCropSelectionSnapshot,
         viewerToolMode: state.viewerToolMode,
     })));
+    const effectiveFid = selectionFileId || nativeFilePath || (typeof pdfUrl === 'string' && pdfUrl.startsWith('file://') ? decodeURIComponent(pdfUrl.replace('file:///', '').replace('file://', '')) : '') || '';
     const accurateColorPage = shouldUseViewerAccurateSimulation(
         detectorRequiresAccurate === true,
         showOutputPreview === true,
@@ -2186,8 +2216,8 @@ export const LivePageFrame = (props: any) => {
         isActiveFrame,
         prefetchPage === true,
     );
-    // PERF (audit 2026-09-11 §PPEBX.C): active mức 10 dùng lane tương tác;
-    // trang kế bên mức 100 dùng lane nền cùng atlas, không giữ mutex của active.
+    // UIUX (feedback 2026-08-14 §VIEW.PAGE): target active vẫn thắng ở mức 10;
+    // underlay đọc được của trang kế bên đứng ở mức 20, trước atlas runway mức 100.
     const shouldRenderBasePage = shouldRenderViewerBasePage(
         viewerIsActive,
         isActiveFrame,
@@ -2235,6 +2265,31 @@ export const LivePageFrame = (props: any) => {
     // với dropdown "Xoay (độ)" ở panel). x/y là toạ độ màn hình (fixed), fieldId là
     // field được nhấp phải. Đóng khi click ra ngoài / Escape / chọn xong.
     const [vdpCtxMenu, setVdpCtxMenu] = useState<{ x: number; y: number; fieldId: string } | null>(null);
+
+    // Tự nạp Text Layer cho trang hiện tại nếu cha chưa truyền textBlocks
+    const [pageTextBlocks, setPageTextBlocks] = useState<TextBlocksInput | null>(null);
+    const textTarget = nativeFilePath
+        || (typeof pdfUrl === 'string' && pdfUrl.startsWith('file://') ? decodeURIComponent(pdfUrl.replace('file:///', '').replace('file://', '')) : '')
+        || selectionFileId
+        || '';
+    useEffect(() => {
+        if (textBlocks || !textTarget || !originalPageNum || isObjectEditMode || isVdpMode || isCropMode) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await authenticatedFetch(`${getApiUrl()}/imposition/pdf-text`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: textTarget, page: originalPageNum }),
+                });
+                if (!res.ok || cancelled) return;
+                const data = await res.json();
+                if (cancelled) return;
+                setPageTextBlocks(data.blocks || []);
+            } catch { /* text không quét được → bỏ qua */ }
+        })();
+        return () => { cancelled = true; };
+    }, [textBlocks, textTarget, originalPageNum, isObjectEditMode, isVdpMode, isCropMode]);
 
     // ─── VDP drag/resize: áp dụng theo THỜI GIAN THỰC qua listener WINDOW ───────
     // Bắt sự kiện ở window (không phải div trang) → con trỏ ra ngoài khung vẫn theo
@@ -2372,6 +2427,81 @@ export const LivePageFrame = (props: any) => {
     }, [vdpCtxMenu, isViewerActive]);
 
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
+    const [editingCluster, setEditingCluster] = useState<{
+        primaryObj: EditCanvasObj;
+        memberIds: string[];
+        combinedContent: string;
+        bbox: [number, number, number, number];
+        isCurved: boolean;
+    } | null>(null);
+
+    // Gom cụm ký tự văn bản thông minh (cho cả chữ uốn cong và chữ rời rạc cùng hàng)
+    const getTextClusterForObject = (targetObj: EditCanvasObj, allObjs: EditCanvasObj[]) => {
+        const textObjs = allObjs.filter(o => o.type === 'text' && !hiddenObjectIds.includes(o.id));
+        const targetIdx = textObjs.findIndex(o => o.id === targetObj.id);
+        if (targetIdx === -1) {
+            return {
+                primaryObj: targetObj,
+                memberIds: [targetObj.id],
+                combinedContent: targetObj.content || '',
+                bbox: targetObj.bbox,
+                isCurved: false,
+            };
+        }
+
+        const m0 = targetObj.matrix;
+        const s0 = m0 ? Math.hypot(m0[0], m0[1]) : 12;
+        const cluster: EditCanvasObj[] = [targetObj];
+
+        let curr = targetObj;
+        for (let j = targetIdx + 1; j < textObjs.length; j++) {
+            const nxt = textObjs[j];
+            const nxtM = nxt.matrix;
+            const sNxt = nxtM ? Math.hypot(nxtM[0], nxtM[1]) : 12;
+            if (Math.abs(sNxt - s0) > s0 * 0.18) break;
+            if (nxt.drawIndex - curr.drawIndex > 2) break;
+            const currE = curr.matrix ? curr.matrix[4] : curr.bbox[0];
+            const currF = curr.matrix ? curr.matrix[5] : curr.bbox[1];
+            const nxtE = nxtM ? nxtM[4] : nxt.bbox[0];
+            const nxtF = nxtM ? nxtM[5] : nxt.bbox[1];
+            const dist = Math.hypot(nxtE - currE, nxtF - currF);
+            if (dist > s0 * 2.5) break;
+            cluster.push(nxt);
+            curr = nxt;
+        }
+
+        curr = targetObj;
+        for (let j = targetIdx - 1; j >= 0; j--) {
+            const prev = textObjs[j];
+            const prevM = prev.matrix;
+            const sPrev = prevM ? Math.hypot(prevM[0], prevM[1]) : 12;
+            if (Math.abs(sPrev - s0) > s0 * 0.18) break;
+            if (curr.drawIndex - prev.drawIndex > 2) break;
+            const currE = curr.matrix ? curr.matrix[4] : curr.bbox[0];
+            const currF = curr.matrix ? curr.matrix[5] : curr.bbox[1];
+            const prevE = prevM ? prevM[4] : prev.bbox[0];
+            const prevF = prevM ? prevM[5] : prev.bbox[1];
+            const dist = Math.hypot(currE - prevE, currF - prevF);
+            if (dist > s0 * 2.5) break;
+            cluster.unshift(prev);
+            curr = prev;
+        }
+
+        const minX = Math.min(...cluster.map(o => o.bbox[0]));
+        const minY = Math.min(...cluster.map(o => o.bbox[1]));
+        const maxX = Math.max(...cluster.map(o => o.bbox[2]));
+        const maxY = Math.max(...cluster.map(o => o.bbox[3]));
+        const isCurved = cluster.length >= 2;
+        const combined = cluster.map(o => o.content || '').join('').trim();
+
+        return {
+            primaryObj: cluster[0],
+            memberIds: cluster.map(o => o.id),
+            combinedContent: combined || (cluster[0].content || ''),
+            bbox: [minX, minY, maxX, maxY] as [number, number, number, number],
+            isCurved,
+        };
+    };
 
     // Crop PDF: lưu theo phần trăm trang, không lưu pixel. Nhờ vậy vùng đã quét
     // không lệch khi đổi zoom/fit. ownerId tách cả các bản nhân đôi cùng source page.
@@ -2404,12 +2534,32 @@ export const LivePageFrame = (props: any) => {
     const [editTextColor, setEditTextColor] = useState<number[] | null>(null);
     const [editOrigContent, setEditOrigContent] = useState<string>('');
     const [editOrigFontName, setEditOrigFontName] = useState<string>('');
+    const [editFontSizePt, setEditFontSizePt] = useState<number | null>(null);
     const editOpenTokenRef = useRef(0); // chống race khi mở nhanh object khác
     // Thông báo tạm (vd. cảnh báo không giữ được font gốc → dùng font dự phòng).
     const [editNotice, setEditNotice] = useState<string | null>(null);
-    useEffect(() => {
-        getSystemFonts().then(f => { systemFontsRef.current = Array.isArray(f) ? f : []; }).catch(() => {});
-    }, []);
+    // PERF: Optimistic text overlay để hiển thị nội dung mới tức thì trong 0ms khi người dùng sửa text
+    // Active text formatting state cho FloatingTextToolbar
+    const [activeTextFontName, setActiveTextFontName] = useState<string>('');
+    const [activeTextFontFile, setActiveTextFontFile] = useState<string | undefined>(undefined);
+    const [activeTextFontSize, setActiveTextFontSize] = useState<number>(14);
+    const [activeTextContent, setActiveTextContent] = useState<string>('');
+    const textPropsCacheRef = useRef<Map<string, any>>(new Map());
+    const editPropsDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const pendingPropsUpdatesRef = useRef<{ fontName?: string; fontFile?: string; fontSizePt?: number; color?: number[]; bold?: boolean; italic?: boolean }>({});
+    const [activeTextColor, setActiveTextColor] = useState<number[] | null>(null);
+    const [activeTextBold, setActiveTextBold] = useState<boolean>(false);
+    const [activeTextItalic, setActiveTextItalic] = useState<boolean>(false);
+
+    const [optimisticTextOverlay, setOptimisticTextOverlay] = useState<{
+        objId: string;
+        bbox: BBox;
+        content: string;
+        color: number[] | null;
+        fontName?: string;
+        fontWeight?: string;
+        fontSizePt?: number;
+    } | null>(null);
     // Khớp tên font gốc (vd. 'Montserrat-Bold') với một font hệ thống (chuẩn hóa tên).
     const pickFontForName = (name?: string): { name: string; path: string } | null =>
         pickFontForNameUtil(name, systemFontsRef.current);
@@ -2442,20 +2592,94 @@ export const LivePageFrame = (props: any) => {
         }).join('');
     // Mở editor sửa text cho object: mở NGAY (trống) rồi LAZY fetch props
     // (content/màu/font gốc) cho đúng object → điền sẵn + tự khớp font hệ thống.
-    const openTextEditor = (o: EditCanvasObj) => {
+
+    // ─── VDP Text Picker: Click-to-Convert text object sang VDP Field ─────────
+    const handlePickTextObject = async (obj: EditCanvasObj, clusterMemberIds?: string[]) => {
+        const fidToUse = effectiveFid;
+        if (!fidToUse) {
+            toast.error(t('Chưa xác định được file mẫu'));
+            return;
+        }
+        try {
+            toast.info(t('Đang chọn trường...'));
+            const pageIdx = originalPageNum - 1;
+            const res = await pickVdpTextField(fidToUse, pageIdx, obj.drawIndex, true);
+            if (res.success && res.field) {
+                // 1. Đánh dấu đã bóc tách toàn bộ các ký tự thuộc cụm chữ này
+                const idsToRemove = clusterMemberIds && clusterMemberIds.length > 0
+                    ? clusterMemberIds
+                    : (res.removedDrawIndices && Array.isArray(res.removedDrawIndices)
+                        ? res.removedDrawIndices.map((idx: number) => `text-${idx}`)
+                        : [obj.id]);
+                setPickedTextIds(prev => [...new Set([...prev, ...idsToRemove, obj.id])]);
+
+                // 2. Thêm vào vdpFields của workspace store (tránh trùng lặp)
+                const newField = res.field;
+                const addFieldSafely = (prevList: any[]) => {
+                    const arr = Array.isArray(prevList) ? prevList : [];
+                    if (arr.some((f: any) => f.id === newField.id || (f.name === newField.name && f.x === newField.x && f.y === newField.y))) {
+                        return arr;
+                    }
+                    return [...arr, newField];
+                };
+
+                if (typeof setVdpFields === 'function') {
+                    setVdpFields(addFieldSafely as any);
+                } else if (onVdpFieldsChange) {
+                    onVdpFieldsChange(addFieldSafely as any);
+                }
+
+                // 3. Chọn trường VDP mới
+                if (typeof setSelectedVdpFieldIds === 'function') {
+                    setSelectedVdpFieldIds([newField.id]);
+                }
+
+                // 4. Tắt chế độ chọn trường
+                if (typeof setIsPickingVdpText === 'function') {
+                    setIsPickingVdpText(false);
+                }
+
+                toast.success(t(`Đã chọn trường "${res.field.name}" thành công!`));
+
+                if (res.working_fid && res.working_pdf_url) {
+                    window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
+                        detail: {
+                            workingFid: res.working_fid,
+                            workingPdfUrl: res.working_pdf_url,
+                            workingPdfPath: res.working_pdf_path,
+                        }
+                    }));
+                }
+            }
+        } catch (err: any) {
+            console.error('Lỗi khi chọn trường VDP:', err);
+            toast.error(err.message || 'Lỗi khi trích xuất chữ');
+        }
+    };
+
+    const openTextEditor = (o: EditCanvasObj, preCluster?: any) => {
+        if (systemFontsRef.current.length === 0) {
+            getSystemFonts().then(f => { systemFontsRef.current = Array.isArray(f) ? f : []; }).catch(() => {});
+        }
+        const cluster = preCluster || getTextClusterForObject(o, editObjects);
         const token = ++editOpenTokenRef.current;
-        setEditingTextId(o.id);
-        setEditTextContent('');
-        setEditOrigContent('');
+        setEditingCluster(cluster);
+        setEditingTextId(cluster.primaryObj.id);
+        const initContent = cluster.combinedContent || o.content || '';
+        setEditTextContent(initContent);
+        setEditOrigContent(initContent);
         setEditTextColor(null);
         setEditOrigFontName('');
         setEditFontName('');
         setEditFontPath(undefined);
+        const mInit = o.matrix;
+        const matrixSizeInit = mInit ? Math.hypot(mInit[0], mInit[1]) : 0;
+        setEditFontSizePt(matrixSizeInit > 0 ? matrixSizeInit : (o.bbox[3] - o.bbox[1]));
         if (!selectionFileId) return;
         const page = originalPageNum - 1;
         void (async () => {
             try {
-                const res = await authenticatedFetch(`${getApiUrl()}/edit/text-props/${selectionFileId}/${page}/${o.drawIndex}`);
+                const res = await authenticatedFetch(`${getApiUrl()}/edit/text-props?fid=${encodeURIComponent(selectionFileId)}&page=${page}&index=${o.drawIndex}`);
                 if (!res.ok) return;
                 const p = await res.json();
                 if (editOpenTokenRef.current !== token) return; // đã mở object khác → bỏ
@@ -2465,10 +2689,15 @@ export const LivePageFrame = (props: any) => {
                 // cách rồi PREFILL (giữ phần đọc được) để người dùng sửa nhanh.
                 const dirty = raw !== '' && looksUnreliableText(raw);
                 const content = dirty ? sanitizeText(raw) : raw;
-                setEditTextContent(content);
-                setEditOrigContent(content);
+                if (cluster.memberIds.length <= 1 && content) {
+                    setEditTextContent(content);
+                    setEditOrigContent(content);
+                }
                 setEditTextColor(Array.isArray(p.color) ? p.color : null);
                 setEditOrigFontName(typeof p.fontName === 'string' ? p.fontName : '');
+                if (typeof p.fontSize === 'number' && p.fontSize > 0) {
+                    setEditFontSizePt(p.fontSize);
+                }
                 const m = pickFontForName(p.fontName);
                 if (m && m.path) { setEditFontName(m.name); setEditFontPath(m.path); }
                 else { setEditFontName(p.fontName || ''); setEditFontPath(undefined); }
@@ -2489,6 +2718,7 @@ export const LivePageFrame = (props: any) => {
     // trạng thái Live_Document sau op) mà KHÔNG cần đổi selectionFileId → khung chọn
     // bám vị trí MỚI + danh sách object cập nhật cho add/delete, không chờ commit.
     const [editObjectsVersion, setEditObjectsVersion] = useState(0);
+    const [pickedTextIds, setPickedTextIds] = useState<string[]>([]);
 
     // apply/undo/redo sống ở hook cấp Viewer, nên frame cần một tín hiệu chung để
     // bỏ cache và nạp lại danh sách Thành phần từ đúng Live_Document hiện tại.
@@ -2653,9 +2883,10 @@ export const LivePageFrame = (props: any) => {
     useEffect(() => {
         const shouldLoadObjects = shouldLoadEditObjectsForFrame({
             isObjectEditMode,
+            isPickingVdpText,
             isActiveFrame,
             originalPageNum,
-            selectionFileId: selectionFileId || '',
+            selectionFileId: effectiveFid,
             hasPageHeight: Boolean(pageDim?.h),
         });
         if (!shouldLoadObjects) {
@@ -2674,7 +2905,7 @@ export const LivePageFrame = (props: any) => {
             return;
         }
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
-        const cacheKey = `${selectionFileId}:${pageIndex}`;
+        const cacheKey = `${effectiveFid}:${pageIndex}`;
 
         // Cache-hit → dùng ngay, KHÔNG fetch lại (bật/tắt chế độ không tải lại).
         // Sau transform, cache bị clear (pdfUrl/fid đổi) nên thường miss; nếu hit
@@ -2701,7 +2932,7 @@ export const LivePageFrame = (props: any) => {
         const pageHeightPt = pageDim.h * 72 / 96;
         (async () => {
             try {
-                const res = await authenticatedFetch(`${getApiUrl()}/edit/objects/${selectionFileId}/${pageIndex}`);
+                const res = await authenticatedFetch(`${getApiUrl()}/edit/objects?fid=${encodeURIComponent(effectiveFid)}&page=${pageIndex}`);
                 if (!res.ok) throw new Error(`/edit/objects HTTP ${res.status}`);
                 const data = await res.json();
                 if (cancelled) return;
@@ -2765,7 +2996,7 @@ export const LivePageFrame = (props: any) => {
             }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion, isActiveFrame, setHiddenObjectIds, setSelectedObjectIds, hideEditGhost, t]);
+    }, [isObjectEditMode, isPickingVdpText, originalPageNum, effectiveFid, pageDim?.h, editObjectsVersion, isActiveFrame, setHiddenObjectIds, setSelectedObjectIds, hideEditGhost, t]);
 
     // ─── Edit PDF Object: đồng bộ object của TRANG ACTIVE lên panel (fix tắt mắt) ─
     // Panel "Thành phần" đọc store `currentEditObjects`. Vì danh sách trang là ảo
@@ -4119,17 +4350,259 @@ export const LivePageFrame = (props: any) => {
     }, [applyOpViaSession, editFontPath, selectionFileId, t]);
     sendEditAndPreviewRef.current = sendEditAndPreview;
 
-    // Sửa nội dung một cụm text CÓ SẴN (double-click → editor inline). editText KHÔNG
-    // cần bbox: backend resolve vị trí/font/cỡ từ object mục tiêu qua Geometry_Reader.
-    const commitEditObjectText = async (objId: string, content: string) => {
-        if (!selectionFileId || !pageDim?.w || !content.trim()) return;
+
+    // Đồng bộ thuộc tính của text object đang chọn lên FloatingTextToolbar
+    const selectedTextObj = selectedObjectIds.length === 1
+        ? editObjects.find(o => o.id === selectedObjectIds[0] && o.type === 'text') || null
+        : null;
+
+    useEffect(() => {
+        if (!selectedTextObj || !selectionFileId) return;
+        const fontName = selectedTextObj.fontName || '';
+        setActiveTextFontName(fontName);
+        setActiveTextFontFile(undefined);
+        const mSel = selectedTextObj.matrix;
+        const matrixSizeSel = mSel ? Math.hypot(mSel[0], mSel[1]) : 0;
+        const bboxHSel = selectedTextObj.bbox[3] - selectedTextObj.bbox[1];
+        const estPtSel = Math.max(6, Math.round(matrixSizeSel > 0 ? matrixSizeSel : bboxHSel));
+        setActiveTextFontSize(estPtSel);
+        setActiveTextColor(selectedTextObj.color || null);
+        const clusterInit = getTextClusterForObject(selectedTextObj, editObjects);
+        setActiveTextContent(clusterInit.combinedContent || selectedTextObj.content || '');
+        setActiveTextBold(/bold|black|heavy|semibold/i.test(fontName));
+        setActiveTextItalic(/italic|oblique/i.test(fontName));
+
+        // PERF: Kiểm tra cache trước (0ms), nếu chưa có mới fetch backend
+        const page = originalPageNum - 1;
+        const cacheKey = `${selectionFileId}:${page}:${selectedTextObj.drawIndex}`;
+        const cached = textPropsCacheRef.current.get(cacheKey);
+        if (cached) {
+            if (Array.isArray(cached.color)) setActiveTextColor(cached.color);
+            if (typeof cached.fontSize === 'number' && cached.fontSize > 0) setActiveTextFontSize(Math.round(cached.fontSize));
+            if (cached.content) {
+                setActiveTextContent(cached.content);
+                setEditObjects(prev => prev.map(o => o.id === selectedTextObj.id ? { ...o, content: cached.content } : o));
+            }
+            if (cached.fontName) {
+                setActiveTextFontName(cached.fontName);
+                setActiveTextBold(/bold|black|heavy|semibold/i.test(cached.fontName));
+                setActiveTextItalic(/italic|oblique/i.test(cached.fontName));
+                const m = pickFontForName(cached.fontName);
+                if (m && m.path) setActiveTextFontFile(m.path);
+            }
+        } else {
+            void (async () => {
+                try {
+                    const res = await authenticatedFetch(`${getApiUrl()}/edit/text-props?fid=${encodeURIComponent(selectionFileId)}&page=${page}&index=${selectedTextObj.drawIndex}`);
+                    if (!res.ok) return;
+                    const p = await res.json();
+                    textPropsCacheRef.current.set(cacheKey, p);
+                    if (Array.isArray(p.color)) setActiveTextColor(p.color);
+                    if (typeof p.fontSize === 'number' && p.fontSize > 0) {
+                        setActiveTextFontSize(Math.round(p.fontSize));
+                    }
+                    const raw = typeof p.content === 'string' ? p.content : '';
+                    const dirty = raw !== '' && looksUnreliableText(raw);
+                    const content = dirty ? sanitizeText(raw) : raw;
+                    if (content) {
+                        p.content = content;
+                        setActiveTextContent(content);
+                        setEditObjects(prev => prev.map(o => o.id === selectedTextObj.id ? { ...o, content } : o));
+                    }
+                    if (typeof p.fontName === 'string') {
+                        setActiveTextFontName(p.fontName);
+                        setActiveTextBold(/bold|black|heavy|semibold/i.test(p.fontName));
+                        setActiveTextItalic(/italic|oblique/i.test(p.fontName));
+                        const m = pickFontForName(p.fontName);
+                        if (m && m.path) setActiveTextFontFile(m.path);
+                    }
+                } catch { /* best-effort */ }
+            })();
+        }
+    }, [selectedTextObj?.id, selectionFileId, originalPageNum]);
+
+    // Sửa nội dung một cụm text CÓ SẴN (double-click → editor inline).
+    // Đổi nhanh thuộc tính văn bản (font, cỡ chữ, màu sắc, bold, italic) từ FloatingTextToolbar
+    const commitEditTextProperties = async (updates: {
+        fontName?: string;
+        fontFile?: string;
+        fontSizePt?: number;
+        color?: number[];
+        bold?: boolean;
+        italic?: boolean;
+    }, debounce = false) => {
+        if (!selectedTextObj || !selectionFileId || !pageDim?.w) return;
+        const cluster = getTextClusterForObject(selectedTextObj, editObjects);
+        const targetIds = cluster.memberIds.length ? cluster.memberIds : [selectedTextObj.id];
+        const pageIndex = originalPageNum - 1;
+
+        pendingPropsUpdatesRef.current = { ...pendingPropsUpdatesRef.current, ...updates };
+
+        // Nếu debounce (vd click tăng/giảm cỡ chữ hoặc kéo màu), cập nhật tức thì UI (0ms) và gom gửi backend
+        if (debounce) {
+            if (editPropsDebounceTimerRef.current) clearTimeout(editPropsDebounceTimerRef.current);
+            editPropsDebounceTimerRef.current = setTimeout(() => {
+                const combined = { ...pendingPropsUpdatesRef.current };
+                pendingPropsUpdatesRef.current = {};
+                void commitEditTextProperties(combined, false);
+            }, 160);
+            return;
+        }
+
+        const mergedUpdates = { ...pendingPropsUpdatesRef.current, ...updates };
+        pendingPropsUpdatesRef.current = {};
+
+        // 1. LẤY NỘI DUNG TEXT THẬT SỰ (TUYỆT ĐỐI KHÔNG ĐƯỢC ĐỂ RỖNG LÀM MẤT TEXT)
+        let contentToUse = activeTextContent || cluster.combinedContent || selectedTextObj.content || '';
+        if (!contentToUse.trim()) {
+            try {
+                const res = await authenticatedFetch(`${getApiUrl()}/edit/text-props?fid=${encodeURIComponent(selectionFileId)}&page=${pageIndex}&index=${selectedTextObj.drawIndex}`);
+                if (res.ok) {
+                    const p = await res.json();
+                    const raw = typeof p.content === 'string' ? p.content : '';
+                    const dirty = raw !== '' && looksUnreliableText(raw);
+                    contentToUse = dirty ? sanitizeText(raw) : raw;
+                    if (contentToUse) {
+                        setActiveTextContent(contentToUse);
+                        setEditObjects(prev => prev.map(o => o.id === selectedTextObj.id ? { ...o, content: contentToUse } : o));
+                    }
+                }
+            } catch (err) {
+                console.error('Lỗi nạp text props on-demand:', err);
+            }
+        }
+
+        if (!contentToUse.trim()) {
+            toast.error(t('Không thể xác định nội dung văn bản để đổi định dạng'));
+            return;
+        }
+
+        // 2. Khớp đường dẫn font file từ fontName nếu chưa có
+        let nextFont = mergedUpdates.fontFile !== undefined ? mergedUpdates.fontFile : activeTextFontFile;
+        const fontNameToUse = mergedUpdates.fontName || activeTextFontName;
+        if (!nextFont && fontNameToUse) {
+            const matched = pickFontForName(fontNameToUse);
+            if (matched?.path) {
+                nextFont = matched.path;
+                setActiveTextFontFile(matched.path);
+            }
+        }
+
+        const nextSize = mergedUpdates.fontSizePt !== undefined ? mergedUpdates.fontSizePt : (activeTextFontSize || 14);
+        const nextColor = mergedUpdates.color !== undefined ? mergedUpdates.color : (activeTextColor || [0, 0, 0]);
+        const nextBold = mergedUpdates.bold !== undefined ? mergedUpdates.bold : activeTextBold;
+        const nextItalic = mergedUpdates.italic !== undefined ? mergedUpdates.italic : activeTextItalic;
+
+        // 3. Optimistic Update (0ms): cập nhật trực tiếp để UI phản hồi tức khắc
+        const targetSet = new Set(targetIds);
+        setEditObjects((prev) => prev.map((item) => {
+            if (item.id === selectedTextObj.id) {
+                return {
+                    ...item,
+                    content: contentToUse,
+                    color: nextColor,
+                    fontName: mergedUpdates.fontName || item.fontName,
+                };
+            }
+            if (targetSet.has(item.id)) {
+                return { ...item, content: '' };
+            }
+            return item;
+        }));
+
+        const bounds = cluster.bbox || selectedTextObj.bbox;
+        setOptimisticTextOverlay({
+            objId: selectedTextObj.id,
+            bbox: bounds,
+            content: contentToUse,
+            color: nextColor,
+            fontName: mergedUpdates.fontName || activeTextFontName || selectedTextObj.fontName,
+            fontSizePt: nextSize,
+            fontWeight: nextBold ? 'bold' : 'normal',
+        });
+
         const op: EditOp = {
-            page: originalPageNum - 1, kind: 'editText',
-            targetIds: [objId],
+            page: pageIndex,
+            kind: 'editText',
+            targetIds,
+            text: {
+                content: contentToUse,
+                font: nextFont,
+                sizePt: nextSize,
+                color: nextColor,
+                bold: nextBold,
+                italic: nextItalic,
+            },
+        };
+
+        try {
+            await sendEditAndPreview(op);
+        } finally {
+            setOptimisticTextOverlay(null);
+        }
+    };
+
+    const commitEditObjectText = async (objId: string, content: string, clusterMemberIds?: string[]) => {
+        if (!selectionFileId || !pageDim?.w || !content.trim()) return;
+        const targetIds = (clusterMemberIds && clusterMemberIds.length > 0) ? clusterMemberIds : [objId];
+        const pageIndex = originalPageNum - 1;
+
+        // 1. OPTIMISTIC UPDATE (0ms): Cập nhật ngay lập tức text trong local editObjects state
+        const targetSet = new Set(targetIds);
+        setEditObjects((prev) => prev.map((item) => {
+            if (item.id === objId) {
+                return { ...item, content };
+            }
+            if (targetSet.has(item.id)) {
+                // Ẩn nội dung của các ký tự phụ trong cluster để tránh chồng chữ
+                return { ...item, content: '' };
+            }
+            return item;
+        }));
+
+        // Đồng bộ cache _editObjectsCache
+        const cacheKey = `${effectiveFid}:${pageIndex}`;
+        const cachedObjs = _editObjectsCache.get(cacheKey);
+        if (cachedObjs) {
+            const updated = cachedObjs.map((item) => {
+                if (item.id === objId) return { ...item, content };
+                if (targetSet.has(item.id)) return { ...item, content: '' };
+                return item;
+            });
+            _editObjectsCache.set(cacheKey, updated);
+        }
+
+        // Kích hoạt Optimistic Overlay tạm thời ngay tại tọa độ cụm text
+        const primaryTarget = editObjects.find(o => o.id === objId);
+        if (primaryTarget) {
+            const clusterTargets = editObjects.filter(o => targetSet.has(o.id));
+            const bounds = selectionBounds(clusterTargets.length ? clusterTargets : [primaryTarget]) || primaryTarget.bbox;
+            const mTarget = primaryTarget.matrix;
+            const matrixSizeTarget = mTarget ? Math.hypot(mTarget[0], mTarget[1]) : 0;
+            const currentSizePt = editFontSizePt || (matrixSizeTarget > 0 ? matrixSizeTarget : (bounds[3] - bounds[1]));
+            setOptimisticTextOverlay({
+                objId,
+                bbox: bounds,
+                content,
+                color: editTextColor,
+                fontName: editFontName || primaryTarget.fontName,
+                fontSizePt: currentSizePt,
+                fontWeight: /bold|black|heavy|semibold/i.test(editOrigFontName) ? 'bold' : 'normal',
+            });
+        }
+
+        const op: EditOp = {
+            page: pageIndex, kind: 'editText',
+            targetIds,
             // font = đường dẫn file font người dùng chọn (nếu có) → backend nhúng font đó.
             text: { content, font: editFontPath },
         };
-        await sendEditAndPreview(op);
+        try {
+            await sendEditAndPreview(op);
+        } finally {
+            // Khi backend trả về preview clip hoặc có lỗi, giải phóng optimistic overlay
+            setOptimisticTextOverlay(null);
+        }
     };
 
     // Thêm cụm text MỚI tại điểm bấm. CONVERT TỌA ĐỘ: draft.{xPt,yPt} ở hệ canvas
@@ -4393,8 +4866,9 @@ export const LivePageFrame = (props: any) => {
         );
         if (hit?.type === 'text') {
             e.preventDefault();
-            setSelectedObjectIds([hit.id]);
-            openTextEditor(hit);
+            const cluster = getTextClusterForObject(hit, editObjects);
+            setSelectedObjectIds(cluster.memberIds);
+            openTextEditor(cluster.primaryObj, cluster);
         }
     };
     // Edit drag: listener WINDOW (giống VDP) — kéo ra ngoài khung vẫn cập nhật ghost
@@ -4505,20 +4979,28 @@ export const LivePageFrame = (props: any) => {
     return (
         <>
         {/* Inject dynamic fonts for VDP */}
-        {isVdpMode && window.__TAURI_INTERNALS__ && vdpFields?.map((field: VdpToolField, idx: number) =>
-            field.fontFile && field.fontName ? (
+        {vdpFields?.map((field: VdpToolField, idx: number) => {
+            if (!field.fontFile || !field.fontName) return null;
+            const cleanName = field.fontName.replace(/^[A-Z]{6}\+/, '');
+            return (
                 <style key={`vdp-font-${field.id || idx}`}>{`
                     @font-face {
                         font-family: "${field.fontName}_local";
                         src: url("${localFileUrl(field.fontFile)}");
                     }
+                    ${cleanName !== field.fontName ? `
+                    @font-face {
+                        font-family: "${cleanName}_local";
+                        src: url("${localFileUrl(field.fontFile)}");
+                    }
+                    ` : ''}
                 `}</style>
-            ) : null
-        )}
+            );
+        })}
         <div className="relative shrink-0" style={{ width: outerWidth }}>
         <div 
             ref={containerRef}
-            className={`bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5 relative shrink-0 overflow-hidden group/pdf-frame ${isCropPanMode ? 'cursor-grab active:cursor-grabbing touch-none select-none' : isCropMode ? 'cursor-crosshair touch-none select-none' : ''}`}
+            className={`bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5 relative shrink-0 overflow-hidden group/pdf-frame ${isCropPanMode ? 'cursor-grab active:cursor-grabbing touch-none select-none' : isCropMode ? 'cursor-crosshair touch-none select-none' : 'select-text'}`}
             style={{
                 width: outerWidth,
                 height: outerHeight,
@@ -4536,7 +5018,7 @@ export const LivePageFrame = (props: any) => {
             onDoubleClick={handleEditDoubleClick}
             onMouseLeave={isCropMode ? undefined : handleMouseLeave}
         >
-            <div ref={pageContentRef} style={{
+            <div ref={pageContentRef} className="select-text" style={{
                 position: 'absolute',
                 width: displayWidth,
                 height: displayHeight,
@@ -4883,9 +5365,9 @@ export const LivePageFrame = (props: any) => {
              {/* Keep the expensive text DOM mounted while Crop is active. The shield
                  below receives crop gestures, avoiding thousands of line unmounts and
                  layout measurements whenever the mode is toggled. */}
-            {getTileUrl && textBlocks && !isObjectEditMode && !isVdpMode && (
+            {getTileUrl && (textBlocks || pageTextBlocks) && !isObjectEditMode && !isVdpMode && (
                 <SelectableTextLayer
-                    textBlocks={textBlocks}
+                    textBlocks={textBlocks || pageTextBlocks}
                     pageWidthPx={pageDim?.w}
                     displayWidth={displayWidth}
                 />
@@ -5123,7 +5605,10 @@ export const LivePageFrame = (props: any) => {
                              const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
                              return areaB - areaA; // lớn nhất trước (dưới cùng), nhỏ nhất sau (trên cùng)
                          }).map((obj) => {
-                             const [x0, y0, x1, y1] = obj.bbox;
+                             const isThisEditing = editingTextId === obj.id;
+                             const isThisCluster = isThisEditing && editingCluster && editingCluster.primaryObj.id === obj.id;
+                             const renderBox = isThisCluster ? editingCluster.bbox : obj.bbox;
+                             const [x0, y0, x1, y1] = renderBox;
                              const isSelected = selectedObjectIds.includes(obj.id);
                              const isLocked = lockedObjectIds.includes(obj.id);
                              // Bộ ba RGB (KHÔNG bọc 'rgb()') để dựng được CẢ màu đặc lẫn rgba()
@@ -5160,7 +5645,7 @@ export const LivePageFrame = (props: any) => {
                                          outline: (isSelected && !isLocked) ? `1.5px solid ${typeColor}` : undefined,
                                          outlineOffset: (isSelected && !isLocked) ? '-1.5px' : undefined,
                                      } as React.CSSProperties}
-                                     title={isLocked ? `🔒 ĐÃ KHÓA — ${obj.type.toUpperCase()}: ${obj.id}` : `${obj.type.toUpperCase()}: ${obj.id}`}
+                                     title={isLocked ? `🔒 ĐÃ KHÓA — ${obj.type.toUpperCase()}: ${obj.id}` : (obj.type === 'text' ? `VĂN BẢN: "${obj.content || ''}" (Double-click để sửa)` : `${obj.type.toUpperCase()}: ${obj.id}`)}
                                      onClick={(e) => {
                                          e.stopPropagation();
                                          if (isLocked) return; // object bị khóa: KHÔNG cho chọn
@@ -5262,7 +5747,7 @@ export const LivePageFrame = (props: any) => {
                                              style={{
                                                  // KHÔNG bó theo bbox (gây "hụt"/cắt chữ): cho khung rộng tối thiểu để
                                                  // thấy & gõ trọn nội dung; cao tự nới theo số dòng (tối thiểu bbox).
-                                                 width: `${Math.max((x1 - x0) * scale, 260)}px`,
+                                                 width: `${Math.max((x1 - x0) * scale + 24, 260)}px`,
                                                  minHeight: `${Math.max((y1 - y0) * scale, 28)}px`,
                                                  height: 'auto',
                                                  color: editTextColor ? `rgb(${editTextColor[0]},${editTextColor[1]},${editTextColor[2]})` : '#111',
@@ -5318,6 +5803,68 @@ export const LivePageFrame = (props: any) => {
                                      color: '#111', lineHeight: 1, fontSize: `${EDIT_ADD_TEXT_SIZE_PT * scale}px`,
                                  }}
                              />
+                         )}
+                                                   {/* Floating Text Formatting Toolbar (Font, Size, Color, Bold, Italic) */}
+                          {isObjectEditMode && !isVdpMode && isActiveFrame && selectedTextObj && editingTextId === null && (
+                              <FloatingTextToolbar
+                                  visible={true}
+                                  bbox={selectedTextObj.bbox}
+                                  scale={scale}
+                                  fontName={activeTextFontName || selectedTextObj.fontName || ''}
+                                  fontFile={activeTextFontFile}
+                                  fontSizePt={activeTextFontSize || 14}
+                                  color={activeTextColor || selectedTextObj.color || [0, 0, 0]}
+                                  bold={activeTextBold}
+                                  italic={activeTextItalic}
+                                  onFontChange={(name, file) => {
+                                      setActiveTextFontName(name);
+                                      setActiveTextFontFile(file);
+                                      void commitEditTextProperties({ fontName: name, fontFile: file });
+                                  }}
+                                  onFontSizeChange={(sizePt) => {
+                                      setActiveTextFontSize(sizePt);
+                                      void commitEditTextProperties({ fontSizePt: sizePt });
+                                  }}
+                                  onColorChange={(rgb) => {
+                                      setActiveTextColor(rgb);
+                                      void commitEditTextProperties({ color: rgb });
+                                  }}
+                                  onToggleBold={() => {
+                                      const next = !activeTextBold;
+                                      setActiveTextBold(next);
+                                      void commitEditTextProperties({ bold: next });
+                                  }}
+                                  onToggleItalic={() => {
+                                      const next = !activeTextItalic;
+                                      setActiveTextItalic(next);
+                                      void commitEditTextProperties({ italic: next });
+                                  }}
+                                  onOpenEditor={() => {
+                                      openTextEditor(selectedTextObj);
+                                  }}
+                              />
+                          )}
+
+                          {/* Optimistic Text Overlay (0ms): Hien ngay khi vua bam Ap dung/Enter */}
+                         {optimisticTextOverlay && (
+                             <div
+                                 className="absolute z-[48] pointer-events-none flex items-center whitespace-pre overflow-hidden rounded-sm"
+                                 style={{
+                                     left: optimisticTextOverlay.bbox[0] * scale,
+                                     top: optimisticTextOverlay.bbox[1] * scale,
+                                     width: Math.max((optimisticTextOverlay.bbox[2] - optimisticTextOverlay.bbox[0]) * scale, 24),
+                                     height: Math.max((optimisticTextOverlay.bbox[3] - optimisticTextOverlay.bbox[1]) * scale, 14),
+                                     backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                                     color: optimisticTextOverlay.color ? `rgb(${optimisticTextOverlay.color[0]},${optimisticTextOverlay.color[1]},${optimisticTextOverlay.color[2]})` : '#111',
+                                     fontFamily: optimisticTextOverlay.fontName ? `"${optimisticTextOverlay.fontName}_local", "${optimisticTextOverlay.fontName}", sans-serif` : undefined,
+                                     fontWeight: optimisticTextOverlay.fontWeight || 'normal',
+                                     fontSize: `${Math.max(10, Math.round((optimisticTextOverlay.fontSizePt || (optimisticTextOverlay.bbox[3] - optimisticTextOverlay.bbox[1])) * scale))}px`,
+                                     lineHeight: 1.1,
+                                     paddingLeft: '2px',
+                                 }}
+                             >
+                                 {optimisticTextOverlay.content}
+                             </div>
                          )}
                      </>
                  );
@@ -5742,6 +6289,130 @@ export const LivePageFrame = (props: any) => {
                  );
              })()}
 
+
+             {/* VDP Text Picker Overlay (Click-to-Convert Text from Design) */}
+             {isPickingVdpText && pageDim && (() => {
+                 const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
+                 const textObjs = editObjects.filter((o) => o.type === 'text' && !hiddenObjectIds.includes(o.id) && !pickedTextIds.includes(o.id));
+                 return (
+                     <div className="absolute inset-0 pointer-events-none z-[65]">
+                         {/* Floating Guide Badge at Top Center of Page (Băng dài chữ nhật bo góc nhẹ) */}
+                         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[70] pointer-events-auto bg-teal-700/95 text-white text-xs font-medium px-4 py-2 rounded-md shadow-2xl border border-teal-400/40 flex items-center gap-3 backdrop-blur-md whitespace-nowrap transition-all select-none">
+                             <span className="relative flex h-2 w-2 shrink-0">
+                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                                 <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                             </span>
+                             <span className="font-semibold tracking-wide">🎯 Nhấp vào chữ trên trang để chọn trường VDP</span>
+                             <button
+                                 type="button"
+                                 onClick={(e) => {
+                                     e.stopPropagation();
+                                     setIsPickingVdpText(false);
+                                 }}
+                                 className="ml-2 hover:bg-teal-900 rounded-md px-2.5 py-1 text-[11px] bg-teal-800/90 text-teal-100 font-semibold border border-teal-400/30 cursor-pointer transition-colors flex items-center gap-1 active:scale-95"
+                             >
+                                 <span>✕</span>
+                                 <span>Xong</span>
+                             </button>
+                         </div>
+                          {(() => {
+                              // Nhóm các ký tự thuộc chuỗi chữ cong (curved text) từ Illustrator/Corel
+                              const clusters: Array<{
+                                  id: string;
+                                  primaryObj: EditCanvasObj;
+                                  memberIds: string[];
+                                  bbox: [number, number, number, number];
+                                  isCurved: boolean;
+                                  label: string;
+                              }> = [];
+                              const visited = new Set<string>();
+
+                              for (let i = 0; i < textObjs.length; i++) {
+                                  const obj = textObjs[i];
+                                  if (visited.has(obj.id)) continue;
+
+                                  const cluster = [obj];
+                                  visited.add(obj.id);
+
+                                  const m = obj.matrix;
+                                  const s0 = m ? Math.hypot(m[0], m[1]) : 12;
+
+                                  let curr = obj;
+                                  let currIdx = i;
+
+                                  for (let j = currIdx + 1; j < textObjs.length; j++) {
+                                      const nxt = textObjs[j];
+                                      if (visited.has(nxt.id)) continue;
+
+                                      const nxtM = nxt.matrix;
+                                      const sNxt = nxtM ? Math.hypot(nxtM[0], nxtM[1]) : 12;
+                                      if (Math.abs(sNxt - s0) > s0 * 0.18) break;
+                                      if (nxt.drawIndex - curr.drawIndex > 2) break;
+
+                                      const currE = curr.matrix ? curr.matrix[4] : curr.bbox[0];
+                                      const currF = curr.matrix ? curr.matrix[5] : curr.bbox[1];
+                                      const nxtE = nxtM ? nxtM[4] : nxt.bbox[0];
+                                      const nxtF = nxtM ? nxtM[5] : nxt.bbox[1];
+                                      const dist = Math.hypot(nxtE - currE, nxtF - currF);
+
+                                      if (dist > s0 * 2.5) break;
+
+                                      cluster.push(nxt);
+                                      visited.add(nxt.id);
+                                      curr = nxt;
+                                      currIdx = j;
+                                  }
+
+                                  const minX = Math.min(...cluster.map(o => o.bbox[0]));
+                                  const minY = Math.min(...cluster.map(o => o.bbox[1]));
+                                  const maxX = Math.max(...cluster.map(o => o.bbox[2]));
+                                  const maxY = Math.max(...cluster.map(o => o.bbox[3]));
+
+                                  const isCurved = cluster.length >= 2;
+                                  const combinedContent = cluster.map(o => o.content || '').join('').trim();
+                                  const label = combinedContent || (isCurved ? 'Chữ uốn cong' : (obj.content || 'Văn bản'));
+
+                                  clusters.push({
+                                      id: cluster.length > 1 ? `cluster-${obj.id}` : obj.id,
+                                      primaryObj: obj,
+                                      memberIds: cluster.map(o => o.id),
+                                      bbox: [minX, minY, maxX, maxY],
+                                      isCurved,
+                                      label,
+                                  });
+                              }
+
+                              return clusters.map((cluster) => {
+                                  const [x0, y0, x1, y1] = cluster.bbox;
+                                  const left = x0 * scale;
+                                  const top = y0 * scale;
+                                  const width = Math.max(10, (x1 - x0) * scale);
+                                  const height = Math.max(10, (y1 - y0) * scale);
+                                  return (
+                                      <div
+                                          key={cluster.id}
+                                          className={`absolute pointer-events-auto cursor-pointer group transition-all duration-150 rounded border-2 border-dashed ${cluster.isCurved ? 'border-amber-500 bg-amber-500/20 hover:border-amber-400 hover:bg-amber-500/35 ring-2 ring-amber-400/50' : 'border-teal-500 bg-teal-500/25 hover:border-teal-400 hover:bg-teal-500/40 ring-2 ring-teal-400/60'} hover:shadow-lg animate-pulse`}
+                                          style={{ left, top, width, height }}
+                                          title={`Nhấp chuột để chọn chuỗi chữ "${cluster.label}" làm trường VDP`}
+                                          onPointerDown={(e) => e.stopPropagation()}
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          onClick={async (e) => {
+                                              e.stopPropagation();
+                                              await handlePickTextObject(cluster.primaryObj, cluster.memberIds);
+                                          }}
+                                      >
+                                          <div className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none absolute bottom-full left-0 mb-1 z-[70] whitespace-nowrap px-2 py-1 bg-zinc-900/95 text-white text-[11px] rounded shadow-md border border-teal-500/40 flex items-center gap-1.5 font-sans">
+                                              <span className={`w-2 h-2 rounded-full ${cluster.isCurved ? 'bg-amber-400' : 'bg-teal-400'} animate-pulse`} />
+                                              <span>{cluster.isCurved ? 'Chọn trường cong: ' : 'Chọn trường: '}<b>"{cluster.label.slice(0, 30)}{cluster.label.length > 30 ? '...' : ''}"</b></span>
+                                          </div>
+                                      </div>
+                                  );
+                              });
+                          })()}
+                     </div>
+                 );
+             })()}
+
              {/* VDP Tool Overlay */}
              {vdpFields && vdpFields.length > 0 && pageDim && (() => {
                  const pageWidthPt = pageDim.w;
@@ -5757,7 +6428,7 @@ export const LivePageFrame = (props: any) => {
                      return (
                          <div
                              key={field.id}
-                             className={`absolute group ${isSelected ? 'z-[60]' : 'z-[55] hover:z-[58]'} border-2 ${isSelected ? 'border-solid border-blue-500 bg-blue-500/10' : 'border-dashed border-transparent group-hover:border-slate-400'} ${isVdpMode ? (isInteracting ? 'pointer-events-auto' : 'pointer-events-auto cursor-move') : 'pointer-events-none'}`}
+                             className={`absolute group ${isSelected ? 'z-[60]' : 'z-[55] hover:z-[58]'} ${isSelected ? 'border border-[#0d99ff] bg-[#0d99ff]/[0.02]' : 'border border-dashed border-transparent hover:border-slate-400/80'} ${isVdpMode ? (isInteracting ? 'pointer-events-auto' : 'pointer-events-auto cursor-move') : 'pointer-events-none'}`}
                              style={{
                                  left: x0, top: y0, width: w, height: h
                              }}
@@ -5916,9 +6587,30 @@ export const LivePageFrame = (props: any) => {
                                  
                              }}
                          >
-                             <div className={`absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow whitespace-nowrap pointer-events-none transition-opacity z-[70] ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                                 {(typeof field.fieldName === 'string' ? field.fieldName : field.name) || t('misc.livePageFrame:chua_dat_ten')} ({field.type})
-                             </div>
+                             <div className={`absolute bottom-full left-0 mb-1.5 bg-[#0d99ff] text-white text-[10px] font-medium px-2 py-0.5 rounded shadow-sm whitespace-nowrap pointer-events-none transition-opacity z-[70] flex items-center gap-1.5 select-none ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                                  {field.type === 'text' && (
+                                      <svg className="w-2.5 h-2.5 opacity-95" viewBox="0 0 24 24" fill="currentColor">
+                                          <path d="M5 4v3h5.5v12h3V7H19V4H5z" />
+                                      </svg>
+                                  )}
+                                  {field.type === 'qrcode' && (
+                                      <svg className="w-2.5 h-2.5 opacity-95" viewBox="0 0 24 24" fill="currentColor">
+                                          <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm13-2h3v2h-3v-2zm-5 0h3v3h-3v-3zm2 5h3v3h-3v-3zm3-2h3v5h-3v-5z" />
+                                      </svg>
+                                  )}
+                                  {field.type === 'barcode' && (
+                                      <svg className="w-2.5 h-2.5 opacity-95" viewBox="0 0 24 24" fill="currentColor">
+                                          <path d="M2 4h2v16H2V4zm3 0h1v16H5V4zm3 0h2v16H8V4zm4 0h1v16h-1V4zm3 0h3v16h-3V4zm4 0h2v16h-2V4z" />
+                                      </svg>
+                                  )}
+                                  {field.type === 'image' && (
+                                      <svg className="w-2.5 h-2.5 opacity-95" viewBox="0 0 24 24" fill="currentColor">
+                                          <path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z" />
+                                      </svg>
+                                  )}
+                                  <span className="font-semibold tracking-tight">{(typeof field.fieldName === 'string' ? field.fieldName : field.name) || t('misc.livePageFrame:chua_dat_ten')}</span>
+                                  <span className="text-[9px] opacity-80 font-mono uppercase bg-black/20 px-1 py-[0.5px] rounded">({field.type})</span>
+                              </div>
                              
                              {/* Visual Placeholders — xoay nội dung quanh tâm box theo
                                  field.rotation để khớp backend render_one_record. Box (w,h)
@@ -5937,12 +6629,11 @@ export const LivePageFrame = (props: any) => {
                              } : {
                                  transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
                              });
-                             const isCurved = field.type === 'text' && field.curveMode && field.curveMode !== 'none';
                              return (
                              <div
-                                 className={`absolute flex items-center justify-center pointer-events-none ${isCurved ? 'overflow-visible' : 'overflow-hidden'} ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')} ${field.type === 'text' && !isCurved ? 'p-1' : ''}`}
-                                 style={rotStyle}
-                             >
+                                  className={`absolute flex items-start justify-center pointer-events-none overflow-visible ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode' || field.type === 'text') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')}`}
+                                  style={rotStyle}
+                              >
                                  {(field.type === 'qrcode' || field.type === 'barcode') && (
                                      <VdpPreviewImage field={field as { type: 'qrcode' | 'barcode' }} />
                                  )}
@@ -5983,7 +6674,9 @@ export const LivePageFrame = (props: any) => {
                                              style={{ 
                                                  color: field.fontColor || '#1e293b', 
                                                  fontSize: `${(field.fontSize || 10) * scale}px`,
-                                                 fontFamily: field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontFile ? `"${field.fontName}_local", sans-serif` : (field.fontName ? `"${field.fontName}", sans-serif` : 'inherit')),
+                                                 fontFamily: field.fontFile
+                                                  ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
+                                                  : (field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit')),
                                                  fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
                                                  fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
                                                  lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
@@ -5993,67 +6686,66 @@ export const LivePageFrame = (props: any) => {
                                              onPointerDown={(e) => e.stopPropagation()}
                                          />
                                      ) : (
-                                         field.curveMode && field.curveMode !== 'none' ? (
-                                             <VdpCurvedText
-                                                 field={field}
-                                                 scale={scale}
-                                                 text={field.textContent ?? `{${field.name}}`}
-                                             />
-                                         ) : (
-                                             <VdpAutoFitText
-                                                 field={field}
-                                                 scale={scale}
-                                                 text={field.textContent ?? `{${field.name}}`}
-                                             />
-                                         )
+                                          field.curveMode && field.curveMode !== 'none' ? (
+                                              <VdpCurvedText
+                                                  field={field}
+                                                  scale={scale}
+                                                  text={field.textContent ?? `{${field.name}}`}
+                                              />
+                                          ) : (
+                                              <VdpAutoFitText
+                                                  field={field}
+                                                  scale={scale}
+                                                  text={field.textContent ?? `{${field.name}}`}
+                                              />
+                                          )
                                      )
                                  )}
                              </div>
                              );
                              })()}
 
-                             {/* Resize Handles: 4 góc + 4 cạnh (giống Illustrator) */}
-                             {isSelected && (() => {
-                                 const isQr = field.type === 'qrcode';
-                                 // QR khoá tỉ lệ vuông → chỉ cho kéo 4 góc. Còn lại đủ 8 điểm.
-                                 const handles = isQr
-                                     ? (['nw','ne','sw','se'] as const)
-                                     : (['nw','n','ne','e','se','s','sw','w'] as const);
-                                 const posMap: Record<string, string> = {
-                                     nw: '-left-1.5 -top-1.5 cursor-nw-resize',
-                                     n:  'left-1/2 -translate-x-1/2 -top-1.5 cursor-n-resize',
-                                     ne: '-right-1.5 -top-1.5 cursor-ne-resize',
-                                     e:  '-right-1.5 top-1/2 -translate-y-1/2 cursor-e-resize',
-                                     se: '-right-1.5 -bottom-1.5 cursor-se-resize',
-                                     s:  'left-1/2 -translate-x-1/2 -bottom-1.5 cursor-s-resize',
-                                     sw: '-left-1.5 -bottom-1.5 cursor-sw-resize',
-                                     w:  '-left-1.5 top-1/2 -translate-y-1/2 cursor-w-resize',
-                                 };
-                                 const isEdge = (h: string) => h.length === 1;
-                                 return handles.map((handle) => (
-                                     <div
-                                         key={handle}
-                                         className={`absolute ${posMap[handle]} w-3 h-3 bg-white border-2 border-blue-500 ${isEdge(handle) ? 'rounded-sm' : 'rounded-full'} shadow-sm hover:scale-150 transition-transform z-[65]`}
-                                         onPointerDown={(e) => {
-                                             // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái resize.
-                                             if (e.button !== 0) return;
-                                             e.stopPropagation();
-                                             if (!containerRef.current) return;
-                                             const rect = containerRef.current.getBoundingClientRect();
-                                             setVdpInteraction({
-                                                 type: 'resize',
-                                                 handle,
-                                                 fieldIds: [field.id],
-                                                 startX: e.clientX - rect.left,
-                                                 startY: e.clientY - rect.top,
-                                                 startFields: {
-                                                     [field.id]: { x: field.x ?? 0, y: field.y ?? 0, w: field.width ?? 0, h: field.height ?? 0, fontSize: field.fontSize }
-                                                 }
-                                             });
-                                         }}
-                                     />
-                                 ));
-                             })()}
+                             {/* Resize Handles: 4 góc + 4 cạnh chuẩn Adobe Illustrator */}
+                              {isSelected && (() => {
+                                  const isQr = field.type === 'qrcode';
+                                  // QR khoá tỉ lệ vuông → chỉ cho kéo 4 góc. Còn lại đủ 8 điểm.
+                                  const handles = isQr
+                                      ? (['nw','ne','sw','se'] as const)
+                                      : (['nw','n','ne','e','se','s','sw','w'] as const);
+                                  const posMap: Record<string, string> = {
+                                      nw: '-top-[3.5px] -left-[3.5px] cursor-nwse-resize',
+                                      n:  '-top-[3.5px] left-1/2 -translate-x-1/2 cursor-ns-resize',
+                                      ne: '-top-[3.5px] -right-[3.5px] cursor-nesw-resize',
+                                      e:  'top-1/2 -right-[3.5px] -translate-y-1/2 cursor-ew-resize',
+                                      se: '-bottom-[3.5px] -right-[3.5px] cursor-nwse-resize',
+                                      s:  '-bottom-[3.5px] left-1/2 -translate-x-1/2 cursor-ns-resize',
+                                      sw: '-bottom-[3.5px] -left-[3.5px] cursor-nesw-resize',
+                                      w:  'top-1/2 -left-[3.5px] -translate-y-1/2 cursor-ew-resize',
+                                  };
+                                  return handles.map((handle) => (
+                                      <div
+                                          key={handle}
+                                          className={`absolute ${posMap[handle]} w-[7px] h-[7px] bg-white border border-[#0d99ff] rounded-none shadow-[0_1px_2px_rgba(0,0,0,0.15)] hover:scale-125 transition-transform hover:bg-[#0d99ff]/10 z-[65]`}
+                                          onPointerDown={(e) => {
+                                              // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái resize.
+                                              if (e.button !== 0) return;
+                                              e.stopPropagation();
+                                              if (!containerRef.current) return;
+                                              const rect = containerRef.current.getBoundingClientRect();
+                                              setVdpInteraction({
+                                                  type: 'resize',
+                                                  handle,
+                                                  fieldIds: [field.id],
+                                                  startX: e.clientX - rect.left,
+                                                  startY: e.clientY - rect.top,
+                                                  startFields: {
+                                                      [field.id]: { x: field.x ?? 0, y: field.y ?? 0, w: field.width ?? 0, h: field.height ?? 0, fontSize: field.fontSize }
+                                                  }
+                                              });
+                                          }}
+                                      />
+                                  ));
+                              })()}
                          </div>
                      );
                  });

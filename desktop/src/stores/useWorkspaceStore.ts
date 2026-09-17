@@ -346,6 +346,7 @@ export interface WorkspaceState {
 
     // ── Object Edit Mode (chế độ chỉnh sửa đối tượng) ──
     isObjectEditMode: boolean;
+    isPickingVdpText: boolean;
     // Current page components for layers-like panel in edit PDF (accurate from /edit/objects)
     currentEditObjects: CachedPdfObject[];
     pdfObjectsVersion: number;
@@ -471,6 +472,7 @@ export interface WorkspaceState {
     setOverprintPreviewUrl: (url: string | null) => void;
 
     setIsObjectEditMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
+    setIsPickingVdpText: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setIsCropMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setCropSelection: (updater: CropSelectionUpdater) => void;
     commitCropSelection: (updater: CropSelectionUpdater) => void;
@@ -749,6 +751,7 @@ export const createWorkspaceStore = (
     overprintPreviewUrl: null,
 
     isObjectEditMode: false,
+    isPickingVdpText: false,
     isCropMode: false,
     cropSelection: null,
     cropPast: [],
@@ -1053,6 +1056,11 @@ export const createWorkspaceStore = (
             }
             : { isObjectEditMode: false };
     }),
+    setIsPickingVdpText: (v) => set((state) => {
+        const next = typeof v === 'function' ? v(state.isPickingVdpText) : v;
+        if (next === state.isPickingVdpText) return state;
+        return { isPickingVdpText: next };
+    }),
     setIsCropMode: (v) => set((state) => {
         const next = typeof v === 'function' ? v(state.isCropMode) : v;
         if (next === state.isCropMode) return state;
@@ -1060,6 +1068,7 @@ export const createWorkspaceStore = (
             ? {
                 isCropMode: true,
                 isObjectEditMode: false,
+    isPickingVdpText: false,
                 cropPast: [],
                 cropFuture: [],
             }

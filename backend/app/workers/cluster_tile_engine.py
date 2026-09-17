@@ -724,6 +724,17 @@ def draw_tile_cut_marks(
     shape.finish(color=(1, 1, 1, 1), fill=None, width=mark_thickness)  # registration (mọi kẽm)
     shape.commit()  # commit to page
 
+    # Đường nét đứt (dashed line) phân ranh giới xuyên suốt giữa các cụm
+    if int_v or int_h:
+        dash_shape = out_page.new_shape()
+        for vx in int_v:
+            dash_shape.draw_line(Point(vx, min_y), Point(vx, max_y))
+        for hy in int_h:
+            dash_shape.draw_line(Point(min_x, hy), Point(max_x, hy))
+        dash_thick = max(0.2, round(mark_thickness * 0.75, 2))
+        dash_shape.finish(color=(1, 1, 1, 1), fill=None, width=dash_thick, dashes=[4, 4])
+        dash_shape.commit()
+
     logger.info(
         f"[CLUSTER_TILE] Drew tile cut marks (style={mark_style}): "
         f"{len(v_cuts)} v-lines × {len(h_cuts)} h-lines "
@@ -795,6 +806,7 @@ def draw_segment_cut_marks(
         return
     shape.finish(color=(1, 1, 1, 1), fill=None, width=mark_thickness)
     shape.commit()
+
     logger.info(
         f"[MIXED_GUILLOTINE] Drew {len(drawn)} endpoint marks "
         f"for {len(segments)} zone segments (style={mark_style})"
