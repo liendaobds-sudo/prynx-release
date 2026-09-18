@@ -1093,11 +1093,6 @@ fn validate_render_request(request: &RenderRequest) -> Result<String, String> {
 }
 
 fn png_dimensions(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
-    if bytes.len() >= 12 && &bytes[0..4] == b"RGBA" {
-        let width = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
-        let height = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
-        return (Some(width), Some(height));
-    }
     if bytes.len() >= 24
         && bytes[0..8] == [137, 80, 78, 71, 13, 10, 26, 10]
         && &bytes[12..16] == b"IHDR"

@@ -262,53 +262,6 @@ export function isInteractiveViewportRender(isTile: boolean, priority: number): 
 }
 
 async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSource> {
-    // 1. Nấc 1: Kênh Raw RGBA Stream không nén (Zero-Compression Stream)
-    if (bytes.byteLength >= 12) {
-        const view = new DataView(bytes);
-        // "RGBA" = 0x52474241 (Big-Endian)
-        if (view.getUint32(0, false) === 0x52474241) {
-            const width = view.getUint32(4, true);
-            const height = view.getUint32(8, true);
-            const expectedPixels = width * height * 4;
-            if (bytes.byteLength >= 12 + expectedPixels && width > 0 && height > 0) {
-                const rawPixels = new Uint8ClampedArray(bytes, 12, expectedPixels);
-                let bitmap: ImageBitmap | undefined;
-                if (typeof createImageBitmap === 'function') {
-                    try {
-                        const imageData = new ImageData(rawPixels, width, height);
-                        bitmap = await createImageBitmap(imageData);
-                    } catch {
-                        // Môi trường test jsdom không hỗ trợ createImageBitmap(ImageData)
-                    }
-                }
-                let url = '';
-                if (!bitmap && typeof document !== 'undefined') {
-                    try {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = width;
-                        canvas.height = height;
-                        const ctx = canvas.getContext('2d');
-                        if (ctx) {
-                            const imageData = new ImageData(rawPixels, width, height);
-                            ctx.putImageData(imageData, 0, 0);
-                            url = canvas.toDataURL('image/png');
-                        }
-                    } catch {
-                        // ignore
-                    }
-                }
-                return {
-                    url,
-                    bitmap,
-                    width,
-                    height,
-                    byteLength: bytes.byteLength,
-                };
-            }
-        }
-    }
-
-    // 2. Fallback: Kênh ảnh PNG chuẩn (PPE accurate worker hoặc cache cũ)
     const blob = new Blob([bytes], { type: 'image/png' });
     const url = URL.createObjectURL(blob);
     let bitmap: ImageBitmap | undefined;
