@@ -71,6 +71,9 @@ async function takePendingBatches(pollSequence: number): Promise<NativeSystemFil
 
 function dispatchPreparedBatch(batch: PreparedSystemFileBatch): void {
     if (batch.files.length === 0) return;
+    if (batch.action === 'bridge') {
+        toast.success(i18n.t('misc.systemIntegrations:received_from_design_bridge', 'Đã nhận file từ Illustrator / Corel (Đã bảo toàn đường bế & tràn lề)'));
+    }
     window.dispatchEvent(new CustomEvent(SYSTEM_FILES_RECEIVED_EVENT, {
         detail: {
             files: batch.files,

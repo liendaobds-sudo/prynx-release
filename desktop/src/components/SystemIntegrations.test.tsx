@@ -463,4 +463,28 @@ describe('SystemIntegrations — mở file hệ thống', () => {
         view.unmount();
     });
 
+    it('nhận diện action bridge từ Illustrator/Corel và phát tán file kèm action bridge', async () => {
+        const received = vi.fn();
+        window.addEventListener('system-files-received', received);
+        const view = render(<SystemIntegrations />);
+        await waitFor(() => expect(mocks.listeners.has('tauri://drag-drop')).toBe(true));
+
+        act(() => mocks.listeners.get('tauri://drag-drop')?.({
+            payload: {
+                paths: [
+                    '--prynx-action=bridge',
+                    'C:\\temp\\PrynX_Bridge\\tem_hop_123.pdf',
+                ],
+            },
+        }));
+
+        await waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+        const event = received.mock.calls[0][0] as CustomEvent;
+        expect(event.detail.action).toBe('bridge');
+        expect(event.detail.files[0].name).toBe('tem_hop_123.pdf');
+
+        window.removeEventListener('system-files-received', received);
+        view.unmount();
+    });
+
 });

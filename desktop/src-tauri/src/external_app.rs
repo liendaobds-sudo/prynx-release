@@ -29,7 +29,7 @@ pub struct DesignApps {
 /// không đăng ký App Paths. Không quét đệ quy toàn ổ đĩa vì sẽ làm hộp thoại
 /// Bế chậm trên máy có nhiều dữ liệu.
 #[cfg(target_os = "windows")]
-fn query_design_apps() -> Option<DesignApps> {
+pub(crate) fn query_design_apps() -> Option<DesignApps> {
     // PERF (audit 2026-08-05 §OPEN-DESIGN): trước đây tạo tối đa bốn process
     // PowerShell nối tiếp nên UI có thể báo nhầm “chưa dò được” trong lúc còn dò.
     const SCRIPT: &str = r#"
