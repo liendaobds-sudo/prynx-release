@@ -146,16 +146,16 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
 
         const { unmount } = render(<ViewerContextMenu {...props} />);
 
-        // Nhấn nút Sửa bằng Adobe Illustrator
+        // Nhấn nút Sửa bằng Adobe Illustrator (toàn bộ file khi không có numPages > 1)
         const aiButton = screen.getByRole('menuitem', { name: /Illustrator/i });
         fireEvent.click(aiButton);
-        expect(onEditInApp).toHaveBeenCalledWith('illustrator');
+        expect(onEditInApp).toHaveBeenCalledWith('illustrator', 'all');
         expect(setContextMenu).toHaveBeenCalledWith(null);
 
         // Kiểm tra CorelDRAW
         const cdrButton = screen.getByRole('menuitem', { name: /CorelDRAW/i });
         fireEvent.click(cdrButton);
-        expect(onEditInApp).toHaveBeenCalledWith('corel');
+        expect(onEditInApp).toHaveBeenCalledWith('corel', 'all');
 
         // Kiểm tra Xuất khuôn bế
         const cutButton = screen.getByRole('menuitem', { name: /khuôn bế/i });
@@ -163,5 +163,17 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
         expect(onOpenDieCutModal).toHaveBeenCalled();
 
         unmount();
+
+        // Kiểm tra chế độ chọn riêng nhiều trang (ví dụ chọn trang 2, 3 trong file 4 trang)
+        const partialProps = {
+            ...props,
+            numPages: 4,
+            selectedIndices: new Set([1, 2]),
+        };
+        const { unmount: unmountPartial } = render(<ViewerContextMenu {...partialProps} />);
+        const partialAiBtn = screen.getByRole('menuitem', { name: /các trang đã chọn.*Illustrator/i });
+        fireEvent.click(partialAiBtn);
+        expect(onEditInApp).toHaveBeenCalledWith('illustrator', 'selection');
+        unmountPartial();
     });
 });

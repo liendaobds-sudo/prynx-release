@@ -516,16 +516,74 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         onFileChanged: retryLoad,
     });
 
-    const handleEditInApp = useCallback(async (which: 'illustrator' | 'corel') => {
+    const [partialEditSession, setPartialEditSession] = useState<{
+        tempFilePath: string;
+        pageIndices: number[];
+        sourceFilePath?: string;
+    } | null>(null);
+
+    // LIVE LINK: Tự động gộp trang đã sửa từ Illustrator / CorelDRAW vào tài liệu gốc
+    useLiveLinkWatcher({
+        filePath: partialEditSession?.tempFilePath,
+        enabled: Boolean(partialEditSession?.tempFilePath),
+        onFileChanged: async () => {
+            if (!partialEditSession) return;
+            try {
+                const { fetchLocalFileBuffer } = await import('../lib/localFileTransport');
+                const { mergeEditedPagesIntoDocument } = await import('../lib/designAppLauncher');
+                const { invoke } = await import('@tauri-apps/api/core');
+
+                const editedBytes = new Uint8Array(await fetchLocalFileBuffer(partialEditSession.tempFilePath));
+                let origBytes: Uint8Array;
+                if (file?.path) {
+                    origBytes = new Uint8Array(await fetchLocalFileBuffer(file.path));
+                } else if (file) {
+                    origBytes = new Uint8Array(await file.arrayBuffer());
+                } else {
+                    return;
+                }
+
+                const mergedBytes = await mergeEditedPagesIntoDocument(
+                    origBytes,
+                    editedBytes,
+                    partialEditSession.pageIndices,
+                );
+
+                if (file?.path) {
+                    await invoke('write_file_atomic', { path: file.path, contents: mergedBytes });
+                }
+                retryLoad();
+            } catch (error) {
+                console.error('Lỗi khi tự động gộp trang đã sửa:', error);
+            }
+        },
+    });
+
+    const handleEditInApp = useCallback(async (which: 'illustrator' | 'corel', mode?: 'selection' | 'all') => {
         if (!file) return;
         try {
-            const { launchDesignApp, ensurePathBackedPdf } = await import('../lib/designAppLauncher');
-            const targetPath = await ensurePathBackedPdf(file, file.name);
-            await launchDesignApp(which, targetPath);
+            const { launchDesignApp, ensurePathBackedPdf, extractPagesForExternalEdit } = await import('../lib/designAppLauncher');
+            const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b);
+            const totalPages = pageOrder.length || numPages;
+            const isPartial = mode === 'selection' || (mode !== 'all' && totalPages > 1 && sortedSel.length > 0 && sortedSel.length < totalPages);
+
+            if (isPartial && sortedSel.length > 0) {
+                const { tempFilePath, pageIndices } = await extractPagesForExternalEdit(file, sortedSel, file.name);
+                setPartialEditSession({
+                    tempFilePath,
+                    pageIndices,
+                    sourceFilePath: file.path,
+                });
+                await launchDesignApp(which, tempFilePath);
+            } else {
+                setPartialEditSession(null);
+                const targetPath = await ensurePathBackedPdf(file, file.name);
+                await launchDesignApp(which, targetPath);
+            }
         } catch (error) {
             console.error('Lỗi khi khởi chạy ứng dụng thiết kế:', error);
         }
-    }, [file]);
+    }, [file, selectedIndices, pageOrder.length, numPages]);
 
     // PERF (audit 2026-08-08 §RENDER.1): metadata pha B có thể đổi khổ các trang đứng
     // trước trang active. Giữ đúng điểm neo viewport qua commit hình học để không nhảy
@@ -2871,6 +2929,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 onTransferToOtherFile={handleTransferToOtherFile}
                 onEditInApp={handleEditInApp}
                 onOpenDieCutModal={onOpenDieCutModal}
+                numPages={pageOrder.length || numPages}
             />
         </div>
     );

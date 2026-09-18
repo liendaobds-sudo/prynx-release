@@ -17,8 +17,10 @@ interface ViewerContextMenuProps {
     setIsDeleteModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     onOpenPageTools: () => void;
     onQuickDuplicate: () => void;
-    /** Mở sửa tài liệu trực tiếp bằng Illustrator hoặc CorelDRAW */
-    onEditInApp?: (which: 'illustrator' | 'corel') => void;
+    /** Tổng số trang trong tài liệu */
+    numPages?: number;
+    /** Mở sửa tài liệu trực tiếp bằng Illustrator hoặc CorelDRAW (mode: 'selection' | 'all') */
+    onEditInApp?: (which: 'illustrator' | 'corel', mode?: 'selection' | 'all') => void;
     /** Mở hộp thoại xuất khuôn bế */
     onOpenDieCutModal?: () => void;
     /** Copy/Move trang đang chọn sang file khác (kéo-thả giữ nguyên — chỉ qua menu). */
@@ -38,7 +40,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
         setIsInsertModalOpen, setIsExtractModalOpen, setExtractPagesStrForModal,
         setIsDeleteModalOpen, onOpenPageTools,
         onQuickDuplicate, onTransferToOtherFile,
-        onEditInApp, onOpenDieCutModal,
+        onEditInApp, onOpenDieCutModal, numPages,
     } = props;
 
     const [openSub, setOpenSub] = useState<'copy' | 'move' | null>(null);
@@ -177,51 +179,79 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
             onMouseLeave={() => setOpenSub(null)}
             onKeyDown={handleMenuKeyDown}
         >
-            {onEditInApp && (
-                <>
-                    <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => { closeContextMenu(); onEditInApp('illustrator'); }}
-                        className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg outline-none transition-colors group"
-                    >
-                        <span className="flex items-center gap-2.5">
-                            <span className="w-5 h-5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[11px] font-extrabold flex items-center justify-center border border-amber-500/30">Ai</span>
-                            <span>{t('misc.viewerContextMenu:sua_bang_illustrator', 'Sửa bằng Adobe Illustrator')}</span>
-                        </span>
-                        <span className="text-[10px] text-slate-400 group-hover:text-amber-500 font-mono">Live</span>
-                    </button>
+            {onEditInApp && (() => {
+                const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b);
+                const totalPages = numPages ?? 1;
+                const isPartialSelection = totalPages > 1 && sortedSel.length > 0 && sortedSel.length < totalPages;
+                const selectionLabel = sortedSel.length === 1
+                    ? `riêng trang ${sortedSel[0] + 1}`
+                    : `các trang đã chọn (${sortedSel.map(i => i + 1).join(', ')})`;
 
-                    <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => { closeContextMenu(); onEditInApp('corel'); }}
-                        className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg outline-none transition-colors group"
-                    >
-                        <span className="flex items-center gap-2.5">
-                            <span className="w-5 h-5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold flex items-center justify-center border border-emerald-500/30">Cdr</span>
-                            <span>{t('misc.viewerContextMenu:sua_bang_corel', 'Sửa bằng CorelDRAW')}</span>
-                        </span>
-                        <span className="text-[10px] text-slate-400 group-hover:text-emerald-500 font-mono">Live</span>
-                    </button>
-
-                    {onOpenDieCutModal && (
+                return (
+                    <>
                         <button
                             type="button"
                             role="menuitem"
-                            onClick={() => { closeContextMenu(); onOpenDieCutModal(); }}
-                            className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg outline-none transition-colors"
+                            onClick={() => { closeContextMenu(); onEditInApp('illustrator', isPartialSelection ? 'selection' : 'all'); }}
+                            className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg outline-none transition-colors group"
                         >
                             <span className="flex items-center gap-2.5">
-                                <Scissors className="w-4 h-4 text-slate-400 ml-0.5" />
-                                <span>{t('misc.viewerContextMenu:xuat_trang_khuon_be', 'Xuất trang khuôn bế...')}</span>
+                                <span className="w-5 h-5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[11px] font-extrabold flex items-center justify-center border border-amber-500/30">Ai</span>
+                                <span>
+                                    {isPartialSelection
+                                        ? `Sửa ${selectionLabel} trong Illustrator`
+                                        : t('misc.viewerContextMenu:sua_bang_illustrator', 'Sửa bằng Adobe Illustrator')}
+                                </span>
                             </span>
+                            <span className="text-[10px] text-slate-400 group-hover:text-amber-500 font-mono">Live</span>
                         </button>
-                    )}
 
-                    <div className="h-px bg-slate-100 dark:bg-white/5 my-1 mx-2" />
-                </>
-            )}
+                        <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => { closeContextMenu(); onEditInApp('corel', isPartialSelection ? 'selection' : 'all'); }}
+                            className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg outline-none transition-colors group"
+                        >
+                            <span className="flex items-center gap-2.5">
+                                <span className="w-5 h-5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold flex items-center justify-center border border-emerald-500/30">Cdr</span>
+                                <span>
+                                    {isPartialSelection
+                                        ? `Sửa ${selectionLabel} trong CorelDRAW`
+                                        : t('misc.viewerContextMenu:sua_bang_corel', 'Sửa bằng CorelDRAW')}
+                                </span>
+                            </span>
+                            <span className="text-[10px] text-slate-400 group-hover:text-emerald-500 font-mono">Live</span>
+                        </button>
+
+                        {isPartialSelection && (
+                            <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => { closeContextMenu(); onEditInApp('illustrator', 'all'); }}
+                                className="w-full text-left px-3 py-1 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded transition-colors"
+                            >
+                                ↳ Mở toàn bộ file ({totalPages} trang)...
+                            </button>
+                        )}
+
+                        {onOpenDieCutModal && (
+                            <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => { closeContextMenu(); onOpenDieCutModal(); }}
+                                className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg outline-none transition-colors"
+                            >
+                                <span className="flex items-center gap-2.5">
+                                    <Scissors className="w-4 h-4 text-slate-400 ml-0.5" />
+                                    <span>{t('misc.viewerContextMenu:xuat_trang_khuon_be', 'Xuất trang khuôn bế...')}</span>
+                                </span>
+                            </button>
+                        )}
+
+                        <div className="h-px bg-slate-100 dark:bg-white/5 my-1 mx-2" />
+                    </>
+                );
+            })()}
 
             <button
                 type="button"

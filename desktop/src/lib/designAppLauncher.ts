@@ -144,3 +144,105 @@ export async function launchDesignApp(
         throw launchError;
     }
 }
+
+/**
+ * Trích các trang được chọn thành một tệp PDF tạm riêng biệt để mở trong Illustrator/Corel.
+ * Giữ nguyên OCG, Spot Color, Bleed và kích thước gốc.
+ */
+export async function extractPagesForExternalEdit(
+    file: File | Blob,
+    pageIndices: number[],
+    originalName?: string,
+): Promise<{ tempFilePath: string; pageIndices: number[] }> {
+    if (pageIndices.length === 0) {
+        throw new Error('Chưa chọn trang để sửa.');
+    }
+
+    const isTauri = typeof window !== 'undefined'
+        && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    if (!isTauri) {
+        throw new Error('Môi trường trình duyệt không hỗ trợ mở ứng dụng ngoài.');
+    }
+
+    const { PDFDocument } = await import('pdf-lib');
+    const {
+        beginOptionalContentTransfer,
+        finishOptionalContentTransfer,
+    } = await import('./pdfOptionalContent');
+    const { tempDir, join } = await import('@tauri-apps/api/path');
+    const { invoke } = await import('@tauri-apps/api/core');
+
+    const srcBytes = new Uint8Array(await file.arrayBuffer());
+    const srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
+    const pageCount = srcDoc.getPageCount();
+
+    const validIndices = pageIndices
+        .filter(idx => Number.isInteger(idx) && idx >= 0 && idx < pageCount)
+        .sort((a, b) => a - b);
+
+    if (validIndices.length === 0) {
+        throw new Error('Các trang được chọn không tồn tại trong tài liệu.');
+    }
+
+    const outDoc = await PDFDocument.create();
+    const ocTransfer = beginOptionalContentTransfer([srcDoc], { preserveUnreferencedOcgs: true });
+    try {
+        const copiedPages = await outDoc.copyPages(srcDoc, validIndices);
+        copiedPages.forEach(p => outDoc.addPage(p));
+    } finally {
+        finishOptionalContentTransfer(ocTransfer, outDoc);
+    }
+
+    const extractedBytes = await outDoc.save();
+
+    const safeBase = (originalName || (file as File).name || 'document')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/\.pdf$/i, '');
+    const pageLabel = validIndices.length === 1
+        ? `p${validIndices[0] + 1}`
+        : `p${validIndices.map(i => i + 1).join('_')}`;
+
+    const tDir = await tempDir();
+    const tempFilePath = await join(tDir, `prynx_${safeBase}_${pageLabel}_${Date.now()}.pdf`);
+    await invoke('write_file_atomic', { path: tempFilePath, contents: extractedBytes });
+
+    return { tempFilePath, pageIndices: validIndices };
+}
+
+/**
+ * Gộp các trang đã chỉnh sửa từ ứng dụng ngoài vào lại đúng vị trí trong tài liệu gốc.
+ */
+export async function mergeEditedPagesIntoDocument(
+    originalBytes: Uint8Array,
+    editedBytes: Uint8Array,
+    pageIndices: number[],
+): Promise<Uint8Array> {
+    const { PDFDocument } = await import('pdf-lib');
+    const {
+        beginOptionalContentTransfer,
+        finishOptionalContentTransfer,
+    } = await import('./pdfOptionalContent');
+
+    const mainDoc = await PDFDocument.load(originalBytes, { ignoreEncryption: true });
+    const editedDoc = await PDFDocument.load(editedBytes, { ignoreEncryption: true });
+
+    const sortedIndices = [...pageIndices].sort((a, b) => a - b);
+    const ocTransfer = beginOptionalContentTransfer([editedDoc], { preserveUnreferencedOcgs: true });
+
+    try {
+        const copied = await mainDoc.copyPages(editedDoc, editedDoc.getPageIndices());
+        for (let i = 0; i < sortedIndices.length && i < copied.length; i++) {
+            const targetIdx = sortedIndices[i];
+            const newPage = copied[i];
+            if (targetIdx < mainDoc.getPageCount()) {
+                mainDoc.insertPage(targetIdx, newPage);
+                mainDoc.removePage(targetIdx + 1);
+            }
+        }
+    } finally {
+        finishOptionalContentTransfer(ocTransfer, mainDoc);
+    }
+
+    return await mainDoc.save();
+}
+
