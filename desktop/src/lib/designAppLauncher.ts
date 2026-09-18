@@ -228,13 +228,22 @@ export async function extractPagesForExternalEdit(
     const ocTransfer = beginOptionalContentTransfer([srcDoc], { preserveUnreferencedOcgs: true });
     try {
         const copiedPages = await outDoc.copyPages(srcDoc, validIndices);
-        copiedPages.forEach(p => outDoc.addPage(p));
+        const { PDFName } = await import('pdf-lib');
+        copiedPages.forEach(p => {
+            // [LIVE-LINK AI FIX]: Xóa triệt để PieceInfo và AIPDFPrivateData của từng trang
+            // để Adobe Illustrator khi mở file tạm không bị nạp ngược toàn bộ các artboards cũ của file gốc!
+            p.node.delete(PDFName.of('PieceInfo'));
+            outDoc.addPage(p);
+        });
+        if (outDoc.catalog.has(PDFName.of('PieceInfo'))) {
+            outDoc.catalog.delete(PDFName.of('PieceInfo'));
+        }
     } finally {
         finishOptionalContentTransfer(ocTransfer, outDoc);
     }
 
     const extractedBytes = await outDoc.save();
-    console.info('[DesignBridge][extractPagesForExternalEdit] Trích trang xong, dung lượng PDF mới:', extractedBytes.length);
+    console.info('[DesignBridge][extractPagesForExternalEdit] Trích trang xong (đã làm sạch PieceInfo), dung lượng PDF mới:', extractedBytes.length);
 
     const safeBase = (originalName || (file as File).name || 'document')
         .replace(/[\\/:*?"<>|]/g, '_')
@@ -265,7 +274,7 @@ export async function mergeEditedPagesIntoDocument(
         editedLength: editedBytes.length,
         pageIndices,
     });
-    const { PDFDocument } = await import('pdf-lib');
+    const { PDFDocument, PDFName } = await import('pdf-lib');
     const {
         beginOptionalContentTransfer,
         finishOptionalContentTransfer,
@@ -282,10 +291,15 @@ export async function mergeEditedPagesIntoDocument(
         for (let i = 0; i < sortedIndices.length && i < copied.length; i++) {
             const targetIdx = sortedIndices[i];
             const newPage = copied[i];
+            newPage.node.delete(PDFName.of('PieceInfo'));
             if (targetIdx < mainDoc.getPageCount()) {
                 mainDoc.insertPage(targetIdx, newPage);
                 mainDoc.removePage(targetIdx + 1);
             }
+        }
+        // Xóa PieceInfo ở cấp Catalog của tài liệu gốc vì đã có trang được cập nhật độc lập
+        if (mainDoc.catalog.has(PDFName.of('PieceInfo'))) {
+            mainDoc.catalog.delete(PDFName.of('PieceInfo'));
         }
     } finally {
         finishOptionalContentTransfer(ocTransfer, mainDoc);
