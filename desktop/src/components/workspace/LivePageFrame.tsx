@@ -5238,6 +5238,7 @@ export const LivePageFrame = (props: any) => {
                                     pageNum={originalPageNum}
                                     pageInstanceId={`${pageInstanceId || `page-${originalPageNum}`}:display-base`}
                                     zoom={bgZoom}
+                                    coarseZoom={!hasReadyUnderlayForPage && bgZoom >= 0.45 ? Math.max(0.25, Number((bgZoom * 0.35).toFixed(2))) : undefined}
                                     rot={0}
                                     clipX={0}
                                     clipY={0}

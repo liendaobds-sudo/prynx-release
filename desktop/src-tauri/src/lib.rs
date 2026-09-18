@@ -2916,50 +2916,71 @@ fn build_cached_document(
         (bootstrap, None)
     };
 
-    // Tự động giải nén in-memory cho các ảnh lớn (>=1MB) bị nén FlateDecode để tránh
-    // PDFium decompress lặp lại nhiều lần khi cùng một Form XObject được đặt nhiều lần trên trang bình.
-    let mut decompressed_images = 0usize;
-    for (_id, object) in lopdf_doc.objects.iter_mut() {
-        if let lopdf::Object::Stream(ref mut stream) = object {
-            let is_image = stream
-                .dict
-                .get(b"Subtype")
-                .and_then(|s| s.as_name())
-                .map(|n| n == b"Image")
-                .unwrap_or(false);
-            if is_image && stream.content.len() >= 1_000_000 {
-                let has_flate = stream
-                    .dict
-                    .get(b"Filter")
-                    .map(|f| match f {
-                        lopdf::Object::Name(name) => name == b"FlateDecode",
-                        lopdf::Object::Array(arr) => arr
-                            .iter()
-                            .any(|item| item.as_name().map(|n| n == b"FlateDecode").unwrap_or(false)),
-                        _ => false,
-                    })
-                    .unwrap_or(false);
-                if has_flate && stream.decompress().is_ok() {
-                    decompressed_images += 1;
+    // PERF (audit 2026-09-18): Chỉ kích hoạt giải nén in-memory + re-save lopdf
+    // khi file THẬT SỰ chứa Form XObject lặp lại (như file bình tem) để tránh PDFium
+    // giải nén lặp lại nhiều lần. Với file thiết kế/tài liệu thông thường, bỏ qua hoàn toàn để
+    // mở file tức thì trong vài chục ms (không tốn thời gian serialize lopdf save_to).
+    let has_repeated_form_xobjects = {
+        let mut form_count = 0usize;
+        for (_id, object) in lopdf_doc.objects.iter() {
+            if let lopdf::Object::Stream(ref stream) = object {
+                if stream.dict.get(b"Subtype").and_then(|s| s.as_name()).ok() == Some(b"Form") {
+                    form_count += 1;
+                    if form_count >= 2 {
+                        break;
+                    }
                 }
             }
         }
-    }
+        form_count >= 2
+    };
 
-    let proxy_bytes = if decompressed_images > 0 {
-        let orig_len = bytes.len();
-        let mut optimized = Vec::new();
-        if lopdf_doc.save_to(&mut optimized).is_ok() {
-            perf_log(&format!(
-                "PDF_STREAM_OPTIMIZE decompressed_images={} orig_len={} opt_len={} elapsed_ms={}",
-                decompressed_images,
-                orig_len,
-                optimized.len(),
-                opt_t0.elapsed().as_millis()
-            ));
-            bytes = optimized;
+    let proxy_bytes = if has_repeated_form_xobjects {
+        let mut decompressed_images = 0usize;
+        for (_id, object) in lopdf_doc.objects.iter_mut() {
+            if let lopdf::Object::Stream(ref mut stream) = object {
+                let is_image = stream
+                    .dict
+                    .get(b"Subtype")
+                    .and_then(|s| s.as_name())
+                    .map(|n| n == b"Image")
+                    .unwrap_or(false);
+                if is_image && stream.content.len() >= 1_000_000 {
+                    let has_flate = stream
+                        .dict
+                        .get(b"Filter")
+                        .map(|f| match f {
+                            lopdf::Object::Name(name) => name == b"FlateDecode",
+                            lopdf::Object::Array(arr) => arr
+                                .iter()
+                                .any(|item| item.as_name().map(|n| n == b"FlateDecode").unwrap_or(false)),
+                            _ => false,
+                        })
+                        .unwrap_or(false);
+                    if has_flate && stream.decompress().is_ok() {
+                        decompressed_images += 1;
+                    }
+                }
+            }
         }
-        generate_proxy_pdf(&lopdf_doc).map(Arc::new)
+
+        if decompressed_images > 0 {
+            let orig_len = bytes.len();
+            let mut optimized = Vec::new();
+            if lopdf_doc.save_to(&mut optimized).is_ok() {
+                perf_log(&format!(
+                    "PDF_STREAM_OPTIMIZE decompressed_images={} orig_len={} opt_len={} elapsed_ms={}",
+                    decompressed_images,
+                    orig_len,
+                    optimized.len(),
+                    opt_t0.elapsed().as_millis()
+                ));
+                bytes = optimized;
+            }
+            generate_proxy_pdf(&lopdf_doc).map(Arc::new)
+        } else {
+            None
+        }
     } else {
         None
     };
