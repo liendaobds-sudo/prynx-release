@@ -187,11 +187,20 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                     ? `riêng trang ${sortedSel[0] + 1}`
                     : `các trang đã chọn (${sortedSel.map(i => i + 1).join(', ')})`;
 
+                const aiTitle = isPartialSelection
+                    ? `Chỉ trích xuất ${selectionLabel} để mở sửa trong Adobe Illustrator. Khi lưu (Ctrl+S), PrynX sẽ tự động gộp lại vào file gốc.`
+                    : `Mở toàn bộ tài liệu (${totalPages} trang) trong Adobe Illustrator.`;
+
+                const cdrTitle = isPartialSelection
+                    ? `Chỉ trích xuất ${selectionLabel} để mở sửa trong CorelDRAW. Khi lưu (Ctrl+S), PrynX sẽ tự động gộp lại vào file gốc.`
+                    : `Mở toàn bộ tài liệu (${totalPages} trang) trong CorelDRAW.`;
+
                 return (
                     <>
                         <button
                             type="button"
                             role="menuitem"
+                            title={aiTitle}
                             onClick={() => { closeContextMenu(); onEditInApp('illustrator', isPartialSelection ? 'selection' : 'all'); }}
                             className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg outline-none transition-colors group"
                         >
@@ -209,6 +218,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                         <button
                             type="button"
                             role="menuitem"
+                            title={cdrTitle}
                             onClick={() => { closeContextMenu(); onEditInApp('corel', isPartialSelection ? 'selection' : 'all'); }}
                             className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg outline-none transition-colors group"
                         >
@@ -224,14 +234,26 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                         </button>
 
                         {isPartialSelection && (
-                            <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() => { closeContextMenu(); onEditInApp('illustrator', 'all'); }}
-                                className="w-full text-left px-3 py-1 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded transition-colors"
-                            >
-                                ↳ Mở toàn bộ file ({totalPages} trang)...
-                            </button>
+                            <div className="flex flex-col gap-0.5 pt-0.5 pb-1 border-t border-dashed border-slate-200 dark:border-zinc-800">
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    title={`Mở toàn bộ ${totalPages} trang của tài liệu gốc trong Adobe Illustrator để chỉnh sửa tổng thể`}
+                                    onClick={() => { closeContextMenu(); onEditInApp('illustrator', 'all'); }}
+                                    className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50/50 dark:hover:bg-amber-500/5 rounded transition-colors flex items-center justify-between"
+                                >
+                                    <span>↳ Mở toàn bộ file trong Illustrator ({totalPages} trang)...</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    title={`Mở toàn bộ ${totalPages} trang của tài liệu gốc trong CorelDRAW để chỉnh sửa tổng thể`}
+                                    onClick={() => { closeContextMenu(); onEditInApp('corel', 'all'); }}
+                                    className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-500/5 rounded transition-colors flex items-center justify-between"
+                                >
+                                    <span>↳ Mở toàn bộ file trong CorelDRAW ({totalPages} trang)...</span>
+                                </button>
+                            </div>
                         )}
 
                         {onOpenDieCutModal && (
