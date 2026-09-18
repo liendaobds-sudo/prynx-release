@@ -80,7 +80,7 @@ export async function ensurePathBackedPdf(file: File | Blob, originalName?: stri
     }
 
     const isTauri = typeof window !== 'undefined'
-        && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+        && Boolean(window.__TAURI_INTERNALS__ || (window as Window & { __PRYNX_INVOKE__?: unknown }).__PRYNX_INVOKE__ || (window as Window & { __TAURI__?: unknown }).__TAURI__);
     if (!isTauri) {
         throw new Error('Môi trường trình duyệt không hỗ trợ mở ứng dụng ngoài.');
     }
@@ -93,8 +93,13 @@ export async function ensurePathBackedPdf(file: File | Blob, originalName?: stri
         .replace(/[\\/:*?"<>|]/g, '_')
         .replace(/\.pdf$/i, '');
     const fullPath = await join(tDir, `prynx_edit_${Date.now()}_${safeName}.pdf`);
+    console.info('[DesignBridge][ensurePathBackedPdf] Ghi file tạm để mở app ngoài:', fullPath);
     const buffer = new Uint8Array(await getFileArrayBuffer(file));
+    if (buffer.length === 0) {
+        throw new Error('Không thể chuẩn bị file: Dữ liệu PDF rỗng (0 bytes).');
+    }
     await invoke('write_file_atomic', { path: fullPath, contents: buffer });
+    console.info('[DesignBridge][ensurePathBackedPdf] Đã ghi thành công file tạm!');
     return fullPath;
 }
 
@@ -106,8 +111,9 @@ export async function launchDesignApp(
     which: 'illustrator' | 'corel',
     filePath: string,
 ): Promise<void> {
+    console.info('[DesignBridge][launchDesignApp] Chuẩn bị mở ứng dụng:', { which, filePath });
     const isTauri = typeof window !== 'undefined'
-        && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+        && Boolean(window.__TAURI_INTERNALS__ || (window as Window & { __PRYNX_INVOKE__?: unknown }).__PRYNX_INVOKE__ || (window as Window & { __TAURI__?: unknown }).__TAURI__);
     if (!isTauri) {
         throw new Error('Tính năng này chỉ khả dụng trên ứng dụng Desktop.');
     }
@@ -118,24 +124,33 @@ export async function launchDesignApp(
     if (!appPath) {
         const detected = await detectInstalledDesignApps();
         appPath = detected[which];
+        console.info('[DesignBridge][launchDesignApp] Đường dẫn tự dò:', appPath);
+    } else {
+        console.info('[DesignBridge][launchDesignApp] Đường dẫn tùy chỉnh:', appPath);
     }
 
     if (!appPath) {
+        console.info('[DesignBridge][launchDesignApp] Chưa có đường dẫn, mở hộp thoại chọn .exe...');
         appPath = await pickDesignAppExe(which);
     }
 
     if (!appPath) {
+        console.warn('[DesignBridge][launchDesignApp] Người dùng hủy chọn ứng dụng.');
         return; // Người dùng hủy chọn
     }
 
     const { invoke } = await import('@tauri-apps/api/core');
+    console.info('[DesignBridge][launchDesignApp] Gọi launch_external_app:', { appPath, filePath });
 
     try {
         await invoke('launch_external_app', { appPath, filePath });
+        console.info('[DesignBridge][launchDesignApp] Khởi chạy ứng dụng thành công!');
     } catch (launchError) {
+        console.error('[DesignBridge][launchDesignApp] Lỗi khi launch_external_app:', launchError);
         const errStr = String(launchError ?? '');
         const needsReauthorization = /chưa được cấp quyền/i.test(errStr);
         if (needsReauthorization) {
+            console.info('[DesignBridge][launchDesignApp] Cần cấp quyền lại, mở hộp thoại chọn lại .exe...');
             const repicked = await pickDesignAppExe(which);
             if (repicked) {
                 await invoke('launch_external_app', { appPath: repicked, filePath });
@@ -154,13 +169,23 @@ export async function extractPagesForExternalEdit(
     file: File | Blob,
     pageIndices: number[],
     originalName?: string,
+    fallbackPath?: string,
 ): Promise<{ tempFilePath: string; pageIndices: number[] }> {
+    console.info('[DesignBridge][extractPagesForExternalEdit] Bắt đầu:', {
+        fileName: (file as File).name,
+        fileSize: file.size,
+        fileType: file.type,
+        path: (file as any)?.path,
+        fallbackPath,
+        pageIndices,
+    });
+
     if (pageIndices.length === 0) {
         throw new Error('Chưa chọn trang để sửa.');
     }
 
     const isTauri = typeof window !== 'undefined'
-        && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+        && Boolean(window.__TAURI_INTERNALS__ || (window as Window & { __PRYNX_INVOKE__?: unknown }).__PRYNX_INVOKE__ || (window as Window & { __TAURI__?: unknown }).__TAURI__);
     if (!isTauri) {
         throw new Error('Môi trường trình duyệt không hỗ trợ mở ứng dụng ngoài.');
     }
@@ -174,9 +199,22 @@ export async function extractPagesForExternalEdit(
     const { invoke } = await import('@tauri-apps/api/core');
     const { getFileArrayBuffer } = await import('./utils');
 
-    const srcBytes = new Uint8Array(await getFileArrayBuffer(file));
+    const effectivePath = (file as any)?.path || fallbackPath;
+    console.info('[DesignBridge][extractPagesForExternalEdit] Đọc buffer từ file, effectivePath:', effectivePath);
+    const srcArrayBuffer = await getFileArrayBuffer(file, effectivePath);
+    const srcBytes = new Uint8Array(srcArrayBuffer);
+    console.info('[DesignBridge][extractPagesForExternalEdit] Kết quả đọc buffer:', {
+        byteLength: srcBytes.length,
+        header: srcBytes.length >= 5 ? String.fromCharCode(...srcBytes.subarray(0, 5)) : 'QUÁ NGẮN HOẶC RỖNG',
+    });
+
+    if (srcBytes.length === 0) {
+        throw new Error(`Dữ liệu PDF rỗng (0 bytes). Đường dẫn: ${effectivePath || 'không xác định'}.`);
+    }
+
     const srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
     const pageCount = srcDoc.getPageCount();
+    console.info('[DesignBridge][extractPagesForExternalEdit] Load PDF thành công, tổng trang:', pageCount);
 
     const validIndices = pageIndices
         .filter(idx => Number.isInteger(idx) && idx >= 0 && idx < pageCount)
@@ -196,6 +234,7 @@ export async function extractPagesForExternalEdit(
     }
 
     const extractedBytes = await outDoc.save();
+    console.info('[DesignBridge][extractPagesForExternalEdit] Trích trang xong, dung lượng PDF mới:', extractedBytes.length);
 
     const safeBase = (originalName || (file as File).name || 'document')
         .replace(/[\\/:*?"<>|]/g, '_')
@@ -206,7 +245,9 @@ export async function extractPagesForExternalEdit(
 
     const tDir = await tempDir();
     const tempFilePath = await join(tDir, `prynx_${safeBase}_${pageLabel}_${Date.now()}.pdf`);
+    console.info('[DesignBridge][extractPagesForExternalEdit] Đang ghi file tạm:', tempFilePath);
     await invoke('write_file_atomic', { path: tempFilePath, contents: extractedBytes });
+    console.info('[DesignBridge][extractPagesForExternalEdit] Ghi file tạm thành công!');
 
     return { tempFilePath, pageIndices: validIndices };
 }
@@ -219,6 +260,11 @@ export async function mergeEditedPagesIntoDocument(
     editedBytes: Uint8Array,
     pageIndices: number[],
 ): Promise<Uint8Array> {
+    console.info('[DesignBridge][mergeEditedPagesIntoDocument] Bắt đầu gộp trang:', {
+        originalLength: originalBytes.length,
+        editedLength: editedBytes.length,
+        pageIndices,
+    });
     const { PDFDocument } = await import('pdf-lib');
     const {
         beginOptionalContentTransfer,

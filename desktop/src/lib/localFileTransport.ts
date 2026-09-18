@@ -26,9 +26,15 @@ export async function fetchLocalFileBuffer(
     headers.set('Range', `bytes=${range.start}-${range.endExclusive - 1}`);
   }
 
-  const response = await fetch(localFileUrl(path), { headers });
+  const url = localFileUrl(path);
+  console.info('[fetchLocalFileBuffer] Gọi URL:', url);
+  const response = await fetch(url, { headers });
   if (!response.ok) {
+    console.warn(`[fetchLocalFileBuffer] HTTP error ${response.status} cho file ${path}`);
     throw new Error(`Không đọc được file cục bộ (HTTP ${response.status})`);
   }
-  return response.arrayBuffer();
+  const buf = await response.arrayBuffer();
+  console.info('[fetchLocalFileBuffer] Đọc thành công:', { path, byteLength: buf.byteLength });
+  return buf;
 }
+

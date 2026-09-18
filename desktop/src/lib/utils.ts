@@ -26,27 +26,78 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer> => {
-    const path = (file as NativePathBlob).path;
-    if (window.__TAURI_INTERNALS__ && path) {
-        // FILEIO (audit 2026-07-28 §FL.04): một kênh Rust có Range thay cho phép thử
-        // asset-403 + fallback IPC. Không làm chậm file lớn trên máy mạnh.
+export const getFileArrayBuffer = async (file: File | Blob, explicitPath?: string): Promise<ArrayBuffer> => {
+    const path = explicitPath || (file as NativePathBlob).path;
+    const isTauriEnv = typeof window !== 'undefined'
+        && Boolean(window.__TAURI_INTERNALS__ || (window as Window & { __PRYNX_INVOKE__?: unknown }).__PRYNX_INVOKE__ || (window as Window & { __TAURI__?: unknown }).__TAURI__);
+
+    console.info('[getFileArrayBuffer] Bắt đầu đọc dữ liệu:', {
+        name: (file as File).name,
+        size: file.size,
+        type: file.type,
+        path,
+        isTauriEnv,
+    });
+
+    if (isTauriEnv && path) {
+        // FILEIO: Ưu tiên đọc qua localfile protocol (Rust streaming / range)
         try {
-            return await fetchLocalFileBuffer(path);
-        } catch (error) {
+            console.info('[getFileArrayBuffer] Thử đọc qua fetchLocalFileBuffer:', path);
+            const buf = await fetchLocalFileBuffer(path);
+            console.info('[getFileArrayBuffer] fetchLocalFileBuffer thành công, bytes:', buf.byteLength);
+            if (buf.byteLength > 0) {
+                return buf;
+            }
+            console.warn('[getFileArrayBuffer] fetchLocalFileBuffer trả về 0 bytes, thử đọc qua Tauri IPC read_system_file...');
+        } catch (fetchError) {
+            console.warn('[getFileArrayBuffer] fetchLocalFileBuffer thất bại, chuyển sang fallback IPC read_system_file:', fetchError);
             if ((file as NativePathBlob & { __prynxArtifactLeaseToken?: string }).__prynxArtifactLeaseToken) {
                 throw new Error(
                     'Không đọc được artifact làm việc đang được tab giữ; file có thể đã bị dọn hoặc lease đã hết hạn.',
-                    { cause: error },
+                    { cause: fetchError },
                 );
             }
-            throw error;
+        }
+
+        // Fallback IPC: Gọi trực tiếp lệnh read_system_file của Tauri Rust
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            console.info('[getFileArrayBuffer] Đang gọi invoke read_system_file cho path:', path);
+            const res = await invoke<unknown>('read_system_file', { path });
+            if (res instanceof ArrayBuffer) {
+                console.info('[getFileArrayBuffer] Fallback IPC thành công (ArrayBuffer), bytes:', res.byteLength);
+                return res;
+            }
+            if (res instanceof Uint8Array) {
+                console.info('[getFileArrayBuffer] Fallback IPC thành công (Uint8Array), bytes:', res.byteLength);
+                return res.buffer.slice(res.byteOffset, res.byteOffset + res.byteLength) as ArrayBuffer;
+            }
+            if (Array.isArray(res)) {
+                console.info('[getFileArrayBuffer] Fallback IPC thành công (Array), bytes:', res.length);
+                return new Uint8Array(res).buffer as ArrayBuffer;
+            }
+            if (res && typeof res === 'object' && 'data' in res && Array.isArray((res as { data: number[] }).data)) {
+                return new Uint8Array((res as { data: number[] }).data).buffer as ArrayBuffer;
+            }
+            if (res && typeof (res as { arrayBuffer?: () => Promise<ArrayBuffer> }).arrayBuffer === 'function') {
+                return await (res as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer!();
+            }
+        } catch (ipcError) {
+            console.warn('[getFileArrayBuffer] Fallback IPC read_system_file thất bại:', ipcError);
         }
     }
+
     if (typeof file.arrayBuffer === 'function') {
-        return file.arrayBuffer();
+        const buf = await file.arrayBuffer();
+        console.info('[getFileArrayBuffer] Đọc qua file.arrayBuffer(), bytes:', buf.byteLength);
+        if (buf.byteLength > 0 || !path) {
+            return buf;
+        }
     }
-    return new Response(file).arrayBuffer();
+    console.info('[getFileArrayBuffer] Đọc qua Response(file).arrayBuffer()...');
+    const respBuf = await new Response(file).arrayBuffer();
+    console.info('[getFileArrayBuffer] Response(file).arrayBuffer() bytes:', respBuf.byteLength);
+    return respBuf;
 };
 
 /**
