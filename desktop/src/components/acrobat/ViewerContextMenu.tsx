@@ -51,6 +51,15 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
         if (!contextMenu?.visible) return;
         const first = menuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"]:not([disabled])');
         first?.focus();
+
+        const handleGlobalKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeContextMenu();
+            }
+        };
+        window.addEventListener('keydown', handleGlobalKeyDown);
+        return () => window.removeEventListener('keydown', handleGlobalKeyDown);
     }, [contextMenu?.visible]);
 
     const closeContextMenu = () => {
@@ -167,18 +176,32 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
     };
 
     return (
-        // UIUX (audit 2026-07-27 §A-03): hex nền/viền → bg-app-2/border-app-line; rounded-xl → rounded-app-lg (thang 12px)
-        <div
-            ref={menuRef}
-            role="menu"
-            aria-label={t('misc.viewerContextMenu:thao_tac_trang', 'Thao tác trang')}
-            className="fixed z-context-menu min-w-[250px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-app-lg animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
-            style={{ left: Math.min(contextMenu.x, window.innerWidth - 270), top: Math.min(contextMenu.y, window.innerHeight - 440) }}
-            onClick={e => e.stopPropagation()}
-            onContextMenu={e => e.preventDefault()}
-            onMouseLeave={() => setOpenSub(null)}
-            onKeyDown={handleMenuKeyDown}
-        >
+        <>
+            {/* Backdrop bắt click/touch NGOÀI menu để đóng */}
+            <div
+                data-testid="viewer-context-menu-backdrop"
+                aria-hidden="true"
+                className="fixed inset-0 z-context-menu"
+                onPointerDown={closeContextMenu}
+                onClick={closeContextMenu}
+                onContextMenu={(e) => {
+                    e.preventDefault();
+                    closeContextMenu();
+                }}
+            />
+            {/* UIUX (audit 2026-07-27 §A-03): hex nền/viền → bg-app-2/border-app-line; rounded-xl → rounded-app-lg (thang 12px) */}
+            <div
+                ref={menuRef}
+                role="menu"
+                aria-label={t('misc.viewerContextMenu:thao_tac_trang', 'Thao tác trang')}
+                className="fixed z-context-menu min-w-[250px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-app-lg animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
+                style={{ left: Math.min(contextMenu.x, window.innerWidth - 270), top: Math.min(contextMenu.y, window.innerHeight - 440) }}
+                onPointerDown={e => e.stopPropagation()}
+                onClick={e => e.stopPropagation()}
+                onContextMenu={e => e.preventDefault()}
+                onMouseLeave={() => setOpenSub(null)}
+                onKeyDown={handleMenuKeyDown}
+            >
             {onEditInApp && (() => {
                 const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b);
                 const totalPages = numPages ?? 1;
@@ -333,5 +356,6 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 {t('misc.viewerContextMenu:quan_ly_trang_xoay_nhan_ban')}
             </button>
         </div>
+        </>
     );
 }

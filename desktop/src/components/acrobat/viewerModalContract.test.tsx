@@ -204,4 +204,40 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
             await i18n.changeLanguage('vi');
         }
     });
+
+    it('đóng context menu khi click ra ngoài vào backdrop hoặc nhấn Escape', () => {
+        const setContextMenu = vi.fn();
+        const props = {
+            contextMenu: { x: 20, y: 20, visible: true },
+            selectedIndices: new Set([0]),
+            numPages: 1,
+            setContextMenu,
+            setIsInsertModalOpen: vi.fn(),
+            setIsExtractModalOpen: vi.fn(),
+            setExtractPagesStrForModal: vi.fn(),
+            setIsDeleteModalOpen: vi.fn(),
+            onOpenPageTools: vi.fn(),
+            onQuickDuplicate: vi.fn(),
+        };
+
+        const { unmount } = render(<ViewerContextMenu {...props} />);
+        const backdrop = screen.getByTestId('viewer-context-menu-backdrop');
+        expect(backdrop).toBeTruthy();
+
+        // 1. Click backdrop -> đóng menu
+        fireEvent.pointerDown(backdrop);
+        expect(setContextMenu).toHaveBeenCalledWith(null);
+
+        // 2. Click backdrop bằng click thông thường
+        setContextMenu.mockClear();
+        fireEvent.click(backdrop);
+        expect(setContextMenu).toHaveBeenCalledWith(null);
+
+        // 3. Nhấn Escape toàn cục
+        setContextMenu.mockClear();
+        fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
+        expect(setContextMenu).toHaveBeenCalledWith(null);
+
+        unmount();
+    });
 });
