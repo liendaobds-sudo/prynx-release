@@ -176,4 +176,32 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
         expect(onEditInApp).toHaveBeenCalledWith('illustrator', 'selection');
         unmountPartial();
     });
+
+    it('hiển thị đúng song ngữ (vi / en) cho các tùy chọn sửa Illustrator/CorelDRAW', async () => {
+        const i18n = (await import('../../i18n')).default;
+        await i18n.changeLanguage('en');
+        try {
+            const props = {
+                contextMenu: { x: 20, y: 20, visible: true },
+                selectedIndices: new Set([0]),
+                numPages: 3,
+                setContextMenu: vi.fn(),
+                setIsInsertModalOpen: vi.fn(),
+                setIsExtractModalOpen: vi.fn(),
+                setExtractPagesStrForModal: vi.fn(),
+                setIsDeleteModalOpen: vi.fn(),
+                onOpenPageTools: vi.fn(),
+                onQuickDuplicate: vi.fn(),
+                onEditInApp: vi.fn(),
+            };
+            const { unmount } = render(<ViewerContextMenu {...props} />);
+            expect(screen.getByRole('menuitem', { name: /Edit page 1 only in Illustrator/i })).toBeTruthy();
+            expect(screen.getByRole('menuitem', { name: /Open entire file in Illustrator/i })).toBeTruthy();
+            expect(screen.getByRole('menuitem', { name: /Edit page 1 only in CorelDRAW/i })).toBeTruthy();
+            expect(screen.getByRole('menuitem', { name: /Open entire file in CorelDRAW/i })).toBeTruthy();
+            unmount();
+        } finally {
+            await i18n.changeLanguage('vi');
+        }
+    });
 });

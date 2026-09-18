@@ -171,7 +171,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
         <div
             ref={menuRef}
             role="menu"
-            aria-label="Thao tác trang"
+            aria-label={t('misc.viewerContextMenu:thao_tac_trang', 'Thao tác trang')}
             className="fixed z-context-menu min-w-[250px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-app-lg animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
             style={{ left: Math.min(contextMenu.x, window.innerWidth - 270), top: Math.min(contextMenu.y, window.innerHeight - 440) }}
             onClick={e => e.stopPropagation()}
@@ -184,16 +184,16 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 const totalPages = numPages ?? 1;
                 const isPartialSelection = totalPages > 1 && sortedSel.length > 0 && sortedSel.length < totalPages;
                 const selectionLabel = sortedSel.length === 1
-                    ? `riêng trang ${sortedSel[0] + 1}`
-                    : `các trang đã chọn (${sortedSel.map(i => i + 1).join(', ')})`;
+                    ? t('misc.viewerContextMenu:rieng_trang', { page: sortedSel[0] + 1, defaultValue: `riêng trang ${sortedSel[0] + 1}` })
+                    : t('misc.viewerContextMenu:cac_trang_da_chon', { pages: sortedSel.map(i => i + 1).join(', '), defaultValue: `các trang đã chọn (${sortedSel.map(i => i + 1).join(', ')})` });
 
                 const aiTitle = isPartialSelection
-                    ? `Chỉ trích xuất ${selectionLabel} để mở sửa trong Adobe Illustrator. Khi lưu (Ctrl+S), PrynX sẽ tự động gộp lại vào file gốc.`
-                    : `Mở toàn bộ tài liệu (${totalPages} trang) trong Adobe Illustrator.`;
+                    ? t('misc.viewerContextMenu:tooltip_sua_trang_chon_ai', { selection: selectionLabel, defaultValue: `Chỉ trích xuất ${selectionLabel} để mở sửa trong Adobe Illustrator. Khi lưu (Ctrl+S), PrynX sẽ tự động gộp lại vào file gốc.` })
+                    : t('misc.viewerContextMenu:tooltip_sua_toan_bo_ai', { total: totalPages, defaultValue: `Mở toàn bộ tài liệu (${totalPages} trang) trong Adobe Illustrator.` });
 
                 const cdrTitle = isPartialSelection
-                    ? `Chỉ trích xuất ${selectionLabel} để mở sửa trong CorelDRAW. Khi lưu (Ctrl+S), PrynX sẽ tự động gộp lại vào file gốc.`
-                    : `Mở toàn bộ tài liệu (${totalPages} trang) trong CorelDRAW.`;
+                    ? t('misc.viewerContextMenu:tooltip_sua_trang_chon_corel', { selection: selectionLabel, defaultValue: `Chỉ trích xuất ${selectionLabel} để mở sửa trong CorelDRAW. Khi lưu (Ctrl+S), PrynX sẽ tự động gộp lại vào file gốc.` })
+                    : t('misc.viewerContextMenu:tooltip_sua_toan_bo_corel', { total: totalPages, defaultValue: `Mở toàn bộ tài liệu (${totalPages} trang) trong CorelDRAW.` });
 
                 return (
                     <>
@@ -208,7 +208,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                 <span className="w-5 h-5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[11px] font-extrabold flex items-center justify-center border border-amber-500/30">Ai</span>
                                 <span>
                                     {isPartialSelection
-                                        ? `Sửa ${selectionLabel} trong Illustrator`
+                                        ? t('misc.viewerContextMenu:sua_trang_chon_illustrator', { selection: selectionLabel, defaultValue: `Sửa ${selectionLabel} trong Illustrator` })
                                         : t('misc.viewerContextMenu:sua_bang_illustrator', 'Sửa bằng Adobe Illustrator')}
                                 </span>
                             </span>
@@ -226,7 +226,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                 <span className="w-5 h-5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold flex items-center justify-center border border-emerald-500/30">Cdr</span>
                                 <span>
                                     {isPartialSelection
-                                        ? `Sửa ${selectionLabel} trong CorelDRAW`
+                                        ? t('misc.viewerContextMenu:sua_trang_chon_corel', { selection: selectionLabel, defaultValue: `Sửa ${selectionLabel} trong CorelDRAW` })
                                         : t('misc.viewerContextMenu:sua_bang_corel', 'Sửa bằng CorelDRAW')}
                                 </span>
                             </span>
@@ -238,20 +238,20 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                 <button
                                     type="button"
                                     role="menuitem"
-                                    title={`Mở toàn bộ ${totalPages} trang của tài liệu gốc trong Adobe Illustrator để chỉnh sửa tổng thể`}
+                                    title={t('misc.viewerContextMenu:tooltip_mo_toan_bo_ai', { total: totalPages, defaultValue: `Mở toàn bộ ${totalPages} trang của tài liệu gốc trong Adobe Illustrator để chỉnh sửa tổng thể` })}
                                     onClick={() => { closeContextMenu(); onEditInApp('illustrator', 'all'); }}
                                     className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50/50 dark:hover:bg-amber-500/5 rounded transition-colors flex items-center justify-between"
                                 >
-                                    <span>↳ Mở toàn bộ file trong Illustrator ({totalPages} trang)...</span>
+                                    <span>{t('misc.viewerContextMenu:mo_toan_bo_file_ai', { total: totalPages, defaultValue: `↳ Mở toàn bộ file trong Illustrator (${totalPages} trang)...` })}</span>
                                 </button>
                                 <button
                                     type="button"
                                     role="menuitem"
-                                    title={`Mở toàn bộ ${totalPages} trang của tài liệu gốc trong CorelDRAW để chỉnh sửa tổng thể`}
+                                    title={t('misc.viewerContextMenu:tooltip_mo_toan_bo_corel', { total: totalPages, defaultValue: `Mở toàn bộ ${totalPages} trang của tài liệu gốc trong CorelDRAW để chỉnh sửa tổng thể` })}
                                     onClick={() => { closeContextMenu(); onEditInApp('corel', 'all'); }}
                                     className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-500/5 rounded transition-colors flex items-center justify-between"
                                 >
-                                    <span>↳ Mở toàn bộ file trong CorelDRAW ({totalPages} trang)...</span>
+                                    <span>{t('misc.viewerContextMenu:mo_toan_bo_file_corel', { total: totalPages, defaultValue: `↳ Mở toàn bộ file trong CorelDRAW (${totalPages} trang)...` })}</span>
                                 </button>
                             </div>
                         )}
