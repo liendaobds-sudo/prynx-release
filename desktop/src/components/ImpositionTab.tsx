@@ -178,6 +178,7 @@ import { canUse } from '../lib/license/features';
 import { isEphemeralBackendPath } from '../lib/impositionPathPolicy';
 import { useAuthStore } from '../stores/useAuthStore';
 import FeatureAccessOverlay from './license/FeatureAccessOverlay';
+import ProFeatureBadge from './license/ProFeatureBadge';
 
 // Phase type is now defined in useWorkspaceStore
 
@@ -565,6 +566,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const licensePlan = useAuthStore(state => state.licensePlan);
     const licenseFeatures = useAuthStore(state => state.licenseFeatures);
+    const isBridgeAllowed = canUse('prepress.app_bridge', licensePlan, licenseFeatures);
     const requestToolActivation = useToolActivationGuard();
     const launchFeature = initialRecovery?.feature || initialFeature;
     const dedicatedInitialTool = resolveDedicatedInitialTool(launchFeature);
@@ -4347,7 +4349,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onDocumentUndo={handleUndo}
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
-                                    onOpenDieCutModal={() => setShowOpenInDesign(true)}
+                                    onOpenDieCutModal={() => {
+                                        if (!isBridgeAllowed) {
+                                            toast.info(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
+                                            return;
+                                        }
+                                        setShowOpenInDesign(true);
+                                    }}
                                     toolbarExtra={file ? (
                                         <RecipeRecordControl
                                             tabId={recipeOwnerTabId}
@@ -4370,11 +4378,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             {/* Bế: luôn hiện khi có file (mở trang khuôn/file bằng Illustrator hoặc CorelDRAW).
                                                 Trước chỉ hiện với file Imposed_* → lưu file ra đĩa rồi mở lại bị mất nút. */}
                                             <button
-                                                onClick={() => setShowOpenInDesign(true)}
+                                                onClick={() => {
+                                                    if (!isBridgeAllowed) {
+                                                        toast.info(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
+                                                        return;
+                                                    }
+                                                    setShowOpenInDesign(true);
+                                                }}
                                                 className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-                                                title={t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel')}
+                                                title={isBridgeAllowed ? t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel') : t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.')}
                                             >
-                                                <Scissors className="w-4 h-4" /> {t('tabs.imposition:be')}
+                                                <Scissors className="w-4 h-4" />
+                                                <span>{t('tabs.imposition:be')}</span>
+                                                <ProFeatureBadge featureId="prepress.app_bridge" />
                                             </button>
                                         </div>
                                     ) : undefined}

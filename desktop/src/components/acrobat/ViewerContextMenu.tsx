@@ -306,13 +306,21 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                             <button
                                 type="button"
                                 role="menuitem"
-                                onClick={() => { closeContextMenu(); onOpenDieCutModal(); }}
+                                onClick={() => {
+                                    closeContextMenu();
+                                    if (!isBridgeAllowed) {
+                                        toast.info(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
+                                        return;
+                                    }
+                                    onOpenDieCutModal();
+                                }}
                                 className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg outline-none transition-colors"
                             >
                                 <span className="flex items-center gap-2.5">
                                     <Scissors className="w-4 h-4 text-slate-400 ml-0.5" />
                                     <span>{t('misc.viewerContextMenu:xuat_trang_khuon_be', 'Xuất trang khuôn bế...')}</span>
                                 </span>
+                                <ProFeatureBadge featureId="prepress.app_bridge" />
                             </button>
                         )}
 

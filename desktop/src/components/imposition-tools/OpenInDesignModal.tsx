@@ -15,6 +15,9 @@ import { X } from 'lucide-react';
 import { buildSavePlan, sanitizeFilename, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
 import { fetchLocalFileBuffer } from '../../lib/localFileTransport';
 import { useTranslation } from 'react-i18next';
+import { canUse } from '../../lib/license/features';
+import { useAuthStore } from '../../stores/useAuthStore';
+import ProFeatureBadge from '../license/ProFeatureBadge';
 
 interface Props {
     open: boolean;
@@ -108,6 +111,8 @@ export default function OpenInDesignModal({
     open, onClose, resultFilePath, resultBlob, separateCut, cncMode, cncTwoSided, originalName, currentPage,
 }: Props) {
     const { t } = useTranslation();
+    const licensePlan = useAuthStore(state => state.licensePlan);
+    const licenseFeatures = useAuthStore(state => state.licenseFeatures);
     const [detected, setDetected] = useState<CustomApps>({});
     const [custom, setCustom] = useState<CustomApps>(loadCustomApps());
     const [detectingApps, setDetectingApps] = useState(false);
@@ -333,6 +338,10 @@ export default function OpenInDesignModal({
     };
 
     const doOpen = async (appPath?: string, which?: 'illustrator' | 'corel') => {
+        if (!canUse('prepress.app_bridge', licensePlan, licenseFeatures)) {
+            setStatus(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
+            return;
+        }
         if (!appPath) { setStatus(t('misc.openInDesign:chua_co_duong_dan_app')); return; }
         setBusy(true);
         setStatus(t('misc.openInDesign:dang_mo'));
@@ -404,7 +413,10 @@ export default function OpenInDesignModal({
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             <div role="dialog" aria-modal="true" aria-label={t('misc.openInDesign:mo_bang_illustrator_corel')} className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[520px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-white/10">
-                    <h2 className="text-[16px] font-bold text-slate-800 dark:text-white">{t('misc.openInDesign:mo_bang_illustrator_corel')}</h2>
+                    <div className="flex items-center gap-2">
+                        <h2 className="text-[16px] font-bold text-slate-800 dark:text-white">{t('misc.openInDesign:mo_bang_illustrator_corel')}</h2>
+                        <ProFeatureBadge featureId="prepress.app_bridge" />
+                    </div>
                     <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-white" title={t('misc.openInDesign:dong')} aria-label={t('misc.openInDesign:dong')}><X className="w-4 h-4" /></button>
                 </div>
 

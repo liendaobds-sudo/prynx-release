@@ -249,6 +249,7 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
             // 1. Gói Free: bị chặn khi click và hiển thị huy hiệu khoá
             useAuthStore.setState({ licensePlan: 'free', licenseFeatures: null });
             const onEditInAppFree = vi.fn();
+            const onOpenDieCutModalFree = vi.fn();
             const setContextMenuFree = vi.fn();
             const props = {
                 contextMenu: { x: 20, y: 20, visible: true },
@@ -262,6 +263,7 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
                 onOpenPageTools: vi.fn(),
                 onQuickDuplicate: vi.fn(),
                 onEditInApp: onEditInAppFree,
+                onOpenDieCutModal: onOpenDieCutModalFree,
             };
 
             const { unmount: unmountFree } = render(<ViewerContextMenu {...props} />);
@@ -271,14 +273,25 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
             fireEvent.click(aiButtonFree);
             expect(onEditInAppFree).not.toHaveBeenCalled();
             expect(setContextMenuFree).toHaveBeenCalledWith(null);
+
+            // Nút Xuất khuôn bế cũng bị chặn khi ở gói Free
+            const cutButtonFree = screen.getByRole('menuitem', { name: /khuôn bế/i });
+            fireEvent.click(cutButtonFree);
+            expect(onOpenDieCutModalFree).not.toHaveBeenCalled();
             unmountFree();
 
             // 2. Gói Pro: được phép kích hoạt
             useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
             const onEditInAppPro = vi.fn();
+            const onOpenDieCutModalPro = vi.fn();
             const setContextMenuPro = vi.fn();
             const { unmount: unmountPro } = render(
-                <ViewerContextMenu {...props} onEditInApp={onEditInAppPro} setContextMenu={setContextMenuPro} />
+                <ViewerContextMenu
+                    {...props}
+                    onEditInApp={onEditInAppPro}
+                    onOpenDieCutModal={onOpenDieCutModalPro}
+                    setContextMenu={setContextMenuPro}
+                />
             );
             expect(screen.getAllByText(/^PRO$/i).length).toBeGreaterThanOrEqual(1);
 
@@ -286,6 +299,10 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
             fireEvent.click(aiButtonPro);
             expect(onEditInAppPro).toHaveBeenCalledWith('illustrator', 'all');
             expect(setContextMenuPro).toHaveBeenCalledWith(null);
+
+            const cutButtonPro = screen.getByRole('menuitem', { name: /khuôn bế/i });
+            fireEvent.click(cutButtonPro);
+            expect(onOpenDieCutModalPro).toHaveBeenCalled();
             unmountPro();
         } finally {
             vi.unstubAllEnvs();

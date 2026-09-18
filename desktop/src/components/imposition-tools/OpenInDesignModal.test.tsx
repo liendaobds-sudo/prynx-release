@@ -503,4 +503,35 @@ it('nhận diện tất cả các trang là trang khuôn khi mở file đã lưu
         expect(screen.getByText('Tờ 1')).toBeTruthy();
         expect(screen.getByText('Tờ 2')).toBeTruthy();
     });
+
+    it('chặn mở ứng dụng khi tài khoản ở gói Free và cờ gating bật', async () => {
+        const { useAuthStore } = await import('../../stores/useAuthStore');
+        vi.stubEnv('VITE_FEATURE_GATING_ENABLED', 'true');
+        useAuthStore.setState({ licensePlan: 'free', licenseFeatures: null });
+
+        try {
+            mocks.invoke.mockImplementation((command: string) => {
+                if (command === 'detect_design_apps') {
+                    return Promise.resolve({ illustrator: ILLUSTRATOR, corel: null });
+                }
+                return Promise.resolve();
+            });
+
+            renderModal();
+            await screen.findByText(ILLUSTRATOR);
+
+            // Click nút mở Illustrator
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: /Adobe Illustrator/ }));
+            });
+
+            // launch_external_app không được gọi
+            expect(mocks.invoke).not.toHaveBeenCalledWith('launch_external_app', expect.anything());
+            expect(await screen.findByText(/tinh_nang_pro_notice|Tính năng/i)).toBeTruthy();
+            expect(screen.getByText(/🔒 PRO/i)).toBeTruthy();
+        } finally {
+            vi.unstubAllEnvs();
+            useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
+        }
+    });
 });
