@@ -4082,7 +4082,11 @@ pub fn render_tile_png_with_options(
     let document_arc =
         get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)?;
 
-        let use_proxy = !force_full_res && zoom <= 1.5 && document_arc.proxy_bytes.is_some();
+        // PERF (audit độ nét 2026-09-18): Không dùng proxy nén ảnh 4x-8x cho zoom <= 1.5.
+        // Proxy document từng khiến trang bị mờ vĩnh viễn ở mức fit-to-page do worker
+        // subprocess không emit được tile-refined về UI. PDFium mở file gốc trực tiếp
+        // đạt 100% độ nét ngay từ lần đầu, không bị mờ nhòe.
+        let use_proxy = false;
     let cell = if use_proxy {
         &document_arc.proxy_handle
     } else {
@@ -4197,14 +4201,20 @@ pub fn render_tile_png_with_options(
                 let width_pt = pdf_page.width().value;
                 let height_pt = pdf_page.height().value;
 
-                if width_pt * render_scale > max_dim {
-                    render_scale = max_dim / width_pt;
-                }
-                if height_pt * render_scale > max_dim {
-                    render_scale = max_dim / height_pt;
-                }
+                // NÉT (audit độ nét 2026-09-18): Quy đổi từ PDF Point (72 DPI) sang CSS Pixel (96 DPI)
+                // bằng hệ số 96/72 để kích thước bitmap khớp chính xác 1:1 với khung CSS màn hình
+                // (displayWidth = actualWidth100 * zoom = width_pt * 96/72 * zoom).
+                let screen_scale = render_scale * (96.0 / 72.0);
 
-                let safe_w = (width_pt * render_scale).max(1.0) as i32;
+                let effective_scale = if width_pt * screen_scale > max_dim || height_pt * screen_scale > max_dim {
+                    let scale_w = max_dim / width_pt;
+                    let scale_h = max_dim / height_pt;
+                    scale_w.min(scale_h)
+                } else {
+                    screen_scale
+                };
+
+                let safe_w = (width_pt * effective_scale).max(1.0) as i32;
 
                 PdfRenderConfig::new()
                     .set_clear_color(PdfColor::WHITE)

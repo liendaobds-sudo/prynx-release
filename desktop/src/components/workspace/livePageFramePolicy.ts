@@ -1,11 +1,12 @@
+
 import type { CSSProperties } from 'react';
 import type { ViewerColorStage } from '../../hooks/viewer/useTileRenderer';
 import { isViewerFullPageWithinSurfaceBudget } from './renderZoomPolicy';
 
-// UIUX (feedback 2026-08-14 §VIEW.SHARP): WebView2/Edge đã đo trên chính file Standee:
-// tăng 24 → 72 → 96 DPI nhưng cùng co về khung Viewer gần như không làm chữ nhỏ rõ hơn.
-// Chế độ WebKit này giữ tương phản cạnh khi compositor thu bitmap và không đổi pixel 1:1.
-export const VIEWER_RASTER_IMAGE_RENDERING = '-webkit-optimize-contrast' as CSSProperties['imageRendering'];
+// NÉT (audit độ nét 2026-09-18): Dùng 'auto' để WebView2/Chromium sử dụng bộ lọc
+// nội suy chất lượng cao (bicubic/bilinear area averaging). '-webkit-optimize-contrast'
+// từng làm mất lọc mượt khi co/giãn bitmap, dẫn đến nét chữ bị răng cưa và đứt gãy ở zoom nhỏ.
+export const VIEWER_RASTER_IMAGE_RENDERING = 'auto' as CSSProperties['imageRendering'];
 
 // UIUX (feedback 2026-08-14 §VIEW.SWAP): underlay ưu tiên đúng mật độ màn hình để
 // trang kế bên hiện ngay. Mức 24 DPI chỉ còn là fallback khi bitmap toàn trang
