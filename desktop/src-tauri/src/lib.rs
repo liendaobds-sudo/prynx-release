@@ -5662,6 +5662,8 @@ enum SystemFileStatStatus {
 struct SystemFileStat {
     status: SystemFileStatStatus,
     size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified_ms: Option<u64>,
 }
 
 fn classify_system_file_stat_error(
@@ -5679,13 +5681,22 @@ fn classify_system_file_stat_error(
 
 fn stat_system_file_blocking(file_path: &std::path::Path) -> SystemFileStat {
     match std::fs::metadata(file_path) {
-        Ok(metadata) if metadata.is_file() => SystemFileStat {
-            status: SystemFileStatStatus::Available,
-            size: metadata.len(),
-        },
+        Ok(metadata) if metadata.is_file() => {
+            let modified_ms = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64);
+            SystemFileStat {
+                status: SystemFileStatStatus::Available,
+                size: metadata.len(),
+                modified_ms,
+            }
+        }
         Ok(_) => SystemFileStat {
             status: SystemFileStatStatus::Inaccessible,
             size: 0,
+            modified_ms: None,
         },
         Err(error) => {
             let parent_is_accessible = file_path
@@ -5695,6 +5706,7 @@ fn stat_system_file_blocking(file_path: &std::path::Path) -> SystemFileStat {
             SystemFileStat {
                 status: classify_system_file_stat_error(&error, parent_is_accessible),
                 size: 0,
+                modified_ms: None,
             }
         }
     }

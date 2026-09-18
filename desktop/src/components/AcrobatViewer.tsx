@@ -28,6 +28,7 @@ import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/Cro
 import { formatPageSizeMm } from './acrobat/dimensionMath';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
+import { useLiveLinkWatcher } from '../hooks/viewer/useLiveLinkWatcher';
 import {
     shouldAutoDisableAccurateColor,
     useTileRenderer,
@@ -505,6 +506,13 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         renderDocumentToken: loaderRenderDocumentToken,
         notifyFirstPageRenderReady,
     } = loader;
+
+    // LIVE LINK: Tự động tải lại trang khi tệp PDF được lưu bởi Illustrator / CorelDRAW
+    useLiveLinkWatcher({
+        filePath: file?.path,
+        enabled: Boolean(file?.path && !file?.isInMemory),
+        onFileChanged: retryLoad,
+    });
 
     // PERF (audit 2026-08-08 §RENDER.1): metadata pha B có thể đổi khổ các trang đứng
     // trước trang active. Giữ đúng điểm neo viewport qua commit hình học để không nhảy
