@@ -200,23 +200,27 @@ function previewDetectionStrategy(
     removeWhiteBg: boolean,
 ): StickerDetectionStrategy | null {
     const page = pageInspection(inspection, pageNumber);
-    if (!page) return null;
-    if (cutMode === 'alpha') return page.has_alpha ? 'alpha' : null;
-    // QUALITY (feedback 2026-08-19 §CUTPREVIEW.PARITY1): nhánh thực thi
-    // `remove_white_bg=false` dựng mask kín toàn trang. Phải chốt điều này trước
-    // mọi gợi ý CutContour/vector/Alpha từ inspector, nếu không preview tự bóc
-    // nền dù người dùng chưa bật tùy chọn.
-    if (!removeWhiteBg) return 'page-box';
-    if (forceContour && page.has_existing_cut) return null;
-    if (!forceContour && page.has_existing_cut) return 'existing-cut';
-    if (page.has_vector) return 'vector';
-    if (page.has_alpha) return 'alpha';
-    // PERF/STABILITY (feedback 2026-08-20 §CUTPREVIEW.MEM5): auto vẫn nâng một
-    // silhouette nền phẳng lên Alpha AI khi đủ bộ nhớ, nên giữ parity với lượt
-    // xuất. Khác với ép `ai`, nó còn mask deterministic để trả preview nếu DML
-    // vừa dùng hết RAM; không biến một lỗi phụ thành màn hình trống.
-    if (page.has_raster && removeWhiteBg && inspection.page_count === 1) return 'auto';
-    return null;
+    let resolved: StickerDetectionStrategy | null = null;
+    if (!page) resolved = null;
+    else if (cutMode === 'alpha') resolved = page.has_alpha ? 'alpha' : null;
+    else if (!removeWhiteBg) resolved = 'page-box';
+    else if (forceContour && page.has_existing_cut) resolved = null;
+    else if (!forceContour && page.has_existing_cut) resolved = 'existing-cut';
+    else if (page.has_vector) resolved = 'vector';
+    else if (page.has_alpha) resolved = 'alpha';
+    else if (page.has_raster && removeWhiteBg && inspection.page_count === 1) resolved = 'auto';
+    else resolved = null;
+    console.log('[CutlinePreview-DEBUG] previewDetectionStrategy:', {
+        pageNumber,
+        resolvedStrategy: resolved,
+        removeWhiteBg,
+        forceContour,
+        cutMode,
+        has_vector: page?.has_vector,
+        has_raster: page?.has_raster,
+        has_alpha: page?.has_alpha,
+    });
+    return resolved;
 }
 
 function normalizedCutMode(value: string): CutMode {
@@ -646,10 +650,16 @@ export function useClassicCutlinePreview({
                 const manifest = await detectStickerSourceManifest(session.sessionId, {
                     strategy,
                     pageNumber,
-                    // PERF/QUALITY (feedback 2026-08-21 §CUTPREVIEW.GATE2):
-                    // chỉ detect khi trang chưa có manifest trong cache session.
                     previewOnly: true,
+                    force: true,
                     signal: controller.signal,
+                });
+
+                console.log('[CutlinePreview-DEBUG] detect manifest returned:', {
+                    boundary_source: manifest.boundary_source,
+                    instances: manifest.instances,
+                    vector_geometry_ref: manifest.vector_geometry_ref,
+                    warnings: manifest.warnings,
                 });
                 const current = (
                     !disposed
@@ -877,6 +887,15 @@ export function useClassicCutlinePreview({
             || activePreviewJobRef.current?.generation !== requested.jobGeneration
         );
         const acceptReady = (payload: StickerCutlinePreview) => {
+            console.log('[CutlinePreview-DEBUG] acceptReady cutline paths:', {
+                paths_count: payload.paths?.length,
+                segment_count: payload.segment_count,
+                paths: payload.paths?.map(p => ({
+                    instance_id: p.instance_id,
+                    segments: p.segment_count,
+                    d_prefix: p.d?.slice(0, 50),
+                })),
+            });
             if (requested.source.classicWholePage && (
                 payload.classic_whole_page !== true
                 || payload.page_number !== requested.pageNumber

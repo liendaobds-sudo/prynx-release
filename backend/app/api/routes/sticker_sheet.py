@@ -271,15 +271,36 @@ async def detect_sticker_source_endpoint(
     request: StickerSourceDetectRequest,
 ):
     """Nhận diện khi người dùng yêu cầu và nâng đúng session inspect hiện tại."""
+    logger.debug(
+        "[STICKER] API /detect: session_id=%s, page=%d, strategy=%s, force=%s, preview_only=%s",
+        session_id,
+        request.page_number,
+        request.strategy,
+        request.force,
+        request.preview_only,
+    )
     session = get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Phiên nguồn tem đã hết hạn. Hãy chọn lại file.")
+    page = get_page_state(session_id, request.page_number)
+    # Nếu client yêu cầu force hoặc đổi strategy khác với boundary_source hiện tại, cho phép nhận diện lại
+    if page is not None and page.stage == "mask-review" and (request.force or request.strategy != page.boundary_source):
+        logger.debug(
+            "[STICKER] Re-detecting page %d: current boundary=%s -> requested strategy=%s",
+            request.page_number,
+            page.boundary_source,
+            request.strategy,
+        )
+        page.stage = "inspected"
+        page.manifest = {**page.manifest, "stage": "inspected"}
+
     session = begin_source_detection(session_id, page_number=request.page_number)
     if session is None:
-        # UIUX (audit 2026-08-09 §MP.9-10): backend có thể đã promote nhưng
-        # WebView lỗi tải asset. Retry cùng trang chỉ phát lại manifest/URL, không
-        # chạy model lần hai và không đóng session chứa kết quả của sibling.
         existing = _page_detection_response(session_id, request.page_number)
+        logger.debug(
+            "[STICKER] API /detect: REUSING existing response (stage != inspected). boundary=%s",
+            existing.get("boundary_source") if existing else None,
+        )
         if existing is not None:
             return existing
         raise HTTPException(status_code=409, detail="Nguồn tem này đã được nhận diện hoặc đang được xử lý.")
@@ -295,6 +316,8 @@ async def detect_sticker_source_endpoint(
             page_number=request.page_number,
             preview_only=request.preview_only,
         )
+
+
         return promote_source_session(
             session_id,
             analysis=detected.analysis,
@@ -309,6 +332,7 @@ async def detect_sticker_source_endpoint(
             edge_background_rgb=detected.background_rgb,
             edge_background_tolerance=detected.background_tolerance,
         )
+
 
     try:
         # PERF/UIUX (feedback 2026-08-19 §CUTPREVIEW.2): các chiến lược đã có
@@ -440,7 +464,7 @@ async def preview_sticker_cutline_endpoint(
             from app.workers.sticker_classic_page_preview import build_classic_page_preview
             preview_builder = build_classic_page_preview
             classic_options["classic_force_contour"] = request.classic_force_contour
-        return await run_in_threadpool(
+        res = await run_in_threadpool(
             preview_builder,
             session,
             page_number=request.page_number,
@@ -461,6 +485,20 @@ async def preview_sticker_cutline_endpoint(
             cutline_simplify_mm=request.cutline_simplify_mm,
             **classic_options,
         )
+        paths_list = res.paths if hasattr(res, "paths") else (res.get("paths", []) if isinstance(res, dict) else [])
+        fit_modes = [p.get("quality", {}).get("fit_mode") if isinstance(p, dict) else getattr(getattr(p, "quality", None), "fit_mode", None) for p in paths_list]
+        kinds = [p.get("quality", {}).get("kind") if isinstance(p, dict) else getattr(getattr(p, "quality", None), "kind", None) for p in paths_list]
+        logger.debug(
+            "[STICKER] API /cutline-preview DONE: session=%s, trang=%d, paths_count=%d, kinds=%s, fit_modes=%s",
+            session_id,
+            request.page_number,
+            len(paths_list),
+            kinds,
+            fit_modes,
+        )
+        return res
+
+
     except StickerSheetSessionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except StickerSheetExportError as exc:

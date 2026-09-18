@@ -1616,6 +1616,43 @@ def _detect_exact_vector_shapes(
     return tuple(exact_shapes)
 
 
+def _is_rendered_alpha_rim_near_white(
+    source_image: Image.Image,
+    rendered_alpha: np.ndarray,
+    alpha_threshold: int = 128,
+) -> tuple[bool, float]:
+    """Kiểm tra xem mép ngoài của vùng đặc trong rendered_alpha có phải là nền trắng.
+
+    Nếu mép ngoài chạm vùng trong suốt thực chất chỉ là màu nền trắng (ví dụ vector lót
+    màu trắng hoặc ảnh raster có nền trắng vẽ lên trang), thì rendered_alpha KHÔNG phải
+    là silhouette cắt bế thật sự của artwork mà chỉ là vết vẽ của mảng nền.
+    """
+    mask_u8 = (rendered_alpha >= int(alpha_threshold)).astype(np.uint8) * 255
+    if not np.any(mask_u8):
+        return False, 0.0
+    inner = cv2.erode(
+        mask_u8,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    rim = (mask_u8 > 0) & (inner == 0)
+    if not np.any(rim):
+        return False, 0.0
+    rgb = np.asarray(source_image.convert("RGB"))
+    rim_colors = rgb[rim]
+    if rim_colors.size == 0:
+        return False, 0.0
+    minimum = rim_colors.min(axis=1)
+    chroma = rim_colors.max(axis=1) - minimum
+    near_white = (minimum >= 238) & (chroma <= 24)
+    near_white_ratio = float(np.count_nonzero(near_white)) / float(len(rim_colors))
+    msg = f"[STICKER] Rim analysis: rim_pixels={len(rim_colors)}, near_white_ratio={near_white_ratio:.3f} ({near_white_ratio*100:.1f}%, nguong=30%)"
+    logger.debug(msg)
+    return near_white_ratio >= 0.30, near_white_ratio
+
+
+
+
 def _looks_like_fragmented_sticker_sheet(analysis: StickerSheetAnalysis) -> bool:
     """Nhận mask bị vỡ qua các component nhỏ nằm trong bbox component lớn."""
     instances = analysis.instances
@@ -2750,6 +2787,14 @@ def detect_sticker_source(
     if not 1 <= page_number <= session.page_count:
         raise StickerSourcePipelineError("Trang cần nhận diện không tồn tại trong file nguồn.")
 
+    logger.info(
+        "[STICKER-DEBUG] detect_sticker_source BẮT ĐẦU: session=%s, trang=%d, strategy=%s, preview_only=%s, source_kind=%s",
+        getattr(session, "session_id", "unknown"),
+        page_number,
+        strategy,
+        preview_only,
+        session.source_kind,
+    )
     page_index = page_number - 1
     if session.source_kind == "raster":
         source_image = _load_raster_source(session)
@@ -2936,6 +2981,87 @@ def detect_sticker_source(
             alpha_threshold=alpha_threshold,
         )
         exact_shapes = _detect_exact_vector_shapes(analysis, dpi=dpi)
+
+        # QUALITY (feedback 2026-09-18 §STICKER.WHITE-BG-ALPHA): Nếu viền ngoài của
+        # rendered_alpha chứa màu nền trắng và không khớp được exact_shapes,
+        # đây không phải là silhouette cắt bế thật (mà chỉ là mảng lót nền trắng vẽ
+        # trên canvas trong suốt đè lên ảnh). Thử bóc nền phẳng xung quanh trước để không lấy
+        # nhầm hình hợp méo mó giữa mảng lót và ảnh; bảo toàn nền trắng bên trong tem.
+        is_spurious_rim = False
+        rim_ratio = 0.0
+        if not exact_shapes:
+            is_spurious_rim, rim_ratio = _is_rendered_alpha_rim_near_white(
+                source_image, rendered_alpha, alpha_threshold
+            )
+
+        bg_candidate = None
+        if not exact_shapes:
+            # Luôn thử background detection khi rendered_alpha không phải hình học chuẩn
+            candidate = _background_detection(
+                source_image,
+                model=model,
+                alpha_threshold=alpha_threshold,
+                boundary_source="vector",
+                dpi=dpi,
+                minimum_confidence=(
+                    _AUTO_BACKGROUND_CONFIDENCE_MIN if strategy == "auto" else 0.0
+                ),
+            )
+            if candidate is not None:
+                bg_exact_shapes = _detect_exact_vector_shapes(candidate.analysis, dpi=dpi)
+                logger.debug(
+                    "[STICKER] bg_candidate: instances=%d, bg_exact_shapes=%s, rim_white_ratio=%.3f, is_spurious=%s",
+                    len(candidate.analysis.instances),
+                    bg_exact_shapes,
+                    rim_ratio,
+                    is_spurious_rim,
+                )
+                # Chấp nhận bg_candidate nếu nó tìm ra exact shape chuẩn (như hình tròn/elip)
+                # HOẶC nếu mép ngoài là nền trắng (is_spurious_rim) và có 1 tem duy nhất
+                if bg_exact_shapes or (is_spurious_rim and len(candidate.analysis.instances) == 1):
+                    bg_candidate = candidate
+                    if bg_exact_shapes:
+                        detected_ref = bg_candidate.vector_geometry_ref or {}
+                        bg_candidate = replace(
+                            bg_candidate,
+                            vector_geometry_ref={
+                                **(bg_candidate.vector_geometry_ref or {}),
+                                "kind": "pdf-vector-source",
+                                "source_page": page_number,
+                                "preserve_original": True,
+                                "exact_shapes": list(bg_exact_shapes),
+                            },
+                        )
+
+        if bg_candidate is not None:
+            exact_shapes_bg = (bg_candidate.vector_geometry_ref or {}).get("exact_shapes")
+            logger.debug(
+                "[STICKER] => CHON bg_candidate: boundary_source=%s, exact_shapes=%s",
+                bg_candidate.boundary_source,
+                exact_shapes_bg,
+            )
+            detected_ref = bg_candidate.vector_geometry_ref or {}
+
+
+            vector_geometry_ref = {
+                "kind": "pdf-vector-source",
+                "source_page": page_number,
+                "preserve_original": True,
+            }
+            if isinstance(exact_shapes_bg, (list, tuple)) and exact_shapes_bg:
+                vector_geometry_ref["exact_shapes"] = list(exact_shapes_bg)
+            return replace(
+                bg_candidate,
+                dpi=dpi,
+                source_page=page_number,
+                vector_geometry_ref=vector_geometry_ref,
+                warnings=tuple(dict.fromkeys((
+                    *bg_candidate.warnings,
+                    "vector-mask-raster-preview",
+                ))),
+            )
+
+
         vector_geometry_ref: dict[str, object] = {
             "kind": "pdf-vector-source",
             "source_page": page_number,

@@ -93,8 +93,14 @@ if not exist "desktop\node_modules" (
 
 echo.
 echo [3/4] Dang dang ky Context Menu (Chuot phai)...
-set "EXE_PATH=%ROOT_DIR%\desktop\src-tauri\target\debug\pdf-inspector.exe"
+if exist "%LOCALAPPDATA%\PrynX\pdf-inspector.exe" (
+    set "EXE_PATH=%LOCALAPPDATA%\PrynX\pdf-inspector.exe"
+    echo - Dung ban cai dat chinh thuc cho Context Menu.
+) else (
+    set "EXE_PATH=%ROOT_DIR%\desktop\src-tauri\target\debug\pdf-inspector.exe"
+)
 set "REG_BASE=HKCU\Software\Classes\SystemFileAssociations"
+
 
 :: PDF
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul

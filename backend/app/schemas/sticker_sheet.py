@@ -94,6 +94,7 @@ class StickerSourceDetectRequest(BaseModel):
     # PERF (feedback 2026-08-20 §CUTPREVIEW.FAST1): preview classic được phép
     # giữ mask nền phẳng đã đủ tin cậy, không chạy bước nâng hình học AI tùy chọn.
     preview_only: bool = False
+    force: bool = False
 
 
 class StickerSourceRefineRequest(BaseModel):

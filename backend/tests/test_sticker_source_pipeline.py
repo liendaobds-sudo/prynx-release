@@ -1781,6 +1781,25 @@ def test_vector_exact_geometry_ignores_decorative_inner_circle(tmp_path, monkeyp
     assert all(shape_kinds[index] == "rect" for index in (2, 3, 4))
 
 
+def test_vector_white_background_rim_falls_back_to_clean_circle(tmp_path, monkeypatch):
+    """Mảng lót nền trắng vector + ảnh JPEG không được sinh viền lai gối ôm."""
+    source_real = Path(r"D:\pdfcompare\test\Tem em Ngoc NVH 25mm.pdf")
+    if not source_real.exists():
+        pytest.skip("Không có file test mẫu Tem em Ngoc NVH 25mm.pdf")
+    session = _create_session(source_real)
+    monkeypatch.setattr(
+        "app.workers.sticker_source_pipeline.read_memory_status_mb",
+        lambda: (32 * 1024, 16 * 1024),
+    )
+    detected = detect_sticker_source(session, strategy="vector", page_number=1, preview_only=True)
+    exact_shapes = (detected.vector_geometry_ref or {}).get("exact_shapes")
+    assert isinstance(exact_shapes, list)
+    assert len(exact_shapes) == 1
+    assert exact_shapes[0].get("kind") == "circle"
+    params = exact_shapes[0].get("params", {})
+    assert 32.0 <= float(params.get("r", 0)) <= 35.0
+
+
 def test_auto_falls_back_to_ai_only_when_deterministic_background_fails(tmp_path, monkeypatch):
     source = tmp_path / "complex.png"
     Image.new("RGB", (100, 80), (90, 80, 70)).save(source, format="PNG")

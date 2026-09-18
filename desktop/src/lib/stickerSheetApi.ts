@@ -347,6 +347,7 @@ export async function detectStickerSourceManifest(
         alphaThreshold?: number;
         pageNumber?: number;
         previewOnly?: boolean;
+        force?: boolean;
         signal?: AbortSignal;
     } = {},
 ): Promise<StickerSourceDetection> {
@@ -361,6 +362,7 @@ export async function detectStickerSourceManifest(
                 alpha_threshold: options.alphaThreshold ?? 128,
                 page_number: options.pageNumber ?? 1,
                 preview_only: options.previewOnly ?? false,
+                force: options.force ?? false,
             }),
             signal: options.signal,
         },
