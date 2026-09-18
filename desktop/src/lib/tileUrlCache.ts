@@ -5,12 +5,25 @@ const GIB = 1024 * MIB;
 
 export interface TileUrlSource {
   url: string;
+  bitmap?: ImageBitmap;
+  width?: number;
+  height?: number;
   byteLength: number;
   /** False khi ảnh chỉ là fallback tạm; không giữ dưới cache key của pipeline khác. */
   cacheable?: boolean;
 }
 
 type TileUrlCacheEntry = TileUrlSource & { namespace: string };
+
+function closeBitmap(bitmap?: ImageBitmap): void {
+  if (bitmap && typeof bitmap.close === 'function') {
+    try {
+      bitmap.close();
+    } catch {
+      // ignore
+    }
+  }
+}
 
 export function tileUrlCacheNamespaceForFileKey(fileKey: string): string {
   // PERF (audit 2026-08-08 §RENDER.5): revision/color chỉ phân biệt bitmap;
@@ -56,18 +69,54 @@ export class TileUrlLruCache {
     return entry.url;
   }
 
-  set(key: string, url: string, byteLength: number, namespace = key): boolean {
-    const safeBytes = Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : 0;
+  getSource(key: string): TileUrlSource | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry;
+  }
+
+  set(
+    key: string,
+    sourceOrUrl: string | TileUrlSource,
+    byteLength?: number,
+    namespace = key,
+  ): boolean {
+    let url: string;
+    let safeBytes: number;
+    let bitmap: ImageBitmap | undefined;
+    let width: number | undefined;
+    let height: number | undefined;
+    let cacheable: boolean | undefined;
+
+    if (typeof sourceOrUrl === 'string') {
+      url = sourceOrUrl;
+      safeBytes = Number.isSafeInteger(byteLength) && (byteLength ?? 0) >= 0 ? (byteLength ?? 0) : 0;
+    } else {
+      url = sourceOrUrl.url;
+      safeBytes = Number.isSafeInteger(sourceOrUrl.byteLength) && sourceOrUrl.byteLength >= 0
+        ? sourceOrUrl.byteLength
+        : 0;
+      bitmap = sourceOrUrl.bitmap;
+      width = sourceOrUrl.width;
+      height = sourceOrUrl.height;
+      cacheable = sourceOrUrl.cacheable;
+    }
+
     const previous = this.entries.get(key);
     if (previous) {
       this.entries.delete(key);
       this._currentBytes = Math.max(0, this._currentBytes - previous.byteLength);
       if (previous.url !== url) this.revokeIfUnused(previous.url);
+      if (previous.bitmap && previous.bitmap !== bitmap) {
+        closeBitmap(previous.bitmap);
+      }
     }
 
     if (this.maxBytes !== null && safeBytes > this.maxBytes) return false;
     this.evictUntilFits(safeBytes);
-    this.entries.set(key, { url, byteLength: safeBytes, namespace });
+    this.entries.set(key, { url, bitmap, width, height, byteLength: safeBytes, cacheable, namespace });
     this._currentBytes += safeBytes;
     return true;
   }
@@ -86,6 +135,9 @@ export class TileUrlLruCache {
 
   clear(): void {
     const urls = new Set(Array.from(this.entries.values(), entry => entry.url));
+    for (const entry of this.entries.values()) {
+      closeBitmap(entry.bitmap);
+    }
     this.entries.clear();
     this._currentBytes = 0;
     for (const url of urls) this.revokeUrl(url);
@@ -97,6 +149,7 @@ export class TileUrlLruCache {
       if (!key.startsWith(prefix)) continue;
       this.entries.delete(key);
       this._currentBytes = Math.max(0, this._currentBytes - entry.byteLength);
+      closeBitmap(entry.bitmap);
       removedUrls.add(entry.url);
     }
     for (const url of removedUrls) this.revokeIfUnused(url);
@@ -145,6 +198,7 @@ export class TileUrlLruCache {
       this.entries.delete(oldestKey);
       if (!oldest) continue;
       this._currentBytes = Math.max(0, this._currentBytes - oldest.byteLength);
+      closeBitmap(oldest.bitmap);
       this.revokeIfUnused(oldest.url);
     }
   }
@@ -159,6 +213,7 @@ export class TileUrlLruCache {
       if (!predicate(entry, key)) continue;
       this.entries.delete(key);
       this._currentBytes = Math.max(0, this._currentBytes - entry.byteLength);
+      closeBitmap(entry.bitmap);
       removedUrls.add(entry.url);
     }
     for (const url of removedUrls) this.revokeIfUnused(url);
@@ -211,7 +266,7 @@ export function configureTileUrlCacheForHardware(): Promise<void> {
 export function cacheTileUrl(key: string, source: TileUrlSource, fileKey = key): boolean {
   return tileUrlCache.set(
     key,
-    source.url,
+    source,
     source.byteLength,
     tileUrlCacheNamespaceForFileKey(fileKey),
   );
@@ -219,6 +274,10 @@ export function cacheTileUrl(key: string, source: TileUrlSource, fileKey = key):
 
 export function getCachedTileUrl(key: string): string | undefined {
   return tileUrlCache.get(key);
+}
+
+export function getCachedTileSource(key: string): TileUrlSource | undefined {
+  return tileUrlCache.getSource(key);
 }
 
 export function hasCachedTileUrl(url: string): boolean {

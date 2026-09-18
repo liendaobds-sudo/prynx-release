@@ -261,6 +261,30 @@ export function isInteractiveViewportRender(isTile: boolean, priority: number): 
     return isTile && priority < 100;
 }
 
+async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSource> {
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const url = URL.createObjectURL(blob);
+    let bitmap: ImageBitmap | undefined;
+    let width: number | undefined;
+    let height: number | undefined;
+    if (typeof createImageBitmap === 'function') {
+        try {
+            bitmap = await createImageBitmap(blob);
+            width = bitmap.width;
+            height = bitmap.height;
+        } catch {
+            // Môi trường test jsdom hoặc lỗi decode -> an toàn fallback
+        }
+    }
+    return {
+        url,
+        bitmap,
+        width,
+        height,
+        byteLength: blob.size,
+    };
+}
+
 export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive, accurateColorEnabled = false, accurateColorPages = [], accurateColorProfileId = 'fogra39', accurateColorIntent = 'relative', outputPreviewFilter = 'all', simulatePaperColor = false, simulateBlackInk = false, pageBackgroundRgb = null, viewerEngineMode = 'current', viewerShadowEnabled = false, accurateDpiAnchor = 96, renderDocumentToken: loaderDocumentToken }: UseTileRendererProps) {
     const activePageRef = useRef(activePage);
     const accurateRenderAbortRef = useRef(new Map<
@@ -524,10 +548,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     render: invokeDisplayPng,
                     // COLOR (audit 2026-08-07 §GV.1/§GV.4): raw PDFium không được nén
                     // mất dữ liệu lần hai; full-page và tile zoom dùng cùng MIME lossless.
-                    encode: (bytes) => {
-                        const blob = new Blob([bytes], { type: 'image/png' });
-                        return { url: URL.createObjectURL(blob), byteLength: blob.size };
-                    },
+                    encode: (bytes) => createTileSourceFromBytes(bytes),
                 });
             };
             const schedulePpeShadow = () => {
@@ -707,10 +728,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                             }
                         }
                     },
-                    encode: (bytes) => {
-                        const blob = new Blob([bytes], { type: 'image/png' });
-                        return { url: URL.createObjectURL(blob), byteLength: blob.size };
-                    },
+                    encode: (bytes) => createTileSourceFromBytes(bytes),
                 });
             }
 
@@ -742,9 +760,27 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
 
             await page.render({ canvasContext: ctx, viewport }).promise;
             return new Promise<TileUrlSource>((resolve, reject) => {
-                canvas.toBlob(blob => {
-                    if (blob) resolve({ url: URL.createObjectURL(blob), byteLength: blob.size });
-                    else reject("Failed to create blob");
+                canvas.toBlob(async blob => {
+                    if (blob) {
+                        const url = URL.createObjectURL(blob);
+                        let bitmap: ImageBitmap | undefined;
+                        if (typeof createImageBitmap === 'function') {
+                            try {
+                                bitmap = await createImageBitmap(blob);
+                            } catch {
+                                // fallback
+                            }
+                        }
+                        resolve({
+                            url,
+                            bitmap,
+                            width: bitmap?.width ?? canvas.width,
+                            height: bitmap?.height ?? canvas.height,
+                            byteLength: blob.size,
+                        });
+                    } else {
+                        reject("Failed to create blob");
+                    }
                 }, 'image/png');
             });
         })();

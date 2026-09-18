@@ -101,7 +101,10 @@ interface RenderTrace {
 export interface RenderPngOptions {
     request: RenderCoordinatorRequestInput;
     render: (request: RenderCoordinatorRequest) => Promise<ArrayBuffer>;
-    encode: (bytes: ArrayBuffer, request: RenderCoordinatorRequest) => TileUrlSource;
+    encode: (
+        bytes: ArrayBuffer,
+        request: RenderCoordinatorRequest,
+    ) => TileUrlSource | Promise<TileUrlSource>;
     /** PPE có lane/process riêng, không được chặn hàng đợi PDFium display. */
     bypassScheduler?: boolean;
 }
@@ -350,7 +353,7 @@ export class RenderCoordinator {
         const sourceStartedAt = this.now();
         let source: TileUrlSource;
         try {
-            source = options.encode(bytes, trace.request);
+            source = await options.encode(bytes, trace.request);
         } catch (error) {
             trace.sourceMs = Math.max(0, this.now() - sourceStartedAt);
             this.reportFinal(trace, 'render-error', {
@@ -362,6 +365,8 @@ export class RenderCoordinator {
         trace.sourceMs = Math.max(0, this.now() - sourceStartedAt);
         trace.sourceReadyAt = this.now();
         trace.byteLength = source.byteLength;
+        if (typeof source.width === 'number') trace.bitmapWidth = source.width;
+        if (typeof source.height === 'number') trace.bitmapHeight = source.height;
         this.sourceTraces.set(source, trace);
         return source;
     }

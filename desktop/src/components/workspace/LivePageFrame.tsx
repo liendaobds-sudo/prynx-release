@@ -13,6 +13,7 @@ import {
 import { normalizePageHoverPosition } from '../../lib/outputPreviewSampling';
 import {
     cacheTileUrl,
+    getCachedTileSource,
     getCachedTileUrl,
     hasCachedTileUrl,
     type TileUrlSource,
@@ -333,6 +334,8 @@ const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEA
 export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [isCanvasActive, setIsCanvasActive] = useState(false);
     const loadAttemptRef = useRef(0);
     const mountedRef = useRef(true);
     const [loadState, dispatchLoadState] = useReducer(tileLoadReducer, INITIAL_TILE_LOAD_STATE);
@@ -428,21 +431,27 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     // thì onLoad snap lại 1:1 như thiết kế.
     useLayoutEffect(() => {
         const el = imgRef.current;
-        if (!el) return;
-        el.style.width = '100%';
-        el.style.height = '100%';
+        if (el) {
+            el.style.width = '100%';
+            el.style.height = '100%';
+        }
+        const cv = canvasRef.current;
+        if (cv) {
+            cv.style.width = '100%';
+            cv.style.height = '100%';
+        }
     }, [cssW, cssH, clipW, clipH, seamlessGridPresentation]);
 
-    const applyExactFit = useCallback((imgEl: HTMLImageElement) => {
+    const applyExactFit = useCallback((el: HTMLElement, naturalW?: number, naturalH?: number) => {
         if (seamlessGridPresentation) {
             // UIUX (feedback 2026-08-11 §PAN.SEAM): atlas nằm trên nội dung màu;
             // không co về naturalWidth vì phần thiếu sẽ lộ nền trắng giữa hai cell.
-            imgEl.style.width = '100%';
-            imgEl.style.height = '100%';
+            el.style.width = '100%';
+            el.style.height = '100%';
             return;
         }
-        const bw = imgEl.naturalWidth;
-        const bh = imgEl.naturalHeight;
+        const bw = naturalW ?? (el instanceof HTMLImageElement ? el.naturalWidth : (el as HTMLCanvasElement).width);
+        const bh = naturalH ?? (el instanceof HTMLImageElement ? el.naturalHeight : (el as HTMLCanvasElement).height);
         const boxW = (cssW || clipW) as number;
         const boxH = (cssH || clipH) as number;
         if (!bw || !bh || !boxW || !boxH) return;
@@ -450,11 +459,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         const wantW = Math.round(boxW * dpr);
         const wantH = Math.round(boxH * dpr);
         if (Math.abs(bw - wantW) <= 2 && Math.abs(bh - wantH) <= 2) {
-            imgEl.style.width = `${bw / dpr}px`;
-            imgEl.style.height = `${bh / dpr}px`;
+            el.style.width = `${bw / dpr}px`;
+            el.style.height = `${bh / dpr}px`;
         } else {
-            imgEl.style.width = '100%';
-            imgEl.style.height = '100%';
+            el.style.width = '100%';
+            el.style.height = '100%';
         }
     }, [cssW, cssH, clipW, clipH, seamlessGridPresentation]);
     const loadedParamsRef = useRef('');
@@ -520,10 +529,62 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     
+    const renderBitmapToCanvas = useCallback((
+        source: TileUrlSource,
+        scale: number,
+        paramsAtRequest: string,
+        colorStage?: ViewerColorStage,
+    ): boolean => {
+        const bm = source.bitmap;
+        const canvas = canvasRef.current;
+        if (!bm || !canvas) return false;
+        canvas.width = bm.width;
+        canvas.height = bm.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return false;
+        ctx.drawImage(bm, 0, 0);
+        applyExactFit(canvas, bm.width, bm.height);
+
+        displayedScaleRef.current = scale;
+        displayedColorRankRef.current = colorStage === 'accurate' ? 2 : 1;
+        displayedSurfaceRef.current = surfaceParams;
+        hasLoadedOnce.current = true;
+        setHasVisibleTile(true);
+        setIsCanvasActive(true);
+        if (tileRef.current) tileRef.current.style.opacity = '1';
+        window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
+
+        nativeRenderCoordinator.markDecoded(source, {
+            width: bm.width,
+            height: bm.height,
+            current: true,
+        });
+
+        traceTileEvent('tile-dom-canvas-ready', {
+            attempt: loadAttemptRef.current,
+            display_decode_ms: tileTimingRef.current?.params === paramsAtRequest
+                ? Math.round(performance.now() - tileTimingRef.current.startedAt)
+                : null,
+            natural_w: bm.width,
+            natural_h: bm.height,
+        });
+
+        onTileReadyRef.current?.({ scale });
+        onRenderReadyRef.current?.();
+        return true;
+    }, [applyExactFit, surfaceParams, traceTileEvent]);
+
     // On mount: immediately restore cached image (no white flash!)
     useEffect(() => {
         const initial = initialCacheParamsRef.current;
-        const cachedUrl = getCachedTileUrl(initial.currentParams);
+        const cachedSource = getCachedTileSource(initial.currentParams);
+        if (cachedSource?.bitmap && canvasRef.current) {
+            loadedParamsRef.current = initial.currentParams;
+            cachedRenderReadyParamsRef.current = initial.currentParams;
+            renderBitmapToCanvas(cachedSource, initial.zoom, initial.currentParams);
+            return;
+        }
+        const cachedUrl = cachedSource?.url ?? getCachedTileUrl(initial.currentParams);
         if (cachedUrl && imgRef.current) {
             loadedParamsRef.current = initial.currentParams;
             cachedRenderReadyParamsRef.current = initial.currentParams;
@@ -533,17 +594,17 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             displayedColorRankRef.current = initial.requestedColorRank;
             displayedSurfaceRef.current = initial.surfaceParams;
             setHasVisibleTile(true);
+            setIsCanvasActive(false);
             // Show immediately if cached
             if (tileRef.current) tileRef.current.style.opacity = '1';
             // Trang chính đã hiển thị (từ cache) → mở cổng cho thumbnail tải.
             window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
         }
-    }, []); // Only on mount
+    }, [renderBitmapToCanvas]); // Only on mount
 
     useEffect(() => {
-        const source = initialSource as ViewerFirstFrame | undefined;
-        const imgEl = imgRef.current;
-        if (!source || !imgEl || hasLoadedOnce.current) return;
+        const source = initialSource as (ViewerFirstFrame & TileUrlSource) | undefined;
+        if (!source || hasLoadedOnce.current) return;
         // PERF (audit 2026-08-14 §VIEW.FIRST.1): bitmap này đã render + decode trước
         // khi Workspace mount. Nhận thẳng làm target hiện tại, không phát lại PPE.
         loadedParamsRef.current = currentParams;
@@ -560,17 +621,23 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             ownedBlobUrlsRef.current.add(source.url);
         }
         adoptViewerFirstFrame(source);
-        imgEl.src = source.url;
-        if (tileRef.current) tileRef.current.style.opacity = '1';
-        window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
+        if (source.bitmap && canvasRef.current) {
+            renderBitmapToCanvas(source, zoom, currentParams);
+        } else if (imgRef.current) {
+            imgRef.current.src = source.url;
+            setIsCanvasActive(false);
+            if (tileRef.current) tileRef.current.style.opacity = '1';
+            window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
+        }
         traceTileEvent('tile-first-frame-adopted', {
             scale: zoom,
             natural_w: source.width,
             natural_h: source.height,
             bytes: source.byteLength,
             cached: keptInCache,
+            surface_mode: source.bitmap ? 'canvas-bitmap' : 'img',
         });
-    }, [currentParams, fileKey, initialSource, requestedColorRank, surfaceParams, traceTileEvent, zoom]);
+    }, [currentParams, fileKey, initialSource, renderBitmapToCanvas, requestedColorRank, surfaceParams, traceTileEvent, zoom]);
     
     useEffect(() => {
         const el = tileRef.current;
@@ -641,7 +708,15 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         }
         
         // Check cache before scheduling network load
-        const cachedUrl = getCachedTileUrl(currentParams);
+        const cachedSource = getCachedTileSource(currentParams);
+        if (cachedSource?.bitmap && canvasRef.current) {
+            loadedParamsRef.current = currentParams;
+            cachedRenderReadyParamsRef.current = currentParams;
+            renderBitmapToCanvas(cachedSource, zoom, currentParams);
+            traceTileEvent('tile-cache-hit', { zoom, requested_color_rank: requestedColorRank, surface_mode: 'canvas-bitmap' });
+            return;
+        }
+        const cachedUrl = cachedSource?.url ?? getCachedTileUrl(currentParams);
         if (cachedUrl && imgRef.current) {
             loadedParamsRef.current = currentParams;
             cachedRenderReadyParamsRef.current = currentParams;
@@ -651,8 +726,9 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             displayedColorRankRef.current = requestedColorRank;
             displayedSurfaceRef.current = surfaceParams;
             setHasVisibleTile(true);
+            setIsCanvasActive(false);
             if (tileRef.current) tileRef.current.style.opacity = '1';
-            traceTileEvent('tile-cache-hit', { zoom, requested_color_rank: requestedColorRank });
+            traceTileEvent('tile-cache-hit', { zoom, requested_color_rank: requestedColorRank, surface_mode: 'img' });
             return;
         }
         
@@ -763,6 +839,69 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                             return;
                         }
+                        if (source.bitmap && canvasRef.current) {
+                            const keepsOrRaisesQuality = shouldCompositeViewerTile(
+                                displayedColorRankRef.current,
+                                displayedScaleRef.current,
+                                colorStage,
+                                scale,
+                            );
+                            const current = requestIsCurrent()
+                                && keepsOrRaisesQuality
+                                && nativeRenderCoordinator.isSourceCurrent(source);
+                            nativeRenderCoordinator.markDecoded(source, {
+                                width: source.bitmap.width,
+                                height: source.bitmap.height,
+                                current,
+                            });
+                            if (!current) {
+                                traceTileEvent('tile-decode-discarded', {
+                                    attempt,
+                                    scale,
+                                    request_current: requestIsCurrent(),
+                                    quality_current: keepsOrRaisesQuality,
+                                    source_current: nativeRenderCoordinator.isSourceCurrent(source),
+                                });
+                                if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
+                                return;
+                            }
+                            const keptInCache = cache && source.cacheable !== false
+                                && cacheTileUrl(paramsAtRequest, source, fileKey);
+                            if (keptInCache) ownedBlobUrlsRef.current.delete(url);
+
+                            renderBitmapToCanvas(source, scale, paramsAtRequest, colorStage);
+
+                            if (!onReady) {
+                                loadedParamsRef.current = paramsAtRequest;
+                                clearInFlightRequest();
+                            }
+                            cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
+                            dispatchLoadState({ type: 'ready', attempt });
+                            traceTileEvent('tile-commit', {
+                                attempt,
+                                scale,
+                                color_stage: colorStage || 'display',
+                                natural_w: source.bitmap.width,
+                                natural_h: source.bitmap.height,
+                                bytes: source.byteLength,
+                                cacheable: source.cacheable !== false,
+                                surface_mode: 'canvas-bitmap',
+                                ...readTileDomRect(),
+                            });
+                            traceTileEvent('tile-first-pixel', {
+                                attempt,
+                                scale,
+                                color_stage: colorStage || 'display',
+                                native_to_decode_ms: tileTimingRef.current?.params === paramsAtRequest
+                                    ? Math.round(performance.now() - tileTimingRef.current.startedAt)
+                                    : null,
+                            });
+                            onRenderReadyRef.current?.();
+                            if (showLoadStatusRef.current) void previewPerfLog('live-tile-load-ready', { page: pageNum, zoom: scale, mode: 'canvas' });
+                            if (onReady) onReady();
+                            return;
+                        }
+
                         const preImg = new Image();
                         preloadRef.current = preImg;
                         traceTileEvent('tile-decode-start', { attempt, scale, color_stage: colorStage || 'display' });
@@ -828,6 +967,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                 window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
                             }
                             setHasVisibleTile(true);
+                            setIsCanvasActive(false);
                             cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
                             dispatchLoadState({ type: 'ready', attempt });
                             traceTileEvent('tile-commit', {
@@ -1118,6 +1258,22 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // khung do làm tròn → chừa sợi mảnh ở mép phải/dưới. Nền trắng làm nó vô hình trên
         // trang PDF (PDFium render với clear_color=WHITE), thay vì hở ra nền skeleton xám.
         <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: showLoadStatus || hasVisibleTile || preserveUnderlay ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: seamlessGridPresentation || (preserveUnderlay && !hasVisibleTile) ? 'transparent' : 'white' }} className="tile-container">
+            <canvas
+                ref={canvasRef}
+                style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    width: '100%',
+                    height: '100%',
+                    imageRendering: VIEWER_RASTER_IMAGE_RENDERING,
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                    display: isCanvasActive ? 'block' : 'none',
+                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : 'white',
+                    opacity: hasVisibleTile && isCanvasActive ? 1 : 0,
+                }}
+            />
             {/* onLoad chạy cho MỌI đường vào (tải mới, khôi phục từ cache, pixel rỗng ban
                 đầu) nên chỉ cần một chỗ để bảo đảm map 1:1 — xem applyExactFit. */}
             <img
@@ -1125,14 +1281,18 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 draggable={false}
                 onLoad={(e) => handleDisplayedImageLoad(e.currentTarget)}
                 style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
                     width: '100%',
                     height: '100%',
                     objectFit: 'fill',
                     imageRendering: VIEWER_RASTER_IMAGE_RENDERING,
                     pointerEvents: 'none',
                     userSelect: 'none',
+                    display: isCanvasActive ? 'none' : 'block',
                     background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : 'white',
-                    opacity: hasVisibleTile ? 1 : 0,
+                    opacity: hasVisibleTile && !isCanvasActive ? 1 : 0,
                 }}
             />
             {showStatusOverlay && (
