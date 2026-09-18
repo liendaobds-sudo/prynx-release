@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { toast } from '../../components/ui/Toast';
 
 interface SystemFileStatResult {
     status: 'available' | 'missing' | 'inaccessible';
@@ -65,7 +64,6 @@ export function useLiveLinkWatcher({
                     // Chờ nhẹ 150ms để ứng dụng ngoài (Illustrator) xả hết buffer ghi đĩa
                     setTimeout(() => {
                         if (cancelled) return;
-                        toast.success('⚡ Live Link: Tệp đã được cập nhật từ ứng dụng ngoài!');
                         onFileChanged();
                     }, 150);
                 }
