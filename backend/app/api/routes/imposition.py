@@ -424,14 +424,16 @@ async def get_imposition_pdf_text_alias(body: dict):
 
 @router.post("/perf-beacon")
 async def preview_perf_beacon(body: dict, license_info: dict = Depends(require_license)):
-    """Ghi log đo timeline ra terminal console để người vận hành kiểm tra tức thì."""
+    """Ghi log đo timeline ra telemetry file khi người vận hành bật đo."""
+    if not development_diagnostic_enabled("PRYNX_PERF"):
+        return {"ok": True}
     msg = str((body or {}).get("msg") or "beacon")[:200]
     fields = {
         k: v for k, v in (body or {}).items()
         if k != "msg" and isinstance(v, (str, int, float, bool))
     }
     field_str = " ".join(f"{k}={v}" for k, v in fields.items())
-    logging.getLogger("app.perf").warning(f"[PERF-BEACON][FE] {msg} {field_str}".strip())
+    logging.getLogger("app.perf").debug(f"[PERF-BEACON][FE] {msg} {field_str}".strip())
     try:
         from app.utils.preview_perf_log import log as _perf
         _perf("FE", msg, **fields)

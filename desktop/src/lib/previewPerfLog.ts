@@ -153,6 +153,19 @@ export async function previewPerfLog(msg: string, extra?: Record<string, unknown
   if (enabledValue === false) return;
   if (enabledValue !== true && !(await isPreviewPerfEnabled())) return;
 
+  // Ưu tiên ghi thẳng qua Tauri IPC (vào PrynX_RenderPerf.log) để không spam HTTP request về FastAPI sidecar
+  try {
+    const invoke = await getInvoke();
+    if (typeof invoke === 'function') {
+      const extraStr = extra ? JSON.stringify(compactTracePayload(extra)) : '';
+      const line = `PREVIEW_PERF ${msg} ${extraStr}`.trim();
+      await invoke('append_render_perf', { msg: line });
+      return;
+    }
+  } catch {
+    // Web mode / fallback
+  }
+
   try {
     await authenticatedFetch(`${getApiUrl()}/imposition/perf-beacon`, {
       method: 'POST',
