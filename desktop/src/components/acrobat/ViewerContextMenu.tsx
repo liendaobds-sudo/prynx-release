@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Scissors } from 'lucide-react';
 import { listOtherOpenPdfTargets } from './viewerContextMenuUtils';
+import { canUse } from '../../lib/license/features';
+import { useAuthStore } from '../../stores/useAuthStore';
+import ProFeatureBadge from '../license/ProFeatureBadge';
+import { toast } from '../ui/Toast';
 
 export type CrossFileTarget = { pdfUrl: string; name: string; tabId?: string; numPages?: number };
 export type ViewerContextMenuState = { x: number; y: number; visible: boolean } | null;
@@ -65,6 +69,19 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
     const closeContextMenu = () => {
         setOpenSub(null);
         setContextMenu(null);
+    };
+
+    const plan = useAuthStore((state) => state.licensePlan);
+    const features = useAuthStore((state) => state.licenseFeatures);
+    const isBridgeAllowed = canUse('prepress.app_bridge', plan, features);
+
+    const triggerEditInApp = (which: 'illustrator' | 'corel', mode?: 'selection' | 'all') => {
+        closeContextMenu();
+        if (!isBridgeAllowed) {
+            toast.info(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
+            return;
+        }
+        onEditInApp?.(which, mode);
     };
 
     const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -224,7 +241,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                             type="button"
                             role="menuitem"
                             title={aiTitle}
-                            onClick={() => { closeContextMenu(); onEditInApp('illustrator', isPartialSelection ? 'selection' : 'all'); }}
+                            onClick={() => triggerEditInApp('illustrator', isPartialSelection ? 'selection' : 'all')}
                             className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg outline-none transition-colors group"
                         >
                             <span className="flex items-center gap-2.5">
@@ -235,14 +252,17 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                         : t('misc.viewerContextMenu:sua_bang_illustrator', 'Sửa bằng Adobe Illustrator')}
                                 </span>
                             </span>
-                            <span className="text-[10px] text-slate-400 group-hover:text-amber-500 font-mono">Live</span>
+                            <span className="flex items-center gap-1.5">
+                                <ProFeatureBadge featureId="prepress.app_bridge" />
+                                <span className="text-[10px] text-slate-400 group-hover:text-amber-500 font-mono">Live</span>
+                            </span>
                         </button>
 
                         <button
                             type="button"
                             role="menuitem"
                             title={cdrTitle}
-                            onClick={() => { closeContextMenu(); onEditInApp('corel', isPartialSelection ? 'selection' : 'all'); }}
+                            onClick={() => triggerEditInApp('corel', isPartialSelection ? 'selection' : 'all')}
                             className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg outline-none transition-colors group"
                         >
                             <span className="flex items-center gap-2.5">
@@ -253,7 +273,10 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                         : t('misc.viewerContextMenu:sua_bang_corel', 'Sửa bằng CorelDRAW')}
                                 </span>
                             </span>
-                            <span className="text-[10px] text-slate-400 group-hover:text-emerald-500 font-mono">Live</span>
+                            <span className="flex items-center gap-1.5">
+                                <ProFeatureBadge featureId="prepress.app_bridge" />
+                                <span className="text-[10px] text-slate-400 group-hover:text-emerald-500 font-mono">Live</span>
+                            </span>
                         </button>
 
                         {isPartialSelection && (
@@ -262,7 +285,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                     type="button"
                                     role="menuitem"
                                     title={t('misc.viewerContextMenu:tooltip_mo_toan_bo_ai', { total: totalPages, defaultValue: `Mở toàn bộ ${totalPages} trang của tài liệu gốc trong Adobe Illustrator để chỉnh sửa tổng thể` })}
-                                    onClick={() => { closeContextMenu(); onEditInApp('illustrator', 'all'); }}
+                                    onClick={() => triggerEditInApp('illustrator', 'all')}
                                     className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50/50 dark:hover:bg-amber-500/5 rounded transition-colors flex items-center justify-between"
                                 >
                                     <span>{t('misc.viewerContextMenu:mo_toan_bo_file_ai', { total: totalPages, defaultValue: `↳ Mở toàn bộ file trong Illustrator (${totalPages} trang)...` })}</span>
@@ -271,7 +294,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                                     type="button"
                                     role="menuitem"
                                     title={t('misc.viewerContextMenu:tooltip_mo_toan_bo_corel', { total: totalPages, defaultValue: `Mở toàn bộ ${totalPages} trang của tài liệu gốc trong CorelDRAW để chỉnh sửa tổng thể` })}
-                                    onClick={() => { closeContextMenu(); onEditInApp('corel', 'all'); }}
+                                    onClick={() => triggerEditInApp('corel', 'all')}
                                     className="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-zinc-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-500/5 rounded transition-colors flex items-center justify-between"
                                 >
                                     <span>{t('misc.viewerContextMenu:mo_toan_bo_file_corel', { total: totalPages, defaultValue: `↳ Mở toàn bộ file trong CorelDRAW (${totalPages} trang)...` })}</span>

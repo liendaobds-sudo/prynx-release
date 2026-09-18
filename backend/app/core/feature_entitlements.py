@@ -23,7 +23,7 @@ FREE_FEATURES = {
 PRO_FEATURES = {
     "pdf.resize_batch", "pdf.office_batch", "pdf.trim_shift",
     "prepress.preflight", "prepress.convert_colors", "prepress.hairlines", "prepress.trapping",
-    "prepress.cutline", "prepress.pdfx", "prepress.paper_library",
+    "prepress.cutline", "prepress.pdfx", "prepress.paper_library", "prepress.app_bridge",
     "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
     "impo.booklet", "impo.nup", "impo.diecut", "impo.cnc", "packaging.dieline",
     # Bình lồng ghép tự do (AppTool standalone). Quyền RIÊNG: không dùng lại

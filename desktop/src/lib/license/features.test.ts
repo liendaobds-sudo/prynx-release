@@ -97,4 +97,12 @@ describe('license feature catalog', () => {
     expect(FEATURE_CATALOG['prepress.preflight'].minPlan).toBe('pro');
     expect('pdf.optimize_advanced' in FEATURE_CATALOG).toBe(false);
   });
+
+  it('Liên kết Illustrator & CorelDRAW là quyền Pro', () => {
+    expect(FEATURE_CATALOG['prepress.app_bridge'].minPlan).toBe('pro');
+    expect(FEATURE_MIN_PLAN['prepress.app_bridge']).toBe('pro');
+    expect(hasFeatureAccess('prepress.app_bridge', 'free')).toBe(false);
+    expect(hasFeatureAccess('prepress.app_bridge', 'pro')).toBe(true);
+    expect(hasFeatureAccess('prepress.app_bridge', 'dev')).toBe(true);
+  });
 });

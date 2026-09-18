@@ -240,4 +240,56 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
 
         unmount();
     });
+
+    it('kiểm tra quyền Pro cho tính năng liên kết Illustrator / CorelDRAW', async () => {
+        const { useAuthStore } = await import('../../stores/useAuthStore');
+        vi.stubEnv('VITE_FEATURE_GATING_ENABLED', 'true');
+
+        try {
+            // 1. Gói Free: bị chặn khi click và hiển thị huy hiệu khoá
+            useAuthStore.setState({ licensePlan: 'free', licenseFeatures: null });
+            const onEditInAppFree = vi.fn();
+            const setContextMenuFree = vi.fn();
+            const props = {
+                contextMenu: { x: 20, y: 20, visible: true },
+                selectedIndices: new Set([0]),
+                numPages: 1,
+                setContextMenu: setContextMenuFree,
+                setIsInsertModalOpen: vi.fn(),
+                setIsExtractModalOpen: vi.fn(),
+                setExtractPagesStrForModal: vi.fn(),
+                setIsDeleteModalOpen: vi.fn(),
+                onOpenPageTools: vi.fn(),
+                onQuickDuplicate: vi.fn(),
+                onEditInApp: onEditInAppFree,
+            };
+
+            const { unmount: unmountFree } = render(<ViewerContextMenu {...props} />);
+            const aiButtonFree = screen.getByRole('menuitem', { name: /Illustrator/i });
+            expect(screen.getAllByText(/🔒 PRO/i).length).toBeGreaterThanOrEqual(1);
+
+            fireEvent.click(aiButtonFree);
+            expect(onEditInAppFree).not.toHaveBeenCalled();
+            expect(setContextMenuFree).toHaveBeenCalledWith(null);
+            unmountFree();
+
+            // 2. Gói Pro: được phép kích hoạt
+            useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
+            const onEditInAppPro = vi.fn();
+            const setContextMenuPro = vi.fn();
+            const { unmount: unmountPro } = render(
+                <ViewerContextMenu {...props} onEditInApp={onEditInAppPro} setContextMenu={setContextMenuPro} />
+            );
+            expect(screen.getAllByText(/^PRO$/i).length).toBeGreaterThanOrEqual(1);
+
+            const aiButtonPro = screen.getByRole('menuitem', { name: /Illustrator/i });
+            fireEvent.click(aiButtonPro);
+            expect(onEditInAppPro).toHaveBeenCalledWith('illustrator', 'all');
+            expect(setContextMenuPro).toHaveBeenCalledWith(null);
+            unmountPro();
+        } finally {
+            vi.unstubAllEnvs();
+            useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
+        }
+    });
 });

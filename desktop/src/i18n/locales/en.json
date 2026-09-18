@@ -3252,7 +3252,8 @@
     "xoa_trang_nhanh": "Quick delete page",
     "copy_sang_file": "Copy to file…",
     "di_chuyen_sang_file": "Move to file…",
-    "khong_co_file_khac": "No other file is open"
+    "khong_co_file_khac": "No other file is open",
+    "tinh_nang_pro_notice": "External link with Illustrator & CorelDRAW requires PrynX Pro."
   },
   "misc.viewerHelpers": {
     "dang_tai": "Loading...",

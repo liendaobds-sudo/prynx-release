@@ -3252,7 +3252,8 @@
     "xoa_trang_nhanh": "Xóa trang nhanh",
     "copy_sang_file": "Copy sang file…",
     "di_chuyen_sang_file": "Di chuyển sang file…",
-    "khong_co_file_khac": "Không có file khác đang mở"
+    "khong_co_file_khac": "Không có file khác đang mở",
+    "tinh_nang_pro_notice": "Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro."
   },
   "misc.viewerHelpers": {
     "dang_tai": "Đang tải...",

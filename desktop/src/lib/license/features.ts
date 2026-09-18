@@ -27,6 +27,7 @@ export const FEATURE_CATALOG = {
   'prepress.cutline': { minPlan: 'pro', label: 'Bù xén và đường cắt' },
   'prepress.pdfx': { minPlan: 'pro', label: 'Xuất PDF/X' },
   'prepress.paper_library': { minPlan: 'pro', label: 'Thư viện vật tư in' },
+  'prepress.app_bridge': { minPlan: 'pro', label: 'Liên kết Illustrator & CorelDRAW' },
   'vdp.datamerge': { minPlan: 'pro', label: 'Trộn dữ liệu VDP' },
   'vdp.numbering': { minPlan: 'pro', label: 'Nhảy số tự động' },
   'vdp.cover_numbering': { minPlan: 'pro', label: 'Chạy số bìa' },
@@ -72,5 +73,6 @@ export function hasFeatureAccess(featureId: FeatureId, plan: LicensePlan | strin
 }
 
 export function canUse(featureId: FeatureId, plan: LicensePlan | string = 'free', features: readonly string[] | null = null): boolean {
-  return !FEATURE_GATING_ENABLED || hasFeatureAccess(featureId, plan, features);
+  const isGated = import.meta.env.VITE_FEATURE_GATING_ENABLED === 'true' || FEATURE_GATING_ENABLED;
+  return !isGated || hasFeatureAccess(featureId, plan, features);
 }

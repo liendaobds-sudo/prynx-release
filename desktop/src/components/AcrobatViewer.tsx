@@ -12,6 +12,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { useActiveViewerStore } from '../stores/useActiveViewerStore'; // UIUX (audit menu 2026-07-28 §MB.5)
+import { useAuthStore } from '../stores/useAuthStore';
+import { canUse } from '../lib/license/features';
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearEditObjectsCache } from './workspace/LivePageFrame';
@@ -600,6 +602,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const handleEditInApp = useCallback(async (which: 'illustrator' | 'corel', mode?: 'selection' | 'all') => {
         if (!file) return;
+        const { licensePlan, licenseFeatures } = useAuthStore.getState();
+        if (!canUse('prepress.app_bridge', licensePlan, licenseFeatures)) {
+            toast.info(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
+            return;
+        }
         const effectiveFilePath = (file as { path?: string })?.path || selectionFileId || undefined;
         console.info('[AcrobatViewer][handleEditInApp] Khởi chạy ứng dụng đồ họa:', {
             which,
