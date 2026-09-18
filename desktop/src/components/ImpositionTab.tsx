@@ -4347,6 +4347,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onDocumentUndo={handleUndo}
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
+                                    onOpenDieCutModal={() => setShowOpenInDesign(true)}
                                     toolbarExtra={file ? (
                                         <RecipeRecordControl
                                             tabId={recipeOwnerTabId}

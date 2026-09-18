@@ -124,4 +124,44 @@ describe('UIUX (audit 2026-08-22 §UX.MD.01) modal boundary', () => {
         expect(setContextMenu).toHaveBeenCalledWith(null);
         expect(setInsert).toHaveBeenCalledWith(true);
     });
+
+    it('kích hoạt onEditInApp và onOpenDieCutModal từ context menu', () => {
+        const setContextMenu = vi.fn();
+        const onEditInApp = vi.fn();
+        const onOpenDieCutModal = vi.fn();
+        const props = {
+            contextMenu: { x: 20, y: 20, visible: true },
+            selectedIndices: new Set([0]),
+            currentPdfUrl: 'memory://source.pdf',
+            setContextMenu,
+            setIsInsertModalOpen: vi.fn(),
+            setIsExtractModalOpen: vi.fn(),
+            setExtractPagesStrForModal: vi.fn(),
+            setIsDeleteModalOpen: vi.fn(),
+            onOpenPageTools: vi.fn(),
+            onQuickDuplicate: vi.fn(),
+            onEditInApp,
+            onOpenDieCutModal,
+        };
+
+        const { unmount } = render(<ViewerContextMenu {...props} />);
+
+        // Nhấn nút Sửa bằng Adobe Illustrator
+        const aiButton = screen.getByRole('menuitem', { name: /Illustrator/i });
+        fireEvent.click(aiButton);
+        expect(onEditInApp).toHaveBeenCalledWith('illustrator');
+        expect(setContextMenu).toHaveBeenCalledWith(null);
+
+        // Kiểm tra CorelDRAW
+        const cdrButton = screen.getByRole('menuitem', { name: /CorelDRAW/i });
+        fireEvent.click(cdrButton);
+        expect(onEditInApp).toHaveBeenCalledWith('corel');
+
+        // Kiểm tra Xuất khuôn bế
+        const cutButton = screen.getByRole('menuitem', { name: /khuôn bế/i });
+        fireEvent.click(cutButton);
+        expect(onOpenDieCutModal).toHaveBeenCalled();
+
+        unmount();
+    });
 });

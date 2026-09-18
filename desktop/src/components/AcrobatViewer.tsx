@@ -228,10 +228,12 @@ interface Props {
     /** Snapshot Undo generic; chỉ hydrate sau khi loader của đúng File đã sẵn sàng. */
     pendingHistoryEntry?: WorkspaceHistoryEntry | null;
     onHistoryEntryHydrated?: (entry: WorkspaceHistoryEntry) => void;
+    /** Mở hộp thoại xuất khuôn bế */
+    onOpenDieCutModal?: () => void;
 }
 
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, cutlinePreviews, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, cutlinePreviews, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated, onOpenDieCutModal }: Props) {
   const { t } = useTranslation();
     const {
         scale: physicalDisplayScale,
@@ -513,6 +515,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         enabled: Boolean(file?.path && !file?.isInMemory),
         onFileChanged: retryLoad,
     });
+
+    const handleEditInApp = useCallback(async (which: 'illustrator' | 'corel') => {
+        if (!file) return;
+        try {
+            const { launchDesignApp, ensurePathBackedPdf } = await import('../lib/designAppLauncher');
+            const targetPath = await ensurePathBackedPdf(file, file.name);
+            await launchDesignApp(which, targetPath);
+        } catch (error) {
+            console.error('Lỗi khi khởi chạy ứng dụng thiết kế:', error);
+        }
+    }, [file]);
 
     // PERF (audit 2026-08-08 §RENDER.1): metadata pha B có thể đổi khổ các trang đứng
     // trước trang active. Giữ đúng điểm neo viewport qua commit hình học để không nhảy
@@ -2356,7 +2369,22 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         const showOcgOverlay = ocgPreviewUrl && viewerPagePosition === activePage;
 
         return (
-            <div id={`pdf-page-container-${(flatIndex ?? (originalPageNum - 1)) + 1}`} className="flex flex-col items-center">
+            <div
+                id={`pdf-page-container-${(flatIndex ?? (originalPageNum - 1)) + 1}`}
+                className="flex flex-col items-center"
+                onContextMenu={(e) => {
+                    if (toolMode === 'dimension') return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const pageIdx = (flatIndex ?? (originalPageNum - 1));
+                    if (!selectedIndices.has(pageIdx)) {
+                        setSelectedIndices(new Set([pageIdx]));
+                        setLastSelectedIndex(pageIdx);
+                    }
+                    setActivePage(pageIdx + 1);
+                    setContextMenu({ x: e.clientX, y: e.clientY, visible: true });
+                }}
+            >
                 {plateLabel && <div className="text-[11px] font-semibold text-yellow-400 mb-1 px-2 py-0.5 tracking-wide max-w-full truncate">{plateLabel}</div>}
                 <div className="relative">
                     <LivePageFrame
@@ -2696,6 +2724,16 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             <div
                                 className={`absolute bottom-0 right-0 overflow-hidden bg-[#525659] flex justify-center select-text ${toolMode === 'hand' ? 'panning-mode cursor-grab active:cursor-grabbing' : toolMode === 'dimension' ? 'cursor-crosshair' : ''}`}
                                 ref={containerRef}
+                                onContextMenu={(e) => {
+                                    if (toolMode === 'dimension') return;
+                                    e.preventDefault();
+                                    const pageIdx = activePage - 1;
+                                    if (pageIdx >= 0 && !selectedIndices.has(pageIdx)) {
+                                        setSelectedIndices(new Set([pageIdx]));
+                                        setLastSelectedIndex(pageIdx);
+                                    }
+                                    setContextMenu({ x: e.clientX, y: e.clientY, visible: true });
+                                }}
                                 onMouseDown={(e) => {
                                     // UIUX (audit 2026-07-27 §C-01): chuột giữa → pan tạm thời.
                                     if (e.button === 1) { handleMiddlePanStart(e); return; }
@@ -2831,6 +2869,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 onOpenPageTools={openPageTools}
                 onQuickDuplicate={handleQuickDuplicate}
                 onTransferToOtherFile={handleTransferToOtherFile}
+                onEditInApp={handleEditInApp}
+                onOpenDieCutModal={onOpenDieCutModal}
             />
         </div>
     );

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Scissors } from 'lucide-react';
 import { listOtherOpenPdfTargets } from './viewerContextMenuUtils';
 
 export type CrossFileTarget = { pdfUrl: string; name: string; tabId?: string; numPages?: number };
@@ -16,6 +17,10 @@ interface ViewerContextMenuProps {
     setIsDeleteModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     onOpenPageTools: () => void;
     onQuickDuplicate: () => void;
+    /** Mở sửa tài liệu trực tiếp bằng Illustrator hoặc CorelDRAW */
+    onEditInApp?: (which: 'illustrator' | 'corel') => void;
+    /** Mở hộp thoại xuất khuôn bế */
+    onOpenDieCutModal?: () => void;
     /** Copy/Move trang đang chọn sang file khác (kéo-thả giữ nguyên — chỉ qua menu). */
     onTransferToOtherFile?: (
         targetPdfUrl: string,
@@ -33,6 +38,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
         setIsInsertModalOpen, setIsExtractModalOpen, setExtractPagesStrForModal,
         setIsDeleteModalOpen, onOpenPageTools,
         onQuickDuplicate, onTransferToOtherFile,
+        onEditInApp, onOpenDieCutModal,
     } = props;
 
     const [openSub, setOpenSub] = useState<'copy' | 'move' | null>(null);
@@ -164,13 +170,59 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
             ref={menuRef}
             role="menu"
             aria-label="Thao tác trang"
-            className="fixed z-context-menu min-w-[240px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-app-lg animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
-            style={{ left: Math.min(contextMenu.x, window.innerWidth - 260), top: Math.min(contextMenu.y, window.innerHeight - 320) }}
+            className="fixed z-context-menu min-w-[250px] bg-app-2 border border-app-line shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-app-lg animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
+            style={{ left: Math.min(contextMenu.x, window.innerWidth - 270), top: Math.min(contextMenu.y, window.innerHeight - 440) }}
             onClick={e => e.stopPropagation()}
             onContextMenu={e => e.preventDefault()}
             onMouseLeave={() => setOpenSub(null)}
             onKeyDown={handleMenuKeyDown}
         >
+            {onEditInApp && (
+                <>
+                    <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { closeContextMenu(); onEditInApp('illustrator'); }}
+                        className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg outline-none transition-colors group"
+                    >
+                        <span className="flex items-center gap-2.5">
+                            <span className="w-5 h-5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[11px] font-extrabold flex items-center justify-center border border-amber-500/30">Ai</span>
+                            <span>{t('misc.viewerContextMenu:sua_bang_illustrator', 'Sửa bằng Adobe Illustrator')}</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 group-hover:text-amber-500 font-mono">Live</span>
+                    </button>
+
+                    <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { closeContextMenu(); onEditInApp('corel'); }}
+                        className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg outline-none transition-colors group"
+                    >
+                        <span className="flex items-center gap-2.5">
+                            <span className="w-5 h-5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold flex items-center justify-center border border-emerald-500/30">Cdr</span>
+                            <span>{t('misc.viewerContextMenu:sua_bang_corel', 'Sửa bằng CorelDRAW')}</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 group-hover:text-emerald-500 font-mono">Live</span>
+                    </button>
+
+                    {onOpenDieCutModal && (
+                        <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => { closeContextMenu(); onOpenDieCutModal(); }}
+                            className="w-full flex items-center justify-between px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg outline-none transition-colors"
+                        >
+                            <span className="flex items-center gap-2.5">
+                                <Scissors className="w-4 h-4 text-slate-400 ml-0.5" />
+                                <span>{t('misc.viewerContextMenu:xuat_trang_khuon_be', 'Xuất trang khuôn bế...')}</span>
+                            </span>
+                        </button>
+                    )}
+
+                    <div className="h-px bg-slate-100 dark:bg-white/5 my-1 mx-2" />
+                </>
+            )}
+
             <button
                 type="button"
                 role="menuitem"

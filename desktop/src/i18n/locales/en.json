@@ -3229,6 +3229,9 @@
     "vo_best_sleeverot_best_sleevecols_best": "Sleeve ${best.sleeveRot}° ${best.sleeveCols}×${best.sleeveRows}"
   },
   "misc.viewerContextMenu": {
+    "sua_bang_illustrator": "Edit with Adobe Illustrator",
+    "sua_bang_corel": "Edit with CorelDRAW",
+    "xuat_trang_khuon_be": "Export die-cut sheet...",
     "chen_trang_trang_insert": "Insert blank page (Insert)",
     "nhan_ban_duplicate": "Duplicate",
     "quan_ly_trang_xoay_nhan_ban": "Manage Pages (Rotate, Duplicate...)",

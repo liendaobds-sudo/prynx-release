@@ -3229,6 +3229,9 @@
     "vo_best_sleeverot_best_sleevecols_best": "Vỏ ${best.sleeveRot}° ${best.sleeveCols}×${best.sleeveRows}"
   },
   "misc.viewerContextMenu": {
+    "sua_bang_illustrator": "Sửa bằng Adobe Illustrator",
+    "sua_bang_corel": "Sửa bằng CorelDRAW",
+    "xuat_trang_khuon_be": "Xuất trang khuôn bế...",
     "chen_trang_trang_insert": "Chèn trang trắng (Insert)",
     "nhan_ban_duplicate": "Nhân bản (Duplicate)",
     "quan_ly_trang_xoay_nhan_ban": "Quản lý Trang (Xoay, Nhân bản...)",
