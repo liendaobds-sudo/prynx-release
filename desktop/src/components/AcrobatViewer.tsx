@@ -26,6 +26,8 @@ import { editPreviewDocumentChanged } from './acrobat/thumbnailEditPreview';
 import { StatusBar } from './acrobat/StatusBar'; // UIUX (audit 2026-07-27 §M-1+C-05)
 import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/CrossFileInsertModal';
 import { formatPageSizeMm } from './acrobat/dimensionMath';
+import { InstantPreflightHud } from './acrobat/InstantPreflightHud';
+import type { InstantPreflightResult } from '../lib/instantPreflight';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useLiveLinkWatcher } from '../hooks/viewer/useLiveLinkWatcher';
@@ -509,11 +511,38 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         notifyFirstPageRenderReady,
     } = loader;
 
+    const [instantPreflightResult, setInstantPreflightResult] = useState<InstantPreflightResult | null>(null);
+
+    // Kích hoạt quét nhanh các lỗi chế bản tức thì (Hairlines, Rich Black, Low-res Image, RGB) khi lưu file
+    const triggerInstantPreflight = useCallback(async (targetPages?: number[]) => {
+        try {
+            let pdfBytes: Uint8Array | null = null;
+            if (file?.path) {
+                const { fetchLocalFileBuffer } = await import('../lib/localFileTransport');
+                pdfBytes = new Uint8Array(await fetchLocalFileBuffer(file.path));
+            } else if (file) {
+                pdfBytes = new Uint8Array(await file.arrayBuffer());
+            }
+            if (!pdfBytes || pdfBytes.length === 0) return;
+
+            const { runInstantPreflight } = await import('../lib/instantPreflight');
+            const res = await runInstantPreflight(pdfBytes, {
+                targetPages: targetPages && targetPages.length > 0 ? targetPages : undefined,
+            });
+            setInstantPreflightResult(res);
+        } catch (error) {
+            console.warn('[InstantPreflight] Lỗi quét kiểm tra:', error);
+        }
+    }, [file]);
+
     // LIVE LINK: Tự động tải lại trang khi tệp PDF được lưu bởi Illustrator / CorelDRAW
     useLiveLinkWatcher({
         filePath: file?.path,
         enabled: Boolean(file?.path && !file?.isInMemory),
-        onFileChanged: retryLoad,
+        onFileChanged: () => {
+            retryLoad();
+            void triggerInstantPreflight();
+        },
     });
 
     const [partialEditSession, setPartialEditSession] = useState<{
@@ -553,6 +582,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     await invoke('write_file_atomic', { path: file.path, contents: mergedBytes });
                 }
                 retryLoad();
+                void triggerInstantPreflight(partialEditSession.pageIndices.map(i => i + 1));
             } catch (error) {
                 console.error('Lỗi khi tự động gộp trang đã sửa:', error);
             }
@@ -2889,6 +2919,24 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     allPageDims={allPageDims}
                 />
             )}
+
+            {/* UIUX (Phase 2): Thanh cảnh báo lỗi chế bản tức thì khi Ctrl + S */}
+            <InstantPreflightHud
+                result={instantPreflightResult}
+                onDismiss={() => setInstantPreflightResult(null)}
+                onOpenTool={(tool) => {
+                    if (tool === 'hairlines') {
+                        setActiveDashboardTool('hairlines');
+                        openWorkspaceSidebar();
+                    } else if (tool === 'convertColors') {
+                        setActiveDashboardTool('convertcolors');
+                        openWorkspaceSidebar();
+                    } else if (tool === 'preflight') {
+                        setActiveDashboardTool('preflight');
+                        openWorkspaceSidebar();
+                    }
+                }}
+            />
 
             {/* Modals */}
             {isDeleteModalOpen && <QuickDeleteModal selectedCount={selectedIndices.size} onConfirm={handleQuickDeleteConfirm} onClose={() => setIsDeleteModalOpen(false)} />}

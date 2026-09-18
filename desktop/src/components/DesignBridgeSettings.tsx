@@ -2,7 +2,18 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import { toast } from './ui/Toast';
-import { RefreshCw, CheckCircle2, AlertCircle, Sparkles } from 'lucide-react';
+import {
+    RefreshCw,
+    CheckCircle2,
+    AlertCircle,
+    Sparkles,
+    FolderOpen,
+    Copy,
+    ChevronDown,
+    ChevronUp,
+    HelpCircle,
+    Check,
+} from 'lucide-react';
 
 interface BridgeSyncStatus {
     illustratorFound: boolean;
@@ -14,11 +25,97 @@ interface BridgeSyncStatus {
     details: string[];
 }
 
+const COREL_VBA_CODE = `' =============================================================================
+' PRYNX DESIGN BRIDGE FOR CORELDRAW
+' Phiên bản: 1.0.0
+' Bản quyền (c) PrynX - Print made easy!
+' Macro VBA xuất PDF chuẩn in ấn và chuyển sang PrynX chỉ với 1 cú click.
+' =============================================================================
+
+Option Explicit
+
+Public Sub SendToPrynX()
+    If Documents.Count = 0 Then
+        MsgBox "Vui lòng mở một file thiết kế trong CorelDRAW trước khi gửi sang PrynX.", vbExclamation, "PrynX Bridge"
+        Exit Sub
+    End If
+
+    Dim doc As Document
+    Set doc = ActiveDocument
+
+    ' 1. Tạo thư mục tạm an toàn
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    Dim tempDirPath As String
+    tempDirPath = Environ("TEMP") & "\\PrynX_Bridge"
+    If Not fso.FolderExists(tempDirPath) Then
+        fso.CreateFolder tempDirPath
+    End If
+
+    ' Tên file tạm
+    Dim safeName As String
+    safeName = doc.FileName
+    If safeName = "" Then
+        safeName = "Untitled_" & Format(Now, "yyyymmdd_hhnnss")
+    Else
+        safeName = Left(safeName, InStrRev(safeName, ".") - 1)
+    End If
+    
+    Dim tempPdfPath As String
+    tempPdfPath = tempDirPath & "\\" & safeName & "_" & Format(Now, "hhnnss") & ".pdf"
+
+    ' 2. Cấu hình xuất PDF chuẩn in ấn cho CorelDRAW
+    Dim pdf As PDFExport
+    Set pdf = doc.PublishToPDF
+    
+    With pdf
+        .Reset
+        .PublishRange = pdfWholeDocument
+        .PDFVersion = pdfVersion16 ' Chuẩn PDF 1.6 tương thích cao
+        .ColorMode = pdfCMYK ' Hệ màu CMYK in ấn
+        .SpotColors = True ' Bảo toàn 100% Spot Color đường bế CutContour
+        .Bleed = True ' Tự động lấy tràn lề Bleed
+        .BleedAmount = doc.BleedAmount
+        .CompressText = True
+        .DownsampleColor = False ' Không hạ độ phân giải ảnh
+        .DownsampleGray = False
+        .DownsampleMono = False
+        .TextAsCurves = False ' Giữ text hoặc embed font
+        .EmbedBaseFonts = True
+        .EmbedAllFonts = True
+        .IncludeHyperlinks = False
+        .OutputSpotColorsAsSpot = True
+    End With
+
+    ' 3. Xuất file
+    On Error Resume Next
+    pdf.Save tempPdfPath
+    If Err.Number <> 0 Then
+        MsgBox "Lỗi xuất PDF sang PrynX: " & Err.Description, vbCritical, "PrynX Bridge"
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    ' 4. Kích hoạt PrynX mở file
+    Dim wsh As Object
+    Set wsh = CreateObject("WScript.Shell")
+    
+    Dim cmd As String
+    cmd = "cmd.exe /c start """" ""prynx://open?action=bridge&file=" & tempPdfPath & """"
+    wsh.Run cmd, 0, False
+    
+    Set wsh = Nothing
+    Set fso = Nothing
+End Sub`;
+
 export default function DesignBridgeSettings() {
     const [status, setStatus] = useState<BridgeSyncStatus | null>(null);
     const [loading, setLoading] = useState(false);
     const [syncing, setSyncing] = useState(false);
     const [exportMode, setExportMode] = useState<'adaptive' | 'strict'>('adaptive');
+    const [showCorelGuide, setShowCorelGuide] = useState(false);
+    const [copiedMacro, setCopiedMacro] = useState(false);
 
     const loadStatus = useCallback(async () => {
         setLoading(true);
@@ -46,6 +143,31 @@ export default function DesignBridgeSettings() {
             toast.error(`Lỗi đồng bộ cầu nối: ${String(err)}`);
         } finally {
             setSyncing(false);
+        }
+    };
+
+    const handleCopyMacro = async () => {
+        try {
+            await navigator.clipboard.writeText(COREL_VBA_CODE);
+            setCopiedMacro(true);
+            toast.success('Đã sao chép mã Macro CorelDRAW vào bộ nhớ tạm!');
+            setTimeout(() => setCopiedMacro(false), 3000);
+        } catch {
+            toast.error('Không thể sao chép vào bộ nhớ tạm.');
+        }
+    };
+
+    const handleOpenCorelGmsFolder = async () => {
+        try {
+            const { appDataDir, join } = await import('@tauri-apps/api/path');
+            const { open } = await import('@tauri-apps/plugin-shell');
+            const appData = await appDataDir();
+            const corelFolder = await join(appData, '..', 'Corel');
+            await open(corelFolder);
+            toast.info('Đang mở thư mục Corel trong File Explorer...');
+        } catch (err) {
+            console.warn('Không thể mở thư mục Corel:', err);
+            toast.error('Không thể mở tự động thư mục CorelDRAW.');
         }
     };
 
@@ -101,7 +223,7 @@ export default function DesignBridgeSettings() {
                             </span>
                             {status?.corelSynced ? (
                                 <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-500/20 px-2 py-0.5 rounded-full">
-                                    <CheckCircle2 className="w-3.5 h-3.5" /> Đã kết nối
+                                    <CheckCircle2 className="w-3.5 h-3.5" /> Đã kết nối GMS
                                 </span>
                             ) : status?.corelFound ? (
                                 <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/20 px-2 py-0.5 rounded-full">
@@ -116,12 +238,70 @@ export default function DesignBridgeSettings() {
                         </p>
                         {status?.corelSynced && (
                             <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-2">
-                                ✓ Đã tạo macro GMS sẵn sàng kéo ra thanh công cụ.
+                                ✓ Đã đồng bộ tài nguyên macro sang thư mục Corel GMS.
                             </p>
                         )}
                     </div>
+
+                    {/* Action buttons cho CorelDRAW */}
+                    <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-slate-200/60 dark:border-white/5">
+                        <button
+                            type="button"
+                            onClick={handleCopyMacro}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-zinc-700/60 border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors text-slate-700 dark:text-zinc-200"
+                            title="Sao chép toàn bộ mã Macro SendToPrynX vào bộ nhớ tạm"
+                        >
+                            {copiedMacro ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedMacro ? 'Đã sao chép' : 'Sao chép Macro'}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleOpenCorelGmsFolder}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-zinc-700/60 border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors text-slate-700 dark:text-zinc-200"
+                            title="Mở thư mục Macro Corel GMS trong File Explorer"
+                        >
+                            <FolderOpen className="w-3.5 h-3.5" /> Thư mục GMS
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setShowCorelGuide(!showCorelGuide)}
+                            className="flex items-center justify-center p-1.5 rounded-lg text-xs font-medium bg-white dark:bg-zinc-700/60 border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors text-slate-700 dark:text-zinc-200"
+                            title="Xem hướng dẫn cài đặt nút 1-Click"
+                        >
+                            {showCorelGuide ? <ChevronUp className="w-3.5 h-3.5" /> : <HelpCircle className="w-3.5 h-3.5" />}
+                        </button>
+                    </div>
                 </div>
             </div>
+
+            {/* Hướng dẫn cài đặt Macro CorelDRAW 1-Click (Expandable) */}
+            {showCorelGuide && (
+                <div className="p-4 rounded-xl border border-indigo-200 dark:border-indigo-500/20 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-3">
+                    <div className="font-semibold text-sm text-indigo-900 dark:text-indigo-200 flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-indigo-500" /> 3 Bước tạo nút bấm 1-Click trong CorelDRAW
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                        <div className="p-3 bg-white/80 dark:bg-zinc-900/60 rounded-lg border border-indigo-100 dark:border-indigo-500/10 flex flex-col gap-1">
+                            <span className="font-bold text-indigo-600 dark:text-indigo-400">1. Mở Script Editor</span>
+                            <span className="text-slate-600 dark:text-zinc-300">
+                                Trong CorelDRAW, nhấn <b>Alt + F11</b> (hoặc menu <i>Tools &gt; Scripts &gt; Script Editor</i>).
+                            </span>
+                        </div>
+                        <div className="p-3 bg-white/80 dark:bg-zinc-900/60 rounded-lg border border-indigo-100 dark:border-indigo-500/10 flex flex-col gap-1">
+                            <span className="font-bold text-indigo-600 dark:text-indigo-400">2. Nạp Macro Bridge</span>
+                            <span className="text-slate-600 dark:text-zinc-300">
+                                Chuột phải vào <b>GlobalMacros</b> &gt; chọn <b>Import File...</b> &gt; chọn tệp <code>PrynX_Bridge.bas</code> (hoặc bấm Sao chép Macro và dán vào).
+                            </span>
+                        </div>
+                        <div className="p-3 bg-white/80 dark:bg-zinc-900/60 rounded-lg border border-indigo-100 dark:border-indigo-500/10 flex flex-col gap-1">
+                            <span className="font-bold text-indigo-600 dark:text-indigo-400">3. Kéo nút ra Toolbar</span>
+                            <span className="text-slate-600 dark:text-zinc-300">
+                                Vào <i>Tools &gt; Options &gt; Customization &gt; Commands</i> &gt; chọn nhóm <b>Macros</b> &gt; kéo lệnh <b>SendToPrynX</b> ra thanh công cụ.
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Thiết lập chế độ xuất PDF */}
             <div className="p-4 rounded-xl border border-slate-200 dark:border-white/10 space-y-3">
