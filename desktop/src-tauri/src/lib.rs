@@ -1822,7 +1822,22 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     tile_cache_dir().join(format!("{:016x}.png", h.finish()))
 }
 
-const TILE_RENDER_CACHE_VERSION: &str = "v7_userunit_lossless_png";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileOutputFormat {
+    RawRgba,
+    Png,
+}
+
+fn pack_raw_rgba_buffer(width: u32, height: u32, raw_pixels: Vec<u8>) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(12 + raw_pixels.len());
+    buffer.extend_from_slice(b"RGBA");
+    buffer.extend_from_slice(&width.to_le_bytes());
+    buffer.extend_from_slice(&height.to_le_bytes());
+    buffer.extend_from_slice(&raw_pixels);
+    buffer
+}
+
+const TILE_RENDER_CACHE_VERSION: &str = "v8_raw_rgba_stream";
 
 #[allow(clippy::too_many_arguments)]
 fn tile_render_cache_key(
@@ -1835,11 +1850,17 @@ fn tile_render_cache_key(
     clip_y: Option<i32>,
     clip_w: Option<i32>,
     clip_h: Option<i32>,
+    format: TileOutputFormat,
 ) -> String {
     let zoom_key = format!("{zoom:.3}");
+    let fmt_tag = match format {
+        TileOutputFormat::RawRgba => "rgba",
+        TileOutputFormat::Png => "png",
+    };
     format!(
-        "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}",
+        "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}",
         TILE_RENDER_CACHE_VERSION,
+        fmt_tag,
         file_path,
         file_identity.size,
         file_identity.modified_nanos,
@@ -4007,6 +4028,7 @@ pub fn render_tile_png_with_options(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
     force_full_res: bool,
+    format: TileOutputFormat,
 ) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
     // Guard: render là ĐỌC file tùy path do renderer truyền (IPC render_pdf_page + protocol
     // tile://). Nếu không chặn, renderer bị chèn mã có thể render → lấy nội dung file nhạy
@@ -4034,6 +4056,7 @@ pub fn render_tile_png_with_options(
         clip_y,
         clip_w,
         clip_h,
+        format,
     );
 
     let kind = if clip_w.is_some() && clip_h.is_some() {
@@ -4240,12 +4263,24 @@ pub fn render_tile_png_with_options(
     };
 
     // COLOR (audit 2026-08-07 §GV.1/§GV.4): trang chính và tile dùng PNG lossless
-    // cùng một hợp đồng. Trên artifact CMYK-gradient, PNG encode 4–10 ms trong khi
-    // JPEG q90 mất 133–334 ms và thêm sai số 1–2 mức/kênh. Cache RAM/đĩa đã có budget
-    // theo phần cứng nên không hạ chất lượng vô điều kiện trên máy >=16GB.
+    // hoặc Raw RGBA stream không nén. Raw RGBA loại bỏ 100% thời gian encode/decode PNG (0ms),
+    // trong khi PNG giữ chuẩn MIME cho protocol tile:// và thumbnail.
     let _encode_t0 = std::time::Instant::now();
-    let buffer = encode_viewer_png(&rgba_image)?;
-    let encode_ms = _encode_t0.elapsed().as_millis() as u64;
+    let (buffer, encode_ms) = match format {
+        TileOutputFormat::RawRgba => {
+            let width = rgba_image.width();
+            let height = rgba_image.height();
+            let raw_pixels = rgba_image.into_raw();
+            let buf = pack_raw_rgba_buffer(width, height, raw_pixels);
+            let ms = _encode_t0.elapsed().as_millis() as u64;
+            (buf, ms)
+        }
+        TileOutputFormat::Png => {
+            let buf = encode_viewer_png(&rgba_image)?;
+            let ms = _encode_t0.elapsed().as_millis() as u64;
+            (buf, ms)
+        }
+    };
     // LƯU Ý: block ghi PrynX_Performance.log kiểu cũ dùng chrono::Local::now() và PANIC
     // ở release. perf_log() thay bằng SystemTime epoch (không chrono) + chỉ ghi khi
     // perf_enabled() → an toàn. Ghi SAU khi encode xong, NGOÀI mọi vùng khóa.
@@ -4294,6 +4329,7 @@ pub fn render_tile_png_with_options(
                         clip_w,
                         clip_h,
                         true,
+                        format,
                     );
                     let mut in_flight = lock_mutex(refinement_in_flight());
                     in_flight.remove(&r_key);
@@ -4346,7 +4382,7 @@ pub fn render_tile_png_with_timing(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
 ) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
-    render_tile_png_with_options(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false)
+    render_tile_png_with_options(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false, TileOutputFormat::RawRgba)
 }
 
 pub fn render_tile_png_in_process(
@@ -4359,7 +4395,7 @@ pub fn render_tile_png_in_process(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
 ) -> Result<Vec<u8>, String> {
-    render_tile_png_with_timing(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h)
+    render_tile_png_with_options(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false, TileOutputFormat::Png)
         .map(|(bytes, _)| bytes)
 }
 
@@ -7464,6 +7500,7 @@ mod pdf_user_unit_tests {
             None,
             None,
             None,
+            TileOutputFormat::Png,
         );
         let new_key = tile_render_cache_key(
             "D:/jobs/same.pdf",
@@ -7475,6 +7512,7 @@ mod pdf_user_unit_tests {
             None,
             None,
             None,
+            TileOutputFormat::Png,
         );
 
         assert_ne!(old_key, new_key);
