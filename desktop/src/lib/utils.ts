@@ -43,7 +43,10 @@ export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer
             throw error;
         }
     }
-    return file.arrayBuffer();
+    if (typeof file.arrayBuffer === 'function') {
+        return file.arrayBuffer();
+    }
+    return new Response(file).arrayBuffer();
 };
 
 /**

@@ -516,13 +516,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Kích hoạt quét nhanh các lỗi chế bản tức thì (Hairlines, Rich Black, Low-res Image, RGB) khi lưu file
     const triggerInstantPreflight = useCallback(async (targetPages?: number[]) => {
         try {
-            let pdfBytes: Uint8Array | null = null;
-            if (file?.path) {
-                const { fetchLocalFileBuffer } = await import('../lib/localFileTransport');
-                pdfBytes = new Uint8Array(await fetchLocalFileBuffer(file.path));
-            } else if (file) {
-                pdfBytes = new Uint8Array(await file.arrayBuffer());
-            }
+            if (!file) return;
+            const { getFileArrayBuffer } = await import('../lib/utils');
+            const pdfBytes = new Uint8Array(await getFileArrayBuffer(file));
             if (!pdfBytes || pdfBytes.length === 0) return;
 
             const { runInstantPreflight } = await import('../lib/instantPreflight');
@@ -556,21 +552,15 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         filePath: partialEditSession?.tempFilePath,
         enabled: Boolean(partialEditSession?.tempFilePath),
         onFileChanged: async () => {
-            if (!partialEditSession) return;
+            if (!partialEditSession || !file) return;
             try {
                 const { fetchLocalFileBuffer } = await import('../lib/localFileTransport');
                 const { mergeEditedPagesIntoDocument } = await import('../lib/designAppLauncher');
+                const { getFileArrayBuffer } = await import('../lib/utils');
                 const { invoke } = await import('@tauri-apps/api/core');
 
                 const editedBytes = new Uint8Array(await fetchLocalFileBuffer(partialEditSession.tempFilePath));
-                let origBytes: Uint8Array;
-                if (file?.path) {
-                    origBytes = new Uint8Array(await fetchLocalFileBuffer(file.path));
-                } else if (file) {
-                    origBytes = new Uint8Array(await file.arrayBuffer());
-                } else {
-                    return;
-                }
+                const origBytes = new Uint8Array(await getFileArrayBuffer(file));
 
                 const mergedBytes = await mergeEditedPagesIntoDocument(
                     origBytes,
@@ -578,7 +568,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                     partialEditSession.pageIndices,
                 );
 
-                if (file?.path) {
+                if (file.path) {
                     await invoke('write_file_atomic', { path: file.path, contents: mergedBytes });
                 }
                 retryLoad();

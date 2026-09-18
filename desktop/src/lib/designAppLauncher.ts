@@ -87,12 +87,13 @@ export async function ensurePathBackedPdf(file: File | Blob, originalName?: stri
 
     const { tempDir, join } = await import('@tauri-apps/api/path');
     const { invoke } = await import('@tauri-apps/api/core');
+    const { getFileArrayBuffer } = await import('./utils');
     const tDir = await tempDir();
     const safeName = (originalName || (file as File).name || 'document.pdf')
         .replace(/[\\/:*?"<>|]/g, '_')
         .replace(/\.pdf$/i, '');
     const fullPath = await join(tDir, `prynx_edit_${Date.now()}_${safeName}.pdf`);
-    const buffer = new Uint8Array(await file.arrayBuffer());
+    const buffer = new Uint8Array(await getFileArrayBuffer(file));
     await invoke('write_file_atomic', { path: fullPath, contents: buffer });
     return fullPath;
 }
@@ -171,8 +172,9 @@ export async function extractPagesForExternalEdit(
     } = await import('./pdfOptionalContent');
     const { tempDir, join } = await import('@tauri-apps/api/path');
     const { invoke } = await import('@tauri-apps/api/core');
+    const { getFileArrayBuffer } = await import('./utils');
 
-    const srcBytes = new Uint8Array(await file.arrayBuffer());
+    const srcBytes = new Uint8Array(await getFileArrayBuffer(file));
     const srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
     const pageCount = srcDoc.getPageCount();
 
