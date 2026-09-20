@@ -6,11 +6,17 @@ use std::f64::consts::{PI, TAU};
 
 const INITIAL_PRIMITIVE_SEGMENTS: usize = 4;
 
+#[derive(Clone, Copy, Debug)]
+enum PrimitiveModel {
+    Ellipse(EllipseModel),
+    Box,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct PrimitiveFit {
     pub(super) kind: ReconstructedPrimitive,
     pub(super) path: ScenePath,
-    model: EllipseModel,
+    model: PrimitiveModel,
     signed_area: f64,
     segment_count: usize,
 }
@@ -19,15 +25,20 @@ impl PrimitiveFit {
     // LOGO-TRAJECTORY (audit 2026-08-25 F-05): tăng số cung theo cấp đôi
     // và không vượt số đỉnh nguồn; ứng viên đầu tiên đạt budget là tối giản.
     pub(super) fn refine_path(&mut self, max_segment_count: usize) -> bool {
-        let Some(next_segment_count) = self.segment_count.checked_mul(2) else {
-            return false;
-        };
-        if next_segment_count > max_segment_count {
-            return false;
+        match self.model {
+            PrimitiveModel::Ellipse(ellipse) => {
+                let Some(next_segment_count) = self.segment_count.checked_mul(2) else {
+                    return false;
+                };
+                if next_segment_count > max_segment_count {
+                    return false;
+                }
+                self.segment_count = next_segment_count;
+                self.path = ellipse_to_cubics(ellipse, self.signed_area, self.segment_count);
+                true
+            }
+            PrimitiveModel::Box => false,
         }
-        self.segment_count = next_segment_count;
-        self.path = ellipse_to_cubics(self.model, self.signed_area, self.segment_count);
-        true
     }
 }
 
@@ -49,10 +60,20 @@ struct PolygonMoments {
 }
 
 pub(super) fn fit_closed_primitive(points: &[FitPoint], tolerance: f64) -> Option<PrimitiveFit> {
-    if points.len() < 12 || !tolerance.is_finite() || tolerance <= 0.0 {
+    if points.len() < 4 || !tolerance.is_finite() || tolerance <= 0.0 {
         return None;
     }
     let moments = polygon_moments(points)?;
+
+    // LOGO-ORTHO (audit 2026-09-20 §VEC.F01): Nhận diện khối chữ nhật / hộp (Box)
+    // trước khi kiểm tra hình tròn/elip để tránh uốn Bézier lượn sóng cho khung badge và chữ nhật.
+    if let Some(box_fit) = fit_box(points, moments, tolerance) {
+        return Some(box_fit);
+    }
+
+    if points.len() < 12 {
+        return None;
+    }
     let (major_radius, minor_radius, rotation) = ellipse_from_moments(moments)?;
     if minor_radius < (4.0 * tolerance).max(2.0) {
         return None;
@@ -69,7 +90,7 @@ pub(super) fn fit_closed_primitive(points: &[FitPoint], tolerance: f64) -> Optio
                         moments.signed_area,
                         INITIAL_PRIMITIVE_SEGMENTS,
                     ),
-                    model: circle,
+                    model: PrimitiveModel::Ellipse(circle),
                     signed_area: moments.signed_area,
                     segment_count: INITIAL_PRIMITIVE_SEGMENTS,
                 });
@@ -86,9 +107,145 @@ pub(super) fn fit_closed_primitive(points: &[FitPoint], tolerance: f64) -> Optio
     primitive_passes(points, ellipse, moments.signed_area, tolerance).then(|| PrimitiveFit {
         kind: ReconstructedPrimitive::Ellipse,
         path: ellipse_to_cubics(ellipse, moments.signed_area, INITIAL_PRIMITIVE_SEGMENTS),
-        model: ellipse,
+        model: PrimitiveModel::Ellipse(ellipse),
         signed_area: moments.signed_area,
         segment_count: INITIAL_PRIMITIVE_SEGMENTS,
+    })
+}
+
+fn fit_box(points: &[FitPoint], moments: PolygonMoments, tolerance: f64) -> Option<PrimitiveFit> {
+    if points.len() < 4 {
+        return None;
+    }
+    // Thử góc 0 trước (khối chữ nhật song song trục toạ độ - phổ biến nhất trong logo)
+    if let Some(fit) = evaluate_box_at_angle(points, moments, 0.0, tolerance) {
+        return Some(fit);
+    }
+    // Nếu có góc xoay từ moments, thử góc xoay đó
+    if let Some((_, _, rotation)) = ellipse_from_moments(moments) {
+        let norm_rot = rotation.rem_euclid(PI);
+        let dist_to_axis = norm_rot.min((norm_rot - PI / 2.0).abs()).min((norm_rot - PI).abs());
+        if dist_to_axis > 0.04 {
+            if let Some(fit) = evaluate_box_at_angle(points, moments, rotation, tolerance) {
+                return Some(fit);
+            }
+        }
+    }
+    None
+}
+
+fn evaluate_box_at_angle(
+    points: &[FitPoint],
+    moments: PolygonMoments,
+    angle: f64,
+    tolerance: f64,
+) -> Option<PrimitiveFit> {
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+    let center = moments.center;
+
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    let mut rotated = Vec::with_capacity(points.len());
+    for p in points {
+        let dx = p.x - center.x;
+        let dy = p.y - center.y;
+        let rx = dx * cos_a + dy * sin_a;
+        let ry = -dx * sin_a + dy * cos_a;
+        min_x = min_x.min(rx);
+        max_x = max_x.max(rx);
+        min_y = min_y.min(ry);
+        max_y = max_y.max(ry);
+        rotated.push(FitPoint { x: rx, y: ry });
+    }
+
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    let min_dim = (4.0 * tolerance).max(2.0);
+    if width < min_dim || height < min_dim {
+        return None;
+    }
+
+    let expected_area = width * height;
+    let actual_area = moments.signed_area.abs();
+    if expected_area <= 0.0 || !expected_area.is_finite() {
+        return None;
+    }
+    let area_ratio = actual_area / expected_area;
+    if !(0.92..=1.06).contains(&area_ratio) {
+        return None;
+    }
+
+    let mut near_min_x = false;
+    let mut near_max_x = false;
+    let mut near_min_y = false;
+    let mut near_max_y = false;
+
+    let corner_tol = tolerance.max(0.35);
+    for rp in &rotated {
+        let d_left = (rp.x - min_x).abs();
+        let d_right = (max_x - rp.x).abs();
+        let d_bottom = (rp.y - min_y).abs();
+        let d_top = (max_y - rp.y).abs();
+        let min_d = d_left.min(d_right).min(d_bottom).min(d_top);
+        if min_d > corner_tol {
+            return None;
+        }
+        if d_left <= corner_tol { near_min_x = true; }
+        if d_right <= corner_tol { near_max_x = true; }
+        if d_bottom <= corner_tol { near_min_y = true; }
+        if d_top <= corner_tol { near_max_y = true; }
+    }
+
+    if !near_min_x || !near_max_x || !near_min_y || !near_max_y {
+        return None;
+    }
+
+    let mut corners = [
+        FitPoint { x: min_x, y: min_y },
+        FitPoint { x: max_x, y: min_y },
+        FitPoint { x: max_x, y: max_y },
+        FitPoint { x: min_x, y: max_y },
+    ];
+
+    for c in &mut corners {
+        let ux = center.x + c.x * cos_a - c.y * sin_a;
+        let uy = center.y + c.x * sin_a + c.y * cos_a;
+        c.x = ux;
+        c.y = uy;
+    }
+
+    let mut box_area = 0.0;
+    for i in 0..4 {
+        let next = (i + 1) % 4;
+        box_area += corners[i].x * corners[next].y - corners[next].x * corners[i].y;
+    }
+    box_area *= 0.5;
+
+    if (box_area > 0.0) != (moments.signed_area > 0.0) {
+        corners.swap(1, 3);
+    }
+
+    let path = ScenePath {
+        start: to_scene_point(corners[0]),
+        segments: vec![
+            SceneSegment::Line { to: to_scene_point(corners[1]) },
+            SceneSegment::Line { to: to_scene_point(corners[2]) },
+            SceneSegment::Line { to: to_scene_point(corners[3]) },
+            SceneSegment::Line { to: to_scene_point(corners[0]) },
+        ],
+        closed: true,
+    };
+
+    Some(PrimitiveFit {
+        kind: ReconstructedPrimitive::Box,
+        path,
+        model: PrimitiveModel::Box,
+        signed_area: moments.signed_area,
+        segment_count: 4,
     })
 }
 

@@ -93,7 +93,9 @@ def test_export_unique_one_page_and_report_summary(tmp_path):
     _make_rect_pdf(src)
 
     report = nup_engine.run_nup_engine(src, out, _base_settings(), job_id="eu-1")
-    assert _page_count(out) == 1, "exportUniqueSheets=True → đúng 1 tờ (không nhân bản)"
+    # BE.08: giữ cả tờ mẫu đầy và tờ bù, chỉ gộp những tờ thực sự trùng.
+    assert _page_count(out) == 2
+    assert "Yêu cầu: 100" in report and "Đã xếp: 100" in report
     assert "LỆNH IN" in (report or "")
     assert "tờ" in (report or "").lower() or "Tờ" in (report or "")
 

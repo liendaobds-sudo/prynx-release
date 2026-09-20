@@ -17,6 +17,7 @@ import pypdfium2 as pdfium
 import pytest
 
 from app.api.routes import imposition
+from app.core.nesting_preview_capacity import settings_from_preview_request
 from app.core.pdfium_lock import pdfium_guard
 from app.workers import nup_engine, pdf_wrapper
 from tests.license_helpers import PRO_LICENSE
@@ -270,9 +271,15 @@ def test_single_template_nup_consumer_keeps_preview_strategy(tmp_path, strategy,
         del doc.pages[1]
         doc.save(source)
     requests, batch, settings = _request_and_settings(source, 90, strategy, fractional)
-    request = requests[0].model_copy(update={"task_mode": "nup", "layout_type": "sequential"})
+    # N-Up không còn autofill ngầm. Khai lượng vừa một tờ để vẫn khóa hình học 12/13 ô.
+    quantity = 13 if strategy == "optimal_auto" and not fractional else 12
+    request = requests[0].model_copy(update={
+        "task_mode": "nup", "layout_type": "sequential", "target_quantity":quantity,
+        "detected_shapes_by_page":{"0":"RECTANGLE"},
+    })
     batch = batch.model_copy(update={"task_mode": "nup", "pages": batch.pages[:1]})
-    settings.update(taskMode="nup", layoutType="sequential", detectedShapesByPage={"0": "RECTANGLE"})
+    # Dùng mapper live pt→mm của lane kế hoạch; không ghép hai hệ số MM khác nhau.
+    settings.update(settings_from_preview_request(request), gridStrategy=strategy)
     preview = imposition.preview_layout(request, PRO_LICENSE)
     assert imposition.preview_layout(request, PRO_LICENSE) == preview
     imposition._NEST_A_CACHE.clear()
@@ -284,8 +291,7 @@ def test_single_template_nup_consumer_keeps_preview_strategy(tmp_path, strategy,
         assert len(doc.pages) == 2
     expected = _preview_rectangles(preview)
     if strategy == "simple_auto":
-        expected = _simple_grid_rectangles(request)
-        _assert_rectangles_match(_preview_rectangles(preview), expected)
+        assert len(expected) == 12
     elif not fractional:
         assert preview["totalItems"] == 13
     _assert_rectangles_match(_cut_rectangles(output, 1), expected)
@@ -315,8 +321,14 @@ def test_homogeneous_nup_sibling_keeps_selected_grid_strategy(tmp_path, strategy
         taskMode="nup", layoutType="sequential", targetQuantity=8,
         detectedShapesByPage={"0": "RECTANGLE", "1": "CUSTOM"},
     )
+    if strategy == "simple_auto":
+        settings.update(settings_from_preview_request(request), gridStrategy=strategy)
     preview = imposition.preview_layout(request, PRO_LICENSE)
-    assert preview.get("isHomogeneousPreview") is True
+    if strategy == "optimal_auto":
+        assert preview.get("isHomogeneousPreview") is True
+    else:
+        assert preview["strategyUsed"] == "simple_auto"
+        assert preview["orderSummary"]["placedCount"] == 16
     assert imposition.preview_layout(request, PRO_LICENSE) == preview
     output = tmp_path / "homogeneous-output.pdf"
     nup_engine.run_nup_engine(source, str(output), settings)
@@ -330,8 +342,10 @@ def test_homogeneous_nup_sibling_keeps_selected_grid_strategy(tmp_path, strategy
         for cell in preview["cells"]
     ]
     if strategy == "simple_auto":
-        expected = _simple_grid_rectangles(request)
-        _assert_rectangles_match(preview_rectangles, expected)
+        # Lane mới cung cấp contour top-down trực tiếp. Không lật absY bằng
+        # sheet_h của fixture transport (hệ số pt/mm cũ khác canvas renderer).
+        expected = _preview_rectangles(preview)
+        assert len(expected) == 12
     else:
         expected = preview_rectangles
         if not fractional:

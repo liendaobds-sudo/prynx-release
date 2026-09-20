@@ -57,6 +57,7 @@ import {
 } from '../lib/viewerPageIdentity';
 import type { DocumentWindowViewState } from '../lib/documentWindow';
 import type { WorkspaceHistoryEntry } from '../lib/workspaceHistory';
+import { isGeneratedWorkspaceFile } from '../lib/nativeFileAccess';
 
 const getRenderedPageElement = (scroller: HTMLElement, page: number): HTMLElement | null => {
     const container = scroller.querySelector<HTMLElement>(`#pdf-page-container-${page}`);
@@ -500,7 +501,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // ═══ Hook: PDF Loader ═══
     const loader = usePdfLoader({
-        file, pdfUrl, setNumPages, setActivePage, setZoom, containerRef,
+        file, pdfUrl, activePage, setNumPages, setActivePage, setZoom, containerRef,
     });
     const {
         pdfRef, thumbPdfRef, pageDim, allPageDims, pageWidthPt, plateLabels,
@@ -544,9 +545,16 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [file, selectionFileId]);
 
     // LIVE LINK: Tự động tải lại trang khi tệp PDF được lưu bởi Illustrator / CorelDRAW
+    // Bỏ qua các tệp tạm nội bộ (ví dụ: vdp_clean_*.pdf, vdp_tags_*.pdf, vdp_templates)
+    // và các tệp sinh tự động trong workspace để tránh vòng lặp reload không mong muốn.
+    const isInternalTempPath = Boolean(
+        file?.path && /[\\/]vdp_templates[\\/]|vdp_clean_[0-9a-fA-F]+|vdp_tags_[0-9a-fA-F]+|[\\/]PrynX-dev[\\/]results[\\/]/i.test(file.path)
+    );
+    const isGeneratedFile = isGeneratedWorkspaceFile(file);
+
     useLiveLinkWatcher({
         filePath: file?.path,
-        enabled: Boolean(file?.path && !file?.isInMemory),
+        enabled: Boolean(file?.path && !file?.isInMemory && !isInternalTempPath && !isGeneratedFile),
         onFileChanged: () => {
             console.info('[AcrobatViewer][LiveLink] Tệp gốc đã thay đổi, nạp lại viewer:', file?.path);
             retryLoad();
@@ -686,12 +694,18 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const accurateColorSourceKey = [pdfUrl || '', (file as ViewerFile)?.path || '', (file as ViewerFile)?.size || 0, (file as ViewerFile)?.lastModified || 0].join('|');
     const [accurateColorPreference, setAccurateColorPreference] = useState<{ sourceKey: string; enabled: boolean } | null>(null);
     const accurateColorPages = useMemo(
-        () => colorRisk?.pages.filter(page => page.accurateColorRecommended).map(page => page.page) || [],
-        [colorRisk],
+        () => colorRisk?.pages
+            .filter(page => page.accurateColorRecommended && (numPages <= 0 || page.page <= numPages))
+            .map(page => page.page) || [],
+        [colorRisk, numPages],
     );
+    // UIUX (audit 2026-09-20 §VIEW.DARK): Khi người dùng bật chế độ nền tối (viewerDarkBackground),
+    // ưu tiên display lane trong suốt để xem tem nhãn/viền bế; không tự động ép PPE
+    // (vốn đổ nền giấy trắng opaque RGB8) trừ khi người dùng chủ động bật CMYK soft-proof.
+    const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
     const accurateColorEnabled = accurateColorPreference?.sourceKey === accurateColorSourceKey
         ? accurateColorPreference.enabled
-        : colorRisk?.highRisk === true;
+        : (colorRisk?.highRisk === true && !viewerDarkBackground);
     const [accuratePrefetchGate, setAccuratePrefetchGate] = useState<{
         sourceKey: string;
         page: number;
@@ -758,6 +772,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         cancelAccurateGroup,
     } = useTileRenderer({
         file, pdfRef, pdfUrl, activePage, tabId, isActive,
+        numPages,
         accurateColorEnabled,
         accurateColorPages,
         accurateColorProfileId: viewerSimulationProfileId,
@@ -2417,6 +2432,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // ═══ Render Rows Memoization ═══
     const visitedIndicesRef = useRef<Set<number>>(new Set());
+    useEffect(() => {
+        visitedIndicesRef.current.clear();
+    }, [accurateColorSourceKey]);
 
     const scrollRowsMemo = useMemo(() => {
         if (!pageOrder || pageOrder.length === 0) return [];
@@ -2435,22 +2453,31 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const fitRowsMemo = useMemo(() => {
         if (!pageOrder || pageOrder.length === 0) return [];
+        for (const idx of Array.from(visitedIndicesRef.current)) {
+            if (idx >= pageOrder.length) visitedIndicesRef.current.delete(idx);
+        }
         if (pageDisplayMode === 'single_fit') {
             const idx = Math.max(0, Math.min(activePage - 1, pageOrder.length - 1));
             [idx - 1, idx, idx + 1].forEach(i => { if (i >= 0 && i < pageOrder.length) { visitedIndicesRef.current.delete(i); visitedIndicesRef.current.add(i); } });
             while (visitedIndicesRef.current.size > 15) { const oldest = visitedIndicesRef.current.values().next().value; if (oldest !== undefined) visitedIndicesRef.current.delete(oldest); else break; }
-            return Array.from(visitedIndicesRef.current).sort((a, b) => a - b).map(i => ({ type: 'single', indices: [i], pages: [pageOrder[i]] }));
+            return Array.from(visitedIndicesRef.current)
+                .filter(i => i < pageOrder.length && pageOrder[i] !== undefined)
+                .sort((a, b) => a - b)
+                .map(i => ({ type: 'single', indices: [i], pages: [pageOrder[i]] }));
         }
         if (pageDisplayMode === 'two_fit') {
             const idx = Math.max(0, Math.min(activePage - 1, pageOrder.length - 1));
             const rowStart = idx % 2 === 0 ? idx : idx - 1;
             [rowStart - 2, rowStart, rowStart + 2].forEach(r => { if (r >= 0 && r < pageOrder.length) { visitedIndicesRef.current.delete(r); visitedIndicesRef.current.add(r); } });
             while (visitedIndicesRef.current.size > 15) { const oldest = visitedIndicesRef.current.values().next().value; if (oldest !== undefined) visitedIndicesRef.current.delete(oldest); else break; }
-            return Array.from(visitedIndicesRef.current).filter(r => r % 2 === 0).sort((a, b) => a - b).map(r => {
-                const row: ViewerRow = { type: 'two', indices: [r], pages: [pageOrder[r]] };
-                if (r + 1 < pageOrder.length) { row.indices.push(r + 1); row.pages.push(pageOrder[r + 1]); }
-                return row;
-            });
+            return Array.from(visitedIndicesRef.current)
+                .filter(r => r % 2 === 0 && r < pageOrder.length && pageOrder[r] !== undefined)
+                .sort((a, b) => a - b)
+                .map(r => {
+                    const row: ViewerRow = { type: 'two', indices: [r], pages: [pageOrder[r]] };
+                    if (r + 1 < pageOrder.length && pageOrder[r + 1] !== undefined) { row.indices.push(r + 1); row.pages.push(pageOrder[r + 1]); }
+                    return row;
+                });
         }
         return [];
     }, [pageOrder, pageDisplayMode, activePage]);
@@ -2467,7 +2494,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // ═══ Page Renderer ═══
     const renderPdfPage = useCallback((originalPageNum: number, flatIndex?: number) => {
-        if (!originalPageNum) return null;
+        if (!originalPageNum || (numPages > 0 && originalPageNum > numPages)) return null;
         const plateLabel = plateLabels[originalPageNum];
         // Rotation keyed theo INSTANCE-ID (mỗi vị trí 1 id riêng) → bản nhân bản / trang
         // trắng xoay ĐỘC LẬP. flatIndex = vị trí trong pageOrder → tra id. Fallback về 0

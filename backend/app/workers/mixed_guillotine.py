@@ -1109,6 +1109,36 @@ def _materialize_template(
         used_by_product[product_id] = used_by_product.get(product_id, 0) + 1
 
     tree = copy.deepcopy(candidate.cut_tree)
+    # QUANTITY-COMPACT (2026-09-19): vùng ban đầu được solve theo sức chứa.
+    # Sau khi chốt số con/tờ phải thu gọn theo số thực dùng, rồi dựng lại cây
+    # cắt và dấu. Chỉ bỏ placement mà giữ lưới đầy khiến các mẫu nằm rải rác.
+    partial = any(
+        used_by_product.get(product_id, 0) < capacity
+        for product_id, capacity in candidate.capacities.items()
+    )
+    cut_lines = copy.deepcopy(candidate.cut_lines)
+    if partial:
+        for zone in list(_iter_final_zones(tree)):
+            count = used_by_product.get(int(zone["productId"]), 0)
+            if count == 0:
+                waste = _waste_leaf(_dict_rect(zone["rect"]), str(zone["zoneId"]))
+                zone.clear()
+                zone.update(waste)
+                continue
+            grid = zone["grid"]
+            cols = min(int(grid["cols"]), count)
+            rows = math.ceil(count / cols)
+            grid["cols"], grid["rows"] = cols, rows
+            grid["capacity"] = cols * rows
+            content = grid["contentRect"]
+            content["width"] = _q(cols * float(grid["itemWidth"]) + (cols - 1) * float(grid["gapX"]))
+            content["height"] = _q(rows * float(grid["itemHeight"]) + (rows - 1) * float(grid["gapY"]))
+        compacted = replace(
+            candidate, placements=placements, cut_tree=tree,
+            cut_lines=[], capacities=dict(used_by_product),
+        )
+        _compact_candidate_blocks(compacted, _dict_rect(tree["rect"]))
+        cut_lines = compacted.cut_lines
     _set_occupied_slots(tree, used_by_product)
     placed_by_product = [
         {
@@ -1124,7 +1154,7 @@ def _materialize_template(
         "runCount": int(run_count),
         "placements": placements,
         "cutTree": tree,
-        "cutLines": copy.deepcopy(candidate.cut_lines),
+        "cutLines": cut_lines,
         "placedByProduct": placed_by_product,
     }
 

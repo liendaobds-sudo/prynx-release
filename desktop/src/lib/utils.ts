@@ -31,20 +31,10 @@ export const getFileArrayBuffer = async (file: File | Blob, explicitPath?: strin
     const isTauriEnv = typeof window !== 'undefined'
         && Boolean(window.__TAURI_INTERNALS__ || (window as Window & { __PRYNX_INVOKE__?: unknown }).__PRYNX_INVOKE__ || (window as Window & { __TAURI__?: unknown }).__TAURI__);
 
-    console.info('[getFileArrayBuffer] Bắt đầu đọc dữ liệu:', {
-        name: (file as File).name,
-        size: file.size,
-        type: file.type,
-        path,
-        isTauriEnv,
-    });
-
     if (isTauriEnv && path) {
         // FILEIO: Ưu tiên đọc qua localfile protocol (Rust streaming / range)
         try {
-            console.info('[getFileArrayBuffer] Thử đọc qua fetchLocalFileBuffer:', path);
             const buf = await fetchLocalFileBuffer(path);
-            console.info('[getFileArrayBuffer] fetchLocalFileBuffer thành công, bytes:', buf.byteLength);
             if (buf.byteLength > 0) {
                 return buf;
             }
@@ -62,18 +52,14 @@ export const getFileArrayBuffer = async (file: File | Blob, explicitPath?: strin
         // Fallback IPC: Gọi trực tiếp lệnh read_system_file của Tauri Rust
         try {
             const { invoke } = await import('@tauri-apps/api/core');
-            console.info('[getFileArrayBuffer] Đang gọi invoke read_system_file cho path:', path);
             const res = await invoke<unknown>('read_system_file', { path });
             if (res instanceof ArrayBuffer) {
-                console.info('[getFileArrayBuffer] Fallback IPC thành công (ArrayBuffer), bytes:', res.byteLength);
                 return res;
             }
             if (res instanceof Uint8Array) {
-                console.info('[getFileArrayBuffer] Fallback IPC thành công (Uint8Array), bytes:', res.byteLength);
                 return res.buffer.slice(res.byteOffset, res.byteOffset + res.byteLength) as ArrayBuffer;
             }
             if (Array.isArray(res)) {
-                console.info('[getFileArrayBuffer] Fallback IPC thành công (Array), bytes:', res.length);
                 return new Uint8Array(res).buffer as ArrayBuffer;
             }
             if (res && typeof res === 'object' && 'data' in res && Array.isArray((res as { data: number[] }).data)) {
@@ -89,15 +75,11 @@ export const getFileArrayBuffer = async (file: File | Blob, explicitPath?: strin
 
     if (typeof file.arrayBuffer === 'function') {
         const buf = await file.arrayBuffer();
-        console.info('[getFileArrayBuffer] Đọc qua file.arrayBuffer(), bytes:', buf.byteLength);
         if (buf.byteLength > 0 || !path) {
             return buf;
         }
     }
-    console.info('[getFileArrayBuffer] Đọc qua Response(file).arrayBuffer()...');
-    const respBuf = await new Response(file).arrayBuffer();
-    console.info('[getFileArrayBuffer] Response(file).arrayBuffer() bytes:', respBuf.byteLength);
-    return respBuf;
+    return await new Response(file).arrayBuffer();
 };
 
 /**

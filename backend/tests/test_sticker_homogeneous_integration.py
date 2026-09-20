@@ -169,7 +169,7 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
     assert set(precalc.keys()) == {0}, "4 trang (gồm master) / 8 ô → đúng 1 tờ"
     sheet0 = precalc[0]
     src_pages = [pl["src_page_idx"] for pl in sheet0]
-    assert src_pages == [0, 0, 1, 1, 2, 2, 3, 3], f"src_page_idx sai/không đúng thứ tự: {src_pages}"
+    assert src_pages == [0, 1, 2, 3], f"src_page_idx sai/không đúng thứ tự: {src_pages}"
     # Master (trang 0) CŨNG là nội dung in — tem loại đầu có artwork + khuôn.
     assert 0 in src_pages
     # mỗi placement có toạ độ tuyệt đối đã căn giữa (finalize_placements)
@@ -437,12 +437,13 @@ def test_fallback_two_dies_uses_old_binpack(monkeypatch):
 
     monkeypatch.setattr(sh, "build_homogeneous_layout", _spy_build)
 
+    _original_offset = bin_packing.solve_offset_mixed
+
     def _spy_auto_fill(*a, **k):
         spy["auto_fill"] += 1
-        return {"placements": [{"x": 0.0, "y": 0.0, "w": 100.0, "h": 80.0,
-                                "page_idx": 0, "is_rotated": False}]}
+        return _original_offset(*a, **k)
 
-    monkeypatch.setattr(bin_packing, "solve_auto_fill_mixed", _spy_auto_fill)
+    monkeypatch.setattr(bin_packing, "solve_offset_mixed", _spy_auto_fill)
 
     captured = {}
 
@@ -469,7 +470,7 @@ def test_fallback_two_dies_uses_old_binpack(monkeypatch):
 
     # ≥2 khuôn → KHÔNG đi nhánh đồng nhất; đi bin-pack trộn cũ.
     assert spy["build_hom"] == 0, "≥2 khuôn không được vào nhánh đồng nhất"
-    assert spy["auto_fill"] == 1, "phải dùng solve_auto_fill_mixed (đường cũ)"
+    assert spy["auto_fill"] == 1, "phải dùng solve_offset_mixed theo lượng đã chuẩn hóa"
     assert captured.get("homogeneous_mode") is False
     assert captured.get("page_sheet_mode") is False
 
@@ -491,12 +492,13 @@ def test_fallback_no_die_uses_old_binpack(monkeypatch):
 
     monkeypatch.setattr(sh, "build_homogeneous_layout", _spy_build)
 
+    _original_offset = bin_packing.solve_offset_mixed
+
     def _spy_auto_fill(*a, **k):
         spy["auto_fill"] += 1
-        return {"placements": [{"x": 0.0, "y": 0.0, "w": 100.0, "h": 80.0,
-                                "page_idx": 0, "is_rotated": False}]}
+        return _original_offset(*a, **k)
 
-    monkeypatch.setattr(bin_packing, "solve_auto_fill_mixed", _spy_auto_fill)
+    monkeypatch.setattr(bin_packing, "solve_offset_mixed", _spy_auto_fill)
     monkeypatch.setattr(nup_engine, "process_chunk", lambda args: (_ for _ in ()).throw(_StopEngine()))
 
     with tempfile.TemporaryDirectory() as td:

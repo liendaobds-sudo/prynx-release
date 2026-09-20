@@ -11,6 +11,7 @@ import {
     getPdfJsThumbnailDocument,
 } from '../../hooks/viewer/usePdfLoader';
 import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
+import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { fitThumbnailPageSize, formatRotatedPageSizePx96 } from './dimensionMath';
@@ -120,6 +121,7 @@ interface MemoThumbItemProps {
     workflowStatus?: ThumbPageWorkflowStatus;
     editPreviews?: readonly SessionPreview[];
     cutlinePreview?: ThumbnailCutlinePreviewItem | null;
+    viewerDarkBackground?: boolean;
 };
 
 interface ThumbSidebarProps {
@@ -173,6 +175,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         rot, localDim, thumbBaseWidth,
         pdfUrl, file, thumbRev, pageCount, isLoadable, isViewerActive, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews, cutlinePreview,
+        viewerDarkBackground,
     } = props;
     const { t } = useTranslation();
     const isBlankDoc = file?.isBlank === true;
@@ -360,35 +363,35 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                 data-thumb-rot={normRot}
                 className={`
                 relative flex items-center justify-center
-                ${isSelected ? 'outline outline-3 outline-blue-500' : 'outline outline-1 outline-black/20 dark:outline-white/10'}
+                ${isSelected ? 'outline outline-3 outline-blue-500' : (viewerDarkBackground ? 'outline outline-1 outline-white/20' : 'outline outline-1 outline-black/20 dark:outline-white/10')}
             `} style={{ width: footprintW, height: footprintH }}>
                 {originalPageNum === -1 ? (
                     <div style={{
                         width: imgW, height: imgH, position: 'absolute', left: '50%', top: '50%',
                         transform: `translate(-50%, -50%) rotate(${normRot}deg)`, transformOrigin: 'center center',
-                    }} className="bg-white border-2 border-dashed border-slate-300 flex items-center justify-center">
+                    }} className={`${viewerDarkBackground ? 'bg-black border-slate-700' : 'bg-white border-slate-300'} border-2 border-dashed flex items-center justify-center`}>
                         <span className="text-slate-300 text-xs font-semibold -rotate-45 block">{tv('TRANG TRỐNG')}</span>
                     </div>
                 ) : (
                     <>
-                        {/* Khối trang (giấy trắng + ảnh) — xoay như MỘT thể. Kích thước = trang gốc
+                        {/* Khối trang (giấy trắng/đen + ảnh) — xoay như MỘT thể. Kích thước = trang gốc
                             imgW×imgH; xoay quanh tâm slot (translate -50% rồi rotate). Bounding box
                             sau xoay = footprint = slot → lấp khít, không dải trắng. */}
                         <div style={{
                             width: imgW, height: imgH, position: 'absolute', left: '50%', top: '50%',
                             transform: `translate(-50%, -50%) rotate(${normRot}deg)`, transformOrigin: 'center center',
                             overflow: 'hidden',
-                        }} className="bg-white" data-thumb-page="1">
+                        }} className={viewerDarkBackground ? "bg-black" : "bg-white"} data-thumb-page="1">
                             {finalSrc ? (
                                 <img
                                     src={finalSrc}
                                     alt={`Page ${originalPageNum}`}
                                     style={{ width: '100%', height: '100%', display: 'block', objectFit: imgObjectFit }}
-                                    className="pointer-events-none bg-white"
+                                    className={`pointer-events-none ${viewerDarkBackground ? "bg-black" : "bg-white"}`}
                                     draggable={false}
                                 />
                             ) : (
-                                <div className={`w-full h-full flex items-center justify-center ${isBlankDoc ? 'bg-white' : 'bg-slate-100 dark:bg-zinc-800 animate-pulse'}`}>
+                                <div className={`w-full h-full flex items-center justify-center ${isBlankDoc ? (viewerDarkBackground ? 'bg-black' : 'bg-white') : 'bg-slate-100 dark:bg-zinc-800 animate-pulse'}`}>
                                     {!isBlankDoc && (nativeRenderError ? (
                                         <button
                                             type="button"
@@ -467,6 +470,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         prev.thumbRev === next.thumbRev &&
         prev.pageCount === next.pageCount &&
         prev.workflowStatus === next.workflowStatus &&
+        prev.viewerDarkBackground === next.viewerDarkBackground &&
         sameEditPreviewSequence(prev.editPreviews, next.editPreviews) &&
         sameCutlinePreview(prev.cutlinePreview, next.cutlinePreview);
 });
@@ -539,6 +543,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
 
     // Panel width hiệu dụng: lúc kéo resize dùng live width (style.width), không chỉ store.
     const panelWidthForClamp = livePanelWidth ?? thumbWidth;
+    const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
+    const toggleViewerDarkBackground = useAppSettingsStore(s => s.toggleViewerDarkBackground);
 
     // Khi thu hẹp panel / Ctrl+wheel phóng to thumb, clamp theo panel để không cắt
     // outline và thanh cuộn. Giữ mật độ 0.72 hiện tại để bản sửa parity không làm
@@ -644,52 +650,59 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
             </button>
 
             {/* Header */}
-            <div className="w-full h-10 shrink-0 flex items-center justify-between border-b border-black/10 dark:border-white/5 bg-slate-100 dark:bg-[#18181b] px-2 relative overflow-hidden">
+            <div className="w-full h-10 shrink-0 flex items-center justify-center border-b border-black/10 dark:border-white/5 bg-slate-100 dark:bg-[#18181b] px-1 relative overflow-hidden">
                 {isThumbMenuOpen ? (
-                    <>
-                        <div className="flex-1 min-w-0 flex items-center">
-                            <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 pl-3 tracking-wider truncate">THUMBNAILS</span>
-                        </div>
-                        <div className="shrink-0 flex items-center justify-center gap-1 px-1">
-                            {/* UIUX (audit 2026-07-27 §C-19): nút −/+ đổi cỡ thumbnail (±25px, cùng clamp với Ctrl+wheel) */}
-                            <button
-                                className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200 transition-colors text-[14px] font-bold leading-none"
-                                title={t('misc.thumbSidebar:thu_nho_thumbnail_hint', 'Thu nhỏ thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)')}
-                                onClick={() => nudgeThumbSize(-1)}
-                            >−</button>
-                            <button
-                                className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200 transition-colors text-[14px] font-bold leading-none"
-                                title={t('misc.thumbSidebar:phong_to_thumbnail_hint', 'Phóng to thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)')}
-                                onClick={() => nudgeThumbSize(1)}
-                            >+</button>
-                            <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
-                            <button
-                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title={hasSelection ? t('misc.thumbSidebar:xoay_trai_rotate_ccw') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
-                                onClick={() => handleQuickRotate(270)}
-                                disabled={!hasSelection}
-                            >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
-                            </button>
-                            <button
-                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title={hasSelection ? t('misc.thumbSidebar:xoay_phai_rotate_cw') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
-                                onClick={() => handleQuickRotate(90)}
-                                disabled={!hasSelection}
-                            >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>
-                            </button>
-                            <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
-                            <button
-                                className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-red-600 dark:text-red-400' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title={hasSelection ? t('misc.thumbSidebar:xoa_trang_delete') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
-                                onClick={() => setIsDeleteModalOpen(true)}
-                                disabled={!hasSelection}
-                            >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-                            </button>
-                        </div>
-                    </>
+                    <div className="w-full flex items-center justify-center gap-1 px-1">
+                        {/* UIUX (audit 2026-07-27 §C-19): nút −/+ đổi cỡ thumbnail (±25px, cùng clamp với Ctrl+wheel) */}
+                        <button
+                            className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200 transition-colors text-[14px] font-bold leading-none"
+                            title={t('misc.thumbSidebar:thu_nho_thumbnail_hint', 'Thu nhỏ thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)')}
+                            onClick={() => nudgeThumbSize(-1)}
+                        >−</button>
+                        <button
+                            className="w-6 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200 transition-colors text-[14px] font-bold leading-none"
+                            title={t('misc.thumbSidebar:phong_to_thumbnail_hint', 'Phóng to thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)')}
+                            onClick={() => nudgeThumbSize(1)}
+                        >+</button>
+                        <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
+                        <button
+                            className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
+                            title={hasSelection ? t('misc.thumbSidebar:xoay_trai_rotate_ccw') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
+                            onClick={() => handleQuickRotate(270)}
+                            disabled={!hasSelection}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
+                        </button>
+                        <button
+                            className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
+                            title={hasSelection ? t('misc.thumbSidebar:xoay_phai_rotate_cw') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
+                            onClick={() => handleQuickRotate(90)}
+                            disabled={!hasSelection}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>
+                        </button>
+                        <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
+                        <button
+                            className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${hasSelection ? 'hover:bg-black/10 dark:hover:bg-white/10 text-red-600 dark:text-red-400' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
+                            title={hasSelection ? t('misc.thumbSidebar:xoa_trang_delete') : noSelectionTitle} /* UIUX (audit 2026-07-27 §C-12) */
+                            onClick={() => setIsDeleteModalOpen(true)}
+                            disabled={!hasSelection}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                        </button>
+                        <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
+                        <button
+                            className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${viewerDarkBackground ? 'bg-black text-amber-300 ring-1 ring-white/30 shadow-sm' : 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200'}`}
+                            title={t('misc.thumbSidebar:che_do_nen_toi_tooltip')}
+                            onClick={toggleViewerDarkBackground}
+                            aria-label={t('misc.thumbSidebar:nen_trang_den', 'Nền Trắng / Đen')}
+                        >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10" />
+                                <path d="M12 2a10 10 0 0 1 0 20z" fill="currentColor" />
+                            </svg>
+                        </button>
+                    </div>
                 ) : (
                     <div className="w-full flex justify-center items-center">
                         <button
@@ -773,6 +786,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         workflowStatus={stickerSheetWorkflowStatusAtViewerPosition(pageWorkflowStatuses, index)}
                                         cutlinePreview={props.cutlinePreviews?.[logicalPageLabel]}
                                         editPreviews={editPreviewsBySourcePage.get(originalPageNum)}
+                                        viewerDarkBackground={viewerDarkBackground}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}
                                         handlePointerDown={handlePointerDown}

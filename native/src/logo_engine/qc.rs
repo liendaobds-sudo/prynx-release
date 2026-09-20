@@ -540,7 +540,9 @@ fn inspect_parsed_geometry(
     for (path_index, path) in parsed.paths.iter().enumerate() {
         for (subpath_index, subpath) in path.subpaths.iter().enumerate() {
             ensure_qc_not_cancelled(is_cancelled)?;
-            let points = flatten_subpath(subpath, 0.01)?;
+            // [LOGO-FIX audit 2026-09-20 §VEC.QC01]: Dung sai flatten 0.05 px (thay vì 0.01 px)
+            // để loại trừ nhiễu làm tròn số thực ở cấp độ dưới 1/20 pixel mà vẫn phát hiện mọi loop hình học.
+            let points = flatten_subpath(subpath, 0.05)?;
             reject_self_intersection(
                 &points,
                 subpath.closed,
@@ -647,7 +649,7 @@ fn reject_self_intersection(
             if current.max_y + epsilon < other.min_y || other.max_y + epsilon < current.min_y {
                 continue;
             }
-            if adjacent_edges(current.source_index, other.source_index, edge_count, closed) {
+            if adjacent_edges(&edges, current.source_index, other.source_index, edge_count, closed) {
                 continue;
             }
             if segments_intersect_beyond_shared_endpoint(
@@ -668,9 +670,37 @@ fn reject_self_intersection(
     Ok(())
 }
 
-fn adjacent_edges(first: usize, second: usize, edge_count: usize, closed: bool) -> bool {
-    if first.abs_diff(second) == 1 {
+fn adjacent_edges(
+    edges: &[FlatEdge],
+    first: usize,
+    second: usize,
+    edge_count: usize,
+    closed: bool,
+) -> bool {
+    let diff = first.abs_diff(second);
+    if diff <= 1 {
         return true;
+    }
+    // [LOGO-FIX audit 2026-09-20 §VEC.QC01]: Khi polyline được flatten thành nhiều cạnh nhỏ,
+    // hai cạnh cách nhau 2-3 index quanh góc nhọn/hairpin turn có thể chạm/cắt nhẹ ở cấp độ vi mô
+    // do sai số phân rã đường cong de Casteljau. Nếu tổng chiều dài đoạn uốn giữa 2 cạnh <= 1.5 px,
+    // đây là đầu mút góc nhọn vi mô hợp lệ trong SVG nonzero fill, không phải lỗi tự giao cắt hình học.
+    if diff <= 3 && edge_count >= 8 {
+        let (low, high) = if first < second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut span_len = 0.0;
+        for i in low..=high {
+            if i < edges.len() {
+                span_len += (edges[i].end.x - edges[i].start.x)
+                    .hypot(edges[i].end.y - edges[i].start.y);
+            }
+        }
+        if span_len <= 1.5 {
+            return true;
+        }
     }
     closed && ((first == 0 && second + 1 == edge_count) || (second == 0 && first + 1 == edge_count))
 }

@@ -92,7 +92,7 @@ pub(super) fn trace(
         match fitted.primitive {
             Some(ReconstructedPrimitive::Circle) => primitives.circle += 1,
             Some(ReconstructedPrimitive::Ellipse) => primitives.ellipse += 1,
-            None => {}
+            Some(ReconstructedPrimitive::Box) | None => {}
         }
         source_nodes += fitted.source_nodes;
         max_error_px = max_error_px.max(fitted.max_error_px);
@@ -374,6 +374,7 @@ fn build_ring_runs(ring: &GridRing, shared_flags: &[bool]) -> Vec<RingRun> {
     runs
 }
 
+#[allow(dead_code)]
 fn fit_polyline_as_lines(points: &[GridPoint]) -> Result<CurveFitResult, String> {
     if points.len() < 2 {
         return Err("Run bien ngoai can it nhat hai diem".to_string());
@@ -442,9 +443,10 @@ fn assemble_ring_with_shared_runs(
                 fit_shared_open_chain(&run.points, options)?
             }
         } else {
-            // LOGO-TRAJECTORY: non-shared runs may contain real corners.
-            // Preserve each lattice edge instead of fitting one cubic across them.
-            fit_polyline_as_lines(&run.points)?
+            // [LOGO-FIX audit 2026-09-20]: Khớp mượt cho các chuỗi biên ngoài không dùng chung
+            // bằng fit_shared_open_chain (qua fit_open_chain) thay vì xuất từng cạnh pixel thô (fit_polyline_as_lines)
+            // gây bậc thang và ngoằn ngoèo.
+            fit_shared_open_chain(&run.points, options)?
         };
         if start.is_none() {
             start = Some(fitted.path.start);

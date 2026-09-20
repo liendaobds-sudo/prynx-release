@@ -24,7 +24,7 @@ interface VdpPreviewField {
  * VdpPreviewImage — Renders a live preview of a VDP field (QR code or barcode).
  * Generates a data URL asynchronously and displays it as an image.
  */
-export const VdpPreviewImage = ({ field }: { field: VdpPreviewField }) => {
+export const VdpPreviewImage = ({ field, customData }: { field: VdpPreviewField; customData?: string }) => {
   const { t } = useTranslation();
     const [dataUrl, setDataUrl] = useState<string | null>(null);
 
@@ -35,8 +35,9 @@ export const VdpPreviewImage = ({ field }: { field: VdpPreviewField }) => {
                 if (field.type === 'qrcode') {
                     // Lề trắng vẽ bằng container (padding) → sinh ảnh QR không margin, nền trong suốt.
                     const style: QRStyleOptions = { ...DEFAULT_QR_STYLE, ...(field.qrStyle || {}), margin: 0, transparentBg: true };
+                    const qrText = (customData && customData.trim()) ? customData.trim() : "https://www.printsolutions.vn/";
                     const blob = await getQRBlob({
-                        data: "https://www.printsolutions.vn/",
+                        data: qrText,
                         size: 400,
                         errorCorrection: field.errorCorrection || 'M',
                         style
@@ -59,9 +60,10 @@ export const VdpPreviewImage = ({ field }: { field: VdpPreviewField }) => {
                         itf14: '10012345000017',
                         codabar: 'A12345B',
                     };
+                    const barText = (customData && customData.trim()) ? customData.trim() : (sampleData[barcodeType] || 'SAMPLE-12345');
                     const url = await generateBarcodeDataURL({
                         type: barcodeType,
-                        data: sampleData[barcodeType] || 'SAMPLE-12345',
+                        data: barText,
                         scale: 3,
                         height: field.barHeight || 12,
                         barColor: field.barColor || '#000000',
@@ -81,11 +83,10 @@ export const VdpPreviewImage = ({ field }: { field: VdpPreviewField }) => {
         };
         generate();
         return () => { isMounted = false; };
-        // CHỈ regen ảnh khi thuộc tính NỘI DUNG đổi — KHÔNG phụ thuộc x/y/width/height.
-        // Nếu phụ thuộc cả `field` thì mỗi lần kéo/di chuyển/resize sẽ render lại QR/
-        // barcode từng pixel → giật nặng. Kích thước khung do CSS lo (object-fit + padding).
+        // CHỈ regen ảnh khi thuộc tính NỘI DUNG đổi hoặc customData đổi — KHÔNG phụ thuộc x/y/width/height.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
+        customData,
         field.type, field.errorCorrection, field.qrStyle,
         field.barcodeType, field.barHeight, field.barColor,
         field.bgColor, field.transparentBg, field.showText,

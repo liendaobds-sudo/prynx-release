@@ -1322,6 +1322,9 @@
     "xoa_may_x": "Delete machine \"{{id}}\"?"
   },
   "imposition.gridPreview": {
+    "bo_cuc_va_so_lan_in": "Layout {{n}}/{{total}} · Print {{runs}} sheets",
+    "tong_hop_don_hang": "{{layouts}} layouts · {{placed}}/{{requested}} labels placed",
+    "da_xep": "Placed:",
     "chua_co_du_lieu_bo_cuc": "No layout data yet",
     "dang_nhan_dien_hinh_dang_tem": "🔍 Detecting sticker shape...",
     "dang_tinh_toan_bo_cuc": "Computing layout...",
@@ -1367,6 +1370,7 @@
     "khong_the_tinh_bo_cuc_preview": "Could not calculate the layout preview."
   },
   "imposition.gridSettings": {
+    "nhap_sl_moi_loai": "Blank = one copy per design",
     "0_xep_toi_da_tren_1_to": "0 = Max fit on 1 sheet",
     "1_mat": "Single-sided:",
     "1_mat_2": "Single-sided",
@@ -1483,7 +1487,9 @@
     "khong_ap_dung_cho_xep_chong": "Not applicable to Stack mode",
     "tran_le_bleed": "Bleed",
     "tu_lap_day_placeholder": "Auto-fill",
-    "xep_chong_moi_trang_mot_lan": "Stack mode uses each PDF page exactly once; quantities do not apply."
+    "xep_chong_moi_trang_mot_lan": "Stack mode uses each PDF page exactly once; quantities do not apply.",
+    "xep_chong_lap_kin_co_ban_du": "Stack mode fills every sheet. Extra copies repeat from the first page and follow the complete original set after collation; quantities do not apply.",
+    "xep_chong_tong_va_in_bu": "Total: {{total}} copies, including {{extra}} extra copies."
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Double-sided imposition requires an even page count. The file currently has ${sourceTotalPages} pages (odd) — add/remove 1 page in the thumbnails, or select 1 Side.",
@@ -3190,7 +3196,9 @@
     "dang_uu_tien_trang_chinh": "Prioritizing the current page...",
     "phong_to_thumbnail_hint": "Enlarge thumbnails (Ctrl+wheel over the list also works)",
     "shift_ctrl_click_chon_nhieu": "Shift/Ctrl+click to select multiple pages",
-    "thu_nho_thumbnail_hint": "Shrink thumbnails (Ctrl+wheel over the list also works)"
+    "thu_nho_thumbnail_hint": "Shrink thumbnails (Ctrl+wheel over the list also works)",
+    "che_do_nen_toi_tooltip": "Toggle page background: White / Black (inspect white borders, transparent PNG)",
+    "nen_trang_den": "Background White / Black"
   },
   "misc.toast": {
     "dong": "Close",
@@ -3625,6 +3633,8 @@
     "cac_ban_in_can_khac_nhau_theo_du_lieu": "prints need to differ by data",
     "cac_record_lien_quan_co_the_bi_thieu": "The related records may be missing content. Do you still want to continue generating the batch?",
     "cai_dat_truong": "Field settings",
+    "ghep_cot_du_lieu": "Data column mapping",
+    "dinh_dang_vi_tri": "Formatting & Position",
     "can_chu": "Text align",
     "can_le": "Alignment",
     "canh_bao": "WARNING",

@@ -386,14 +386,67 @@ def _inspect_raster(source_path: str) -> StickerSourceInspection:
 
 def _inspect_pdf(source_path: str) -> StickerSourceInspection:
     color_provenance = describe_color_provenance(source_path)
+    from app.workers.cut_export.cut_layer_extractor import extract_cut_contours_from_pdf
+    warnings: list[str] = []
+    warnings.extend(str(item) for item in color_provenance.get("warnings", []) if item)
+    pages_list: list[StickerSourcePageInspection] = []
+
     try:
         with pikepdf.Pdf.open(source_path, attempt_recovery=False) as document:
-            if len(document.pages) < 1:
+            total_pages = len(document.pages)
+            if total_pages < 1:
                 raise StickerSourceInspectionError("PDF không có trang nào.")
-            structural_pages = tuple(
-                _inspect_pdf_page(page, document, index + 1)
-                for index, page in enumerate(document.pages)
-            )
+
+            # PERF (audit 2026-09-19 §STICKER.MULTI_PAGE_FAST):
+            # Tái dùng trực tiếp `document` đang mở in-memory thay vì gọi extract_cut_contours
+            # mở lại file từ đĩa N lần.
+            # Với batch nhiều trang (vd 72 tem), trang 1 inspect đầy đủ, các trang sau đọc nhanh
+            # kích thước trang thay vì parse trùng lặp content stream và XObject.
+            is_large_batch = total_pages > 4
+            first_struct = _inspect_pdf_page(document.pages[0], document, 1)
+            try:
+                first_cut = len(extract_cut_contours_from_pdf(document, 0).contours)
+            except Exception:
+                first_cut = 0
+                warnings.append("cut-scan-failed-page-1")
+
+            pages_list.append(replace(
+                first_struct,
+                has_existing_cut=first_cut > 0,
+                cut_contour_count=first_cut,
+            ))
+
+            for idx in range(1, total_pages):
+                if is_large_batch:
+                    w_mm, h_mm = _page_size_mm(document.pages[idx])
+                    cut_count = 0
+                    if first_cut > 0:
+                        try:
+                            cut_count = len(extract_cut_contours_from_pdf(document, idx).contours)
+                        except Exception:
+                            cut_count = 0
+                    pages_list.append(StickerSourcePageInspection(
+                        page_number=idx + 1,
+                        width_mm=w_mm,
+                        height_mm=h_mm,
+                        has_existing_cut=cut_count > 0,
+                        has_vector=first_struct.has_vector,
+                        has_raster=first_struct.has_raster,
+                        has_alpha=first_struct.has_alpha,
+                        cut_contour_count=cut_count,
+                    ))
+                else:
+                    page_struct = _inspect_pdf_page(document.pages[idx], document, idx + 1)
+                    try:
+                        cut_count = len(extract_cut_contours_from_pdf(document, idx).contours)
+                    except Exception:
+                        cut_count = 0
+                        warnings.append(f"cut-scan-failed-page-{idx + 1}")
+                    pages_list.append(replace(
+                        page_struct,
+                        has_existing_cut=cut_count > 0,
+                        cut_contour_count=cut_count,
+                    ))
     except pikepdf.PasswordError as exc:
         raise StickerSourceInspectionError(
             "PDF đang được bảo vệ bằng mật khẩu. Hãy mở khóa rồi thử lại."
@@ -401,22 +454,6 @@ def _inspect_pdf(source_path: str) -> StickerSourceInspection:
     except pikepdf.PdfError as exc:
         raise StickerSourceInspectionError("Không đọc được cấu trúc PDF nguồn.") from exc
 
-    warnings: list[str] = []
-    warnings.extend(str(item) for item in color_provenance.get("warnings", []) if item)
-    pages_list: list[StickerSourcePageInspection] = []
-    from app.workers.cut_export.cut_layer_extractor import extract_cut_contours
-
-    for index, page in enumerate(structural_pages):
-        try:
-            cut_count = len(extract_cut_contours(source_path, index).contours)
-        except Exception:
-            cut_count = 0
-            warnings.append(f"cut-scan-failed-page-{index + 1}")
-        pages_list.append(replace(
-            page,
-            has_existing_cut=cut_count > 0,
-            cut_contour_count=cut_count,
-        ))
     pages = tuple(pages_list)
 
     preview = _render_pdf_preview(source_path)

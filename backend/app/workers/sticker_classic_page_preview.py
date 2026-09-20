@@ -5,6 +5,8 @@ không sửa nhãn để ép nhiều mảng thành một tem. PDFium chạy tron
 """
 from __future__ import annotations
 
+from app.utils.cutline_debug_log import log_cutline, CutlineTimer
+
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from io import BytesIO
@@ -292,11 +294,12 @@ def _render_canonical_classic_page(source_path, page_number, preview_size, geome
         # không khớp frame/nhánh góc của Execute. Dùng chính engine xuất và thu
         # memo trước writer; cache nóng bỏ solver mà không đổi quỹ đạo.
         with simplify_memo_scope() as memo:
-            result = StickerEngine(dpi=300).process_pdf(
-                input_path=source_path, output_path="", _page_subset=[page_number-1],
-                remove_white_bg=True, draw_cut_contour=True, alpha_corner_policy="adaptive",
-                **geometry,
-            )
+            with CutlineTimer("CLASSIC_PREVIEW", "STICKER_ENGINE_PROCESS_PDF", f"page={page_number}", simplify=requested_simplify):
+                result = StickerEngine(dpi=300).process_pdf(
+                    input_path=source_path, output_path="", _page_subset=[page_number-1],
+                    remove_white_bg=True, draw_cut_contour=True, alpha_corner_policy="adaptive",
+                    **geometry,
+                )
         if not isinstance(result[0], bytes):
             raise StickerSheetExportError("Không dựng được đường bế toàn trang.")
         with pikepdf.Pdf.open(BytesIO(result[0])) as document:
@@ -357,9 +360,22 @@ def _render_classic_page_scoped(source_path, page_number, preview_size, geometry
             Path(canonical).unlink(missing_ok=True)
 
 
+_DIGEST_CACHE: dict[tuple[str, float, int], str] = {}
+
 def source_digest(path):
-    with open(path, "rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+    try:
+        st = os.stat(path)
+        key = (str(path), st.st_mtime, st.st_size)
+        cached = _DIGEST_CACHE.get(key)
+        if cached is not None:
+            return cached
+        with open(path, "rb") as stream:
+            d = hashlib.file_digest(stream, "sha256").hexdigest()
+        _DIGEST_CACHE[key] = d
+        return d
+    except Exception:
+        with open(path, "rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def whole_page_key(digest, page_number, revision, geometry, preview_size):

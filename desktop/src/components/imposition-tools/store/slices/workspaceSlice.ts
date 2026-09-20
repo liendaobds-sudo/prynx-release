@@ -52,6 +52,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 layoutMode,
                 state.layoutType,
                 tool,
+                state.impositionUnit,
             );
 
             const updates: Record<string, unknown> = {
@@ -101,6 +102,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                         snap.taskMode,
                         snap.layoutType,
                         prevTool,
+                        snap.impositionUnit,
                     );
                 }
                 // impositionUnit chỉ có nghĩa trong Bình tem bế. Không lưu
@@ -123,6 +125,12 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 }
             } else {
                 // Chưa có profile tool mới → mặc định theo loại, KHÔNG kế thừa taskMode tool cũ
+                if (nextTool === 'sticker_imposer') {
+                    // M72.C: đơn hàng mới cần SL rõ ràng, không ngầm ép mọi mẫu lên một tờ.
+                    Object.assign(updates, {
+                        targetQuantity: 1, targetQuantitiesByPage: {}, groupingStrategy: 'free_gang',
+                    });
+                }
                 if (nextTool === 'booklet') {
                     updates.taskMode = 'booklet';
                 } else if ((LAYOUT_TASK_TOOLS as readonly string[]).includes(nextTool)) {
@@ -147,6 +155,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 nextTaskMode,
                 candidateLayout,
                 nextTool,
+                updates.impositionUnit,
             );
             updates.taskMode = normalizeProfileTaskMode(nextTaskMode, nextTool);
 
@@ -184,8 +193,14 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
             next,
             rememberedLayout ?? state.layoutType,
             tool,
+            nextUnit,
         );
+        const productionDefaults = tool === 'sticker_imposer'
+            && !state.toolProfiles[tool] && next === 'nup' && nextUnit === 'sticker'
+            ? { targetQuantity: 1, targetQuantitiesByPage: {}, groupingStrategy: 'free_gang' as const }
+            : {};
         set((s) => ({
+            ...productionDefaults,
             taskMode: next,
             impositionUnit: nextUnit,
             layoutType: nextLayoutType,
@@ -193,6 +208,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 ...s.toolProfiles,
                 [tool]: {
                     ...(s.toolProfiles[tool] || {}),
+                    ...productionDefaults,
                     taskMode: next,
                     impositionUnit: nextUnit,
                     layoutType: nextLayoutType,

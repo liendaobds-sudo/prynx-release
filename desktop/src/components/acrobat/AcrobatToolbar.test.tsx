@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
     appSettingsState: {
         showRulers: false,
         toggleRulers: vi.fn(),
+        viewerDarkBackground: false,
+        toggleViewerDarkBackground: vi.fn(),
     },
     imposerSettingsState: {
         activeDashboardTool: null,
@@ -132,5 +134,12 @@ describe('UIUX (audit 2026-08-25) popup toolbar không bị scrollport cắt', (
         fireEvent.click(within(menu).getByRole('menuitem', { name: '200%' }));
         expect(mocks.workspaceState.setViewerZoom).toHaveBeenCalledWith(2);
         expect(mocks.workspaceState.setViewerFitMode).toHaveBeenCalledWith('custom');
+    });
+
+    it('nút đổi màu nền trang gọi toggleViewerDarkBackground', () => {
+        renderToolbar();
+        const bgButton = screen.getByRole('button', { name: 'Nền Trắng / Đen' });
+        fireEvent.click(bgButton);
+        expect(mocks.appSettingsState.toggleViewerDarkBackground).toHaveBeenCalledTimes(1);
     });
 });

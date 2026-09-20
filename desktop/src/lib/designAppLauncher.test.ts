@@ -66,11 +66,12 @@ describe('designAppLauncher partial page edit and merge', () => {
         expect(pageIndices).toEqual([1]);
     });
 
-    it('loại bỏ triệt để PieceInfo (Illustrator Private Data) để Illustrator không mở lại toàn bộ artboard cũ', async () => {
+    it('loại bỏ triệt để PieceInfo (Illustrator Private Data) cho tài liệu nhiều trang để Illustrator không mở lại toàn bộ artboard cũ', async () => {
         const { extractPagesForExternalEdit } = await import('./designAppLauncher');
-        const { PDFName, PDFDict } = await import('pdf-lib');
+        const { PDFName } = await import('pdf-lib');
         const doc = await PDFDocument.create();
         const p1 = doc.addPage([100, 100]);
+        doc.addPage([100, 100]); // Trang 2 để tạo tài liệu nhiều trang (pageCount > 1)
         // Gắn giả lập PieceInfo vào trang giống như Adobe Illustrator làm
         const pieceInfo = doc.context.obj({
             Illustrator: doc.context.obj({
@@ -105,5 +106,44 @@ describe('designAppLauncher partial page edit and merge', () => {
         expect(extractedDoc.getPageCount()).toBe(1);
         expect(extractedDoc.getPage(0).node.has(PDFName.of('PieceInfo'))).toBe(false);
         expect(extractedDoc.catalog.has(PDFName.of('PieceInfo'))).toBe(false);
+    });
+
+    it('bảo tồn PieceInfo cho tài liệu đơn trang (pageCount === 1) để Illustrator giữ nguyên Live Text và layer gốc', async () => {
+        const { extractPagesForExternalEdit } = await import('./designAppLauncher');
+        const { PDFName } = await import('pdf-lib');
+        const doc = await PDFDocument.create();
+        const p1 = doc.addPage([100, 100]); // Chỉ 1 trang
+        const pieceInfo = doc.context.obj({
+            Illustrator: doc.context.obj({
+                Private: doc.context.obj({ NumBlock: 1 }),
+            }),
+        });
+        p1.node.set(PDFName.of('PieceInfo'), pieceInfo);
+        doc.catalog.set(PDFName.of('PieceInfo'), pieceInfo);
+        const bytes = await doc.save();
+
+        let savedBytes: Uint8Array | null = null;
+        (window as unknown as { __TAURI_INTERNALS__?: { invoke: unknown } }).__TAURI_INTERNALS__ = {
+            invoke: vi.fn(async (cmd: string, args?: { path?: string; contents?: Uint8Array; paths?: string[] }) => {
+                if (cmd === 'plugin:path|resolve_directory') return 'C:\\Temp';
+                if (cmd === 'plugin:path|join' && args?.paths) return args.paths.join('\\');
+                if (cmd === 'write_file_atomic' && args?.contents) {
+                    savedBytes = args.contents;
+                    return undefined;
+                }
+                return undefined;
+            }),
+        };
+
+        const fakeFile = {
+            name: 'single_artboard.pdf',
+            arrayBuffer: async () => bytes.buffer.slice(0),
+        } as unknown as File;
+
+        await extractPagesForExternalEdit(fakeFile, [0], 'single_artboard.pdf');
+        expect(savedBytes).not.toBeNull();
+        const extractedDoc = await PDFDocument.load(savedBytes!);
+        expect(extractedDoc.getPageCount()).toBe(1);
+        expect(extractedDoc.getPage(0).node.has(PDFName.of('PieceInfo'))).toBe(true);
     });
 });

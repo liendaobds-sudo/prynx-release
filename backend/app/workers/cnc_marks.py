@@ -18,6 +18,23 @@ logger = logging.getLogger(__name__)
 MM_TO_PTS = 2.83465
 
 
+def compute_duplex_mark_forbidden_zones(sheet_w, sheet_h, margin_mm=3.0):
+    """PARITY (audit 2026-09-20 §PAR20.04): trả về 4 Shapely Polygon vùng cấm của dấu canh."""
+    from shapely.geometry import box
+    line_len = 5.1 * MM_TO_PTS
+    half = line_len / 2.0
+    margin_pt = margin_mm * MM_TO_PTS
+    cx = sheet_w / 2.0
+    cy = sheet_h / 2.0
+    centers = [
+        (cx, margin_pt),
+        (cx, sheet_h - margin_pt),
+        (margin_pt, cy),
+        (sheet_w - margin_pt, cy),
+    ]
+    return [box(px - half, py - half, px + half, py + half) for px, py in centers]
+
+
 def draw_duplex_marks(page, sheet_w, sheet_h, margin_mm=3.0, ocg_xref=None):
     """Vẽ dấu canh in 2 mặt lên `page`. Trả về số dấu đã vẽ (4)."""
     circle_d = 3 * MM_TO_PTS

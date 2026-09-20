@@ -69,14 +69,15 @@ def _create_cnc_pont_ocgs(out_doc, pont_config):
 
 
 def _resolve_cnc_collisions(placements, pont_config, sheet_w, sheet_h,
-                            margin_left, margin_bottom, src_doc, detected_shapes_by_page):
+                            margin_left, margin_bottom, src_doc, detected_shapes_by_page,
+                            duplex_marks=False):
     """Dời/loại tem đè vùng cấm boong (pont) — tái dùng pont_collision như Bình Tem Bế.
 
     Trả placements đã giải va chạm (hoặc nguyên bản nếu không có boong / không va chạm).
     S&R 1 mẫu: dùng polygon hình thật của trang. Gang nhiều mẫu khác trang: dùng
     kiểm tra theo hình chữ nhật bao (base_poly=None) để an toàn.
     """
-    if not placements or not pont_config or pont_config.get('disableCollision', False):
+    if not placements or ((not pont_config or pont_config.get('disableCollision', False)) and not duplex_marks):
         return placements
     try:
         from app.workers.pont_collision import (
@@ -86,20 +87,25 @@ def _resolve_cnc_collisions(placements, pont_config, sheet_w, sheet_h,
     except Exception:
         return placements
 
-    def _m(key, default_pt):
-        v = pont_config.get(key)
-        return v * PC_MM if v is not None else default_pt
+    zones = []
+    if pont_config and not pont_config.get('disableCollision', False):
+        def _m(key, default_pt):
+            v = pont_config.get(key)
+            return v * PC_MM if v is not None else default_pt
 
-    margins = {
-        'top': _m('marginTop', margin_bottom),
-        'bottom': _m('marginBottom', margin_bottom),
-        'left': _m('marginLeft', margin_left),
-        'right': _m('marginRight', margin_left),
-    }
-    try:
-        zones = calculate_forbidden_zones(pont_config, margins, sheet_w, sheet_h)
-    except Exception:
-        return placements
+        margins = {
+            'top': _m('marginTop', margin_bottom),
+            'bottom': _m('marginBottom', margin_bottom),
+            'left': _m('marginLeft', margin_left),
+            'right': _m('marginRight', margin_left),
+        }
+        try:
+            zones = calculate_forbidden_zones(pont_config, margins, sheet_w, sheet_h) or []
+        except Exception:
+            zones = []
+    if duplex_marks:
+        from app.workers.cnc_marks import compute_duplex_mark_forbidden_zones
+        zones.extend(compute_duplex_mark_forbidden_zones(sheet_w, sheet_h))
     if not zones:
         return placements
 
@@ -392,19 +398,38 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                 frontend_shape_props = (detected_shape_params_by_page.get(str(fi))
                                         or detected_shape_params_by_page.get(fi) or {})
 
-            layout = compute_sticker_layout_for_page(
-                page=src_doc[fi],
-                sheet_usable_w=usable_w,
-                sheet_usable_h=usable_h,
-                gap_x=gap_x, gap_y=gap_y,
-                strategy=sr_strategy,
-                shape_type_override=frontend_shape if frontend_shape else None,
-                shape_props_override=frontend_shape_props if frontend_shape_props else None,
-                bleed_pt=bleed_pt,
-                secondary_gap=None
-            )
-            
-            items = layout.get('items', [])
+            if sr_strategy == 'manual':
+                # PARITY (audit 2026-09-20 §PAR20.02): CNC S&R thủ công nhận đúng cols/rows từ settings
+                from app.workers.nup_layout_solver import solve_manual
+                cols_m = max(1, int(settings.get('cols') or settings.get('columns') or 1))
+                rows_m = max(1, int(settings.get('rows') or 1))
+                pg = src_doc[fi]
+                lp = _find_largest_die_path(pg)
+                if lp:
+                    tw, th = lp['rect'].width, lp['rect'].height
+                else:
+                    tw = pg.rect.width - 2 * bleed_pt
+                    th = pg.rect.height - 2 * bleed_pt
+                sol_m = solve_manual(tw, th, gap_x, gap_y, cols_m, rows_m)
+                items = [{
+                    'x': c['x'], 'y': c['y'],
+                    'width': c['width'], 'height': c['height'],
+                    'isRotated': c.get('isRotated', False),
+                    'isRotated180': c.get('isRotated180', False),
+                } for c in sol_m.get('cells', [])]
+            else:
+                layout = compute_sticker_layout_for_page(
+                    page=src_doc[fi],
+                    sheet_usable_w=usable_w,
+                    sheet_usable_h=usable_h,
+                    gap_x=gap_x, gap_y=gap_y,
+                    strategy=sr_strategy,
+                    shape_type_override=frontend_shape if frontend_shape else None,
+                    shape_props_override=frontend_shape_props if frontend_shape_props else None,
+                    bleed_pt=bleed_pt,
+                    secondary_gap=None
+                )
+                items = layout.get('items', [])
             placements = _build_placements(
                 items, usable_w, usable_h, margin_left, margin_bottom, margin_top, fi
             )
@@ -412,6 +437,7 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
             placements = _resolve_cnc_collisions(
                 placements, pont_config, sheet_w, sheet_h,
                 margin_left, margin_bottom, src_doc, detected_shapes_by_page,
+                duplex_marks=duplex_marks,
             )
             total_placed = len(placements)
 
@@ -467,6 +493,19 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                     )
                 except Exception:
                     gang_exclude = []
+            if duplex_marks:
+                from app.workers.cnc_marks import compute_duplex_mark_forbidden_zones
+                dm_zones = compute_duplex_mark_forbidden_zones(sheet_w, sheet_h)
+                gap_buf = (gap or 0) / 2.0
+                for z in dm_zones:
+                    zminx, zminy, zmaxx, zmaxy = z.bounds
+                    zw = zmaxx - zminx
+                    zh = zmaxy - zminy
+                    px = zminx - margin_left - gap_buf
+                    py = usable_h - (zminy - margin_bottom + zh) - gap_buf
+                    zw += gap_buf * 2
+                    zh += gap_buf * 2
+                    gang_exclude.append((px, py, zw, zh))
             res = build_cnc_gang_layout(
                 gang_items, usable_w, usable_h, gap,
                 margin_left=margin_left, margin_bottom=margin_bottom, margin_top=margin_top,

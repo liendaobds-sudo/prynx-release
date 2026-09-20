@@ -69,10 +69,9 @@ describe('InstantPreflightHud — Thanh cảnh báo lỗi chế bản tức thì
         expect(container.firstChild).toBeNull();
     });
 
-    it('Hiển thị trạng thái sạch (Đã cập nhật / 0 lỗi) khi file đạt chuẩn', () => {
-        render(<InstantPreflightHud result={cleanResult} onDismiss={vi.fn()} />);
-        expect(screen.getByText('Đã cập nhật')).toBeDefined();
-        expect(screen.getByText('CMYK chuẩn · Sắc nét · 0 lỗi')).toBeDefined();
+    it('Không hiển thị HUD khi file đạt chuẩn (0 lỗi, 0 cảnh báo) để tránh che khuất giao diện', () => {
+        const { container } = render(<InstantPreflightHud result={cleanResult} onDismiss={vi.fn()} />);
+        expect(container.firstChild).toBeNull();
     });
 
     it('Hiển thị cảnh báo và cho phép bấm mở rộng xem chi tiết', () => {
@@ -102,9 +101,9 @@ describe('InstantPreflightHud — Thanh cảnh báo lỗi chế bản tức thì
         expect(onOpenTool).toHaveBeenCalledWith('hairlines');
     });
 
-    it('Bấm nút đóng gọi callback onDismiss', () => {
+    it('Bấm nút đóng gọi callback onDismiss khi có cảnh báo', () => {
         const onDismiss = vi.fn();
-        render(<InstantPreflightHud result={cleanResult} onDismiss={onDismiss} />);
+        render(<InstantPreflightHud result={warningResult} onDismiss={onDismiss} />);
         const closeBtn = screen.getByTitle('Đóng thông báo');
         fireEvent.click(closeBtn);
         expect(onDismiss).toHaveBeenCalledTimes(1);

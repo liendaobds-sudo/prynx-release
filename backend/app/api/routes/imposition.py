@@ -2118,6 +2118,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     Preview sticker layout — uses the SAME compute function as nup_engine
     to guarantee preview ≡ output.
     """
+    from app.workers.sticker_nup_policy import effective_nup_quantity
     from app.utils.preview_perf_log import log as _diag_log, sanitize_diagnostic_id
     _diagnostic_trace_id = sanitize_diagnostic_id(req.diagnostic_trace_id)
     _diagnostic_request_id = sanitize_diagnostic_id(req.diagnostic_request_id)
@@ -2149,9 +2150,20 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
         req.duplex_flow = "normal"
 
     # INKING (audit 2026-08-12 §INK-DIE-02): tem bế chỉ nhận Inking khi hình
+    from app.workers.sticker_nup_policy import validate_sticker_layout
+    try:
+        validate_sticker_layout({
+            "isDieCutMode": req.is_die_cut, "imposerMode": req.imposer_mode,
+            "page_sheet_mode": req.page_sheet_mode, "taskMode": req.task_mode,
+            "layoutType": req.layout_type,
+        })
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # INKING: các cổng hình học bên dưới dùng trạng thái đã được xác thực.
     # chuẩn là RECTANGLE (bao gồm hình vuông); CNC/hình khác luôn bị khóa.
     _preview_alternate_rotation = req.alternate_rotation
-    from app.workers.nup_layout_solver import rectangle_inking_is_allowed
+    from app.workers.nup_layout_solver import rectangle_inking_is_allowed, sequential_required_items
     _preview_diecut_inking = rectangle_inking_is_allowed(
         is_die_cut=bool(req.is_die_cut),
         is_cnc=str(req.imposer_mode or "").lower() == "cnc",
@@ -2357,11 +2369,58 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             doc = pdf_lib.open(_doc_path)
             _plog(f"open doc ({file_path.split(chr(92))[-1]}, {doc.page_count}p)")
             src_page_count = doc.page_count
+            # SIMPLE-GRID (2026-09-19): không đi nhánh ghép vùng/NFP dù có nhiều mẫu.
+            _page_sheet_pont_order = (
+                req.page_sheet_mode and req.layout_type in ("sequential", "cut_stacks")
+                and req.pont_type != "none" and bool(req.pont_config)
+                and not req.pont_config.get("disableCollision", False)
+                and req.grouping_strategy != "cluster_tile"
+            )
+            _single_optimal_order = (
+                req.strategy == "optimal_auto" and (req.total_pages or doc.page_count) == 1
+                and req.grouping_strategy != "cluster_tile"
+            )
+            if _page_sheet_pont_order or ((req.strategy in ("simple_auto", "manual") or _single_optimal_order) and req.is_die_cut
+                    and req.imposer_mode != "cnc" and not req.page_sheet_mode
+                    and ((req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat")
+                         or (req.strategy == "manual" and req.task_mode == "step_repeat"))):
+                from app.core.nesting_preview_capacity import settings_from_preview_request
+                from app.workers.sticker_grid_order import build_sticker_grid_order, build_sticker_manual_repeat_order
+                grid_settings = settings_from_preview_request(req)
+                grid_settings["gridStrategy"] = req.strategy
+                grid_settings["cols"], grid_settings["rows"] = req.cols, req.rows
+                grid_settings["alternateRotation"] = _preview_alternate_rotation
+                try:
+                    grid_preview = (
+                        build_sticker_manual_repeat_order(doc, grid_settings, logical_page_count=req.total_pages).preview
+                        if req.task_mode == "step_repeat" else
+                        build_sticker_grid_order(doc, grid_settings, logical_page_count=req.total_pages).preview
+                    )
+                    _plog(f"RETURN {req.strategy} plan: sheets={grid_preview['sheetsNeeded']} items={grid_preview['orderSummary']['placedCount']}")
+                    return grid_preview
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                finally:
+                    doc.close()
             # SSOT số mẫu đang có trên dải thumbnail. PDF vật lý có thể vẫn chỉ
             # có 1 trang trong lúc các bản nhân đang được materialize.
             _live_preview_page_count = int(getattr(req, 'total_pages', 0) or 0)
             if _live_preview_page_count <= 0:
                 _live_preview_page_count = int(doc.page_count or 0)
+            if (req.is_die_cut and req.imposer_mode != "cnc" and not req.page_sheet_mode
+                    and req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat"):
+                from app.workers.sticker_nup_policy import sticker_order_quantities
+                effective_quantities = sticker_order_quantities(range(_live_preview_page_count), {
+                    "targetQuantity": req.target_quantity,
+                    "targetQuantitiesByPage": req.target_quantities_by_page,
+                })
+                req = req.model_copy(update={
+                    "target_quantity": effective_nup_quantity(req.target_quantity),
+                    "target_quantities_by_page": {
+                        str(index): effective_quantities.get(index, 0)
+                        for index in range(_live_preview_page_count)
+                    },
+                })
 
             # Tách vị trí loại đang xem khỏi chỉ số trang vật lý. Với thumbnail
             # nhân bản, viewer có thể đang ở loại 3 trong khi PDF fallback còn 1 trang.
@@ -2418,6 +2477,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 return result
 
             if _is_cluster_req:
+                if getattr(req, 'imposer_mode', None) == 'cnc':
+                    # PARITY (audit 2026-09-20 §PAR20.03): CNC không hỗ trợ cluster, fail-closed
+                    doc.close()
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Công cụ CNC (Bình bế rớt) không hỗ trợ chia cụm (cluster_tile)."
+                    )
                 _plog("ENTER cluster branch")
                 # ══ CHIA CỤM (cluster_tile) PREVIEW — DÙNG CHUNG SSOT với export ══
                 # compute_cluster_placements xử cả single/multi-page + 3 kiểu ghép
@@ -2445,9 +2511,16 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 _gq = getattr(req, 'target_quantity', 0) or 0
 
                 def _qty_c(pi):
-                    q = _tqbp.get(str(pi), _tqbp.get(pi, _gq))
+                    # PARITY (audit 2026-09-20 §PAR20.09): override 0 là loại trừ tường minh
+                    p_str = str(pi)
+                    if p_str in _tqbp or pi in _tqbp:
+                        raw = _tqbp.get(p_str, _tqbp.get(pi))
+                        try:
+                            return max(0, int(raw))
+                        except (TypeError, ValueError):
+                            return 0
                     try:
-                        q = int(q)
+                        q = int(_gq)
                     except (TypeError, ValueError):
                         q = 0
                     return q if q > 0 else 1
@@ -2466,16 +2539,19 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 for pi in range(doc.page_count):
                     pg = doc[pi]
                     if _is_gui_cluster:
+                        # PARITY (audit 2026-09-20 §PAR20.08): dùng chung resolver với export (không ghi đè TrimBox)
                         if req.page_sheet_mode:
                             from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
-                            _geo_c = resolve_page_sheet_geometry(pg.rect.width, pg.rect.height, bleed_pt)
+                            from app.workers.mixed_guillotine_adapter import resolve_guillotine_geometry
+                            _source_w_gui, _source_h_gui, _ = resolve_guillotine_geometry(pg, 0.0)
+                            _geo_c = resolve_page_sheet_geometry(_source_w_gui, _source_h_gui, bleed_pt)
                             tw_c, th_c = _geo_c.trim_width, _geo_c.trim_height
-                        elif abs(pg.trimbox.width - pg.rect.width) > 1.0:
-                            tw_c, th_c = pg.trimbox.width, pg.trimbox.height
                         else:
-                            tw_c = pg.rect.width - 2 * bleed_pt
-                            th_c = pg.rect.height - 2 * bleed_pt
-                        page_infos_c.append((pi, _qty_c(pi), tw_c, th_c))
+                            from app.workers.mixed_guillotine_adapter import resolve_guillotine_trim
+                            tw_c, th_c = resolve_guillotine_trim(pg, bleed_pt)
+                        _q_val = _qty_c(pi)
+                        if _q_val > 0:
+                            page_infos_c.append((pi, _q_val, tw_c, th_c))
                         continue
                     lp = _find_largest_die_path(pg)
                     # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (chung export).
@@ -2493,7 +2569,9 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     else:
                         tw_c = pg.rect.width - 2 * bleed_pt
                         th_c = pg.rect.height - 2 * bleed_pt
-                    page_infos_c.append((pi, _qty_c(pi), tw_c, th_c))
+                    _q_val = _qty_c(pi)
+                    if _q_val > 0:
+                        page_infos_c.append((pi, _q_val, tw_c, th_c))
 
                 # Cluster dùng cùng master context với S&R/homogeneous. Chỉ đúng
                 # một page có geometry thật mới được kế thừa; multi-mold no-op.
@@ -2517,6 +2595,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 # PARITY với export (nup_engine): CHỈ replicate_mixed sort theo kích
                 # thước (gom mọi loại vào 1 cụm). zone_per_type / zone_ratio giữ THỨ TỰ
                 # TRANG (mỗi loại 1 vùng theo trang 1→N) → KHÔNG sort.
+                if not page_infos_c and doc.page_count > 0:
+                    page_infos_c = [(0, 1, doc[0].rect.width - 2 * bleed_pt, doc[0].rect.height - 2 * bleed_pt)]
                 if combine_mode == 'replicate_mixed':
                     page_infos_c.sort(key=lambda x: min(x[2], x[3]), reverse=True)
 
@@ -2572,15 +2652,16 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     _pg = doc[_geometry_idx_c]
                     _t_n = _time_c.perf_counter()
                     if _is_gui_cluster:
+                        # PARITY (audit 2026-09-20 §PAR20.08): dùng chung resolver với export
                         if req.page_sheet_mode:
                             from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
-                            _geo_g = resolve_page_sheet_geometry(_pg.rect.width, _pg.rect.height, bleed_pt)
+                            from app.workers.mixed_guillotine_adapter import resolve_guillotine_geometry
+                            _source_w_gui, _source_h_gui, _ = resolve_guillotine_geometry(_pg, 0.0)
+                            _geo_g = resolve_page_sheet_geometry(_source_w_gui, _source_h_gui, bleed_pt)
                             _tw_g, _th_g = _geo_g.trim_width, _geo_g.trim_height
-                        elif abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
-                            _tw_g, _th_g = _pg.trimbox.width, _pg.trimbox.height
                         else:
-                            _tw_g = _pg.rect.width - 2 * bleed_pt
-                            _th_g = _pg.rect.height - 2 * bleed_pt
+                            from app.workers.mixed_guillotine_adapter import resolve_guillotine_trim
+                            _tw_g, _th_g = resolve_guillotine_trim(_pg, bleed_pt)
                         try:
                             if req.strategy == 'manual':
                                 _sol = _sm_c(
@@ -2650,7 +2731,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     _ch = (req.cluster_h or 210.0 * MM)
 
                 if _lt == 'repeat':
-                    _view_pi = getattr(req, 'view_page_idx', 0) or 0
+                    # PARITY (audit 2026-09-20 §PAR20.10): schema PreviewLayoutRequest dùng page_idx
+                    _view_pi = getattr(req, 'page_idx', None)
+                    if _view_pi is None:
+                        _view_pi = getattr(req, 'view_page_idx', 0) or 0
                     _matched_info = [info for info in page_infos_c if info[0] == _view_pi]
                     page_infos_c = _matched_info if _matched_info else page_infos_c[:1]
                     combine_mode = 'replicate_mixed'
@@ -2826,6 +2910,21 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         except Exception:
                             cnc_exclude = []
 
+                    if getattr(req, 'cnc_duplex_marks', False):
+                        from app.workers.cnc_marks import compute_duplex_mark_forbidden_zones
+                        _dm_zones = compute_duplex_mark_forbidden_zones(
+                            getattr(req, 'sheet_w', 0) or 0, getattr(req, 'sheet_h', 0) or 0
+                        )
+                        _gb = cnc_gap / 2.0
+                        for z in _dm_zones:
+                            zminx, zminy, zmaxx, zmaxy = z.bounds
+                            zw = zmaxx - zminx
+                            zh = zmaxy - zminy
+                            px = zminx - (getattr(req, 'margin_left', 0) or 0) - _gb
+                            py = req.usable_h - (zminy - (getattr(req, 'margin_bottom', 0) or 0) + zh) - _gb
+                            zw += _gb * 2
+                            zh += _gb * 2
+                            cnc_exclude.append((px, py, zw, zh))
                     cnc_layout = build_cnc_front_layout(
                         page_dims_qty, req.usable_w, req.usable_h,
                         gap=cnc_gap,
@@ -3231,6 +3330,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         gap=max(gap_x_pt, gap_y_pt),
                         allow_rotation=True,
                     )
+                    # BE.02: không công bố preview thiếu mẫu như một kế hoạch hợp lệ.
+                    from app.workers.nup_order_safety import require_packer_coverage
+                    try:
+                        require_packer_coverage(page_dims_qty, bp_result)
+                    except ValueError as exc:
+                        doc.close()
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
                 else:
                     bp_result = solve_auto_fill_mixed(
                         sheet_w=req.usable_w,
@@ -3283,6 +3389,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     "totalItems": sum(len(s["cells"]) for s in _sheets_out),
                     # Chỉ trả `sheets` khi thật sự tràn tờ, tránh hiện nút lật vô cớ.
                     **({"sheets": _sheets_out} if len(_sheets_out) > 1 else {}),
+                    "sheetsNeeded": max(1, int(bp_result.get("sheets_needed") or len(_sheets_out))),
                     "strategyUsed": "bin_pack_mixed",
                     "isMixedPreview": True,
                     "absPlacement": True,
@@ -3613,11 +3720,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     )
             if (not getattr(req, 'is_die_cut', False)
                     and _lt in ('sequential', 'cut_stacks', 'ratio_stack')
-                    and _live_preview_page_count > 1
+                    and (_live_preview_page_count > 1
+                         or (req.page_sheet_mode and _lt == 'cut_stacks'))
                     and _tm in ('nup', 'step_repeat', 'booklet')):
                 from app.workers.nup_layout_solver import (
                     solve_optimal_layout, solve_manual,
                     compute_ratio_stack_templates,
+                    build_cut_stack_sheets,
                     build_sequential_product_sequence,
                     build_guillotine_preview_sheet,
                     build_mixed_preview_response,
@@ -3649,6 +3758,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
                         alternate_rotation=_preview_alternate_rotation,
+                        required_items=(
+                            sequential_required_items(
+                                _live_preview_page_count, req.target_quantity,
+                                req.target_quantities_by_page, req.duplex_flow == 'double',
+                            )
+                            if _lt == 'sequential' and not req.page_sheet_mode else None
+                        ),
                     )
                 _mp_cells = _mp_layout.get('cells', [])
                 _mp_cap = len(_mp_cells)
@@ -3727,13 +3843,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 elif _lt == 'cut_stacks' and _mp_cap > 0:
                     # Mỗi tờ s: cell j → page j * n_sheets + s. Phải trả đủ mọi
                     # tờ khác nhau để UI lật xem, không chỉ gửi tờ 0 + sheetsNeeded.
-                    _n_sheets_cs = max(1, _math_mp.ceil(_n_src / _mp_cap))
-                    for _sheet_idx_cs in range(_n_sheets_cs):
-                        _pages_cs = []
-                        for _j in range(_mp_cap):
-                            _src = _j * _n_sheets_cs + _sheet_idx_cs
-                            if _src < _n_src:
-                                _pages_cs.append(_src)
+                    # CS.FILL (audit 2026-09-20): chỉ nguyên tấm decal lấp phần dư
+                    # bằng bản sao; dùng đúng helper của exporter để giữ thứ tự cọc.
+                    _cut_stack_pages = build_cut_stack_sheets(
+                        _n_src, _mp_cap, fill_sheet=req.page_sheet_mode,
+                    )
+                    _n_sheets_cs = len(_cut_stack_pages)
+                    for _sheet_idx_cs, _pages_cs in enumerate(_cut_stack_pages):
                         if _pages_cs:
                             _preview_sheets_mp.append(build_guillotine_preview_sheet(
                                 _mp_cells, _pages_cs, **_sheet_kwargs_mp,
@@ -3873,6 +3989,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         strategy=req.strategy,
                         secondary_gap=_split_gap_val,
                         alternate_rotation=_preview_alternate_rotation,
+                        required_items=(
+                            sequential_required_items(
+                                _live_preview_page_count, req.target_quantity,
+                                req.target_quantities_by_page, req.duplex_flow == 'double',
+                            )
+                            if _lt == 'sequential' and not req.page_sheet_mode else None
+                        ),
                     )
                 _diag_log(
                     "PREVIEW", "solver.result",
@@ -3899,6 +4022,33 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 result['heightUsed'] = result.get('overallHeight', 0)
                 result['items'] = result.get('cells', [])
                 _plog("branch B: before solve_optimal (nup grid)")
+            elif req.strategy == 'manual' and (getattr(req, 'is_die_cut', False) or getattr(req, 'imposer_mode', None) == 'cnc'):
+                # PARITY (audit 2026-09-20 §PAR20.02): CNC / Tem bế S&R thủ công nhận đúng cols/rows
+                from app.workers.nup_layout_solver import solve_manual
+                from app.workers.nup_diecut import _find_largest_die_path
+                lp = _find_largest_die_path(page)
+                if lp:
+                    tw, th = lp['rect'].width, lp['rect'].height
+                else:
+                    tw = page.rect.width - 2 * bleed_pt
+                    th = page.rect.height - 2 * bleed_pt
+                cols_m = max(1, getattr(req, 'cols', 1))
+                rows_m = max(1, getattr(req, 'rows', 1))
+                sol_m = solve_manual(tw, th, req.gap_x, req.gap_y, cols_m, rows_m, _preview_alternate_rotation)
+                items_m = [{
+                    'x': c['x'], 'y': c['y'],
+                    'width': c['width'], 'height': c['height'],
+                    'isRotated': c.get('isRotated', False),
+                    'isRotated180': c.get('isRotated180', False),
+                } for c in sol_m.get('cells', [])]
+                result = {
+                    'items': items_m,
+                    'totalItems': len(items_m),
+                    'widthUsed': sol_m.get('overallWidth', 0),
+                    'heightUsed': sol_m.get('overallHeight', 0),
+                    'shapeType': 'CUSTOM',
+                    'strategyUsed': 'manual',
+                }
             else:
                 from app.workers.nup_sticker import compute_sticker_layout_for_page
                 _plog("branch B: before compute_sticker_layout (die-cut/sticker nest)")
@@ -4039,7 +4189,16 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     _gq = getattr(req, 'target_quantity', 0) or 0
                     _auto_fill = (_gq == 0) and not any(int(v or 0) > 0 for v in _tqbp.values())
                     if not _auto_fill:
-                        items = items[:min(src_page_count, _capacity)]
+                        # ORIENTATION (2026-09-19): một trang có thể cần nhiều
+                        # bản. Không cắt preview về số trang sau khi solve theo SL.
+                        _needed = (
+                            sequential_required_items(
+                                _live_preview_page_count, _gq, _tqbp,
+                                req.duplex_flow == 'double',
+                            )
+                            if _lt == 'sequential' else src_page_count
+                        )
+                        items = items[:min(_needed or _capacity, _capacity)]
                 elif _tm == 'step_repeat':
                     # Bình trang cắt xén: mọi ô là loại thumbnail đang chọn.
                     # Không có pageIdx, frontend mặc định 0 nên luôn hiện loại 1.
@@ -4110,6 +4269,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 "strategyUsed": result.get("strategyUsed", ""),
                 "absPlacement": True,
                 "diePolygon": die_polygon_norm,
+                # PARITY (audit 2026-09-20 §PAR20.11): trả metadata CNC cho preview mặt sau
+                "isCncPreview": getattr(req, 'imposer_mode', None) == 'cnc',
+                "cncTwoSided": bool(getattr(req, 'cnc_two_sided', False)),
+                "cncFlipEdge": getattr(req, 'cnc_flip_edge', 'long') or 'long',
             }
             
 
@@ -4148,6 +4311,13 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     strategy=req.strategy,
                     secondary_gap=getattr(req, 'split_gap', None),
                     alternate_rotation=_preview_alternate_rotation,
+                    required_items=(
+                        sequential_required_items(
+                            req.total_pages or 1, req.target_quantity,
+                            req.target_quantities_by_page, req.duplex_flow == 'double',
+                        )
+                        if req.layout_type == 'sequential' and not req.page_sheet_mode else None
+                    ),
                 )
             result['shapeType'] = 'CUSTOM'
             result['strategyUsed'] = req.strategy
@@ -4648,6 +4818,23 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
     def _nest_one_page(p: dict, page_idx: int, doc=None, *, page_loader=None) -> int:
         def _page():
             return page_loader() if page_loader is not None else doc[page_idx]
+
+        if _use_sticker and req.strategy == "manual":
+            # BE.03: hàng/cột thủ công không đi cache/bộ giải nesting tự động.
+            from app.core.nesting_preview_capacity import settings_from_preview_request
+            from app.workers.sticker_grid_order import build_sticker_grid_order, _SinglePageDocument
+            grid_settings = settings_from_preview_request(req)
+            grid_settings.update(
+                gridStrategy="manual", cols=req.cols, rows=req.rows, targetQuantity=1,
+                targetQuantitiesByPage={}, taskMode="nup", layoutType="sequential",
+                alternateRotation=_batch_alternate_rotation,
+                sheetWidth=(req.sheet_w or (compute_w + req.margin_left + req.margin_right)) / (72 / 25.4),
+                sheetHeight=(req.sheet_h or (compute_h + req.margin_top + req.margin_bottom)) / (72 / 25.4),
+            )
+            from app.core.pdfium_lock import pdfium_guard
+            with pdfium_guard():
+                order = build_sticker_grid_order(_SinglePageDocument(_page()), grid_settings, repeat_template=True)
+            return int(order.layout["totalItems"])
 
         _shape = p.get("shape_type")
         shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)

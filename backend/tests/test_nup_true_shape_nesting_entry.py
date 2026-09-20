@@ -281,14 +281,14 @@ def test_trang_so_luong_0_bi_loai(source: Path):
     assert [part.page_index for part in job.parts] == [0]
 
 
-def test_khong_khai_so_luong_thi_lap_day_mot_to(source: Path):
+def test_khong_khai_so_luong_nup_mac_dinh_mot_ban(source: Path):
     job = build_true_shape_nesting_job(
         str(source), _settings(targetQuantitiesByPage={}), job_id="abc12345"
     )
 
-    assert job.layout_intent == "autofill_single_sheet"
+    assert job.layout_intent == "quantity_fulfillment"
     assert job.max_sheets == 1
-    assert job.parts[0].quantity is None
+    assert job.parts[0].quantity == 1
 
 
 def test_max_sheets_co_tran(source: Path):
@@ -616,8 +616,8 @@ def test_report_tem_be_dung_trim_detector_khong_do_lai_bbox_contour(
     assert captured == {0: "45.3 x 52.3 mm"}
 
 
-def test_chay_that_lap_day_mot_to(source: Path, tmp_path, _flag_on):
-    """Không khai SL ⇒ lấp đầy đúng một tờ, report ghi rõ chế độ."""
+def test_chay_that_nup_trong_sl_in_mot_ban(source: Path, tmp_path, _flag_on):
+    """N-Up không khai SL in đúng một bản, không lấp đầy tờ."""
 
     from app.workers.nup_true_shape_nesting import run_true_shape_nesting
 
@@ -630,7 +630,8 @@ def test_chay_that_lap_day_mot_to(source: Path, tmp_path, _flag_on):
     )
 
     assert output.is_file()
-    assert "Lấp đầy một tờ" in report
+    assert "Đủ số lượng đặt" in report
+    assert "1 con" in report
 
 
 def test_chay_that_qua_engine_dung_duong_chay_that(source: Path, tmp_path, _flag_on):

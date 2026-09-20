@@ -1322,6 +1322,9 @@
     "xoa_may_x": "Xóa máy \"{{id}}\"?"
   },
   "imposition.gridPreview": {
+    "bo_cuc_va_so_lan_in": "Bố cục {{n}}/{{total}} · In {{runs}} tờ",
+    "tong_hop_don_hang": "{{layouts}} bố cục · Đã xếp {{placed}}/{{requested}} tem",
+    "da_xep": "Đã xếp:",
     "chua_co_du_lieu_bo_cuc": "Chưa có dữ liệu bố cục",
     "dang_nhan_dien_hinh_dang_tem": "🔍 Đang nhận diện hình dạng tem...",
     "dang_tinh_toan_bo_cuc": "Đang tính toán bố cục...",
@@ -1367,6 +1370,7 @@
     "khong_the_tinh_bo_cuc_preview": "Không thể tính bố cục preview."
   },
   "imposition.gridSettings": {
+    "nhap_sl_moi_loai": "Trống = 1 mẫu mỗi loại",
     "0_xep_toi_da_tren_1_to": "0 = Xếp tối đa trên 1 tờ",
     "1_mat": "1 mặt:",
     "1_mat_2": "1 Mặt",
@@ -1483,7 +1487,9 @@
     "khong_ap_dung_cho_xep_chong": "Không áp dụng cho Xếp chồng",
     "tran_le_bleed": "Tràn lề (Bleed)",
     "tu_lap_day_placeholder": "Tự lấp đầy",
-    "xep_chong_moi_trang_mot_lan": "Xếp chồng dùng mỗi trang PDF đúng một lần; số lượng không áp dụng."
+    "xep_chong_moi_trang_mot_lan": "Xếp chồng dùng mỗi trang PDF đúng một lần; số lượng không áp dụng.",
+    "xep_chong_lap_kin_co_ban_du": "Xếp chồng lấp kín mọi tờ. Bản in bù lặp từ trang đầu, nằm cuối bộ sau khi gom cọc; số lượng không áp dụng.",
+    "xep_chong_tong_va_in_bu": "Tổng: {{total}} bản, gồm {{extra}} bản in bù."
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Bình 2 mặt bắt buộc số trang chẵn. File hiện ${sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.",
@@ -3190,7 +3196,9 @@
     "dang_uu_tien_trang_chinh": "Đang ưu tiên hiển thị trang chính...",
     "phong_to_thumbnail_hint": "Phóng to thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)",
     "shift_ctrl_click_chon_nhieu": "Shift/Ctrl+click để chọn nhiều",
-    "thu_nho_thumbnail_hint": "Thu nhỏ thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)"
+    "thu_nho_thumbnail_hint": "Thu nhỏ thumbnail (Ctrl+lăn chuột trên danh sách cũng đổi được)",
+    "che_do_nen_toi_tooltip": "Đổi màu nền trang: Trắng / Đen (soi viền tem trắng, file PNG trong suốt)",
+    "nen_trang_den": "Nền Trắng / Đen"
   },
   "misc.toast": {
     "dong": "Đóng",
@@ -3625,6 +3633,8 @@
     "cac_ban_in_can_khac_nhau_theo_du_lieu": "các bản in cần khác nhau theo dữ liệu",
     "cac_record_lien_quan_co_the_bi_thieu": "Các record liên quan có thể bị thiếu nội dung. Bạn vẫn muốn tiếp tục sinh lô?",
     "cai_dat_truong": "Cài đặt trường",
+    "ghep_cot_du_lieu": "Ghép cột dữ liệu",
+    "dinh_dang_vi_tri": "Định dạng & Vị trí",
     "can_chu": "Căn chữ",
     "can_le": "Căn lề",
     "canh_bao": "CẢNH BÁO",

@@ -114,6 +114,104 @@ fn object_alpha_is_transparent(document: &Document, object: &Object) -> bool {
     }
 }
 
+fn resolve_object<'a>(document: &'a Document, object: &'a Object) -> &'a Object {
+    match object {
+        Object::Reference(object_id) => document
+            .get_object(*object_id)
+            .map(|resolved| resolve_object(document, resolved))
+            .unwrap_or(object),
+        _ => object,
+    }
+}
+
+fn is_technical_dieline_name(name_bytes: &[u8]) -> bool {
+    let name_str = String::from_utf8_lossy(name_bytes).to_lowercase();
+    let clean = name_str.trim().replace(['-', '_', ' '], "");
+    if clean.is_empty() {
+        return false;
+    }
+    // COLOR (audit 2026-09-20 §CUT.COLOR): Tên kỹ thuật đường cắt / khuôn bế chuẩn quốc tế
+    // và RIP in ấn (Roland, Mimaki, Esko, Zund...) cùng thuật ngữ PrynX:
+    if matches!(
+        clean.as_str(),
+        "cutcontour"
+            | "perfcutcontour"
+            | "kisscut"
+            | "thrucut"
+            | "diecut"
+            | "cut"
+            | "cutting"
+            | "crease"
+            | "creasing"
+            | "fold"
+            | "folding"
+            | "score"
+            | "scoring"
+            | "slit"
+            | "slitting"
+            | "perforation"
+            | "perf"
+            | "punch"
+            | "drill"
+            | "trim"
+            | "bleed"
+            | "margin"
+            | "none"
+            | "all"
+            | "khuonbe"
+            | "thanhpham"
+            | "canhbua"
+            | "be"
+            | "nepgap"
+    ) {
+        return true;
+    }
+    // Biến thể tiền tố / hậu tố thường gặp (vd CutContour_1, DieCut-Thru):
+    if clean.starts_with("cutcontour")
+        || clean.starts_with("perfcut")
+        || clean.ends_with("cutcontour")
+        || clean.contains("diecut")
+    {
+        return true;
+    }
+    false
+}
+
+fn check_technical_dieline_colorspace(document: &Document, items: &[Object]) -> Option<ColorFlags> {
+    if items.len() < 2 {
+        return None;
+    }
+    let first = resolve_object(document, &items[0]);
+    if object_name_is(first, b"Separation") {
+        let second = resolve_object(document, &items[1]);
+        let is_technical = match second {
+            Object::Name(name) => is_technical_dieline_name(name),
+            Object::String(bytes, _) => is_technical_dieline_name(bytes),
+            _ => false,
+        };
+        if is_technical {
+            return Some(ColorFlags::default());
+        }
+    } else if object_name_is(first, b"DeviceN") {
+        let second = resolve_object(document, &items[1]);
+        if let Object::Array(names) = second {
+            if !names.is_empty()
+                && names.iter().all(|name_obj| {
+                    let resolved = resolve_object(document, name_obj);
+                    match resolved {
+                        Object::Name(name) => is_technical_dieline_name(name),
+                        Object::String(bytes, _) => is_technical_dieline_name(bytes),
+                        _ => false,
+                    }
+                })
+            {
+                return Some(ColorFlags::default());
+            }
+        }
+    }
+    None
+}
+
 fn scan_object(
     document: &Document,
     object: &Object,
@@ -154,6 +252,11 @@ fn scan_object(
             flags
         }
         Object::Array(items) => {
+            // COLOR (audit 2026-09-20 §CUT.COLOR): Bỏ qua Separation/DeviceN của đường bế kỹ thuật
+            // (CutContour, DieCut, Crease...) để không kích hoạt PPE sai trên file tem/nhãn bế.
+            if let Some(flags) = check_technical_dieline_colorspace(document, items) {
+                return flags;
+            }
             let mut flags = ColorFlags::default();
             for item in items {
                 flags.merge(scan_object(document, item, memo, visiting, depth + 1));
@@ -256,6 +359,41 @@ fn has_output_intent(document: &Document) -> bool {
     }
 }
 
+fn page_contents_has_cmyk_operators(document: &Document, page_id: ObjectId) -> bool {
+    let content_bytes = document.get_page_content(page_id);
+    if content_bytes.is_empty() {
+        return false;
+    }
+    // Fast path: nếu không chứa ký tự 'k' hoặc 'K' thì chắc chắn không có toán tử CMYK
+    if !content_bytes.contains(&b'k') && !content_bytes.contains(&b'K') {
+        return false;
+    }
+    // Parse bằng lopdf::content::Content để kiểm tra token toán tử chính xác
+    if let Ok(content) = lopdf::content::Content::decode(&content_bytes) {
+        content.operations.iter().any(|op| op.operator == "k" || op.operator == "K")
+    } else {
+        scan_raw_bytes_for_cmyk_operator(&content_bytes)
+    }
+}
+
+fn scan_raw_bytes_for_cmyk_operator(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 2 {
+        return false;
+    }
+    for i in 0..len {
+        let b = bytes[i];
+        if b == b'k' || b == b'K' {
+            let prev_ws = i == 0 || matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b'\r');
+            let next_ws = i + 1 == len || matches!(bytes[i + 1], b' ' | b'\t' | b'\n' | b'\r');
+            if prev_ws && next_ws {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn analyze_page_color_risk(
     document: &Document,
     page: u32,
@@ -269,6 +407,13 @@ fn analyze_page_color_risk(
         if let Some(value) = inherited_page_value(document, page_id, key) {
             flags.merge(scan_object(document, &value, memo, &mut visiting, 0));
         }
+    }
+
+    // COLOR (audit 2026-09-20 §V20.4): Nếu resource dictionary không khai báo /DeviceCMYK
+    // (như PDF dùng toán tử trực tiếp k/K), quét content stream của trang để phát hiện
+    // toán tử CMYK thực tế, đảm bảo 2 cú pháp xuất PDF tương đương được định tuyến đồng nhất.
+    if !flags.has_device_cmyk {
+        flags.has_device_cmyk = page_contents_has_cmyk_operators(document, page_id);
     }
 
     let accurate_color_recommended = flags.has_non_rgb_color();
@@ -617,4 +762,100 @@ mod tests {
             vec!["missing_output_intent", "device_cmyk"]
         );
     }
+
+    fn document_with_content_stream(content_bytes: Vec<u8>) -> Document {
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let content_id = document.add_object(Stream::new(dictionary! {}, content_bytes));
+        let page = dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Resources" => dictionary! {},
+            "Contents" => content_id,
+        };
+        let page_id = document.add_object(page);
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog = dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        };
+        let catalog_id = document.add_object(catalog);
+        document.trailer.set("Root", catalog_id);
+        document
+    }
+
+    #[test]
+    fn toan_tu_cmyk_truc_tiep_trong_content_stream_duoc_danh_dau() {
+        // PDF không có /Resources /ColorSpace nhưng content stream dùng toán tử 'k' trực tiếp (audit 2026-09-20 §V20.4)
+        let doc_direct_k = document_with_content_stream(b"0.1 0.2 0.3 0.4 k\n10 10 50 50 re f".to_vec());
+        let summary_k = analyze_pdf_color_risk(&doc_direct_k);
+        assert!(summary_k.pages[0].has_device_cmyk);
+        assert!(summary_k.accurate_color_recommended);
+
+        // Tương tự với toán tử 'K' (stroke CMYK)
+        let doc_direct_stroke_k = document_with_content_stream(b"0.0 0.5 0.5 0.0 K\n10 10 m 50 50 l S".to_vec());
+        let summary_stroke_k = analyze_pdf_color_risk(&doc_direct_stroke_k);
+        assert!(summary_stroke_k.pages[0].has_device_cmyk);
+        assert!(summary_stroke_k.accurate_color_recommended);
+
+        // Text thông thường chứa chữ 'k' trong chuỗi không bị nhận diện nhầm là toán tử CMYK
+        let doc_text = document_with_content_stream(b"BT /F1 12 Tf (kho bau cua khanh) Tj ET".to_vec());
+        let summary_text = analyze_pdf_color_risk(&doc_text);
+        assert!(!summary_text.pages[0].has_device_cmyk);
+        assert!(!summary_text.accurate_color_recommended);
+    }
+
+    #[test]
+    fn dieline_cutcontour_separation_khong_bi_danh_dau_rui_ro_mau() {
+        // COLOR (audit 2026-09-20 §CUT.COLOR): Đường bế CutContour/DieCut là đường kỹ thuật hoàn thiện,
+        // không phải mực in thương mại cần soft-proof qua PPE.
+        let doc_cutcontour = document_with_resources(
+            dictionary! {
+                "ColorSpace" => dictionary! {
+                    "CS0" => vec![
+                        Object::Name(b"Separation".to_vec()),
+                        Object::Name(b"CutContour".to_vec()),
+                        Object::Name(b"DeviceCMYK".to_vec()),
+                        Object::Dictionary(dictionary! {}),
+                    ],
+                },
+            },
+            None,
+            false,
+        );
+        let summary = analyze_pdf_color_risk(&doc_cutcontour);
+        assert!(!summary.high_risk);
+        assert!(!summary.accurate_color_recommended);
+        assert!(!summary.pages[0].has_separation);
+        assert!(!summary.pages[0].has_device_cmyk);
+
+        // Ngược lại, màu pha in ấn thực tế (như PANTONE 185 C) PHẢI được đánh dấu rủi ro cao
+        let doc_pantone = document_with_resources(
+            dictionary! {
+                "ColorSpace" => dictionary! {
+                    "CS0" => vec![
+                        Object::Name(b"Separation".to_vec()),
+                        Object::Name(b"PANTONE 185 C".to_vec()),
+                        Object::Name(b"DeviceCMYK".to_vec()),
+                        Object::Dictionary(dictionary! {}),
+                    ],
+                },
+            },
+            None,
+            false,
+        );
+        let summary_pantone = analyze_pdf_color_risk(&doc_pantone);
+        assert!(summary_pantone.high_risk);
+        assert!(summary_pantone.accurate_color_recommended);
+        assert!(summary_pantone.pages[0].has_separation);
+    }
 }
+

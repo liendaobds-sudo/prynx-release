@@ -486,15 +486,49 @@ function imagePagePoints(img: PDFImage, bytes: Uint8Array): [number, number] {
  * Nhúng ảnh trực tiếp thành một trang trong tài liệu đích. Đường Combine dùng helper
  * này để tránh tạo PDF trung gian rồi `copyPages()` — bước copy đó chiếm phần lớn thời
  * gian với PNG lớn dù dữ liệu ảnh vẫn giữ nguyên nén.
+ * Bổ sung `targetPageSize`: Nếu được chỉ định, ảnh sẽ được fit trực tiếp vào giữa trang
+ * khổ đích mà không cần qua bước resizePages thứ hai.
  */
 export async function appendImagePageToPdfDoc(
     doc: PDFDocument,
     bytes: ArrayBuffer | Uint8Array,
     fileName: string,
+    targetPageSize?: [number, number],
 ): Promise<PDFPage> {
     const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const img = await embedImagePreserveCompression(doc, buf, fileName);
     const [pw, ph] = imagePagePoints(img, buf);
+
+    if (targetPageSize && (targetPageSize[0] > 0 || targetPageSize[1] > 0)) {
+        let [destW, destH] = targetPageSize;
+        if (destW > 0 && !(destH > 0)) {
+            // Cùng chiều rộng: chiều cao tự động tính theo tỷ lệ ảnh gốc (fit 100%, không viền thừa)
+            const scale = destW / pw;
+            destH = ph * scale;
+            const page = doc.addPage([destW, destH]);
+            page.drawImage(img, { x: 0, y: 0, width: destW, height: destH });
+            return page;
+        }
+        if (destH > 0 && !(destW > 0)) {
+            // Cùng chiều cao: chiều rộng tự động tính theo tỷ lệ ảnh gốc (fit 100%, không viền thừa)
+            const scale = destH / ph;
+            destW = pw * scale;
+            const page = doc.addPage([destW, destH]);
+            page.drawImage(img, { x: 0, y: 0, width: destW, height: destH });
+            return page;
+        }
+        if (destW > 0 && destH > 0) {
+            const page = doc.addPage([destW, destH]);
+            const scale = Math.min(destW / pw, destH / ph);
+            const renderW = pw * scale;
+            const renderH = ph * scale;
+            const offX = (destW - renderW) / 2;
+            const offY = (destH - renderH) / 2;
+            page.drawImage(img, { x: offX, y: offY, width: renderW, height: renderH });
+            return page;
+        }
+    }
+
     const page = doc.addPage([pw, ph]);
     page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
     return page;

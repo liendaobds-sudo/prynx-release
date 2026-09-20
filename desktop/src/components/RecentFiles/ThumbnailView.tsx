@@ -124,7 +124,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
       <img
         src={typeof src === 'string' ? src : undefined}
         alt={name}
-        loading="lazy"
+        decoding="async"
         className={`w-full h-full ${isPdf ? 'object-contain bg-white' : 'object-cover'}`}
         onError={() => setImgError(true)}
       />

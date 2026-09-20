@@ -1582,6 +1582,22 @@ def _render_sheet_plan(
     return tuple(plan)
 
 
+def production_sheet_recipes(
+    manifest: Mapping[str, Any], *, render_bundle: Mapping[str, Any], render_bundle_hash: str,
+) -> tuple[tuple[int, int], ...]:
+    """M72.D: bố cục đại diện + số lần in dùng CHUNG cho preview và writer."""
+    _assert_renderable(manifest, render_bundle_hash=render_bundle_hash)
+    parts = _parts_by_id(render_bundle)
+    count = _sheet_count(manifest)
+    index = _build_sheet_placement_index(
+        manifest, sheet_count=count, parts=parts, render_bundle_hash=render_bundle_hash,
+    )
+    return _render_sheet_plan(
+        manifest, sheet_count=count, parts=parts, render_bundle_hash=render_bundle_hash,
+        export_unique_sheets=True, placements_by_sheet=index,
+    )
+
+
 def render_production_nesting(
     *,
     production_request: Mapping[str, Any],

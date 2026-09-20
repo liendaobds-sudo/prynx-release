@@ -46,13 +46,18 @@ function fieldRole(f: VdpToolField): 'X' | 'Y' | 'Z' | null {
     return null;
 }
 
+const EMPTY_VDP_FIELDS: VdpToolField[] = [];
+
 export default function CoverNumberingTool({
-    pdfFile, getWorkingFile, workingPageCount, vdpFields = [], setVdpFields,
+    pdfFile, getWorkingFile, workingPageCount, vdpFields = EMPTY_VDP_FIELDS, setVdpFields,
     selectedFieldIds = [], onSelectField, onSpawnTab, onApplyResult, isActive = true,
 }: Props) {
   const { t } = useTranslation();
     const isPickingVdpText = useWorkspaceStore(s => s.isPickingVdpText);
     const setIsPickingVdpText = useWorkspaceStore(s => s.setIsPickingVdpText);
+    const isLivePreviewEnabled = useWorkspaceStore(s => s.vdpLivePreview.enabled);
+    const setVdpLivePreview = useWorkspaceStore(s => s.setVdpLivePreview);
+    const [previewIndex, setPreviewIndex] = useState<number>(1);
     // PA1: job dùng chung xuyên-tab. Khi "linked", ruột & bìa đọc/ghi cùng nguồn → khớp dải.
     const { linked, setLinked, job: sharedJob, setJob: setSharedJob } = useNumberingJobStore();
     const [localJob, setLocalJob] = useState<SharedJob>({ ...DEFAULT_SHARED_JOB });
@@ -146,6 +151,98 @@ export default function CoverNumberingTool({
         return t('preprocess.coverNumbering:so_chia_lien_cuon', { total: derived.totalNumbers, count: v.bookletCount, per: derived.perBooklet }) +
             (first && last ? t('preprocess.coverNumbering:dai_cuon_dau_cuoi', { firstY: first.Y, firstZ: first.Z, count: v.bookletCount, lastY: last.Y, lastZ: last.Z }) : '');
     }, [derived, preview, t, v.bookletCount]);
+
+    // Đồng bộ kế hoạch số bìa realtime lên view chính
+    useEffect(() => {
+        if (!isActive || !derived.valid || vdpFields.length === 0) {
+            setVdpLivePreview(prev => {
+                if (prev.totalRecords === 0 && prev.currentRecord === null) return prev;
+                return { ...prev, totalRecords: 0, currentRecord: null };
+            });
+            return;
+        }
+
+        const roleOf = new Map<string, 'X' | 'Y' | 'Z'>();
+        const fieldsByGroup = new Map<string, VdpToolField[]>();
+        for (const f of vdpFields) {
+            const gid = f.groupId || f.id;
+            if (!fieldsByGroup.has(gid)) fieldsByGroup.set(gid, []);
+            fieldsByGroup.get(gid)!.push(f);
+            const role = fieldRole(f);
+            if (role) roleOf.set(f.id, role);
+        }
+
+        let totalSheets = 1;
+        const currentRecord: Record<string, string> = {};
+
+        if (clusters.length > 0) {
+            const plan = planCoverLayout(job, clusters);
+            const slotsPerSheet = clusters.length;
+            totalSheets = Math.max(1, Math.ceil(job.bookletCount / slotsPerSheet));
+            const safeIdx = Math.max(1, Math.min(totalSheets, previewIndex));
+            const sheetIdx = safeIdx - 1;
+
+            // Lấy các item thuộc sheet này
+            const sheetItems = plan.filter(it => it.sheet === sheetIdx);
+            for (const it of sheetItems) {
+                const fs = fieldsByGroup.get(it.clusterId) || [];
+                for (const f of fs) {
+                    const role = roleOf.get(f.id);
+                    if (!role) continue;
+                    const val = it.cover ? it.cover[role] : '';
+                    currentRecord[f.id] = val;
+                    currentRecord[f.name] = val;
+                    if (currentRecord[role] === undefined) {
+                        currentRecord[role] = val;
+                    }
+                }
+            }
+
+            setVdpLivePreview({
+                totalRecords: totalSheets,
+                recordIndex: safeIdx,
+                currentRecord,
+                sourceTitle: `Bìa: Tờ ${safeIdx}/${totalSheets} (${slotsPerSheet} cuốn/tờ)`,
+            });
+        } else {
+            const coverData = generateCoverData(job);
+            totalSheets = Math.max(1, coverData.length);
+            const safeIdx = Math.max(1, Math.min(totalSheets, previewIndex));
+            const row = coverData[safeIdx - 1];
+            if (row) {
+                currentRecord['X'] = row.X;
+                currentRecord['Y'] = row.Y;
+                currentRecord['Z'] = row.Z;
+                for (const f of vdpFields) {
+                    const role = roleOf.get(f.id);
+                    if (role && row[role] !== undefined) {
+                        currentRecord[f.id] = row[role];
+                        currentRecord[f.name] = row[role];
+                    }
+                }
+            }
+
+            setVdpLivePreview({
+                totalRecords: totalSheets,
+                recordIndex: safeIdx,
+                currentRecord,
+                sourceTitle: `Bìa: Cuốn ${safeIdx}/${totalSheets}`,
+            });
+        }
+    }, [isActive, derived.valid, job, clusters, vdpFields, previewIndex, setVdpLivePreview]);
+
+    // Lắng nghe sự kiện đổi record từ view chính để đồng bộ về sidebar
+    useEffect(() => {
+        const handleIndexChange = (e: Event) => {
+            const ce = e as CustomEvent<{ index: number }>;
+            const idx = ce.detail?.index;
+            if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
+                setPreviewIndex(idx);
+            }
+        };
+        window.addEventListener('vdp-preview-index-change', handleIndexChange);
+        return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
+    }, [previewIndex]);
 
     const handleGenerate = async () => {
         try {
@@ -311,27 +408,56 @@ export default function CoverNumberingTool({
                         const next = !isPickingVdpText;
                         setIsPickingVdpText(next);
                         if (next) {
-                            toast.info(t('Nhấp vào chữ hoặc số trên bản thiết kế bìa để chọn làm trường VDP.'));
+                            toast.info(t('Chế độ chọn liên tục đã bật: Nhấp vào chữ hoặc số trên bản thiết kế bìa để chọn làm trường VDP, bấm "Xong" hoặc phím Esc khi hoàn tất.'));
                         }
                     }}
                     className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
                         isPickingVdpText
-                            ? 'bg-teal-500 text-white border-teal-600 ring-2 ring-teal-400 ring-offset-1 animate-pulse'
+                            ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
                             : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/50 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
                     }`}
-                    title={t('Bật chế độ chọn trường trực tiếp từ chữ/số trên trang bìa')}
+                    title={isPickingVdpText ? t('Hoàn tất chọn trường (phím Esc)') : t('Bật chế độ chọn trường trực tiếp từ chữ/số trên trang bìa')}
                 >
-                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                    </svg>
-                    <span>{isPickingVdpText ? t('Đang chọn trường...') : t('Chọn trường')}</span>
+                    {isPickingVdpText ? (
+                        <svg className="w-4 h-4 shrink-0 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                    ) : (
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                    )}
+                    <span>{isPickingVdpText ? t('✓ Xong chọn trường') : t('Chọn trường')}</span>
                 </button>
                 <div className="flex gap-2 items-center text-[11px]">
                     <span className="text-slate-500">{t('preprocess.coverNumbering:n_cum_n_truong', { clusters: clusters.length, fields: vdpFields.length })}</span>
-                    {selectedFieldIds.length > 1 && <button onClick={handleGroupFields} className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded font-medium">Group</button>}
+                    {selectedFieldIds.length > 1 && (
+                        <button 
+                            onClick={() => {
+                                handleGroupFields();
+                            }} 
+                            className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded font-medium"
+                        >
+                            Group
+                        </button>
+                    )}
                     {selectedFieldIds.length > 0 && <button onClick={handleUngroupFields} className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded text-red-500 font-medium">Ungroup</button>}
                     {selectedFieldIds.length > 0 && <button onClick={deleteSelectedField} className="text-red-500 px-2 py-1 rounded bg-red-50 dark:bg-red-500/10">{t('preprocess.coverNumbering:xoa')}</button>}
                 </div>
+                {/* Nút bật/tắt xem trực tiếp trên view chính */}
+                <button
+                    type="button"
+                    onClick={() => setVdpLivePreview(prev => ({ ...prev, enabled: !prev.enabled }))}
+                    className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
+                        isLivePreviewEnabled
+                            ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
+                            : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
+                    }`}
+                    title={isLivePreviewEnabled ? t('Bấm để tắt xem trước trên view chính') : t('Bật xem trước dữ liệu thật trên view chính')}
+                >
+                    <span className={`w-2 h-2 rounded-full ${isLivePreviewEnabled ? 'bg-white animate-pulse' : 'bg-teal-500'}`} />
+                    <span>{isLivePreviewEnabled ? t('✓ Đang xem số bìa thật trên View chính') : t('👁️ Bật xem trực tiếp trên View chính')}</span>
+                </button>
             </div>
 
             {/* Nguồn bìa (PA2: 1 file gán trang) */}

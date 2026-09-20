@@ -315,8 +315,47 @@ def artwork_bbox(page: Any, *, raster_dpi_fallback: int = 72) -> Optional[Rect]:
             # Loại path nền phủ kín trang (không phải nội dung tem).
             if pw is not None and abs(r.width - pw) <= 2 and abs(r.height - ph) <= 2:
                 continue
+            # OVAL20.01 (audit 2026-09-20): Loại bỏ đường bế CutContour/die khỏi artwork bbox
+            spot = str(p.get("spot_name") or "").lower()
+            if any(k in spot for k in ("cut", "die", "khuon", "regmark")):
+                continue
             xs0.append(float(r.x0)); ys0.append(float(r.y0))
             xs1.append(float(r.x1)); ys1.append(float(r.y1))
+
+        # OVAL20.01 (audit 2026-09-20): Kiểm tra Form XObject hoặc Image XObject.
+        # Nếu trang chứa Form XObject có /BBox lớn hơn các path vector con, gộp /BBox
+        # vào để không bị mất nội dung nền. Nếu có Image XObject mà không có Form BBox
+        # bao quanh, dùng raster bbox để bắt trọn nội dung ảnh.
+        has_large_form = False
+        has_image = False
+        if hasattr(page, "_page"):
+            try:
+                res = page._page.get("/Resources")
+                if res is not None and "/XObject" in res:
+                    xobjs = res["/XObject"]
+                    for _k in xobjs.keys():
+                        _xo = xobjs[_k]
+                        _st = str(_xo.get("/Subtype", ""))
+                        if "/Form" in _st and "/BBox" in _xo:
+                            _fb = [float(_v) for _v in _xo["/BBox"]]
+                            _fw, _fh = _fb[2] - _fb[0], _fb[3] - _fb[1]
+                            if _fw > 10 and _fh > 10:
+                                xs0.append(_fb[0]); ys0.append(_fb[1])
+                                xs1.append(_fb[2]); ys1.append(_fb[3])
+                                has_large_form = True
+                        elif "/Image" in _st:
+                            has_image = True
+            except Exception:
+                pass
+
+        if has_image and not has_large_form:
+            _rb = _raster_artwork_bbox(page, raster_dpi_fallback)
+            if _rb is not None:
+                if xs0:
+                    return Rect(min(min(xs0), _rb.x0), min(min(ys0), _rb.y0),
+                                max(max(xs1), _rb.x1), max(max(ys1), _rb.y1))
+                return _rb
+
         if xs0:
             return Rect(min(xs0), min(ys0), max(xs1), max(ys1))
 

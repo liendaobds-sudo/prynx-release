@@ -6,6 +6,8 @@ giữ metadata nhẹ; artifact nằm dưới RESULTS_DIR và được dọn theo
 
 from __future__ import annotations
 
+from app.utils.cutline_debug_log import log_cutline, CutlineTimer
+
 from dataclasses import dataclass, field
 import json
 import logging
@@ -520,9 +522,13 @@ def create_source_session(
     session_source = directory / f"source{safe_extension}"
 
     try:
-        shutil.copyfile(source, session_source)
-        preview = inspection.preview.convert("RGBA")
-        preview.save(directory / "preview.png", format="PNG", optimize=True)
+        with CutlineTimer("SESSION", "CREATE_SOURCE_SESSION", f"file={original_name}"):
+            try:
+                os.link(source, session_source)
+            except Exception:
+                shutil.copyfile(source, session_source)
+            preview = inspection.preview.convert("RGBA")
+            preview.save(directory / "preview.png", format="PNG")
         manifest: dict[str, object] = {
             "session_id": session_id,
             "stage": "inspected",

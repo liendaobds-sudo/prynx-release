@@ -631,12 +631,16 @@ def _run_nup_engine_impl(
 
     mark_type = settings.get('markType', 'none')
 
-    mark_len = settings.get('markLength', 5.0) * MM_TO_PTS
+    # PARITY (audit 2026-09-20 §PAR20.01): bảo toàn giá trị 0, None mới về mặc định
+    _ml_raw = settings.get('markLength')
+    mark_len = float(5.0 if _ml_raw is None else _ml_raw) * MM_TO_PTS
 
-    mark_off = settings.get('markOffset', 3.0) * MM_TO_PTS
+    _mo_raw = settings.get('markOffset')
+    mark_off = float(3.0 if _mo_raw is None else _mo_raw) * MM_TO_PTS
 
     # Độ dày nét dấu xén (mm → pts). Mặc định 0.25mm khớp DEFAULT_MARKS_CONFIG ở frontend.
-    mark_thick = settings.get('markThickness', 0.25) * MM_TO_PTS
+    _mt_raw = settings.get('markThickness')
+    mark_thick = float(0.25 if _mt_raw is None else _mt_raw) * MM_TO_PTS
 
     # Kiểu dấu xén: 'default' (nét đơn) | 'japanese' (nét đôi trim+bleed / トンボ)
     mark_style = settings.get('markStyle', 'default')
@@ -2864,28 +2868,30 @@ def _run_nup_engine_impl(
                 for _pi, _q, _tw, _th in _gui_page_infos:
                     _gui_full[_pi] = _gui_zone_layout_fn(_pi, cw_pt, ch_pt)
 
-            cluster_sheets = compute_cluster_sheets(
-                page_infos=_gui_page_infos,
-                full_layouts=_gui_full,
-                zone_layout_fn=_gui_zone_layout_fn,
-                sheet_w=usable_w,
-                sheet_h=usable_h,
-                cluster_w=cw_pt,
-                cluster_h=ch_pt,
-                gap_x=gap_x,
-                gap_y=gap_y,
-                tile_gap_x=tile_gap_x_pt,
-                tile_gap_y=tile_gap_y_pt,
-                combine_mode=combine_mode,
-                cluster_nesting=cluster_nesting,
-                is_die_cut=False,
-                doc=None,
-                shape_type='RECTANGLE',
-                shape_props={},
-                strategy=strategy,
-                zone_cols=max(1, int(settings.get('clusterCols', 2))),
-                zone_rows=max(1, int(settings.get('clusterRows', 2))),
-            )
+            cluster_sheets = []
+            if layout_type != 'repeat':
+                cluster_sheets = compute_cluster_sheets(
+                    page_infos=_gui_page_infos,
+                    full_layouts=_gui_full,
+                    zone_layout_fn=_gui_zone_layout_fn,
+                    sheet_w=usable_w,
+                    sheet_h=usable_h,
+                    cluster_w=cw_pt,
+                    cluster_h=ch_pt,
+                    gap_x=gap_x,
+                    gap_y=gap_y,
+                    tile_gap_x=tile_gap_x_pt,
+                    tile_gap_y=tile_gap_y_pt,
+                    combine_mode=combine_mode,
+                    cluster_nesting=cluster_nesting,
+                    is_die_cut=False,
+                    doc=None,
+                    shape_type='RECTANGLE',
+                    shape_props={},
+                    strategy=strategy,
+                    zone_cols=max(1, int(settings.get('clusterCols', 2))),
+                    zone_rows=max(1, int(settings.get('clusterRows', 2))),
+                )
 
             # Shift top-down usable → abs (margin + y-flip). Mirror die-cut L1113-1138.
             ct_offset_x = margin_left
@@ -2926,7 +2932,41 @@ def _run_nup_engine_impl(
             _export_unique_ct = bool(settings.get('exportUniqueSheets', True))
 
             # Danh sách tờ front (placements, cuts).
-            if _is_zone:
+            if layout_type == 'repeat':
+                # PARITY (audit 2026-09-20 §PAR20.07): S&R (repeat) chia cụm mỗi mẫu là 1 bộ tờ riêng, KHÔNG trộn mẫu
+                _front_sheets = []
+                for _pi, _q, _tw, _th in _gui_page_infos:
+                    _single_full = {_pi: _gui_full.get(_pi)} if _gui_full else {}
+                    _single_cs = compute_cluster_sheets(
+                        page_infos=[(_pi, _q, _tw, _th)],
+                        full_layouts=_single_full,
+                        zone_layout_fn=_gui_zone_layout_fn,
+                        sheet_w=usable_w,
+                        sheet_h=usable_h,
+                        cluster_w=cw_pt,
+                        cluster_h=ch_pt,
+                        gap_x=gap_x,
+                        gap_y=gap_y,
+                        tile_gap_x=tile_gap_x_pt,
+                        tile_gap_y=tile_gap_y_pt,
+                        combine_mode='replicate_mixed',
+                        cluster_nesting=cluster_nesting,
+                        is_die_cut=False,
+                        doc=None,
+                        shape_type='RECTANGLE',
+                        shape_props={},
+                        strategy=strategy,
+                        zone_cols=max(1, int(settings.get('clusterCols', 2))),
+                        zone_rows=max(1, int(settings.get('clusterRows', 2))),
+                    )
+                    _ctp = _single_cs[0][0] if _single_cs else []
+                    _ctc = _single_cs[0][1] if _single_cs else None
+                    items_per_sheet = len(_ctp)
+                    sheets_needed = math.ceil(_q / items_per_sheet) if (not is_auto_fill and items_per_sheet > 0 and _q > 0) else 1
+                    repeat_count = 1 if _export_unique_ct else max(1, sheets_needed)
+                    for _ in range(repeat_count):
+                        _front_sheets.append((_ctp, _ctc))
+            elif _is_zone:
                 _front_sheets = list(cluster_sheets)
             else:
                 # replicate_mixed: 1 tờ mẫu × sheets_needed (ceil SL/con-mỗi-loại).
@@ -3609,7 +3649,14 @@ def _run_nup_engine_impl(
         _align_np = settings.get('align', 'center')
         _cells_np = layout.get('cells') or []
 
-        if layout_type == 'sequential' and capacity > 0 and page_count > 0 and _cells_np:
+        from app.workers.sticker_grid_order import uses_page_sheet_pont_order, build_sticker_grid_order
+        if uses_page_sheet_pont_order(settings):
+            # BE.01 (audit 2026-09-20 §PAR20.05): phân tờ sau khi chừa boong, writer không reflow.
+            _grid_order = build_sticker_grid_order(src_doc, settings)
+            precalculated_placements = _grid_order.placements
+            total_sheets = len(precalculated_placements)
+            total_items_placed = sum(len(p) for p in precalculated_placements.values())
+        elif layout_type == 'sequential' and capacity > 0 and page_count > 0 and _cells_np:
             # ── Xếp LẦN LƯỢT ──
             # 1 mặt: trang 0×q0, 1×q1… (không xen). Nhiều trang và SL trống = mỗi
             # trang một lần; một trang duy nhất vẫn tự lấp đầy một tờ.

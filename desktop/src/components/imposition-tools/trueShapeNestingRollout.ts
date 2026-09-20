@@ -324,7 +324,12 @@ export function shouldUseTrueShapeNesting(params: TrueShapeCompatibilityIntent &
   if (String(gridStrategy || '').trim() !== DEFAULT_GRID_STRATEGY) return false;
   // PARITY (audit 2026-08-29 §MAP-NEST-03): cùng thứ tự/default với backend guard.
   if (unsupportedTrueShapeReason(params) !== null) return false;
-  return jobHasSpecialShape(params);
+  const task = String(params.taskMode || 'nup').trim().toLowerCase();
+  const nupOneEach = !isCnc && isDieCut && task !== 'step_repeat' && task !== 'sr' && layoutType !== 'repeat';
+  return jobHasSpecialShape({
+    ...params,
+    targetQuantity: nupOneEach && !(Number(params.targetQuantity) > 0) ? 1 : params.targetQuantity,
+  });
 }
 
 const RELEASE_ENABLED =

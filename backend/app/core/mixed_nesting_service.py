@@ -706,7 +706,7 @@ def validate_production_manifest(
 # ═════════════════════════════════════════════════════════════════════════════
 
 #: Phiên bản của MÔ HÌNH ước lượng. Tăng khi đổi hệ số, để benchmark cũ không bị so lệch.
-ADMISSION_MODEL_VERSION: Final[int] = 4
+ADMISSION_MODEL_VERSION: Final[int] = 5
 
 # Mirror trần protocol `MAX_INSTANCES_TOTAL` của Rust. Core không import schema để
 # tránh đảo tầng; test admission khóa parity ba chiều Rust ↔ schema ↔ service.
@@ -784,6 +784,14 @@ class WorkloadShape:
     #: Tổng đỉnh contour NGUỒN (outer + holes) của mọi part, KHÔNG nhân theo quantity.
     source_vertex_count: int
     max_sheets: int
+    # M72.B: số đỉnh của các bản cần đặt, có trọng số quantity, không phải N x số tờ.
+    instance_vertex_count: int | None = None
+
+    @property
+    def placed_vertex_count(self) -> float:
+        if self.instance_vertex_count is not None:
+            return float(self.instance_vertex_count)
+        return self.instance_count * self.avg_vertices_per_part
 
     @property
     def avg_vertices_per_part(self) -> float:
@@ -922,31 +930,39 @@ def describe_workload(request: dict[str, Any]) -> WorkloadShape:
     part_count = 0
     instance_count = 0
     vertex_count = 0
+    instance_vertex_count = 0
+    max_part_vertices = 0
     for part in parts:
         if not isinstance(part, dict):
             continue
         part_count += 1
+        quantity = 0
         if request.get("layoutIntent") not in _AUTOFILL_LAYOUT_INTENTS:
             raw_quantity = part.get("quantity", 0)
             quantity = raw_quantity if isinstance(raw_quantity, int) and raw_quantity > 0 else 0
             instance_count += quantity
-        vertex_count += _count_ring_vertices(part.get("outer"))
+        part_vertices = _count_ring_vertices(part.get("outer"))
         holes = part.get("holes")
         if isinstance(holes, list):
             for hole in holes:
-                vertex_count += _count_ring_vertices(hole)
+                part_vertices += _count_ring_vertices(hole)
+        vertex_count += part_vertices
+        instance_vertex_count += quantity * part_vertices
+        max_part_vertices = max(max_part_vertices, part_vertices)
 
     sheet = request.get("sheet")
     raw_max_sheets = sheet.get("maxSheets") if isinstance(sheet, dict) else None
     max_sheets = raw_max_sheets if isinstance(raw_max_sheets, int) and raw_max_sheets > 0 else 1
     if request.get("layoutIntent") in _AUTOFILL_LAYOUT_INTENTS:
         instance_count = _autofill_instance_upper_bound(request, parts)
+        instance_vertex_count = instance_count * max_part_vertices
 
     return WorkloadShape(
         part_count=part_count,
         instance_count=instance_count,
         source_vertex_count=vertex_count,
         max_sheets=max_sheets,
+        instance_vertex_count=instance_vertex_count,
     )
 
 
@@ -982,7 +998,8 @@ def estimate_per_worker_mb(shape: WorkloadShape, effort: SearchEffort) -> float:
         / _MB
     )
 
-    return proposal_mb + beam_mb + refinement_mb + NFP_CACHE_MAX_MB
+    posed_geometry_mb = shape.placed_vertex_count * _BYTES_PER_VERTEX * 2 / _MB
+    return proposal_mb + beam_mb + refinement_mb + posed_geometry_mb + NFP_CACHE_MAX_MB
 
 
 def estimate_shared_mb(shape: WorkloadShape, effort: SearchEffort) -> float:
@@ -990,7 +1007,14 @@ def estimate_shared_mb(shape: WorkloadShape, effort: SearchEffort) -> float:
     del effort  # Effort chỉ ảnh hưởng search state per-worker; giữ tham số tương thích.
     geometry_mb = shape.source_vertex_count * _GEOMETRY_COPIES * _BYTES_PER_VERTEX / _MB
 
-    spatial_mb = shape.instance_count * shape.max_sheets * _BYTES_PER_PLACEMENT / _MB
+    # M72.B (2026-09-19): mỗi instance thuộc MỘT tờ. validator.rs dựng spatial
+    # grid từng tờ rồi bỏ; không có ma trận instance x maxSheets. Giữ cận cho
+    # contour đã đặt, ledger và header tờ; lưới tạm nằm trong overhead 64 MB.
+    spatial_mb = (
+        shape.instance_count * _BYTES_PER_PLACEMENT
+        + shape.placed_vertex_count * _BYTES_PER_VERTEX * _GEOMETRY_COPIES
+        + min(shape.instance_count, shape.max_sheets) * 3 * 24
+    ) / _MB
     thumbnail_mb = shape.part_count * _THUMBNAIL_MB_PER_PART
 
     return geometry_mb + spatial_mb + thumbnail_mb

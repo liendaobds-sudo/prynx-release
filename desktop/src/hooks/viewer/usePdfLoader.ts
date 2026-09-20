@@ -248,6 +248,7 @@ export interface UsePdfLoaderResult {
 interface UsePdfLoaderProps {
     file: LoaderFile | null;
     pdfUrl: string | null;
+    activePage?: number;
     setNumPages: (n: number) => void;
     setActivePage: (p: number) => void;
     setZoom: (z: number) => void;
@@ -255,7 +256,7 @@ interface UsePdfLoaderProps {
 }
 
 export function usePdfLoader({
-    file, pdfUrl, setNumPages, setActivePage, setZoom, containerRef
+    file, pdfUrl, activePage, setNumPages, setActivePage, setZoom, containerRef
 }: UsePdfLoaderProps) {
     const [pdfRef, setPdfRef] = useState<PDFDocumentProxy | null>(null);
     const [thumbPdfRef, setThumbPdfRef] = useState<PDFDocumentProxy | null>(null);
@@ -394,6 +395,11 @@ export function usePdfLoader({
         setViewerEngineMode('current');
         setViewerShadowEnabled(false);
         setNumPages(0);
+        setNativeRenderIdentity(null);
+        if (!file?.__editCommit && !file?.__pathRebaseOnly) {
+            setPageOrder([]);
+            setPageInstanceIds([]);
+        }
 
         // UIUX (audit 2026-08-01 §A.1+A.2): mỗi lượt tải thật phải có trạng thái
         // kết thúc rõ ràng; lỗi của file trước không được bám sang file mới.
@@ -767,6 +773,19 @@ export function usePdfLoader({
                             : Array.from({ length: numPagesFromEngine }, (_, i) => i + 1));
                         setPageInstanceIds(prev => keepOrder ? prev : genPageIds(numPagesFromEngine));
                     }
+
+                    // Luôn clamp activePage và selectedIndices về dải trang hợp lệ của tài liệu mới
+                    if (typeof activePage === 'number' && activePage > numPagesFromEngine) {
+                        setActivePage(Math.max(1, numPagesFromEngine));
+                    }
+                    setSelectedIndices(prev => {
+                        const next = new Set<number>();
+                        for (const idx of prev) {
+                            if (idx < numPagesFromEngine) next.add(idx);
+                        }
+                        return next.size > 0 ? next : new Set([0]);
+                    });
+                    setLastSelectedIndex(prev => (prev !== null && prev < numPagesFromEngine) ? prev : 0);
 
                     if (!isSameUrl) {
                         const focusIdx = cfFocus != null

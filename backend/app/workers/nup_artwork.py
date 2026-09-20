@@ -1076,6 +1076,30 @@ def place_one_artwork(
         else:
             _reg_rotate = 0
 
+        # OVAL20.01 (audit 2026-09-20): Chốt an toàn chống phóng to bất thường ở pha render.
+        # Lưu ý: clip PHẢI ở hệ toạ độ trang NGUỒN (không lấy reg_rect toạ độ tờ in).
+        if homogeneous_clip is not None:
+            _cw = homogeneous_clip.width
+            _ch = homogeneous_clip.height
+            if _cw > 0 and _ch > 0:
+                _rot = _reg_rotate % 180 != 0
+                _rw = reg_rect.height if _rot else reg_rect.width
+                _rh = reg_rect.width if _rot else reg_rect.height
+                _eff_scale = min(_rw / _cw, _rh / _ch)
+                if _eff_scale > 1.35:
+                    _fallback_clip = None
+                    _hom_die = die_items_cache.get(f"{job_id}_{src_page_idx}") if die_items_cache else None
+                    if _hom_die and _hom_die.get('rect'):
+                        _fallback_clip = pdf_lib.Rect(_hom_die['rect'])
+                    else:
+                        _fallback_clip = pdf_lib.Rect(src_page.rect)
+                    logger.warning(
+                        "[HOMOGENEOUS/SCALE_WARNING] page=%d phóng to bất thường (scale=%.3f > 1.35) "
+                        "clip=%.1fx%.1f rect=%.1fx%.1f -> fallback giữ scale 1.0 với nguồn",
+                        src_page_idx, _eff_scale, _cw, _ch, reg_rect.width, reg_rect.height,
+                    )
+                    homogeneous_clip = _fallback_clip
+
         # ── Clip THEO HÌNH khuôn MASTER (chế độ ĐỒNG NHẤT) ────────────────────
         # Nhánh này trước đây không truyền out_clip → clip = chính rect ô. Nội dung
         # được co khít vào khuôn nên phần lấn ít hơn nhánh die-cut, nhưng với tem

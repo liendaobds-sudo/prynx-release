@@ -75,7 +75,7 @@ function GalleryCard({
                         alt={tv(variant.nameVi, VARIANT_NS)}
                         className="dt-gallery-card-img"
                         draggable={false}
-                        loading="lazy"
+                        decoding="async"
                         onError={() => setImgFailed(true)}
                     />
                 )}

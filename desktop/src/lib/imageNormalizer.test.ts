@@ -417,4 +417,22 @@ describe('imageFilesToPdfFile — nhiều ảnh dùng chung Viewer/thumbnail', (
         await expect(imageFilesToPdfFile([new File([], 'anh.gif')]))
             .rejects.toThrow('Định dạng ảnh chưa được hỗ trợ');
     });
+
+    it('appendImagePageToPdfDoc hỗ trợ khóa chiều rộng (chiều cao tự tính theo tỷ lệ)', async () => {
+        const png = fromBase64(PNG_2X3_NO_DPI); // 2x3 pt
+        const doc = await PDFDocument.create();
+        // Khóa chiều rộng W = 200 pt, H = 0 (tự tính): W/pw = 200/2 = 100 -> H = 3 * 100 = 300 pt
+        const page = await appendImagePageToPdfDoc(doc, png, 'sample.png', [200, 0]);
+        expect(page.getWidth()).toBeCloseTo(200, 2);
+        expect(page.getHeight()).toBeCloseTo(300, 2);
+    });
+
+    it('appendImagePageToPdfDoc hỗ trợ khóa chiều cao (chiều rộng tự tính theo tỷ lệ)', async () => {
+        const png = fromBase64(PNG_2X3_NO_DPI); // 2x3 pt
+        const doc = await PDFDocument.create();
+        // Khóa chiều cao H = 300 pt, W = 0 (tự tính): H/ph = 300/3 = 100 -> W = 2 * 100 = 200 pt
+        const page = await appendImagePageToPdfDoc(doc, png, 'sample.png', [0, 300]);
+        expect(page.getWidth()).toBeCloseTo(200, 2);
+        expect(page.getHeight()).toBeCloseTo(300, 2);
+    });
 });

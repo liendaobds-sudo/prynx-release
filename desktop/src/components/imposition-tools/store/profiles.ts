@@ -64,9 +64,12 @@ export function resolveLayoutTypeForTaskMode(
     taskMode: unknown,
     layoutType: unknown,
     tool: string = 'nup',
+    impositionUnit: unknown = 'sticker',
 ): 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' | 'mixed_guillotine' {
     const mode = normalizeProfileTaskMode(taskMode, tool);
     if (mode === 'step_repeat') return 'repeat';
+    // BE.04 (audit 2026-09-20): Từng tem không có điều khiển cách ráp cọc.
+    if (tool === 'sticker_imposer' && impositionUnit !== 'page_sheet') return 'sequential';
     // MIXED-GUILLOTINE (audit 2026-07-30 §MG.8/§MG.9): mode mới chỉ thuộc Bình cắt xén.
     if (layoutType === 'mixed_guillotine' && tool === 'nup') return layoutType;
     if (layoutType === 'cut_stacks' || layoutType === 'ratio_stack' || layoutType === 'sequential') {

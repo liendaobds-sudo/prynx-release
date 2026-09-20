@@ -108,14 +108,15 @@ fn check_cancelled(cancel_token: Option<&CancelToken>) -> PpeResult<()> {
 }
 
 /// LUT 3 chiều cho một phép biến đổi 3 kênh → CMYK.
-struct Lut3 {
+pub(crate) struct Lut3 {
     /// `[(r * G + g) * G + b] * 4`, giá trị 0..1.
-    data: Vec<f32>,
+    pub(crate) data: Vec<f32>,
 }
 
 impl Lut3 {
     /// Nội suy 3 tuyến tính.
-    fn sample(&self, a: f32, b: f32, c: f32) -> [f32; 4] {
+    #[inline]
+    pub(crate) fn sample(&self, a: f32, b: f32, c: f32) -> [f32; 4] {
         let g = LUT_GRID - 1;
         let fa = a.clamp(0.0, 1.0) * g as f32;
         let fb = b.clamp(0.0, 1.0) * g as f32;
@@ -172,11 +173,13 @@ pub struct ColorManager {
     rgb: Option<Profile>,
     intent: RenderIntent,
     /// LUT sRGB → CMYK, dựng khi lần đầu cần.
-    srgb_lut: RefCell<Option<Lut3>>,
+    srgb_lut: RefCell<Option<Arc<Lut3>>>,
     /// LUT Lab → CMYK.
     lab_lut: RefCell<Option<Lut3>>,
     /// LUT cho profile nhúng, khoá bằng hash nội dung profile.
-    embedded_luts: RefCell<HashMap<u64, Option<Lut3>>>,
+    embedded_luts: RefCell<HashMap<u64, Option<Arc<Lut3>>>>,
+    /// Fast-path cache con trỏ/độ dài profile nhúng vừa dùng gần nhất để tránh băm lại hàng triệu lần.
+    last_embedded: RefCell<Option<(usize, usize, Option<Arc<Lut3>>)>>,
     /// Profile gray → CMYK dạng bảng 256 ô (1 chiều nên không cần LUT 3D).
     gray_lut: RefCell<Option<Vec<[f32; 4]>>>,
     /// Bù điểm đen (black point compensation).
@@ -235,6 +238,7 @@ impl ColorManager {
             srgb_lut: RefCell::new(None),
             lab_lut: RefCell::new(None),
             embedded_luts: RefCell::new(HashMap::new()),
+            last_embedded: RefCell::new(None),
             gray_lut: RefCell::new(None),
             black_point_compensation: true,
         }
@@ -252,6 +256,7 @@ impl ColorManager {
             self.lab_lut.replace(None);
             self.gray_lut.replace(None);
             self.embedded_luts.borrow_mut().clear();
+            self.last_embedded.replace(None);
         }
     }
 
@@ -284,15 +289,23 @@ impl ColorManager {
         }
     }
 
-    /// sRGB → CMYK.
-    pub fn rgb_to_cmyk(&self, r: f32, g: f32, b: f32) -> Option<[f32; 4]> {
+    /// sRGB → CMYK LUT dạng Arc<Lut3>, dựng một lần cho session/page.
+    pub(crate) fn rgb_lut(&self) -> Option<Arc<Lut3>> {
         let mut slot = self.srgb_lut.borrow_mut();
         if slot.is_none() {
             let fallback = Profile::new_srgb();
             let src = self.rgb.as_ref().unwrap_or(&fallback);
-            *slot = self.build_lut(src, PixelFormat::RGB_FLT, |i, j, k| [i, j, k]);
+            *slot = self
+                .build_lut(src, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
+                .map(Arc::new);
         }
-        slot.as_ref().map(|lut| lut.sample(r, g, b))
+        slot.clone()
+    }
+
+    /// sRGB → CMYK.
+    pub fn rgb_to_cmyk(&self, r: f32, g: f32, b: f32) -> Option<[f32; 4]> {
+        let lut = self.rgb_lut()?;
+        Some(lut.sample(r, g, b))
     }
 
     /// Lab (L 0..100, a/b −128..127) → CMYK.
@@ -360,18 +373,34 @@ impl ColorManager {
         slot.as_ref().map(|t| t[idx.min(255)])
     }
 
-    /// Profile nhúng (`ICCBased`) 3 kênh → CMYK.
-    ///
-    /// Trả `None` nếu profile không đọc được — caller phải hạ `accuracy` chứ
-    /// không được lặng lẽ coi như sRGB.
-    pub fn embedded_to_cmyk(&self, profile: &[u8], a: f32, b: f32, c: f32) -> Option<[f32; 4]> {
+    /// Lấy LUT 3 chiều cho profile nhúng, có cache theo con trỏ/độ dài và băm nội dung.
+    pub(crate) fn embedded_lut(&self, profile: &[u8]) -> Option<Arc<Lut3>> {
+        let ptr = profile.as_ptr() as usize;
+        let len = profile.len();
+        if let Some((last_ptr, last_len, lut_opt)) = self.last_embedded.borrow().as_ref() {
+            if *last_ptr == ptr && *last_len == len {
+                return lut_opt.clone();
+            }
+        }
         let key = hash_bytes(profile);
         let mut cache = self.embedded_luts.borrow_mut();
         let entry = cache.entry(key).or_insert_with(|| {
             let p = Profile::new_icc(profile).ok()?;
             self.build_lut(&p, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
+                .map(Arc::new)
         });
-        entry.as_ref().map(|lut| lut.sample(a, b, c))
+        let res = entry.clone();
+        *self.last_embedded.borrow_mut() = Some((ptr, len, res.clone()));
+        res
+    }
+
+    /// Profile nhúng (`ICCBased`) 3 kênh → CMYK.
+    ///
+    /// Trả `None` nếu profile không đọc được — caller phải hạ `accuracy` chứ
+    /// không được lặng lẽ coi như sRGB.
+    pub fn embedded_to_cmyk(&self, profile: &[u8], a: f32, b: f32, c: f32) -> Option<[f32; 4]> {
+        let lut = self.embedded_lut(profile)?;
+        Some(lut.sample(a, b, c))
     }
 
     /// CMYK → sRGB, cho soft-proof. Biến đổi theo lô cả trang.

@@ -268,6 +268,40 @@ describe('PageResizer — resizePages', () => {
     expect(bleed.x).toBeCloseTo(2.5, 1);
     expect(bleed.width).toBeCloseTo((srcW - 10) / 2, 1);
   });
+
+  it('hỗ trợ pageSizeMode: fixed_width (chiều cao tự tính theo tỷ lệ)', async () => {
+    const source = await PDFDocument.create();
+    // 100x200 pt (tỷ lệ 1:2)
+    source.addPage([100, 200]);
+    // Khóa width = 50 mm, height = 0: W = 50 * 2.83465 = 141.73 pt -> H phải là 283.465 pt
+    const out = await resizePages(await source.save(), {
+      targetW: 50,
+      targetH: 0,
+      scaleMode: 'fit',
+      applyTo: 'all',
+      pageSizeMode: 'fixed_width',
+    });
+    const page = (await PDFDocument.load(out)).getPage(0);
+    expect(page.getWidth()).toBeCloseTo(50 * MM_TO_POINTS, 1);
+    expect(page.getHeight()).toBeCloseTo(100 * MM_TO_POINTS, 1);
+  });
+
+  it('hỗ trợ pageSizeMode: fixed_height (chiều rộng tự tính theo tỷ lệ)', async () => {
+    const source = await PDFDocument.create();
+    // 100x200 pt (tỷ lệ 1:2)
+    source.addPage([100, 200]);
+    // Khóa height = 100 mm, width = 0: H = 100 * 2.83465 = 283.465 pt -> W phải là 50 * 2.83465 pt
+    const out = await resizePages(await source.save(), {
+      targetW: 0,
+      targetH: 100,
+      scaleMode: 'fit',
+      applyTo: 'all',
+      pageSizeMode: 'fixed_height',
+    });
+    const page = (await PDFDocument.load(out)).getPage(0);
+    expect(page.getWidth()).toBeCloseTo(50 * MM_TO_POINTS, 1);
+    expect(page.getHeight()).toBeCloseTo(100 * MM_TO_POINTS, 1);
+  });
 });
 
 // ─── PdfMerger (PDF-only, không chạm imageNormalizer) ──────────────────────

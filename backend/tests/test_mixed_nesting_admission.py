@@ -265,6 +265,7 @@ def test_workload_shape_khong_co_truong_dem_goc():
         "instance_count",
         "source_vertex_count",
         "max_sheets",
+        "instance_vertex_count",
     }
     for ten in ten_truong:
         assert "angle" not in ten and "rotation" not in ten and "goc" not in ten
@@ -663,7 +664,7 @@ def test_model_version_duoc_ghi_vao_reason(monkeypatch):
     _gia_lap_ram(monkeypatch, 32 * 1024.0)
     plan = svc.plan_hardware(_request(), cpu_count=16)
     assert f"model=v{svc.ADMISSION_MODEL_VERSION}" in plan.reason
-    assert svc.ADMISSION_MODEL_VERSION == 4
+    assert svc.ADMISSION_MODEL_VERSION == 5
     assert svc.MIXED_NESTING_KIND in plan.reason
 
 
@@ -686,3 +687,17 @@ def test_admission_khong_nap_native():
     plan = svc.plan_hardware(_request(), cpu_count=os.cpu_count() or 4)
     assert plan.workers >= 1
     assert plan.estimated_peak_mb > 0
+
+def test_many_sheets_do_not_allocate_every_instance_on_every_sheet(monkeypatch):
+    """M72.B: 7.200 tem không phải ma trận 7.200 x 7.200 placement."""
+    _gia_lap_ram(monkeypatch, 32 * 1024.0)
+    request = _request(part_count=72, quantity=100, max_sheets=7200, profile="fast")
+    shape = svc.describe_workload(request)
+    assert shape.instance_vertex_count == 72 * 100 * 4
+    plan = svc.plan_hardware(request, cpu_count=16)
+    assert plan.workers == 15
+    assert plan.estimated_peak_mb < 4 * 1024
+    effort = svc.SEARCH_EFFORT_BY_PROFILE["fast"]
+    request["sheet"]["maxSheets"] = 800
+    smaller = svc.describe_workload(request)
+    assert svc.estimate_shared_mb(shape, effort) - svc.estimate_shared_mb(smaller, effort) < 1.0

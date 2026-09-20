@@ -535,3 +535,101 @@ fn layer_has_vertical_boundary(layer: &super::scene::VectorLayer, x: f64) -> boo
         })
     })
 }
+
+#[test]
+fn flat_color_despeckle_preserves_vietnamese_diacritic_marks() {
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    let width = 20;
+    let height = 20;
+    let mut pixels = vec![BLUE; width * height];
+
+    // Thân chữ chính (base glyph): cột x=8..12, y=8..18 (diện tích 40px)
+    for y in 8..18 {
+        for x in 8..12 {
+            pixels[y * width + x] = RED;
+        }
+    }
+
+    // Dấu tiếng Việt / chấm chữ i: x=9..11, y=3..5 (diện tích 4px, nhỏ hơn ngưỡng despeckle 4x4 = 16px)
+    for y in 3..5 {
+        for x in 9..11 {
+            pixels[y * width + x] = RED;
+        }
+    }
+
+    // Hạt bụi cô lập ở góc xa (x=0, y=0, diện tích 1px)
+    pixels[0] = RED;
+
+    // Chạy với despeckle_size_px = 4 (ngưỡng diện tích khử hạt = 16px)
+    let cleaned = trace_core_profile(
+        &flat_request_with_options(&pixels, width, height, 0.0, 4),
+        CoreProfileOptions::default(),
+    )
+    .unwrap();
+
+    // Hạt bụi ở (0,0) phải bị loại, nhưng dấu chữ ở (9..11, 3..5) được bảo vệ và giữ nguyên!
+    // Có 3 component: nền BLUE, thân chữ RED, dấu RED.
+    assert_eq!(cleaned.metrics.component_count, 3);
+    assert_eq!(cleaned.metrics.outer_count, 3);
+    assert!(cleaned.scene.validate_contract().is_ok());
+}
+
+#[test]
+#[ignore]
+fn bench_large_image_breakdown() {
+    use std::time::Instant;
+    let width = 1500;
+    let height = 1000;
+    let white = [255, 255, 255];
+    let red = [220, 30, 30];
+    let blue = [30, 80, 220];
+    let black = [20, 20, 20];
+    let mut pixels = vec![white; width * height];
+    for y in 100..400 {
+        for x in 100..600 {
+            pixels[y * width + x] = red;
+        }
+    }
+    for y in 100..400 {
+        for x in 700..1200 {
+            pixels[y * width + x] = blue;
+        }
+    }
+    for i in 0..20 {
+        for y in 850..950 {
+            for x in (100 + i * 60)..(140 + i * 60) {
+                pixels[y * width + x] = black;
+            }
+        }
+    }
+    let req = flat_request_with_options(&pixels, width, height, 0.0, 4);
+
+    let t0 = Instant::now();
+    let mut artifact = crate::logo_engine::preprocess::preprocess_rgba(
+        req.width, req.height, &req.rgba, req.profile, &req.palette
+    ).unwrap();
+    println!("bench: preprocess_rgba: {:?}", t0.elapsed());
+
+    let t1 = Instant::now();
+    crate::logo_engine::preprocess::despeckle_artifact(&mut artifact, req.profile, req.despeckle_size_px).unwrap();
+    println!("bench: despeckle_artifact: {:?}", t1.elapsed());
+
+    let t_c0 = Instant::now();
+    let contours = crate::logo_engine::contour::extract_contours(&artifact).unwrap();
+    println!("bench: extract_contours: {:?}", t_c0.elapsed());
+
+    let t_c1 = Instant::now();
+    let _classified = crate::logo_engine::topology::classify_contours(&contours).unwrap();
+    println!("bench: classify_contours: {:?}", t_c1.elapsed());
+
+    let t2 = Instant::now();
+    let _raw_layers = crate::logo_engine::topology::build_vector_layers(&artifact).unwrap();
+    println!("bench: build_vector_layers: {:?}", t2.elapsed());
+
+    let t3 = Instant::now();
+    let _out = trace_core_profile(&req, CoreProfileOptions::default()).unwrap();
+    println!("bench: total trace_core_profile: {:?}", t3.elapsed());
+}
+
+

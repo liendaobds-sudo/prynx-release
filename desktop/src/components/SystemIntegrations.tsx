@@ -4,7 +4,14 @@ import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
 import { isOfficePathOrName, isPdfOrImagePath } from '../lib/officeFileTypes';
-import { createPathBackedFile } from '../lib/nativeFileAccess';
+import {
+    createPathBackedFile,
+    createPathBackedFiles,
+    statNativeSystemFiles,
+    createSavedSourceFile,
+    systemFileMime,
+    type NativeFileStatResult,
+} from '../lib/nativeFileAccess';
 import {
     SYSTEM_FILES_POLL_SETTLED_EVENT,
     SYSTEM_FILES_RECEIVED_EVENT,
@@ -109,11 +116,13 @@ export default function SystemIntegrations() {
 
         if (validPaths.length === 0) return { batchId: batch.batchId, action, files: [] };
 
-        // FILEIO (audit 2026-08-02 §OPEN.1): khởi động mọi probe cùng lúc; NAS/UNC
-        // chậm chỉ làm size=0 sau deadline, không giữ toàn bộ dispatcher theo từng file.
-        const files = (await Promise.all(validPaths.map(async (path): Promise<File | null> => {
-            try {
-                const { file, stat } = await createPathBackedFile(path);
+        // FILEIO (audit 2026-08-02 §OPEN.1, audit 2026-09-19 §BURST.BATCH_STAT): Stat toàn bộ batch
+        // trong 1 lời gọi IPC duy nhất (hoặc fallback song song); NAS/UNC chậm chỉ làm size=0
+        // sau deadline, không giữ toàn bộ dispatcher theo từng file.
+        let files: File[] = [];
+        try {
+            const backedFiles = await createPathBackedFiles(validPaths);
+            files = backedFiles.map(({ file, stat }) => {
                 if (stat.status !== 'available') {
                     console.warn(
                         i18n.t('misc.systemIntegrations:get_file_size_loi_van_mo_size_0'),
@@ -122,13 +131,28 @@ export default function SystemIntegrations() {
                     );
                 }
                 return file;
-            } catch (error) {
-                const name = path.split('\\').pop() || path.split('/').pop() || 'unknown';
-                console.error('Không thể chuẩn bị file hệ thống:', name, error);
-                toast.error(`Không thể mở file: ${name}`);
-                return null;
-            }
-        }))).filter((file): file is File => file !== null);
+            });
+        } catch (error) {
+            console.error('Không thể chuẩn bị file hệ thống theo batch:', error);
+            files = (await Promise.all(validPaths.map(async (path): Promise<File | null> => {
+                try {
+                    const { file, stat } = await createPathBackedFile(path);
+                    if (stat.status !== 'available') {
+                        console.warn(
+                            i18n.t('misc.systemIntegrations:get_file_size_loi_van_mo_size_0'),
+                            file.name,
+                            stat.status,
+                        );
+                    }
+                    return file;
+                } catch (err) {
+                    const name = path.split('\\').pop() || path.split('/').pop() || 'unknown';
+                    console.error('Không thể chuẩn bị file hệ thống:', name, err);
+                    toast.error(`Không thể mở file: ${name}`);
+                    return null;
+                }
+            }))).filter((file): file is File => file !== null);
+        }
 
         return { batchId: batch.batchId, action, files };
     }, []);
@@ -140,43 +164,161 @@ export default function SystemIntegrations() {
         // Dùng setTimeout đệ quy: chỉ lên lịch lần kế SAU khi lần này xong.
         let pollTimer: ReturnType<typeof setTimeout> | null = null;
         let pollStopped = false;
+        let isPolling = false;
+        let hasPendingImmediatePoll = false;
         let pollSequence = 0;
+        let inBurst = false;
+        let quietPollCount = 0;
+
+        const IDLE_POLL_MS = 1000;
+        const BURST_POLL_MS = 150;
+        // FILEIO (audit 2026-09-19 §BURST.72): Windows Explorer spawn 72 tiến trình theo nhiều đợt
+        // với khoảng dừng 300-800ms. Chờ 8 nhịp rỗng liên tiếp (8 * 150ms = 1.2s) đảm bảo Explorer
+        // đã gửi hết toàn bộ các file vào single-instance trước khi đóng batch và mở tab Combine.
+        const QUIET_SETTLE_COUNT = 8;
+
+        const hasExplicitAction = (batches: NativeSystemFileBatch[]) => (
+            batches.some(batch => batch.args.some(arg => arg.startsWith('--prynx-action=')))
+        );
+
         const processBatches = async (batches: NativeSystemFileBatch[]) => {
-            // Probe song song để một NAS chậm không đẩy batch explicit vượt fallback 3 giây.
-            const prepared = await Promise.all(batches.map(batch => prepareBatch(batch)));
-            if (pollStopped) return;
-            prepared.forEach(dispatchPreparedBatch);
-        };
-        const scheduleNextPoll = () => {
-            if (pollStopped) return;
-            pollTimer = setTimeout(() => {
-                // FILEIO (audit 2026-08-02 §OPEN.1): chỉ đặt lượt kế tiếp sau khi
-                // toàn bộ path của lượt hiện tại đã thành file và được dispatch.
-                void (async () => {
-                    try {
-                        pollSequence += 1;
-                        const batches = await takePendingBatches(pollSequence);
-                        if (batches.length > 0) await processBatches(batches);
-                    } catch (error) {
-                        console.error('Không thể đọc hàng đợi file hệ thống:', error);
-                    } finally {
-                        // FILEIO (audit 2026-08-02 §TEST.1): explicit intent Combine/
-                        // Convert chỉ đóng batch sau khi lượt pending đầu đã được vét.
-                        window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT));
-                        scheduleNextPoll();
+            // FILEIO (audit 2026-09-19 §BURST.GLOBAL_BATCH): Thay vì gọi N lần IPC stat riêng lẻ
+            // cho từng batch (khiến 72 batch phát sinh 72 IPC calls), gom TẤT CẢ các file của toàn bộ
+            // batches vào đúng 1 lần gọi statNativeSystemFiles duy nhất chạy trên Rust threadpool (chỉ ~5ms).
+            const allValidPaths: string[] = [];
+            const batchInfoList: Array<{ batchId: string; action: string; validPaths: string[] }> = [];
+
+            for (const batch of batches) {
+                const actionArg = batch.args.find(arg => arg.startsWith('--prynx-action='));
+                const action = actionArg ? actionArg.split('=')[1] : '';
+                const rawPaths = batch.args.filter(arg => !arg.startsWith('--prynx-action='));
+                const validPaths = rawPaths.filter(p => isPdfOrImagePath(p) || isOfficePathOrName(p));
+                batchInfoList.push({ batchId: batch.batchId, action, validPaths });
+                for (const p of validPaths) {
+                    if (!allValidPaths.includes(p)) {
+                        allValidPaths.push(p);
                     }
-                })();
-            }, 1000);
+                }
+            }
+
+            const statMap = new Map<string, NativeFileStatResult>();
+            if (allValidPaths.length > 0) {
+                try {
+                    const stats = await statNativeSystemFiles(allValidPaths);
+                    allValidPaths.forEach((path, idx) => {
+                        statMap.set(path, stats[idx] ?? { status: 'inaccessible', size: 0 });
+                    });
+                } catch (err) {
+                    console.error('[SystemIntegrations] Lỗi batch stat all paths:', err);
+                }
+            }
+
+            const prepared: PreparedSystemFileBatch[] = batchInfoList.map(({ batchId, action, validPaths }) => {
+                const files = validPaths.map(path => {
+                    const stat = statMap.get(path) ?? { status: 'inaccessible', size: 0 };
+                    const name = path.split('\\').pop() || path.split('/').pop() || 'unknown';
+                    return createSavedSourceFile([], name, {
+                        type: systemFileMime(name),
+                        path,
+                        size: stat.size,
+                    });
+                });
+                return { batchId, action, files };
+            });
+
+            if (pollStopped) return;
+            prepared.forEach(b => {
+                dispatchPreparedBatch(b);
+            });
+        };
+
+        const scheduleNextPoll = (delay = IDLE_POLL_MS) => {
+            if (pollStopped) return;
+            if (pollTimer) clearTimeout(pollTimer);
+            pollTimer = setTimeout(() => {
+                void executePoll();
+            }, delay);
+        };
+
+        const executePoll = async () => {
+            if (pollStopped || isPolling) {
+                if (isPolling) hasPendingImmediatePoll = true;
+                return;
+            }
+            isPolling = true;
+            let receivedBatches: NativeSystemFileBatch[] = [];
+            try {
+                pollSequence += 1;
+                receivedBatches = await takePendingBatches(pollSequence);
+                if (hasExplicitAction(receivedBatches)) {
+                    inBurst = true;
+                    quietPollCount = 0;
+                }
+                if (receivedBatches.length > 0) {
+                    await processBatches(receivedBatches);
+                }
+            } catch (error) {
+                console.error('Không thể đọc hàng đợi file hệ thống:', error);
+            } finally {
+                isPolling = false;
+                if (pollStopped) return;
+
+                if (hasPendingImmediatePoll) {
+                    hasPendingImmediatePoll = false;
+                    void executePoll();
+                    return;
+                }
+
+                if (inBurst) {
+                    // FILEIO (audit 2026-09-19 §BURST.72): khi Explorer mở nhiều process (Combine/Convert),
+                    // tiếp tục vét nhanh mỗi 150ms. Chỉ chốt settled khi hàng đợi thực sự rỗng
+                    // trong QUIET_SETTLE_COUNT lần liên tiếp (~1.2s yên tĩnh hoàn toàn).
+                    if (receivedBatches.length === 0) {
+                        quietPollCount += 1;
+                        if (quietPollCount >= QUIET_SETTLE_COUNT) {
+                            inBurst = false;
+                            quietPollCount = 0;
+                            window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT));
+                            scheduleNextPoll(IDLE_POLL_MS);
+                        } else {
+                            scheduleNextPoll(BURST_POLL_MS);
+                        }
+                    } else {
+                        quietPollCount = 0;
+                        scheduleNextPoll(BURST_POLL_MS);
+                    }
+                } else {
+                    // Bình thường không trong explicit burst: chỉ phát settled khi hàng đợi rỗng
+                    // (không phát ngay khi vừa nhận được file để tránh ngắt batch giữa chừng).
+                    if (receivedBatches.length === 0) {
+                        window.dispatchEvent(new Event(SYSTEM_FILES_POLL_SETTLED_EVENT));
+                    }
+                    scheduleNextPoll(IDLE_POLL_MS);
+                }
+            }
+        };
+
+        const triggerImmediatePoll = () => {
+            if (pollStopped) return;
+            if (pollTimer) {
+                clearTimeout(pollTimer);
+                pollTimer = null;
+            }
+            void executePoll();
         };
 
         void (async () => {
             try {
                 const batches = await takeStartupBatches();
+                if (hasExplicitAction(batches)) {
+                    inBurst = true;
+                    quietPollCount = 0;
+                }
                 if (batches.length > 0) await processBatches(batches);
             } catch (error) {
                 console.error('Không thể đọc tham số khởi động:', error);
             } finally {
-                scheduleNextPoll();
+                scheduleNextPoll(inBurst ? BURST_POLL_MS : IDLE_POLL_MS);
             }
         })();
 
@@ -216,6 +358,9 @@ export default function SystemIntegrations() {
                         args: paths,
                     }]);
                 }
+            });
+            void register('prynx-system-file-incoming', () => {
+                triggerImmediatePoll();
             });
         }).catch(err => console.error('Failed to register native drag-drop:', err));
 

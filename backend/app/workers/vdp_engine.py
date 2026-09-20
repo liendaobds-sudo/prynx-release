@@ -7,8 +7,11 @@ import uuid
 import logging
 import datetime
 import tempfile
+import ctypes
 from xml.sax.saxutils import escape as xml_escape
 
+import pypdfium2.raw as c_pdfium
+import pikepdf
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.vdp_gs1 import (
     parse_gs1, build_gs1_payload, human_readable, GS1Error, FNC1,
@@ -18,6 +21,7 @@ from app.core.pdfium_lock import pdfium_guard
 from app.core.disk_space_guard import ensure_job_disk_space, estimate_vdp_disk
 from app.core.system_memory import plan_worker_count
 from app.schemas.vdp import VdpField
+from app.workers.vdp_text_picker import resolve_font_file
 from typing import List, Dict
 
 from reportlab.pdfgen import canvas
@@ -103,24 +107,341 @@ def _find_variant_file(regular_path: str, variant: str):
     return None
 
 
-def _register_font_family(regular_path: str, base_name: str) -> dict:
-    """Đăng ký Regular + mọi biến thể tìm được. Trả {variant: font_name}."""
-    variants = {}
+def _get_font_postscript_name(font_path: str) -> str | None:
+    """Lấy PostScript name thực tế từ file font (TTF/OTF) để Illustrator/Corel nhận diện được font sống."""
     try:
-        pdfmetrics.registerFont(TTFont(base_name, regular_path))
-        variants['regular'] = base_name
-    except Exception:
+        from fontTools.ttLib import TTFont as FontToolsTTFont
+        with FontToolsTTFont(font_path, fontNumber=0, lazy=True) as tt:
+            name_table = tt.get('name')
+            if name_table:
+                name_record = name_table.getDebugName(6)  # nameID 6 = PostScript name
+                if name_record:
+                    clean_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '', str(name_record))
+                    if clean_name:
+                        return clean_name
+    except Exception as e:
+        logger.debug(f"Không thể đọc PostScript name từ font {font_path}: {e}")
+    return None
+
+
+_SYSTEM_FONT_CACHE: dict[str, str | None] = {}
+
+
+def _resolve_system_font(font_name: str | None) -> str | None:
+    """Tìm file font thực tế (.ttf/.otf) trên hệ thống (Windows) theo tên font.
+    Hợp nhất dùng chung resolve_font_file từ vdp_text_picker.
+    KHÔNG tự ý fallback ngầm về Arial khi font không tồn tại.
+    """
+    if not font_name:
+        return None
+    key = str(font_name).strip()
+    if key in _SYSTEM_FONT_CACHE:
+        return _SYSTEM_FONT_CACHE[key]
+
+    resolved = resolve_font_file(key)
+    if resolved and os.path.isfile(resolved):
+        _SYSTEM_FONT_CACHE[key] = resolved
+        return resolved
+
+    logger.warning(
+        f"[VDP-FONT] Không tìm thấy file font hệ thống cho '{font_name}'. "
+        f"Vui lòng cài đặt font này lên Windows hoặc chọn font có sẵn."
+    )
+    _SYSTEM_FONT_CACHE[key] = None
+    return None
+
+
+def _register_font_family(regular_path: str, base_name: str) -> dict:
+    """Đăng ký Regular + mọi biến thể tìm được. Ưu tiên PostScript name thật để Illustrator/Corel nhận diện Live Text."""
+    variants = {}
+    real_name = _get_font_postscript_name(regular_path) or base_name
+    try:
+        registered = pdfmetrics.getRegisteredFontNames()
+        if real_name not in registered:
+            ttf = TTFont(real_name, regular_path)
+            # Quan trọng: ReportLab mặc định thay dấu cách trong PostScript name thành dấu gạch ngang '-'
+            # (vd: UTM Times -> UTM-Times). Để Illustrator/Corel nhận diện chính xác Live Text khớp với
+            # PostScript name chuẩn của file thiết kế (UTMTimes), ta gán trực tiếp real_name vào face.name.
+            if real_name:
+                try:
+                    ttf.face.name = real_name.encode('latin1', 'ignore')
+                except Exception:
+                    pass
+            pdfmetrics.registerFont(ttf)
+        variants['regular'] = real_name
+    except Exception as e:
+        logger.warning(f"Lỗi đăng ký font regular {regular_path}: {e}")
         return variants
+
     for variant in ('bold', 'italic', 'bolditalic'):
         vp = _find_variant_file(regular_path, variant)
         if vp:
-            vname = f"{base_name}_{variant}"
+            v_real_name = _get_font_postscript_name(vp) or f"{real_name}_{variant}"
             try:
-                pdfmetrics.registerFont(TTFont(vname, vp))
-                variants[variant] = vname
+                registered = pdfmetrics.getRegisteredFontNames()
+                if v_real_name not in registered:
+                    v_ttf = TTFont(v_real_name, vp)
+                    if v_real_name:
+                        try:
+                            v_ttf.face.name = v_real_name.encode('latin1', 'ignore')
+                        except Exception:
+                            pass
+                    pdfmetrics.registerFont(v_ttf)
+                variants[variant] = v_real_name
+            except Exception as e:
+                logger.debug(f"Lỗi đăng ký biến thể font {variant} ({vp}): {e}")
+    return variants
+
+
+class PdfiumVdpTextRenderer:
+    """[VDP-TYPE0-LIVE-TEXT] Engine render chữ VDP bằng PDFium C-API thành Type0 Composite Fonts.
+    Sử dụng FPDFText_LoadFont với cid=1 để nhúng font TTF/OTF hệ thống thành 16-bit Identity-H
+    với bảng /ToUnicode chuẩn Adobe. Giúp Adobe Illustrator 2025 nhận diện 100% Live Text
+    tiếng Việt có dấu (không bị ép outline/curve).
+    """
+    def __init__(self, pw: float, ph: float, font_bytes_cache: dict | None = None):
+        self.pw = pw
+        self.ph = ph
+        self._font_bytes_cache = font_bytes_cache if font_bytes_cache is not None else {}
+        with pdfium_guard():
+            self.doc = c_pdfium.FPDF_CreateNewDocument()
+            self.page = c_pdfium.FPDFPage_New(self.doc, 0, pw, ph)
+        self._font_handles: dict[str, int] = {}
+        self._font_buffers: list = []
+        self.has_text = False
+
+    def _get_or_load_font(self, font_path: str) -> int | None:
+        if font_path in self._font_handles:
+            return self._font_handles[font_path]
+        if not os.path.isfile(font_path):
+            return None
+        try:
+            if font_path in self._font_bytes_cache:
+                fb = self._font_bytes_cache[font_path]
+            else:
+                with open(font_path, 'rb') as f:
+                    fb = f.read()
+                self._font_bytes_cache[font_path] = fb
+            buf = (ctypes.c_ubyte * len(fb)).from_buffer_copy(fb)
+            self._font_buffers.append(buf)
+            with pdfium_guard():
+                # cid=1: tạo Type0 font với /Encoding /Identity-H và /ToUnicode CMap chuẩn
+                fh = c_pdfium.FPDFText_LoadFont(self.doc, buf, len(fb), 1, 1)
+            if fh:
+                self._font_handles[font_path] = fh
+                return fh
+        except Exception as exc:
+            logger.warning(f"[VDP-TYPE0] Lỗi nạp font {font_path} vào PDFium: {exc}")
+        return None
+
+    @staticmethod
+    def _hex_or_cmyk_to_rgba(color_spec) -> tuple[int, int, int, int]:
+        if isinstance(color_spec, str) and color_spec.startswith('#'):
+            h = color_spec.lstrip('#')
+            if len(h) == 6:
+                return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255
+        elif isinstance(color_spec, (list, tuple)) and len(color_spec) == 4:
+            cv, mv, yv, kv = color_spec
+            r = int(255 * (1.0 - float(cv)) * (1.0 - float(kv)))
+            g = int(255 * (1.0 - float(mv)) * (1.0 - float(kv)))
+            b = int(255 * (1.0 - float(yv)) * (1.0 - float(kv)))
+            return max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)), 255
+        return 0, 0, 0, 255
+
+    def add_text_field(
+        self,
+        font_path: str,
+        text: str,
+        x_pts: float,
+        y_pts: float,
+        w_pts: float,
+        h_pts: float,
+        fontsize: float,
+        color='#000000',
+        alignment='center',
+        auto_fit=True,
+        line_height=1.0,
+        angle_deg=0.0,
+        need_faux_bold=False,
+        need_faux_italic=False,
+    ) -> bool:
+        if not text or not str(text).strip():
+            return True
+        fh = self._get_or_load_font(font_path)
+        if not fh:
+            return False
+
+        r, g, b, a = self._hex_or_cmyk_to_rgba(color)
+        lines = str(text).split('\n') or ['']
+        n_lines = len(lines)
+        leading = float(fontsize) * float(line_height or 1.0)
+        bottom_y = self.ph - y_pts - h_pts
+
+        rot = float(angle_deg) % 360.0
+        is_quarter_turn = abs(rot - 90.0) < 0.01 or abs(rot - 270.0) < 0.01
+        ew, eh = (h_pts, w_pts) if is_quarter_turn else (w_pts, h_pts)
+        cx = x_pts + w_pts / 2.0
+        cy = bottom_y + h_pts / 2.0
+
+        total_h = float(fontsize) + (n_lines - 1) * leading
+        first_baseline_local = -total_h / 2.0 + (n_lines - 1) * leading
+
+        with pdfium_guard():
+            line_objs_and_widths = []
+            for line in lines:
+                tobj = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
+                u16 = (line + '\0').encode('utf-16-le')
+                u16_buf = ctypes.cast(ctypes.create_string_buffer(u16), ctypes.POINTER(ctypes.c_ushort))
+                c_pdfium.FPDFText_SetText(tobj, u16_buf)
+                left, bottom, right, top = ctypes.c_float(), ctypes.c_float(), ctypes.c_float(), ctypes.c_float()
+                c_pdfium.FPDFPageObj_GetBounds(tobj, ctypes.byref(left), ctypes.byref(bottom), ctypes.byref(right), ctypes.byref(top))
+                lw = max(0.0, right.value - left.value)
+                line_objs_and_widths.append((tobj, lw, left.value, line))
+
+            max_w = max((lw for _, lw, _, _ in line_objs_and_widths), default=0.0)
+            sx = 1.0
+            if auto_fit and max_w > ew and max_w > 0:
+                sx = max(0.05, min(1.0, ew / max_w))
+
+            rad = math.radians(rot)
+            cos_a, sin_a = math.cos(rad), math.sin(rad)
+            shear = 0.21 if need_faux_italic else 0.0
+
+            a_mat = sx * cos_a
+            b_mat = sx * sin_a
+            c_mat = shear * cos_a - sin_a
+            d_mat = shear * sin_a + cos_a
+
+            for idx, (tobj, lw, left_val, line) in enumerate(line_objs_and_widths):
+                eff_w = lw * sx
+                align_l = str(alignment).lower()
+                # [VDPALIGN21.03] Bù gốc trái glyph (-left_val * sx) để ink bounds căn đúng tâm/mép
+                if align_l == 'center':
+                    lx_local = -eff_w / 2.0 - left_val * sx
+                elif align_l == 'right':
+                    lx_local = ew / 2.0 - eff_w - left_val * sx
+                else:
+                    lx_local = -ew / 2.0 - left_val * sx
+
+                base_y_local = first_baseline_local - idx * leading
+                # [VDPALIGN21.04] Biến đổi affine xoay quanh tâm khung (cx, cy)
+                e_mat = cx + lx_local * cos_a - base_y_local * sin_a
+                f_mat = cy + lx_local * sin_a + base_y_local * cos_a
+
+                c_pdfium.FPDFPageObj_SetFillColor(tobj, r, g, b, a)
+                c_pdfium.FPDFPageObj_Transform(tobj, a_mat, b_mat, c_mat, d_mat, e_mat, f_mat)
+                c_pdfium.FPDFPage_InsertObject(self.page, tobj)
+                self.has_text = True
+
+                if need_faux_bold:
+                    t_bold = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
+                    u16 = (line + '\0').encode('utf-16-le')
+                    u16_buf = ctypes.cast(ctypes.create_string_buffer(u16), ctypes.POINTER(ctypes.c_ushort))
+                    c_pdfium.FPDFText_SetText(t_bold, u16_buf)
+                    c_pdfium.FPDFPageObj_SetFillColor(t_bold, r, g, b, a)
+                    dx = max(0.3, float(fontsize) * 0.03)
+                    e_bold = e_mat + dx * cos_a
+                    f_bold = f_mat + dx * sin_a
+                    c_pdfium.FPDFPageObj_Transform(t_bold, a_mat, b_mat, c_mat, d_mat, e_bold, f_bold)
+                    c_pdfium.FPDFPage_InsertObject(self.page, t_bold)
+
+        return True
+
+    def build_pdf_bytes(self) -> bytes:
+        if not self.has_text:
+            return b''
+        with pdfium_guard():
+            c_pdfium.FPDFPage_GenerateContent(self.page)
+            class MemWriter:
+                def __init__(self):
+                    self.bio = io.BytesIO()
+                    self.writer = c_pdfium.FPDF_FILEWRITE(1, ctypes.cast(
+                        ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t)(self.wb),
+                        ctypes.CFUNCTYPE(ctypes.c_int, ctypes.POINTER(c_pdfium.struct_FPDF_FILEWRITE_), ctypes.c_void_p, ctypes.c_ulong)
+                    ))
+                def wb(self, param, pData, size):
+                    self.bio.write(ctypes.string_at(pData, size))
+                    return 1
+            mw = MemWriter()
+            c_pdfium.FPDF_SaveAsCopy(self.doc, ctypes.byref(mw.writer), 0)
+            return mw.bio.getvalue()
+
+    def close(self):
+        with pdfium_guard():
+            try:
+                c_pdfium.FPDF_ClosePage(self.page)
+                c_pdfium.FPDF_CloseDocument(self.doc)
             except Exception:
                 pass
-    return variants
+
+
+def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> None:
+    """[VDP-TYPE0-LIVE-TEXT] Ghép trực tiếp content stream và resources của overlay vào trang đích.
+    KHÔNG bọc qua Form XObject (/NupXo... /Form) để Adobe Illustrator và CorelDRAW nhận diện
+    toàn bộ chữ và hình học ở tầng cao nhất (top-level page contents), giữ nguyên Live Text
+    và khả năng chọn/sửa văn bản bằng Type tool.
+    """
+    if not overlay_bytes:
+        return
+    import pikepdf
+    with pikepdf.open(io.BytesIO(overlay_bytes)) as ov_pdf:
+        if len(ov_pdf.pages) == 0:
+            return
+        out_pdf.pages.append(ov_pdf.pages[0])
+        temp_page = out_pdf.pages[-1]
+
+        # 1. Ghép resources (Font, XObject, ExtGState, ColorSpace...)
+        if "/Resources" in temp_page:
+            if "/Resources" not in target_page_obj:
+                target_page_obj["/Resources"] = pikepdf.Dictionary()
+            res_dest = target_page_obj["/Resources"]
+            for cat, cat_dict in temp_page.Resources.items():
+                if cat not in res_dest:
+                    res_dest[cat] = cat_dict
+                elif isinstance(cat_dict, pikepdf.Dictionary):
+                    for k, v in cat_dict.items():
+                        if k not in res_dest[cat]:
+                            res_dest[cat][k] = v
+            # [VDP-TYPE0-LIVE-TEXT] Bổ sung /FontFamily cho các font VDP vừa ghép để Illustrator nhận diện cả theo Family
+            if "/Font" in res_dest:
+                for f_key, f_obj in list(res_dest["/Font"].items()):
+                    try:
+                        base_font = str(f_obj.get('/BaseFont', ''))
+                        clean_name = re.sub(r'^[A-Z]{6}\+', '', base_font.lstrip('/'))
+                        clean_name = re.sub(r'-Identity-[HV]$', '', clean_name)
+                        font_file = _resolve_system_font(clean_name)
+                        if font_file and os.path.exists(font_file):
+                            from fontTools.ttLib import TTFont
+                            tt = TTFont(font_file)
+                            for rec in tt['name'].names:
+                                if rec.nameID == 1:
+                                    fam_name = rec.toUnicode()
+                                    if '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
+                                        fd = f_obj.DescendantFonts[0].get('/FontDescriptor')
+                                        if fd and '/FontFamily' not in fd:
+                                            fd['/FontFamily'] = pikepdf.String(fam_name)
+                                    elif '/FontDescriptor' in f_obj:
+                                        fd = f_obj['/FontDescriptor']
+                                        if '/FontFamily' not in fd:
+                                            fd['/FontFamily'] = pikepdf.String(fam_name)
+                                    break
+                    except Exception:
+                        pass
+
+        # 2. Nối stream vẽ trực tiếp vào mảng /Contents
+        ov_c = temp_page.get("/Contents")
+        if ov_c:
+            new_contents = target_page_obj.get("/Contents")
+            if new_contents is None:
+                new_contents = pikepdf.Array()
+                target_page_obj["/Contents"] = new_contents
+            elif not isinstance(new_contents, pikepdf.Array):
+                new_contents = pikepdf.Array([new_contents])
+                target_page_obj["/Contents"] = new_contents
+            new_contents.append(ov_c)
+
+        # 3. Xoá trang tạm khỏi out_doc
+        del out_pdf.pages[-1]
 
 
 # ─── #8 Định dạng dữ liệu trong placeholder: {Cot|upper}, {Gia|number:0}, ... ──
@@ -581,7 +902,7 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
     return True
 
 
-def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, error_sink=None):
+def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, error_sink=None, skip_field_ids=None):
     """Vẽ TẤT CẢ field của một record lên canvas ReportLab ``c``.
 
     Tách dùng chung giữa ``process_chunk`` (sinh lô) và Preview_Service để bảo
@@ -602,6 +923,9 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
     from reportlab.graphics import renderPDF
     fields_dict = fields
     for fi, field in enumerate(fields_dict):
+        f_id = field.get('id', str(fi))
+        if skip_field_ids and f_id in skip_field_ids:
+            continue
         f_rect = field_rects[fi]
         # Clamp khung field vào trong trang (MediaBox) để nội dung (QR / mã vạch /
         # text / ảnh) KHÔNG tràn ra ngoài trang rồi bị cắt mất — ví dụ người dùng
@@ -870,6 +1194,8 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 fontsize = field.get('fontSize', 10)
                 line_h = float(field.get('lineHeight') or 1.0)
                 font_file = field.get('fontFile')
+                if not font_file or not os.path.exists(font_file):
+                    font_file = _resolve_system_font(field.get('fontName'))
 
                 # #7 Chọn font THẬT theo fontStyle nếu có biến thể Bold/Italic;
                 # chỉ dùng faux cho phần KHÔNG có file font tương ứng.
@@ -892,15 +1218,18 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 if not _draw_curved_text(c, field, val, rl_x, rl_y, f_rect['w'], f_rect['h'], font_name, fontsize, text_color, need_faux_bold, need_faux_italic):
                     # Map frontend alignment to ReportLab alignment
                     align_map = {'left': TA_LEFT, 'center': TA_CENTER, 'right': TA_RIGHT}
-                    raw_align = field.get('alignment', 'left')
-                    text_align = align_map.get(raw_align, TA_LEFT)
+                    raw_align = field.get('alignment', 'center')
+                    text_align = align_map.get(raw_align, TA_CENTER)
+
+                    raw_lines = str(val).split('\n') or ['']
+                    leading_val = fontsize if len(raw_lines) <= 1 else fontsize * line_h
 
                     style = ParagraphStyle(
                         name='VDP',
                         fontName=font_name,
                         fontSize=fontsize,
                         textColor=text_color,
-                        leading=fontsize * line_h,
+                        leading=leading_val,
                         alignment=text_align
                     )
 
@@ -918,7 +1247,6 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                     auto_fit = field.get('autoFit', True)
                     sx = 1.0
                     if auto_fit:
-                        raw_lines = str(val).split('\n') or ['']
                         maxw = max(
                             (c.stringWidth(ln, font_name, fontsize) for ln in raw_lines if ln),
                             default=0.0,
@@ -1005,10 +1333,14 @@ def process_chunk(args) -> str:
     for field in fields_dict:
         if field.get('type') == 'text':
             font_file = field.get('fontFile')
+            if not font_file or not os.path.exists(font_file):
+                font_file = _resolve_system_font(field.get('fontName'))
             if font_file and os.path.exists(font_file):
-                base_name = "f_" + field.get('id', 'default').replace('-', '')
+                base_name = "f_" + str(field.get('id', 'default')).replace('-', '')
                 field_font_variants[field.get('id')] = _register_font_family(font_file, base_name)
     
+    font_bytes_cache = {}
+
     # Pre-compute MediaBox dims per template page (cache once, use for all records)
     template_dims = []
     for t_idx in range(template_page_count):
@@ -1026,7 +1358,9 @@ def process_chunk(args) -> str:
     cached_pages = []
     for t_idx in range(template_page_count):
         out_doc._pdf.pages.append(doc_template._pdf.pages[t_idx])
-        cached_pages.append(out_doc._pdf.pages[-1])
+        cp = out_doc._pdf.pages[-1]
+        _clean_template_dead_text_ops_and_fonts(cp, out_doc._pdf)
+        cached_pages.append(cp)
         
     count = 0
     from reportlab.graphics.barcode import createBarcodeDrawing
@@ -1078,32 +1412,97 @@ def process_chunk(args) -> str:
         
         # NO need to call show_pdf_page for the template! The native contents are already copied.
         
-        # Create ReportLab canvas covering the entire MediaBox
-        buf = io.BytesIO()
-        c = canvas.Canvas(buf, pagesize=(pw, ph))
-        
-        render_one_record(c, fields_dict, row, field_rects, pw, ph, field_font_variants)
-                
-        c.showPage()
-        c.save()
-        
-        # Merge overlay onto page
-        overlay_pdf = pdf_lib.open(stream=buf.getvalue())
-        page.show_pdf_page(page.rect, overlay_pdf, 0)
-
-        # Giải phóng tài nguyên overlay của record này. XObject đã được copy_foreign
-        # vào out_doc và add_resource lên trang nên VẪN nằm trong output → an toàn để
-        # đóng handle nguồn. Đồng thời xoá entry vừa thêm khỏi _nup_xobj_cache: mỗi
-        # overlay VDP có UID riêng ⇒ cache LUÔN miss (không tái dùng được), nếu giữ
-        # lại chỉ làm phình RAM tuyến tính theo số record trong vòng nóng. Phần copy
-        # nặng vẫn chạy y như cũ nên tốc độ/record KHÔNG đổi (audit vdp-upgrade).
+        # [VDP-TYPE0-LIVE-TEXT] 1. Thử render các trường text qua engine Type0 PDFium để giữ Live Text Illustrator
+        handled_by_pdfium = set()
+        pdfium_renderer = PdfiumVdpTextRenderer(pw, ph, font_bytes_cache=font_bytes_cache)
         try:
-            overlay_pdf.close()
-        except Exception:
-            pass
-        _xobj_cache = getattr(out_doc._pdf, "_nup_xobj_cache", None)
-        if _xobj_cache:
-            _xobj_cache.clear()
+            for f_idx, field in enumerate(fields_dict):
+                curve_mode = str(field.get('curveMode') or 'none').lower()
+                if field.get('type') == 'text' and curve_mode not in ('arc_top', 'arc_bottom', 'wave'):
+                    f_id = field.get('id', str(f_idx))
+                    f_rect = field_rects[f_idx]
+                    try:
+                        resolved = resolve_field_content(field, row)
+                    except Exception:
+                        resolved = None
+                    if not resolved:
+                        continue
+                    if not resolved.visible:
+                        handled_by_pdfium.add(f_id)
+                        continue
+                    val = resolved.content
+                    if not val or not str(val).strip():
+                        continue
+
+                    font_file = field.get('fontFile')
+                    if not font_file or not os.path.exists(font_file):
+                        font_file = _resolve_system_font(field.get('fontName'))
+                    if not font_file or not os.path.exists(font_file):
+                        font_file = _resolve_system_font('Arial')
+
+                    fs_style = str(field.get('fontStyle') or 'regular').lower()
+                    want_bold = 'bold' in fs_style
+                    want_italic = 'italic' in fs_style
+                    need_faux_bold = want_bold
+                    need_faux_italic = want_italic
+                    if font_file:
+                        if want_bold and want_italic:
+                            vp = _find_variant_file(font_file, 'bolditalic')
+                            if vp:
+                                font_file = vp
+                                need_faux_bold = need_faux_italic = False
+                            else:
+                                vp_b = _find_variant_file(font_file, 'bold')
+                                if vp_b:
+                                    font_file = vp_b
+                                    need_faux_bold = False
+                        elif want_bold:
+                            vp = _find_variant_file(font_file, 'bold')
+                            if vp:
+                                font_file = vp
+                                need_faux_bold = False
+                        elif want_italic:
+                            vp = _find_variant_file(font_file, 'italic')
+                            if vp:
+                                font_file = vp
+                                need_faux_italic = False
+
+                    if font_file and os.path.exists(font_file):
+                        success = pdfium_renderer.add_text_field(
+                            font_path=font_file,
+                            text=str(val),
+                            x_pts=f_rect['x'],
+                            y_pts=f_rect['y'],
+                            w_pts=f_rect['w'],
+                            h_pts=f_rect['h'],
+                            fontsize=float(field.get('fontSize', 10) or 10),
+                            color=field.get('fontColor', '#000000'),
+                            alignment=field.get('alignment', 'center'),
+                            auto_fit=field.get('autoFit', True),
+                            line_height=float(field.get('lineHeight', 1.0) or 1.0),
+                            angle_deg=float(field.get('rotation') or field.get('angle', 0) or 0),
+                            need_faux_bold=need_faux_bold,
+                            need_faux_italic=need_faux_italic,
+                        )
+                        if success:
+                            handled_by_pdfium.add(f_id)
+
+            if pdfium_renderer.has_text:
+                text_pdf_bytes = pdfium_renderer.build_pdf_bytes()
+                _merge_overlay_direct(out_doc._pdf, page._page.obj, text_pdf_bytes)
+        finally:
+            pdfium_renderer.close()
+
+        # [VDP-TYPE0-LIVE-TEXT] 2. Các trường còn lại (barcode, QR, image, curved text, hoặc text thiếu font file)
+        # tiếp tục được vẽ qua ReportLab và ghép trực tiếp không qua Form XObject.
+        remaining_fields = [f for idx, f in enumerate(fields_dict) if f.get('id', str(idx)) not in handled_by_pdfium]
+        if remaining_fields:
+            buf = io.BytesIO()
+            c = canvas.Canvas(buf, pagesize=(pw, ph))
+            render_one_record(c, fields_dict, row, field_rects, pw, ph, field_font_variants, skip_field_ids=handled_by_pdfium)
+            c.showPage()
+            c.save()
+            _merge_overlay_direct(out_doc._pdf, page._page.obj, buf.getvalue())
 
         count += 1
         if progress_file and count % 50 == 0:
@@ -1133,6 +1532,128 @@ def process_chunk(args) -> str:
     out_doc.close()
     doc_template.close()
     return tmp_path
+
+
+def _clean_template_dead_text_ops_and_fonts(page, pdf: pikepdf.Pdf) -> dict:
+    """[VDP-TYPE0-LIVE-TEXT] Dọn dẹp các toán tử Tf chết (không có text) và font ma
+    trong /Resources/Font của trang template sau khi bóc tách trường VDP.
+    Đồng thời chuẩn hoá BaseFont / FontFamily với font hệ thống để Illustrator nhận diện đúng.
+    """
+    stats = {"dead_tf_removed": 0, "ghost_fonts_purged": 0, "fonts_harmonized": 0}
+    if "/Contents" not in page:
+        return stats
+
+    text_show_ops = {'Tj', 'TJ', "'", '"'}
+    try:
+        instructions = pikepdf.parse_content_stream(page)
+    except Exception as exc:
+        logger.warning("Không thể parse_content_stream để dọn font template: %s", exc)
+        return stats
+
+    n = len(instructions)
+    surviving_fonts = set()
+    cleaned_instructions = []
+    
+    i = 0
+    while i < n:
+        instr = instructions[i]
+        op = str(instr.operator)
+        if op == 'Tf':
+            f_name = str(instr.operands[0])
+            # Kiểm tra xem từ Tf này tới Tf kế tiếp (hoặc hết stream) có lệnh show text nào không
+            has_text = False
+            for k in range(i + 1, n):
+                sub_op = str(instructions[k].operator)
+                if sub_op in text_show_ops:
+                    has_text = True
+                    break
+                if sub_op == 'Tf':
+                    break
+            if not has_text:
+                stats["dead_tf_removed"] += 1
+                # Nếu lệnh ngay trước là lệnh đặt toạ độ (Tm, TD, Td) phục vụ cho text này, bỏ luôn
+                if cleaned_instructions and str(cleaned_instructions[-1].operator) in ('Tm', 'TD', 'Td'):
+                    cleaned_instructions.pop()
+                i += 1
+                continue
+            else:
+                surviving_fonts.add(f_name)
+        cleaned_instructions.append(instr)
+        i += 1
+
+    if stats["dead_tf_removed"] > 0:
+        page.Contents = pdf.make_stream(pikepdf.unparse_content_stream(cleaned_instructions))
+
+    # Xoá font ma không còn được bất kỳ lệnh Tf nào tham chiếu
+    if "/Resources" in page and "/Font" in page.Resources:
+        font_dict = page.Resources.Font
+        for f_key in list(font_dict.keys()):
+            if f_key not in surviving_fonts:
+                del font_dict[f_key]
+                stats["ghost_fonts_purged"] += 1
+
+        # Chuẩn hoá font còn lại với font hệ thống (FontFamily & PostScript Name)
+        for f_key, f_obj in list(font_dict.items()):
+            try:
+                base_font = str(f_obj.get('/BaseFont', ''))
+                m_pref = re.match(r'^/([A-Z]{6}\+)', base_font)
+                prefix = f"/{m_pref.group(1)}" if m_pref else "/"
+                clean_name = re.sub(r'^[A-Z]{6}\+', '', base_font.lstrip('/'))
+                clean_name = re.sub(r'-Identity-[HV]$', '', clean_name)
+                
+                font_file = _resolve_system_font(clean_name)
+                if not font_file or not os.path.exists(font_file):
+                    continue
+                from fontTools.ttLib import TTFont
+                tt = TTFont(font_file)
+                ps_name = None
+                family_name = None
+                for rec in tt['name'].names:
+                    try:
+                        val = rec.toUnicode()
+                    except Exception:
+                        continue
+                    if rec.nameID == 6 and not ps_name:
+                        ps_name = val
+                    elif rec.nameID == 1 and not family_name:
+                        family_name = val
+                
+                if ps_name or family_name:
+                    target_ps = f"{prefix}{ps_name}" if ps_name else base_font
+                    changed_any = False
+                    if ps_name and target_ps != base_font:
+                        f_obj['/BaseFont'] = pikepdf.Name(target_ps)
+                        changed_any = True
+                    
+                    # Cập nhật DescendantFonts nếu là Type0
+                    if '/DescendantFonts' in f_obj:
+                        for df in f_obj['/DescendantFonts']:
+                            if ps_name and str(df.get('/BaseFont', '')) != target_ps:
+                                df['/BaseFont'] = pikepdf.Name(target_ps)
+                                changed_any = True
+                            if '/FontDescriptor' in df:
+                                fd = df['/FontDescriptor']
+                                if ps_name and str(fd.get('/FontName', '')) != target_ps:
+                                    fd['/FontName'] = pikepdf.Name(target_ps)
+                                    changed_any = True
+                                if family_name and '/FontFamily' not in fd:
+                                    fd['/FontFamily'] = pikepdf.String(family_name)
+                                    changed_any = True
+                    elif '/FontDescriptor' in f_obj:
+                        fd = f_obj['/FontDescriptor']
+                        if ps_name and str(fd.get('/FontName', '')) != target_ps:
+                            fd['/FontName'] = pikepdf.Name(target_ps)
+                            changed_any = True
+                        if family_name and '/FontFamily' not in fd:
+                            fd['/FontFamily'] = pikepdf.String(family_name)
+                            changed_any = True
+                    if changed_any:
+                        stats["fonts_harmonized"] += 1
+            except Exception as e:
+                logger.warning(f"Lỗi chuẩn hoá font template {f_key}: {e}")
+
+    return stats
+
 
 def _canonicalize_template_to_cropbox(template_path: str) -> tuple:
     """Chuẩn hoá template về hệ toạ độ mà VDP giả định: vùng hiển thị bắt đầu ở

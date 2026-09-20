@@ -54,6 +54,7 @@ from app.core.nesting_imposition_bundle import (
     DUPLEX_REGISTRATION_STROKE_WIDTH_MM,
 )
 from app.schemas.mixed_nesting import MAX_SHEETS_LIMIT
+from app.core.nesting_order_plan import require_fulfilled_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,11 @@ def _job_has_special_shape(settings: Mapping[str, Any]) -> bool:
     if not isinstance(shapes, Mapping):
         # Chưa dò khuôn ⇒ thận trọng coi là đặc biệt (die-cut không mẫu tên = CUSTOM).
         return True
-    quantities = _page_quantities(settings)
+    from app.workers.sticker_nup_policy import is_sticker_nup, sticker_order_quantities
+    quantities = (
+        sticker_order_quantities(_autofill_pages(settings), settings)
+        if is_sticker_nup(settings) else _page_quantities(settings)
+    )
     pages = sorted(quantities) if quantities else _autofill_pages(settings)
     for page in pages:
         value = shapes.get(str(page))
@@ -783,7 +788,21 @@ def build_true_shape_nesting_job(
         else None
     )
 
-    quantities = _page_quantities(settings, eligible_pages=cnc_front_pages)
+    from app.workers.sticker_nup_policy import is_sticker_nup, sticker_order_quantities
+    declared_pages = (
+        _page_index_keys(settings.get("targetQuantitiesByPage"))
+        | _page_index_keys(settings.get("detectedShapesByPage"))
+        | _page_index_keys(settings.get("detectedShapeParamsByPage"))
+    )
+    quantities = (
+        sticker_order_quantities(declared_pages or set(shapes) or {0}, settings)
+        if is_sticker_nup(settings)
+        else _page_quantities(settings, eligible_pages=cnc_front_pages)
+    )
+    if tool == "sticker_imposer" and int(settings.get("targetQuantity") or 0) > 0 and not quantities:
+        raise ValueError(
+            "Không có mẫu nào có số lượng cần giao. Hãy kiểm tra số lượng riêng từng loại."
+        )
     if quantities:
         layout_intent = "quantity_fulfillment"
         pages = sorted(quantities)
@@ -1108,7 +1127,7 @@ def _verify_reference_report_hash(
     return expected
 
 
-def _report_from_manifest(job, manifest) -> str:
+def _report_from_manifest(job, manifest, production=None) -> str:
     """Chuỗi report tiếng Việt cho ô kết quả, cùng giọng với nhánh CNC.
 
     Nhận thẳng `manifest` để dùng được cho cả hai đường: phiên vừa solve và manifest
@@ -1131,6 +1150,16 @@ def _report_from_manifest(job, manifest) -> str:
     )
     lines.append(f"  • Số mẫu xếp được: {placed} con")
     lines.append(f"  ⇒ Số tờ cần in: {sheets} tờ")
+    if (job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment"
+            and isinstance(getattr(production, "render_bundle", None), Mapping)):
+        from app.workers.nesting_imposition_render import production_sheet_recipes
+        recipes = production_sheet_recipes(
+            manifest, render_bundle=production.render_bundle,
+            render_bundle_hash=production.render_bundle_hash,
+        )
+        lines.append(f"  • Số bố cục khác nhau: {len(recipes)}")
+        for index, (_, runs) in enumerate(recipes, 1):
+            lines.append(f"    Bố cục {index}: in {runs} tờ")
 
     unplaced = manifest.get("unplaced") or []
     if unplaced:
@@ -1340,6 +1369,12 @@ def run_true_shape_nesting(
             job.tool,
             stored.manifest_id,
         )
+        # M72.A (2026-09-19): manifest hợp lệ hình học vẫn có thể thiếu SL.
+        # Chặn trước writer để không tạo artifact thiếu từ phiên preview đã lưu.
+        if job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment":
+            require_fulfilled_manifest(
+                {part.part_id: part.quantity for part in job.parts}, stored.manifest,
+            )
         render_started = time.perf_counter()
         render = render_stored_production_nesting(
             stored,
@@ -1369,7 +1404,7 @@ def run_true_shape_nesting(
                 ),
                 nativeRuntime=native_runtime_summary(),
             )
-        return _report_from_manifest(job, stored.manifest)
+        return _report_from_manifest(job, stored.manifest, stored.production_request)
 
     if reference_present:
         # FIX (re-audit 2026-08-30 §RA-NEST-08): reference preview là cam kết
@@ -1444,6 +1479,11 @@ def run_true_shape_nesting(
         job.max_sheets,
         lookup.reused,
     )
+    # M72.A (2026-09-19): cùng chốt SL cho đường không có preview/manifest đã lưu.
+    if job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment":
+        require_fulfilled_manifest(
+            {part.part_id: part.quantity for part in job.parts}, solved_manifest,
+        )
     render_started = time.perf_counter()
     render = render_production_nesting_session(
         lookup.session,
@@ -1474,7 +1514,7 @@ def run_true_shape_nesting(
                 lookup.session.solved.runtime_diagnostics.get("nfpDiagnostics")
             ),
         )
-    return _report_from_manifest(job, solved_manifest)
+    return _report_from_manifest(job, solved_manifest, solved_production)
 
 
 def _export_quality_gate_decision(

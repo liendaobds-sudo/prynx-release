@@ -5,8 +5,10 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { GripVertical, Trash2 } from 'lucide-react';
 
 export type LogoCompareMode = 'source' | 'vector' | 'split' | 'overlay';
 
@@ -31,6 +33,9 @@ interface LogoCompareLabels {
   showAnchors: string;
   comparisonWarning: string;
   keyboardHint: string;
+  emptyTitle?: string;
+  emptyHint?: string;
+  emptyFormat?: string;
 }
 
 interface LogoCompareViewportProps {
@@ -43,6 +48,12 @@ interface LogoCompareViewportProps {
   previewUrl: string;
   selectionMode: 'full' | 'crop' | 'perspective';
   sourceUrl: string;
+  onDeletePath?: (pathIndex: number) => void;
+  onUndoDeletePath?: () => void;
+  canUndoDeletePath?: boolean;
+  onPickFile?: () => void;
+  actions?: React.ReactNode;
+  className?: string;
 }
 
 interface ViewState {
@@ -228,20 +239,39 @@ function clampZoom(value: number): number {
 }
 
 export default function LogoCompareViewport({
+  canUndoDeletePath = false,
   crop,
   labels,
   onCropChange,
+  onDeletePath,
   onPerspectiveChange,
+  onUndoDeletePath,
   perspective,
   previewSvg,
   previewUrl,
   selectionMode,
   sourceUrl,
+  onPickFile,
+  actions,
+  className,
 }: LogoCompareViewportProps) {
   const [mode, setMode] = useState<LogoCompareMode>(previewUrl ? 'split' : 'source');
+  const prevPreviewUrlRef = useRef(previewUrl);
+  useEffect(() => {
+    if (!prevPreviewUrlRef.current && previewUrl) {
+      setMode('split');
+    } else if (prevPreviewUrlRef.current && !previewUrl) {
+      setMode('source');
+    }
+    prevPreviewUrlRef.current = previewUrl;
+  }, [previewUrl]);
   const [view, setView] = useState<ViewState>({ zoom: 1, panX: 0, panY: 0 });
   const [overlayOpacity, setOverlayOpacity] = useState(0.5);
   const [showAnchors, setShowAnchors] = useState(false);
+  const [isPickDeleteMode, setIsPickDeleteMode] = useState(false);
+  const [hoveredPathIndex, setHoveredPathIndex] = useState<number | null>(null);
+  const [splitPercent, setSplitPercent] = useState(50);
+  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null);
   const [sourceSize, setSourceSize] = useState<{ width: number; height: number } | null>(null);
@@ -255,6 +285,104 @@ export default function LogoCompareViewport({
     | { kind: 'perspective'; index: number }
     | null
   >(null);
+
+  // UIUX: Thao tác kéo trượt thanh chia đôi (split comparison slider)
+  const updateSplitFromPointer = useCallback((clientX: number) => {
+    const rect = artboardRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    const raw = ((clientX - rect.left) / rect.width) * 100;
+    setSplitPercent(Math.min(100, Math.max(0, raw)));
+  }, []);
+
+  const beginSplitDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Bỏ qua nếu môi trường không hỗ trợ pointer capture
+    }
+    setIsDraggingSplit(true);
+    if (typeof event.clientX === 'number' && !Number.isNaN(event.clientX)) {
+      updateSplitFromPointer(event.clientX);
+    }
+  }, [updateSplitFromPointer]);
+
+  const moveSplitDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isDraggingSplit) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateSplitFromPointer(event.clientX);
+  }, [isDraggingSplit, updateSplitFromPointer]);
+
+  const endSplitDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isDraggingSplit) return;
+    setIsDraggingSplit(false);
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // Bỏ qua lỗi capture khi unmount / mouse release
+    }
+    event.stopPropagation();
+  }, [isDraggingSplit]);
+
+  useEffect(() => {
+    if (!isDraggingSplit) return;
+    const handlePointerMove = (event: PointerEvent) => {
+      updateSplitFromPointer(event.clientX);
+    };
+    const handlePointerUp = () => {
+      setIsDraggingSplit(false);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [isDraggingSplit, updateSplitFromPointer]);
+
+  const handleSplitKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const step = event.shiftKey ? 10 : 2;
+    if (event.key === 'ArrowLeft') {
+      setSplitPercent(prev => Math.max(0, prev - step));
+    } else if (event.key === 'ArrowRight') {
+      setSplitPercent(prev => Math.min(100, prev + step));
+    } else if (event.key === 'Home') {
+      setSplitPercent(0);
+    } else if (event.key === 'End') {
+      setSplitPercent(100);
+    }
+  }, []);
+
+  const resetSplit = useCallback((event: ReactMouseEvent) => {
+    event.stopPropagation();
+    setSplitPercent(50);
+  }, []);
+
+  const parsedPaths = useMemo(() => {
+    if (!previewSvg || typeof DOMParser === 'undefined') return [];
+    try {
+      const doc = new DOMParser().parseFromString(previewSvg, 'image/svg+xml');
+      const nodes = Array.from(doc.querySelectorAll('path'));
+      return nodes
+        .map((node, index) => ({
+          index,
+          d: node.getAttribute('d') ?? '',
+        }))
+        .filter(item => Boolean(item.d));
+    } catch {
+      return [];
+    }
+  }, [previewSvg]);
 
   const updateView = useCallback((next: ViewState) => {
     viewRef.current = next;
@@ -512,52 +640,93 @@ export default function LogoCompareViewport({
     ? 'source'
     : mode;
 
-
-
   return (
-    <figure className="flex min-h-[320px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 xl:min-h-0">
+    <figure className={`flex min-h-[320px] flex-col overflow-hidden ${className ?? 'rounded-xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900'} xl:min-h-0`}>
       <figcaption className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 dark:border-zinc-800">
-        <div className="flex flex-wrap gap-1" role="group" aria-label={labels.viewport}>
-          {(['source', 'vector', 'split', 'overlay'] as const).map(value => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={effectiveMode === value}
-              disabled={value !== 'source' && (!hasPreview || !comparableCoordinates)}
-              onClick={() => setMode(value)}
-              className="rounded border border-slate-200 px-2.5 py-1 text-xs font-semibold disabled:opacity-35 aria-pressed:border-violet-500 aria-pressed:bg-violet-50 aria-pressed:text-violet-700 dark:border-zinc-700 dark:aria-pressed:bg-violet-950/40 dark:aria-pressed:text-violet-200"
-            >
-              {{ source: labels.source, vector: labels.vector, split: labels.split, overlay: labels.overlay }[value]}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          {Boolean(sourceUrl) ? (
+            <>
+              <div className="flex flex-wrap gap-1" role="group" aria-label={labels.viewport}>
+                {(['source', 'vector', 'split', 'overlay'] as const).map(value => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={effectiveMode === value}
+                    disabled={value !== 'source' && (!hasPreview || !comparableCoordinates)}
+                    onClick={() => setMode(value)}
+                    className="rounded border border-slate-200 px-2.5 py-1 text-xs font-semibold disabled:opacity-35 aria-pressed:border-violet-500 aria-pressed:bg-violet-50 aria-pressed:text-violet-700 dark:border-zinc-700 dark:aria-pressed:bg-violet-950/40 dark:aria-pressed:text-violet-200"
+                  >
+                    {{ source: labels.source, vector: labels.vector, split: labels.split, overlay: labels.overlay }[value]}
+                  </button>
+                ))}
+              </div>
+              {!comparableCoordinates && (
+                <span role="status" className="basis-full rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                  {labels.comparisonWarning}
+                </span>
+              )}
+              <div className="flex items-center gap-1 text-xs">
+                <button type="button" aria-label={labels.zoomOut} onClick={() => updateZoom(viewRef.current.zoom - 0.25)} disabled={view.zoom <= MIN_ZOOM} className="h-7 w-7 rounded border border-slate-200 font-bold disabled:opacity-35 dark:border-zinc-700">−</button>
+                <input aria-label={labels.zoomLevel} type="range" min={100} max={800} step={25} value={Math.round(view.zoom * 100)} onChange={event => updateZoom(Number(event.target.value) / 100)} className="w-28" />
+                <button type="button" aria-label={labels.zoomIn} onClick={() => updateZoom(viewRef.current.zoom + 0.25)} disabled={view.zoom >= MAX_ZOOM} className="h-7 w-7 rounded border border-slate-200 font-bold disabled:opacity-35 dark:border-zinc-700">+</button>
+                <button type="button" aria-label={labels.resetZoom} title={labels.resetZoom} onClick={resetView} className="min-w-14 rounded border border-slate-200 px-2 py-1 font-mono dark:border-zinc-700">{Math.round(view.zoom * 100)}%</button>
+              </div>
+              {effectiveMode === 'overlay' && hasPreview && (
+                <label className="flex items-center gap-2 text-xs font-semibold">
+                  {labels.overlayOpacity}
+                  <input aria-label={labels.overlayOpacity} type="range" min={0} max={100} value={Math.round(overlayOpacity * 100)} onChange={event => setOverlayOpacity(Number(event.target.value) / 100)} className="w-24" />
+                </label>
+              )}
+              {comparableCoordinates && hasPreview && previewSvg && anchorOverlay && (
+                <label className="flex items-center gap-2 text-xs font-semibold">
+                  <input
+                    aria-label={labels.showAnchors}
+                    type="checkbox"
+                    checked={showAnchors}
+                    onChange={event => setShowAnchors(event.target.checked)}
+                  />
+                  {labels.showAnchors}
+                </label>
+              )}
+              {comparableCoordinates && hasPreview && previewSvg && onDeletePath && (
+                <div className="flex items-center gap-1.5 border-l border-slate-200 pl-2 dark:border-zinc-700">
+                  <button
+                    type="button"
+                    aria-pressed={isPickDeleteMode}
+                    onClick={() => setIsPickDeleteMode(prev => !prev)}
+                    className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold transition-colors ${
+                      isPickDeleteMode
+                        ? 'bg-rose-600 text-white shadow-xs dark:bg-rose-500'
+                        : 'border border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                    }`}
+                    title="Bật công cụ click trực tiếp vào vết bẩn/mảng rác trên vector để xóa"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    <span>{isPickDeleteMode ? 'Đang nhặt rác' : 'Nhặt rác / Xóa mảng'}</span>
+                  </button>
+                  {isPickDeleteMode && canUndoDeletePath && onUndoDeletePath && (
+                    <button
+                      type="button"
+                      onClick={onUndoDeletePath}
+                      className="rounded border border-slate-200 px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      title="Hoàn tác xóa mảng vừa rồi"
+                    >
+                      Hoàn tác
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-xs font-semibold text-slate-500 dark:text-zinc-400">
+              {labels.viewport}
+            </div>
+          )}
         </div>
-        {!comparableCoordinates && (
-          <span role="status" className="basis-full rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-            {labels.comparisonWarning}
-          </span>
-        )}
-        <div className="flex items-center gap-1 text-xs">
-          <button type="button" aria-label={labels.zoomOut} onClick={() => updateZoom(viewRef.current.zoom - 0.25)} disabled={view.zoom <= MIN_ZOOM} className="h-7 w-7 rounded border border-slate-200 font-bold disabled:opacity-35 dark:border-zinc-700">−</button>
-          <input aria-label={labels.zoomLevel} type="range" min={100} max={800} step={25} value={Math.round(view.zoom * 100)} onChange={event => updateZoom(Number(event.target.value) / 100)} className="w-28" />
-          <button type="button" aria-label={labels.zoomIn} onClick={() => updateZoom(viewRef.current.zoom + 0.25)} disabled={view.zoom >= MAX_ZOOM} className="h-7 w-7 rounded border border-slate-200 font-bold disabled:opacity-35 dark:border-zinc-700">+</button>
-          <button type="button" aria-label={labels.resetZoom} title={labels.resetZoom} onClick={resetView} className="min-w-14 rounded border border-slate-200 px-2 py-1 font-mono dark:border-zinc-700">{Math.round(view.zoom * 100)}%</button>
-        </div>
-        {effectiveMode === 'overlay' && hasPreview && (
-          <label className="flex items-center gap-2 text-xs font-semibold">
-            {labels.overlayOpacity}
-            <input aria-label={labels.overlayOpacity} type="range" min={0} max={100} value={Math.round(overlayOpacity * 100)} onChange={event => setOverlayOpacity(Number(event.target.value) / 100)} className="w-24" />
-          </label>
-        )}
-        {comparableCoordinates && hasPreview && previewSvg && anchorOverlay && (
-          <label className="flex items-center gap-2 text-xs font-semibold">
-            <input
-              aria-label={labels.showAnchors}
-              type="checkbox"
-              checked={showAnchors}
-              onChange={event => setShowAnchors(event.target.checked)}
-            />
-            {labels.showAnchors}
-          </label>
+        {actions && (
+          <div key="viewport-actions" className="flex items-center gap-1.5 ml-auto">
+            {actions}
+          </div>
         )}
       </figcaption>
       <div
@@ -576,21 +745,96 @@ export default function LogoCompareViewport({
         className={`relative flex flex-1 items-center justify-center overflow-hidden bg-[linear-gradient(45deg,#eee_25%,transparent_25%),linear-gradient(-45deg,#eee_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#eee_75%),linear-gradient(-45deg,transparent_75%,#eee_75%)] bg-[length:20px_20px] bg-[position:0_0,0_10px,10px_-10px,-10px_0px] outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:bg-zinc-950 ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
       >
         {!sourceUrl ? (
-          <p className="text-sm text-slate-400">{labels.noImage}</p>
+          <div
+            className="flex flex-col items-center justify-center p-8 md:p-12 text-center cursor-pointer select-none max-w-md animate-in fade-in duration-300"
+            onClick={onPickFile}
+          >
+            <div className="w-24 h-24 md:w-28 md:h-28 rounded-3xl bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center text-5xl md:text-6xl mb-5 md:mb-6 shadow-md text-violet-600 hover:scale-105 transition-transform">
+              🪄
+            </div>
+            <h2 className="text-xl md:text-2xl font-bold text-slate-800 dark:text-white mb-2 md:mb-3">
+              {labels.emptyTitle ?? 'Vector hóa Logo'}
+            </h2>
+            <p className="text-slate-500 dark:text-zinc-400 text-xs md:text-sm leading-relaxed">
+              {labels.emptyHint ?? 'Kéo thả ảnh logo vào đây hoặc bấm để chọn'}
+            </p>
+            <span className="mt-2 text-[11px] md:text-xs text-slate-400 dark:text-zinc-500">
+              {labels.emptyFormat ?? 'Hỗ trợ PNG, JPEG, WebP (tối đa 500MB)'}
+            </span>
+            <span className="sr-only">{labels.noImage}</span>
+          </div>
         ) : (
           <div data-testid="logo-compare-stage" className="absolute inset-0" style={{ transform, transformOrigin: 'center center' }}>
             <div ref={artboardRef} data-testid="logo-selection-artboard" className="absolute" style={artboardStyle}>
               {(effectiveMode === 'source' || effectiveMode === 'split' || effectiveMode === 'overlay') && <img src={sourceUrl} alt={labels.sourceAlt} draggable={false} className={imageClass} onLoad={event => setSourceSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} />}
               {effectiveMode === 'vector' && hasPreview && <img src={previewUrl} alt={labels.previewAlt} draggable={false} className={imageClass} />}
               {effectiveMode === 'split' && hasPreview && (
-                <div className="absolute inset-0" style={{ clipPath: 'inset(0 50% 0 0)' }}>
+                <div
+                  data-testid="logo-split-vector-layer"
+                  className="absolute inset-0 pointer-events-none"
+                  style={{ clipPath: `inset(0 ${100 - splitPercent}% 0 0)` }}
+                >
                   <img src={previewUrl} alt={labels.previewAlt} draggable={false} className={imageClass} />
                 </div>
               )}
               {effectiveMode === 'overlay' && hasPreview && (
                 <img data-testid="logo-overlay-layer" src={previewUrl} alt={labels.previewAlt} draggable={false} className={imageClass} style={{ opacity: overlayOpacity }} />
               )}
-              {effectiveMode === 'split' && hasPreview && <span aria-hidden="true" className="absolute inset-y-0 left-1/2 w-0.5 bg-violet-500 shadow" />}
+              {effectiveMode === 'split' && hasPreview && (
+                <>
+                  {/* Nhãn nhận diện 2 bên */}
+                  <div className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded bg-violet-600/85 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-xs backdrop-blur-xs select-none">
+                    Vector
+                  </div>
+                  <div className="pointer-events-none absolute right-2 top-2 z-20 flex items-center gap-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-xs backdrop-blur-xs select-none">
+                    Ảnh gốc
+                  </div>
+
+                  {/* Thanh kéo chia đôi tương tác */}
+                  <div
+                    data-testid="logo-split-divider"
+                    role="separator"
+                    tabIndex={0}
+                    aria-label="Thanh trượt so sánh chia đôi"
+                    aria-orientation="vertical"
+                    aria-valuenow={Math.round(splitPercent)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    onPointerDown={beginSplitDrag}
+                    onPointerMove={moveSplitDrag}
+                    onPointerUp={endSplitDrag}
+                    onPointerCancel={endSplitDrag}
+                    onKeyDown={handleSplitKeyDown}
+                    onDoubleClick={resetSplit}
+                    className="group absolute inset-y-0 z-30 cursor-col-resize select-none"
+                    style={{
+                      left: `${splitPercent}%`,
+                      transform: 'translateX(-50%)',
+                      width: '28px',
+                    }}
+                    title="Kéo sang trái/phải để so sánh giữa Vector và Ảnh gốc (Nhấp đúp để đặt lại 50%)"
+                  >
+                    {/* Đường phân cách */}
+                    <div
+                      className={`absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 transition-colors ${
+                        isDraggingSplit
+                          ? 'bg-violet-600 shadow-[0_0_8px_rgba(139,92,246,0.6)]'
+                          : 'bg-violet-500 shadow group-hover:bg-violet-600'
+                      }`}
+                    />
+                    {/* Nút cầm kéo ở giữa */}
+                    <div
+                      className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center h-8 w-5 rounded-full bg-white dark:bg-zinc-800 border shadow-md transition-all ${
+                        isDraggingSplit
+                          ? 'scale-110 border-violet-500 ring-2 ring-violet-500/40'
+                          : 'border-slate-300 dark:border-zinc-600 group-hover:scale-105 group-hover:border-violet-400'
+                      }`}
+                    >
+                      <GripVertical className="h-3.5 w-3.5 text-slate-500 dark:text-zinc-400 group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors" />
+                    </div>
+                  </div>
+                </>
+              )}
               {comparableCoordinates && hasPreview && previewSvg && anchorOverlay && showAnchors && (
                 <svg
                   data-testid="logo-anchor-overlay"
@@ -640,6 +884,42 @@ export default function LogoCompareViewport({
                       />
                     ))}
                   </g>
+                </svg>
+              )}
+              {comparableCoordinates && hasPreview && previewSvg && isPickDeleteMode && anchorOverlay && (
+                <svg
+                  data-testid="logo-pick-delete-overlay"
+                  aria-label="Lớp nhặt rác trực tiếp trên vector"
+                  viewBox={`0 0 ${anchorOverlay.width} ${anchorOverlay.height}`}
+                  preserveAspectRatio="none"
+                  className="absolute inset-0 z-15 h-full w-full"
+                  style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
+                >
+                  {parsedPaths.map(item => (
+                    <path
+                      key={`pick-del-${item.index}`}
+                      d={item.d}
+                      fill={hoveredPathIndex === item.index ? 'rgba(244, 63, 94, 0.45)' : 'transparent'}
+                      stroke={hoveredPathIndex === item.index ? '#e11d48' : 'transparent'}
+                      strokeWidth={hoveredPathIndex === item.index ? 2 : 0}
+                      vectorEffect="non-scaling-stroke"
+                      className="cursor-pointer transition-colors"
+                      onPointerEnter={e => {
+                        e.stopPropagation();
+                        setHoveredPathIndex(item.index);
+                      }}
+                      onPointerLeave={() => {
+                        if (hoveredPathIndex === item.index) setHoveredPathIndex(null);
+                      }}
+                      onClick={e => {
+                        e.stopPropagation();
+                        onDeletePath?.(item.index);
+                        setHoveredPathIndex(null);
+                      }}
+                    >
+                      <title>Click để xóa mảng này khỏi vector</title>
+                    </path>
+                  ))}
                 </svg>
               )}
               {selectionMode !== 'full' && effectiveMode !== 'vector' && (

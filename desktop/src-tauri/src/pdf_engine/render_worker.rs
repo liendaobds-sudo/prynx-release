@@ -50,12 +50,22 @@ const PPE_FALLBACK_FONT_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../backend/app/assets/fonts/DejaVuSans.ttf"
 ));
+const PPE_FALLBACK_BOLD_FONT_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../backend/app/assets/fonts/DejaVuSans-Bold.ttf"
+));
 const PPE_FALLBACK_FONT_SHA256: &str =
     "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954";
 
 fn ppe_fallback_font() -> Arc<Vec<u8>> {
     static FONT: OnceLock<Arc<Vec<u8>>> = OnceLock::new();
     FONT.get_or_init(|| Arc::new(PPE_FALLBACK_FONT_BYTES.to_vec()))
+        .clone()
+}
+
+fn ppe_fallback_bold_font() -> Arc<Vec<u8>> {
+    static FONT: OnceLock<Arc<Vec<u8>>> = OnceLock::new();
+    FONT.get_or_init(|| Arc::new(PPE_FALLBACK_BOLD_FONT_BYTES.to_vec()))
         .clone()
 }
 
@@ -780,6 +790,10 @@ pub struct RenderResponse {
     pub unsupported_reason: Option<RenderUnsupportedReason>,
     /// Fingerprint font dự phòng được nhúng trong worker; không phụ thuộc font hệ thống.
     pub fallback_font_sha256: Option<String>,
+    #[serde(default)]
+    pub substituted_fonts: Vec<String>,
+    #[serde(default)]
+    pub geometry_approximated: bool,
     pub error: Option<String>,
 }
 
@@ -1315,6 +1329,8 @@ struct AccurateWorkerOutput {
     render_ms: u64,
     encode_ms: u64,
     cache_ms: u64,
+    substituted_fonts: Vec<String>,
+    geometry_approximated: bool,
 }
 
 enum AccurateWorkerFailure {
@@ -1495,6 +1511,7 @@ fn render_accurate_png(
             // binary và có fingerprint cố định; không phụ thuộc font hệ thống.
             // Kết quả dùng font này vẫn bị gắn GeometryApproximation bên dưới.
             .with_fallback_font(ppe_fallback_font())
+            .with_fallback_bold_font(ppe_fallback_bold_font())
             .with_memory_budget_bytes(render_budget)
             .with_cancel_token(cancel_token.clone())
     };
@@ -1599,6 +1616,8 @@ fn render_accurate_png(
         .map_err(|error| format!("Không encode được PNG PPE: {error}"))?;
     let render_ms =
         (timings.open + timings.parse + timings.raster + timings.color).as_millis() as u64;
+    let substituted_fonts = rendered.warnings.substituted_fonts.clone();
+    let geometry_approximated = rendered.warnings.geometry_approximate();
     Ok(AccurateWorkerOutput {
         bytes,
         width: rendered.width,
@@ -1606,6 +1625,8 @@ fn render_accurate_png(
         render_ms,
         encode_ms: encode_started.elapsed().as_millis() as u64,
         cache_ms: timings.resource.as_millis() as u64,
+        substituted_fonts,
+        geometry_approximated,
     })
 }
 
@@ -1613,8 +1634,8 @@ fn render_response(
     request: RenderRequest,
     cancel_token: Option<&CancelToken>,
 ) -> (RenderResponse, Vec<u8>) {
-    let base =
-        |status, unsupported_reason, error, bitmap_width, bitmap_height, timing, cache_tier| {
+    let base_with_fonts =
+        |status, unsupported_reason, error, bitmap_width, bitmap_height, timing, cache_tier, substituted_fonts: Vec<String>, geometry_approximated: bool| {
             RenderResponse {
                 request_id: request.request_id.clone(),
                 owner_id: request.owner_id.clone(),
@@ -1629,8 +1650,24 @@ fn render_response(
                 unsupported_reason,
                 fallback_font_sha256: (request.color.pipeline == RenderColorPipeline::Accurate)
                     .then(|| PPE_FALLBACK_FONT_SHA256.to_string()),
+                substituted_fonts,
+                geometry_approximated,
                 error,
             }
+        };
+    let base =
+        |status, unsupported_reason, error, bitmap_width, bitmap_height, timing, cache_tier| {
+            base_with_fonts(
+                status,
+                unsupported_reason,
+                error,
+                bitmap_width,
+                bitmap_height,
+                timing,
+                cache_tier,
+                Vec::new(),
+                false,
+            )
         };
     let started = Instant::now();
     let path = match validate_render_request(&request) {
@@ -1666,7 +1703,7 @@ fn render_response(
             Ok(output) => {
                 let total_ms = started.elapsed().as_millis() as u64;
                 (
-                    base(
+                    base_with_fonts(
                         RenderResponseStatus::Ready,
                         None,
                         None,
@@ -1680,6 +1717,8 @@ fn render_response(
                             ..Default::default()
                         },
                         RenderCacheTier::Rendered,
+                        output.substituted_fonts,
+                        output.geometry_approximated,
                     ),
                     output.bytes,
                 )
@@ -2104,6 +2143,8 @@ pub fn run_worker_stdio() -> i32 {
                             fallback_font_sha256: (request.color.pipeline
                                 == RenderColorPipeline::Accurate)
                                 .then(|| PPE_FALLBACK_FONT_SHA256.to_string()),
+                            substituted_fonts: Vec::new(),
+                            geometry_approximated: false,
                             error: Some("Worker chưa handshake.".to_string()),
                         },
                         Vec::new(),
@@ -4782,6 +4823,8 @@ mod tests {
             soundness: RenderSoundness::DisplayPreview,
             unsupported_reason: None,
             fallback_font_sha256: None,
+            substituted_fonts: Vec::new(),
+            geometry_approximated: false,
             error: None,
         })
     }
@@ -5001,6 +5044,9 @@ mod tests {
             response.fallback_font_sha256.as_deref(),
             Some(PPE_FALLBACK_FONT_SHA256)
         );
+        // FIX (audit 2026-09-20 §V20.3): Không nuốt cảnh báo hình học khi font không nhúng
+        assert!(response.geometry_approximated);
+        assert!(!response.substituted_fonts.is_empty());
         assert!(payload.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
         assert!(response.bitmap_width.is_some_and(|width| width > 0));
         assert!(response.bitmap_height.is_some_and(|height| height > 0));

@@ -161,3 +161,91 @@ def test_pick_curved_text_font_size(tmp_path):
     assert field["fontSize"] == 24.0
     assert field["curveMode"] == "arc_top"
     assert field["curveRadius"] > 0
+
+
+def test_pick_text_baseline_parity(tmp_path):
+    """Kiểm tra baseline parity: ReportLab phải vẽ baseline trùng khít 100% với baseline_y gốc của chữ."""
+    pdf_path = str(tmp_path / "baseline_test.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(400, 300))
+    # Vẽ chữ tại y=150.0 (baseline_y = 150.0)
+    c.setFont("Helvetica", 14)
+    c.drawString(50, 150, "<Name C>")
+    c.save()
+
+    metas = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    target = [m for m in metas if "<Name C>" in (m.content or "")][0]
+    res = pick_text_to_vdp_field(pdf_path, 0, target.drawIndex, remove_original=False)
+    assert res["success"] is True
+    field = res["field"]
+
+    # Quy đổi tọa độ mm của field sang point trong ReportLab:
+    # y_pts = field['y'] * MM_TO_PTS * CSS_TO_PT_FACTOR
+    # h_pts = field['height'] * MM_TO_PTS * CSS_TO_PT_FACTOR
+    from app.workers.vdp_engine import MM_TO_PTS, CSS_TO_PT_FACTOR
+    y_pts = field["y"] * MM_TO_PTS * CSS_TO_PT_FACTOR
+    h_pts = field["height"] * MM_TO_PTS * CSS_TO_PT_FACTOR
+    rl_y = 300 - y_pts - h_pts
+    effective_fs = field["fontSize"]
+
+    # ReportLab vẽ baseline tại:
+    baseline_rl = rl_y + (h_pts - effective_fs) / 2.0
+
+    # Khẳng định sai số baseline giữa ReportLab và chữ gốc trong PDF < 0.05 pt (< 0.02 mm)
+    assert abs(baseline_rl - 150.0) < 0.05, f"Baseline lệch: rl={baseline_rl} vs orig=150.0"
+
+
+def test_resolve_font_file_comprehensive():
+    from app.workers.vdp_text_picker import resolve_font_file, VALID_FONT_EXTENSIONS
+
+    # 1. Font tiêu chuẩn
+    arial_path = resolve_font_file("Arial")
+    assert arial_path is not None
+    assert os.path.isfile(arial_path)
+    assert arial_path.lower().endswith(VALID_FONT_EXTENSIONS)
+
+    times_path = resolve_font_file("Times-Roman")
+    assert times_path is not None
+    assert os.path.isfile(times_path)
+    assert not times_path.lower().endswith(".fon")
+    assert times_path.lower().endswith(VALID_FONT_EXTENSIONS)
+
+    # 2. Font không tồn tại phải trả về None (không được fallback ngầm)
+    assert resolve_font_file("NonExistentFontXYZ987") is None
+    assert resolve_font_file("") is None
+    assert resolve_font_file(None) is None
+
+
+def test_vdp_engine_font_resolver_and_registration():
+    from app.workers.vdp_engine import _resolve_system_font, _register_font_family
+    import io
+    from reportlab.pdfgen import canvas
+    import pikepdf
+
+    # 1. Kiểm tra _resolve_system_font không fallback ngầm sang Arial
+    non_existent = _resolve_system_font("DefinitelyNotAFontOnAnySystem12345")
+    assert non_existent is None
+
+    # 2. Kiểm tra _resolve_system_font tìm được font có sẵn trên Windows
+    arial = _resolve_system_font("Arial")
+    assert arial is not None
+    assert os.path.isfile(arial)
+
+    # 3. Kiểm tra _register_font_family gán đúng PostScript name không bị ReportLab chèn dấu '-'
+    variants = _register_font_family(arial, "test_arial")
+    assert "regular" in variants
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    c.setFont(variants["regular"], 12)
+    c.drawString(50, 50, "Hello Live Text")
+    c.save()
+
+    buf.seek(0)
+    pdf = pikepdf.open(buf)
+    page = pdf.pages[0]
+    fonts = page.Resources.Font
+    base_fonts = [str(f.BaseFont) for f in fonts.values()]
+    # BaseFont phải chứa tên PostScript thật của font
+    assert any("Arial" in bf for bf in base_fonts)
+
+

@@ -32,6 +32,7 @@ from app.workers.vdp_engine import (
     MM_TO_PTS,
     _canonicalize_template_to_cropbox,
     _register_font_family,
+    _resolve_system_font,
     render_one_record,
 )
 
@@ -124,6 +125,8 @@ def _register_preview_fonts(fields_dict: Sequence[dict]) -> dict:
     for field in fields_dict:
         if field.get('type') == 'text':
             font_file = field.get('fontFile')
+            if not font_file or not os.path.exists(font_file):
+                font_file = _resolve_system_font(field.get('fontName'))
             if font_file and os.path.exists(font_file):
                 base_name = "f_" + str(field.get('id', 'default')).replace('-', '')
                 field_font_variants[field.get('id')] = _register_font_family(font_file, base_name)

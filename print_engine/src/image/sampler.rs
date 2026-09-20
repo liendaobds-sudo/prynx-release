@@ -14,11 +14,12 @@
 //! ô nên chi phí quy màu về gần bằng không.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
 use crate::cancel::CancelToken;
-use crate::color::icc::ColorManager;
+use crate::color::icc::{ColorManager, Lut3};
 use crate::color::space::resolve_colorspace;
 use crate::color::ColorSpace;
 use crate::error::{PpeError, PpeResult, RenderWarnings};
@@ -152,6 +153,35 @@ impl SampledImage {
         })
     }
 
+    /// Ba mẫu RGB thô tại một texel, chưa áp `/Decode`.
+    ///
+    /// Viewer cộng các byte này trên footprint có trọng số alpha rồi mới áp `/Decode` một
+    /// lần cho pixel đích. Tránh lặp hàng chục triệu phép float khi thu ảnh.
+    #[inline]
+    pub(crate) fn rgb_raw_at(&self, x: u32, y: u32) -> [u8; 3] {
+        let base = (y as usize * self.width as usize + x as usize) * self.n_comps;
+        if base + 3 <= self.samples.len() {
+            [self.samples[base], self.samples[base + 1], self.samples[base + 2]]
+        } else {
+            [0, 0, 0]
+        }
+    }
+
+    /// Áp `/Decode` cho ba trung bình thô đã chuẩn hoá 0..1.
+    #[inline]
+    pub(crate) fn decode_rgb_units(&self, units: [f32; 3]) -> [f32; 3] {
+        std::array::from_fn(|component| {
+            let unit = units[component];
+            match (
+                self.decode.get(2 * component),
+                self.decode.get(2 * component + 1),
+            ) {
+                (Some(d0), Some(d1)) => (d0 + unit * (d1 - d0)).clamp(0.0, 1.0),
+                _ => unit.clamp(0.0, 1.0),
+            }
+        })
+    }
+
     /// Dung lượng mẫu chính để cache tính vào MemoryBudget.
     pub(crate) fn memory_bytes(&self) -> usize {
         self.samples
@@ -211,6 +241,7 @@ impl SampledImage {
         }
     }
 
+    #[inline]
     pub fn alpha_at(&self, x: u32, y: u32) -> f32 {
         match &self.alpha {
             Some(a) => a
@@ -242,6 +273,8 @@ pub struct ImageSampler<'a> {
     image: &'a SampledImage,
     /// LUT 256 ô cho colorspace 1 thành phần: `[(ink, mask)]`.
     lut: Option<Vec<(Vec<f32>, ChannelMask)>>,
+    /// 3D LUT (sRGB hoặc ICC profile nhúng) cho ảnh RGB 3 kênh.
+    lut3: Option<Arc<Lut3>>,
 }
 
 impl<'a> ImageSampler<'a> {
@@ -253,6 +286,7 @@ impl<'a> ImageSampler<'a> {
         cm: Option<&ColorManager>,
     ) -> PpeResult<Self> {
         let mut lut = None;
+        let mut lut3 = None;
         if matches!(image.colorspace, Some(ColorSpace::DeviceCMYK)) {
             // Ghi nhận một lần khi dựng sampler; làm lại phép tìm chuỗi này cho
             // từng pixel của ảnh lớn chiếm đáng kể hot path Viewer.
@@ -278,8 +312,42 @@ impl<'a> ImageSampler<'a> {
                 }
                 lut = Some(table);
             }
+        } else if image.n_comps == 3 && !image.has_matte() {
+            // PERF (audit 2026-09-20 §POSTVIEW20.03): Chuẩn bị sẵn 3D LUT cho ảnh RGB
+            // để tránh băm lại profile nhúng và allocate Vec trên hàng triệu pixel.
+            if let Some(cs) = &image.colorspace {
+                match cs {
+                    ColorSpace::DeviceRGB => {
+                        warn.note_colorspace_used("DeviceRGB");
+                        if let Some(cm) = cm {
+                            lut3 = cm.rgb_lut();
+                        }
+                    }
+                    ColorSpace::IccBased { alternate, profile } => {
+                        warn.note_colorspace_used("ICCBased");
+                        if matches!(**alternate, ColorSpace::DeviceRGB) {
+                            if let (Some(cm), Some(bytes)) = (cm, profile.as_ref()) {
+                                lut3 = cm.embedded_lut(bytes);
+                                if lut3.is_none() {
+                                    warn.note_approximated_colorspace(
+                                        "ICCBased: profile nhúng không đọc được, dùng sRGB",
+                                    );
+                                    lut3 = cm.rgb_lut();
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
-        Ok(ImageSampler { image, lut })
+        Ok(ImageSampler { image, lut, lut3 })
+    }
+
+    /// Trả về 3D LUT (nếu có) cho ảnh RGB để caller lấy mẫu footprint trực tiếp.
+    #[inline]
+    pub(crate) fn lut3(&self) -> Option<&Lut3> {
+        self.lut3.as_deref()
     }
 
     /// Mực tại một pixel ảnh. `None` = không tô (colorant `/None`).
@@ -322,6 +390,21 @@ impl<'a> ImageSampler<'a> {
             out.clear();
             out.extend_from_slice(ink);
             return Ok(Some(*mask));
+        }
+        if let Some(lut3) = &self.lut3 {
+            // PERF (audit 2026-09-20 §POSTVIEW20.03): Đường nóng ảnh RGB có LUT3 sẵn.
+            // Không cấp phát Vec, không băm profile, biến đổi thẳng qua trilinear LUT.
+            let raw = self.image.rgb_raw_at(x, y);
+            let decoded = self.image.decode_rgb_units([
+                raw[0] as f32 / 255.0,
+                raw[1] as f32 / 255.0,
+                raw[2] as f32 / 255.0,
+            ]);
+            let cmyk = lut3.sample(decoded[0], decoded[1], decoded[2]);
+            out.clear();
+            out.resize(space.len(), 0.0);
+            out[..4].copy_from_slice(&cmyk);
+            return Ok(Some(ChannelMask::PROCESS));
         }
         let Some(cs) = &self.image.colorspace else {
             return Ok(None);

@@ -48,7 +48,7 @@ def test_45_thumbnails_fill_two_28_up_preview_sheets_in_grouped_order(tmp_path):
         sheet_h=400.0,
         path=source,
         task_mode="nup",
-        layout_type="ratio_stack",
+        layout_type="sequential",
         is_die_cut=True,
         total_pages=45,
         detected_shapes_by_page={str(i): "CIRCLE_ELLIPSE" for i in range(45)},
@@ -63,13 +63,9 @@ def test_45_thumbnails_fill_two_28_up_preview_sheets_in_grouped_order(tmp_path):
     assert result["strategyUsed"] == "homogeneous"
     assert result["totalContentItems"] == 45
     assert result["sheetsNeeded"] == 2
-    assert [len(sheet["cells"]) for sheet in result["sheets"]] == [28, 28]
+    assert [len(sheet["cells"]) for sheet in result["sheets"]] == [28, 17]
     assert result["totalItems"] == 28
-    expected = [
-        src
-        for src in range(45)
-        for _ in range(2 if src < 11 else 1)
-    ]
+    expected = list(range(45))
     actual = [cell["pageIdx"] for sheet in result["sheets"] for cell in sheet["cells"]]
     assert actual == expected
 
@@ -92,7 +88,7 @@ def test_capacity_is_not_confused_with_number_of_source_samples(tmp_path):
         sheet_h=700.0,
         path=source,
         task_mode="nup",
-        layout_type="ratio_stack",
+        layout_type="sequential",
         is_die_cut=True,
         total_pages=45,
         detected_shapes_by_page={str(i): "CIRCLE_ELLIPSE" for i in range(45)},
@@ -109,14 +105,9 @@ def test_capacity_is_not_confused_with_number_of_source_samples(tmp_path):
     assert result["totalItems"] > 45
     assert result["sheetsNeeded"] == 1
     assert len(result["sheets"]) == 1
-    assert len(result["sheets"][0]["cells"]) == result["totalItems"]
+    assert len(result["sheets"][0]["cells"]) == 45
     roomy_pages = [cell["pageIdx"] for cell in result["sheets"][0]["cells"]]
-    base, remainder = divmod(result["totalItems"], 45)
-    expected = [
-        src
-        for src in range(45)
-        for _ in range(base + (1 if src < remainder else 0))
-    ]
+    expected = list(range(45))
     assert roomy_pages == expected
 
 
@@ -138,7 +129,7 @@ def test_live_thumbnail_count_can_exceed_physical_preview_pdf(tmp_path):
         sheet_h=700.0,
         path=source,
         task_mode="nup",
-        layout_type="ratio_stack",
+        layout_type="sequential",
         is_die_cut=True,
         total_pages=45,
         detected_shapes_by_page={str(i): "CIRCLE_ELLIPSE" for i in range(28)},
@@ -153,12 +144,7 @@ def test_live_thumbnail_count_can_exceed_physical_preview_pdf(tmp_path):
     assert result["strategyUsed"] == "homogeneous"
     assert result["totalContentItems"] == 45
     assert result["sheetsNeeded"] == 1
-    assert len(result["sheets"][0]["cells"]) == result["totalItems"]
+    assert len(result["sheets"][0]["cells"]) == 45
     live_pages = [cell["pageIdx"] for cell in result["sheets"][0]["cells"]]
-    base, remainder = divmod(result["totalItems"], 45)
-    expected = [
-        src
-        for src in range(45)
-        for _ in range(base + (1 if src < remainder else 0))
-    ]
+    expected = list(range(45))
     assert live_pages == expected

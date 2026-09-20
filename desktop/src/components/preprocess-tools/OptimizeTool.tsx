@@ -103,9 +103,21 @@ export default function OptimizeTool({ tabId, pdfFile, onFileFixed }: Props) {
 
             const blob = await response.blob();
 
-            const originalSize = parseInt(response.headers.get('X-Original-Size') || '0');
-            const outputSize = parseInt(response.headers.get('X-Output-Size') || '0');
-            const ratio = parseFloat(response.headers.get('X-Compression-Ratio') || '0');
+            const headerOriginalSize = parseInt(response.headers.get('X-Original-Size') || '0');
+            const headerOutputSize = parseInt(
+                response.headers.get('X-Output-Size')
+                || response.headers.get('X-Optimized-Size')
+                || '0'
+            );
+            const originalSize = headerOriginalSize > 0
+                ? headerOriginalSize
+                : (pdfFile.size > 0 ? pdfFile.size : blob.size);
+            const outputSize = headerOutputSize > 0 ? headerOutputSize : blob.size;
+
+            const headerRatio = parseFloat(response.headers.get('X-Compression-Ratio') || '0');
+            const ratio = headerRatio !== 0
+                ? headerRatio
+                : (originalSize > 0 ? Math.round((1 - outputSize / originalSize) * 1000) / 10 : 0);
 
             setResult({ originalSize, outputSize, ratio });
             setProgress('');

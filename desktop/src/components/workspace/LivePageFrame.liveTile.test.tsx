@@ -695,4 +695,47 @@ describe('LiveTile — cold-open màu chính xác', () => {
         view.unmount();
         expect(onTileUnmount).toHaveBeenCalledTimes(1);
     });
+
+    it('ZOOMRACE20.01: khi zoom nhanh, canvas/img co giãn 100% theo khung mới, không kẹt kích thước px cũ gây cắt góc', async () => {
+        const sharpUrl = 'blob:http://localhost/fast-zoom-test';
+        cacheTileUrl(
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_3_0_0_0_0_0',
+            { url: sharpUrl, byteLength: 64, cacheable: true },
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate',
+        );
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                zoom: 3,
+                cssW: 960,
+                cssH: 600,
+            })} />,
+        );
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        const image = view.container.querySelector('img')!;
+        fireEvent.load(image);
+
+        // Thu nhỏ nhanh về khung 320x200
+        view.rerender(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                zoom: 1,
+                cssW: 320,
+                cssH: 200,
+            })} />,
+        );
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        // Không bị kẹt 960px trong khung 320px, phải là 100% để vừa khít khung
+        expect(image.style.width).toBe('100%');
+        expect(image.style.height).toBe('100%');
+    });
 });

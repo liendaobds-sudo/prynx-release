@@ -2272,6 +2272,43 @@ describe("GridPreview — hướng xoay Inking", () => {
     expect(body.alternate_rotation).toBe('column');
   });
 
+  it('lưới đơn giản chỉ gọi preview đồng bộ, không tạo job nesting', async () => {
+    authenticatedFetchMock.mockResolvedValue({ ok: true, json: async () => ({
+      ...stepRepeatSheetsResponse([0, 1, 2]), strategyUsed: 'simple_auto',
+    }) });
+    render(<GridPreview taskMode="nup" isDieCut layoutType="sequential"
+      gridStrategy="simple_auto" columns={0} rows={0} gapX={2} gapY={2}
+      sheetWidth={226} sheetHeight={226} marginTop={5} marginBottom={5}
+      marginLeft={5} marginRight={5} align="center" shapeType="CUSTOM"
+      itemW={70} itemH={70} targetQuantity={0} targetQuantitiesByPage={{}}
+      sourceTotalPages={72} filePath="C:\\simple72.pdf" bleed={0} />);
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalled(), { timeout: 3000 });
+    expect(JSON.parse(String(authenticatedFetchMock.mock.calls[0]?.[1]?.body)).strategy).toBe('simple_auto');
+    expect(nestingJobMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('M72 hiển thị 8 bố cục, 800 tờ và số lần in khi đổi bố cục', async () => {
+    const data = {
+      ...stepRepeatSheetsResponse(Array.from({ length: 8 }, (_, i) => i)),
+      sheetsNeeded: 800,
+      orderSummary: { templateCount: 8, physicalSheetCount: 800, requestedCount: 7200, placedCount: 7200 },
+    };
+    data.sheets.forEach((sheet) => { sheet.runCount = 100; });
+    nestingJobMocks.result.mockResolvedValue(data);
+    authenticatedFetchMock.mockResolvedValue({ ok: true, json: async () => data });
+    render(<GridPreview taskMode="nup" isDieCut layoutType="sequential"
+      gridStrategy="optimal_auto" columns={0} rows={0} gapX={2} gapY={2}
+      sheetWidth={226} sheetHeight={226} marginTop={5} marginBottom={5}
+      marginLeft={5} marginRight={5} align="center" shapeType="CUSTOM"
+      itemW={70} itemH={70} targetQuantity={100} targetQuantitiesByPage={{}}
+      sourceTotalPages={72} filePath="C:\\order72.pdf" bleed={0} />);
+    await waitFor(() => expect(screen.getByTestId('nesting-order-summary').textContent).toContain('7200/7200'), { timeout: 3000 });
+    expect(screen.getByTestId('needed-sheets-count').textContent).toBe('800');
+    expect(screen.getByText('Bố cục 1/8 · In 100 tờ')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '►' }));
+    expect(screen.getByText('Bố cục 2/8 · In 100 tờ')).toBeTruthy();
+  });
+
   // §B10: CUSTOM nay auto-route sang nesting (không còn đi lưới), nên bỏ khỏi danh sách này
   // và thay bằng HEXAGON — vẫn là hình CÓ TÊN không-chữ-nhật đi lưới, phải ép Inking = none.
   it.each(['CIRCLE_ELLIPSE', 'HEXAGON'])('ép Inking về none cho tem bế %s', async (shapeType) => {

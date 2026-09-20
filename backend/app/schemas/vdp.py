@@ -38,8 +38,8 @@ class VdpField(BaseModel):
     fontColor: Optional[str] = '#000000'
     fontStyle: Optional[str] = 'regular'  # regular | bold | italic | bolditalic
     lineHeight: Optional[float] = 1.0
-    textAlign: Optional[str] = 'left'
-    alignment: Optional[str] = 'left'
+    textAlign: Optional[str] = 'center'
+    alignment: Optional[str] = 'center'
     autoFit: Optional[bool] = True  # tự bóp cỡ chữ để vừa khung (không tràn)
     # Barcode/QR specific
     barType: Optional[str] = 'code128'

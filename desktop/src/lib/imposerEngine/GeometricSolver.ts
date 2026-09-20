@@ -84,7 +84,7 @@ export const solveGeometry = (
 
         // If they want marks strictly inside the margin, we must add the space marks consume
         if (marginMode === 'include_marks' && settings.markType !== 'none') {
-            const extraPt = ((settings.markOffset || 3) + (settings.markLength || 5)) * 2 * MM_TO_POINTS;
+            const extraPt = ((settings.markOffset ?? 3) + (settings.markLength ?? 5)) * 2 * MM_TO_POINTS;
             requiredW += extraPt;
             requiredH += extraPt;
         }

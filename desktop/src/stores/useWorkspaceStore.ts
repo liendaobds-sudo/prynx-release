@@ -231,6 +231,14 @@ export interface WatermarkPreviewSettings {
     wmHeight: number;
 }
 
+export interface VdpLivePreviewState {
+    enabled: boolean;
+    recordIndex: number; // 1-based
+    totalRecords: number;
+    currentRecord: Record<string, string> | null;
+    sourceTitle?: string;
+}
+
 export interface StickPreviewSettings {
     fields: {
         topLeft: string;
@@ -380,6 +388,7 @@ export interface WorkspaceState {
     // ── VDP Tool ──
     vdpFields: VdpToolField[];
     selectedVdpFieldIds: string[];
+    vdpLivePreview: VdpLivePreviewState;
 
     // ── Preprocess ──
     detectedShapeType: string | null;
@@ -519,6 +528,7 @@ export interface WorkspaceState {
 
     setVdpFields: (updater: VdpToolField[] | VdpTemplateField[] | Record<string, unknown>[] | ((prev: VdpToolField[]) => VdpToolField[])) => void;
     setSelectedVdpFieldIds: (ids: string[]) => void;
+    setVdpLivePreview: (updater: Partial<VdpLivePreviewState> | ((prev: VdpLivePreviewState) => VdpLivePreviewState)) => void;
 
     // ── Watermark Preview ──
     setWatermarkPreview: (settings: WatermarkPreviewSettings | null) => void;
@@ -779,6 +789,12 @@ export const createWorkspaceStore = (
 
     vdpFields: [],
     selectedVdpFieldIds: [],
+    vdpLivePreview: {
+        enabled: false,
+        recordIndex: 1,
+        totalRecords: 0,
+        currentRecord: null,
+    },
 
     detectedShapeType: null,
     detectedShapeParams: null,
@@ -1396,6 +1412,19 @@ export const createWorkspaceStore = (
         if (prev === ids) return state;
         if (Array.isArray(prev) && Array.isArray(ids) && prev.length === ids.length && prev.every((id, i) => id === ids[i])) return state;
         return { selectedVdpFieldIds: ids };
+    }),
+    setVdpLivePreview: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.vdpLivePreview) : { ...state.vdpLivePreview, ...updater };
+        if (
+            state.vdpLivePreview.enabled === next.enabled &&
+            state.vdpLivePreview.recordIndex === next.recordIndex &&
+            state.vdpLivePreview.totalRecords === next.totalRecords &&
+            state.vdpLivePreview.currentRecord === next.currentRecord &&
+            state.vdpLivePreview.sourceTitle === next.sourceTitle
+        ) {
+            return state;
+        }
+        return { vdpLivePreview: next };
     }),
 
     setWatermarkPreview: (settings) => set({ watermarkPreview: settings }),

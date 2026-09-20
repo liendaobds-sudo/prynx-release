@@ -7,6 +7,8 @@ use super::request::{LogoEngineProfile, LogoEngineRequest};
 use super::scene::EngineProvenance;
 use super::svg_writer::{write_svg, PhysicalSizeMm, SvgWriteOptions};
 
+use std::collections::HashMap;
+
 pub(crate) const LOGO_STRUCTURED_RESULT_VERSION: u16 = 1;
 const MAX_CORE_PALETTE_COLORS: usize = 13;
 
@@ -245,17 +247,19 @@ fn build_qc_reference(
     }
 
     let mut reference = Vec::with_capacity(expected_len);
+    let mut palette_cache: HashMap<[u8; 3], usize> = HashMap::with_capacity(256);
     for pixel in request.rgba.chunks_exact(4) {
         let alpha = pixel[3];
         if alpha == 0 {
             reference.extend_from_slice(&[0, 0, 0, 0]);
             continue;
         }
+        let rgb = [pixel[0], pixel[1], pixel[2]];
         let label = match request.profile {
             LogoEngineProfile::Silhouette => 0,
-            LogoEngineProfile::FlatColor => {
-                nearest_palette_index([pixel[0], pixel[1], pixel[2]], &palette)
-            }
+            LogoEngineProfile::FlatColor => *palette_cache
+                .entry(rgb)
+                .or_insert_with(|| nearest_palette_index(rgb, &palette)),
         };
         if background_label == Some(label as u16) {
             reference.extend_from_slice(&[0, 0, 0, 0]);

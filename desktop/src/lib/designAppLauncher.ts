@@ -229,13 +229,17 @@ export async function extractPagesForExternalEdit(
     try {
         const copiedPages = await outDoc.copyPages(srcDoc, validIndices);
         const { PDFName } = await import('pdf-lib');
+        // [LIVE-LINK AI FIX]: Chỉ xóa PieceInfo khi tài liệu gốc có nhiều trang (pageCount > 1)
+        // để Adobe Illustrator khi mở file tạm không bị nạp ngược toàn bộ các artboards cũ của file gốc.
+        // Với tài liệu đơn trang (pageCount === 1), giữ nguyên PieceInfo để Illustrator giữ Live Text và layer gốc.
+        const shouldStripPieceInfo = pageCount > 1;
         copiedPages.forEach(p => {
-            // [LIVE-LINK AI FIX]: Xóa triệt để PieceInfo và AIPDFPrivateData của từng trang
-            // để Adobe Illustrator khi mở file tạm không bị nạp ngược toàn bộ các artboards cũ của file gốc!
-            p.node.delete(PDFName.of('PieceInfo'));
+            if (shouldStripPieceInfo) {
+                p.node.delete(PDFName.of('PieceInfo'));
+            }
             outDoc.addPage(p);
         });
-        if (outDoc.catalog.has(PDFName.of('PieceInfo'))) {
+        if (shouldStripPieceInfo && outDoc.catalog.has(PDFName.of('PieceInfo'))) {
             outDoc.catalog.delete(PDFName.of('PieceInfo'));
         }
     } finally {

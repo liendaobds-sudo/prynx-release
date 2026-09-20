@@ -7,7 +7,7 @@ use pdfium_render::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
 use tauri_plugin_fs::FsExt;
@@ -1823,7 +1823,7 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     tile_cache_dir().join(format!("{:016x}.png", h.finish()))
 }
 
-const TILE_RENDER_CACHE_VERSION: &str = "v7_userunit_lossless_png";
+const TILE_RENDER_CACHE_VERSION: &str = "v8_transparent_bg_lossless_png";
 
 #[allow(clippy::too_many_arguments)]
 fn tile_render_cache_key(
@@ -1967,8 +1967,6 @@ struct CachedDocument {
     color_risk: Mutex<Option<pdf_color_risk::PdfColorRiskSummary>>,
     file_identity: PdfFileIdentity,
     cached_bytes: Arc<Vec<u8>>,
-    proxy_handle: OnceLock<DocHandle>,
-    proxy_bytes: Option<Arc<Vec<u8>>>,
     next: AtomicUsize, // Round-robin index
 }
 
@@ -2348,6 +2346,77 @@ fn mark_frontend_interactive() {
     }
 }
 
+static LAST_WINDOW_RAISE_MS: AtomicI64 = AtomicI64::new(0);
+
+/// UIUX/WINDOW (audit 2026-09-19 §BURST.INSTANT_SHOW):
+/// Đưa cửa sổ PrynX nổi lên trên mặt phẳng hiển thị (Z-order) ngay tức thì
+/// nhưng mang cờ SWP_NOACTIVATE để KHÔNG cướp Foreground Focus của Windows Explorer.
+/// Nhờ đó người dùng thấy ngay app phản hồi, mà vòng lặp ShellExecuteEx của Explorer
+/// vẫn chạy trọn vẹn 100% không bị ngắt ngang.
+fn bring_window_to_top_no_activate(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+        };
+
+        if let Ok(raw_hwnd) = window.hwnd() {
+            let hwnd = HWND(raw_hwnd.0 as *mut std::ffi::c_void);
+            unsafe {
+                if window.is_minimized().unwrap_or(false) {
+                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window.unminimize();
+        let _ = window.show();
+    }
+}
+
+/// UIUX/WINDOW (audit 2026-09-19 §BURST.SETTLE_FOCUS):
+/// Sau khi toàn bộ file từ Explorer đã gom xong (đạt poll-settled),
+/// frontend gọi command này để PrynX nhận Foreground Focus hoàn toàn.
+#[tauri::command]
+fn activate_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        if !window.is_visible().unwrap_or(true) {
+            let _ = window.show();
+        }
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_always_on_top(false);
+        if let Err(err) = window.set_focus() {
+            log::warn!("[WINDOW] Không set_focus được cửa sổ chính: {err}");
+        }
+    }
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // [PROC-LIFECYCLE FIX 2026-08-28 §UP.6] Canh "chỉ một instance app thật sự chạy".
 //
@@ -2366,6 +2435,32 @@ fn mark_frontend_interactive() {
 // từ chối khởi động thay vì phá sidecar của nó.
 static SECONDARY_INSTANCE: AtomicBool = AtomicBool::new(false);
 
+/// [PROC-LIFECYCLE FIX 2026-09-19 §BURST.72] Khi Windows Explorer khởi chạy nhiều
+/// tiến trình đồng thời (chọn 72 file chuột phải "Combine in PrynX"), tiến trình
+/// chính (instance 1) có thể đang dựng cửa sổ ẩn `com.prynx.app-sic`/`com.prynx.app-siw`.
+/// Các tiến trình thứ 2..72 chờ tối đa 3000ms để cửa sổ này sẵn sàng nhận WM_COPYDATA
+/// thay vì gọi FindWindowW quá sớm rồi bị trượt (drop file do plugin vendor không retry).
+fn wait_for_primary_single_instance_window() {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    let class_name = "com.prynx.app-sic\0".encode_utf16().collect::<Vec<u16>>();
+    let window_name = "com.prynx.app-siw\0".encode_utf16().collect::<Vec<u16>>();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+    while std::time::Instant::now() < deadline {
+        let hwnd_res = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR(window_name.as_ptr())) };
+        if let Ok(hwnd) = hwnd_res {
+            if !hwnd.0.is_null() {
+                log::info!("[INSTANCE] Đã tìm thấy cửa sổ nhận lệnh của instance chính.");
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    log::warn!("[INSTANCE] Hết thời gian chờ cửa sổ single-instance của instance chính.");
+}
+
 fn claim_primary_instance_mutex() {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -2383,6 +2478,7 @@ fn claim_primary_instance_mutex() {
                 SECONDARY_INSTANCE.store(already_running, Ordering::Release);
                 if already_running {
                     log::warn!("[INSTANCE] Đã có tiến trình PrynX khác đang chạy.");
+                    wait_for_primary_single_instance_window();
                 }
                 // KHÔNG CloseHandle: mutex phải sống bằng tuổi tiến trình vì nó chính là dấu
                 // hiệu "app còn sống". HANDLE không có Drop nên chỉ cần không đóng tay.
@@ -2804,110 +2900,19 @@ fn drop_pdf_document_safely(document: PdfDocument<'static>) {
     drop(document);
 }
 
-fn generate_proxy_pdf(lopdf_doc: &lopdf::Document) -> Option<Vec<u8>> {
-    let mut proxy_doc = lopdf_doc.clone();
-    let mut modified = false;
-
-    for (_id, object) in proxy_doc.objects.iter_mut() {
-        if let lopdf::Object::Stream(ref mut stream) = object {
-            let is_image = stream
-                .dict
-                .get(b"Subtype")
-                .and_then(|s| s.as_name())
-                .map(|n| n == b"Image")
-                .unwrap_or(false);
-
-            if !is_image {
-                continue;
-            }
-
-            let width = stream.dict.get(b"Width").and_then(|w| w.as_i64()).unwrap_or(0) as usize;
-            let height = stream.dict.get(b"Height").and_then(|h| h.as_i64()).unwrap_or(0) as usize;
-
-            let is_rgb = stream
-                .dict
-                .get(b"ColorSpace")
-                .map(|cs| cs.as_name().map(|n| n == b"DeviceRGB").unwrap_or(false))
-                .unwrap_or(false);
-            let is_8bit = stream
-                .dict
-                .get(b"BitsPerComponent")
-                .map(|b| b.as_i64().map(|v| v == 8).unwrap_or(false))
-                .unwrap_or(false);
-            let has_mask = stream.dict.has(b"Mask") || stream.dict.has(b"SMask");
-
-            // Chỉ tạo proxy cho ảnh RGB 8-bit cực lớn (>= 2048px) không có SMask
-            if width >= 2048
-                && height >= 2048
-                && is_rgb
-                && is_8bit
-                && !has_mask
-                && stream.content.len() == width * height * 3
-            {
-                let factor = if width >= 4096 { 8usize } else { 4usize };
-                let target_w = width / factor;
-                let target_h = height / factor;
-                let count_pixels_in_block = (factor * factor) as u32;
-
-                let mut out_data = Vec::with_capacity(target_w * target_h * 3);
-                let raw = &stream.content;
-
-                for y in 0..target_h {
-                    let src_y_start = y * factor;
-                    for x in 0..target_w {
-                        let src_x_start = x * factor;
-                        let mut sum_r = 0u32;
-                        let mut sum_g = 0u32;
-                        let mut sum_b = 0u32;
-
-                        for dy in 0..factor {
-                            let src_y = src_y_start + dy;
-                            let row_offset = src_y * width * 3;
-                            for dx in 0..factor {
-                                let src_x = src_x_start + dx;
-                                let idx = row_offset + src_x * 3;
-                                sum_r += raw[idx] as u32;
-                                sum_g += raw[idx + 1] as u32;
-                                sum_b += raw[idx + 2] as u32;
-                            }
-                        }
-
-                        out_data.push((sum_r / count_pixels_in_block) as u8);
-                        out_data.push((sum_g / count_pixels_in_block) as u8);
-                        out_data.push((sum_b / count_pixels_in_block) as u8);
-                    }
-                }
-
-                stream.content = out_data;
-                stream.dict.set("Width", target_w as i64);
-                stream.dict.set("Height", target_h as i64);
-                modified = true;
-            }
-        }
-    }
-
-    if modified {
-        let mut out_bytes = Vec::new();
-        if proxy_doc.save_to(&mut out_bytes).is_ok() {
-            return Some(out_bytes);
-        }
-    }
-    None
-}
-
 fn build_cached_document(
     pdfium: &'static Pdfium,
     file_path: &str,
     file_identity: PdfFileIdentity,
     include_color_risk: bool,
 ) -> Result<Arc<CachedDocument>, String> {
-    // I/O và parse không giữ cache/PDFium mutex. Cùng buffer này được đọc đúng một
-    // lần, parse bằng lopdf, drop parser rồi mới move vào PDFium để giảm peak RAM.
-    let mut bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
+    // PERF (audit 2026-09-20 §V20.1): Tuyệt đối không eager-decompress FlateDecode toàn tài liệu
+    // hoặc generate proxy PDF ở khâu mở. Chỉ đọc structure tối thiểu, trích xuất UserUnits và
+    // bootstrap ColorRisk trang đầu rồi drop ngay lopdf để PDFium chiếm dụng bộ nhớ tối thiểu.
+    let bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
     let total_ram = system_total_memory_bytes();
-    let opt_t0 = std::time::Instant::now();
 
-    let mut lopdf_doc = load_lopdf_structure(&bytes, total_ram)?;
+    let lopdf_doc = load_lopdf_structure(&bytes, total_ram)?;
     let user_units = collect_pdf_user_units(&lopdf_doc);
     let (bootstrap_color_risk, color_risk) = if include_color_risk {
         let color_risk = pdf_color_risk::analyze_pdf_color_risk(&lopdf_doc);
@@ -2915,75 +2920,6 @@ fn build_cached_document(
     } else {
         let bootstrap = pdf_color_risk::analyze_pdf_color_risk_bootstrap(&lopdf_doc);
         (bootstrap, None)
-    };
-
-    // PERF (audit 2026-09-18): Chỉ kích hoạt giải nén in-memory + re-save lopdf
-    // khi file THẬT SỰ chứa Form XObject lặp lại (như file bình tem) để tránh PDFium
-    // giải nén lặp lại nhiều lần. Với file thiết kế/tài liệu thông thường, bỏ qua hoàn toàn để
-    // mở file tức thì trong vài chục ms (không tốn thời gian serialize lopdf save_to).
-    let has_repeated_form_xobjects = {
-        let mut form_count = 0usize;
-        for (_id, object) in lopdf_doc.objects.iter() {
-            if let lopdf::Object::Stream(ref stream) = object {
-                if stream.dict.get(b"Subtype").and_then(|s| s.as_name()).ok() == Some(b"Form") {
-                    form_count += 1;
-                    if form_count >= 2 {
-                        break;
-                    }
-                }
-            }
-        }
-        form_count >= 2
-    };
-
-    let proxy_bytes = if has_repeated_form_xobjects {
-        let mut decompressed_images = 0usize;
-        for (_id, object) in lopdf_doc.objects.iter_mut() {
-            if let lopdf::Object::Stream(ref mut stream) = object {
-                let is_image = stream
-                    .dict
-                    .get(b"Subtype")
-                    .and_then(|s| s.as_name())
-                    .map(|n| n == b"Image")
-                    .unwrap_or(false);
-                if is_image && stream.content.len() >= 1_000_000 {
-                    let has_flate = stream
-                        .dict
-                        .get(b"Filter")
-                        .map(|f| match f {
-                            lopdf::Object::Name(name) => name == b"FlateDecode",
-                            lopdf::Object::Array(arr) => arr
-                                .iter()
-                                .any(|item| item.as_name().map(|n| n == b"FlateDecode").unwrap_or(false)),
-                            _ => false,
-                        })
-                        .unwrap_or(false);
-                    if has_flate && stream.decompress().is_ok() {
-                        decompressed_images += 1;
-                    }
-                }
-            }
-        }
-
-        if decompressed_images > 0 {
-            let orig_len = bytes.len();
-            let mut optimized = Vec::new();
-            if lopdf_doc.save_to(&mut optimized).is_ok() {
-                perf_log(&format!(
-                    "PDF_STREAM_OPTIMIZE decompressed_images={} orig_len={} opt_len={} elapsed_ms={}",
-                    decompressed_images,
-                    orig_len,
-                    optimized.len(),
-                    opt_t0.elapsed().as_millis()
-                ));
-                bytes = optimized;
-            }
-            generate_proxy_pdf(&lopdf_doc).map(Arc::new)
-        } else {
-            None
-        }
-    } else {
-        None
     };
     drop(lopdf_doc);
 
@@ -3019,8 +2955,6 @@ fn build_cached_document(
         color_risk: Mutex::new(color_risk),
         file_identity,
         cached_bytes,
-        proxy_handle: OnceLock::new(),
-        proxy_bytes,
         next: AtomicUsize::new(0),
     }))
 }
@@ -3059,27 +2993,53 @@ fn cached_document_for_identity(
     }
 }
 
+fn get_file_load_lock(file_path: &str) -> Arc<Mutex<()>> {
+    static LOAD_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let map_lock = LOAD_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = lock_mutex(map_lock);
+    map.entry(file_path.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
 fn get_or_load_cached_document_with_identity(
     pdfium: &'static Pdfium,
     file_path: &str,
     file_identity: PdfFileIdentity,
     include_color_risk: bool,
 ) -> Result<Arc<CachedDocument>, String> {
-    let (existing, stale) = {
+    // Fast path: nếu tài liệu đã có trong cache và khớp identity, trả về ngay.
+    {
         let mut cache = lock_mutex(document_cache());
-        cached_document_for_identity(&mut cache, file_path, file_identity)
-    };
-    // Document cùng path nhưng khác size/mtime phải đóng ngoài cache mutex.
-    drop(stale);
-    if let Some(existing) = existing {
-        if include_color_risk {
-            ensure_cached_color_risk(&existing, file_path)?;
+        let (existing, stale) = cached_document_for_identity(&mut cache, file_path, file_identity);
+        drop(stale);
+        if let Some(existing) = existing {
+            if include_color_risk {
+                ensure_cached_color_risk(&existing, file_path)?;
+            }
+            return Ok(existing);
         }
-        return Ok(existing);
     }
 
-    // Double-checked insert: đọc/parse file bên ngoài cache mutex. Hai request đua nhau
-    // có thể cùng load; chỉ một entry cùng identity thắng.
+    // PERF (audit 2026-09-19 §SINGLEFLIGHT): nhiều request (trang chính + các thumbnail)
+    // cùng mở một file mới phải xếp hàng qua lock theo path. Tránh thundering herd nhiều thread
+    // cùng đọc đĩa, parse lopdf và load PDFium đồng thời gây nghẽn CPU và bùng nổ RAM.
+    let load_lock = get_file_load_lock(file_path);
+    let _file_guard = lock_mutex(&load_lock);
+
+    // Double-check sau khi nhận lock: request trước có thể đã nạp xong vào cache.
+    {
+        let mut cache = lock_mutex(document_cache());
+        let (existing, stale) = cached_document_for_identity(&mut cache, file_path, file_identity);
+        drop(stale);
+        if let Some(existing) = existing {
+            if include_color_risk {
+                ensure_cached_color_risk(&existing, file_path)?;
+            }
+            return Ok(existing);
+        }
+    }
+
     let candidate = build_cached_document(pdfium, file_path, file_identity, include_color_risk)?;
     if pdf_file_identity(file_path)? != file_identity {
         drop(candidate);
@@ -3089,20 +3049,6 @@ fn get_or_load_cached_document_with_identity(
     }
 
     let mut cache = lock_mutex(document_cache());
-    if let Some(existing) = cache.get_cloned(file_path) {
-        drop(cache);
-        drop(candidate);
-        if existing.file_identity == file_identity {
-            if include_color_risk {
-                ensure_cached_color_risk(&existing, file_path)?;
-            }
-            return Ok(existing);
-        }
-        // Một request khác đã nạp identity mới hơn; không ghi đè ngược bằng bản cũ.
-        return Err(
-            "File PDF đã thay đổi trong lúc đang mở; vui lòng thử lại để tải bản mới.".to_string(),
-        );
-    }
     let removed = cache.insert(file_path.to_string(), Arc::clone(&candidate));
     drop(cache);
     drop(removed);
@@ -4083,25 +4029,12 @@ pub fn render_tile_png_with_options(
     let document_arc =
         get_or_load_cached_document_with_identity(pdfium, file_path, file_identity, false)?;
 
-        // PERF (audit độ nét 2026-09-18): Không dùng proxy nén ảnh 4x-8x cho zoom <= 1.5.
-        // Proxy document từng khiến trang bị mờ vĩnh viễn ở mức fit-to-page do worker
-        // subprocess không emit được tile-refined về UI. PDFium mở file gốc trực tiếp
-        // đạt 100% độ nét ngay từ lần đầu, không bị mờ nhòe.
-        let use_proxy = false;
-    let cell = if use_proxy {
-        &document_arc.proxy_handle
-    } else {
-        let pool_size = document_arc.pool.len();
-        let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
-        &document_arc.pool[pool_idx]
-    };
+    let pool_size = document_arc.pool.len();
+    let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
+    let cell = &document_arc.pool[pool_idx];
 
     if cell.get().is_none() {
-        let bytes = if use_proxy {
-            (*document_arc.proxy_bytes.as_ref().unwrap()).as_ref().clone()
-        } else {
-            (*document_arc.cached_bytes).clone()
-        };
+        let bytes = (*document_arc.cached_bytes).clone();
         let doc = load_pdf_document_from_bytes(pdfium, bytes)?;
         let page_count = {
             let _pdfium_guard = lock_mutex(&RENDER_LOCK);
@@ -4173,7 +4106,7 @@ pub fn render_tile_png_with_options(
 
         // PAGEBOX (audit 2026-08-04 §W1.PB6): clip của frontend và metadata đều ở
         // kích thước vật lý; nhân /UserUnit để bitmap/tile khớp đúng hệ tọa độ đó.
-        let mut render_scale = viewer_render_scale(zoom, document_arc.user_unit(page_index)?);
+        let render_scale = viewer_render_scale(zoom, document_arc.user_unit(page_index)?);
         // CHỈ chặn cận DƯỚI. KHÔNG clamp cận trên: clip_x/y do frontend tính ở scale
         // THẬT (zoom×dpr); nếu clamp render_scale mà translate = -x/render_scale thì tile
         // trỏ SAI vùng → mất nội dung ở zoom cao (bug viewport-tiling). An toàn OOM vì:
@@ -4184,7 +4117,7 @@ pub fn render_tile_png_with_options(
                 let safe_w = w.clamp(1, 4000) as i32;
                 let safe_h = h.clamp(1, 4000) as i32;
                 PdfRenderConfig::new()
-                    .set_clear_color(PdfColor::WHITE)
+                    .set_clear_color(PdfColor::new(0, 0, 0, 0))
                     .set_fixed_size(safe_w, safe_h)
                     .translate(
                         PdfPoints::new(-(x as f32) / render_scale),
@@ -4202,10 +4135,10 @@ pub fn render_tile_png_with_options(
                 let width_pt = pdf_page.width().value;
                 let height_pt = pdf_page.height().value;
 
-                // NÉT (audit độ nét 2026-09-18): Quy đổi từ PDF Point (72 DPI) sang CSS Pixel (96 DPI)
-                // bằng hệ số 96/72 để kích thước bitmap khớp chính xác 1:1 với khung CSS màn hình
-                // (displayWidth = actualWidth100 * zoom = width_pt * 96/72 * zoom).
-                let screen_scale = render_scale * (96.0 / 72.0);
+                // FIX (audit 2026-09-20 §V20.2): render_scale đã chứa (96/72)*zoom*user_unit từ
+                // viewer_render_scale; không nhân (96/72) lần thứ hai để tránh phình 77.8% pixel
+                // và làm lệch chuẩn snap 1:1 của text LCD subpixel.
+                let screen_scale = render_scale;
 
                 let effective_scale = if width_pt * screen_scale > max_dim || height_pt * screen_scale > max_dim {
                     let scale_w = max_dim / width_pt;
@@ -4218,7 +4151,7 @@ pub fn render_tile_png_with_options(
                 let safe_w = (width_pt * effective_scale).max(1.0) as i32;
 
                 PdfRenderConfig::new()
-                    .set_clear_color(PdfColor::WHITE)
+                    .set_clear_color(PdfColor::new(0, 0, 0, 0))
                     .set_target_width(safe_w)
                     // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
                     .use_lcd_text_rendering(true)
@@ -4274,46 +4207,7 @@ pub fn render_tile_png_with_options(
         }
     }
 
-    if use_proxy {
-        let refinement_key = cache_key.clone();
-        let mut in_flight = lock_mutex(refinement_in_flight());
-        if in_flight.insert(refinement_key.clone()) {
-            drop(in_flight);
-            let fp = file_path.to_string();
-            let r_key = refinement_key.clone();
-            let _ = std::thread::Builder::new()
-                .name("tile-auto-refinement".to_string())
-                .spawn(move || {
-                    perf_log(&format!("TILE_REFINEMENT_START path={} page={} zoom={:.3}", fp, page, zoom));
-                    let _ = render_tile_png_with_options(
-                        &fp,
-                        page,
-                        zoom,
-                        rotation,
-                        clip_x,
-                        clip_y,
-                        clip_w,
-                        clip_h,
-                        true,
-                    );
-                    let mut in_flight = lock_mutex(refinement_in_flight());
-                    in_flight.remove(&r_key);
-                    drop(in_flight);
-                    perf_log(&format!("TILE_REFINEMENT_COMPLETE path={} page={} zoom={:.3}", fp, page, zoom));
-                    if let Some(app) = GLOBAL_APP_HANDLE.get() {
-                        use tauri::Emitter;
-                        let _ = app.emit(
-                            "tile-refined",
-                            TileRefinedPayload {
-                                file_path: fp,
-                                page,
-                                zoom,
-                            },
-                        );
-                    }
-                });
-        }
-    }
+
 
     let cache_ms = _cache_t0.elapsed().as_millis() as u64;
     let total_ms = _total_t0.elapsed().as_millis() as u64;
@@ -4846,6 +4740,8 @@ struct ViewerShadowRenderReport {
     cache_ms: Option<u64>,
     unsupported_reason: Option<pdf_engine::render_worker::RenderUnsupportedReason>,
     fallback_font_sha256: Option<String>,
+    substituted_fonts: Vec<String>,
+    geometry_approximated: bool,
 }
 
 fn shadow_png_rgb_mae(first: &[u8], second: &[u8]) -> Option<f64> {
@@ -4954,6 +4850,8 @@ async fn shadow_render_ppe_page(
                     cache_ms: ppe_timing.cache_ms,
                     unsupported_reason: None,
                     fallback_font_sha256,
+                    substituted_fonts: output.response.substituted_fonts.clone(),
+                    geometry_approximated: output.response.geometry_approximated,
                 }
             }
             Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Unsupported(unsupported)) => {
@@ -4972,6 +4870,8 @@ async fn shadow_render_ppe_page(
                     cache_ms: unsupported.timing.cache_ms,
                     unsupported_reason: Some(unsupported.reason),
                     fallback_font_sha256: unsupported.fallback_font_sha256,
+                    substituted_fonts: Vec::new(),
+                    geometry_approximated: false,
                 }
             }
             Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Disabled)
@@ -4991,6 +4891,8 @@ async fn shadow_render_ppe_page(
                     cache_ms: None,
                     unsupported_reason: None,
                     fallback_font_sha256: None,
+                    substituted_fonts: Vec::new(),
+                    geometry_approximated: false,
                 }
             }
             Err(_) => ViewerShadowRenderReport {
@@ -5008,6 +4910,8 @@ async fn shadow_render_ppe_page(
                 cache_ms: None,
                 unsupported_reason: None,
                 fallback_font_sha256: None,
+                substituted_fonts: Vec::new(),
+                geometry_approximated: false,
             },
         };
         if let Ok(serialized) = serde_json::to_string(&report) {
@@ -5712,9 +5616,8 @@ fn stat_system_file_blocking(file_path: &std::path::Path) -> SystemFileStat {
     }
 }
 
-#[tauri::command]
-async fn stat_system_file(path: String) -> Result<SystemFileStat, String> {
-    let ext = std::path::Path::new(&path)
+fn is_allowed_system_file_ext(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -5724,7 +5627,17 @@ async fn stat_system_file(path: String) -> Result<SystemFileStat, String> {
         "otf", "ttc", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx",
         "odp", "json", "txt",
     ];
-    if !allowed.contains(&ext.as_str()) {
+    allowed.contains(&ext.as_str())
+}
+
+#[tauri::command]
+async fn stat_system_file(path: String) -> Result<SystemFileStat, String> {
+    if !is_allowed_system_file_ext(&path) {
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         return Err(format!("File type .{} not allowed", ext));
     }
     if is_sensitive_path(&path) {
@@ -5739,6 +5652,30 @@ async fn stat_system_file(path: String) -> Result<SystemFileStat, String> {
     })
     .await
     .map_err(|error| format!("Lỗi chạy tác vụ metadata: {error}"))
+}
+
+#[tauri::command]
+async fn stat_system_files(paths: Vec<String>) -> Result<Vec<SystemFileStat>, String> {
+    // FILEIO (audit 2026-09-19 §BURST.BATCH_STAT): gom toàn bộ danh sách file (vd 72 file)
+    // vào 1 lời gọi IPC duy nhất chạy trên blocking threadpool để tránh nghẽn hàng đợi IPC/timeout.
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                if !is_allowed_system_file_ext(&path) || is_sensitive_path(&path) {
+                    SystemFileStat {
+                        status: SystemFileStatStatus::Inaccessible,
+                        size: 0,
+                        modified_ms: None,
+                    }
+                } else {
+                    stat_system_file_blocking(std::path::Path::new(&path))
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("Lỗi chạy tác vụ metadata hàng loạt: {error}"))
 }
 
 #[tauri::command]
@@ -7575,8 +7512,6 @@ mod doc_cache_tests {
             color_risk: Mutex::new(Some(pdf_color_risk::PdfColorRiskSummary::empty())),
             file_identity: identity,
             cached_bytes: Arc::new(Vec::new()),
-            proxy_handle: OnceLock::new(),
-            proxy_bytes: None,
             next: AtomicUsize::new(0),
         })
     }
@@ -7600,8 +7535,6 @@ mod doc_cache_tests {
             color_risk: Mutex::new(None),
             file_identity: identity,
             cached_bytes: Arc::new(Vec::new()),
-            proxy_handle: OnceLock::new(),
-            proxy_bytes: None,
             next: AtomicUsize::new(0),
         };
 
@@ -8139,24 +8072,30 @@ pub fn run() {
         .manage(Mutex::new(document_window_registry::DocumentWindowRegistry::default()))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, document_window_registry::request_document_save_grant, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, device_identity::get_device_public_identity, device_identity::sign_device_license_challenge, license_renewal::begin_license_renewal, license_renewal::finish_license_renewal, license_renewal::commit_license_renewal, security::get_license_runtime_policy, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::begin_license_validation, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::load_clock_anchor, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app, bridge_installer::sync_design_bridges, bridge_installer::get_design_bridge_status])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, stat_system_files, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, document_window_registry::request_document_save_grant, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, device_identity::get_device_public_identity, device_identity::sign_device_license_challenge, license_renewal::begin_license_renewal, license_renewal::finish_license_renewal, license_renewal::commit_license_renewal, security::get_license_runtime_policy, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::begin_license_validation, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::load_clock_anchor, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app, bridge_installer::sync_design_bridges, bridge_installer::get_design_bridge_status, activate_main_window])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 state.enqueue(args);
             }
+            use tauri::Emitter;
+            let _ = app.emit("prynx-system-file-incoming", ());
 
+            // FILEIO/WINDOW (audit 2026-09-19 §BURST.72 / §BURST.INSTANT_SHOW):
+            // Khi Explorer mở 72 file đồng thời, KHÔNG được gọi set_focus dồn dập cho từng file
+            // vì sẽ làm Windows Shell hủy ngang selection và dừng lại ở ~34 file.
+            // Nhưng NGAY TỨC THÌ ở file đầu tiên, đưa cửa sổ nổi lên mặt phẳng hiển thị
+            // bằng SWP_NOACTIVATE (không cướp focus của Explorer). Các file tiếp theo trong vòng
+            // 2000ms được throttle để không làm nghẽn hàng đợi message Win32.
             if APP_STARTUP_READY.load(Ordering::Acquire) {
                 if let Some(window) = app.get_webview_window("main") {
-                    if let Err(error) = window.unminimize() {
-                        log::warn!("[WINDOW] Không khôi phục được cửa sổ từ lần mở thứ hai: {}", error);
-                    }
-                    if let Err(error) = window.show() {
-                        log::warn!("[WINDOW] Không hiện được cửa sổ từ lần mở thứ hai: {}", error);
-                    }
-                    let _ = window.set_always_on_top(true);
-                    let _ = window.set_always_on_top(false);
-                    if let Err(error) = window.set_focus() {
-                        log::warn!("[WINDOW] Không focus được cửa sổ từ lần mở thứ hai: {}", error);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    let last = LAST_WINDOW_RAISE_MS.load(Ordering::Acquire);
+                    if now - last > 2000 {
+                        LAST_WINDOW_RAISE_MS.store(now, Ordering::Release);
+                        bring_window_to_top_no_activate(&window);
                     }
                 }
             }

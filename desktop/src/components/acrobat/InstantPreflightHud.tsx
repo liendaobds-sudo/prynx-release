@@ -64,6 +64,9 @@ export const InstantPreflightHud: React.FC<InstantPreflightHudProps> = ({
     const { summary, issues, hasErrors, hasWarnings, scanDurationMs } = result;
     const isClean = !hasErrors && !hasWarnings;
 
+    // UIUX: Không hiển thị thanh HUD khi file đạt chuẩn (0 lỗi, 0 cảnh báo) để tránh che khuất giao diện làm việc
+    if (isClean) return null;
+
     // Phân nhóm issues
     const hairlineIssues = issues.filter(i => i.type === 'hairline');
     const richBlackIssues = issues.filter(i => i.type === 'rich_black');

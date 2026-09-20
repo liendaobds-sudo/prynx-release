@@ -74,6 +74,7 @@ interface UseTileRendererProps {
     activePage: number;
     tabId?: string;
     isActive?: boolean;
+    numPages?: number;
     accurateColorEnabled?: boolean;
     accurateColorPages?: number[];
     accurateColorProfileId?: string;
@@ -285,7 +286,7 @@ async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSou
     };
 }
 
-export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive, accurateColorEnabled = false, accurateColorPages = [], accurateColorProfileId = 'fogra39', accurateColorIntent = 'relative', outputPreviewFilter = 'all', simulatePaperColor = false, simulateBlackInk = false, pageBackgroundRgb = null, viewerEngineMode = 'current', viewerShadowEnabled = false, accurateDpiAnchor = 96, renderDocumentToken: loaderDocumentToken }: UseTileRendererProps) {
+export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isActive, numPages, accurateColorEnabled = false, accurateColorPages = [], accurateColorProfileId = 'fogra39', accurateColorIntent = 'relative', outputPreviewFilter = 'all', simulatePaperColor = false, simulateBlackInk = false, pageBackgroundRgb = null, viewerEngineMode = 'current', viewerShadowEnabled = false, accurateDpiAnchor = 96, renderDocumentToken: loaderDocumentToken }: UseTileRendererProps) {
     const activePageRef = useRef(activePage);
     const accurateRenderAbortRef = useRef(new Map<
         string,
@@ -434,6 +435,11 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
     }, [cancelAllAccurateRenders, isActive, renderOwnerId]);
 
     useEffect(() => {
+        cancelAllAccurateRenders();
+        setAccurateColorFailure(null);
+    }, [fileIdentity, cancelAllAccurateRenders]);
+
+    useEffect(() => {
         void configureTileUrlCacheForHardware();
     }, []);
 
@@ -441,6 +447,9 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
         if (isImage) {
             return Promise.resolve({ url: pdfUrl ? pdfUrl + '#keep' : '', byteLength: 0 });
+        }
+        if (typeof numPages === 'number' && numPages > 0 && pageNum > numPages) {
+            return Promise.reject(new CancelledTileRenderError());
         }
 
         // Native file path. Ở RELEASE, protocol tile.localhost (img declarative / new Image /
@@ -609,6 +618,12 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     request: coordinatedRequest,
                     bypassScheduler: true,
                     render: async request => {
+                        if (typeof numPages === 'number' && numPages > 0 && pageNum > numPages) {
+                            throw new CancelledTileRenderError();
+                        }
+                        if (nativeDocumentIdentity && request.document.token !== nativeDocumentIdentity.token) {
+                            throw new CancelledTileRenderError();
+                        }
                         try {
                             if (usesNativeAccurateWorker(
                                 normalizedProfileId,
@@ -784,7 +799,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 }, 'image/png');
             });
         })();
-    }, [activePageRef, accurateColorEnabled, accurateColorPages, accurateDpiAnchor, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
+    }, [activePageRef, accurateColorEnabled, accurateColorPages, accurateDpiAnchor, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, numPages, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
 
     // Text extraction via pdfjs
     const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, ViewerTextBlock[]>) => {

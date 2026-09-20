@@ -471,6 +471,38 @@ def _source_pin_key(source_path: str | Path) -> str:
         raise _error("Đường dẫn PDF nguồn cần pin không hợp lệ.") from exc
 
 
+def _assert_order_area_feasible(value: ProductionNestingJobInput, footprints: Mapping[str, Any]) -> None:
+    """M72: chặn cấu hình chắc chắn không vừa bằng điều kiện diện tích cần."""
+    if value.tool != "sticker_imposer":
+        return
+    areas = {}
+    for part_id, polygon in footprints.items():
+        ring = polygon.outer
+        # Native hiện coi lỗ là vật liệu đặc, nên dùng diện tích outer cùng quy tắc.
+        areas[part_id] = abs(sum(
+            a[0] * b[1] - b[0] * a[1]
+            for a, b in zip(ring, (*ring[1:], ring[0]))
+        )) / 2
+    usable_area = (
+        value.sheet_width_mm - value.margin_mm.get("left", 0) - value.margin_mm.get("right", 0)
+    ) * (
+        value.sheet_height_mm - value.margin_mm.get("top", 0) - value.margin_mm.get("bottom", 0)
+    )
+    if value.layout_intent == "autofill_single_sheet" and sum(areas.values()) > usable_area + 1e-6:
+        raise _error(
+            f"{len(value.parts)} mẫu không thể nằm đủ trên một tờ với khổ giấy hiện tại. "
+            "Hãy dùng Dàn nhiều mẫu để tự chia nhiều tờ hoặc giảm số mẫu/tăng khổ giấy."
+        )
+    for zone in value.placement_zones:
+        bounds = zone.bounds
+        zone_area = (bounds.max_x_mm - bounds.min_x_mm) * (bounds.max_y_mm - bounds.min_y_mm)
+        if areas[zone.part_id] > zone_area + 1e-6:
+            raise _error(
+                f"Vùng Chia đều diện tích của mẫu {zone.part_id} quá nhỏ. "
+                "Hãy chọn Xếp tự do hoặc tăng khổ giấy."
+            )
+
+
 def _public_request(
     value: ProductionNestingJobInput,
     geometry: Mapping[str, ResolvedSourceGeometry],
@@ -599,6 +631,7 @@ def solve_production_nesting_job(
             part.part_id: derive_packing_footprint(geometry[part.part_id].polygon)
             for part in value.parts
         }
+        _assert_order_area_feasible(value, footprints)
 
         part_specs: list[ImpositionRenderPartSpec] = []
         for part in value.parts:

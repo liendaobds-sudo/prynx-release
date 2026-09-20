@@ -36,7 +36,7 @@ import {
     type ViewerColorStage,
 } from '../../hooks/viewer/useTileRenderer';
 import { globalPdfObjectCache, type CachedPdfObject } from '../../stores/pdfObjectCache';
-import { useWorkspaceStore, type WorkspacePreflightIssue } from '../../stores/useWorkspaceStore';
+import { useWorkspaceStore, type WorkspacePreflightIssue, type VdpLivePreviewState } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore'; // §R.9 (audit độ nét 2026-07-28)
 import { useShallow } from 'zustand/react/shallow';
@@ -332,6 +332,7 @@ interface EditPreviewLayer {
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
 // Export ở mức component để regression test không cho hiện PDFium trong cold-open PPE.
 export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
+    const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -429,21 +430,22 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     //      có lần load mới → onLoad không bao giờ chạy lại → kẹt vĩnh viễn.
     // Chạy ở useLayoutEffect (trước khi browser vẽ) nên không thấy nháy. Tile mới load xong
     // thì onLoad snap lại 1:1 như thiết kế.
-    useLayoutEffect(() => {
-        const el = imgRef.current;
-        if (el) {
-            el.style.width = '100%';
-            el.style.height = '100%';
-        }
-        const cv = canvasRef.current;
-        if (cv) {
-            cv.style.width = '100%';
-            cv.style.height = '100%';
-        }
-    }, [cssW, cssH, clipW, clipH, seamlessGridPresentation]);
+    // ZOOMRACE20.01 FIX (audit 2026-09-20): Tách geometry trình bày khỏi callback render bất đồng bộ.
+    // Lưu kích thước khung hiện tại vào ref để callback commit bitmap muộn luôn đọc đúng kích thước
+    // thời gian thực, không bị bắt vào closure của zoom cũ lúc khởi tạo request.
+    const presentationRef = useRef({ cssW, cssH, clipW, clipH, seamlessGridPresentation });
+    presentationRef.current = { cssW, cssH, clipW, clipH, seamlessGridPresentation };
 
     const applyExactFit = useCallback((el: HTMLElement, naturalW?: number, naturalH?: number) => {
-        if (seamlessGridPresentation) {
+        const {
+            cssW: curCssW,
+            cssH: curCssH,
+            clipW: curClipW,
+            clipH: curClipH,
+            seamlessGridPresentation: curSeamless,
+        } = presentationRef.current;
+
+        if (curSeamless) {
             // UIUX (feedback 2026-08-11 §PAN.SEAM): atlas nằm trên nội dung màu;
             // không co về naturalWidth vì phần thiếu sẽ lộ nền trắng giữa hai cell.
             el.style.width = '100%';
@@ -452,9 +454,13 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         }
         const bw = naturalW ?? (el instanceof HTMLImageElement ? el.naturalWidth : (el as HTMLCanvasElement).width);
         const bh = naturalH ?? (el instanceof HTMLImageElement ? el.naturalHeight : (el as HTMLCanvasElement).height);
-        const boxW = (cssW || clipW) as number;
-        const boxH = (cssH || clipH) as number;
-        if (!bw || !bh || !boxW || !boxH) return;
+        const boxW = (curCssW || curClipW) as number;
+        const boxH = (curCssH || curClipH) as number;
+        if (!bw || !bh || !boxW || !boxH) {
+            el.style.width = '100%';
+            el.style.height = '100%';
+            return;
+        }
         const dpr = window.devicePixelRatio || 1;
         const wantW = Math.round(boxW * dpr);
         const wantH = Math.round(boxH * dpr);
@@ -462,10 +468,27 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             el.style.width = `${bw / dpr}px`;
             el.style.height = `${bh / dpr}px`;
         } else {
+            // Khi kích thước bitmap không khớp khung hiện tại (đang zoom nhanh hoặc dùng underlay),
+            // luôn co giãn 100% để vừa khít khung nhìn, chống tràn hoặc bị cắt thành 1 góc.
             el.style.width = '100%';
             el.style.height = '100%';
         }
-    }, [cssW, cssH, clipW, clipH, seamlessGridPresentation]);
+    }, []);
+
+    // ZOOMRACE20.01 FIX (audit 2026-09-20): Khi cssW/cssH thay đổi (lăn chuột zoom),
+    // lập tức áp dụng lại exactFit cho cả canvas lẫn img trước khi trình duyệt vẽ.
+    // Nếu bitmap khớp 1:1 thì snap; nếu không khớp (đang co/phóng) thì co về 100%
+    // thay vì giữ kích thước px tuyệt đối cũ gây cắt góc.
+    useLayoutEffect(() => {
+        const el = imgRef.current;
+        if (el) {
+            applyExactFit(el);
+        }
+        const cv = canvasRef.current;
+        if (cv) {
+            applyExactFit(cv);
+        }
+    }, [cssW, cssH, clipW, clipH, seamlessGridPresentation, applyExactFit]);
     const loadedParamsRef = useRef('');
     const inFlightRequestRef = useRef<{ params: string; attempt: number } | null>(null);
     const preloadRef = useRef<HTMLImageElement|null>(null);
@@ -688,6 +711,14 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             // UIUX (feedback 2026-08-11 §VIEW.SURFACE): scale thấp hơn không mang
             // thêm chi tiết. Giữ nguyên bitmap đã decode và chỉ co bằng compositor;
             // không phát PPE thấp DPI rồi tự hạ chất lượng surface đang đọc được.
+            // ZOOMRACE20.01 FIX (audit 2026-09-20): Đảm bảo geometry hiện tại được áp lại
+            // cho canvas/img khi tái dùng sharper surface.
+            if (canvasRef.current) {
+                applyExactFit(canvasRef.current);
+            }
+            if (imgRef.current) {
+                applyExactFit(imgRef.current);
+            }
             loadedParamsRef.current = currentParams;
             cachedRenderReadyParamsRef.current = null;
             dispatchLoadState({ type: 'ready', attempt: loadAttemptRef.current });
@@ -1257,7 +1288,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // background:'white' cho khung: khi snap 1:1 (§R.4) bitmap có thể hụt ≤2px so với
         // khung do làm tròn → chừa sợi mảnh ở mép phải/dưới. Nền trắng làm nó vô hình trên
         // trang PDF (PDFium render với clear_color=WHITE), thay vì hở ra nền skeleton xám.
-        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: showLoadStatus || hasVisibleTile || preserveUnderlay ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: seamlessGridPresentation || (preserveUnderlay && !hasVisibleTile) ? 'transparent' : 'white' }} className="tile-container">
+        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', overflow: 'hidden', opacity: showLoadStatus || hasVisibleTile || preserveUnderlay ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: seamlessGridPresentation || (preserveUnderlay && !hasVisibleTile) ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white') }} className="tile-container">
             <canvas
                 ref={canvasRef}
                 style={{
@@ -1270,7 +1301,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                     pointerEvents: 'none',
                     userSelect: 'none',
                     display: isCanvasActive ? 'block' : 'none',
-                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : 'white',
+                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white'),
                     opacity: hasVisibleTile && isCanvasActive ? 1 : 0,
                 }}
             />
@@ -1291,7 +1322,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                     pointerEvents: 'none',
                     userSelect: 'none',
                     display: isCanvasActive ? 'none' : 'block',
-                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : 'white',
+                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white'),
                     opacity: hasVisibleTile && !isCanvasActive ? 1 : 0,
                 }}
             />
@@ -1663,13 +1694,13 @@ const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId
         Boolean(tileBuffer.visible),
         panGridPhaseReady,
     );
-    const activePanGridTiles = panGridPlan && panGridPolicy.near
+    const activePanGridTiles = renderEnabled && panGridPlan && panGridPolicy.near
         ? [
             ...panGridPlan.near,
             ...(panGridPolicy.outer ? panGridPlan.outer : []),
         ]
         : [];
-    const presentPanGrid = shouldPresentViewerPanGrid(
+    const presentPanGrid = renderEnabled && shouldPresentViewerPanGrid(
         panGridPlanIsCurrent,
         panGridViewportCovered,
         zoomSettling,
@@ -1936,54 +1967,85 @@ interface VdpPreviewField extends VdpToolField {
 }
 
 const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale: number; text: string }) => {
-    const ref = useRef<HTMLSpanElement>(null);
+    const containerRef = useRef<HTMLSpanElement>(null);
+    const measureRef = useRef<HTMLSpanElement>(null);
     // Backend render fontSize ở pt THẬT, nhưng khung dùng đơn vị CSS (×96/72). Để preview
     // khớp output, cỡ chữ trên màn = fontSize(pt) × scale × (96/72). scale = displayWidth/pageDim.w.
     const fontPx = (field.fontSize || 10) * scale * (96 / 72);
     const [scaleX, setScaleX] = useState<number>(1);
-    const align = (field.alignment || 'left') as 'left' | 'center' | 'right';
+    const [naturalWidth, setNaturalWidth] = useState<number>(0);
+    const [availWidth, setAvailWidth] = useState<number>(0);
+    const align = (field.alignment || 'center') as 'left' | 'center' | 'right';
 
     useLayoutEffect(() => {
         // Cần đồng bộ ngay sau layout để preview chữ không lóe sai tỷ lệ.
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        if (field.autoFit === false) { setScaleX(1); return; }
-        const el = ref.current;
+        if (field.autoFit === false) {
+            setScaleX(1);
+            setNaturalWidth(0);
+            return;
+        }
+        const el = containerRef.current;
         if (!el) return;
-        // "Tự bóp chữ vừa khung" = NÉN BỀ RỘNG (scaleX), GIỮ NGUYÊN cỡ chữ/chiều cao.
-        // Đo bề rộng tự nhiên (scrollWidth khi whitespace:pre — không xuống dòng) so với
-        // bề rộng khung (clientWidth). Nếu tràn ngang → nén ngang cho vừa. Chỉ ngắt dòng
-        // ở '\n' người dùng gõ. Parity với backend (canvas scale(sx,1)).
-        const natural = el.scrollWidth;
+        const measureEl = measureRef.current;
+        // Đo bề rộng tự nhiên qua measureEl (inline-block với white-space: pre)
+        const natural = measureEl ? measureEl.offsetWidth : el.scrollWidth;
         const avail = el.clientWidth;
+        setNaturalWidth(natural);
+        setAvailWidth(avail);
         const sx = natural > avail && natural > 0 ? Math.max(0.05, avail / natural) : 1;
         setScaleX(sx);
 
         if (typeof document !== 'undefined' && document.fonts && field.fontFile) {
             document.fonts.ready.then(() => {
-                const el2 = ref.current;
+                const el2 = containerRef.current;
                 if (!el2) return;
-                const nat = el2.scrollWidth;
+                const measureEl2 = measureRef.current;
+                const nat = measureEl2 ? measureEl2.offsetWidth : el2.scrollWidth;
                 const av = el2.clientWidth;
+                setNaturalWidth(nat);
+                setAvailWidth(av);
                 const sx2 = nat > av && nat > 0 ? Math.max(0.05, av / nat) : 1;
                 setScaleX(sx2);
             });
         }
     }, [text, fontPx, field.width, field.height, field.autoFit, field.fontName, field.fontFile, field.fontStyle, field.lineHeight, align]);
 
-    // Nén từ mép TRÁI để khớp backend (canvas scale(sx,1) sau translate về mép trái
-    // khung, map [0, bề_rộng_tự_nhiên] → [0, bề_ngang_khung]). Text-align vẫn xử lý
-    // vị trí chữ trong khung khi KHÔNG nén (sx=1).
+    // UIUX (audit 2026-09-21 §VDPALIGN21.01):
+    // Khi autoFit co ngang (scaleX < 1), cần neo vị trí khối chữ theo đúng bề rộng tự nhiên:
+    // - align='center': căn giữa khối chữ trước scaleX bằng marginLeft = (avail - natural) / 2, sau đó co quanh tâm
+    //   -> tâm chữ nằm chính xác 100% tại giữa khung (không bị trôi sang phải do inline-block lệch gốc).
+    // - align='right': căn phải bằng marginLeft = avail - natural, sau đó co quanh mép phải
+    //   -> mép phải chạm chính xác mép phải khung.
+    // - align='left': marginLeft = 0, co quanh mép trái.
+    const isScaled = field.autoFit !== false && scaleX < 1 && naturalWidth > 0 && availWidth > 0;
+    const origin = align === 'center' ? 'center center' : align === 'right' ? 'right center' : 'left center';
+    const computedMarginLeft = isScaled
+        ? (align === 'center' ? `${(availWidth - naturalWidth) / 2}px` : align === 'right' ? `${availWidth - naturalWidth}px` : '0px')
+        : '0px';
+
+    // Bù baseline ReportLab vs CSS em-box (khoảng 0.22 fontPx) để chân chữ khớp chính xác vị trí dòng kẻ phôi in
+    const baselineShift = fontPx * 0.22;
+    const transformStyle = isScaled
+        ? `translateY(${baselineShift}px) scaleX(${scaleX})`
+        : `translateY(${baselineShift}px)`;
+
     return (
         <span
+            ref={containerRef}
             className="w-full h-full overflow-visible"
-            style={{ display: 'flex', alignItems: 'center' }}
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+            }}
         >
             <span
-                ref={ref}
                 className="whitespace-pre"
                 style={{
                     display: 'block',
-                    width: '100%',
+                    width: isScaled ? `${naturalWidth}px` : '100%',
+                    marginLeft: computedMarginLeft,
+                    flexShrink: 0,
                     color: field.fontColor || '#1e293b',
                     fontSize: `${fontPx}px`,
                     fontFamily: field.fontFile
@@ -1992,15 +2054,15 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
                     fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
                     fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
                     lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
-                    // Backend (ReportLab Paragraph) chưa hỗ trợ tracking → preview cũng bỏ qua để khớp output.
                     letterSpacing: 0,
                     textAlign: align,
-                    // NÉN NGANG khi chữ tràn; neo theo hướng căn lề để chữ không trôi khỏi khung.
-                    transform: field.autoFit === false ? 'none' : `scaleX(${scaleX})`,
-                    transformOrigin: 'left center',
+                    transform: transformStyle,
+                    transformOrigin: origin,
                 }}
             >
-                {text}
+                <span ref={measureRef} style={{ display: 'inline-block' }}>
+                    {text}
+                </span>
             </span>
         </span>
     );
@@ -2257,6 +2319,64 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
 });
 
 // Props contract is supplied by AcrobatViewer; keep the broad bridge while the shared viewer contract is migrated.
+/**
+ * Phân giải nội dung hiển thị thật của VDP field khi đang bật Realtime Live Preview.
+ * Hỗ trợ các thẻ {Tên_Cột} phức hợp lẫn map trực tiếp theo field.name / field.fieldName.
+ */
+function resolveFieldLiveText(
+    field: VdpToolField,
+    previewState?: VdpLivePreviewState | null,
+): string {
+    const fieldNameStr = typeof field.name === 'string' ? field.name : '';
+    const fieldAliasStr = typeof field.fieldName === 'string' ? field.fieldName : '';
+    const defaultTemplate = field.textContent ?? (fieldNameStr ? `{${fieldNameStr}}` : '');
+    if (!previewState || !previewState.enabled || !previewState.currentRecord) {
+        return defaultTemplate;
+    }
+    const record = previewState.currentRecord;
+
+    // 1. Nếu trường có giá trị khớp chính xác theo field.id (đặc biệt khi có nhiều cụm/con cùng loại)
+    if (field.id && record[field.id] !== undefined && record[field.id] !== null) {
+        const trimmed = defaultTemplate.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}') && trimmed.indexOf('}', 1) === trimmed.length - 1) {
+            return String(record[field.id]);
+        }
+    }
+
+    // 2. Nếu template có chứa placeholder {Key}
+    if (/\{[^}]+\}/.test(defaultTemplate)) {
+        return defaultTemplate.replace(/\{([^}]+)\}/g, (match, rawKey) => {
+            const key = rawKey.split(':')[0].trim();
+            if (record[key] !== undefined && record[key] !== null) {
+                return String(record[key]);
+            }
+            if (field.id && record[field.id] !== undefined && record[field.id] !== null) {
+                return String(record[field.id]);
+            }
+            if (fieldNameStr && record[fieldNameStr] !== undefined && record[fieldNameStr] !== null) {
+                return String(record[fieldNameStr]);
+            }
+            if (fieldAliasStr && record[fieldAliasStr] !== undefined && record[fieldAliasStr] !== null) {
+                return String(record[fieldAliasStr]);
+            }
+            return match;
+        });
+    }
+
+    // 3. Nếu không chứa token {}, tìm trực tiếp theo field.id / fieldNameStr / fieldAliasStr
+    if (field.id && record[field.id] !== undefined && record[field.id] !== null) {
+        return String(record[field.id]);
+    }
+    if (fieldNameStr && record[fieldNameStr] !== undefined && record[fieldNameStr] !== null) {
+        return String(record[fieldNameStr]);
+    }
+    if (fieldAliasStr && record[fieldAliasStr] !== undefined && record[fieldAliasStr] !== null) {
+        return String(record[fieldAliasStr]);
+    }
+
+    return defaultTemplate;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const LivePageFrame = (props: any) => {
   const { t } = useTranslation();
@@ -2284,6 +2404,7 @@ export const LivePageFrame = (props: any) => {
     const [baseDisplayReadyKey, setBaseDisplayReadyKey] = useState<string | null>(null);
     const [accurateCommittedKey, setAccurateCommittedKey] = useState<string | null>(null);
     const [accurateBaseReadyKey, setAccurateBaseReadyKey] = useState<string | null>(null);
+    const [hasRenderedBaseState, setHasRenderedBaseState] = useState(false);
     const traceFrameIdRef = useRef(
         viewerTraceHash(`${tabId || 'tab'}:${pageInstanceId || 'page'}:${originalPageNum}`),
     );
@@ -2301,6 +2422,7 @@ export const LivePageFrame = (props: any) => {
         isObjectEditMode, isPickingVdpText, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds, ocgVisibilityIntent,
         showOutputPreview,
         separationPlates, vdpFields, setVdpFields, selectedVdpFieldIds, setSelectedVdpFieldIds, setIsPickingVdpText,
+        vdpLivePreview, setVdpLivePreview,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         outputPreviewWarningOpacity, outputPreviewOverprintDiagnosticActive,
         outputPreviewActiveViewerPage,
@@ -2333,6 +2455,8 @@ export const LivePageFrame = (props: any) => {
         setVdpFields: state.setVdpFields,
         selectedVdpFieldIds: state.selectedVdpFieldIds,
         setIsPickingVdpText: state.setIsPickingVdpText,
+        vdpLivePreview: state.vdpLivePreview,
+        setVdpLivePreview: state.setVdpLivePreview,
         softProofImageUrl: state.softProofImageUrl,
         gamutWarningUrl: state.gamutWarningUrl,
         tacHeatmapUrl: state.tacHeatmapUrl,
@@ -2351,6 +2475,13 @@ export const LivePageFrame = (props: any) => {
         recordCropSelectionSnapshot: state.recordCropSelectionSnapshot,
         viewerToolMode: state.viewerToolMode,
     })));
+
+    useEffect(() => {
+        setHasRenderedBaseState(false);
+        setBaseDisplayReadyKey(null);
+        setAccurateBaseReadyKey(null);
+        setAccurateCommittedKey(null);
+    }, [pdfUrl, previewRevision, originalPageNum]);
     const effectiveFid = selectionFileId || nativeFilePath || (typeof pdfUrl === 'string' && pdfUrl.startsWith('file://') ? decodeURIComponent(pdfUrl.replace('file:///', '').replace('file://', '')) : '') || '';
     const accurateColorPage = shouldUseViewerAccurateSimulation(
         detectorRequiresAccurate === true,
@@ -2376,12 +2507,23 @@ export const LivePageFrame = (props: any) => {
         isActiveFrame,
         prefetchPage === true,
     );
+    const hasRenderedBase = Boolean(
+        hasRenderedBaseState
+        || baseDisplayReadyKey
+        || accurateBaseReadyKey
+        || accurateCommittedKey
+        || initialPpeFrame
+    );
+
     // UIUX (feedback 2026-08-14 §VIEW.PAGE): target active vẫn thắng ở mức 10;
     // underlay đọc được của trang kế bên đứng ở mức 20, trước atlas runway mức 100.
+    // Khi trang đã từng render xong (hasRenderedBase), giữ nguyên surface đã dựng để
+    // cuộn lên xuống không bị mất preview / biến thành spinner.
     const shouldRenderBasePage = shouldRenderViewerBasePage(
         viewerIsActive,
         isActiveFrame,
         prefetchPage === true,
+        hasRenderedBase,
     );
 
     const separationPreviewBelongsToFrame = separationPlates.some(
@@ -2408,6 +2550,7 @@ export const LivePageFrame = (props: any) => {
     const activeDashboardTool = useImposerSettingsStore(s => s.activeDashboardTool);
     // PERF (audit độ nét 2026-07-28 §R.9): selector riêng một trường — không subscribe cả store.
     const previewQuality = useAppSettingsStore(s => s.previewQuality);
+    const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
     const containerRef = useRef<HTMLDivElement>(null);
     const pageContentRef = useRef<HTMLDivElement>(null);
     const [pagePixelSnap, setPagePixelSnap] = useState({ x: 0, y: 0 });
@@ -2467,6 +2610,8 @@ export const LivePageFrame = (props: any) => {
         if (!interaction || !onVdpFieldsChange || !pageDim) return;
         const dx = curX - interaction.startX;
         const dy = curY - interaction.startY;
+        // Bỏ qua vi dịch chuyển dưới 3px khi kéo để không làm nhảy vị trí khi người dùng chỉ click chọn
+        if (interaction.type === 'move' && Math.hypot(dx, dy) < 3) return;
         const scale = (actualWidth100 * zoom) / pageDim.w; // = displayWidth / pageDim.w
         const dxMM = (dx / scale) / 72 * 25.4;
         const dyMM = (dy / scale) / 72 * 25.4;
@@ -2562,6 +2707,7 @@ export const LivePageFrame = (props: any) => {
             const p = vdpPendingRef.current;
             if (p) applyVdpDrag(p.curX, p.curY);
             vdpPendingRef.current = null;
+            vdpInteractionRef.current = null;
             setVdpInteraction(null);
         };
         window.addEventListener('pointermove', onMove);
@@ -2754,14 +2900,58 @@ export const LivePageFrame = (props: any) => {
     // (content/màu/font gốc) cho đúng object → điền sẵn + tự khớp font hệ thống.
 
     // ─── VDP Text Picker: Click-to-Convert text object sang VDP Field ─────────
+    const [isVdpPickBusy, setIsVdpPickBusy] = useState(false);
+
+    // Thoát chế độ chọn trường VDP khi bấm phím Escape
+    useEffect(() => {
+        if (!isPickingVdpText) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                setIsPickingVdpText(false);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown, { capture: true });
+        return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
+    }, [isPickingVdpText, setIsPickingVdpText]);
+
+    // Lắng nghe phím [ và ] để chuyển record VDP realtime trên view chính
+    useEffect(() => {
+        if (!isVdpMode || !vdpLivePreview || vdpLivePreview.totalRecords <= 1 || !isActiveFrame) return;
+        const handleRecordKeyDown = (e: KeyboardEvent) => {
+            const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement)?.isContentEditable) return;
+
+            if (e.key === '[' || (e.altKey && e.key === 'ArrowLeft')) {
+                e.preventDefault();
+                setVdpLivePreview((prev: VdpLivePreviewState) => {
+                    const nextIdx = Math.max(1, prev.recordIndex - 1);
+                    window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: nextIdx } }));
+                    return { ...prev, recordIndex: nextIdx };
+                });
+            } else if (e.key === ']' || (e.altKey && e.key === 'ArrowRight')) {
+                e.preventDefault();
+                setVdpLivePreview((prev: VdpLivePreviewState) => {
+                    const nextIdx = Math.min(prev.totalRecords, prev.recordIndex + 1);
+                    window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: nextIdx } }));
+                    return { ...prev, recordIndex: nextIdx };
+                });
+            }
+        };
+        window.addEventListener('keydown', handleRecordKeyDown);
+        return () => window.removeEventListener('keydown', handleRecordKeyDown);
+    }, [isVdpMode, vdpLivePreview, isActiveFrame, setVdpLivePreview]);
+
     const handlePickTextObject = async (obj: EditCanvasObj, clusterMemberIds?: string[]) => {
+        if (isVdpPickBusyRef.current) return;
         const fidToUse = effectiveFid;
         if (!fidToUse) {
             toast.error(t('Chưa xác định được file mẫu'));
             return;
         }
+        isVdpPickBusyRef.current = true;
+        setIsVdpPickBusy(true);
         try {
-            toast.info(t('Đang chọn trường...'));
             const pageIdx = originalPageNum - 1;
             const res = await pickVdpTextField(fidToUse, pageIdx, obj.drawIndex, true);
             if (res.success && res.field) {
@@ -2794,12 +2984,10 @@ export const LivePageFrame = (props: any) => {
                     setSelectedVdpFieldIds([newField.id]);
                 }
 
-                // 4. Tắt chế độ chọn trường
-                if (typeof setIsPickingVdpText === 'function') {
-                    setIsPickingVdpText(false);
-                }
-
-                toast.success(t(`Đã chọn trường "${res.field.name}" thành công!`));
+                // [CONTINUOUS PICK]: Giữ nguyên chế độ chọn trường (isPickingVdpText = true)
+                // để người dùng có thể nhấp chọn liên tiếp nhiều trường trên trang mà không cần bấm lại nút.
+                // Khi chọn xong, người dùng chỉ cần bấm nút "Xong" hoặc phím Esc.
+                toast.success(t('Đã thêm trường "{{name}}". Tiếp tục chọn hoặc bấm Xong.', { name: newField.name }));
 
                 if (res.working_fid && res.working_pdf_url) {
                     window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
@@ -2814,6 +3002,9 @@ export const LivePageFrame = (props: any) => {
         } catch (err: any) {
             console.error('Lỗi khi chọn trường VDP:', err);
             toast.error(err.message || 'Lỗi khi trích xuất chữ');
+        } finally {
+            isVdpPickBusyRef.current = false;
+            setIsVdpPickBusy(false);
         }
     };
 
@@ -2879,6 +3070,30 @@ export const LivePageFrame = (props: any) => {
     // bám vị trí MỚI + danh sách object cập nhật cho add/delete, không chờ commit.
     const [editObjectsVersion, setEditObjectsVersion] = useState(0);
     const [pickedTextIds, setPickedTextIds] = useState<string[]>([]);
+    const isVdpPickBusyRef = useRef(false);
+
+    // Khi thoát/vào chế độ chọn trường VDP, hoặc đổi trang/file, reset danh sách text đã bóc tách.
+    useEffect(() => {
+        if (isPickingVdpText) {
+            setPickedTextIds([]);
+        }
+    }, [isPickingVdpText]);
+
+    useEffect(() => {
+        setPickedTextIds([]);
+    }, [effectiveFid, originalPageNum]);
+
+    // Khi file mẫu được làm sạch sau khi bóc trường VDP (vdp-template-cleaned),
+    // xoá cache editObjects cũ, dọn pickedTextIds và tăng editObjectsVersion để nạp lại đối tượng của file mới.
+    useEffect(() => {
+        const handleTemplateCleaned = () => {
+            clearEditObjectsCache();
+            setPickedTextIds([]);
+            setEditObjectsVersion(v => v + 1);
+        };
+        window.addEventListener('vdp-template-cleaned', handleTemplateCleaned);
+        return () => window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
+    }, []);
 
     // apply/undo/redo sống ở hook cấp Viewer, nên frame cần một tín hiệu chung để
     // bỏ cache và nạp lại danh sách Thành phần từ đúng Live_Document hiện tại.
@@ -3646,7 +3861,9 @@ export const LivePageFrame = (props: any) => {
             isActiveFrame,
             fullPageWithinSurfaceBudget,
         );
-        const bgZoom = computeViewerBackgroundZoom(renderZoom, dpr, isActiveFrame, needsTiling);
+        const bgZoom = hasRenderedBase
+            ? renderZoom
+            : computeViewerBackgroundZoom(renderZoom, dpr, isActiveFrame, needsTiling);
         const preferredAccurateBaseZoom = accurateViewerRequestScale(
             directFullPageSurface
                 ? Math.min(renderZoom, fullPageTargetRenderZoom)
@@ -4900,6 +5117,7 @@ export const LivePageFrame = (props: any) => {
             return;
         }
         if (vdpInteraction) {
+            vdpInteractionRef.current = null;
             setVdpInteraction(null);
             return;
         }
@@ -5160,7 +5378,7 @@ export const LivePageFrame = (props: any) => {
         <div className="relative shrink-0" style={{ width: outerWidth }}>
         <div 
             ref={containerRef}
-            className={`bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5 relative shrink-0 overflow-hidden group/pdf-frame ${isCropPanMode ? 'cursor-grab active:cursor-grabbing touch-none select-none' : isCropMode ? 'cursor-crosshair touch-none select-none' : 'select-text'}`}
+            className={`${viewerDarkBackground ? 'bg-black ring-1 ring-white/20 shadow-[0_4px_30px_rgba(0,0,0,0.6)]' : 'bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5'} relative shrink-0 overflow-hidden group/pdf-frame ${isCropPanMode ? 'cursor-grab active:cursor-grabbing touch-none select-none' : isCropMode ? 'cursor-crosshair touch-none select-none' : 'select-text'}`}
             style={{
                 width: outerWidth,
                 height: outerHeight,
@@ -5189,7 +5407,7 @@ export const LivePageFrame = (props: any) => {
             }}>
             {isBlankDoc ? (
                 /* Trang trắng mới tạo: kích thước đã biết, không cần render qua engine nào — hiện nền trắng tức thì */
-                <div style={{ width: displayWidth, height: displayHeight, background: 'white' }} />
+                <div style={{ width: displayWidth, height: displayHeight, background: viewerDarkBackground ? '#000000' : 'white' }} />
             ) : getTileUrl ? (() => {
                 // Surface nền phủ cả trang ở renderZoom đã lượng tử hóa. Trang accurate
                 // nằm trọn trong viewport đi thẳng mật độ đích; chỉ footprint tràn khung
@@ -5260,7 +5478,9 @@ export const LivePageFrame = (props: any) => {
                 // khi renderZoom > 2×dpr, tức zoom > ~200%. Ở mức fit/100% mọi thứ y như trước.
                 // Đánh đổi duy nhất: xem 2 trang cạnh nhau ở zoom >200% thì trang không active
                 // nét bằng nửa cho tới khi cuộn sang (nó thành active và render lại đủ nét).
-                const bgZoom = computeViewerBackgroundZoom(S, dpr, isActiveFrame, needsTiling);
+                const bgZoom = hasRenderedBase
+                    ? S
+                    : computeViewerBackgroundZoom(S, dpr, isActiveFrame, needsTiling);
                 // COLOR (audit 2026-08-07 §GV.3): cache display/accurate và từng
                 // Simulation phải có identity riêng trước khi quyết định stage underlay.
                 const displayFileKey = viewerTileFileKey(
@@ -5280,7 +5500,8 @@ export const LivePageFrame = (props: any) => {
                 );
                 const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
                 const hasReadyUnderlayForPage = Boolean(initialPpeFrame)
-                    || Boolean(accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`));
+                    || Boolean(accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`))
+                    || hasRenderedBase;
                 const preferredAccurateBaseZoom = accurateViewerRequestScale(
                     directFullPageSurface
                         ? Math.min(S, fullPageTargetRenderZoom)
@@ -5408,7 +5629,10 @@ export const LivePageFrame = (props: any) => {
                                     getTileUrl={getTileUrl}
                                     onVisible={handleTileVisibility}
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
-                                    onTileReady={() => setBaseDisplayReadyKey(displayBaseReadyKey)}
+                                    onTileReady={() => {
+                                        setBaseDisplayReadyKey(displayBaseReadyKey);
+                                        setHasRenderedBaseState(true);
+                                    }}
                                     renderOwnerId={effectiveRenderOwnerId}
                                     renderPriority={pageRenderPriority}
                                     renderEnabled={renderBaseTile}
@@ -5440,6 +5664,7 @@ export const LivePageFrame = (props: any) => {
                                     onTileReady={({ scale }: { scale: number }) => {
                                         setAccurateCommittedKey(accuratePageCommitKey);
                                         if (initialPpeFrame) releaseViewerFirstFrame(initialPpeFrame);
+                                        setHasRenderedBaseState(true);
                                         if (isViewerTargetScaleReady(scale, accurateBaseZoom)) {
                                             setAccurateBaseReadyKey(accurateBaseIdentity);
                                         }
@@ -5506,7 +5731,7 @@ export const LivePageFrame = (props: any) => {
                                     initialPpeFrame={initialPpeFrame}
                                     stableUnderlayReady={accurateColorPage
                                         ? hasStableAccurateUnderlay
-                                        : displayBaseReady}
+                                        : (displayBaseReady || hasRenderedBase)}
                                 />
                             </div>
                         )}
@@ -6462,17 +6687,24 @@ export const LivePageFrame = (props: any) => {
                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
                              </span>
-                             <span className="font-semibold tracking-wide">🎯 Nhấp vào chữ trên trang để chọn trường VDP</span>
+                             <span className="font-semibold tracking-wide">
+                                 {isVdpPickBusy
+                                     ? '⏳ Đang trích xuất trường...'
+                                     : (vdpFields && vdpFields.length > 0
+                                         ? `🎯 Đã chọn ${vdpFields.length} trường • Nhấp tiếp hoặc bấm "Xong"`
+                                         : '🎯 Nhấp vào chữ trên trang để chọn trường VDP')}
+                             </span>
                              <button
                                  type="button"
                                  onClick={(e) => {
                                      e.stopPropagation();
                                      setIsPickingVdpText(false);
                                  }}
-                                 className="ml-2 hover:bg-teal-900 rounded-md px-2.5 py-1 text-[11px] bg-teal-800/90 text-teal-100 font-semibold border border-teal-400/30 cursor-pointer transition-colors flex items-center gap-1 active:scale-95"
+                                 className="ml-2 hover:bg-teal-900 rounded-md px-3 py-1 text-xs bg-teal-800/90 text-teal-100 font-semibold border border-teal-400/30 cursor-pointer transition-colors flex items-center gap-1.5 active:scale-95 shadow-sm"
+                                 title={t('Hoàn tất chọn trường (phím Esc)')}
                              >
-                                 <span>✕</span>
-                                 <span>Xong</span>
+                                 <span>✓</span>
+                                 <span>{t('Xong')}</span>
                              </button>
                          </div>
                           {(() => {
@@ -6551,13 +6783,14 @@ export const LivePageFrame = (props: any) => {
                                   return (
                                       <div
                                           key={cluster.id}
-                                          className={`absolute pointer-events-auto cursor-pointer group transition-all duration-150 rounded border-2 border-dashed ${cluster.isCurved ? 'border-amber-500 bg-amber-500/20 hover:border-amber-400 hover:bg-amber-500/35 ring-2 ring-amber-400/50' : 'border-teal-500 bg-teal-500/25 hover:border-teal-400 hover:bg-teal-500/40 ring-2 ring-teal-400/60'} hover:shadow-lg animate-pulse`}
+                                          className={`absolute ${isVdpPickBusy ? 'pointer-events-none opacity-40 cursor-wait' : 'pointer-events-auto cursor-pointer'} group transition-all duration-150 rounded border-2 border-dashed ${cluster.isCurved ? 'border-amber-500 bg-amber-500/20 hover:border-amber-400 hover:bg-amber-500/35 ring-2 ring-amber-400/50' : 'border-teal-500 bg-teal-500/25 hover:border-teal-400 hover:bg-teal-500/40 ring-2 ring-teal-400/60'} hover:shadow-lg animate-pulse`}
                                           style={{ left, top, width, height }}
-                                          title={`Nhấp chuột để chọn chuỗi chữ "${cluster.label}" làm trường VDP`}
+                                          title={isVdpPickBusy ? t('Đang trích xuất...') : `Nhấp chuột để chọn chuỗi chữ "${cluster.label}" làm trường VDP`}
                                           onPointerDown={(e) => e.stopPropagation()}
                                           onMouseDown={(e) => e.stopPropagation()}
                                           onClick={async (e) => {
                                               e.stopPropagation();
+                                              if (isVdpPickBusy) return;
                                               await handlePickTextObject(cluster.primaryObj, cluster.memberIds);
                                           }}
                                       >
@@ -6572,6 +6805,88 @@ export const LivePageFrame = (props: any) => {
                      </div>
                  );
              })()}
+
+             {/* VDP Live Preview Record Navigator Bar */}
+             {isVdpMode && !isPickingVdpText && vdpLivePreview && vdpLivePreview.totalRecords > 0 && isActiveFrame && (
+                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[68] pointer-events-auto bg-slate-900/95 text-white text-xs px-3 py-1.5 rounded-lg shadow-2xl border border-slate-700/80 flex items-center gap-2.5 backdrop-blur-md whitespace-nowrap select-none transition-all">
+                     {/* Toggle Bật/Tắt xem trước */}
+                     <button
+                         type="button"
+                         onClick={(e) => {
+                             e.stopPropagation();
+                             setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, enabled: !prev.enabled }));
+                         }}
+                         className={`px-2.5 py-1 rounded font-semibold text-[11px] flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95 ${
+                             vdpLivePreview.enabled
+                                 ? 'bg-teal-600 hover:bg-teal-500 text-white ring-1 ring-teal-400'
+                                 : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600/50'
+                         }`}
+                         title={vdpLivePreview.enabled ? t('Đang xem dữ liệu thật (Bấm để tắt)') : t('Bật xem trước dữ liệu biến đổi thời gian thực')}
+                     >
+                         <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-slate-400'}`} />
+                         <span>{vdpLivePreview.enabled ? t('👁️ Dữ liệu thật: BẬT') : t('👁️ Xem trước: TẮT')}</span>
+                     </button>
+
+                     <div className="h-4 w-px bg-slate-700" />
+
+                     {/* Điều hướng record: Trước / ô nhập / Sau */}
+                     <div className="flex items-center gap-1">
+                         <button
+                             type="button"
+                             disabled={vdpLivePreview.recordIndex <= 1}
+                             onClick={(e) => {
+                                 e.stopPropagation();
+                                 const next = Math.max(1, vdpLivePreview.recordIndex - 1);
+                                 setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: next }));
+                                 window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: next } }));
+                             }}
+                             className="h-6 w-6 flex items-center justify-center rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed border border-slate-700 transition-colors text-[10px]"
+                             title={t('Record trước (phím [)')}
+                         >
+                             ◀
+                         </button>
+
+                         <div className="flex items-center gap-1 px-1 text-[11px] font-mono">
+                             <span>Record</span>
+                             <input
+                                 type="number"
+                                 min={1}
+                                 max={vdpLivePreview.totalRecords}
+                                 value={vdpLivePreview.recordIndex}
+                                 onChange={(e) => {
+                                     const val = Math.max(1, Math.min(vdpLivePreview.totalRecords, Number(e.target.value) || 1));
+                                     setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: val }));
+                                     window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: val } }));
+                                 }}
+                                 onClick={(e) => e.stopPropagation()}
+                                 className="w-12 h-6 text-center bg-slate-800 border border-slate-600 rounded text-white font-bold text-xs focus:outline-none focus:border-teal-400"
+                             />
+                             <span className="text-slate-400">/ {vdpLivePreview.totalRecords.toLocaleString('vi-VN')}</span>
+                         </div>
+
+                         <button
+                             type="button"
+                             disabled={vdpLivePreview.recordIndex >= vdpLivePreview.totalRecords}
+                             onClick={(e) => {
+                                 e.stopPropagation();
+                                 const next = Math.min(vdpLivePreview.totalRecords, vdpLivePreview.recordIndex + 1);
+                                 setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: next }));
+                                 window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: next } }));
+                             }}
+                             className="h-6 w-6 flex items-center justify-center rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed border border-slate-700 transition-colors text-[10px]"
+                             title={t('Record sau (phím ])')}
+                         >
+                             ▶
+                         </button>
+                     </div>
+
+                     {vdpLivePreview.sourceTitle && (
+                         <span className="text-[10px] text-teal-300/80 max-w-[150px] truncate border-l border-slate-700 pl-2">
+                             {vdpLivePreview.sourceTitle}
+                         </span>
+                     )}
+                 </div>
+             )}
 
              {/* VDP Tool Overlay */}
              {vdpFields && vdpFields.length > 0 && pageDim && (() => {
@@ -6642,6 +6957,7 @@ export const LivePageFrame = (props: any) => {
                                  onVdpBoxSelect?.(newSelection);
                                  if (!containerRef.current) return;
                                  const rect = containerRef.current.getBoundingClientRect();
+                                 const startCoords = getUnrotatedCoords(e.clientX, e.clientY, rect);
                                  
                                  // Record start positions for ALL selected fields (or group fields if not in current selection)
                                  const fieldsToMove = newSelection.includes(field.id) ? newSelection : groupFields;
@@ -6661,7 +6977,7 @@ export const LivePageFrame = (props: any) => {
                                              
                                              const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                                              newFieldsToMove.push(copyId);
-                                             startFields[copyId] = { x: f.x ?? 0, y: f.y ?? 0, w: f.width ?? 0, h: f.height ?? 0, fontSize: f.fontSize };
+                                             startFields[copyId] = { x: (f.x ?? 0) + 5, y: (f.y ?? 0) + 5, w: f.width ?? 0, h: f.height ?? 0, fontSize: f.fontSize };
                                              
                                              let newName = f.name;
                                              let newTextContent = f.textContent;
@@ -6669,65 +6985,55 @@ export const LivePageFrame = (props: any) => {
                                              if (newName) {
                                                  const match = newName.match(/^(.*?)(\d+)$/);
                                                  if (match) {
-                                                     const prefix = match[1];
-                                                     let maxNum = parseInt(match[2], 10);
-                                                     [...prev, ...copies].forEach((pf: VdpToolField) => {
-                                                         if (pf && pf.name && pf.name.startsWith(prefix)) {
-                                                             const m = pf.name.match(/^(.*?)(\d+)$/);
-                                                             if (m && m[1] === prefix) {
-                                                                 maxNum = Math.max(maxNum, parseInt(m[2], 10));
-                                                             }
-                                                         }
-                                                     });
-                                                     newName = `${prefix}${maxNum + 1}`;
-                                                     if (newTextContent === `{${f.name}}`) {
-                                                         newTextContent = `{${newName}}`;
-                                                     } else if (newTextContent && newTextContent.includes(`{${f.name}}`)) {
-                                                         newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
+                                                     const baseName = match[1];
+                                                     const currentNum = parseInt(match[2], 10);
+                                                     let nextNum = currentNum + 1;
+                                                     while (prev.some((ef: VdpToolField) => ef.name === `${baseName}${nextNum}`) || copies.some(c => c.name === `${baseName}${nextNum}`)) {
+                                                         nextNum++;
                                                      }
+                                                     newName = `${baseName}${nextNum}`;
                                                  } else {
-                                                     let maxNum = 0;
-                                                     [...prev, ...copies].forEach((pf: VdpToolField) => {
-                                                         if (pf && pf.name && pf.name.startsWith(`${newName}_`)) {
-                                                             const m = pf.name.match(/_(\d+)$/);
-                                                             if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
-                                                         }
-                                                     });
-                                                     newName = maxNum > 0 ? `${newName}_${maxNum + 1}` : `${newName}_copy`;
-                                                     if (newTextContent === `{${f.name}}`) {
-                                                         newTextContent = `{${newName}}`;
-                                                     } else if (newTextContent && newTextContent.includes(`{${f.name}}`)) {
-                                                         newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
+                                                     let nextNum = 2;
+                                                     while (prev.some((ef: VdpToolField) => ef.name === `${newName}_${nextNum}`) || copies.some(c => c.name === `${newName}_${nextNum}`)) {
+                                                         nextNum++;
                                                      }
+                                                     newName = `${newName}_${nextNum}`;
                                                  }
                                              }
-
+                                             
+                                             if (newTextContent && f.name) {
+                                                 newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
+                                             }
+                                             
                                              copies.push({
                                                  ...f,
                                                  id: copyId,
-                                                 groupId: hasMultiple ? newGroupId : undefined,
                                                  name: newName,
-                                                 textContent: newTextContent
+                                                 textContent: newTextContent,
+                                                 x: (f.x ?? 0) + 5,
+                                                 y: (f.y ?? 0) + 5,
+                                                 groupId: hasMultiple ? newGroupId : undefined
                                              });
                                          });
-                                         
-                                         // Schedule interaction start AFTER state updates
-                                         setTimeout(() => {
-                                             setSelectedVdpFieldIds(newFieldsToMove);
-                                            onVdpBoxSelect?.(newFieldsToMove);
-                                             setVdpInteraction({
-                                                 type: 'move',
-                                                 fieldIds: newFieldsToMove,
-                                                 startX: e.clientX - rect.left,
-                                                 startY: e.clientY - rect.top,
-                                                 startFields
-                                             });
-                                         }, 0);
-                                         
                                          return [...prev, ...copies];
                                      });
+                                     
+                                     setTimeout(() => {
+                                         setSelectedVdpFieldIds(newFieldsToMove);
+                                         onVdpBoxSelect?.(newFieldsToMove);
+                                     }, 10);
+                                     
+                                     const moveData = {
+                                         type: 'move' as const,
+                                         startX: startCoords.x,
+                                         startY: startCoords.y,
+                                         fieldIds: newFieldsToMove,
+                                         startFields
+                                     };
+                                     vdpInteractionRef.current = moveData;
+                                     setVdpInteraction(moveData);
                                  } else {
-                                     // STANDARD MOVE/RESIZE
+                                     // NORMAL MOVE LOGIC
                                      const startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> = {};
                                      fieldsToMove.forEach((id: string) => {
                                          const f = vdpFields.find((tf: VdpToolField) => tf.id === id);
@@ -6736,15 +7042,16 @@ export const LivePageFrame = (props: any) => {
                                          }
                                      });
                                      
-                                     setVdpInteraction({
-                                         type: 'move',
+                                     const moveData = {
+                                         type: 'move' as const,
+                                         startX: startCoords.x,
+                                         startY: startCoords.y,
                                          fieldIds: fieldsToMove,
-                                         startX: e.clientX - rect.left,
-                                         startY: e.clientY - rect.top,
                                          startFields
-                                     });
+                                     };
+                                     vdpInteractionRef.current = moveData;
+                                     setVdpInteraction(moveData);
                                  }
-                                 
                              }}
                          >
                              <div className={`absolute bottom-full left-0 mb-1.5 bg-[#0d99ff] text-white text-[10px] font-medium px-2 py-0.5 rounded shadow-sm whitespace-nowrap pointer-events-none transition-opacity z-[70] flex items-center gap-1.5 select-none ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
@@ -6769,46 +7076,59 @@ export const LivePageFrame = (props: any) => {
                                       </svg>
                                   )}
                                   <span className="font-semibold tracking-tight">{(typeof field.fieldName === 'string' ? field.fieldName : field.name) || t('misc.livePageFrame:chua_dat_ten')}</span>
+                                  {vdpLivePreview?.enabled && <span className="text-[9px] bg-teal-500/90 text-white px-1 py-[0.5px] rounded font-bold">LIVE</span>}
                                   <span className="text-[9px] opacity-80 font-mono uppercase bg-black/20 px-1 py-[0.5px] rounded">({field.type})</span>
                               </div>
                              
-                             {/* Visual Placeholders — xoay nội dung quanh tâm box theo
-                                 field.rotation để khớp backend render_one_record. Box (w,h)
-                                 là footprint ĐÃ hoán cho 90/270; nội dung trước xoay có kích
-                                 thước hoán NGƯỢC lại (rotContentW/H), rồi rotate() quanh tâm. */}
+                             {/* Visual Placeholders & Live Preview Rendering */}
                              {(() => {
-                             // Đang sửa text: KHÔNG xoay wrapper (textarea xoay 90° rất khó gõ);
-                             // xoay lại ngay khi blur. Các loại field khác luôn xoay theo rotation.
                              const editingThis = editingTextId === field.id;
                              const rot = editingThis ? 0 : ((Number(field.rotation) || 0) % 360 + 360) % 360;
                              const isVert = rot === 90 || rot === 270;
                              const rotStyle: React.CSSProperties = rot === 0 ? {} : (isVert ? {
-                                 // Nội dung trước xoay: hoán w/h so với box footprint, căn giữa.
                                  width: h, height: w, left: (w - h) / 2, top: (h - w) / 2,
                                  transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
                              } : {
                                  transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
                              });
+
+                             // Phân giải nội dung live khi đang bật realtime preview
+                             const liveVal = resolveFieldLiveText(field, vdpLivePreview);
+
                              return (
                              <div
                                   className={`absolute flex items-start justify-center pointer-events-none overflow-visible ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode' || field.type === 'text') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')}`}
                                   style={rotStyle}
                               >
                                  {(field.type === 'qrcode' || field.type === 'barcode') && (
-                                     <VdpPreviewImage field={field as { type: 'qrcode' | 'barcode' }} />
+                                     <VdpPreviewImage
+                                         field={field as { type: 'qrcode' | 'barcode' }}
+                                         customData={vdpLivePreview?.enabled ? liveVal : undefined}
+                                     />
                                  )}
                                  {field.type === 'image' && (
-                                     <div 
-                                         className="w-full h-full flex items-center justify-center bg-slate-300 dark:bg-zinc-700/80"
-                                         style={{
-                                             borderRadius: field.imageShape === 'circle' ? '50%' : field.imageShape === 'rounded' ? '16px' : '0',
-                                             clipPath: field.imageShape === 'polygon' ? 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)' : field.imageShape === 'star' ? 'polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)' : 'none'
-                                         }}
-                                     >
-                                         <svg className="w-full h-full max-w-[50%] max-h-[50%] text-slate-500 opacity-75" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                         </svg>
-                                     </div>
+                                     vdpLivePreview?.enabled && liveVal && (liveVal.startsWith('http') || liveVal.startsWith('data:image') || liveVal.startsWith('blob:') || liveVal.startsWith('/') || /^[a-zA-Z]:\\/.test(liveVal)) ? (
+                                         <img
+                                             src={liveVal}
+                                             alt={field.name}
+                                             className="w-full h-full object-contain pointer-events-none select-none"
+                                             style={{
+                                                 borderRadius: field.imageShape === 'circle' ? '50%' : field.imageShape === 'rounded' ? '16px' : '0',
+                                             }}
+                                         />
+                                     ) : (
+                                         <div 
+                                             className="w-full h-full flex items-center justify-center bg-slate-300 dark:bg-zinc-700/80"
+                                             style={{
+                                                 borderRadius: field.imageShape === 'circle' ? '50%' : field.imageShape === 'rounded' ? '16px' : '0',
+                                                 clipPath: field.imageShape === 'polygon' ? 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)' : field.imageShape === 'star' ? 'polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)' : 'none'
+                                             }}
+                                         >
+                                             <svg className="w-full h-full max-w-[50%] max-h-[50%] text-slate-500 opacity-75" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                             </svg>
+                                         </div>
+                                     )
                                  )}
                                  {field.type === 'text' && (
                                      editingTextId === field.id ? (
@@ -6830,17 +7150,20 @@ export const LivePageFrame = (props: any) => {
                                                      e.currentTarget.blur();
                                                  }
                                              }}
-                                             className="w-full h-full bg-transparent border-none outline-none px-1 resize-none overflow-hidden"
+                                             className="w-full h-full bg-transparent border-none outline-none resize-none overflow-hidden"
                                              style={{ 
+                                                 padding: 0,
+                                                 margin: 0,
                                                  color: field.fontColor || '#1e293b', 
-                                                 fontSize: `${(field.fontSize || 10) * scale}px`,
+                                                 fontSize: `${(field.fontSize || 10) * scale * (96 / 72)}px`,
                                                  fontFamily: field.fontFile
                                                   ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
                                                   : (field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit')),
                                                  fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
                                                  fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
                                                  lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
-                                                 letterSpacing: field.characterSpacing ? `${field.characterSpacing}pt` : 0,
+                                                 letterSpacing: 0,
+                                                 textAlign: (field.alignment || 'center') as 'left' | 'center' | 'right',
                                                  pointerEvents: 'auto' 
                                              }}
                                              onPointerDown={(e) => e.stopPropagation()}
@@ -6850,13 +7173,13 @@ export const LivePageFrame = (props: any) => {
                                               <VdpCurvedText
                                                   field={field}
                                                   scale={scale}
-                                                  text={field.textContent ?? `{${field.name}}`}
+                                                  text={liveVal}
                                               />
                                           ) : (
                                               <VdpAutoFitText
                                                   field={field}
                                                   scale={scale}
-                                                  text={field.textContent ?? `{${field.name}}`}
+                                                  text={liveVal}
                                               />
                                           )
                                      )
@@ -6892,16 +7215,19 @@ export const LivePageFrame = (props: any) => {
                                               e.stopPropagation();
                                               if (!containerRef.current) return;
                                               const rect = containerRef.current.getBoundingClientRect();
-                                              setVdpInteraction({
-                                                  type: 'resize',
+                                              const startCoords = getUnrotatedCoords(e.clientX, e.clientY, rect);
+                                              const resizeData = {
+                                                  type: 'resize' as const,
                                                   handle,
                                                   fieldIds: [field.id],
-                                                  startX: e.clientX - rect.left,
-                                                  startY: e.clientY - rect.top,
+                                                  startX: startCoords.x,
+                                                  startY: startCoords.y,
                                                   startFields: {
                                                       [field.id]: { x: field.x ?? 0, y: field.y ?? 0, w: field.width ?? 0, h: field.height ?? 0, fontSize: field.fontSize }
                                                   }
-                                              });
+                                              };
+                                              vdpInteractionRef.current = resizeData;
+                                              setVdpInteraction(resizeData);
                                           }}
                                       />
                                   ));

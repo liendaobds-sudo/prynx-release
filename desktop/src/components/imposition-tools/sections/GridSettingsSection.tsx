@@ -530,7 +530,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     giản" = lưới bbox. Vì vậy option "Nesting theo đường bế" thủ công đã bỏ. */}
                 <option value="optimal_auto">{t('imposition.gridSettings:xep_toi_uu')}</option>
                 <option value="simple_auto">{t('imposition.gridSettings:luoi_don_gian')}</option>
-                <option value="manual">{t('imposition.gridSettings:tuy_chinh')}</option>
+                {/* PARITY (audit 2026-09-20 §PAR20.02): CNC dàn nhiều mẫu (gang) dùng bin-packing, không áp dụng thủ công hàng/cột */}
+                {!(activeTool === 'cnc_imposer' && taskMode === 'nup') && (
+                  <option value="manual">{t('imposition.gridSettings:tuy_chinh')}</option>
+                )}
               </select>
               {/* UIUX (audit 2026-07-27 §B-17): div onClick → button có aria-label + focus-visible */}
               <button

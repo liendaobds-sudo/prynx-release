@@ -6,6 +6,8 @@ Thứ tự tự động: CutContour thật → Alpha/clip render sạch → vect
 
 from __future__ import annotations
 
+from app.utils.cutline_debug_log import log_cutline, CutlineTimer
+
 from dataclasses import dataclass, replace
 from io import BytesIO
 import logging
@@ -423,8 +425,9 @@ def _render_pdf_page(
     import pypdfium2 as pdfium
 
     raster_scale_limit = _full_page_raster_scale_limit(source_path, page_index)
-    with pdfium_guard("sticker_source_pipeline_render"):
-        document = pdfium.PdfDocument(source_path)
+    with CutlineTimer("PIPELINE", "RENDER_PDF_PAGE", f"file={Path(source_path).name} page={page_index+1}"):
+        with pdfium_guard("sticker_source_pipeline_render"):
+            document = pdfium.PdfDocument(source_path)
         try:
             if page_index < 0 or page_index >= len(document):
                 raise StickerSourcePipelineError("Trang PDF cần nhận diện không tồn tại.")
@@ -2794,6 +2797,11 @@ def detect_sticker_source(
         strategy,
         preview_only,
         session.source_kind,
+    )
+    log_cutline(
+        "PIPELINE",
+        "DETECT_START",
+        f"session={getattr(session, 'session_id', 'unknown')} page={page_number} strategy={strategy} preview_only={preview_only} source_kind={session.source_kind}"
     )
     page_index = page_number - 1
     if session.source_kind == "raster":

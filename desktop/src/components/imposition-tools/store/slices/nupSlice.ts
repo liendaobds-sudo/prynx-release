@@ -1,4 +1,5 @@
 import type { ImposerSlice } from '../sliceType';
+import { resolveLayoutTypeForTaskMode } from '../profiles';
 import {
     DEFAULT_CUT_BORDER_CONFIG,
     type CutBorderConfig,
@@ -99,13 +100,18 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
         if (state.activeDashboardTool !== 'sticker_imposer') {
             return { impositionUnit: 'sticker' };
         }
+        const layoutType = resolveLayoutTypeForTaskMode(
+            state.taskMode, state.layoutType, state.activeDashboardTool, v,
+        );
         return {
             impositionUnit: v,
+            layoutType,
             toolProfiles: {
                 ...state.toolProfiles,
                 sticker_imposer: {
                     ...(state.toolProfiles.sticker_imposer || {}),
                     impositionUnit: v,
+                    layoutType,
                 },
             },
         };

@@ -1,6 +1,11 @@
+import {
+    buildInstantAlphaCutlinePreview,
+    extractAlphaChannel,
+} from '../../lib/fastAlphaCutlineTracer';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+    sendCutlineDebugLog,
     cancelStickerCutlinePreviewJob,
     closeStickerSheetSession,
     detectStickerSourceManifest,
@@ -210,16 +215,6 @@ function previewDetectionStrategy(
     else if (page.has_alpha) resolved = 'alpha';
     else if (page.has_raster && removeWhiteBg && inspection.page_count === 1) resolved = 'auto';
     else resolved = null;
-    console.log('[CutlinePreview-DEBUG] previewDetectionStrategy:', {
-        pageNumber,
-        resolvedStrategy: resolved,
-        removeWhiteBg,
-        forceContour,
-        cutMode,
-        has_vector: page?.has_vector,
-        has_raster: page?.has_raster,
-        has_alpha: page?.has_alpha,
-    });
     return resolved;
 }
 
@@ -402,6 +397,96 @@ export function useClassicCutlinePreview({
         && resolvedCutMode !== 'alpha'
         && resolvedCutMode !== 'none'
     );
+    const [localAlphaPayload, setLocalAlphaPayload] = useState<{
+        documentIdentity: string;
+        pageNumber: number;
+        alphaData: Uint8Array;
+        width: number;
+        height: number;
+    } | null>(null);
+
+    // Fast-path: trích xuất kênh Alpha tức thì nếu nguồn là file ảnh
+    useEffect(() => {
+        if (!enabled || resolvedCutMode !== 'alpha') {
+            setLocalAlphaPayload(null);
+            return;
+        }
+        let cancelled = false;
+        void (async () => {
+            try {
+                const file = await resolveSourceFile();
+                if (cancelled || !file) return;
+
+                const isImage = file.type.startsWith('image/') || /\.(png|webp|bmp|tif|tiff)$/i.test(file.name);
+                if (isImage && typeof createImageBitmap !== 'undefined') {
+                    const bitmap = await createImageBitmap(file);
+                    if (cancelled) return;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    if (ctx) {
+                        ctx.drawImage(bitmap, 0, 0);
+                        const imgData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+                        const alphaData = extractAlphaChannel(imgData);
+                        if (!cancelled) {
+                            setLocalAlphaPayload({
+                                documentIdentity,
+                                pageNumber,
+                                alphaData,
+                                width: bitmap.width,
+                                height: bitmap.height,
+                            });
+                        }
+                    }
+                }
+            } catch {
+                // Tiếp tục luồng server preview bình thường
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [documentIdentity, enabled, pageNumber, resolveSourceFile, resolvedCutMode]);
+
+    const localFastAlphaPreview = useMemo(() => {
+        if (
+            resolvedCutMode !== 'alpha'
+            || !localAlphaPayload
+            || !viewerPagePhysical
+            || viewerPagePhysical.documentIdentity !== documentIdentity
+            || viewerPagePhysical.viewerPage !== pageNumber
+            || (
+                pageInstanceId !== null
+                && viewerPagePhysical.pageInstanceId !== pageInstanceId
+            )
+        ) return null;
+
+        const pageWidthMm = viewerPagePhysical.widthPt * POINT_TO_MM;
+        const pageHeightMm = viewerPagePhysical.heightPt * POINT_TO_MM;
+
+        return buildInstantAlphaCutlinePreview({
+            pageNumber,
+            pageWidthMm,
+            pageHeightMm,
+            alphaData: localAlphaPayload.alphaData,
+            bitmapWidth: localAlphaPayload.width,
+            bitmapHeight: localAlphaPayload.height,
+            offsetMm,
+            cornerStyle: resolvedCornerStyle,
+            cacheKey: `${documentIdentity}|${pageNumber}`,
+        });
+    }, [
+        documentIdentity,
+        localAlphaPayload,
+        offsetMm,
+        pageInstanceId,
+        pageNumber,
+        resolvedCornerStyle,
+        resolvedCutMode,
+        viewerPagePhysical,
+    ]);
+
     const localPageBoxPreview = useMemo(() => {
         if (
             !usesLocalPageBox
@@ -599,19 +684,26 @@ export function useClassicCutlinePreview({
             const cachedFrame = [...previewCacheRef.current.entries()]
                 .find(([, frame]) => (
                     frame.preview.page_number === pageNumber
-                    && frame.canonicalReference?.sessionId === cachedSource.sessionId
-                    && frame.canonicalReference?.maskRevision === (cachedSource.manifest.mask_revision ?? 1)
                     && frame.preview.paths.length > 0
                 ))?.[1];
-            setState(cachedFrame ? {
-                canSimplify: !['existing-cut', 'page-box'].includes(cachedSource.manifest.boundary_source),
-                preview: cachedFrame.preview,
-                canonicalReference: cachedFrame.canonicalReference,
-                isPreparing: false,
-                isUpdating: false,
-                warning: recognitionWarning(cachedSource.manifest),
-                error: '',
-            } : {
+            if (cachedFrame) {
+                const hasCanonical = Boolean(
+                    cachedFrame.canonicalReference
+                    && cachedFrame.canonicalReference.sessionId === cachedSource.sessionId
+                    && cachedFrame.canonicalReference.maskRevision === (cachedSource.manifest.mask_revision ?? 1)
+                );
+                setState({
+                    canSimplify: !['existing-cut', 'page-box'].includes(cachedSource.manifest.boundary_source),
+                    preview: cachedFrame.preview,
+                    canonicalReference: hasCanonical ? cachedFrame.canonicalReference : null,
+                    isPreparing: false,
+                    isUpdating: !hasCanonical,
+                    warning: recognitionWarning(cachedSource.manifest),
+                    error: '',
+                });
+                return undefined;
+            }
+            setState({
                 canSimplify: !['existing-cut', 'page-box'].includes(cachedSource.manifest.boundary_source),
                 preview: null,
                 canonicalReference: null,
@@ -655,12 +747,6 @@ export function useClassicCutlinePreview({
                     signal: controller.signal,
                 });
 
-                console.log('[CutlinePreview-DEBUG] detect manifest returned:', {
-                    boundary_source: manifest.boundary_source,
-                    instances: manifest.instances,
-                    vector_geometry_ref: manifest.vector_geometry_ref,
-                    warnings: manifest.warnings,
-                });
                 const current = (
                     !disposed
                     && mountedRef.current
@@ -787,17 +873,9 @@ export function useClassicCutlinePreview({
         };
         jobGenerationRef.current = request.jobGeneration;
         latestKeyRef.current = request.key;
-        // QUALITY (audit 2026-08-21 §CANONICAL.4): vẫn giữ SVG cũ để Viewer
-        // không chớp, nhưng reference phải stale NGAY khi thông số đổi.
-        setState(current => ({
-            ...current,
-            canonicalReference: null,
-            isPreparing: false,
-            isUpdating: true,
-            error: '',
-        }));
+
         const cachedFrame = previewCacheRef.current.get(request.key);
-        if (cachedFrame) {
+        if (cachedFrame?.canonicalReference) {
             setState(current => ({
                 ...current,
                 preview: cachedFrame.preview,
@@ -808,6 +886,17 @@ export function useClassicCutlinePreview({
             }));
             return undefined;
         }
+
+        // QUALITY (audit 2026-08-21 §CANONICAL.4): vẫn giữ SVG cũ để Viewer
+        // không chớp, nhưng reference phải stale NGAY khi thông số đổi.
+        setState(current => ({
+            ...current,
+            canonicalReference: null,
+            ...(cachedFrame?.preview ? { preview: cachedFrame.preview } : {}),
+            isPreparing: false,
+            isUpdating: true,
+            error: '',
+        }));
         const timer = window.setTimeout(() => {
             desiredRef.current = request;
             setPumpVersion(version => version + 1);
@@ -887,15 +976,6 @@ export function useClassicCutlinePreview({
             || activePreviewJobRef.current?.generation !== requested.jobGeneration
         );
         const acceptReady = (payload: StickerCutlinePreview) => {
-            console.log('[CutlinePreview-DEBUG] acceptReady cutline paths:', {
-                paths_count: payload.paths?.length,
-                segment_count: payload.segment_count,
-                paths: payload.paths?.map(p => ({
-                    instance_id: p.instance_id,
-                    segments: p.segment_count,
-                    d_prefix: p.d?.slice(0, 50),
-                })),
-            });
             if (requested.source.classicWholePage && (
                 payload.classic_whole_page !== true
                 || payload.page_number !== requested.pageNumber
@@ -965,12 +1045,50 @@ export function useClassicCutlinePreview({
         };
 
         void (async () => {
+            const jobT0 = performance.now();
+            await sendCutlineDebugLog('JOB_SUBMIT', `Bắt đầu gửi job preview`, {
+                sessionId: requested.source.sessionId,
+                generation: requested.jobGeneration,
+                page: requested.pageNumber,
+                mode: requested.cutMode,
+            });
             try {
                 let job = await startStickerCutlinePreviewJob(
                     requested.source.sessionId,
                     requested.jobGeneration,
                     options,
                 );
+                let draftRendered = false;
+                const updateWithDraft = async (draftJob: StickerCutlinePreviewJob) => {
+                    if (draftJob.draft && !draftRendered && !isStale() && mountedRef.current) {
+                        draftRendered = true;
+                        if (
+                            sessionRef.current?.generation === requested.generation
+                            && sessionRef.current.sessionId === requested.source.sessionId
+                        ) {
+                            previewCacheRef.current.set(requested.key, {
+                                preview: draftJob.draft,
+                                canonicalReference: null,
+                            });
+                        }
+                        setState(current => ({
+                            ...current,
+                            preview: draftJob.draft,
+                            canonicalReference: null,
+                            isPreparing: false,
+                            isUpdating: true,
+                            error: '',
+                        }));
+                        await sendCutlineDebugLog('JOB_DRAFT_RENDERED', `Rendered instant draft cutline preview (${Math.round(performance.now() - jobT0)}ms)`, {
+                            paths: draftJob.draft.paths?.length ?? 0,
+                            segment_count: draftJob.draft.segment_count,
+                        });
+                    }
+                };
+
+                await updateWithDraft(job);
+
+                let polls = 0;
                 while (job.status === 'preparing' || job.status === 'simplifying') {
                     if (isStale()) return;
                     await waitForPreviewJobPoll(controller.signal);
@@ -980,8 +1098,16 @@ export function useClassicCutlinePreview({
                         job.job_id,
                         controller.signal,
                     );
+                    await updateWithDraft(job);
+                    polls++;
                 }
                 if (isStale()) return;
+                const totalJobMs = Math.round(performance.now() - jobT0);
+                await sendCutlineDebugLog('JOB_DONE', `Job preview xong (${totalJobMs}ms, ${polls} lần poll)`, {
+                    status: job.status,
+                    paths: job.result?.paths?.length ?? 0,
+                    total_job_ms: totalJobMs,
+                });
                 settleTerminal(job);
             } catch (error) {
                 const stale = isStale();

@@ -954,4 +954,32 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
         unmount();
     });
+
+    it('từ chối ngay lập tức khi pageNum vượt quá numPages của tài liệu', async () => {
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: {
+                path: 'D:\\jobs\\single-page.pdf',
+                name: 'single-page.pdf',
+                type: 'application/pdf',
+            },
+            pdfRef: null,
+            pdfUrl: 'localfile://single-page',
+            activePage: 1,
+            isActive: true,
+            numPages: 1,
+            accurateColorEnabled: true,
+            accurateColorPages: [1],
+        }));
+
+        await expect(
+            result.current.getTileUrl(
+                2, 0, 1, undefined, undefined, undefined, undefined,
+                { colorStage: 'accurate' },
+            ),
+        ).rejects.toMatchObject({ name: 'CancelledTileRenderError' });
+
+        expect(transportMocks.invoke).not.toHaveBeenCalled();
+        expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
+        unmount();
+    });
 });

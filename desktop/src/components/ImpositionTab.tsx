@@ -553,7 +553,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         useAppSettingsStore.getState().collapseWorkspaceSidebar();
     }, [setRightToolMenuMode]);
 
-    const hasActiveRightTool = activeDashboardTool !== 'none' || isObjectEditMode;
+    const hasActiveRightTool = (activeDashboardTool !== 'none' && activeDashboardTool !== 'logo_rebuild') || isObjectEditMode;
     const effectiveToolMenuLayout = resolveEffectiveToolMenuLayout({
         preferredMode: toolMenuMode,
         preferredFullWidth: sidebarWidth,
@@ -844,7 +844,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     viewerPageOrder,
                     viewerPageRotations,
                 );
-                console.info('[PERF-MEASURE] Instant bind nativePath to selectionFileId (0ms):', nativePath);
                 setSelectionFileId(nativePath, identity);
                 return;
             }
@@ -1100,7 +1099,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 setPdfUrl(objUrl);
                 setPhase('workspace');
                 settleFileOpeningAttempt(attempt, 'idle');
-                console.info(`[PERF-MEASURE][INITIAL-FILE] Opened ${openedFile.name} ready in workspace`);
                 onTitleChange?.(openedFile.name);
 
                 // Chỉ cập nhật tiêu đề màu sau first tile để không tranh tài nguyên lúc mở.
@@ -1963,23 +1961,63 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const detail = (event as CustomEvent)?.detail;
             if (!detail?.workingPdfUrl) return;
             try {
-                const apiBase = getApiUrl().replace(/\/api\/?$/, '');
-                const url = detail.workingPdfUrl.startsWith('http')
-                    ? detail.workingPdfUrl
-                    : `${apiBase}${detail.workingPdfUrl.startsWith('/') ? '' : '/'}${detail.workingPdfUrl}`;
-                const res = await authenticatedFetch(url);
-                if (!res.ok) return;
-                const blob = await res.blob();
+                const isTauri = Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
                 const originalName = file?.name || 'template.pdf';
                 const currentVdp = store.getState().vdpFields;
                 const currentSelected = store.getState().selectedVdpFieldIds;
-                await commitWorkingFile(blob, originalName, detail.workingPdfPath, null, null);
+                const prevPdfUrl = pdfUrl;
+
+                let newFile: File;
+                let newPdfUrl: string;
+                let sizeStr: string | null = null;
+
+                if (isTauri && detail.workingPdfPath) {
+                    newFile = new File([], originalName, { type: 'application/pdf' });
+                    Object.defineProperty(newFile, 'path', { value: detail.workingPdfPath });
+                    newPdfUrl = localFileUrl(detail.workingPdfPath);
+                    try {
+                        const { stat } = await import('@tauri-apps/plugin-fs');
+                        const info = await stat(detail.workingPdfPath);
+                        if (info?.size != null) sizeStr = (info.size / (1024 * 1024)).toFixed(2) + ' MB';
+                    } catch { /* giữ size cũ */ }
+                } else {
+                    const apiBase = getApiUrl().replace(/\/api\/?$/, '');
+                    const url = detail.workingPdfUrl.startsWith('http')
+                        ? detail.workingPdfUrl
+                        : `${apiBase}${detail.workingPdfUrl.startsWith('/') ? '' : '/'}${detail.workingPdfUrl}`;
+                    const res = await authenticatedFetch(url);
+                    if (!res.ok) return;
+                    const blob = await res.blob();
+                    newFile = new File([blob], originalName, { type: 'application/pdf' });
+                    newPdfUrl = URL.createObjectURL(blob);
+                    sizeStr = (blob.size / (1024 * 1024)).toFixed(2) + ' MB';
+                }
+
+                // [VDP EDIT-COMMIT] Đánh dấu __editCommit: true để AcrobatViewer & usePdfLoader
+                // coi đây là commit nội dung (cấu trúc trang không đổi) -> BỎ QUA reset scroll/zoom/view,
+                // giữ nguyên hoàn toàn vị trí xem của người dùng mà không bị nhảy về góc trên trái (0, 0).
+                try { Object.defineProperty(newFile, '__editCommit', { value: true, configurable: true }); } catch { /* noop */ }
+                markGeneratedWorkspaceFile(newFile);
+
+                editHistory.pushSnapshot({ file, pdfUrl: prevPdfUrl, fid: selectionFileId });
+                setFile(newFile);
+                setOriginalFileName(originalName);
+                setPdfUrl(newPdfUrl);
+                if (sizeStr) setFileSizeStr(sizeStr);
+                setIsSaved(false);
+
+                const nextFileId = detail.workingPdfPath || detail.workingFid;
+                if (nextFileId) {
+                    setSelectionFileId(nextFileId);
+                    store.getState().setSelectionFileId(nextFileId);
+                }
+
                 // Preserve VDP fields & selected field on the clean template
                 store.getState().setVdpFields(currentVdp);
                 store.getState().setSelectedVdpFieldIds(currentSelected);
-                const nextFileId = detail.workingPdfPath || detail.workingFid;
-                if (nextFileId) {
-                    store.getState().setSelectionFileId(nextFileId);
+
+                if (prevPdfUrl && prevPdfUrl.startsWith('blob:') && prevPdfUrl !== newPdfUrl) {
+                    URL.revokeObjectURL(prevPdfUrl);
                 }
             } catch (err) {
                 console.warn('Failed to commit cleaned VDP template:', err);
@@ -1989,7 +2027,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return () => {
             window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
         };
-    }, [commitWorkingFile, file]);
+    }, [file, pdfUrl, setFile, setPdfUrl, setOriginalFileName, setFileSizeStr, setIsSaved, setSelectionFileId, selectionFileId, editHistory]);
 
 
     const handleDeleteObjects = useCallback(async (objs: PdfObject[], pageNum: number) => {
@@ -2530,8 +2568,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
         syncedStickerSourceRef.current = selectedFile;
         setSourceImageFile(isSupportedImageFileName(selectedFile.name) ? selectedFile : null);
-        const tSelectStart = performance.now();
-        console.info(`[PERF-MEASURE][FILE-OPEN] START: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(2)} MB)`);
         const attempt = beginFileOpeningAttempt(false);
         try {
             selectedFile = await imageFileToPdfIfNeeded(selectedFile, getFileArrayBuffer);
@@ -2552,16 +2588,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (fileOpeningAttemptRef.current !== attempt) return;
         // Đổi file dùng stale-while-revalidate nhưng chỉ nhường grace ngắn;
         // frame đến muộn vẫn được cache cho Viewer sau khi Workspace đã mở.
-        const tBeforePrime = performance.now();
         await waitForViewerFirstFrameGrace(primeViewerFirstFrame(selectedFile));
-        console.info(`[PERF-MEASURE][FILE-OPEN] primeViewerFirstFrame: ${Math.round(performance.now() - tBeforePrime)}ms`);
         if (fileOpeningAttemptRef.current !== attempt) return;
         setFile(selectedFile);
         setOriginalFileName(selectedFile.name);
         const selNativePath = (selectedFile as File & { path?: string }).path;
         if (selNativePath) {
             const docId = workspaceDocumentIdentity(selectedFile, undefined, undefined);
-            console.info('[PERF-MEASURE] Instant bind nativePath to selectionFileId (0ms):', selNativePath);
             setSelectionFileId(selNativePath, docId);
         } else {
             setSelectionFileId('');
@@ -2581,7 +2614,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setPdfUrl(objUrl);
         setPhase('workspace');
         settleFileOpeningAttempt(attempt, 'idle');
-        console.info(`[PERF-MEASURE][FILE-OPEN] TOTAL workspace ready: ${Math.round(performance.now() - tSelectStart)}ms`);
         
         setHistory([]);
         // Reset undo/redo edit-object khi đổi file (tránh khôi phục file cũ).
@@ -4272,6 +4304,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     isLocked={activeToolLocked}
                                     hasOtherDirtyChanges={documentIsDirty}
                                     onDirtyChange={setLogoSessionDirty}
+                                    onClose={() => setActiveDashboardTool('none')}
+                                    showLimitations={false}
                                 />
                             </div>
                         )}

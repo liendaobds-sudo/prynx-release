@@ -281,9 +281,12 @@ export function shouldRenderViewerBasePage(
     viewerIsActive: boolean,
     isActiveFrame: boolean,
     prefetchPage: boolean,
+    hasRendered = false,
 ): boolean {
     // Cổng prefetch do Viewer chỉ mở sau khi trang active đã hiển thị.
-    return viewerIsActive && (isActiveFrame || prefetchPage);
+    // Khi trang đã từng render thành công (hasRendered), giữ nguyên surface đã dựng
+    // để không bị mất preview / quay spinner khi cuộn qua lại giữa các trang.
+    return viewerIsActive && (isActiveFrame || prefetchPage || hasRendered);
 }
 
 export function viewerBackgroundRenderOwnerId(

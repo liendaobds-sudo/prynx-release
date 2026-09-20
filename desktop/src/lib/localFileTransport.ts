@@ -27,14 +27,11 @@ export async function fetchLocalFileBuffer(
   }
 
   const url = localFileUrl(path);
-  console.info('[fetchLocalFileBuffer] Gọi URL:', url);
   const response = await fetch(url, { headers });
   if (!response.ok) {
     console.warn(`[fetchLocalFileBuffer] HTTP error ${response.status} cho file ${path}`);
     throw new Error(`Không đọc được file cục bộ (HTTP ${response.status})`);
   }
-  const buf = await response.arrayBuffer();
-  console.info('[fetchLocalFileBuffer] Đọc thành công:', { path, byteLength: buf.byteLength });
-  return buf;
+  return await response.arrayBuffer();
 }
 

@@ -266,3 +266,194 @@ class TestKnownBugs:
         txt = _render_page_text(out_path, 0)
         assert "No.00001" in txt
 
+
+class TestLiveTextIllustratorInteroperability:
+    """[VDP-TYPE0-LIVE-TEXT] Kiểm tra hợp đồng tương thích Illustrator:
+    1. Text xuất ra dưới dạng Type0 / Identity-H Composite Font với bảng /ToUnicode chuẩn.
+    2. Không bị đóng gói trong Form XObject (/NupXo... /Form) làm Illustrator cô lập hoặc ép outline.
+    3. Giữ nguyên 100% tiếng Việt có dấu.
+    """
+
+    def test_vdp_renders_type0_composite_fonts(self, template_1page, out_path):
+        import pikepdf
+        from app.workers.vdp_text_picker import resolve_font_file
+
+        font_path = resolve_font_file("Arial") or r"C:\Windows\Fonts\arial.ttf"
+        tf = VdpField(
+            id="f_vietnamese",
+            name="ho_ten",
+            type="text",
+            x=15,
+            y=20,
+            width=70,
+            height=20,
+            fontSize=14,
+            fontColor="#B4141E",
+            fontName="Arial",
+            fontFile=font_path if os.path.exists(font_path) else None,
+            alignment="center",
+            textContent="{ho_ten}",
+        )
+        sample_name = "Cháu Nguyễn Thị Minh Thư"
+        data = [{"ho_ten": sample_name}]
+
+        run_vdp_engine(template_1page, [tf], data, out_path, job_id=uuid.uuid4().hex)
+        assert os.path.exists(out_path)
+
+        # 1. Kiểm tra bằng pikepdf
+        with pikepdf.open(out_path) as pdf:
+            page = pdf.pages[0]
+            # Không có Form XObject /NupXo nào
+            xobjs = list(page.Resources.get("/XObject", {}).keys())
+            assert not any("NupXo" in str(xo) for xo in xobjs), f"Không được có Form XObject: {xobjs}"
+
+            # Phải có font Type0 với Identity-H
+            fonts = page.Resources.get("/Font", {})
+            type0_fonts = [f for f in fonts.values() if str(f.get("/Subtype")) == "/Type0"]
+            assert len(type0_fonts) >= 1, f"Phải có ít nhất 1 font Type0, tìm thấy: {fonts}"
+            for t0 in type0_fonts:
+                assert str(t0.get("/Encoding")) == "/Identity-H"
+
+        # 2. Kiểm tra trích xuất text tiếng Việt nguyên vẹn
+        extracted = _render_page_text(out_path, 0)
+        assert sample_name in extracted
+
+    def test_vdp_mixed_barcode_and_type0_text(self, template_1page, out_path):
+        import pikepdf
+
+        tf = VdpField(
+            id="f_text",
+            name="name",
+            type="text",
+            x=10,
+            y=10,
+            width=80,
+            height=15,
+            fontSize=12,
+            textContent="{name}",
+        )
+        bc = VdpField(
+            id="f_bc",
+            name="code",
+            type="barcode",
+            x=10,
+            y=30,
+            width=80,
+            height=25,
+            barType="code128",
+            textContent="{code}",
+        )
+        data = [{"name": "Trần Văn Bình", "code": "PRYNX-999"}]
+
+        run_vdp_engine(template_1page, [tf, bc], data, out_path, job_id=uuid.uuid4().hex)
+        assert os.path.exists(out_path)
+
+        with pikepdf.open(out_path) as pdf:
+            page = pdf.pages[0]
+            xobjs = list(page.Resources.get("/XObject", {}).keys())
+            assert not any("NupXo" in str(xo) for xo in xobjs)
+
+        extracted = _render_page_text(out_path, 0)
+        assert "Trần Văn Bình" in extracted
+
+    def test_clean_template_dead_text_ops_and_ghost_fonts(self, tmp_path):
+        """[VDP-TYPE0-LIVE-TEXT] Kiểm tra tự động dọn dead Tf, xóa ghost font và chuẩn hoá font tĩnh."""
+        import pikepdf
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.colors import HexColor
+        from app.workers.vdp_engine import _clean_template_dead_text_ops_and_fonts
+
+        tmpl_file = str(tmp_path / "ghost_font_template.pdf")
+        c = canvas.Canvas(tmpl_file, pagesize=(300, 200))
+        c.setFont("Helvetica", 12)
+        c.drawString(30, 150, "Dong chu giu lai")
+        c.setFont("Times-Roman", 14)
+        c.drawString(30, 80, "Dong chu se bi xoa")
+        c.save()
+
+        # Giả lập xóa text của Times-Roman nhưng để lại dead Tf
+        pdf = pikepdf.open(tmpl_file)
+        page = pdf.pages[0]
+        instructions = pikepdf.parse_content_stream(page)
+
+        # Bỏ Tj của "Dong chu se bi xoa"
+        new_instrs = []
+        for instr in instructions:
+            if str(instr.operator) in ('Tj', 'TJ') and any("Dong chu se bi xoa" in str(op) for op in instr.operands):
+                continue
+            new_instrs.append(instr)
+        page.Contents = pdf.make_stream(pikepdf.unparse_content_stream(new_instrs))
+
+        # Kiểm tra trước khi dọn: cả 2 font đều có trong Resources
+        assert "/Font" in page.Resources
+        initial_fonts = list(page.Resources.Font.keys())
+        assert len(initial_fonts) >= 2
+
+        # Chạy dọn dẹp
+        stats = _clean_template_dead_text_ops_and_fonts(page, pdf)
+        assert stats["dead_tf_removed"] >= 1
+        assert stats["ghost_fonts_purged"] >= 1
+
+        # Sau khi dọn: font ma bị xóa, font thật của dòng chữ còn lại vẫn nguyên vẹn
+        remaining_fonts = list(page.Resources.Font.keys())
+        assert len(remaining_fonts) < len(initial_fonts)
+
+        cleaned_file = str(tmp_path / "cleaned_template.pdf")
+        pdf.save(cleaned_file)
+        pdf.close()
+
+        extracted = _render_page_text(cleaned_file, 0)
+        assert "Dong chu giu lai" in extracted
+        assert "Dong chu se bi xoa" not in extracted
+
+    def test_vdp_alignment_and_rotation_audit_fixes(self, template_1page, out_path):
+        """[VDPALIGN21.03-04] Kiểm tra export VDP với rotation 90 độ, căn giữa và bù gốc ink bearing."""
+        import pikepdf
+
+        tf_rot90 = VdpField(
+            id="f_rot",
+            name="customer",
+            type="text",
+            x=20,
+            y=20,
+            width=50,
+            height=100,
+            fontSize=16,
+            rotation=90,
+            alignment="center",
+            autoFit=True,
+            textContent="{customer}",
+        )
+        tf_center_long = VdpField(
+            id="f_long",
+            name="title",
+            type="text",
+            x=10,
+            y=140,
+            width=80,
+            height=20,
+            fontSize=18,
+            rotation=0,
+            alignment="center",
+            autoFit=True,
+            textContent="{title}",
+        )
+        data = [{
+            "customer": "Nguyễn Hoàng Nam",
+            "title": "CHỨNG NHẬN ĐẠT CHUẨN IN ẤN VÀ BAO BÌ CHUYÊN NGHIỆP"
+        }]
+
+        run_vdp_engine(template_1page, [tf_rot90, tf_center_long], data, out_path, job_id=uuid.uuid4().hex)
+        assert os.path.exists(out_path)
+
+        with pikepdf.open(out_path) as pdf:
+            page = pdf.pages[0]
+            fonts = page.Resources.get("/Font", {})
+            assert len(fonts) >= 1
+
+        extracted = _render_page_text(out_path, 0)
+        assert "Nguyễn Hoàng Nam" in extracted
+        assert "CHỨNG NHẬN" in extracted
+
+
+

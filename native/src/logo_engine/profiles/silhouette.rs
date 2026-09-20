@@ -49,7 +49,7 @@ pub(super) fn trace(
         match fitted.primitive {
             Some(ReconstructedPrimitive::Circle) => primitives.circle += 1,
             Some(ReconstructedPrimitive::Ellipse) => primitives.ellipse += 1,
-            None => {}
+            Some(ReconstructedPrimitive::Box) | None => {}
         }
         rings.push(FillRing {
             role: ring.role,

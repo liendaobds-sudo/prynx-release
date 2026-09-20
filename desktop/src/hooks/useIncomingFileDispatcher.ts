@@ -10,7 +10,9 @@ import { primeViewerFirstFrame } from '../lib/viewerFirstFrame';
 export const SYSTEM_FILES_RECEIVED_EVENT = 'system-files-received';
 export const SYSTEM_FILES_POLL_SETTLED_EVENT = 'prynx-system-files-poll-settled';
 export const INCOMING_FILES_DEBOUNCE_MS = 50;
-export const EXPLICIT_INTENT_FALLBACK_MS = 3_000;
+// FILEIO (audit 2026-09-19 §BURST.72): fallback timer bảo vệ kẹt poll; tăng lên 15s
+// để đợt mở hàng chục file từ Windows Explorer không bị flush sớm trước khi gom đủ.
+export const EXPLICIT_INTENT_FALLBACK_MS = 15_000;
 
 interface IncomingFilesDetail {
   files?: File[];
@@ -53,6 +55,20 @@ function dispatchIncomingFileBatchAndPrime(
   dispatch();
   if (!intent && files.length === 1 && isPathBackedPdf(files[0])) {
     void primeViewerFirstFrame(files[0]).catch(() => undefined);
+  }
+}
+
+/** UIUX/WINDOW (audit 2026-09-19 §BURST.SETTLE_FOCUS): gọi native để nhận Foreground Focus sau khi nạp batch. */
+function activateMainWindow(): void {
+  if (
+    typeof window !== 'undefined'
+    && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  ) {
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => {
+        void invoke('activate_main_window').catch(() => undefined);
+      })
+      .catch(() => undefined);
   }
 }
 
@@ -166,6 +182,7 @@ export function useIncomingFileDispatcher({
           tabsRef.current ?? [],
           activeTabIdRef.current ?? '',
         );
+        activateMainWindow();
       });
     };
 
@@ -194,7 +211,9 @@ export function useIncomingFileDispatcher({
 
     const scheduleExplicitFallback = () => {
       clearTimer(explicitTimerRef);
-      explicitTimerRef.current = setTimeout(flushExplicit, EXPLICIT_INTENT_FALLBACK_MS);
+      explicitTimerRef.current = setTimeout(() => {
+        flushExplicit();
+      }, EXPLICIT_INTENT_FALLBACK_MS);
     };
 
     const handleSystemFiles = (event: Event) => {

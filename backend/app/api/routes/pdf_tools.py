@@ -1223,6 +1223,7 @@ async def optimize_pdf_endpoint(
             media_type="application/pdf",
             headers={
                 "X-Original-Size": str(original_size),
+                "X-Output-Size": str(output_size),
                 "X-Optimized-Size": str(output_size),
                 "X-Compression-Ratio": str(ratio),
                 "X-PrynX-Engine": "pikepdf",
@@ -1649,6 +1650,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         form, "cutline_simplify_mm", default=0.0, low=0.0, high=CUTLINE_SIMPLIFY_MAX_MM
     )
     cutline_simplify_auto = str(form.get("cutline_simplify_auto", "false")).lower() in {"true", "1", "yes"}
+    alpha_source_mode = str(form.get("alpha_source_mode", "false")).lower() in {"true", "1", "yes"}
 
     # Resize chỉ dịch điểm lấy màu vào trong; không dùng tham số này để clip artwork.
     try:
@@ -1879,6 +1881,11 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                         "giữ nguyên PDF gốc, không tách nhiều tem",
                         approved.boundary_source,
                     )
+            logger.info(
+                "[STICKER_JOB] Bắt đầu xử lý file='%s' (cut_mode=%s, offset_mm=%.2f, bleed_mm=%.2f, cut_first_page_only=%s, rect=%s, shape=%s)",
+                os.path.basename(job_source_path),
+                cut_mode, offset_mm, bleed_mm, do_cut_first_page_only, do_rectangle_mode, shape_mode,
+            )
             success, meta = engine.process_pdf(
                 input_path=job_source_path,
                 output_path=output_path,
@@ -1907,8 +1914,13 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 _simplify_memo=(canonical_preview_override.get("simplify_memo")
                     if canonical_preview_override and canonical_preview_override.get("kind") == "whole-page-memo-v1" else None),
                 cutline_simplify_auto=cutline_simplify_auto,
+                alpha_source_mode=alpha_source_mode,
             )
             engine_seconds = time.perf_counter() - engine_started
+            logger.info(
+                "[STICKER_JOB] Hoàn thành xử lý file='%s' trong %.2fs (success=%s)",
+                os.path.basename(job_source_path), engine_seconds, success,
+            )
             if not success or not os.path.exists(output_path):
                 # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
                 biz_err = meta.get("error") if isinstance(meta, dict) else None

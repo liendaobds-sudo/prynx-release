@@ -48,6 +48,7 @@ class NupOutputContext:
     layout: dict[str, Any]
     strategy: str
     total_capacity: int
+    order_summary: dict[str, Any] | None = None
 
 
 def _mark(context: NupOutputContext, stage: str) -> None:
@@ -179,6 +180,24 @@ def _merge_layered_chunks(chunk_paths: list[str], output_path: str) -> None:
             finally:
                 src_pdf.close()
             _remove_file(chunk_path)
+
+        # PERF (audit 2026-09-20 §POSTVIEW20.01): Khử trùng lặp Image XObjects
+        # được nhân bản giữa các chunk độc lập. Tránh phình file (166MB -> 29MB)
+        # và giảm tải I/O cũng như bộ nhớ giải mã cho viewer.
+        try:
+            from app.core.pdf_resource_dedup import deduplicate_image_xobjects
+
+            dedup_stats = deduplicate_image_xobjects(final_doc)
+            if dedup_stats.get("duplicates", 0) > 0:
+                logger.info(
+                    "[NUP_FINALIZE_DEDUP] Đã khử trùng %d/%d ảnh (%d tham chiếu), tiết kiệm ~%.2f MB",
+                    dedup_stats["duplicates"],
+                    dedup_stats["images"],
+                    dedup_stats["rewired"],
+                    dedup_stats["candidate_bytes"] / (1024 * 1024),
+                )
+        except Exception as exc:
+            logger.warning("[NUP_FINALIZE_DEDUP] Lỗi khử trùng lặp ảnh (tiếp tục lưu): %s", exc)
 
         final_doc.save(output_path)
     finally:
@@ -406,6 +425,8 @@ def _write_completed_progress(context: NupOutputContext) -> None:
 
 
 def _build_report_fallback(context: NupOutputContext) -> None:
+    if context.order_summary is not None:
+        return  # BE.07: report đã chốt theo recipe, không tính lại bằng capacity lớn nhất.
     if context.reports_by_sheet:
         return
     try:
@@ -616,6 +637,14 @@ def finalize_nup_output(
 
         report_lines = ["✅ Hoàn tất! Xuất thành công file kẽm."]
         _append_print_summary(context, report_lines)
+        if context.order_summary is not None:
+            summary = context.order_summary
+            report_lines.append(
+                f"Yêu cầu: {summary['requestedCount']} · Đã xếp: {summary['placedCount']}"
+                f" · Số tờ cần in: {summary['physicalSheetCount']}"
+            )
+            if summary.get("extraCount",0):
+                report_lines.append(f"In bù: {summary['extraCount']}")
         report_lines.extend(context.ratio_stack_warnings)
         _append_strategy_summary(context, report_lines)
         _mark(context, "postprocess_s")

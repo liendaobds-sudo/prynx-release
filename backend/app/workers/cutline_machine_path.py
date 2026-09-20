@@ -372,14 +372,36 @@ def _curvature(
     t: float,
     mm_to_units: float,
 ) -> float | None:
-    first = _first_derivative(segment, t)
-    speed = _length(first)
-    if speed <= _VECTOR_EPSILON:
+    # PERF (audit 2026-09-19): Tính trực tiếp đạo hàm bậc 1 và 2 từ tọa độ 4 điểm,
+    # tránh cấp phát hàng triệu tuple trung gian và lời gọi hàm _add/_sub/_scale.
+    p0 = segment.p0
+    p1 = segment.p1
+    p2 = segment.p2
+    p3 = segment.p3
+    u = 1.0 - t
+
+    dx0 = p1[0] - p0[0]
+    dy0 = p1[1] - p0[1]
+    dx1 = p2[0] - p1[0]
+    dy1 = p2[1] - p1[1]
+    dx2 = p3[0] - p2[0]
+    dy2 = p3[1] - p2[1]
+
+    fx = 3.0 * (dx0 * u * u + 2.0 * dx1 * u * t + dx2 * t * t)
+    fy = 3.0 * (dy0 * u * u + 2.0 * dy1 * u * t + dy2 * t * t)
+
+    speed_sq = fx * fx + fy * fy
+    if speed_sq <= _VECTOR_EPSILON * _VECTOR_EPSILON:
         return None
-    second = _second_derivative(segment, t)
-    cross = first[0] * second[1] - first[1] * second[0]
+
+    sx = 6.0 * ((dx1 - dx0) * u + (dx2 - dx1) * t)
+    sy = 6.0 * ((dy1 - dy0) * u + (dy2 - dy1) * t)
+
+    cross = fx * sy - fy * sx
+    speed = math.sqrt(speed_sq)
     # Tọa độ theo unit làm curvature có đơn vị 1/unit; nhân unit/mm → 1/mm.
-    return cross / speed**3 * mm_to_units
+    return (cross / (speed * speed_sq)) * mm_to_units
+
 
 
 def _segment_length(segment: MachinePathSegment, samples_per_cubic: int) -> float:

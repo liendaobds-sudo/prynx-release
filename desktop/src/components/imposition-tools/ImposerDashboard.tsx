@@ -1698,18 +1698,6 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             );
             const effClusterMode = _clusterAppliesNup ? s.clusterMode : 'none';
 
-            console.warn('[CLUSTER-DEBUG-FRONTEND-DASHBOARD] onStartNup clicked!', {
-                taskMode: s.taskMode,
-                layoutType: s.layoutType,
-                groupingStrategy: effectiveGroupingStrategy,
-                clusterTileW: s.clusterTileW,
-                clusterTileH: s.clusterTileH,
-                clusterCols: s.clusterCols,
-                clusterRows: s.clusterRows,
-                clusterCombineMode: s.taskMode === 'step_repeat' ? 'replicate_mixed' : s.clusterCombineMode,
-                clusterSizingMode: s.clusterSizingMode,
-                isDieCutMode: dieGeometryMode
-            });
             onStartNup({
                 // FIX (audit 2026-08-29 §SR-MODE-1): không làm rơi tác vụ S&R ở biên thực thi.
                 taskMode: s.taskMode === 'step_repeat' ? 'step_repeat' : 'nup',

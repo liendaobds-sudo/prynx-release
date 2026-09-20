@@ -1,5 +1,57 @@
 # PrynX Master Audit Matrix
 
+> Audit căn chữ VDP 2026-09-21 — **VDPALIGN21.01..04 OPEN / CHỜ DUYỆT**. LIVE đã tái hiện lệch phải20–43.5px trong khung360px do inline-block + scaleX; đối chứng neo đúng giảm còn khoảng0–3px. PDF còn tràn dọc, quên bù glyph-left; xuất Type0 đọc angle thay rotation và lệch PNG ở leading/autoFit.15ca cơ sở,6ca backend bổ sung,15đối chứngCSS,1final-pipeline;31backend+7frontend pass nhưng chưa chặn các lỗi trên. W4-VDPALIGN21-LIVE=AUTO; PDF/PARITY=ARTIFACT, chưaTauriRUNTIME. Không sửa production. Xem BAO_CAO_AUDIT_VDP_CAN_GIUA_TRAN_KHUNG_2026-09-21.md và audit/VDP_ALIGNMENT_2026-09-21.json. Working tree renderer đã đổi: các claim parity dựa duy nhất render_one_record trong audit/test cũ là STALE cho nhánh straight-text mới.
+
+> Audit VDP font 2026-09-21 - **VDPFONT21.01..03: font-live interoperability OPEN, CHỜ DUYỆT SỬA**. PDF VDP trang3 và filetrích sangAI có font program/ToUnicode/text hash y hệt, vẫn có3field TrueType text; Illustrator2025 đang mở chỉ còn1fontUTMTimes missing. Tab PDF gốc có4font, thiếuUTMTimes/UTMViceroyJF nhưng2fontbold nhận được. Alias sửa không đổi3BaseFont trước/sau; resolvername-only sai3/4fontUTM ->Arial dù picker tìm đúng.26backend+11frontend pass; runtime chỉ quan sát tài liệu đang mở, chưafreshA/B cmap/naming/flags nên không gắn một trường riêng làm nguyên nhân outline cuối cùng. Không sửa production/font/PDFkhách. Xem BAO_CAO_AUDIT_VDP_FONT_ILLUSTRATOR_2026-09-21.md và audit/VDP_FONT_ILLUSTRATOR_2026-09-21.json.
+
+> Re-audit sau bản sửa user 2026-09-20 - **POSTVIEW20.01 ARTIFACT đạt cho output mới; POSTVIEW20.02 cacheICC đã xác nhận, performance còn OPEN; POSTVIEW20.03 OPEN**. Binary21:58:18/hash75993ECB...847E đang chạy; output nup_4f866c3a.pdf còn28,74MB/2image objects. Cùng output cũ trên engine mới PPE13,02->6,25s; output mới6,07s, warm5,74s. Core image-hit hoạt động nhưng raster warm5,56s. Sampling hiện mới averagealpha/chọnbesttexel, không averagemàuICC; PNG còn alias.9backendtests pass; không sửa source và loại zoom khỏi phạm vi. Xem RE_AUDIT_VIEWER_SAU_BINH_2026-09-20.md và audit/POST_IMPOSITION_VIEWER_RECHECK_2026-09-20.json.
+
+> Audit zoom nhanh 2026-09-20 - **ZOOMRACE20.01 / W2-ZOOMRACE20-PRESENT: CONFIRMED P1, AUTO/DOM, CHỜ DUYỆT SỬA**. Response ImageBitmap về sau khi khung CSS đã đổi gọi applyExactFit closure cũ: parent320x200 nhưng canvas960x600, overflow:hidden -> chỉ thấy góc trên-trái; zoom-in lỗi chiều ngược. 8ca full/viewport x down/up x DPR1/2 đều đỏ; ca ready-before-resize xanh. Sharper reuse có thể giữ geometry sai sau settle. 144test hiện hữu xanh nhưng thiếu race này. Không sửa production, không nâng RUNTIME/Tauri. Xem BAO_CAO_AUDIT_ZOOM_NHANH_GOC_ANH_2026-09-20.md và audit/ZOOM_RACE_2026-09-20.json.
+
+> Audit tải/độ nét sau bình 2026-09-20 - **POSTVIEW20.01..03 / W7-POSTVIEW-IO, W7-POSTVIEW-RASTER, W2-POSTVIEW-SAMPLING: CONFIRMED, AUTO + ARTIFACT, CHỜ DUYỆT SỬA**. Bản oval đã scale1: nguồn28,43MB -> output165,96MB;8 bản bitmap/mask trùng, dư136,94MB. Worker debug hiện có N3: bootstrap output183ms, PPE96DPI13018ms trung vị, PDFium702ms; warm PPE không nhanh hơn. Core riêng raster10,8-12,7s, image-cache không lookup ICCBased trong khi Form-cache có hit. PNG ICC+SMask thu nhỏ lấy mẫu tâm, kém nét; zoom viewport192DPI vẫn2,6-4,1s. 73 frontend +10 backend test pass, chưa click-to-paint/installer/Acrobat. Không sửa production hoặc phần scale user tự sửa. Xem BAO_CAO_AUDIT_VIEWER_SAU_BINH_2026-09-20.md và audit/POST_IMPOSITION_VIEWER_2026-09-20.json; không dùng cache URL để suy rằng cache ảnh PPE đã phủ mọi colorspace.
+
+> Audit ca khách oval 2026-09-20 - **OVAL20.01 / W2-OVAL20-SCALE: CONFIRMED P1, AUTO + ARTIFACT, CHỜ DUYỆT SỬA**. Nguồn 123 trang có bitmap nền + khung tên vector, chỉ trang đầu có CutContour. artwork_bbox bỏ qua bitmap khi có vector nên 122 trang bị đo thành 75,2x17,8 mm; homogeneous writer phóng 2,136893 lần. PDF job 64e3aaa5 có 2 ô scale1 (đều nguồn1) và126 ô scale2,136893. Parse toàn output + Poppler hai trang nguồn/tờ đầu khớp phản hồi; chưa sửa production, chưa runtime app. Xem BAO_CAO_AUDIT_TEM_OVAL_PHONG_ARTWORK_2026-09-20.md và audit/TEM_OVAL_SCALE_2026-09-20.json. Không dùng test capacity/pose để đóng lỗi scale nội dung.
+
+> Audit parity ba công cụ 2026-09-20 - **W2-P20-U01..U20 / PAR20.01..11: AUTO + ARTIFACT, CHỜ DUYỆT SỬA**. Phủ danh mục 83 trường NupSettings + 25 boong + 22 report + 8 save + 4 viền; 75 ca probe độc lập preview/export, xác nhận 10 P1 và 1 P2: zero dấu xén, CNC manual/cluster/marks/mirror, quantity/strategy theo boong, cụm S&R trộn mẫu, TrimBox, override 0 và chọn trang preview. Baseline 1730 pass/4 lỗi RAM; file chứa 4 ca chạy cô lập 18/18 pass; bổ sung cluster/canonical 46 pass; frontend hiện hữu 400 pass + typecheck, 3 probe chẩn đoán đỏ đúng lỗi. Không cộng rerun thành tổng test mới; không coi 75 probe là 75 pass. Không sửa production, không nâng GUI/Tauri/installer/cutter lên RUNTIME. Xem [báo cáo](BAO_CAO_AUDIT_PARITY_TEM_BE_CAT_XEN_CNC_2026-09-20.md) và [inventory/evidence](audit/IMPOSITION_PARITY_2026-09-20.json). Kết luận cũ về parity chỉ giữ trong tổ hợp đã kiểm; các nhánh mới phát hiện ở đợt này còn OPEN.
+
+> Hoàn tất sửa Viewer theo yêu cầu 2026-09-20: **V20.1–V20.6 / W7-V20-OPEN, W7-V20-PIXEL, W2-V20-FONT, W2-V20-ROUTE đã đạt SOURCE + AUTO + ARTIFACT**, supersede trạng thái “chưa sửa” của audit bên dưới.
+> - V20.1: Dọn dẹp sạch proxy fields trong `CachedDocument` Rust, loại bỏ nguy cơ memory inflation ở bootstrap tài liệu lớn.
+> - V20.2: Sửa triệt để lỗi nhân `96.0 / 72.0` hai lần ở full-page preview trong `desktop/src-tauri/src/lib.rs`, đưa kích thước pixel về đúng chuẩn 1:1, giảm 43.75% pixel dư thừa.
+> - V20.3: Bổ sung font fallback bold trong PPE (`interp.rs`), nhúng `DejaVuSans-Bold.ttf`, trả `geometry_approximated: true` và mảng `substituted_fonts` qua IPC ra UI thay vì nuốt cảnh báo.
+> - V20.4: Nâng cấp `pdf_color_risk.rs` quét toán tử CMYK trực tiếp `k`/`K` trong content stream, đồng nhất phân loại rủi ro màu và engine routing.
+> - V20.5: Xác minh và đảm bảo RAM-gating cho Tile Cache (`tileUrlCache.ts`), giữ nguyên hiệu năng trên máy mạnh (>=16GB full cache null).
+> - V20.6: Toàn bộ test suite Vitest viewer (useTileRenderer 34/34, usePdfLoader 15/15, LivePageFrame renderPolicy 22/22) và Cargo tests (pdf_color_risk 5/5, render_worker ppe fallback) đều đạt xanh. W7-V20-CORE (profile) và W7-V20-ACROBAT (GUI) giữ trạng thái runtime lịch sử. Xem [nhật ký nghiệm thu](VIEWER_OPEN_QUALITY_FIXES_2026-09-20.md). Chưa GUI/installer/phát hành.
+
+| Audit unit Viewer 2026-09-20 | Mức hiện tại | Điểm đã chốt / còn mở |
+|---|---|---|
+| W7-V20-OPEN: bootstrap tài liệu lớn | SOURCE + AUTO + ARTIFACT | Đã dọn dẹp proxy thừa, bootstrap nhẹ và nhanh |
+| W7-V20-PIXEL: tỷ lệ pixel full-page preview | SOURCE + AUTO + ARTIFACT | Bỏ nhân 96/72 thừa, test renderPolicy đạt |
+| W2-V20-FONT: fallback font PPE & cảnh báo | SOURCE + AUTO + ARTIFACT | Fallback bold DejaVu, cảnh báo geometry_approximated ra UI |
+| W2-V20-ROUTE: phân loại màu CMYK k/K | SOURCE + AUTO + ARTIFACT | Quét k/K trong content stream, test 5/5 đạt |
+| W7-V20-CORE: PPE render session & cache | PROFILE core | Profile Form/image hit, giữ nguyên RAM-gating |
+| W7-V20-ACROBAT: so sánh GUI Acrobat | UNKNOWN | Cần ca khách và click-smoke GUI thực tế |
+
+> Audit Viewer 2026-09-20 (Lịch sử khảo sát ban đầu): mở302MB trên release2.0.3 local có bootstrap median5669ms/RSS sau mở2773MiB/peak4573MiB; dev median222ms/RSS598MiB/peak1285MiB (N=5, worker riêng, không GUI, OS cache không flush). V20.2 nhân96/72 hai lần chỉ thấy ở dev, không ở release được đo. V20.3 font PPE thay Helvetica/Times/Courier bằng cùng glyph fallback và V20.4 classifier k vs cs/scn chọn engine khác dù bitmap từng engine giống nhau đã xác minh cả dev/release. 162 Viewer tests đạt nhưng chưa có Acrobat GUI A/B. Các unit W7-V20-OPEN/PIXEL/CORE và W2-V20-FONT/ROUTE đạt worker/artifact tương ứng; W7-V20-ACROBAT UNKNOWN. Xem [báo cáo và lộ trình](BAO_CAO_AUDIT_MO_FILE_NANG_VA_CHAT_LUONG_VIEWER_2026-09-20.md). Không đóng các HOLD/installer/runtime khác bằng kết quả này.
+
+> Hoàn tất sửa theo yêu cầu 2026-09-20: **BE.01–BE.08 / W2-ST20-01…07 đã đạt SOURCE + AUTO + ARTIFACT**, supersede trạng thái “chưa sửa” của audit ngay bên dưới. Backend cuối1005/1005, frontend342/342, typecheck đạt; hai PDF từ nguồn72 trang đã parse source-id/report và xem đủ14 trang IN/CUT. Boong9 mẫu→5+4 không mất; cut-stack→5+5 có bù; manual2x2 đúng; unit/preset không giữ mode ẩn; 0tường minh được loại; optimalN=1 giữ lượng; unique/report theo recipe. W2-ST20-08…10 giữ AUTO và các giới hạn runtime lịch sử. Xem [nhật ký nghiệm thu](BINH_TEM_BE_AUDIT_FIXES_2026-09-20.md). Chưa GUI/installer/máy bế; không commit hoặc phát hành.
+
+> Cập nhật 2026-09-20 - Audit chức năng Bình tem bế, working tree tại HEAD `0c8a347`: **8 finding CONFIRMED (7 P1 / 1 P2), CHƯA SỬA**. Hai chốt mất mẫu còn hở: nguyên tấm va boong 9→7 và tối ưu legacy bỏ mẫu quá khổ rồi báo thành công. Còn manual không theo hàng/cột, mode ẩn khi đổi đơn vị, số riêng 0→1, N-Up một mẫu preview≠PDF, report sai lượng và simple N-Up không tôn trọng unique. Các delta số lượng/nhánh lưới ngày 19–20/09 làm một phần oracle autofill cũ **STALE**; không nâng trạng thái chung thành RUNTIME. Xem [báo cáo và thẻ audit unit W2-ST20-01…10](BAO_CAO_AUDIT_TOAN_BO_BINH_TEM_BE_2026-09-20.md).
+
+| Audit unit mới | Mức hiện tại | Điểm còn mở |
+|---|---|---|
+| W2-ST20-01: đơn vị/cách ráp/SL ẩn | AUTO UI + log backend | BE.04; cần chuẩn hóa state và click-smoke |
+| W2-ST20-02: trống/0/SL riêng | ARTIFACT | BE.05; tách migration với số 0 tường minh |
+| W2-ST20-03: manual N-Up/S&R | ARTIFACT | BE.03; lưới 2x2 bị bỏ qua |
+| W2-ST20-04: optimal N-Up một loại | ARTIFACT + consumer TRACED | BE.06; preview 9 nhưng PDF 1 |
+| W2-ST20-05: nguyên tấm + boong | ARTIFACT | BE.01; preview 9, PDF 7, báo thành công |
+| W2-ST20-06: mẫu quá khổ | ARTIFACT | BE.02; unplaced chỉ ghi log, xuất PDF thiếu |
+| W2-ST20-07: report/unique/tờ bù | ARTIFACT | BE.07/08; actual 30/report36, yêu cầu ảo7000, unique không áp dụng |
+| W2-ST20-08: true-shape đa tờ | AUTO hiện tại | Giữ artifact lịch sử M72, chưa UI/installer |
+| W2-ST20-09: S&R/1 Dao/master/holes | AUTO phạm vi suite | Oracle autofill cũ còn stale, chưa corpus mọi tổ hợp |
+| W2-ST20-10: cancel/session/ownership | AUTO phạm vi suite | Runtime nhiều tab, thiết bị ngoài và installer UNKNOWN |
+
+> Verify đợt này: backend A 622 pass/6 fail (một health-check đã rerun riêng 19 pass); backend B cuối 274 pass/12 fail; frontend 332 pass/1 fail, probe UI riêng 1 pass; typecheck đạt. Không cộng rerun chồng lấp; test đỏ gồm oracle cũ và parity thật, không coi là 18 finding. Không sửa source sản phẩm, snapshot, native hoặc cấu hình user.
+
 > Audit delta 2026-09-12 · `W8-U05-LICENSE-RECOVERY`: **TRACED + ARTIFACT-PARTIAL · LÔ 1 APPLIED · ROOT CAUSE HOLD**. Profile lỗi ghi activation server 1/1 nhưng desktop native commit thất bại; HWID/DPAPI profile đạt kiểm an toàn, EXE đang chạy không khớp `BUILD_EXE_SHA256` trong manifest (`GIT_DIRTY=yes`, `RUNTIME_VERIFIED=no`). Lô 1 đã thêm mã phase diagnostics an toàn ở desktop; typecheck + 124 test auth/protocol/token đạt. Installer 2.0.1 đã tạo nhưng verifier smoke bị chặn đúng thiết kế bởi process PrynX đang chạy; chưa nâng `RUNTIME_VERIFIED`. Remote signing-secret parity, live Edge bundle và good-vs-bad artifact vẫn `[EXTERNAL]`. Xem `BAO_CAO_AUDIT_LICENSE_RECOVERY_RUNTIME_2026-09-12.md`.
 
 > Audit 2026-09-11 · `W2-U03-PPE-PERF / W7-U04-CMNM`: **TRACED + PROBE, CHỜ DUYỆT**.

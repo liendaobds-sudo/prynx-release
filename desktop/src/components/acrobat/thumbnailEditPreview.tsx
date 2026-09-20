@@ -119,7 +119,6 @@ export function ThumbnailEditPreviewLayer({
             data-testid="thumbnail-edit-preview"
             data-source-page={preview.page + 1}
             draggable={false}
-            loading="lazy"
             decoding="async"
             className="pointer-events-none absolute z-[2] block object-fill"
             style={thumbnailEditPreviewStyle(preview, pageWidthPt, pageHeightPt)}

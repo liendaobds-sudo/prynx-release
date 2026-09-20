@@ -195,6 +195,8 @@ pub struct RenderOptions {
     /// bản gốc. Vì vậy mỗi lần thay đều bật cờ hạ `accuracy`: kết quả dùng để
     /// **cảnh báo** được, không dùng để chốt kẽm.
     pub fallback_font: Option<Arc<Vec<u8>>>,
+    /// Font dự phòng cho các font đậm (bold/black/heavy) không nhúng.
+    pub fallback_bold_font: Option<Arc<Vec<u8>>>,
     /// Quy mực pha về CMYK thay vì cấp kênh riêng — chỉ dùng cho soft-proof.
     ///
     /// **Không bao giờ** bật ở đường đo: kết quả chỉ còn bốn kẽm process.
@@ -248,6 +250,7 @@ impl Default for RenderOptions {
             max_form_depth: 12,
             memory_budget_bytes: DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
             fallback_font: None,
+            fallback_bold_font: None,
             flatten_spots: false,
             simulate_overprint: true,
             conservative_image_sampling: false,
@@ -390,6 +393,12 @@ impl RenderOptions {
     /// Đặt font thay thế cho font không nhúng.
     pub fn with_fallback_font(mut self, data: Arc<Vec<u8>>) -> Self {
         self.fallback_font = Some(data);
+        self
+    }
+
+    /// Đặt font thay thế cho font đậm (bold) không nhúng.
+    pub fn with_fallback_bold_font(mut self, data: Arc<Vec<u8>>) -> Self {
+        self.fallback_bold_font = Some(data);
         self
     }
 }
@@ -3205,6 +3214,17 @@ impl<'a> Renderer<'a> {
             {
                 Some(*id)
             }
+            // PERF (audit 2026-09-20 §POSTVIEW20.02): Mở cache cho ảnh ICCBased tự chứa.
+            // Profile nhúng hoặc trỏ gián tiếp trong file không phụ thuộc Resource scope
+            // bên ngoài, nên an toàn khi dùng ObjectId của Image XObject làm khóa cache.
+            Object::Array(arr) => {
+                let first = arr.first().map(|o| pdf::deref(self.doc, o));
+                if matches!(first, Some(Object::Name(name)) if name.as_slice() == b"ICCBased") {
+                    Some(*id)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -3577,14 +3597,10 @@ impl<'a> Renderer<'a> {
         let static_process_channels =
             matches!(img.colorspace, Some(ColorSpace::DeviceCMYK)) && !img.has_matte();
 
-        // PERF (audit 2026-08-14 §VIEW.IMAGE): Viewer trước đây lấy đúng một texel
-        // ở tâm dù đang thu ảnh CMYK 300–600 DPI xuống màn hình. menu.pdf @96 DPI
-        // có footprint khoảng 5,2×5,2 texel, nên nét chữ mảnh rơi khỏi toàn bộ trang.
-        // Chỉ đường xem ảnh CMYK đục dùng lưới phủ footprint; đường đo mực bảo thủ,
-        // ảnh có alpha và zoom gần 1:1 giữ nguyên hợp đồng cũ.
-        let preview_cmyk_grid = if !self.opts.conservative_image_sampling
-            && static_process_channels
-            && img.alpha.is_none()
+        // PERF (audit 2026-08-14 §VIEW.IMAGE / 2026-09-20 §POSTVIEW20.03):
+        // Viewer thu ảnh 300–600 DPI xuống màn hình cần lưới footprint để không mất nét chữ
+        // mảnh và chống răng cưa.
+        let preview_sample_grid = if !self.opts.conservative_image_sampling
             && !overprint
             && blend == BlendMode::Normal
         {
@@ -3592,6 +3608,10 @@ impl<'a> Renderer<'a> {
         } else {
             (1, 1)
         };
+
+        let is_rgb_lut3 = sampler.lut3().is_some() && img.n_comps == 3;
+        let is_cmyk_alpha = static_process_channels && img.alpha.is_some();
+        let is_cmyk_solid = static_process_channels && img.alpha.is_none();
 
         let mut ink_scratch: Vec<f32> = Vec::with_capacity(8);
         let iw = img.width as f64;
@@ -3661,50 +3681,68 @@ impl<'a> Renderer<'a> {
                     continue;
                 }
 
-                let mut sample_sx = sx;
-                let mut sample_sy = sy;
-                let mut center_coverage = base_alpha * img.alpha_at(sx, sy) * common_coverage;
-                if center_coverage <= 0.0 {
-                    if !self.opts.conservative_image_sampling {
+                let mut current_blend_rgb = None;
+
+                let (center_mask, center_coverage) = if preview_sample_grid != (1, 1) && is_rgb_lut3 {
+                    // PERF (audit 2026-09-20 §POSTVIEW20.03): Footprint premultiplied area averaging cho RGB.
+                    // Lọc màu và alpha cùng nhau trên footprint, áp 3D LUT một lần duy nhất cho pixel đích.
+                    let lut3 = sampler.lut3().expect("is_rgb_lut3 đã kiểm tra");
+                    let avg = preview_premultiplied_average::<3, _>(
+                        &inv64,
+                        dx,
+                        dy,
+                        img.width,
+                        img.height,
+                        preview_sample_grid,
+                        |x, y| (img.rgb_raw_at(x, y), img.alpha_at(x, y)),
+                    );
+                    let Some(avg) = avg else {
+                        continue;
+                    };
+                    let cov = base_alpha * avg.alpha * common_coverage;
+                    if cov <= 0.0 {
                         continue;
                     }
-                    // Alpha tại tâm bằng 0: tham chiếu (nearest trên cùng lưới
-                    // căng-bbox) cũng bỏ pixel này — TRỪ khi mẫu rơi trong dải
-                    // nhiễu quanh biên texel, nơi GS có thể lấy texel kề có
-                    // alpha. Trước khi lưới được căn đúng, chỗ này từng lấy
-                    // TRUNG BÌNH alpha footprint để cứu nét 1-texel (Steam Iron
-                    // @72: −21/255) — nhưng đó là bù cho lệch pha lưới; giữ nó
-                    // sau khi căn lưới làm ảnh mask thu nhỏ dư mực so với GS
-                    // (túi nước mắm @72: mean kẽm 3.15, giá trị 21/38 không có
-                    // thật trên kẽm tham chiếu).
-                    if base_alpha * common_coverage > 0.0 {
-                        let alt_x = texel_tie_alternate(u * iw, img.width, sx);
-                        let alt_y = texel_tie_alternate((1.0 - v) * ih, img.height, sy);
-                        for (cx, cy) in [(alt_x, Some(sy)), (Some(sx), alt_y), (alt_x, alt_y)]
-                            .into_iter()
-                            .filter_map(|(a, b)| Some((a?, b?)))
-                        {
-                            let a = img.alpha_at(cx, cy);
-                            if a * base_alpha * common_coverage > center_coverage {
-                                center_coverage = a * base_alpha * common_coverage;
-                                sample_sx = cx;
-                                sample_sy = cy;
-                            }
-                        }
+                    let decoded = img.decode_rgb_units(avg.color);
+                    let cmyk = lut3.sample(decoded[0], decoded[1], decoded[2]);
+                    ink_scratch.clear();
+                    ink_scratch.resize(self.buffer.space().len(), 0.0);
+                    ink_scratch[..4].copy_from_slice(&cmyk);
+                    if image_rgb_sidecar {
+                        current_blend_rgb = Some(decoded);
                     }
-                    if center_coverage <= 0.0 {
+                    (Some(ChannelMask::PROCESS), cov)
+                } else if preview_sample_grid != (1, 1) && is_cmyk_alpha {
+                    // PERF (audit 2026-09-20 §POSTVIEW20.03): Footprint premultiplied area averaging cho CMYK có alpha (SMask).
+                    let avg = preview_premultiplied_average::<4, _>(
+                        &inv64,
+                        dx,
+                        dy,
+                        img.width,
+                        img.height,
+                        preview_sample_grid,
+                        |x, y| (img.device_cmyk_raw_at(x, y), img.alpha_at(x, y)),
+                    );
+                    let Some(avg) = avg else {
+                        continue;
+                    };
+                    let cov = base_alpha * avg.alpha * common_coverage;
+                    if cov <= 0.0 {
                         continue;
                     }
-                }
-                let (sx, sy) = (sample_sx, sample_sy);
-                let center_mask = if preview_cmyk_grid != (1, 1) {
+                    let cmyk = img.decode_device_cmyk_units(avg.color);
+                    ink_scratch.clear();
+                    ink_scratch.resize(self.buffer.space().len(), 0.0);
+                    ink_scratch[..4].copy_from_slice(&cmyk);
+                    (Some(ChannelMask::PROCESS), cov)
+                } else if preview_sample_grid != (1, 1) && is_cmyk_solid {
                     match preview_device_cmyk_raw_average(
                         &inv64,
                         dx,
                         dy,
                         img.width,
                         img.height,
-                        preview_cmyk_grid,
+                        preview_sample_grid,
                         |sample_x, sample_y| img.device_cmyk_raw_at(sample_x, sample_y),
                     ) {
                         Some(raw_average) => {
@@ -3716,27 +3754,71 @@ impl<'a> Renderer<'a> {
                             ink_scratch.clear();
                             ink_scratch.resize(self.buffer.space().len(), 0.0);
                             ink_scratch[..4].copy_from_slice(&cmyk);
-                            Some(ChannelMask::PROCESS)
+                            (Some(ChannelMask::PROCESS), base_alpha * common_coverage)
                         }
-                        None => sampler.ink_into(
-                            sx,
-                            sy,
-                            &mut ink_scratch,
-                            self.buffer.space_mut(),
-                            &mut self.warnings,
-                            self.color,
-                        )?,
+                        None => {
+                            let cov = base_alpha * img.alpha_at(sx, sy) * common_coverage;
+                            if cov <= 0.0 {
+                                continue;
+                            }
+                            let mask = sampler.ink_into(
+                                sx,
+                                sy,
+                                &mut ink_scratch,
+                                self.buffer.space_mut(),
+                                &mut self.warnings,
+                                self.color,
+                            )?;
+                            (mask, cov)
+                        }
                     }
                 } else {
-                    sampler.ink_into(
-                        sx,
-                        sy,
+                    let mut sample_sx = sx;
+                    let mut sample_sy = sy;
+                    let mut center_coverage = base_alpha * img.alpha_at(sx, sy) * common_coverage;
+                    if center_coverage <= 0.0 {
+                        if !self.opts.conservative_image_sampling {
+                            continue;
+                        }
+                        // Alpha tại tâm bằng 0: tham chiếu (nearest trên cùng lưới
+                        // căng-bbox) cũng bỏ pixel này — TRỪ khi mẫu rơi trong dải
+                        // nhiễu quanh biên texel, nơi GS có thể lấy texel kề có
+                        // alpha. Trước khi lưới được căn đúng, chỗ này từng lấy
+                        // TRUNG BÌNH alpha footprint để cứu nét 1-texel (Steam Iron
+                        // @72: −21/255) — nhưng đó là bù cho lệch pha lưới; giữ nó
+                        // sau khi căn lưới làm ảnh mask thu nhỏ dư mực so với GS
+                        // (túi nước mắm @72: mean kẽm 3.15, giá trị 21/38 không có
+                        // thật trên kẽm tham chiếu).
+                        if base_alpha * common_coverage > 0.0 {
+                            let alt_x = texel_tie_alternate(u * iw, img.width, sx);
+                            let alt_y = texel_tie_alternate((1.0 - v) * ih, img.height, sy);
+                            for (cx, cy) in [(alt_x, Some(sy)), (Some(sx), alt_y), (alt_x, alt_y)]
+                                .into_iter()
+                                .filter_map(|(a, b)| Some((a?, b?)))
+                            {
+                                let a = img.alpha_at(cx, cy);
+                                if a * base_alpha * common_coverage > center_coverage {
+                                    center_coverage = a * base_alpha * common_coverage;
+                                    sample_sx = cx;
+                                    sample_sy = cy;
+                                }
+                            }
+                        }
+                        if center_coverage <= 0.0 {
+                            continue;
+                        }
+                    }
+                    let mask = sampler.ink_into(
+                        sample_sx,
+                        sample_sy,
                         &mut ink_scratch,
                         self.buffer.space_mut(),
                         &mut self.warnings,
                         self.color,
-                    )?
+                    )?;
+                    (mask, center_coverage)
                 };
+
                 let Some(center_declared) = center_mask else {
                     continue;
                 };
@@ -3755,7 +3837,7 @@ impl<'a> Renderer<'a> {
                         alpha: center_coverage,
                         blend,
                         blend_rgb: if image_rgb_sidecar {
-                            img.device_rgb_at(sx, sy)
+                            current_blend_rgb.or_else(|| img.device_rgb_at(sx, sy))
                         } else {
                             None
                         },
@@ -4903,7 +4985,16 @@ impl<'a> Renderer<'a> {
         let mut loaded = load_font(self.doc, &dict);
 
         if loaded.cannot_draw() {
-            match &self.opts.fallback_font {
+            let lower_name = loaded.base_font.to_lowercase();
+            let is_bold = lower_name.contains("bold")
+                || lower_name.contains("black")
+                || lower_name.contains("heavy");
+            let candidate = if is_bold {
+                self.opts.fallback_bold_font.as_ref().or(self.opts.fallback_font.as_ref())
+            } else {
+                self.opts.fallback_font.as_ref()
+            };
+            match candidate {
                 Some(data) => {
                     // Thay font: lấp được lỗ đo (trang chữ không còn báo 0% mực)
                     // nhưng bề rộng và hình chữ khác bản gốc ⇒ diện tích phủ mực
@@ -5535,6 +5626,77 @@ fn preview_image_sample_grid(inv: &[f64; 6], width: u32, height: u32) -> (u32, u
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+struct PreviewPremultipliedAverage<const N: usize> {
+    /// Giá trị màu trung bình [0..1] trên toàn footprint (sau khi chia cho tổng alpha).
+    color: [f32; N],
+    /// Độ phủ alpha trung bình [0..1] trên toàn footprint.
+    alpha: f32,
+}
+
+/// Lấy mẫu trung bình màu và alpha kết hợp (premultiplied area averaging) trên footprint
+/// của pixel thiết bị Viewer.
+///
+/// PERF (audit 2026-09-20 §POSTVIEW20.03): Lọc màu và alpha cùng nhau, có trọng số
+/// premultiplied alpha thay vì chọn một texel đại diện. Chống răng cưa chữ và chi tiết
+/// hoa văn trong ảnh thu nhỏ, triệt tiêu viền halo tối ở mép cắt khuôn trong suốt,
+/// đồng thời tính màu một lần cho mỗi pixel thiết bị.
+fn preview_premultiplied_average<const N: usize, F>(
+    inv: &[f64; 6],
+    dx: i64,
+    dy: i64,
+    width: u32,
+    height: u32,
+    grid: (u32, u32),
+    mut sample: F,
+) -> Option<PreviewPremultipliedAverage<N>>
+where
+    F: FnMut(u32, u32) -> ([u8; N], f32),
+{
+    let (samples_x, samples_y) = grid;
+    if samples_x == 0 || samples_y == 0 || width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut color_sum = [0.0_f64; N];
+    let mut alpha_sum = 0.0_f64;
+    let mut valid_samples = 0_u32;
+
+    for sample_y in 0..samples_y {
+        let py = dy as f64 + (sample_y as f64 + 0.5) / samples_y as f64;
+        let base_u = inv[2] * py + inv[4];
+        let base_v = inv[3] * py + inv[5];
+        for sample_x in 0..samples_x {
+            let px = dx as f64 + (sample_x as f64 + 0.5) / samples_x as f64;
+            let u = inv[0] * px + base_u;
+            let v = inv[1] * px + base_v;
+            if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                continue;
+            }
+            let sx = tex_index(u * width as f64, width);
+            let sy = tex_index((1.0 - v) * height as f64, height);
+            let (raw, a) = sample(sx, sy);
+            if a > 0.0 {
+                let a_f64 = a as f64;
+                for ch in 0..N {
+                    color_sum[ch] += (raw[ch] as f64) * a_f64;
+                }
+                alpha_sum += a_f64;
+            }
+            valid_samples += 1;
+        }
+    }
+
+    if valid_samples == 0 || alpha_sum <= 1.0e-6 {
+        return None;
+    }
+
+    let inv_alpha_sum = 1.0 / (alpha_sum * 255.0);
+    let color = std::array::from_fn(|ch| (color_sum[ch] * inv_alpha_sum).clamp(0.0, 1.0) as f32);
+    let alpha = (alpha_sum / valid_samples as f64).clamp(0.0, 1.0) as f32;
+    Some(PreviewPremultipliedAverage { color, alpha })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct PreviewDeviceCmykRawAverage {
     /// Trung bình trên toàn footprint — lớp chống alias giữ nét mảnh không biến mất.
     footprint: [f32; 4],
@@ -6144,6 +6306,33 @@ mod conservative_sampling_tests {
         let limited = boost_preview_device_cmyk_detail([0.2; 4], Some([1.0; 4]));
         let max_gain = PREVIEW_IMAGE_DETAIL_LIMIT * PREVIEW_IMAGE_DETAIL_BOOST;
         assert!((limited[0] - (0.2 + max_gain)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn preview_premultiplied_average_computes_weighted_color_and_alpha() {
+        let inv = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        // 2x2 grid: 2 mẫu trắng đục alpha 1.0, 2 mẫu đen trong suốt alpha 0.0
+        let avg = preview_premultiplied_average::<3, _>(&inv, 0, 0, 2, 2, (2, 2), |x, _y| {
+            if x == 0 {
+                ([255, 255, 255], 1.0)
+            } else {
+                ([0, 0, 0], 0.0)
+            }
+        })
+        .expect("có mẫu hợp lệ");
+
+        // Màu phải là trắng thuần [1.0, 1.0, 1.0] vì pixel trong suốt không làm ám đen (no halo)!
+        assert!((avg.color[0] - 1.0).abs() < 1e-5);
+        assert!((avg.color[1] - 1.0).abs() < 1e-5);
+        assert!((avg.color[2] - 1.0).abs() < 1e-5);
+        // Alpha là 2/4 = 0.5
+        assert!((avg.alpha - 0.5).abs() < 1e-5);
+
+        // Toàn bộ trong suốt trả None để skip pixel
+        let transparent = preview_premultiplied_average::<3, _>(&inv, 0, 0, 2, 2, (2, 2), |_x, _y| {
+            ([0, 0, 0], 0.0)
+        });
+        assert_eq!(transparent, None);
     }
 }
 

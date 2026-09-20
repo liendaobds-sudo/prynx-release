@@ -3,12 +3,22 @@
 // File RỖNG/sentinel chỉ mang `.path` — Mẹc Bìa phải đọc bytes THẬT từ đĩa, nếu không:
 //   - `:94` đếm số trang ra 0 → UI không hiện "File có N trang", nút Chạy bị khoá;
 //   - `:198` trích trang bìa ném "No PDF header found".
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import { PDFDocument } from 'pdf-lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CoverNumberingTool from './CoverNumberingTool';
 import { readArtifactLeaseToken } from '@/lib/artifactLease';
+import { createWorkspaceStore, WorkspaceContext } from '@/stores/useWorkspaceStore';
+
+function render(ui: React.ReactElement) {
+    const store = createWorkspaceStore();
+    return rtlRender(
+        <WorkspaceContext.Provider value={store}>
+            {ui}
+        </WorkspaceContext.Provider>
+    );
+}
 
 const mocks = vi.hoisted(() => ({
     fetchLocalFileBuffer: vi.fn(),

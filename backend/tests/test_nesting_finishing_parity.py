@@ -50,8 +50,8 @@ def _settings(**overrides):
         "marginRight": 5.0,
         "marginTop": 5.0,
         "marginBottom": 5.0,
-        # SL để trống = "tự lấp đầy tờ", đúng ca người dùng gặp lỗi.
-        "targetQuantitiesByPage": {str(index): 0 for index in range(13)},
+        # N-Up để trống = một bản mỗi loại; không giả lập trống bằng map số 0.
+        "targetQuantitiesByPage": {},
         "detectedShapesByPage": {str(index): "CUSTOM" for index in range(13)},
         # ── Gia công ──
         "pontType": "custom",
@@ -173,20 +173,21 @@ def test_tu_lap_day_to_lay_du_moi_mau():
 
     job = _job()
 
-    assert job.layout_intent == "autofill_single_sheet"
+    assert job.layout_intent == "quantity_fulfillment"
     assert len(job.parts) == 13, "tự lấp đầy tờ phải nhận MỌI mẫu"
-    assert all(part.quantity is None for part in job.parts)
+    assert all(part.quantity == 1 for part in job.parts)
 
 
 @requires_real_source
 def test_so_luong_khai_tuong_minh_thi_theo_dung_khai():
-    """Có SL thì chỉ lấy trang có SL > 0 — không kéo cả 13 mẫu vào."""
+    """SL riêng ghi đè, trang chưa khai riêng kế thừa mặc định một bản."""
 
     job = _job(targetQuantitiesByPage={"0": 10, "3": 4})
 
     assert job.layout_intent == "quantity_fulfillment"
-    assert [part.page_index for part in job.parts] == [0, 3]
-    assert [part.quantity for part in job.parts] == [10, 4]
+    assert {part.page_index: part.quantity for part in job.parts} == {
+        i: (10 if i == 0 else 4 if i == 3 else 1) for i in range(13)
+    }
 
 
 # ── 2. Gia công phải tới được job ────────────────────────────────────────────

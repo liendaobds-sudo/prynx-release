@@ -339,12 +339,31 @@ def solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated=Fals
 def solve_optimal_layout(
     usable_w, usable_h, orig_w, orig_h, gap_x, gap_y,
     strategy='simple_auto', secondary_gap=None, alternate_rotation='none',
+    *, required_items: Optional[int] = None,
 ):
     if _USE_RUST:
         res = _rust_solve_optimal(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy, secondary_gap)
     else:
         _allow_python_path()
         res = _py_solve_optimal_layout(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy, secondary_gap)
+    # ORIENTATION (2026-09-19): có SL hữu hạn thì tối ưu số tờ, không tối ưu
+    # sức chứa không dùng đến. Chỉ xoay khi hướng gốc không vừa hoặc tốn thêm tờ.
+    # None/0 giữ nguyên chế độ lấp đầy; các caller ngoài cắt xén không đổi.
+    if required_items and required_items > 0 and strategy in ('simple_auto', 'optimal_auto'):
+        original = solve_grid(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, False)
+        original_capacity = len(original['cells'])
+        best_capacity = len(res.get('cells', []))
+        if original_capacity and (
+            not best_capacity
+            or (required_items + original_capacity - 1) // original_capacity
+            <= (required_items + best_capacity - 1) // best_capacity
+        ):
+            res = {
+                **original,
+                'totalItems': original_capacity,
+                'overallWidth': original['width'],
+                'overallHeight': original['height'],
+            }
     res = apply_alternate_rotation(res, alternate_rotation)
     # ── DEBUG MARKER (Task: chẩn đoán grid-preference) ──
     try:
@@ -366,22 +385,15 @@ def get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, 
     return _py_get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, page_count)
 
 
-def build_sequential_product_sequence(
+def _sequential_product_quantities(
     page_count: int,
-    capacity: int,
     target_quantity: int = 0,
     target_quantities_by_page: Optional[Dict[Any, Any]] = None,
     duplex: bool = False,
-) -> List[int]:
-    """Dựng thứ tự sản phẩm cho N-Up xếp lần lượt.
-
-    Khi file có nhiều mẫu mà không nhập số lượng, mỗi mẫu phải xuất đúng một lần;
-    không được cắt danh sách theo sức chứa của tờ đầu. File một mẫu vẫn giữ hành vi
-    tự lấp đầy một tờ để tương thích luồng N-Up cũ.
-    """
+) -> Optional[List[int]]:
+    """Số bản từng sản phẩm; None là một mẫu tự lấp đầy theo sức chứa."""
     safe_page_count = max(0, int(page_count or 0))
-    safe_capacity = max(0, int(capacity or 0))
-    if safe_page_count <= 0 or safe_capacity <= 0:
+    if safe_page_count <= 0:
         return []
 
     use_duplex = bool(
@@ -407,22 +419,69 @@ def build_sequential_product_sequence(
 
     per_product = [quantity_for_product(index) for index in range(product_count)]
     if any(quantity > 0 for quantity in per_product):
-        sequence: List[int] = []
-        for product_index, quantity in enumerate(per_product):
-            sequence.extend([product_index] * quantity)
-        return sequence
+        return per_product
 
     if global_quantity > 0:
-        sequence = []
-        for product_index in range(product_count):
-            sequence.extend([product_index] * global_quantity)
-        return sequence
+        return [global_quantity] * product_count
 
     # [NUP SEQUENTIAL FIX 2026-08-10] Nhiều trang là nhiều mẫu cần bảo toàn;
     # chỉ file một mẫu mới dùng số lượng trống như lệnh tự lấp đầy một tờ.
     if product_count == 1:
+        return None
+    return [1] * product_count
+
+
+def sequential_required_items(
+    page_count: int,
+    target_quantity: int = 0,
+    target_quantities_by_page: Optional[Dict[Any, Any]] = None,
+    duplex: bool = False,
+) -> Optional[int]:
+    """Tổng con cần dàn; dùng cùng chuẩn SL với export, không tạo N bản sao."""
+    quantities = _sequential_product_quantities(
+        page_count, target_quantity, target_quantities_by_page, duplex,
+    )
+    return None if quantities is None else sum(quantities)
+
+
+def build_sequential_product_sequence(
+    page_count: int,
+    capacity: int,
+    target_quantity: int = 0,
+    target_quantities_by_page: Optional[Dict[Any, Any]] = None,
+    duplex: bool = False,
+) -> List[int]:
+    """Dựng thứ tự mẫu; chỉ một mẫu không nhập SL mới tự lấp đầy một tờ."""
+    safe_capacity = max(0, int(capacity or 0))
+    if safe_capacity <= 0:
+        return []
+    quantities = _sequential_product_quantities(
+        page_count, target_quantity, target_quantities_by_page, duplex,
+    )
+    if quantities is None:
         return [0] * safe_capacity
-    return list(range(product_count))
+    return [index for index, count in enumerate(quantities) for _ in range(count)]
+
+
+def build_cut_stack_sheets(
+    page_count: int, capacity: int, *, fill_sheet: bool = False,
+) -> List[List[int]]:
+    """CS.FILL (audit 2026-09-20): thứ tự cọc chung cho preview và bản in.
+
+    Chỉ nguyên tấm decal cho phép in bù: nối bản sao tuần hoàn SAU mọi trang
+    gốc khi gom cọc, không xen bản dư vào bộ chính. Sách/VDP giữ ô trống.
+    """
+    if page_count <= 0 or capacity <= 0:
+        return []
+    depth = (page_count + capacity - 1) // capacity
+    return [
+        [
+            (cell * depth + sheet) % page_count
+            for cell in range(capacity)
+            if fill_sheet or cell * depth + sheet < page_count
+        ]
+        for sheet in range(depth)
+    ]
 
 
 def _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows):

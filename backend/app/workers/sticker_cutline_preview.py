@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.utils.cutline_debug_log import log_cutline, CutlineTimer
+
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from copy import deepcopy
@@ -1250,11 +1252,17 @@ def build_sticker_cutline_preview(
         scale_y = preview_height / max(1, analysis_height)
         simplify_height = analysis_height * 72.0 / dpi_y_resolved
         if cutline_simplify_mm > 0 and session.source_kind == "pdf":
-            import pikepdf
-
-            with pikepdf.Pdf.open(session.source_path) as source_pdf:
-                box = source_pdf.pages[page_number - 1].cropbox
-                simplify_height = abs(float(box[3]) - float(box[1]))
+            try:
+                pages = list(session.manifest.get("pages", [])) if hasattr(session, "manifest") and isinstance(session.manifest, dict) else []
+                if page_number - 1 < len(pages) and "height_mm" in pages[page_number - 1]:
+                    simplify_height = float(pages[page_number - 1]["height_mm"]) / 25.4 * 72.0
+                else:
+                    import pikepdf
+                    with pikepdf.Pdf.open(session.source_path) as source_pdf:
+                        box = source_pdf.pages[page_number - 1].cropbox
+                        simplify_height = abs(float(box[3]) - float(box[1]))
+            except Exception:
+                pass
 
         # PERF (audit 2026-09-11 §SIMPLIFY.CACHE): giữ riêng Bézier TRƯỚC
         # Simplify và các frame SAU kiểm. Đổi dung sai không fit lại, không

@@ -425,3 +425,97 @@ fn vector(from: ScenePoint, to: ScenePoint) -> (f64, f64) {
 fn length(vector: (f64, f64)) -> f64 {
     vector.0.hypot(vector.1)
 }
+
+#[test]
+fn box_contour_is_reconstructed_as_four_sharp_lines() {
+    // LOGO-ORTHO (audit 2026-09-20 §VEC.F01): Khối chữ nhật 40x20 px
+    // phải được nhận diện thành Primitive::Box gồm đúng 4 đoạn thẳng sắc nét.
+    let scale = CONTOUR_COORDINATE_SCALE;
+    let mut vertices = Vec::new();
+    for x in (0..=40).step_by(2) {
+        vertices.push(GridPoint { x2: x * scale, y2: 0 });
+    }
+    for y in (1..=20).step_by(2) {
+        vertices.push(GridPoint { x2: 40 * scale, y2: y * scale });
+    }
+    for x in (1..=40).rev().step_by(2) {
+        vertices.push(GridPoint { x2: x * scale, y2: 20 * scale });
+    }
+    for y in (1..=20).rev().step_by(2) {
+        vertices.push(GridPoint { x2: 0, y2: y * scale });
+    }
+
+    let ring = GridRing {
+        label_index: 1,
+        vertices,
+        saddle_cuts: 0,
+    };
+    let result = fit_closed_ring(&ring, options(0.35)).unwrap();
+
+    assert_eq!(result.primitive, Some(ReconstructedPrimitive::Box));
+    assert_eq!(result.output_nodes, 4);
+    assert_eq!(result.hard_corner_count, 4);
+    assert!(result.path.segments.iter().all(|seg| matches!(seg, SceneSegment::Line { .. })));
+    assert!(result.max_error_px <= 0.35);
+}
+
+#[test]
+fn orthogonal_snapping_keeps_typography_stems_straight() {
+    // LOGO-ORTHO (audit 2026-09-20 §VEC.F01): Nhịp điểm thẳng đứng dài 30px
+    // có răng cưa nhỏ được snap thành đoạn thẳng SceneSegment::Line thay vì cubic uốn lượn.
+    let points = vec![
+        FitPoint { x: 10.0, y: 0.0 },
+        FitPoint { x: 10.08, y: 5.0 },
+        FitPoint { x: 9.95, y: 10.0 },
+        FitPoint { x: 10.05, y: 15.0 },
+        FitPoint { x: 9.98, y: 20.0 },
+        FitPoint { x: 10.02, y: 25.0 },
+        FitPoint { x: 10.0, y: 30.0 },
+    ];
+    let tangent = FitPoint { x: 0.0, y: 1.0 };
+    let result = fit_open_with_tangents(&points, tangent, tangent, options(0.35)).unwrap();
+
+    assert_eq!(result.path.segments.len(), 1);
+    assert!(matches!(result.path.segments[0], SceneSegment::Line { .. }));
+    let end = result.path.segments[0].end_point();
+    assert!((end.x - 10.0).abs() < 1e-6);
+    assert!((end.y - 30.0).abs() < 1e-6);
+}
+
+#[test]
+fn swoosh_cusp_tip_reconstructs_as_sharp_apex_without_chopped_cap() {
+    // [LOGO-FIX audit 2026-09-20 §VEC.CUSP]: Chóp nhọn của swoosh (như logo Pepsi/Nike)
+    // kết thúc bằng bước pixel 1px không được bị chặt cụt thành đoạn thẳng phẳng (blunt cap).
+    // Phải được gom cụm thành 1 đỉnh apex nhọn duy nhất.
+    let samples = vec![
+        (0.0, 0.0),
+        (15.0, 3.0),
+        (30.0, 6.0),
+        (42.0, 8.5),
+        (48.0, 9.5),
+        (50.0, 10.0),
+        (50.0, 11.0), // 1px blunt turnaround from raster
+        (48.0, 11.5),
+        (42.0, 12.5),
+        (30.0, 15.0),
+        (15.0, 18.0),
+        (0.0, 21.0),
+    ];
+    let ring = grid_ring(&samples);
+    let result = fit_closed_ring(&ring, trajectory_options(1.0)).unwrap();
+
+    // Không được chứa đoạn thẳng siêu ngắn 1px cắt ngang mũi nhọn tại x ~ 50
+    let has_chopped_apex_line = result.path.segments.iter().any(|seg| match seg {
+        SceneSegment::Line { to } => {
+            to.x >= 49.0 && (to.y - 10.5).abs() <= 1.5
+        }
+        _ => false,
+    });
+    assert!(
+        !has_chopped_apex_line,
+        "Mũi nhọn không được bị cắt cụt thành đoạn thẳng phẳng"
+    );
+    assert!(result.max_error_px <= 1.0);
+}
+
+

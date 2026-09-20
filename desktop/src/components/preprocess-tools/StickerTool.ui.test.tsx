@@ -27,6 +27,7 @@ const previewApiMocks = vi.hoisted(() => ({
     readStickerCutlinePreviewJob: vi.fn(),
     cancelStickerCutlinePreviewJob: vi.fn(),
     closeStickerSheetSession: vi.fn(),
+    sendCutlineDebugLog: vi.fn(async () => {}),
     resolveWorkingPdf: Object.assign(vi.fn(async () => null), {
         prepare: vi.fn(async () => undefined),
         resolveUnprepared: vi.fn(async () => null),

@@ -23,15 +23,28 @@ export function useLiveLinkWatcher({
     enabled = true,
     onFileChanged,
 }: UseLiveLinkWatcherOptions) {
+    const lastWatchedPathRef = useRef<string | null>(null);
     const lastModifiedRef = useRef<number | null>(null);
     const lastSizeRef = useRef<number | null>(null);
     const isCheckingRef = useRef(false);
+    const onFileChangedRef = useRef(onFileChanged);
+    if (onFileChangedRef && 'current' in onFileChangedRef) {
+        onFileChangedRef.current = onFileChanged;
+    }
 
     useEffect(() => {
         if (!enabled || !filePath) {
+            lastWatchedPathRef.current = null;
             lastModifiedRef.current = null;
             lastSizeRef.current = null;
             return;
+        }
+
+        // Khi đổi đường dẫn sang tệp khác, xóa mtime/size cũ để không so sánh nhầm tệp mới với tệp cũ
+        if (lastWatchedPathRef.current !== filePath) {
+            lastWatchedPathRef.current = filePath;
+            lastModifiedRef.current = null;
+            lastSizeRef.current = null;
         }
 
         let cancelled = false;
@@ -64,7 +77,8 @@ export function useLiveLinkWatcher({
                     // Chờ nhẹ 150ms để ứng dụng ngoài (Illustrator) xả hết buffer ghi đĩa
                     setTimeout(() => {
                         if (cancelled) return;
-                        onFileChanged();
+                        const notify = onFileChangedRef?.current || onFileChanged;
+                        notify();
                     }, 150);
                 }
             } catch {
@@ -95,5 +109,5 @@ export function useLiveLinkWatcher({
             window.removeEventListener('focus', handleFocus);
             clearInterval(interval);
         };
-    }, [filePath, enabled, onFileChanged]);
+    }, [filePath, enabled]);
 }

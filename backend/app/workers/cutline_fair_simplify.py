@@ -239,11 +239,12 @@ def _fair_refit_ring_impl(
     check_preview_cancelled()
     values = np.asarray(source, dtype=np.float64)
     if (values.ndim != 3 or values.shape[1:] != (4, 2) or len(values) < 4
+            or len(values) > 100
             or not np.isfinite(values).all() or not math.isfinite(tolerance)
             or tolerance < .005):
-        # Dưới bước điều khiển Simplify (0,005 mm), giữ nhánh gộp bảo toàn
-        # của caller. Không cho tham số API cực nhỏ kích hoạt tái dựng với
-        # mật độ 1/ε; dung sai yêu cầu vẫn do nhánh bảo toàn kiểm, không nới.
+        # Dưới bước điều khiển Simplify (0,005 mm) hoặc ring quá dày (>100 cubic
+        # khiến solver ma trận phi tuyến giải tích O(N^3) làm tê liệt CPU hàng chục giây),
+        # giữ nhánh gộp bảo toàn của caller.
         return source, 0.0
     origin = values[0, 0].copy()
     local = values-origin

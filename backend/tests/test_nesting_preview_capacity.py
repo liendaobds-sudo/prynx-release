@@ -51,7 +51,8 @@ def _request(**overrides) -> SimpleNamespace:
     """`PreviewLayoutRequest` tối thiểu — snake_case, đơn vị POINT, như frontend gửi."""
 
     parts = int(overrides.pop("parts", 3))
-    quantities = {str(index): 0 for index in range(parts)}
+    # BE.05: fixture khai các mẫu cần in; 0 tường minh giờ là loại bỏ.
+    quantities = {str(index): 1 for index in range(parts)}
     base = dict(
         strategy="true_shape_nesting",
         is_die_cut=True,

@@ -89,6 +89,23 @@ pub(super) fn classify_contours(contours: &[GridRing]) -> Result<Vec<ClassifiedR
         signed_areas.push(area);
     }
 
+    let mut contour_boxes = Vec::with_capacity(contours.len());
+    for contour in contours {
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for v in &contour.vertices {
+            let x = v.x2 as f64;
+            let y = v.y2 as f64;
+            if x < min_x { min_x = x; }
+            if x > max_x { max_x = x; }
+            if y < min_y { min_y = y; }
+            if y > max_y { max_y = y; }
+        }
+        contour_boxes.push((min_x, max_x, min_y, max_y));
+    }
+
     let mut parents = vec![None; contours.len()];
     for (index, contour) in contours.iter().enumerate() {
         let sample = interior_sample(&contour.vertices, signed_areas[index]);
@@ -102,6 +119,10 @@ pub(super) fn classify_contours(contours: &[GridRing]) -> Result<Vec<ClassifiedR
             }
             let candidate_area = signed_areas[candidate_index].abs();
             if candidate_area <= own_area || candidate_area >= best_area {
+                continue;
+            }
+            let (min_x, max_x, min_y, max_y) = contour_boxes[candidate_index];
+            if sample.0 < min_x || sample.0 > max_x || sample.1 < min_y || sample.1 > max_y {
                 continue;
             }
             if point_in_polygon(sample, &candidate.vertices) {
@@ -197,12 +218,19 @@ pub(super) fn validate_simple_ring(vertices: &[GridPoint]) -> Result<(), String>
     let count = vertices.len();
     let mut buckets = HashMap::<(i64, i64), Vec<usize>>::new();
     let mut checked_pairs = HashSet::<(usize, usize)>::new();
+    // PERF (audit 2026-09-20 §VEC.PERF): Dùng ô lưới phân giải 32 units để
+    // tránh vòng lặp từng đơn vị tọa độ lẻ làm bùng nổ hàng triệu hashmap lookups.
+    const BUCKET_SHIFT: i64 = 5;
     for segment in 0..count {
         let next = (segment + 1) % count;
         let start = vertices[segment];
         let end = vertices[next];
-        for bucket_x in start.x2.min(end.x2)..=start.x2.max(end.x2) {
-            for bucket_y in start.y2.min(end.y2)..=start.y2.max(end.y2) {
+        let min_bx = start.x2.min(end.x2) >> BUCKET_SHIFT;
+        let max_bx = start.x2.max(end.x2) >> BUCKET_SHIFT;
+        let min_by = start.y2.min(end.y2) >> BUCKET_SHIFT;
+        let max_by = start.y2.max(end.y2) >> BUCKET_SHIFT;
+        for bucket_x in min_bx..=max_bx {
+            for bucket_y in min_by..=max_by {
                 let entries = buckets.entry((bucket_x, bucket_y)).or_default();
                 for &other in entries.iter() {
                     let other_next = (other + 1) % count;

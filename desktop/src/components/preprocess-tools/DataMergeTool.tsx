@@ -503,6 +503,8 @@ export default function DataMergeTool({
     const isPickingVdpText = useWorkspaceStore((s) => s.isPickingVdpText);
     const setIsPickingVdpText = useWorkspaceStore((s) => s.setIsPickingVdpText);
     const selectionFileId = useWorkspaceStore((s) => s.selectionFileId);
+    const vdpLivePreview = useWorkspaceStore((s) => s.vdpLivePreview);
+    const setVdpLivePreview = useWorkspaceStore((s) => s.setVdpLivePreview);
 
     const handleAutoDetectTags = async () => {
         const fid = selectionFileId || (pdfFile as any)?.path;
@@ -1082,6 +1084,43 @@ export default function DataMergeTool({
         ? (sourceRecordCount ?? csvData.length)
         : csvData.length;
 
+    // Đồng bộ dữ liệu record hiện tại và tổng số record lên workspace store để LivePageFrame render realtime
+    useEffect(() => {
+        if (!csvData || csvData.length === 0) {
+            setVdpLivePreview(prev => {
+                if (prev.totalRecords === 0 && prev.currentRecord === null) return prev;
+                return { ...prev, totalRecords: 0, currentRecord: null };
+            });
+            return;
+        }
+        const safeIdx = Math.max(1, Math.min(csvData.length, previewIndex));
+        const curRow = csvData[safeIdx - 1] || null;
+        let title = 'Bảng dữ liệu';
+        if (dataMode === 'xlsx' && xlsxFile) title = `Excel: ${xlsxFile.name}`;
+        else if (dataMode === 'csv' && lastCsvFileRef.current) title = `CSV: ${lastCsvFileRef.current.name}`;
+        else if (dataMode === 'gsheet') title = 'Google Sheets';
+
+        setVdpLivePreview({
+            recordIndex: safeIdx,
+            totalRecords: previewTotal > 0 ? previewTotal : csvData.length,
+            currentRecord: curRow,
+            sourceTitle: title,
+        });
+    }, [csvData, previewIndex, previewTotal, dataMode, xlsxFile, setVdpLivePreview]);
+
+    // Lắng nghe sự kiện đổi record từ view chính (LivePageFrame) để đồng bộ ngược về sidebar
+    useEffect(() => {
+        const handleIndexChange = (e: Event) => {
+            const ce = e as CustomEvent<{ index: number }>;
+            const idx = ce.detail?.index;
+            if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
+                setPreviewIndex(idx);
+            }
+        };
+        window.addEventListener('vdp-preview-index-change', handleIndexChange);
+        return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
+    }, [previewIndex]);
+
     // Gọi /vdp/preview bất đồng bộ cho record thứ `index` (1-based). Giữ UI phản
     // hồi (không block), huỷ request cũ khi điều hướng nhanh, và chỉ hiện chỉ báo
     // "đang xử lý" khi vượt 2 giây (Req 4.3, 8.5).
@@ -1623,20 +1662,26 @@ export default function DataMergeTool({
                     const next = !isPickingVdpText;
                     setIsPickingVdpText(next);
                     if (next) {
-                        toast.info(t('Nhấp vào bất kỳ đoạn chữ nào trên bản thiết kế để tự động chọn làm trường VDP.'));
+                        toast.info(t('Chế độ chọn liên tục đã bật: Nhấp vào các dòng chữ trên bản thiết kế để bóc tách thành trường VDP, bấm "Xong" hoặc phím Esc khi hoàn tất.'));
                     }
                 }}
                 className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
                     isPickingVdpText
-                        ? 'bg-teal-500 text-white border-teal-600 ring-2 ring-teal-400 ring-offset-1 animate-pulse'
+                        ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
                         : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/50 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
                 }`}
-                title={t('Bật chế độ chọn trường trực tiếp từ chữ trên bản thiết kế')}
+                title={isPickingVdpText ? t('Hoàn tất chọn trường (phím Esc)') : t('Bật chế độ chọn trường trực tiếp từ chữ trên bản thiết kế')}
             >
-                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                </svg>
-                <span>{isPickingVdpText ? t('Đang chọn trường...') : t('Chọn trường')}</span>
+                {isPickingVdpText ? (
+                    <svg className="w-4 h-4 shrink-0 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                ) : (
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                    </svg>
+                )}
+                <span>{isPickingVdpText ? t('✓ Xong chọn trường') : t('Chọn trường')}</span>
             </button>
 
             <button
@@ -1698,7 +1743,9 @@ export default function DataMergeTool({
                     return (
                         <div
                             key={field.id}
-                            onClick={() => onSelectField?.([field.id])}
+                            onClick={() => {
+                                onSelectField?.([field.id]);
+                            }}
                             className={`w-full text-left p-2.5 rounded border transition-colors cursor-pointer ${isSelected ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/30 dark:border-blue-700' : 'bg-white border-slate-200 hover:bg-slate-100 dark:bg-zinc-800 dark:border-zinc-700 dark:hover:bg-zinc-700'}`}
                         >
                             <div className="flex items-center justify-between">
@@ -1743,9 +1790,10 @@ export default function DataMergeTool({
         </div>
             </VdpSection>
 
-            {/* Field Settings Editor */}
+            {/* Field Settings Editor: Tách làm 2 mục riêng biệt */}
+            {/* ─── Mục 4: Ghép cột dữ liệu ─── */}
             {selectedField && (
-                <VdpSection step="4" title={t('preprocess.dataMerge:cai_dat_truong')} accent defaultOpen>
+                <VdpSection step="4" title={t('preprocess.dataMerge:ghep_cot_du_lieu', 'Ghép cột dữ liệu')} accent defaultOpen>
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-1 p-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
                             <span className="text-[12px] font-bold text-blue-700 dark:text-blue-400 block mb-1">{t('preprocess.dataMerge:cot_chinh_cua_o_nay')}</span>
@@ -1778,63 +1826,9 @@ export default function DataMergeTool({
                                 <option value="image">{t('preprocess.dataMerge:hinh_anh_image')}</option>
                             </select>
                         </div>
-                        
-                        {/* UIUX (audit 2026-07-27 §M-4/§D-01): X/Y + W/H cho MỌI loại field kể cả
-                            text. Field lưu theo "mm phồng" (CSS px). Hiển thị/nhập theo mm THẬT
-                            (×0.75) để khớp kích thước trang & file xuất. */}
-                        <div className="grid grid-cols-2 gap-3 mt-1">
-                            <ToolNumberInput
-                                label={t('preprocess.dataMerge:vi_tri_x', 'Vị trí X')}
-                                value={Math.round((selectedField.x || 0) * 0.75 * 100) / 100}
-                                onChange={(val) => updateSelectedField({ x: val / 0.75 })}
-                                suffix="mm" step={0.1}
-                            />
-                            <ToolNumberInput
-                                label={t('preprocess.dataMerge:vi_tri_y', 'Vị trí Y')}
-                                value={Math.round((selectedField.y || 0) * 0.75 * 100) / 100}
-                                onChange={(val) => updateSelectedField({ y: val / 0.75 })}
-                                suffix="mm" step={0.1}
-                            />
-                            <ToolNumberInput
-                                label={t('preprocess.dataMerge:rong_w')}
-                                value={Math.round((selectedField.width || 0) * 0.75 * 100) / 100}
-                                onChange={(val) => updateSelectedField({ width: val / 0.75 })}
-                                suffix="mm" step={0.1}
-                            />
-                            <ToolNumberInput
-                                label="Cao H"
-                                value={Math.round((selectedField.height || 0) * 0.75 * 100) / 100}
-                                onChange={(val) => updateSelectedField({ height: val / 0.75 })}
-                                suffix="mm" step={0.1}
-                            />
-                        </div>
-                        {selectedFieldIds.length >= 1 && (
-                            <VdpAlignPanel
-                                vdpFields={vdpFields}
-                                setVdpFields={setDataMergeFields}
-                                selectedFieldIds={selectedFieldIds}
-                                pageDimMm={viewerPageDimMm}
-                            />
-                        )}
-                        {/* Xoay: áp cho MỌI loại field (text/qr/barcode/image). Backend
-                            render_one_record xử lý field.rotation cho tất cả; trước đây
-                            control này chỉ hiện trong khối barcode nên text/qr/ảnh không
-                            xoay được. */}
-                        <div className="flex flex-col gap-1 mt-1">
-                            <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:xoay_do')}</span>
-                            <select
-                                value={selectedField.rotation || 0}
-                                onChange={(e) => updateSelectedField({ rotation: Number(e.target.value) })}
-                                className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
-                            >
-                                <option value={0}>0°</option>
-                                <option value={90}>90°</option>
-                                <option value={180}>180°</option>
-                                <option value={270}>270°</option>
-                            </select>
-                        </div>
+
                         {['text', 'qrcode', 'barcode'].includes(selectedField.type ?? '') && (
-                            <div className="flex flex-col gap-3 mt-1">
+                            <div className="flex flex-col gap-3 pt-1 border-t border-slate-200 dark:border-zinc-700">
                                 <div className="flex flex-col gap-1">
                                     <span className="text-[10px] font-medium text-slate-500 block mb-1">
                                         {t('preprocess.dataMerge:noi_dung')} {selectedField.type === 'text' ? 'Text' : selectedField.type === 'qrcode' ? 'QR Code' : t('preprocess.dataMerge:ma_vach')} 
@@ -1961,90 +1955,153 @@ export default function DataMergeTool({
                                         )}
                                     </div>
                                 )}
-                                {selectedField.type === 'text' && (
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div className="flex flex-col gap-1 col-span-2">
-                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:font_chu_font_family')}</span>
-                                        <FontSelector 
-                                            value={selectedField.fontName || 'Helvetica'}
-                                            fontFile={selectedField.fontFile}
-                                            onChange={(fontName, fontFile) => updateSelectedField({ fontName, fontFile })}
-                                        />
-                                    </div>
-                                    <div className="flex flex-col gap-1 col-span-2">
-                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:net_font_font_style')}</span>
-                                        <select 
-                                            value={selectedField.fontStyle || 'normal'}
-                                            onChange={(e) => updateSelectedField({ fontStyle: e.target.value })}
-                                            className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
-                                        >
-                                            <option value="normal">Regular</option>
-                                            <option value="bold">Bold</option>
-                                            <option value="italic">Italic</option>
-                                            <option value="bolditalic">Bold Italic</option>
-                                        </select>
-                                    </div>
-                                    
-                                    <ToolNumberInput 
-                                        label={t('preprocess.dataMerge:co_chu')}
-                                        value={selectedField.fontSize || 13}
-                                        onChange={(val) => updateSelectedField({ fontSize: val })}
-                                        suffix="pt" step={1}
-                                    />
-                                    <ToolNumberInput 
-                                        label={t('preprocess.dataMerge:dong_leading')}
-                                        value={selectedField.lineHeight || 1}
-                                        onChange={(val) => updateSelectedField({ lineHeight: val })}
-                                        suffix="em" step={0.1}
-                                    />
-                                    <ToolNumberInput 
-                                        label={t('preprocess.dataMerge:khoang_cach_tracking')}
-                                        value={selectedField.characterSpacing || 0}
-                                        onChange={(val) => updateSelectedField({ characterSpacing: val })}
-                                        suffix="pt" step={0.5}
-                                    />
-                                    <div>
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:can_le')}</span>
-                                        <div className="flex items-center gap-1.5">
-                                            <select 
-                                                value={selectedField.alignment || 'left'}
-                                                onChange={(e) => updateSelectedField({ alignment: e.target.value })}
-                                                className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
-                                            >
-                                                <option value="left">{t('preprocess.dataMerge:trai')}</option>
-                                                <option value="center">{t('preprocess.dataMerge:giua')}</option>
-                                                <option value="right">{t('preprocess.dataMerge:phai')}</option>
-                                            </select>
-                                        </div>
-                                    </div>
-                                    <div className="col-span-2 flex items-center justify-between gap-2 py-1">
-                                        <label className="flex items-center gap-2 text-[12px] font-semibold text-slate-600 dark:text-zinc-300 cursor-pointer select-none">
-                                            <input
-                                                type="checkbox"
-                                                checked={selectedField.autoFit !== false}
-                                                onChange={(e) => updateSelectedField({ autoFit: e.target.checked })}
-                                                className="w-4 h-4 accent-teal-500"
-                                            />
-                                            {t('preprocess.dataMerge:tu_bop_chu_vua_khung')}
-                                        </label>
-                                        <button
-                                            title={t('preprocess.dataMerge:thu_chieu_cao_khung_vua_khit_noi_dung')}
-                                            onClick={fitHeightToText}
-                                            className="h-8 px-2 text-[11px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md hover:border-teal-500 hover:text-teal-600 transition-all"
-                                        >
-                                            {t('preprocess.dataMerge:thu_khung_theo_chu')}
-                                        </button>
-                                    </div>
-                                    <div className="col-span-2">
-                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_chu')}</span>
-                                        <CmykColorPicker
-                                            value={selectedField.fontColor || '#000000'}
-                                            onChange={(hex) => updateSelectedField({ fontColor: hex })}
-                                        />
-                                    </div>
-                                </div>
-                                )}
                             </div>
+                        )}
+                    </div>
+                </VdpSection>
+            )}
+
+            {/* ─── Mục 5: Định dạng & Vị trí ─── */}
+            {selectedField && (
+                <VdpSection step="5" title={t('preprocess.dataMerge:dinh_dang_vi_tri', 'Định dạng & Vị trí')} defaultOpen={false}>
+                    <div className="flex flex-col gap-3">
+                        {/* UIUX (audit 2026-07-27 §M-4/§D-01): X/Y + W/H cho MỌI loại field kể cả
+                            text. Field lưu theo "mm phồng" (CSS px). Hiển thị/nhập theo mm THẬT
+                            (×0.75) để khớp kích thước trang & file xuất. */}
+                        <div className="grid grid-cols-2 gap-3 mt-1">
+                            <ToolNumberInput
+                                label={t('preprocess.dataMerge:vi_tri_x', 'Vị trí X')}
+                                value={Math.round((selectedField.x || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ x: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                            <ToolNumberInput
+                                label={t('preprocess.dataMerge:vi_tri_y', 'Vị trí Y')}
+                                value={Math.round((selectedField.y || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ y: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                            <ToolNumberInput
+                                label={t('preprocess.dataMerge:rong_w')}
+                                value={Math.round((selectedField.width || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ width: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                            <ToolNumberInput
+                                label="Cao H"
+                                value={Math.round((selectedField.height || 0) * 0.75 * 100) / 100}
+                                onChange={(val) => updateSelectedField({ height: val / 0.75 })}
+                                suffix="mm" step={0.1}
+                            />
+                        </div>
+                        {selectedFieldIds.length >= 1 && (
+                            <VdpAlignPanel
+                                vdpFields={vdpFields}
+                                setVdpFields={setDataMergeFields}
+                                selectedFieldIds={selectedFieldIds}
+                                pageDimMm={viewerPageDimMm}
+                            />
+                        )}
+                        {/* Xoay: áp cho MỌI loại field (text/qr/barcode/image). Backend
+                            render_one_record xử lý field.rotation cho tất cả; trước đây
+                            control này chỉ hiện trong khối barcode nên text/qr/ảnh không
+                            xoay được. */}
+                        <div className="flex flex-col gap-1 mt-1">
+                            <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:xoay_do')}</span>
+                            <select
+                                value={selectedField.rotation || 0}
+                                onChange={(e) => updateSelectedField({ rotation: Number(e.target.value) })}
+                                className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                            >
+                                <option value={0}>0°</option>
+                                <option value={90}>90°</option>
+                                <option value={180}>180°</option>
+                                <option value={270}>270°</option>
+                            </select>
+                        </div>
+
+                        {selectedField.type === 'text' && (
+                        <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-200 dark:border-zinc-700">
+                            <div className="flex flex-col gap-1 col-span-2">
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:font_chu_font_family')}</span>
+                                <FontSelector 
+                                    value={selectedField.fontName || 'Helvetica'}
+                                    fontFile={selectedField.fontFile}
+                                    onChange={(fontName, fontFile) => updateSelectedField({ fontName, fontFile })}
+                                />
+                            </div>
+                            <div className="flex flex-col gap-1 col-span-2">
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:net_font_font_style')}</span>
+                                <select 
+                                    value={selectedField.fontStyle || 'normal'}
+                                    onChange={(e) => updateSelectedField({ fontStyle: e.target.value })}
+                                    className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                                >
+                                    <option value="normal">Regular</option>
+                                    <option value="bold">Bold</option>
+                                    <option value="italic">Italic</option>
+                                    <option value="bolditalic">Bold Italic</option>
+                                </select>
+                            </div>
+                            
+                            <ToolNumberInput 
+                                label={t('preprocess.dataMerge:co_chu')}
+                                value={selectedField.fontSize || 13}
+                                onChange={(val) => updateSelectedField({ fontSize: val })}
+                                suffix="pt" step={1}
+                            />
+                            <ToolNumberInput 
+                                label={t('preprocess.dataMerge:dong_leading')}
+                                value={selectedField.lineHeight || 1}
+                                onChange={(val) => updateSelectedField({ lineHeight: val })}
+                                suffix="em" step={0.1}
+                            />
+                            <ToolNumberInput 
+                                label={t('preprocess.dataMerge:khoang_cach_tracking')}
+                                value={selectedField.characterSpacing || 0}
+                                onChange={(val) => updateSelectedField({ characterSpacing: val })}
+                                suffix="pt" step={0.5}
+                            />
+                            <div>
+                                <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:can_le')}</span>
+                                <div className="flex items-center gap-1.5">
+                                    <select 
+                                        value={selectedField.alignment || 'center'}
+                                        onChange={(e) => updateSelectedField({ alignment: e.target.value })}
+                                        className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                                    >
+                                        <option value="center">{t('preprocess.dataMerge:giua')}</option>
+                                        <option value="left">{t('preprocess.dataMerge:trai')}</option>
+                                        <option value="right">{t('preprocess.dataMerge:phai')}</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="col-span-2 flex items-center justify-between gap-2 py-1">
+                                <label className="flex items-center gap-2 text-[12px] font-semibold text-slate-600 dark:text-zinc-300 cursor-pointer select-none">
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedField.autoFit !== false}
+                                        onChange={(e) => updateSelectedField({ autoFit: e.target.checked })}
+                                        className="w-4 h-4 accent-teal-500"
+                                    />
+                                    {t('preprocess.dataMerge:tu_bop_chu_vua_khung')}
+                                </label>
+                                <button
+                                    title={t('preprocess.dataMerge:thu_chieu_cao_khung_vua_khit_noi_dung')}
+                                    onClick={fitHeightToText}
+                                    className="h-8 px-2 text-[11px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md hover:border-teal-500 hover:text-teal-600 transition-all"
+                                >
+                                    {t('preprocess.dataMerge:thu_khung_theo_chu')}
+                                </button>
+                            </div>
+                            <div className="col-span-2">
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_chu')}</span>
+                                <CmykColorPicker
+                                    value={selectedField.fontColor || '#000000'}
+                                    onChange={(hex) => updateSelectedField({ fontColor: hex })}
+                                />
+                            </div>
+                        </div>
                         )}
 
                         {selectedField.type === 'qrcode' && selectedField.qrStyle && (
@@ -2273,7 +2330,7 @@ export default function DataMergeTool({
 
             {/* Logic điều kiện: ẩn/hiện + bảng rule cho field (task 14.2, Req 2.1/2.2/2.5/2.6) */}
             {selectedField && (
-                <VdpSection step="5" title={t('preprocess.dataMerge:logic_dieu_kien_an_hien_rule')} defaultOpen={false}>
+                <VdpSection step="6" title={t('preprocess.dataMerge:logic_dieu_kien_an_hien_rule')} defaultOpen={false}>
                     <VdpLogicPanel
                         field={selectedField}
                         csvHeaders={csvHeaders}
@@ -2284,8 +2341,23 @@ export default function DataMergeTool({
             )}
 
             {/* Xem trước record + điều hướng + dấu lỗi (task 14.3, Req 4.2/4.3/4.5/4.6/4.9) */}
-            <VdpSection step="6" title={t('preprocess.dataMerge:xem_truoc_record')} defaultOpen={false}>
+            <VdpSection step="7" title={t('preprocess.dataMerge:xem_truoc_record')} defaultOpen={false}>
                 <div className="flex flex-col gap-3">
+                    {/* Nút bật/tắt xem trực tiếp trên view chính */}
+                    <button
+                        type="button"
+                        onClick={() => setVdpLivePreview({ enabled: !vdpLivePreview.enabled })}
+                        className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
+                            vdpLivePreview.enabled
+                                ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
+                                : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
+                        }`}
+                        title={vdpLivePreview.enabled ? t('Bấm để tắt xem trước trên view chính') : t('Bật xem trước dữ liệu thật trên view chính')}
+                    >
+                        <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-teal-500'}`} />
+                        <span>{vdpLivePreview.enabled ? t('✓ Đang xem dữ liệu thật trên View chính') : t('👁️ Bật xem trực tiếp trên View chính')}</span>
+                    </button>
+
                     {/* Điều hướng record: Prev / ô chỉ số / Next + nút Xem */}
                     <div className="flex items-center gap-2">
                         <button
@@ -2404,7 +2476,7 @@ export default function DataMergeTool({
             </VdpSection>
 
             {/* Kiểm tra trước khi chạy + xuất báo cáo lỗi CSV (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) */}
-            <VdpSection step="7" title={t('preprocess.dataMerge:kiem_tra_truoc_khi_chay')} defaultOpen={false}>
+            <VdpSection step="8" title={t('preprocess.dataMerge:kiem_tra_truoc_khi_chay')} defaultOpen={false}>
                 <div className="flex flex-col gap-3">
                     <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic leading-snug">
                         {t('preprocess.dataMerge:kiem_tra_placeholder_anh_bien_doi_va')}

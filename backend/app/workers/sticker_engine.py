@@ -2742,11 +2742,12 @@ def _fit_alpha_source_smoothed_paths(
         merge_short_options = (True,)
         tension_options = (0.33, 0.22, 0.10, 0.03)
     else:
+        # PERF (audit 2026-09-19): Dùng 7 mức tension đại diện thay vì 14 mức dày đặc
         merge_short_options = (False, True)
         tension_options = (
-            0.33, 0.30, 0.26, 0.22, 0.18, 0.15,
-            0.12, 0.10, 0.07, 0.05, 0.03, 0.02, 0.01, 0.005,
+            0.33, 0.22, 0.15, 0.10, 0.05, 0.02, 0.005,
         )
+    raw_candidates = []
     for anchor_geometry, simplify_mm in anchor_candidates:
         anchor_parts = (
             [anchor_geometry]
@@ -2822,22 +2823,56 @@ def _fit_alpha_source_smoothed_paths(
                     )
                 ):
                     continue
-                motion_rank = _alpha_candidate_motion_rank(
-                    all_paths,
-                    mm_to_pts=mm_to_pts,
-                    diagonal_mm=diagonal_mm,
-                    can_protect_sparse_cusps=False,
+                # PERF (audit 2026-09-19): Lọc sơ bộ trước khi tính curvature chi tiết
+                prescreen_metrics = [
+                    analyze_machine_path(
+                        cubic_segments_from_tuples(path),
+                        mm_to_units=mm_to_pts,
+                        smooth_join_threshold_degrees=_PRESERVED_MOTION_SMOOTH_JOIN_DEGREES,
+                        short_segment_threshold_mm=_PRESERVED_MOTION_SHORT_SEGMENT_MM,
+                        samples_per_cubic=12,
+                        curvature_samples_per_cubic=1,
+                        curvature_noise_floor_per_mm=(
+                            _PRESERVED_MOTION_CURVATURE_NOISE_PER_DIAGONAL
+                            / max(diagonal_mm, 1e-9)
+                        ),
+                    )
+                    for path in all_paths
+                ]
+                prescreen_rank = (
+                    sum(m.short_segment_count for m in prescreen_metrics) > 0,
+                    sum(m.discontinuous_join_count for m in prescreen_metrics),
+                    sum(m.segment_count for m in prescreen_metrics),
                 )
-                candidates.append(
-                    (motion_rank, sampled_geometry, all_paths, simplify_mm)
+                raw_candidates.append(
+                    (prescreen_rank, sampled_geometry, all_paths, simplify_mm)
                 )
+
+    if raw_candidates:
+        raw_candidates.sort(key=lambda c: c[0])
+        for _p_rank, geom, paths, tol in raw_candidates[:3]:
+            motion_rank = _alpha_candidate_motion_rank(
+                paths,
+                mm_to_pts=mm_to_pts,
+                diagonal_mm=diagonal_mm,
+                can_protect_sparse_cusps=False,
+            )
+            candidates.append((motion_rank, geom, paths, tol))
+
     if not candidates:
         return None
     _rank, sampled_geometry, all_paths, simplify_mm = min(
         candidates,
         key=lambda candidate: candidate[0],
     )
-    return sampled_geometry, all_paths, simplify_mm
+    result = _AlphaCandidateResult((sampled_geometry, all_paths, simplify_mm))
+    result.motion_rank = _rank
+    return result
+
+
+class _AlphaCandidateResult(tuple):
+    """3-tuple (sampled_geometry, all_paths, simplify_mm) kèm motion_rank đã tính sẵn để tránh tính lại."""
+    motion_rank: tuple | None = None
 
 
 def _fit_alpha_simplified_anchor_paths(
@@ -2874,14 +2909,12 @@ def _fit_alpha_simplified_anchor_paths(
         # QUALITY (audit 2026-08-08 §AI-MOTION.1): headroom nhỏ + simplify gần
         # hết ngân sách cho phép Catmull G1 đi qua đúng quỹ đạo nhưng không bị
         # safe-envelope loại chỉ vì tay nắm vượt ra ngoài Alpha vài phần pixel.
+        # PERF (audit 2026-09-19): Chọn các profile đại diện, loại bỏ trùng lặp
         (0.16, 0.90, 1),
         (0.13, 0.90, 1),
         (0.37, 0.49, 2),
         (0.43, 0.43, 2),
-        (0.31, 0.43, 2),
-        (0.37, 0.43, 2),
         (0.31, 0.37, 2),
-        (0.25, 0.37, 2),
     )
     min_x, min_y, max_x, max_y = ideal_cut_geometry.bounds
     diagonal_mm = math.hypot(max_x - min_x, max_y - min_y) / max(
@@ -2935,6 +2968,7 @@ def _fit_alpha_simplified_anchor_paths(
             source_paths,
             source_tolerance,
         ))
+    raw_candidates = []
     for profile_index, (
         inset_fraction,
         simplify_fraction,
@@ -2979,14 +3013,15 @@ def _fit_alpha_simplified_anchor_paths(
         else:
             continue
 
+        # PERF (audit 2026-09-19): Dùng các mức tension đại diện thay vì 15 mức dày đặc
         builders = [
             ("g1", tension)
             for tension in (
-                0.33, 0.30, 0.26, 0.22, 0.18, 0.15, 0.12, 0.10, 0.08,
+                0.33, 0.22, 0.12, 0.08,
             )
         ] + [
             ("corner_locked", tension)
-            for tension in (0.15, 0.12, 0.10, 0.08, 0.05, 0.03)
+            for tension in (0.12, 0.05)
         ]
         for builder, tension in builders:
             all_paths = []
@@ -3060,22 +3095,54 @@ def _fit_alpha_simplified_anchor_paths(
                 )
             ):
                 continue
+            # PERF (audit 2026-09-19): Hai tầng xếp hạng ứng viên Alpha:
+            # Tầng 1: Đánh giá nhanh (prescreen) bằng độ dài lệnh và góc tiếp tuyến (không sample curvature đắt đỏ).
+            # Tầng 2: Chỉ chạy _alpha_candidate_motion_rank đầy đủ trên top ứng viên tốt nhất.
+            prescreen_metrics = [
+                analyze_machine_path(
+                    cubic_segments_from_tuples(path),
+                    mm_to_units=mm_to_pts,
+                    smooth_join_threshold_degrees=_PRESERVED_MOTION_SMOOTH_JOIN_DEGREES,
+                    short_segment_threshold_mm=_PRESERVED_MOTION_SHORT_SEGMENT_MM,
+                    samples_per_cubic=12,
+                    curvature_samples_per_cubic=1,
+                    curvature_noise_floor_per_mm=(
+                        _PRESERVED_MOTION_CURVATURE_NOISE_PER_DIAGONAL
+                        / max(diagonal_mm, 1e-9)
+                    ),
+                )
+                for path in all_paths
+            ]
+            prescreen_rank = (
+                sum(m.short_segment_count for m in prescreen_metrics) > 0,
+                sum(m.discontinuous_join_count for m in prescreen_metrics),
+                sum(m.segment_count for m in prescreen_metrics),
+            )
+            raw_candidates.append(
+                (prescreen_rank, sampled_geometry, all_paths, simplify_mm, builder == "corner_locked")
+            )
+
+    if raw_candidates:
+        # Lấy top ứng viên tốt nhất qua prescreen để đánh giá curvature đầy đủ
+        raw_candidates.sort(key=lambda c: c[0])
+        for _p_rank, geom, paths, tol, can_protect in raw_candidates[:4]:
             motion_rank = _alpha_candidate_motion_rank(
-                all_paths,
+                paths,
                 mm_to_pts=mm_to_pts,
                 diagonal_mm=diagonal_mm,
-                can_protect_sparse_cusps=(builder == "corner_locked"),
+                can_protect_sparse_cusps=can_protect,
             )
-            candidates.append(
-                (motion_rank, sampled_geometry, all_paths, simplify_mm)
-            )
+            candidates.append((motion_rank, geom, paths, tol))
+
     if not candidates:
         return None
     _rank, sampled_geometry, all_paths, simplify_mm = min(
         candidates,
         key=lambda candidate: candidate[0],
     )
-    return sampled_geometry, all_paths, simplify_mm
+    result = _AlphaCandidateResult((sampled_geometry, all_paths, simplify_mm))
+    result.motion_rank = _rank
+    return result
 
 
 def _polygon_node_count(geometry) -> int:
@@ -3166,6 +3233,7 @@ def _preserved_candidate_motion_rank(
     mm_to_pts: float,
     diagonal_mm: float,
     can_protect_sparse_cusps: bool,
+    metrics: list | None = None,
 ):
     """Xếp hạng quỹ đạo mà không biến số node thành điều kiện đúng/sai.
 
@@ -3173,21 +3241,22 @@ def _preserved_candidate_motion_rank(
     và hõm của tim). Quy tắc này đứng sau yêu cầu không có lệnh cực ngắn, nhưng
     đứng trước số lần đảo dấu độ cong để nhánh trơn không được phép xóa cusp.
     """
-    metrics = [
-        analyze_machine_path(
-            cubic_segments_from_tuples(path),
-            mm_to_units=mm_to_pts,
-            smooth_join_threshold_degrees=(
-                _PRESERVED_MOTION_SMOOTH_JOIN_DEGREES
-            ),
-            short_segment_threshold_mm=_PRESERVED_MOTION_SHORT_SEGMENT_MM,
-            curvature_noise_floor_per_mm=(
-                _PRESERVED_MOTION_CURVATURE_NOISE_PER_DIAGONAL
-                / max(diagonal_mm, 1e-9)
-            ),
-        )
-        for path in paths
-    ]
+    if metrics is None:
+        metrics = [
+            analyze_machine_path(
+                cubic_segments_from_tuples(path),
+                mm_to_units=mm_to_pts,
+                smooth_join_threshold_degrees=(
+                    _PRESERVED_MOTION_SMOOTH_JOIN_DEGREES
+                ),
+                short_segment_threshold_mm=_PRESERVED_MOTION_SHORT_SEGMENT_MM,
+                curvature_noise_floor_per_mm=(
+                    _PRESERVED_MOTION_CURVATURE_NOISE_PER_DIAGONAL
+                    / max(diagonal_mm, 1e-9)
+                ),
+            )
+            for path in paths
+        ]
     short_segment_count = sum(metric.short_segment_count for metric in metrics)
     sharp_join_count = sum(
         metric.discontinuous_join_count for metric in metrics
@@ -3254,19 +3323,8 @@ def _alpha_candidate_motion_rank(
     trọng hơn, cubic có tay nắm quá ngắn vẫn nhìn như polyline dù góc tiếp tuyến
     bằng 0. Vì vậy Alpha ưu tiên độ nhảy độ cong P95 trước số lần đổi dấu và node.
     """
-    preserved_rank = _preserved_candidate_motion_rank(
-        paths,
-        mm_to_pts=mm_to_pts,
-        diagonal_mm=diagonal_mm,
-        can_protect_sparse_cusps=can_protect_sparse_cusps,
-    )
-    (
-        has_short_segments,
-        loses_sparse_cusps,
-        curvature_flip_count,
-        artificial_join_count,
-        segment_count,
-    ) = preserved_rank
+    # PERF (audit 2026-09-19): Tính analyze_machine_path một lượt duy nhất
+    # dùng chung cho cả preserved rank và curvature metrics, tránh tính trùng x2.
     curvature_metrics = [
         analyze_machine_path(
             cubic_segments_from_tuples(path),
@@ -3282,6 +3340,20 @@ def _alpha_candidate_motion_rank(
         )
         for path in paths
     ]
+    preserved_rank = _preserved_candidate_motion_rank(
+        paths,
+        mm_to_pts=mm_to_pts,
+        diagonal_mm=diagonal_mm,
+        can_protect_sparse_cusps=can_protect_sparse_cusps,
+        metrics=curvature_metrics,
+    )
+    (
+        has_short_segments,
+        loses_sparse_cusps,
+        curvature_flip_count,
+        artificial_join_count,
+        segment_count,
+    ) = preserved_rank
     p95_curvature_jump = max(
         (
             metric.p95_curvature_jump_per_mm or 0.0
@@ -3311,6 +3383,7 @@ def _alpha_candidate_motion_rank(
         curvature_flip_count,
         segment_count,
     )
+
 
 
 def _fit_preserved_contour_paths(
@@ -3816,15 +3889,18 @@ def _fit_alpha_bezier_paths_core(
         candidates = [result for result in results if result is not None]
         if not candidates:
             return None
-        return min(
-            candidates,
-            key=lambda result: _alpha_candidate_motion_rank(
+        # PERF (audit 2026-09-19): Tái dùng motion_rank đã tính sẵn từ _fit_alpha_*
+        def _get_motion_rank(result):
+            cached = getattr(result, "motion_rank", None)
+            if cached is not None:
+                return cached
+            return _alpha_candidate_motion_rank(
                 result[1],
                 mm_to_pts=mm_to_pts,
                 diagonal_mm=diagonal_mm,
                 can_protect_sparse_cusps=True,
-            ),
-        )
+            )
+        return min(candidates, key=_get_motion_rank)
 
     if (
         use_adaptive_corners
@@ -8089,173 +8165,11 @@ def _make_srgb_colorspace(pdf: pikepdf.Pdf):
         return pikepdf.Name.DeviceRGB
 
 
-def _stable_pdf_object_signature(
-    value,
-    *,
-    cache: dict | None = None,
-    active: set | None = None,
-    depth: int = 0,
-):
-    """Build an object-number-independent signature for a PDF resource.
+from app.core.pdf_resource_dedup import (
+    deduplicate_image_xobjects as _deduplicate_image_xobjects,
+    stable_pdf_object_signature as _stable_pdf_object_signature,
+)
 
-    Worker PDFs assign new object numbers to copied images. The signature includes
-    the complete stream dictionary (except /Length), nested ICC profiles and soft
-    masks, so only byte-for-byte equivalent resources can be merged. Cyclic or
-    unexpectedly deep graphs are rejected instead of being deduplicated.
-    """
-    if cache is None:
-        cache = {}
-    if active is None:
-        active = set()
-    if depth > 8:
-        raise ValueError("PDF resource graph is too deep to deduplicate safely")
-
-    if isinstance(value, pikepdf.Stream):
-        object_id = ("stream", value.objgen)
-        if value.objgen != (0, 0) and object_id in cache:
-            return cache[object_id]
-        if object_id in active:
-            raise ValueError("Cyclic PDF stream resource")
-        active.add(object_id)
-        try:
-            entries = tuple(sorted(
-                (
-                    str(key),
-                    _stable_pdf_object_signature(
-                        value.get(key), cache=cache, active=active, depth=depth + 1
-                    ),
-                )
-                for key in value.keys()
-                if str(key) != "/Length"
-            ))
-            signature = (
-                "stream",
-                entries,
-                hashlib.sha256(value.read_raw_bytes()).digest(),
-            )
-        finally:
-            active.remove(object_id)
-        if value.objgen != (0, 0):
-            cache[object_id] = signature
-        return signature
-
-    if isinstance(value, pikepdf.Array):
-        return (
-            "array",
-            tuple(
-                _stable_pdf_object_signature(
-                    item, cache=cache, active=active, depth=depth + 1
-                )
-                for item in value
-            ),
-        )
-
-    if isinstance(value, pikepdf.Dictionary):
-        object_id = ("dict", value.objgen)
-        if value.objgen != (0, 0) and object_id in cache:
-            return cache[object_id]
-        if object_id in active:
-            raise ValueError("Cyclic PDF dictionary resource")
-        active.add(object_id)
-        try:
-            signature = (
-                "dict",
-                tuple(sorted(
-                    (
-                        str(key),
-                        _stable_pdf_object_signature(
-                            value.get(key),
-                            cache=cache,
-                            active=active,
-                            depth=depth + 1,
-                        ),
-                    )
-                    for key in value.keys()
-                    if str(key) != "/Length"
-                )),
-            )
-        finally:
-            active.remove(object_id)
-        if value.objgen != (0, 0):
-            cache[object_id] = signature
-        return signature
-
-    return (type(value).__name__, str(value))
-
-
-def _deduplicate_image_xobjects(pdf: pikepdf.Pdf) -> dict:
-    """Rewire identical image resources introduced by cross-worker PDF merges."""
-    started = time.perf_counter()
-    signature_cache = {}
-    canonical_by_signature = {}
-    replacements = {}
-    duplicate_bytes = 0
-    image_count = 0
-
-    for obj in list(pdf.objects):
-        try:
-            if not (
-                isinstance(obj, pikepdf.Stream)
-                and str(obj.get("/Subtype", "")) == "/Image"
-                and obj.objgen != (0, 0)
-            ):
-                continue
-            image_count += 1
-            signature = _stable_pdf_object_signature(obj, cache=signature_cache)
-            canonical = canonical_by_signature.get(signature)
-            if canonical is None:
-                canonical_by_signature[signature] = obj
-            else:
-                replacements[obj.objgen] = canonical
-                duplicate_bytes += int(obj.get("/Length", 0) or 0)
-        except Exception as exc:
-            logger.debug("Skip unsafe image dedup candidate: %s", exc)
-
-    rewired = 0
-    if replacements:
-        for obj in list(pdf.objects):
-            try:
-                if (
-                    isinstance(obj, pikepdf.Stream)
-                    and str(obj.get("/Subtype", "")) == "/Image"
-                ):
-                    for key in ("/SMask", "/Mask"):
-                        ref = obj.get(key, None)
-                        if isinstance(ref, pikepdf.Stream):
-                            canonical = replacements.get(ref.objgen)
-                            if canonical is not None:
-                                obj[pikepdf.Name(key)] = canonical
-                                rewired += 1
-
-                if not isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
-                    continue
-                resources = obj.get("/Resources", None)
-                if not isinstance(resources, pikepdf.Dictionary):
-                    continue
-                xobjects = resources.get("/XObject", None)
-                if not isinstance(xobjects, pikepdf.Dictionary):
-                    continue
-                for name in list(xobjects.keys()):
-                    ref = xobjects.get(name)
-                    if not isinstance(ref, pikepdf.Stream):
-                        continue
-                    canonical = replacements.get(ref.objgen)
-                    if canonical is not None:
-                        xobjects[name] = canonical
-                        rewired += 1
-            except Exception as exc:
-                logger.debug("Cannot rewrite one PDF image resource: %s", exc)
-
-        pdf.remove_unreferenced_resources()
-
-    return {
-        "images": image_count,
-        "unique": len(canonical_by_signature),
-        "duplicates": len(replacements),
-        "rewired": rewired,
-        "candidate_bytes": duplicate_bytes,
-        "seconds": time.perf_counter() - started,
-    }
 
 def _rectangle_vector_bleed_commands(
     xobject_name,
@@ -8679,6 +8593,38 @@ def _cap_sticker_workers(
     return max(1, cap)
 
 
+def _page_has_smask_image(page_in_pike) -> bool:
+    """Kiểm tra nhanh xem trang PDF có chứa ảnh raster mang Soft Mask (/SMask) hay không.
+
+    PERF (audit 2026-09-19): Các file PNG trong suốt khi gộp/combine vào PDF sẽ lưu kênh Alpha
+    dưới dạng /SMask của Image XObject. Phát hiện /SMask cho phép StickerEngine tự động kích hoạt
+    chế độ đọc Alpha chuẩn, tránh việc PDFium ép nền trắng làm vỡ vụn artwork trắng bên trong
+    thành hàng trăm mảnh và gây chậm nghiêm trọng.
+    """
+    if page_in_pike is None:
+        return False
+    try:
+        resources = page_in_pike.get("/Resources")
+        if not resources:
+            return False
+        xobjs = resources.get("/XObject")
+        if not xobjs:
+            return False
+        for obj in xobjs.values():
+            subtype = obj.get("/Subtype")
+            if subtype == "/Image" and "/SMask" in obj:
+                return True
+            if subtype == "/Form":
+                f_res = obj.get("/Resources")
+                if f_res and "/XObject" in f_res:
+                    for f_obj in f_res["/XObject"].values():
+                        if f_obj.get("/Subtype") == "/Image" and "/SMask" in f_obj:
+                            return True
+    except Exception:
+        pass
+    return False
+
+
 def _automatic_simplify_mm(page, document, page_number, *, alpha_source=False, approved=None):
     """AUTO chỉ dành đường mới từ raster/Alpha; không suy từ trang đang xem."""
     if _page_defines_cut_contour(page):
@@ -8709,10 +8655,20 @@ def _process_sticker_chunk(args: dict):
     chunk_idx = args["chunk_idx"]
     pages = args.get("page_indices") or []
     t0 = time.perf_counter()
+    pid = os.getpid()
     logger.debug(
         "[STICKER] chunk start idx=%s pages=%s pid=%s",
-        chunk_idx, pages, os.getpid(),
+        chunk_idx, pages, pid,
     )
+    try:
+        from app.utils.cutline_debug_log import log_cutline
+        log_cutline(
+            "WORKER",
+            "CHUNK_START",
+            f"chunk={chunk_idx} pages={pages} count={len(pages)} pid={pid}",
+        )
+    except Exception:
+        pass
     # OVERSUBSCRIPTION FIX: OpenCV/BLAS tự đa luồng (cv2.getNumThreads=số nhân). Chạy
     # W worker mà mỗi worker vẫn dùng full nhân → W×nhân luồng chen nhau trên số nhân
     # có hạn → thrashing (đo thực: 6 worker chỉ nhanh 2x thay vì ~6x). Ghim mỗi worker
@@ -8765,10 +8721,21 @@ def _process_sticker_chunk(args: dict):
             _simplify_memo=args.get("simplify_memo"),
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
+        t_chunk = time.perf_counter() - t0
         logger.debug(
             "[STICKER] chunk done idx=%s pages=%s s=%.2f pid=%s",
-            chunk_idx, pages, time.perf_counter() - t0, os.getpid(),
+            chunk_idx, pages, t_chunk, pid,
         )
+        try:
+            from app.utils.cutline_debug_log import log_cutline
+            log_cutline(
+                "WORKER",
+                "CHUNK_DONE",
+                f"chunk={chunk_idx} pages={pages} pid={pid}",
+                elapsed_s=round(t_chunk, 3),
+            )
+        except Exception:
+            pass
         return (chunk_idx, result)
     except Exception as error:
         logger.error(
@@ -8956,6 +8923,7 @@ class StickerEngine:
         doc_out = None
         canonical_input_path = None
         canonical_input_is_temp = False
+        _process_start_time = time.perf_counter()
         try:
             debug_step = "Open Original PDF"
             if _page_subset is None:
@@ -9082,10 +9050,20 @@ class StickerEngine:
                     first_page_area_pt2 = float(_pw) * float(_ph)
                 except Exception:
                     first_page_area_pt2 = None
+            # PERF (2026-09-20 §CUT-FIRST-PAGE-PARALLEL): Khi cut_first_page_only=True và bleed_mm <= 0,
+            # chỉ duy nhất trang 1 cần tạo đường cắt. Trang 2..N không có đường cắt và không bù xén ->
+            # bỏ qua spawn pool đa tiến trình (tốn 3-5s overhead). Chạy tuần tự in-process xong trong <1s.
+            if cut_first_page_only and bleed_mm <= 0.0:
+                logger.info(
+                    "[STICKER] cut_first_page_only=True và bleed_mm=%.2f <= 0: "
+                    "Chỉ tạo khuôn trang đầu, %d trang sau giữ nguyên -> chạy trực tiếp tuần tự siêu tốc.",
+                    bleed_mm, pdfium_page_count - 1 if pdfium_page_count > 1 else 0,
+                )
             if (
                 _page_subset is None
                 and not selection_mode
                 and process_page_indexes is None
+                and not (cut_first_page_only and bleed_mm <= 0.0)
                 and _n_pages_should_parallelize(
                     pdfium_page_count, page_area_pt2=first_page_area_pt2
                 )
@@ -9101,6 +9079,11 @@ class StickerEngine:
                     n_pages_probe, input_mb, rectangle_mode, bleed_mm, cut_mode,
                     self.dpi,
                 )
+                doc_has_smask = any(
+                    _page_has_smask_image(p)
+                    for p in doc_in_pike.pages[:min(len(doc_in_pike.pages), 8)]
+                )
+                resolved_alpha_source = alpha_source_contour or doc_has_smask
                 with pdfium_guard():
                     doc_in_pdfium.close()
                 doc_in_pdfium = None
@@ -9120,7 +9103,7 @@ class StickerEngine:
                     bleed_sides=bleed_sides_resolved,
                     alpha_corner_policy=alpha_corner_policy,
                     alpha_source_pixel_mm=alpha_source_pixel_mm,
-                    alpha_source_mode=alpha_source_contour,
+                    alpha_source_mode=resolved_alpha_source,
                     cutline_smoothness=cutline_smoothness,
                     # QUALITY (audit 2026-09-09 §BINDER2.1): đừng để worker
                     # trở về 0 khi người dùng đã chọn mức Khử răng cưa khác.
@@ -9200,8 +9183,17 @@ class StickerEngine:
 
             for page_idx in _page_list:
                 page_started = time.perf_counter()
+                t_open_pdfium = 0.0
+                t_open_pike = 0.0
                 raster_seconds = 0.0
+                mask_prep_seconds = 0.0
                 contour_seconds = 0.0
+                geom_union_recon_seconds = 0.0
+                buffer_fit_seconds = 0.0
+                xobject_seconds = 0.0
+                simplify_seconds = 0.0
+                shape_detect_seconds = 0.0
+                content_add_seconds = 0.0
                 selected_peel_px = None
                 gs_seconds = 0.0
                 smooth_seconds = 0.0
@@ -9230,12 +9222,57 @@ class StickerEngine:
                 approved_edge_background_tolerance = 0
                 alpha_edge_background_rgb = None
                 alpha_edge_background_tolerance = 0
+                _cut_page_ok = (not cut_first_page_only) or (page_idx == 0)
+
+                # PERF (2026-09-20 §CUT-FIRST-PAGE-FAST): Khi cut_first_page_only=True và bleed_mm <= 0,
+                # trang 2..N không có đường cắt và không bù xén. Nối thẳng page_in_pike vào doc_out,
+                # bỏ qua hoàn toàn PDFium render 300 DPI, marching-squares và buffer_fit.
+                if cut_first_page_only and page_idx > 0 and bleed_mm <= 0.0:
+                    if page_in is not None:
+                        with pdfium_guard():
+                            page_in.close()
+                            page_in = None
+                    page_in_pike = doc_in_pike.pages[page_idx]
+                    doc_out.pages.append(page_in_pike)
+                    all_pages_meta.append({
+                        "cut_first_page_skipped": True,
+                        "has_dieline": False,
+                        "page": page_idx + 1,
+                    })
+                    logger.info(
+                        "[STICKER] Trang %d/%d: Bỏ qua (chỉ tạo đường cắt trang đầu & không bù xén)",
+                        page_idx + 1, _n_pages,
+                    )
+                    try:
+                        from app.utils.cutline_debug_log import log_cutline
+                        log_cutline(
+                            "ENGINE",
+                            "PAGE_SKIPPED",
+                            f"page={page_idx + 1} reason=cut_first_page_only_no_bleed",
+                        )
+                    except Exception:
+                        pass
+                    continue
+
                 debug_step = f"Rasterize Page {page_idx}"
+                _t0_pdfium = time.perf_counter()
                 with pdfium_guard():
                     if page_in is not None:
                         page_in.close()
                     page_in = doc_in_pdfium[page_idx]
+                t_open_pdfium = time.perf_counter() - _t0_pdfium
+                _t0_pike = time.perf_counter()
                 page_in_pike = doc_in_pike.pages[page_idx]
+                t_open_pike = time.perf_counter() - _t0_pike
+                try:
+                    _pw_box = float(page_in_pike.cropbox[2]) - float(page_in_pike.cropbox[0])
+                    _ph_box = float(page_in_pike.cropbox[3]) - float(page_in_pike.cropbox[1])
+                    logger.info(
+                        "[STICKER] Bắt đầu trang %d/%d (khổ %.1f x %.1f pt, dpi=%d)...",
+                        page_idx + 1, _n_pages, _pw_box, _ph_box, self.dpi,
+                    )
+                except Exception:
+                    pass
                 selection_page_mode = page_idx in selection_targets
                 approved_payload = approved_contour_overrides.get(page_idx)
                 alpha_path_payload = alpha_path_overrides.get(page_idx)
@@ -9407,7 +9444,9 @@ class StickerEngine:
                         img = cv2.cvtColor(img_native, cv2.COLOR_RGB2RGBA)
                         has_alpha = False
                     else:
-                        if alpha_source_contour:
+                        page_has_smask = _page_has_smask_image(page_in_pike)
+                        page_alpha_source = alpha_source_contour or page_has_smask
+                        if page_alpha_source:
                             # PDF trung gian của PNG giữ Alpha trong /SMask. Render
                             # nền trong suốt để lấy lại silhouette, không composite trắng.
                             with pdfium_guard():
@@ -9473,6 +9512,7 @@ class StickerEngine:
                 # Bỏ qua giúp rectangle nhanh hẳn (audit tốc độ 2026-07-08).
                 # LƯU Ý: rect mode bỏ qua remove_white_bg/alpha — đúng ngữ nghĩa "shape
                 # là cả trang"; đừng dựa auto-trim trắng khi rectangle_mode=True.
+                _t0_mask = time.perf_counter()
                 if rectangle_mode:
                     _full = np.full(img.shape[:2], 255, dtype=np.uint8)
                     base_mask = raw_mask = mask = aa_mask = _full
@@ -9699,6 +9739,7 @@ class StickerEngine:
                     )
                     aa_mask_padded = np.pad(contour_mask, pad_width=1, mode='constant', constant_values=0)
 
+                    mask_prep_seconds = time.perf_counter() - _t0_mask
                     debug_step = f"Find Contours Page {page_idx}"
                     from skimage import measure
                     contour_started = time.perf_counter()
@@ -9826,6 +9867,7 @@ class StickerEngine:
                         )
                 
                 elif cut_mode != "none" and len(contours) > 0:
+                    _t0_geom = time.perf_counter()
                     debug_step = f"Process Contours Page {page_idx}"
                     poly_scale = contour_pixel_to_pt
                     
@@ -10025,6 +10067,8 @@ class StickerEngine:
                                 "reconstructed": False,
                                 "error": type(_recon_err).__name__,
                             }
+                        geom_union_recon_seconds = time.perf_counter() - _t0_geom
+                        _t0_fit = time.perf_counter()
 
                         # Vị trí đường cắt + mép ngoài bù xén — xem compute_cut_bleed_offsets.
                         total_offset, bleed_outer_offset = compute_cut_bleed_offsets(
@@ -10151,6 +10195,12 @@ class StickerEngine:
                             # thẳng; fit lần hai từng làm preview đúng nhưng PDF sai.
                             cut_poly, cut_fitted_paths = override_result
                             dieline_poly = cut_poly
+                        elif not _cut_page_ok:
+                            # PERF (2026-09-20 §CUT-FIRST-PAGE-NO-FIT): Khi cut_first_page_only=True và page_idx > 0,
+                            # trang này CHỈ bù xén, KHÔNG vẽ đường cắt. Bỏ qua toàn bộ bước fit Bézier
+                            # (_fit_alpha_bezier_paths, _fit_preserved_contour_paths, _fit_round_contour_paths),
+                            # tiết kiệm 1.5–6s mỗi trang.
+                            cut_poly = dieline_poly
                         elif (
                             alpha_source_contour or approved_contour_page
                         ) and preserve_contour:
@@ -10301,6 +10351,7 @@ class StickerEngine:
                                         _cut_simplify,
                                         preserve_topology=False,
                                     )
+                    buffer_fit_seconds = time.perf_counter() - _t0_fit
 
                 # ============================================================
                 # STEP B: Generate bleed using dieline_poly for perfect alignment
@@ -11050,8 +11101,10 @@ class StickerEngine:
                 # by the original artwork layer. Its resources retain CMYK/ICC/spot.
                 src_xobj_name = None
                 if not selection_page_mode and flattened_img_name is None:
+                    _t0_xobj = time.perf_counter()
                     src_xobj = page_in_pike.as_form_xobject()
                     src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
+                    xobject_seconds = time.perf_counter() - _t0_xobj
 
                 page_content_stream = []
                 sampled_bleed_overlay_stream = []
@@ -11320,6 +11373,7 @@ class StickerEngine:
                         and shape_mode in {"auto_safe", "contour"}
                         and not _page_defines_cut_contour(page_in_pike)
                     ):
+                        _t0_simp = time.perf_counter()
                         from app.workers.cutline_cubic_simplify import simplify_cubic_path_groups
 
                         baseline_paths = cut_fitted_paths
@@ -11327,21 +11381,31 @@ class StickerEngine:
                         if polyline_reduction is not None:
                             baseline_paths = [[(s.p0, s.p1, s.p2, s.p3) for s in path]
                                               for path in polyline_reduction.paths]
-                        if baseline_paths is None and cut_draw_style in {"preserve", "miter"}:
+                        if cutline_simplify_auto and (
+                            cut_fitted_paths is not None
+                            or corner_style in {"round", "alpha_smooth"}
+                            or cut_draw_style in {"round", "alpha_smooth"}
+                        ):
+                            # PERF (audit 2026-09-19 §SIMPLIFY.AUTO-SKIP-FITTED):
+                            # Khi chạy AUTO (cutline_simplify_auto=True), các đường đã được
+                            # bộ fitter (_fit_alpha_bezier_paths, _fit_round_contour_paths,
+                            # hoặc direct_analytic_fillet) fit thành cubic Bézier hoàn chỉnh
+                            # không đưa qua bộ solver phi tuyến SciPy (tránh nghẽn 8-25s/trang
+                            # trên file nhiều tem như 72 tem).
+                            # Auto-simplify chỉ dành cho polyline thô từ raster chưa được fit.
+                            baseline_paths = None
+                        elif baseline_paths is None and cut_draw_style in {"preserve", "miter"}:
                             baseline_paths = _paths_for_alpha_geometry(cut_poly)
                         elif baseline_paths is None and cut_draw_style in {"round", "alpha_smooth"}:
-                            writer_round_baseline = True
-                            # QUALITY (2026-09-10 §SIMPLIFY.ROUND): nhánh Góc tròn
-                            # từng chỉ tạo cubic ở writer, nên Simplify không thấy
-                            # baseline và bị bỏ qua dù slider >0. Dùng CHÍNH cubic
-                            # writer sẽ ghi, không fit lại polygon thành đường khác.
-                            from app.workers.cutline_geometry import _catmull_rom_bezier_segments
-                            baseline_paths = [
-                                _catmull_rom_bezier_segments(
-                                    [segment[0] for segment in path] + [path[-1][3]],
-                                    tension=cut_draw_tension,
-                                ) for path in _paths_for_alpha_geometry(cut_poly) if path
-                            ]
+                            if not cutline_simplify_auto:
+                                writer_round_baseline = True
+                                from app.workers.cutline_geometry import _catmull_rom_bezier_segments
+                                baseline_paths = [
+                                    _catmull_rom_bezier_segments(
+                                        [segment[0] for segment in path] + [path[-1][3]],
+                                        tension=cut_draw_tension,
+                                    ) for path in _paths_for_alpha_geometry(cut_poly) if path
+                                ]
                         if baseline_paths:
                             groups = _group_alpha_paths_like(cut_poly, baseline_paths)
                             if groups:
@@ -11349,16 +11413,15 @@ class StickerEngine:
                                     groups, tolerance_mm=page_simplify_mm,
                                     page_height=page_in_height,
                                     prefer_conservative=writer_round_baseline,
-                                    # Góc tròn dùng baseline Catmull của writer;
-                                    # giữ đầy đủ vòng tìm kiếm để không làm rơi
-                                    # quá nhiều cung ở các đường cong ngắn. Nhánh
-                                    # bảo toàn mép ảnh mới dùng đường nhanh.
-                                    preview_fast=not writer_round_baseline,
-                                )
+                                    # PERF (audit 2026-09-19): execute route luôn dùng đường
+                                    # nhanh để không kẹt solver lặp 7 vòng trên tài liệu lớn.
+                                    preview_fast=True,
+                                    )
                                 if additional_simplification["changed"]:
                                     cut_fitted_paths = [ring for group in simplified
                                                         for ring in [group["exterior"], *group.get("interiors", [])]]
                                     polyline_reduction = None
+                        simplify_seconds = time.perf_counter() - _t0_simp
                     
                     page_content_stream.append("q")
                     cut_origin_x = crop_x0 if selection_page_mode else exp_left
@@ -11420,6 +11483,7 @@ class StickerEngine:
                     page_content_stream.append("S")
                     page_content_stream.append("Q")
 
+                _t0_cnt = time.perf_counter()
                 if selection_page_mode:
                     if selection_bleed_content_stream:
                         bleed_content = "\n".join(selection_bleed_content_stream).encode("ascii")
@@ -11436,12 +11500,14 @@ class StickerEngine:
                 else:
                     full_content = "\n".join(page_content_stream).encode("ascii")
                     page_out.contents_add(pikepdf.Stream(doc_out, full_content))
+                content_add_seconds = time.perf_counter() - _t0_cnt
                 
-                if "/Resources" not in page_out:
-                    page_out.Resources = pikepdf.Dictionary()
-                if "/ColorSpace" not in page_out.Resources:
-                    page_out.Resources.ColorSpace = pikepdf.Dictionary()
-                page_out.Resources.ColorSpace.CutContour = cs_arr
+                if _cut_page_ok and draw_cut_contour and cut_mode != "none":
+                    if "/Resources" not in page_out:
+                        page_out.Resources = pikepdf.Dictionary()
+                    if "/ColorSpace" not in page_out.Resources:
+                        page_out.Resources.ColorSpace = pikepdf.Dictionary()
+                    page_out.Resources.ColorSpace.CutContour = cs_arr
                 
                 page_meta = {
                     "recon": recon_meta,
@@ -11508,6 +11574,7 @@ class StickerEngine:
                     mask_h = int(np.ceil(height_pt * scale))
                     shape_mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
                     
+                    _t0_shp = time.perf_counter()
                     def fill_poly(poly_geom):
                         if poly_geom.is_empty: return
                         if isinstance(poly_geom, MultiPolygon):
@@ -11532,6 +11599,7 @@ class StickerEngine:
                         shape_params['effective_body_w_ratio'] = shape_params.get('bigEndAxisFrac', 0.65)
                         
                     shape_params_str = json.dumps(shape_params)
+                    shape_detect_seconds = time.perf_counter() - _t0_shp
                     
                     boxes = []
                     _meta_poly = cut_poly if cut_poly is not None else dieline_poly
@@ -11655,6 +11723,12 @@ class StickerEngine:
                     page_meta["bleed_warning"] = page_warning
                 
                 all_pages_meta.append(page_meta)
+                _page_duration = time.perf_counter() - page_started
+                logger.info(
+                    "[STICKER] Hoàn thành trang %d/%d trong %.2fs (raster: %.2fs, contour: %.2fs, buffer_fit: %.2fs)",
+                    page_idx + 1, _n_pages, _page_duration,
+                    raster_seconds, contour_seconds, buffer_fit_seconds,
+                )
                 logger.debug(
                     "[STICKER_STAGE] page=%d boundary=%s raster_px=%dx%d "
                     "render_dpi=%.2f render_s=%.3f contour_s=%.3f total_s=%.3f",
@@ -11671,6 +11745,33 @@ class StickerEngine:
                     contour_seconds,
                     time.perf_counter() - page_started,
                 )
+                try:
+                    from app.utils.cutline_debug_log import log_cutline
+                    _page_tot = time.perf_counter() - page_started
+                    _measured = (raster_seconds + contour_seconds + t_open_pike + t_open_pdfium
+                                 + mask_prep_seconds + geom_union_recon_seconds + buffer_fit_seconds
+                                 + xobject_seconds + simplify_seconds + shape_detect_seconds + content_add_seconds)
+                    _other_s = max(0.0, _page_tot - _measured)
+                    log_cutline(
+                        "ENGINE",
+                        "PAGE_TIMING",
+                        f"page={page_idx + 1} w={int(img.shape[1])} h={int(img.shape[0])} dpi={self.scale * 72.0:.1f} pid={os.getpid()}",
+                        total_s=round(_page_tot, 3),
+                        raster_s=round(raster_seconds, 3),
+                        contour_s=round(contour_seconds, 3),
+                        open_pike_s=round(t_open_pike, 3),
+                        open_pdfium_s=round(t_open_pdfium, 3),
+                        mask_prep_s=round(mask_prep_seconds, 3),
+                        geom_recon_s=round(geom_union_recon_seconds, 3),
+                        buffer_fit_s=round(buffer_fit_seconds, 3),
+                        xobj_s=round(xobject_seconds, 3),
+                        simplify_s=round(simplify_seconds, 3),
+                        shape_s=round(shape_detect_seconds, 3),
+                        content_s=round(content_add_seconds, 3),
+                        other_s=round(_other_s, 3),
+                    )
+                except Exception:
+                    pass
                 if rectangle_mode and bleed_color_type in ("inpaint", "trajectory"):
                     logger.debug(
                         "[STICKER_TIMING] page=%d gs_s=%.3f smooth_s=%.3f "
@@ -11688,12 +11789,28 @@ class StickerEngine:
             # để orchestrator tổng hợp từ mọi chunk). page_idx trong vòng là index GỐC nên
             # pages_no_dieline đã là số trang GLOBAL, orchestrator không cần offset.
             if _page_subset is not None:
+                _t0_chunk_save = time.perf_counter()
                 _buf = io.BytesIO()
                 doc_out.save(_buf)
+                _chunk_save_s = time.perf_counter() - _t0_chunk_save
+                try:
+                    from app.utils.cutline_debug_log import log_cutline
+                    log_cutline(
+                        "ENGINE",
+                        "CHUNK_BUFFER_SAVED",
+                        f"chunk_pages={_page_subset} size_mb={len(_buf.getvalue()) / (1024 * 1024):.2f} pid={os.getpid()}",
+                        save_s=round(_chunk_save_s, 3),
+                    )
+                except Exception:
+                    pass
                 return (_buf.getvalue(), all_pages_meta, pages_no_dieline, any_dieline_found)
 
             debug_step = "Save Output PDF"
             doc_out.save(output_path)
+            logger.info(
+                "[STICKER] Đã lưu kết quả thành công ra file '%s' trong %.2fs (tổng %d trang)",
+                output_path, time.perf_counter() - _process_start_time, _n_pages,
+            )
 
             # Watermark (stealth) được áp ở tầng route qua _safe_watermark(license_info),
             # nhất quán với các endpoint pdf-tools khác. Engine KHÔNG có thông tin license
@@ -11844,6 +11961,15 @@ class StickerEngine:
             "[STICKER] run chunks mode=pool count=%d workers=%d spill=%s",
             len(args_list), n_workers, spill_dir is not None,
         )
+        try:
+            from app.utils.cutline_debug_log import log_cutline
+            log_cutline(
+                "ORCHESTRATOR",
+                "POOL_SUBMIT_ALL",
+                f"chunks={len(args_list)} workers={n_workers} spill={spill_dir is not None}",
+            )
+        except Exception:
+            pass
         results = []
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
             future_map = {
@@ -11851,8 +11977,23 @@ class StickerEngine:
             }
             for fut in as_completed(future_map):
                 a = future_map[fut]
+                c_idx = a.get("chunk_idx")
+                c_pages = a.get("page_indices")
                 try:
-                    results.append(_spill(fut.result()))
+                    t_spill0 = time.perf_counter()
+                    spilled = _spill(fut.result())
+                    t_spill = time.perf_counter() - t_spill0
+                    results.append(spilled)
+                    try:
+                        from app.utils.cutline_debug_log import log_cutline
+                        log_cutline(
+                            "ORCHESTRATOR",
+                            "CHUNK_RECEIVED",
+                            f"chunk={c_idx} pages={c_pages} count={len(c_pages)}",
+                            spill_s=round(t_spill, 3),
+                        )
+                    except Exception:
+                        pass
                 except Exception as e:
                     # Python exception từ worker (không phải process kill).
                     logger.error(
@@ -12144,6 +12285,20 @@ class StickerEngine:
                 dedup_stats["candidate_bytes"] / (1024 * 1024),
                 os.path.getsize(output_path) / (1024 * 1024),
             )
+            try:
+                from app.utils.cutline_debug_log import log_cutline
+                log_cutline(
+                    "PARALLEL",
+                    "SUMMARY",
+                    f"pages={n_pages} workers={n_workers} chunks={len(chunks)} used_pool={used_pool}",
+                    worker_s=round(worker_seconds, 3),
+                    merge_s=round(merge_seconds, 3),
+                    dedup_s=round(dedup_stats["seconds"], 3),
+                    save_s=round(save_seconds, 3),
+                    total_s=round(time.perf_counter() - parallel_started, 3),
+                )
+            except Exception:
+                pass
         finally:
             if final_doc is not None:
                 try: final_doc.close()

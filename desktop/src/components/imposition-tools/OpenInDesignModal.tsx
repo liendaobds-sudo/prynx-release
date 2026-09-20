@@ -463,7 +463,7 @@ export default function OpenInDesignModal({
                                             )}
                                             <div className="w-full aspect-[3/4] bg-white flex items-center justify-center overflow-hidden">
                                                 {thumbSrc(p.pageIndex) ? (
-                                                    <img src={thumbSrc(p.pageIndex) || undefined} alt={`Tờ ${p.sheetNum}`} loading="lazy" className="w-full h-full object-contain" />
+                                                    <img src={thumbSrc(p.pageIndex) || undefined} alt={`Tờ ${p.sheetNum}`} decoding="async" className="w-full h-full object-contain" />
                                                 ) : (
                                                     <span className="text-[10px] text-slate-400">{p.sheetNum}</span>
                                                 )}

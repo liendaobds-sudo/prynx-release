@@ -328,6 +328,8 @@ export default function AdvancedSettingsSection({
         pontSettingsMode,
         stickerToolIdentity,
     } = resolveImpositionModes(activeTool, s.impositionUnit);
+    const simpleStickerNup = activeTool === 'sticker_imposer' && !pageSheetMode
+        && (s.gridStrategy === 'manual' || (s.taskMode === 'nup' && s.gridStrategy === 'simple_auto'));
     // DIAG (feedback 2026-09-01 §DIM-DIE): ghi đúng dữ liệu WebView đang dùng
     // để phân biệt detector bị rỗng với report chọn nhầm hộp trang.
     const detectedWidthPt = detectedDimensionPt?.w;
@@ -1187,11 +1189,11 @@ export default function AdvancedSettingsSection({
                         </CollapsibleGroup>
                         )}
 
-                        {/* 1. Grouping Strategy — die-cut (Bế tem/CNC) LẪN bình cắt xén
+                        {/* 1. Grouping Strategy — die-cut (Bế tem) LẪN bình cắt xén
                             (guillotine: activeTool 'nup' + markType 'guillotine'). Chia cụm
-                            zone hợp guillotine (vùng chữ nhật = nhát dao thẳng). Ẩn cho các
-                            tổ hợp khác để tránh control vô tác dụng. */}
-                        {s.taskMode !== 'booklet' && s.layoutType !== 'mixed_guillotine' && (stickerLike || pageSheetMode || (activeTool === 'nup' && s.markType === 'guillotine')) && (
+                            zone hợp guillotine (vùng chữ nhật = nhát dao thẳng).
+                            PARITY (audit 2026-09-20 §PAR20.03): ẩn cho CNC vì CNC dùng renderer riêng không hỗ trợ cluster. */}
+                        {s.taskMode !== 'booklet' && s.layoutType !== 'mixed_guillotine' && activeTool !== 'cnc_imposer' && (stickerLike || pageSheetMode || (activeTool === 'nup' && s.markType === 'guillotine')) && (
                         <div>
                             <div className="flex items-center justify-between mb-2">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:cach_chia_cum')}</label>
@@ -1228,7 +1230,8 @@ export default function AdvancedSettingsSection({
                                 </button>
                             </div>
                             <select
-                                value={s.groupingStrategy}
+                                value={simpleStickerNup ? 'none' : s.groupingStrategy}
+                                disabled={simpleStickerNup}
                                 onChange={(e) => s.setGroupingStrategy(e.target.value as NonNullable<NupSettings['groupingStrategy']>)}
                                 className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
@@ -1245,7 +1248,7 @@ export default function AdvancedSettingsSection({
                             </select>
 
                             {/* Cluster Tile Settings */}
-                            {s.groupingStrategy === 'cluster_tile' && (
+                            {!simpleStickerNup && s.groupingStrategy === 'cluster_tile' && (
                                 <div className="mt-2 flex flex-col gap-3 p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg">
                                     {/* Kiểu ghép cụm - chỉ hiển thị khi Dàn nhiều mẫu; S&R cố định replicate_mixed */}
                                     {s.taskMode !== 'step_repeat' && (

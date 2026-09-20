@@ -485,15 +485,14 @@ def _get_pdf_meta(body: dict):
             if i == 0:
                 try:
                     _tb = page.trimbox
-                    _mb = page.mediabox
+                    # CROP-CONSENSUS (2026-09-19): canvas đã bỏ qua khi chọn
+                    # trang logic không phải bleed. Không tự trừ crop lần hai.
                     _bx = (
-                        (float(_mb.width) - float(_tb.width))
-                        * user_unit
+                        (guillotine_w - float(_tb.width) * user_unit)
                         / 2.0
                     )
                     _by = (
-                        (float(_mb.height) - float(_tb.height))
-                        * user_unit
+                        (guillotine_h - float(_tb.height) * user_unit)
                         / 2.0
                     )
                     if _bx > 0.5 and _by > 0.5 and abs(_bx - _by) < 3.0:

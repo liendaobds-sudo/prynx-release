@@ -539,7 +539,10 @@ def _correct_illumination(image: Image.Image) -> Image.Image:
     sigma = max(5.0, min(image.size) / 30.0)
     background = cv2.GaussianBlur(lightness, (0, 0), sigmaX=sigma, sigmaY=sigma)
     anchor = float(np.median(background))
-    lab[:, :, 0] = np.clip(lightness - background + anchor, 0, 255).astype(np.uint8)
+    # [LOGO-FIX audit 2026-09-20 §VEC.PRE01]: Giới hạn biên độ bù trừ trường sáng tối đa 35 đơn vị L
+    # để triệt tiêu hiện tượng quầng sáng (halo) làm nổi viền giả và bùng nổ hàng loạt contour rác trên artwork phẳng.
+    correction = np.clip(anchor - background, -35.0, 35.0)
+    lab[:, :, 0] = np.clip(lightness + correction, 0, 255).astype(np.uint8)
     corrected_rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     if has_alpha:
         corrected = np.dstack((corrected_rgb, array[:, :, 3]))
@@ -1332,7 +1335,7 @@ def _process_logo_preview_reserved(
         warnings.append(
             f"{upscale_prefix}Khử hạt {source_despeckle} px sẽ gộp mọi chi tiết nhỏ hơn "
             f"{source_despeckle}×{source_despeckle} px ảnh nguồn "
-            "(dấu, chấm, ký hiệu nhỏ) vào màu lân cận; đặt 0 nếu cần giữ các chi tiết này."
+            "(hệ thống tự động bảo toàn dấu tiếng Việt và ký hiệu gióng hàng; đặt 0 nếu cần giữ 100% nguyên bản)."
         )
 
     from app.workers.logo_svg_cleanup import (
@@ -1376,7 +1379,13 @@ def _process_logo_preview_reserved(
                 background_label=background_label,
                 physical_width_mm=prepared.physical_width_mm,
                 physical_height_mm=prepared.physical_height_mm,
-                raster_scale=4,
+                # PERF (audit 2026-09-20): raster_scale thích ứng theo kích thước ảnh;
+                # ảnh lớn (>=512px) dùng scale=1 để tránh scanline 24-60M pixel gây đơ preview.
+                raster_scale=(
+                    1
+                    if max(prepared.width_px, prepared.height_px) >= 512
+                    else (2 if max(prepared.width_px, prepared.height_px) >= 256 else 4)
+                ),
                 cancel=token,
             )
             structured = _parse_structured_native_result(

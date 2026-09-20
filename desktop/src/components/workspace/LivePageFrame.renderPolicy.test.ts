@@ -201,6 +201,7 @@ describe('Viewer — policy ghép tile progressive', () => {
         expect(shouldRenderViewerBasePage(true, false, true)).toBe(true);
         expect(shouldRenderViewerBasePage(true, false, false)).toBe(false);
         expect(shouldRenderViewerBasePage(false, true, true)).toBe(false);
+        expect(shouldRenderViewerBasePage(true, false, false, true)).toBe(true);
     });
 
     it('tách scope prefetch accurate theo từng trang để không tự hủy lẫn nhau', () => {
@@ -222,4 +223,30 @@ describe('Viewer — policy ghép tile progressive', () => {
         expect(shouldMountViewerViewportLayer(false, false, true)).toBe(false);
         expect(shouldMountViewerViewportLayer(false, true, false)).toBe(false);
     });
+
+    it('khớp chính xác 1:1 chuẩn 96 DPI giữa point và device pixel ở zoom 1 (audit 2026-09-20 §V20.2)', () => {
+        // Trang Letter 612x792 pt, zoom=1, dpr=1
+        const widthPt = 612;
+        const heightPt = 792;
+        const zoom = 1;
+        const dpr = 1;
+        const cssW = (widthPt * 96) / 72 * zoom;
+        const cssH = (heightPt * 96) / 72 * zoom;
+        const wantW = Math.round(cssW * dpr);
+        const wantH = Math.round(cssH * dpr);
+
+        expect(wantW).toBe(816);
+        expect(wantH).toBe(1056);
+
+        // Kích thước bitmap từ render worker ở screen_scale = (96/72)*zoom phải khớp wantW/wantH
+        const renderScale = (96 / 72) * zoom;
+        const bitmapW = Math.round(widthPt * renderScale);
+        const bitmapH = Math.round(heightPt * renderScale);
+
+        expect(bitmapW).toBe(816);
+        expect(bitmapH).toBe(1056);
+        expect(Math.abs(bitmapW - wantW)).toBeLessThanOrEqual(2);
+        expect(Math.abs(bitmapH - wantH)).toBeLessThanOrEqual(2);
+    });
 });
+

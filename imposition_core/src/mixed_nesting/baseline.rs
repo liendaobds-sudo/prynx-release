@@ -50,9 +50,10 @@ use super::spatial::SpatialGrid;
 use super::transform::place_ring_checked;
 
 mod periodic;
+mod quantity_seed;
 
 /// Version của chiến lược baseline. Đổi chiến lược là đổi sàn an toàn.
-pub const BASELINE_VERSION: u32 = 13;
+pub const BASELINE_VERSION: u32 = 14;
 
 /// Số đỉnh miền hợp lệ thử tối đa cho mỗi (chi tiết, góc, tờ).
 ///
@@ -638,6 +639,15 @@ pub fn run_baseline(
     // của nó; rẽ nhánh trước khi cấp phát để không clone và bỏ cache rỗng.
     if request.layout_intent.is_single_sheet_autofill() {
         return run_autofill_baseline(request, control, policy);
+    }
+
+    // M72.B (2026-09-19): production gang có phương án đủ SL trước khi tiêu
+    // deadline vào NFP. Không áp cho autofill/S&R; seed không được thì vẫn giữ
+    // toàn bộ miền tìm kiếm cũ, không kết luận hình không vừa chỉ từ bbox.
+    if request.production_contract.is_some() {
+        if let Some(seed) = quantity_seed::run(request, control, policy)? {
+            return Ok(seed);
+        }
     }
 
     let tol = request.tolerance;

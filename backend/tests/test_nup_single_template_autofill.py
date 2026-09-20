@@ -60,7 +60,7 @@ def _canned_layout(*_a, **_k):
     }
 
 
-def test_single_template_autofill_uses_nesting_not_maxrects(monkeypatch):
+def test_step_repeat_template_autofill_uses_nesting_not_maxrects(monkeypatch):
     """1 trang die-cut + auto-fill → KHÔNG gọi solve_auto_fill_mixed; dùng nesting+finalize."""
     n_pages = 1  # DUY NHẤT 1 loại tem
 
@@ -95,7 +95,7 @@ def test_single_template_autofill_uses_nesting_not_maxrects(monkeypatch):
         out = os.path.join(td, "out.pdf")
         _make_blank_pdf(src, n_pages)
         settings = {
-            "isDieCutMode": True,
+            "isDieCutMode": True, "taskMode": "step_repeat", "layoutType": "repeat",
             "sheetWidth": 320,
             "sheetHeight": 450,
             "targetQuantity": 0,
@@ -121,7 +121,7 @@ def test_single_template_autofill_uses_nesting_not_maxrects(monkeypatch):
         assert "abs_x" in pl and "abs_y" in pl and "original_cell_y" in pl
 
 
-def test_single_template_autofill_parity_with_preview(monkeypatch):
+def test_step_repeat_template_autofill_parity_with_preview(monkeypatch):
     """Output (1 mẫu auto-fill) phải cho CÙNG placements như preview: cả 2 đều là
     finalize_placements(full_layout['items'], usable_w, usable_h, ml, mb, mt, p_idx)."""
     from app.workers.imposition_finalize import finalize_placements
@@ -149,7 +149,7 @@ def test_single_template_autofill_parity_with_preview(monkeypatch):
         out = os.path.join(td, "out.pdf")
         _make_blank_pdf(src, 1)
         settings = {
-            "isDieCutMode": True, "sheetWidth": 320, "sheetHeight": 450,
+            "isDieCutMode": True, "taskMode": "step_repeat", "layoutType": "repeat", "sheetWidth": 320, "sheetHeight": 450,
             "targetQuantity": 0, "targetQuantitiesByPage": {},
             "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE"},
             "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area",

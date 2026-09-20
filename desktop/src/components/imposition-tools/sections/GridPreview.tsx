@@ -195,6 +195,12 @@ interface BackendLayoutSheet {
 }
 
 interface BackendLayoutResult {
+  orderSummary?: {
+    templateCount: number;
+    physicalSheetCount: number;
+    requestedCount: number;
+    placedCount: number;
+  };
   success: boolean;
   totalItems: number;
   overallWidth: number;
@@ -3292,7 +3298,12 @@ export default function GridPreview(props: GridPreviewProps) {
 
   // Mặt sau dùng CHÍNH ô mặt trước — phản chiếu do backGroupTransform đảm nhiệm.
   const cncBackCells = svgCells;
-  const activeSheetLabel = _isMixedGuillotine && _activeSheetMeta
+  const activeSheetLabel = layoutResult?.orderSummary
+    ? t('imposition.gridPreview:bo_cuc_va_so_lan_in', {
+        n: activeSheet + 1, total: layoutResult.orderSummary.templateCount,
+        runs: _activeSheetMeta?.runCount ?? 1,
+      })
+    : _isMixedGuillotine && _activeSheetMeta
     ? `${t('imposition.gridPreview:to')} ${(_activeSheetMeta.physicalSheetIndex ?? activeSheet) + 1} · ${t(_mixedBackFace ? 'imposition.gridPreview:mat_sau' : 'imposition.gridPreview:mat_truoc')}`
     : `${t('imposition.gridPreview:to')} ${activeSheet + 1} / ${layoutResult?.sheets?.length || 1}`;
 
@@ -3447,9 +3458,18 @@ export default function GridPreview(props: GridPreviewProps) {
       {layoutResult ? (
         <div className="flex flex-col items-center gap-2 w-full">
           {/* Stats */}
+          {layoutResult.orderSummary && (
+            <div data-testid="nesting-order-summary" className="text-[13px] text-slate-700 dark:text-zinc-200 text-center">
+              {t('imposition.gridPreview:tong_hop_don_hang', {
+                layouts: layoutResult.orderSummary.templateCount,
+                placed: layoutResult.orderSummary.placedCount,
+                requested: layoutResult.orderSummary.requestedCount,
+              })}
+            </div>
+          )}
           <div className="flex items-center gap-4 text-[13px] font-medium flex-wrap justify-center">
             <div className="text-slate-600 dark:text-zinc-400">
-              {t('imposition.gridPreview:suc_chua')}{" "}
+              {t(layoutResult.orderSummary ? 'imposition.gridPreview:da_xep' : 'imposition.gridPreview:suc_chua')}{" "}
               <span className="font-bold text-slate-800 dark:text-zinc-200">
                 {/* Homogeneous: totalItems là SỨC CHỨA hình học; cells.length chỉ là
                     số mẫu hiện có. Hai khái niệm này tuyệt đối không được trộn. */}
@@ -3479,7 +3499,7 @@ export default function GridPreview(props: GridPreviewProps) {
             {!_isCutStacks &&
               (isStepRepeatLayout
                 ? stepRepeatQuantity > 0 && stepRepeatCapacity > 0
-                : Number(targetQuantity) > 0 ||
+                : !!layoutResult.orderSummary || Number(targetQuantity) > 0 ||
                   _isRatioStack ||
                   Object.values(targetQuantitiesByPage || {}).some((v) => Number(v) > 0)) && (
               <>

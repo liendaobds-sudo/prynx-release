@@ -160,6 +160,7 @@ interface AppSettingsState {
   language: AppLanguage;
   showRulers: boolean;
   showMenuBar: boolean;
+  viewerDarkBackground: boolean;
   setLanguage: (lang: AppLanguage) => void;
   toggleToolVisibility: (toolKey: string) => void;
   toggleFavoriteTool: (toolKey: string) => void;
@@ -169,6 +170,8 @@ interface AppSettingsState {
   setPreviewQuality: (quality: 'high' | 'fast') => void;
   toggleRulers: () => void;
   setShowMenuBar: (show: boolean) => void;
+  setViewerDarkBackground: (dark: boolean) => void;
+  toggleViewerDarkBackground: () => void;
   toolMenuWidth: number;
   toolConfigWidth: number;
   homeToolMenuWidth: number;
@@ -309,6 +312,9 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       setPreviewQuality: (quality) => set({ previewQuality: quality }),
       toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
       setShowMenuBar: (show) => set({ showMenuBar: show }),
+      viewerDarkBackground: false,
+      setViewerDarkBackground: (dark) => set({ viewerDarkBackground: dark }),
+      toggleViewerDarkBackground: () => set((state) => ({ viewerDarkBackground: !state.viewerDarkBackground })),
       toolMenuWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       toolConfigWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       homeToolMenuWidth: 320,

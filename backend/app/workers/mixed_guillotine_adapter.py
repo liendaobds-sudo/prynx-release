@@ -8,6 +8,7 @@ bottom-up. Mặt sau đã được materialize ở đây nên worker không đư
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import math
 from typing import Any
 
 import pikepdf
@@ -48,6 +49,66 @@ def canonicalize_pikepdf_page_boxes(
         page.CropBox = pikepdf.Array([0, 0, width, height])
 
 
+_CROP_SIZE_TOLERANCE_PT = 0.5
+
+
+def _has_uniform_document_crop(page: Any) -> bool:
+    """Nhận tài liệu đã crop đồng khổ nhưng vẫn giữ canvas gốc khác nhau."""
+    doc = getattr(page, "doc", None)
+    if doc is None or int(getattr(doc, "page_count", 0)) < 2:
+        return False
+    # CROP-CONSENSUS (2026-09-19): chỉ nhớ trên handle nguồn bất biến, không
+    # cache toàn cục theo path (file làm việc có thể được thay thế tại cùng path).
+    cacheable = bool(getattr(doc, "_path", None))
+    cached = getattr(doc, "_guillotine_uniform_crop", None) if cacheable else None
+    if cached is not None:
+        return bool(cached)
+
+    tolerance = _CROP_SIZE_TOLERANCE_PT
+    first_crop = first_media = None
+    mixed_media = False
+    uniform_crop = True
+    for index in range(doc.page_count):
+        current = doc[index]
+        raw_page = getattr(current, "_page", {})
+        # Hộp sản xuất tường minh có thể mang bleed thật: không suy đoán lại.
+        if "/TrimBox" in raw_page or "/BleedBox" in raw_page:
+            uniform_crop = False
+            break
+        crop, media = current.cropbox, current.mediabox
+        if crop is None or media is None:
+            uniform_crop = False
+            break
+        unit = float(raw_page.get("/UserUnit", 1.0))
+        if not math.isfinite(unit) or not 0 < unit <= 75000:
+            unit = 1.0
+        crop_size = (float(crop.width) * unit, float(crop.height) * unit)
+        media_size = (float(media.width) * unit, float(media.height) * unit)
+        if (
+            not all(math.isfinite(value) and value > 0 for value in (*crop_size, *media_size))
+            or crop.x0 < media.x0 - tolerance / unit
+            or crop.y0 < media.y0 - tolerance / unit
+            or crop.x1 > media.x1 + tolerance / unit
+            or crop.y1 > media.y1 + tolerance / unit
+        ):
+            uniform_crop = False
+            break
+        if int(raw_page.get("/Rotate", 0)) % 180 == 90:
+            crop_size, media_size = crop_size[::-1], media_size[::-1]
+        if first_crop is None:
+            first_crop, first_media = crop_size, media_size
+        elif any(abs(a - b) > tolerance for a, b in zip(crop_size, first_crop)):
+            uniform_crop = False
+            break
+        else:
+            mixed_media |= any(abs(a - b) > tolerance for a, b in zip(media_size, first_media))
+
+    result = uniform_crop and mixed_media
+    if cacheable:
+        doc._guillotine_uniform_crop = result
+    return result
+
+
 def resolve_guillotine_geometry(
     page: Any,
     bleed_pt: float,
@@ -55,8 +116,8 @@ def resolve_guillotine_geometry(
     """Trả khổ thành phẩm và vùng nguồn cho mọi chế độ bình cắt xén.
 
     Bleed trên UI là nguồn duy nhất để suy ra khổ thành phẩm. TrimBox nhúng trong
-    PDF không được ghi đè lựa chọn đó. CropBox chỉ được chọn khi nó nhỏ đáng kể so
-    với MediaBox và thực sự đại diện cho một trang logic trên canvas lớn.
+    PDF không được ghi đè lựa chọn đó. Ngoài trang con trên canvas lớn, CropBox
+    đồng khổ của tài liệu có canvas khác nhau cũng là vùng trang đã được crop.
 
     Renderer dùng toàn bộ hộp trang logic làm vùng có bleed; footprint của solver
     là hộp đó trừ bleed UI ở bốn cạnh. Tọa độ clip trả về theo hệ top-down mà
@@ -69,6 +130,16 @@ def resolve_guillotine_geometry(
     # mang TrimBox từ lần xuất trước (ví dụ 3 mm), trong khi người dùng đang chọn
     # bleed khác trên UI. Chỉ giữ ngoại lệ CropBox cho trang con trên canvas lớn.
     logical_box = effective_imposition_box(page)
+    # CROP-CONSENSUS (2026-09-19): các ảnh đã crop 30 × 40 không phải nhiều
+    # khổ chỉ vì giữ lại MediaBox gốc. Giữ nguyên policy của booklet/tem bế.
+    crop = page.cropbox
+    if (
+        crop is not None
+        and (abs(float(crop.width) - float(logical_box.width)) > _CROP_SIZE_TOLERANCE_PT
+             or abs(float(crop.height) - float(logical_box.height)) > _CROP_SIZE_TOLERANCE_PT)
+        and _has_uniform_document_crop(page)
+    ):
+        logical_box = crop
     logical_width = float(logical_box.width)
     logical_height = float(logical_box.height)
     logical_differs = (

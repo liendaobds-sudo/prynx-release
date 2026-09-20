@@ -461,6 +461,42 @@ def build_nesting_preview(
         "placedByPage": _placed_by_page(job, manifest),
         "coordinateSpace": "sheet_abs_pt",
     }
+    # M72.D: gang đủ SL phải xem được mọi BỐ CỤC, không chỉ tờ 0.
+    # Dùng recipe lossless của writer để 8 bố cục x 100 lần vẫn chỉ gửi 8 hình.
+    if job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment":
+        from app.core.nesting_order_plan import require_fulfilled_manifest
+        from app.workers.nesting_imposition_render import production_sheet_recipes
+
+        requested = {part.part_id: part.quantity for part in job.parts}
+        require_fulfilled_manifest(requested, manifest)
+        recipes = production_sheet_recipes(
+            manifest, render_bundle=bundle, render_bundle_hash=production.render_bundle_hash,
+        )
+        sheets = []
+        for sheet_index, run_count in recipes:
+            sheet_cells = cells if sheet_index == 0 else _project_sheet_cells(
+                job, session, sheet_index=sheet_index,
+            )
+            sheets.append({
+                "cells": sheet_cells,
+                "totalItems": len(sheet_cells),
+                "overallWidth": response["overallWidth"],
+                "overallHeight": response["overallHeight"],
+                "physicalSheetIndex": sheet_index,
+                "runCount": run_count,
+                "absPlacement": True,
+                "coordinateSpace": "sheet_abs_pt",
+            })
+        response.update(
+            sheets=sheets,
+            totalItems=len(cells),
+            orderSummary={
+                "templateCount": len(recipes),
+                "physicalSheetCount": sum(runs for _, runs in recipes),
+                "requestedCount": sum(requested.values()),
+                "placedCount": len(manifest["placements"]),
+            },
+        )
     if trace_enabled:
         runtime_diagnostics = session.solved.runtime_diagnostics
         native_phase_timings = runtime_diagnostics.get("phaseTimings")

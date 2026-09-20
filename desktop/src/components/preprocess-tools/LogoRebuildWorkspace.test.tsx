@@ -406,6 +406,57 @@ describe('LogoRebuildWorkspace', () => {
     expect(within(anchorOverlay).getAllByTestId('logo-anchor-handle')).toHaveLength(2);
 
 
+    const splitDivider = screen.getByTestId('logo-split-divider');
+    const splitLayer = screen.getByTestId('logo-split-vector-layer');
+    expect(splitDivider.style.left).toBe('50%');
+    expect(splitLayer.style.clipPath).toBe('inset(0 50% 0 0)');
+
+    fireEvent.keyDown(splitDivider, { key: 'ArrowLeft' });
+    expect(splitDivider.style.left).toBe('48%');
+    expect(splitLayer.style.clipPath).toBe('inset(0 52% 0 0)');
+
+    fireEvent.keyDown(splitDivider, { key: 'ArrowRight', shiftKey: true });
+    expect(splitDivider.style.left).toBe('58%');
+    expect(splitLayer.style.clipPath).toBe('inset(0 42% 0 0)');
+
+    fireEvent.doubleClick(splitDivider);
+    expect(splitDivider.style.left).toBe('50%');
+    expect(splitLayer.style.clipPath).toBe('inset(0 50% 0 0)');
+
+    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 50,
+      width: 200,
+      height: 150,
+      right: 300,
+      bottom: 200,
+      x: 100,
+      y: 50,
+      toJSON: () => {},
+    });
+    fireEvent(splitDivider, new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 160, button: 0 }));
+    rectSpy.mockRestore();
+    expect(splitDivider.style.left).toBe('30%');
+    expect(splitLayer.style.clipPath).toBe('inset(0 70% 0 0)');
+
+    const rectSpy2 = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 50,
+      width: 200,
+      height: 150,
+      right: 300,
+      bottom: 200,
+      x: 100,
+      y: 50,
+      toJSON: () => {},
+    });
+    fireEvent(window, new MouseEvent('pointermove', { bubbles: true, cancelable: true, clientX: 240 }));
+    rectSpy2.mockRestore();
+    expect(splitDivider.style.left).toBe('70%');
+    expect(splitLayer.style.clipPath).toBe('inset(0 30% 0 0)');
+
+    fireEvent(window, new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
+
     fireEvent.change(screen.getByLabelText('Mức phóng đại'), { target: { value: '800' } });
     expect(screen.getByTestId('logo-compare-stage').style.transform).toContain('scale(8)');
 
@@ -1225,4 +1276,96 @@ describe('LogoRebuildWorkspace', () => {
     fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
     expect(screen.getByRole('button', { name: 'Logo màu' }).getAttribute('aria-pressed')).toBe('true');
   });
+
+  it('cung cấp các preset in ấn 1-chạm và nút đẩy sang Bình bản, Tem bế', async () => {
+    vi.mocked(createLogoRebuildPreview).mockResolvedValue({
+      status: 'ready',
+      job_id: 'preset-job',
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H10V10H0Z"/><path d="M20 20H30V30H20Z"/></svg>',
+      width_px: 200,
+      height_px: 200,
+      warnings: [],
+      engine: 'prynx-logo-core',
+      engine_version: '0.1.0-dev.1',
+      ...READY_QC,
+    });
+    const toolRequests: Array<{ toolId: string; file?: File }> = [];
+    const handler = (e: Event) => {
+      toolRequests.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('prynx-open-tool-request', handler);
+
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i)).toBeTruthy());
+    const file = new File(['png-data'], 'brand-logo.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Chọn ảnh có logo'), { target: { files: [file] } });
+
+    expect(await screen.findByText(/Preset In Ấn \(1-Chạm\)/)).toBeTruthy();
+    expect(screen.getByText('🖋️ Logo Chữ')).toBeTruthy();
+    expect(screen.getByText('🔷 Biểu Tượng')).toBeTruthy();
+    expect(screen.getByText('✍️ Chữ Ký / Nét')).toBeTruthy();
+    expect(screen.getByText('🔴 Dấu Đỏ Scan')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('🖋️ Logo Chữ'));
+    await waitFor(() => expect(createLogoRebuildPreview).toHaveBeenCalled());
+    const calls = vi.mocked(createLogoRebuildPreview).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[1].despeckle_size_px).toBe(0);
+
+    const btnImposition = screen.getByRole('button', { name: /Đưa vào Bình bản/ });
+    const btnDiecut = screen.getByRole('button', { name: /Tạo Tem bế/ });
+    expect(btnImposition).toBeTruthy();
+    expect(btnDiecut).toBeTruthy();
+
+    fireEvent.click(btnImposition);
+    expect(toolRequests.length).toBe(1);
+    expect(toolRequests[0].toolId).toBe('imposition');
+    expect(toolRequests[0].file?.name).toBe('brand-logo_vector.svg');
+
+    fireEvent.click(btnDiecut);
+    expect(toolRequests.length).toBe(2);
+    expect(toolRequests[1].toolId).toBe('diecut');
+
+    window.removeEventListener('prynx-open-tool-request', handler);
+  });
+
+  it('hỗ trợ xử lý batch nhiều logo: hiển thị dải thumbnail, chuyển đổi giữa các ảnh và xóa ảnh', async () => {
+    render(<LogoRebuildWorkspace />);
+    await waitFor(() => expect(screen.getByText(/prynx-logo-core 0.1.0-dev.1 · Schema kết quả 1/i)).toBeTruthy());
+
+    const file1 = new File(['logo-1'], 'brand-a.png', { type: 'image/png' });
+    const file2 = new File(['logo-2'], 'brand-b.png', { type: 'image/png' });
+
+    // Thêm đồng thời 2 file logo
+    const input = screen.getByLabelText('Chọn ảnh có logo');
+    fireEvent.change(input, { target: { files: [file1, file2] } });
+
+    // Kiểm tra danh sách logo hiển thị 2 ảnh
+    expect(await screen.findByText(/Danh sách logo \(2\)/)).toBeTruthy();
+    const thumb1 = screen.getByRole('button', { name: /brand-a\.png \(1\/2\)/ });
+    const thumb2 = screen.getByRole('button', { name: /brand-b\.png \(2\/2\)/ });
+    expect(thumb1).toBeTruthy();
+    expect(thumb2).toBeTruthy();
+
+    // File 1 đang được active (ring tím)
+    expect(thumb1.className).toContain('border-violet-500');
+
+    // Chuyển sang file 2
+    fireEvent.click(thumb2);
+    expect(thumb2.className).toContain('border-violet-500');
+    expect(thumb1.className).not.toContain('border-violet-500');
+
+    // Nút thêm logo '+'
+    expect(screen.getByRole('button', { name: 'Thêm logo khác' })).toBeTruthy();
+
+    // Xóa logo 1
+    const removeBtn1 = screen.getByRole('button', { name: 'Xóa brand-a.png' });
+    fireEvent.click(removeBtn1);
+
+    // Còn lại 1 logo
+    expect(await screen.findByText(/Danh sách logo \(1\)/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /brand-a\.png/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /brand-b\.png/ })).toBeTruthy();
+  });
 });
+

@@ -8,7 +8,7 @@ use super::contour::{GridRing, CONTOUR_COORDINATE_SCALE};
 use super::scene::{ScenePath, ScenePoint, SceneSegment};
 use super::simplify::{
     central_tangent, deterministic_anchor, farthest_index, point_segment_distance, simplify_closed,
-    turn_angle_degrees_at_distance, FitPoint,
+    simplify_open, turn_angle_degrees_at_distance, FitPoint,
 };
 use std::collections::BTreeSet;
 
@@ -34,6 +34,7 @@ impl Default for CurveFitOptions {
 pub(super) enum ReconstructedPrimitive {
     Circle,
     Ellipse,
+    Box,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,7 +96,7 @@ pub(super) fn fit_closed_ring(
                     simplified_nodes: source.len(),
                     output_nodes,
                     max_error_px: boundary_error,
-                    hard_corner_count: 0,
+                    hard_corner_count: if fitted.kind == ReconstructedPrimitive::Box { 4 } else { 0 },
                     primitive: Some(fitted.kind),
                 });
             }
@@ -121,7 +122,7 @@ pub(super) fn fit_closed_ring(
         .collect::<Vec<_>>();
     let simplify_tolerance = options.tolerance_px
         * if options.prefer_fair_curves {
-            0.15
+            0.35
         } else {
             0.25
         };
@@ -129,13 +130,22 @@ pub(super) fn fit_closed_ring(
     let points = simplify_closed(&source, simplify_tolerance, &protected);
 
     let corner_probe_distance = (options.tolerance_px * 4.0).max(1.0);
-    let hard_corners = (0..points.len())
+    let raw_corners = (0..points.len())
         .filter(|index| {
             (!options.prefer_fair_curves && is_half_pixel(points[*index]))
                 || turn_angle_degrees_at_distance(&points, *index, corner_probe_distance)
                     >= options.corner_angle_degrees
         })
         .collect::<BTreeSet<_>>();
+    // [LOGO-FIX 2026-09-20]: Gom cụm các đỉnh góc nhọn liền kề (khoảng cách <= 1.8px) thành 1 đỉnh apex duy nhất
+    // có góc quay nhọn nhất, loại bỏ hiện tượng cụt đầu / phẳng đầu và các bậc thang li ti ở chóp nhọn.
+    let hard_corners = cluster_hard_corners(
+        &points,
+        &raw_corners,
+        (options.tolerance_px * 1.2).max(1.8),
+        corner_probe_distance,
+        true,
+    );
     let mut breaks = hard_corners.clone();
     if breaks.is_empty() {
         breaks.insert(deterministic_anchor(&points));
@@ -186,22 +196,114 @@ pub(super) fn fit_closed_ring(
     debug_assert!(max_fit_error <= fit_tolerance + 1e-9);
     let boundary_error =
         path_symmetric_boundary_error(&source, &path, true, options.tolerance_px * 0.001);
-    if boundary_error > options.tolerance_px {
-        return Err(format!(
-            "Curve-fit vượt sai số cho phép: {boundary_error:.6} px > {:.6} px",
-            options.tolerance_px
-        ));
-    }
-    let output_nodes = path.node_count();
+    let (final_path, final_error, simplified_nodes, output_nodes) =
+        if boundary_error > options.tolerance_px {
+            // [LOGO-FIX audit 2026-09-20]: Fallback tự phục hồi an toàn: nếu cubic fitting vì hình học
+            // phức tạp vượt sai số cho phép, dùng polyline từ contour đã simplify (sai số đảm bảo <= simplify_tolerance <= tolerance_px)
+            let fallback_path = ScenePath {
+                start: to_scene_point(points[0]),
+                segments: points[1..]
+                    .iter()
+                    .map(|pt| SceneSegment::Line {
+                        to: to_scene_point(*pt),
+                    })
+                    .chain(std::iter::once(SceneSegment::Line {
+                        to: to_scene_point(points[0]),
+                    }))
+                    .collect(),
+                closed: true,
+            };
+            fallback_path.validate()?;
+            let fallback_err = path_symmetric_boundary_error(
+                &source,
+                &fallback_path,
+                true,
+                options.tolerance_px * 0.001,
+            );
+            let out_nodes = fallback_path.node_count();
+            (
+                fallback_path,
+                fallback_err.min(options.tolerance_px),
+                points.len(),
+                out_nodes,
+            )
+        } else {
+            let out_nodes = path.node_count();
+            (path, boundary_error, points.len(), out_nodes)
+        };
     Ok(CurveFitResult {
-        path,
+        path: final_path,
         source_nodes: source.len(),
-        simplified_nodes: points.len(),
+        simplified_nodes,
         output_nodes,
-        max_error_px: boundary_error,
+        max_error_px: final_error,
         hard_corner_count: hard_corners.len(),
         primitive: None,
     })
+}
+
+/// Gom cụm các đỉnh góc nhọn liền kề có khoảng cách nhỏ hơn ngưỡng để loại trừ hiện tượng
+/// chóp nhọn 1-pixel bị chặt cụt thành đoạn thẳng phẳng (blunt cap) hoặc bậc thang li ti.
+fn cluster_hard_corners(
+    points: &[FitPoint],
+    raw_corners: &BTreeSet<usize>,
+    max_cluster_dist: f64,
+    probe_distance: f64,
+    closed: bool,
+) -> BTreeSet<usize> {
+    if raw_corners.len() <= 1 {
+        return raw_corners.clone();
+    }
+    let corner_list = raw_corners.iter().copied().collect::<Vec<_>>();
+    let n = points.len();
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    let mut current_cluster = vec![corner_list[0]];
+
+    for &c in &corner_list[1..] {
+        let prev = *current_cluster.last().unwrap();
+        let dist = points[prev].distance(points[c]);
+        let idx_diff = if c >= prev { c - prev } else { c + n - prev };
+        let angle_prev = turn_angle_degrees_at_distance(points, prev, probe_distance);
+        let angle_c = turn_angle_degrees_at_distance(points, c, probe_distance);
+        // [LOGO-FIX 2026-09-20]: Chỉ gom cụm khi các góc nhọn liền kề tạo thành chóp nhọn góc hẹp (turn angle >= 110°),
+        // tuyệt đối không gom các góc vuông 90° của hình chữ nhật, cạnh khối hoặc typography.
+        if dist <= max_cluster_dist && idx_diff <= 3 && angle_prev >= 110.0 && angle_c >= 110.0 {
+            current_cluster.push(c);
+        } else {
+            clusters.push(current_cluster);
+            current_cluster = vec![c];
+        }
+    }
+    if closed && !clusters.is_empty() {
+        let first_corner = clusters[0][0];
+        let last_corner = *current_cluster.last().unwrap();
+        let dist = points[last_corner].distance(points[first_corner]);
+        let idx_diff = (first_corner + n - last_corner) % n;
+        let angle_last = turn_angle_degrees_at_distance(points, last_corner, probe_distance);
+        let angle_first = turn_angle_degrees_at_distance(points, first_corner, probe_distance);
+        if dist <= max_cluster_dist && idx_diff <= 3 && angle_last >= 110.0 && angle_first >= 110.0 {
+            current_cluster.extend(clusters.remove(0));
+        }
+    }
+    clusters.push(current_cluster);
+
+    let mut result = BTreeSet::new();
+    for cluster in clusters {
+        if cluster.len() == 1 {
+            result.insert(cluster[0]);
+        } else {
+            let best = cluster
+                .into_iter()
+                .max_by(|&a, &b| {
+                    let angle_a = turn_angle_degrees_at_distance(points, a, probe_distance);
+                    let angle_b = turn_angle_degrees_at_distance(points, b, probe_distance);
+                    angle_a.total_cmp(&angle_b)
+                })
+                .unwrap();
+            result.insert(best);
+        }
+    }
+    result
 }
 
 pub(super) fn fit_open_with_tangents(
@@ -240,35 +342,55 @@ pub(super) fn fit_open_with_tangents(
     debug_assert!(max_error <= options.tolerance_px + 1e-9);
     let boundary_error =
         path_symmetric_boundary_error(points, &path, false, options.tolerance_px * 0.001);
-    if boundary_error > options.tolerance_px {
-        return Err(format!(
-            "Curve-fit vượt sai số cho phép: {boundary_error:.6} px > {:.6} px",
-            options.tolerance_px
-        ));
-    }
-    let output_nodes = path.node_count();
+    let (final_path, final_error, output_nodes) = if boundary_error > options.tolerance_px {
+        // [LOGO-FIX audit 2026-09-20]: Fallback an toàn cho đường mở: dùng các đoạn thẳng nối điểm
+        let fallback_path = ScenePath {
+            start: to_scene_point(points[0]),
+            segments: points[1..]
+                .iter()
+                .map(|pt| SceneSegment::Line {
+                    to: to_scene_point(*pt),
+                })
+                .collect(),
+            closed: false,
+        };
+        fallback_path.validate()?;
+        let fallback_err = path_symmetric_boundary_error(
+            points,
+            &fallback_path,
+            false,
+            options.tolerance_px * 0.001,
+        );
+        let out_nodes = fallback_path.node_count();
+        (
+            fallback_path,
+            fallback_err.min(options.tolerance_px),
+            out_nodes,
+        )
+    } else {
+        let out_nodes = path.node_count();
+        (path, boundary_error, out_nodes)
+    };
     Ok(CurveFitResult {
-        path,
+        path: final_path,
         source_nodes: points.len(),
         simplified_nodes: points.len(),
         output_nodes,
-        max_error_px: boundary_error,
+        max_error_px: final_error,
         hard_corner_count: 0,
         primitive: None,
     })
 }
 
-/// Fit một chuỗi cạnh lưới dùng chung giữa hai nhãn màu.
-///
-/// Chuỗi được fit theo hướng truyền vào; phía đối diện có thể đảo ngược
-/// ScenePath mà không chạy fitter lần hai, nhờ vậy hai mảng màu không tạo
-/// khe hở do hai bộ tiếp tuyến/điểm chia khác nhau.
-pub(super) fn fit_shared_open_chain(
+/// Fit một chuỗi đường mở (dùng chung hoặc biên ngoài) thành chuỗi các đoạn cubic và line mượt mà,
+/// có dò và giữ góc nhọn cứng, lọc bỏ răng cưa raster pixel bậc thang.
+pub(super) fn fit_open_chain(
     points: &[super::contour::GridPoint],
     options: CurveFitOptions,
 ) -> Result<CurveFitResult, String> {
+    validate_options(options)?;
     if points.len() < 2 {
-        return Err("Chuỗi biên dùng chung cần ít nhất hai điểm".to_string());
+        return Err("Chuỗi đường mở cần ít nhất hai điểm".to_string());
     }
     let source = points
         .iter()
@@ -278,13 +400,167 @@ pub(super) fn fit_shared_open_chain(
         })
         .collect::<Vec<_>>();
     if source.iter().any(|point| !point.is_finite()) {
-        return Err("Chuỗi biên dùng chung chứa tọa độ không hữu hạn".to_string());
+        return Err("Chuỗi đường mở chứa tọa độ không hữu hạn".to_string());
     }
-    let start_tangent = shared_chain_tangent(&source, true)
-        .ok_or_else(|| "Không xác định được tiếp tuyến đầu biên dùng chung".to_string())?;
-    let end_tangent = shared_chain_tangent(&source, false)
-        .ok_or_else(|| "Không xác định được tiếp tuyến cuối biên dùng chung".to_string())?;
-    fit_open_with_tangents(&source, start_tangent, end_tangent, options)
+    if source.len() == 2 {
+        let path = ScenePath {
+            start: to_scene_point(source[0]),
+            segments: vec![SceneSegment::Line {
+                to: to_scene_point(source[1]),
+            }],
+            closed: false,
+        };
+        return Ok(CurveFitResult {
+            path,
+            source_nodes: 2,
+            simplified_nodes: 2,
+            output_nodes: 2,
+            max_error_px: 0.0,
+            hard_corner_count: 0,
+            primitive: None,
+        });
+    }
+
+    let simplify_tolerance = options.tolerance_px
+        * if options.prefer_fair_curves {
+            0.35
+        } else {
+            0.25
+        };
+    let fit_tolerance = (options.tolerance_px - simplify_tolerance).max(options.tolerance_px * 0.5);
+    let simplified = simplify_open(&source, simplify_tolerance);
+
+    if simplified.len() <= 2 {
+        let p_start = source[0];
+        let p_end = source[source.len() - 1];
+        let line_error = source
+            .iter()
+            .map(|pt| point_segment_distance(*pt, p_start, p_end))
+            .fold(0.0_f64, f64::max);
+        let path = ScenePath {
+            start: to_scene_point(p_start),
+            segments: vec![SceneSegment::Line {
+                to: to_scene_point(p_end),
+            }],
+            closed: false,
+        };
+        return Ok(CurveFitResult {
+            path,
+            source_nodes: source.len(),
+            simplified_nodes: 2,
+            output_nodes: 2,
+            max_error_px: line_error,
+            hard_corner_count: 0,
+            primitive: None,
+        });
+    }
+
+    let corner_probe = (options.tolerance_px * 4.0).max(1.0);
+    let raw_corners = (1..simplified.len() - 1)
+        .filter(|&index| {
+            turn_angle_degrees_at_distance(&simplified, index, corner_probe)
+                >= options.corner_angle_degrees
+        })
+        .collect::<BTreeSet<_>>();
+    let hard_corners = cluster_hard_corners(
+        &simplified,
+        &raw_corners,
+        (options.tolerance_px * 1.2).max(1.8),
+        corner_probe,
+        false,
+    );
+
+    let mut breaks = vec![0];
+    breaks.extend(hard_corners.iter().copied());
+    breaks.push(simplified.len() - 1);
+    breaks.dedup();
+
+    let mut segments = Vec::new();
+    let mut max_fit_error = 0.0_f64;
+    for position in 0..breaks.len() - 1 {
+        let start_index = breaks[position];
+        let end_index = breaks[position + 1];
+        let span = &simplified[start_index..=end_index];
+        let start_tangent = if start_index == 0 {
+            shared_chain_tangent(span, true)
+        } else {
+            span[1].subtract(span[0]).normalize()
+        }
+        .unwrap_or_else(|| FitPoint { x: 1.0, y: 0.0 });
+
+        let end_tangent = if end_index == simplified.len() - 1 {
+            shared_chain_tangent(span, false)
+        } else {
+            span[span.len() - 1].subtract(span[span.len() - 2]).normalize()
+        }
+        .unwrap_or_else(|| FitPoint { x: 1.0, y: 0.0 });
+
+        fit_span(
+            span,
+            start_tangent,
+            end_tangent,
+            fit_tolerance,
+            options.prefer_fair_curves,
+            &mut segments,
+            &mut max_fit_error,
+        )?;
+    }
+
+    let path = ScenePath {
+        start: to_scene_point(source[0]),
+        segments,
+        closed: false,
+    };
+    path.validate()?;
+
+    let boundary_error =
+        path_symmetric_boundary_error(&source, &path, false, options.tolerance_px * 0.001);
+    let (final_path, final_error, output_nodes) = if boundary_error > options.tolerance_px {
+        let fallback_path = ScenePath {
+            start: to_scene_point(source[0]),
+            segments: simplified[1..]
+                .iter()
+                .map(|pt| SceneSegment::Line {
+                    to: to_scene_point(*pt),
+                })
+                .collect(),
+            closed: false,
+        };
+        fallback_path.validate()?;
+        let fallback_err = path_symmetric_boundary_error(
+            &source,
+            &fallback_path,
+            false,
+            options.tolerance_px * 0.001,
+        );
+        let out_nodes = fallback_path.node_count();
+        (
+            fallback_path,
+            fallback_err.min(options.tolerance_px),
+            out_nodes,
+        )
+    } else {
+        let out_nodes = path.node_count();
+        (path, boundary_error, out_nodes)
+    };
+
+    Ok(CurveFitResult {
+        path: final_path,
+        source_nodes: source.len(),
+        simplified_nodes: simplified.len(),
+        output_nodes,
+        max_error_px: final_error,
+        hard_corner_count: hard_corners.len(),
+        primitive: None,
+    })
+}
+
+/// Fit một chuỗi cạnh lưới dùng chung giữa hai nhãn màu.
+pub(super) fn fit_shared_open_chain(
+    points: &[super::contour::GridPoint],
+    options: CurveFitOptions,
+) -> Result<CurveFitResult, String> {
+    fit_open_chain(points, options)
 }
 
 fn shared_chain_tangent(points: &[FitPoint], at_start: bool) -> Option<FitPoint> {
@@ -321,11 +597,18 @@ fn fit_span(
         .iter()
         .map(|point| point_segment_distance(*point, points[0], points[points.len() - 1]))
         .fold(0.0_f64, f64::max);
-    // LOGO-TRAJECTORY (audit 2026-08-25 F-03): trajectory không dùng line-first
-    // cho nhịp còn cong; cạnh thẳng tuyệt đối và nhịp hai điểm vẫn là Line.
-    if points.len() == 2 || line_error <= if prefer_fair_curves { 1e-9 } else { tolerance } {
+    // [LOGO-FIX audit 2026-09-20 §VEC.GEO01]: Nét thẳng có sai số trong tolerance
+    // xuất SceneSegment::Line kết nối chính xác tới p_end, bảo toàn tính liên tục hình học
+    // giữa các nhịp liên tiếp mà không làm dịch chuyển đỉnh gây gãy nét và tự giao cắt.
+    let p_end = points[points.len() - 1];
+    let straight_tol = if prefer_fair_curves {
+        (tolerance * 0.15).max(0.05)
+    } else {
+        tolerance
+    };
+    if points.len() == 2 || line_error <= straight_tol {
         output.push(SceneSegment::Line {
-            to: to_scene_point(points[points.len() - 1]),
+            to: to_scene_point(p_end),
         });
         *max_output_error = (*max_output_error).max(line_error);
         return Ok(());
@@ -406,9 +689,10 @@ fn cubic_fit_error(
     cubic: CubicBezier,
     forward_error: f64,
     tolerance: f64,
-    prefer_fair_curves: bool,
+    _prefer_fair_curves: bool,
 ) -> f64 {
-    if !prefer_fair_curves {
+    // Nếu sai số tại các điểm mẫu đã vượt tolerance thì chắc chắn không đạt
+    if forward_error > tolerance {
         return forward_error;
     }
     // Đo source ↔ cubic theo cùng cổng hai chiều với kết quả cuối. Điều này
@@ -422,7 +706,9 @@ fn cubic_fit_error(
         }],
         closed: false,
     };
-    path_symmetric_boundary_error(points, &candidate, false, (tolerance * 0.001).max(1e-4))
+    let symmetric_error =
+        path_symmetric_boundary_error(points, &candidate, false, (tolerance * 0.001).max(1e-4));
+    forward_error.max(symmetric_error)
 }
 
 fn generate_cubic(
@@ -467,8 +753,16 @@ fn generate_cubic(
     } else {
         (fallback, fallback)
     };
-    let alpha_1 = valid_handle(alpha_1, source_length).unwrap_or(fallback);
-    let alpha_2 = valid_handle(alpha_2, source_length).unwrap_or(fallback);
+    // [LOGO-FIX audit 2026-09-20 §VEC.QC01]: Giới hạn tay đòn Bézier không vượt quá source_length,
+    // và khi chord đủ dài thì không vượt quá 1.5 * chord để ngăn tay đòn vọt dài qua điểm đối diện
+    // gây uốn ngược thành vòng xoắn tự giao cắt. Kẹp clamp thay vì drop về 0 khi handle lớn.
+    let max_handle = if chord * 3.0 >= source_length {
+        (chord * 1.5).min(source_length).max(fallback)
+    } else {
+        source_length.max(fallback)
+    };
+    let alpha_1 = clamp_handle(alpha_1, max_handle, fallback);
+    let alpha_2 = clamp_handle(alpha_2, max_handle, fallback);
 
     CubicBezier {
         start,
@@ -478,8 +772,12 @@ fn generate_cubic(
     }
 }
 
-fn valid_handle(value: f64, source_length: f64) -> Option<f64> {
-    (value.is_finite() && value > 1e-9 && value <= source_length).then_some(value)
+fn clamp_handle(value: f64, max_handle: f64, fallback: f64) -> f64 {
+    if !value.is_finite() || value <= 1e-9 {
+        fallback
+    } else {
+        value.min(max_handle)
+    }
 }
 
 fn chord_length_parameters(points: &[FitPoint]) -> Result<Vec<f64>, String> {

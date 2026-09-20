@@ -694,3 +694,25 @@ describe('TEMPERF.2: batch sức chứa chỉ thuộc lượt còn hiệu lực 
         expect(JSON.parse(batchRequests()[0].body as string).path).toBe(workspace.file.path);
     });
 });
+
+it.each(['nup','step_repeat'] as const)('BE.03 manual %s không gửi chia cụm ẩn', async (mode) => {
+    const {store,onStartNup}=mountDashboard('sticker_imposer',mode,'cluster_tile');
+    act(()=>store.setState({gridStrategy:'manual',columns:2,rows:2}));
+    await settleDashboard();
+    expect(lastPreview().groupingStrategy).toBe('none');
+    executeWithAppliedPreview();
+    expect(onStartNup).toHaveBeenCalledWith(expect.objectContaining({
+        gridStrategy:'manual',columns:2,rows:2,groupingStrategy:'none',
+    }));
+    expect(store.getState().groupingStrategy).toBe('cluster_tile');
+});
+
+it('BE.04 nạp state/preset cũ cũng được chuẩn hóa trước khi thực thi', async () => {
+    const {store,onStartNup}=mountDashboard('sticker_imposer','nup','none');
+    act(()=>store.setState({impositionUnit:'sticker',layoutType:'cut_stacks',targetQuantity:100}));
+    await settleDashboard();
+    expect(store.getState().layoutType).toBe('sequential');
+    expect(store.getState().targetQuantity).toBe(100);
+    executeWithAppliedPreview();
+    expect(onStartNup).toHaveBeenCalledWith(expect.objectContaining({layoutType:'sequential',targetQuantity:100}));
+});

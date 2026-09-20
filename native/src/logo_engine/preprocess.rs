@@ -48,6 +48,7 @@ pub(crate) fn preprocess_rgba(
     let mut alpha_mask = Vec::with_capacity(pixel_count);
     let mut labels = Vec::with_capacity(pixel_count);
     let mut label_pixel_counts = vec![0_u64; palette_colors.len()];
+    let mut palette_cache = std::collections::HashMap::<[u8; 3], usize>::new();
 
     for pixel in rgba.chunks_exact(4) {
         let alpha = pixel[3];
@@ -60,7 +61,10 @@ pub(crate) fn preprocess_rgba(
         let label_index = match profile {
             LogoEngineProfile::Silhouette => 0,
             LogoEngineProfile::FlatColor => {
-                nearest_palette_index([pixel[0], pixel[1], pixel[2]], &palette_colors)
+                let rgb = [pixel[0], pixel[1], pixel[2]];
+                *palette_cache
+                    .entry(rgb)
+                    .or_insert_with(|| nearest_palette_index(rgb, &palette_colors))
             }
         };
         labels.push(label_index as u16);
@@ -114,9 +118,22 @@ pub(crate) fn despeckle_artifact(
     // chúng nhập vào vùng lớn ổn định, không đổi kết quả theo thứ tự palette.
     components.sort_by_key(|component| (component.pixels.len(), component.first_pixel));
 
+    // LOGO-DIACRITIC (audit 2026-09-20 §VEC.F03): Thu thập các khối hình chính
+    // để bảo vệ dấu tiếng Việt / ký hiệu liền kề không bị xóa mù quáng.
+    let substantial_components: Vec<ComponentBounds> = components
+        .iter()
+        .filter(|c| c.pixels.len() >= minimum_area || c.pixels.len() >= 32)
+        .map(|c| compute_component_bounds(c, width, height))
+        .collect();
+
     let mut removed_components = 0;
     for component in components {
         if component.pixels.len() >= minimum_area {
+            continue;
+        }
+        let bounds = compute_component_bounds(&component, width, height);
+        if is_diacritic_or_mark_candidate(&bounds, &substantial_components) {
+            // Bảo toàn dấu tiếng Việt và ký hiệu nhỏ gióng hàng với chữ chính
             continue;
         }
         let Some(replacement) = dominant_neighbor_label(
@@ -208,6 +225,117 @@ fn collect_component_pixels(labels: &[u16], width: usize, height: usize) -> Vec<
         });
     }
     components
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ComponentBounds {
+    label: u16,
+    area: usize,
+    min_x: usize,
+    max_x: usize,
+    min_y: usize,
+    max_y: usize,
+}
+
+fn compute_component_bounds(
+    comp: &ComponentPixels,
+    width: usize,
+    height: usize,
+) -> ComponentBounds {
+    let mut min_x = width;
+    let mut max_x = 0;
+    let mut min_y = height;
+    let mut max_y = 0;
+    for &idx in &comp.pixels {
+        let x = idx % width;
+        let y = idx / width;
+        if x < min_x {
+            min_x = x;
+        }
+        if x > max_x {
+            max_x = x;
+        }
+        if y < min_y {
+            min_y = y;
+        }
+        if y > max_y {
+            max_y = y;
+        }
+    }
+    ComponentBounds {
+        label: comp.label,
+        area: comp.pixels.len(),
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    }
+}
+
+/// Kiểm tra xem một component nhỏ có đặc tính hình học của dấu tiếng Việt
+/// (sắc, huyền, hỏi, ngã, nặng, mũ, móc, chấm i/j) hoặc ký hiệu nhỏ (®, ™)
+/// gióng hàng theo trục dọc với một ký tự/hình khối chính hay không.
+fn is_diacritic_or_mark_candidate(
+    comp: &ComponentBounds,
+    substantial_components: &[ComponentBounds],
+) -> bool {
+    // Đốm nhiễu 1-2px ngẫu nhiên không đủ kích thước để được coi là dấu chữ thật
+    if comp.area < 3 {
+        return false;
+    }
+    let comp_w = comp.max_x.saturating_sub(comp.min_x) + 1;
+    let comp_h = comp.max_y.saturating_sub(comp.min_y) + 1;
+
+    // Vệt nhiễu đường dài mảnh ngang hoặc dọc không phải là dấu
+    let aspect_ratio = (comp_w as f64) / (comp_h as f64);
+    if aspect_ratio > 6.0 || aspect_ratio < 0.15 {
+        return false;
+    }
+
+    for base in substantial_components {
+        if base.label != comp.label {
+            continue;
+        }
+        let base_w = base.max_x.saturating_sub(base.min_x) + 1;
+        let base_h = base.max_y.saturating_sub(base.min_y) + 1;
+
+        if base.area < comp.area.saturating_mul(2) {
+            continue;
+        }
+
+        // Gióng hàng theo trục ngang (horizontal overlap)
+        let padding = (comp_w / 2).max(4);
+        let h_overlap = comp.max_x + padding >= base.min_x && comp.min_x <= base.max_x + padding;
+        if !h_overlap {
+            continue;
+        }
+
+        // Khoảng cách theo trục dọc (vertical gap):
+        // Trường hợp 1: Dấu nằm trên chữ cái (sắc, huyền, hỏi, ngã, mũ, chấm của i/j...)
+        if comp.max_y < base.min_y {
+            let v_gap = base.min_y - comp.max_y;
+            let max_gap = ((base_h as f64) * 0.9).max((comp_h as f64) * 3.5).max(35.0) as usize;
+            if v_gap <= max_gap {
+                return true;
+            }
+        }
+        // Trường hợp 2: Dấu nằm dưới chữ cái (dấu nặng '.')
+        else if comp.min_y > base.max_y {
+            let v_gap = comp.min_y - base.max_y;
+            let max_gap = ((base_h as f64) * 0.7).max((comp_h as f64) * 3.0).max(25.0) as usize;
+            if v_gap <= max_gap {
+                return true;
+            }
+        }
+        // Trường hợp 3: Ký hiệu nhãn hiệu (®, ™) ở góc trên bên phải
+        else if comp.min_y <= base.min_y + (base_h / 2) && comp.min_x > base.max_x {
+            let h_gap = comp.min_x - base.max_x;
+            if h_gap <= ((base_w as f64) * 0.6).max(30.0) as usize {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn dominant_neighbor_label(

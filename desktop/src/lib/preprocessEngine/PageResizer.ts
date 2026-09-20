@@ -23,6 +23,7 @@ export interface ResizeOptions {
     targetH: number;   // mm
     scaleMode: ScaleMode;
     applyTo: 'all' | 'even' | 'odd' | number[];  // 1-based page numbers
+    pageSizeMode?: 'fixed' | 'fixed_width' | 'fixed_height';
     // Màu nền vùng trống khi fit/center
     bgFillMode?: BackgroundFillMode;
     bgFillColor?: string;  // hex '#rrggbb'
@@ -81,27 +82,6 @@ export async function resizePages(
             continue;
         }
 
-        // Create new page with target dimensions
-        const newPage = outputPdf.addPage([targetWPt, targetHPt]);
-        const hasGap = options.scaleMode === 'fit' || options.scaleMode === 'center_no_scale';
-        if (hasGap && options.bgFillMode === 'solid') {
-            const [fillR, fillG, fillB] = parseSolidColor(options.bgFillColor);
-            // RESIZE (audit 2026-07-31 §B.2): vẽ trước khi kiểm tra /Contents để
-            // trang trắng cũng nhận đúng màu nền đã chọn.
-            newPage.drawRectangle({
-                x: 0, y: 0,
-                width: targetWPt, height: targetHPt,
-                color: rgb(fillR, fillG, fillB),
-            });
-        }
-
-        // Trang trắng (chèn thêm để đủ số trang) không có /Contents —
-        // embedPages sẽ ném "Can't embed page with missing Contents".
-        // Trang rỗng thì chẳng có gì để nhúng, cứ để trang khổ mới trống.
-        if (!srcPage.node.Contents()) {
-            continue;
-        }
-
         // Embed source page.
         // Ưu tiên CropBox khi nhỏ hơn MediaBox (sau Crop UI: viewer đã cắt, MediaBox
         // có thể còn gốc nếu bản cũ chưa sync) → resize đúng vùng đã cắt, không co
@@ -123,41 +103,73 @@ export async function resizePages(
             }
         } catch { /* no crop box */ }
 
+        let pageTargetWPt = targetWPt;
+        let pageTargetHPt = targetHPt;
+        let scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0;
+
+        if (options.pageSizeMode === 'fixed_width') {
+            const scale = pageTargetWPt / Math.max(0.001, embedW);
+            pageTargetHPt = embedH * scale;
+            scaleX = scaleY = scale;
+            offsetX = offsetY = 0;
+        } else if (options.pageSizeMode === 'fixed_height') {
+            const scale = pageTargetHPt / Math.max(0.001, embedH);
+            pageTargetWPt = embedW * scale;
+            scaleX = scaleY = scale;
+            offsetX = offsetY = 0;
+        } else {
+            switch (options.scaleMode) {
+                case 'fit': {
+                    const scale = Math.min(targetWPt / embedW, targetHPt / embedH);
+                    scaleX = scaleY = scale;
+                    offsetX = (targetWPt - embedW * scale) / 2;
+                    offsetY = (targetHPt - embedH * scale) / 2;
+                    break;
+                }
+                case 'fill': {
+                    const scale = Math.max(targetWPt / embedW, targetHPt / embedH);
+                    scaleX = scaleY = scale;
+                    offsetX = (targetWPt - embedW * scale) / 2;
+                    offsetY = (targetHPt - embedH * scale) / 2;
+                    break;
+                }
+                case 'stretch': {
+                    scaleX = targetWPt / embedW;
+                    scaleY = targetHPt / embedH;
+                    break;
+                }
+                case 'center_no_scale': {
+                    offsetX = (targetWPt - embedW) / 2;
+                    offsetY = (targetHPt - embedH) / 2;
+                    break;
+                }
+            }
+        }
+
+        // Create new page with target dimensions
+        const newPage = outputPdf.addPage([pageTargetWPt, pageTargetHPt]);
+        const hasGap = options.pageSizeMode !== 'fixed_width' && options.pageSizeMode !== 'fixed_height'
+            && (options.scaleMode === 'fit' || options.scaleMode === 'center_no_scale');
+        if (hasGap && options.bgFillMode === 'solid') {
+            const [fillR, fillG, fillB] = parseSolidColor(options.bgFillColor);
+            newPage.drawRectangle({
+                x: 0, y: 0,
+                width: pageTargetWPt, height: pageTargetHPt,
+                color: rgb(fillR, fillG, fillB),
+            });
+        }
+
+        // Trang trắng (chèn thêm để đủ số trang) không có /Contents —
+        // embedPages sẽ ném "Can't embed page with missing Contents".
+        // Trang rỗng thì chẳng có gì để nhúng, cứ để trang khổ mới trống.
+        if (!srcPage.node.Contents()) {
+            continue;
+        }
+
         const [embedded] = await outputPdf.embedPages(
             [srcPage],
             [box],
         );
-
-        // Calculate scale and position (theo khổ embed — MediaBox hoặc CropBox)
-        let scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0;
-
-        switch (options.scaleMode) {
-            case 'fit': {
-                const scale = Math.min(targetWPt / embedW, targetHPt / embedH);
-                scaleX = scaleY = scale;
-                offsetX = (targetWPt - embedW * scale) / 2;
-                offsetY = (targetHPt - embedH * scale) / 2;
-                break;
-            }
-            case 'fill': {
-                const scale = Math.max(targetWPt / embedW, targetHPt / embedH);
-                scaleX = scaleY = scale;
-                offsetX = (targetWPt - embedW * scale) / 2;
-                offsetY = (targetHPt - embedH * scale) / 2;
-                break;
-            }
-            case 'stretch': {
-                scaleX = targetWPt / embedW;
-                scaleY = targetHPt / embedH;
-                break;
-            }
-            case 'center_no_scale': {
-                offsetX = (targetWPt - embedW) / 2;
-                offsetY = (targetHPt - embedH) / 2;
-                break;
-            }
-        }
-
 
         newPage.drawPage(embedded, {
             x: offsetX,

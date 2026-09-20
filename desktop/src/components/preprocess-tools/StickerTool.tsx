@@ -531,8 +531,8 @@ export default function StickerTool({
         canonicalPreviewExpected
         && (
             cutlinePreview.isPreparing
-            || cutlinePreview.isUpdating
-            || canonicalPreviewStale
+            || (cutlinePreview.isUpdating && !cutlinePreview.preview)
+            || (canonicalPreviewStale && !cutlinePreview.preview)
         )
     );
     // QUALITY (audit 2026-09-10 §FAIR.5): chỉ PDF Alpha nhiều mảng đã nhận

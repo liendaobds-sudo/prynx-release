@@ -510,6 +510,9 @@ def _raster_resize(source_path: str, output_path: str,
 
     NHANH & NHỎ nhất cho trang thuần ảnh. Raster hoá → mất vector/text, ra RGB.
     Chỉ hỗ trợ apply_to='all' (caller đã đảm bảo)."""
+    import tempfile
+    import shutil
+    import gc
     import pypdfium2 as pdfium
     from PIL import Image
 
@@ -522,56 +525,75 @@ def _raster_resize(source_path: str, output_path: str,
         for channel in _background_rgb(bg_fill_mode, bg_fill_color)
     )
 
-    pdf = pdfium.PdfDocument(source_path)
-    pages_img: List["Image.Image"] = []
+    # PERF (audit 2026-09-19 §RESIZE.STREAM_RAM): không tích lũy toàn bộ mảng Image.Image
+    # (với 72 trang tốn ~2GB RAM uncompressed) trong bộ nhớ. Ghi từng trang xuống file tạm
+    # JPEG chất lượng cao và giải phóng RAM bitmap ngay lập tức.
+    temp_dir = tempfile.mkdtemp(prefix="prynx_raster_resize_")
+    temp_files: list[str] = []
     try:
-        for i in range(len(pdf)):
-            page = pdf[i]
-            sw, sh = page.get_size()  # points
-            if sw <= 0 or sh <= 0:
-                sw, sh = tw_pt, th_pt
-            # 4 mode PHẢI khớp resize_pages (vector) + frontend PageResizer.ts:
-            #  - fit: scale ĐỀU nhỏ nhất, có viền, KHÔNG cắt.
-            #  - fill/crop: scale ĐỀU lớn nhất, lấp đầy, CẮT phần thừa.
-            #  - stretch (Ép bóp méo): kéo X/Y RIÊNG lấp đầy canvas → méo, KHÔNG cắt.
-            #  - center_no_scale (Giữ nguyên ở giữa): scale=1, canh giữa.
-            # Bug cũ: chỉ fit + else(=fill) → stretch & center_no_scale rơi vào fill
-            # → phóng to giữ tỉ lệ + cắt mất hình (user báo "ép bóp méo mà lại cắt").
-            if scale_mode == "stretch":
-                # Render native theo DPI rồi kéo bitmap khít px_w×px_h (méo).
-                _rs = max(0.01, min(target_dpi / 72.0, target_dpi / 72.0 * 8))
-                bmp = page.render(scale=_rs).to_pil().convert("RGB")
-                canvas = bmp.resize((px_w, px_h), Image.LANCZOS)
-                pages_img.append(canvas)
-                continue
-            if scale_mode == "center_no_scale":
-                _rs = max(0.01, min(target_dpi / 72.0, target_dpi / 72.0 * 8))
-                bmp = page.render(scale=_rs).to_pil().convert("RGB")
-            else:
-                if scale_mode == "fit":
-                    fit = min(tw_pt / sw, th_pt / sh)
-                else:  # fill/crop
-                    fit = max(tw_pt / sw, th_pt / sh)
-                render_scale = (target_dpi / 72.0) * fit
-                # Chặn scale phi lý (trang lỗi) → tránh OOM.
-                render_scale = max(0.01, min(render_scale, target_dpi / 72.0 * 8))
-                bmp = page.render(scale=render_scale).to_pil().convert("RGB")
-            canvas = Image.new("RGB", (px_w, px_h), background_rgb)
-            off_x = (px_w - bmp.width) // 2
-            off_y = (px_h - bmp.height) // 2
-            # fill/crop có thể tràn canvas → paste vẫn cắt đúng phần trong canvas.
-            canvas.paste(bmp, (off_x, off_y))
-            pages_img.append(canvas)
+        pdf = pdfium.PdfDocument(source_path)
+        try:
+            total_pages = len(pdf)
+            for i in range(total_pages):
+                page = pdf[i]
+                sw, sh = page.get_size()  # points
+                if sw <= 0 or sh <= 0:
+                    sw, sh = tw_pt, th_pt
+                # 4 mode PHẢI khớp resize_pages (vector) + frontend PageResizer.ts:
+                if scale_mode == "stretch":
+                    _rs = max(0.01, min(target_dpi / 72.0, target_dpi / 72.0 * 8))
+                    bmp = page.render(scale=_rs).to_pil().convert("RGB")
+                    canvas = bmp.resize((px_w, px_h), Image.LANCZOS)
+                    del bmp
+                elif scale_mode == "center_no_scale":
+                    _rs = max(0.01, min(target_dpi / 72.0, target_dpi / 72.0 * 8))
+                    bmp = page.render(scale=_rs).to_pil().convert("RGB")
+                    canvas = Image.new("RGB", (px_w, px_h), background_rgb)
+                    off_x = (px_w - bmp.width) // 2
+                    off_y = (px_h - bmp.height) // 2
+                    canvas.paste(bmp, (off_x, off_y))
+                    del bmp
+                else:
+                    if scale_mode == "fit":
+                        fit = min(tw_pt / sw, th_pt / sh)
+                    else:  # fill/crop
+                        fit = max(tw_pt / sw, th_pt / sh)
+                    render_scale = (target_dpi / 72.0) * fit
+                    render_scale = max(0.01, min(render_scale, target_dpi / 72.0 * 8))
+                    bmp = page.render(scale=render_scale).to_pil().convert("RGB")
+                    canvas = Image.new("RGB", (px_w, px_h), background_rgb)
+                    off_x = (px_w - bmp.width) // 2
+                    off_y = (px_h - bmp.height) // 2
+                    canvas.paste(bmp, (off_x, off_y))
+                    del bmp
+
+                page_tmp = os.path.join(temp_dir, f"page_{i:05d}.jpg")
+                canvas.save(page_tmp, format="JPEG", quality=95)
+                temp_files.append(page_tmp)
+                del canvas
+                if (i + 1) % 10 == 0:
+                    gc.collect()
+        finally:
+            pdf.close()
+
+        if not temp_files:
+            raise ValueError("Không render được trang nào để raster resize.")
+
+        first_img = Image.open(temp_files[0])
+        other_imgs = [Image.open(f) for f in temp_files[1:]]
+        try:
+            first_img.save(
+                output_path, format="PDF", save_all=True,
+                append_images=other_imgs, resolution=float(target_dpi),
+            )
+        finally:
+            first_img.close()
+            for im in other_imgs:
+                im.close()
     finally:
-        pdf.close()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        gc.collect()
 
-    if not pages_img:
-        raise ValueError("Không render được trang nào để raster resize.")
-
-    pages_img[0].save(
-        output_path, format="PDF", save_all=True,
-        append_images=pages_img[1:], resolution=float(target_dpi),
-    )
     return output_path
 
 

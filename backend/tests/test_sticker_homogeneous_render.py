@@ -106,7 +106,9 @@ def test_homogeneous_end_to_end_real_render(tmp_path, monkeypatch):
     # nên tỉ lệ mực đen đo được xấp xỉ 0.70. Dải dưới bắt ô bị DROP/trắng; dải trên
     # vẫn bắt registration hỏng kéo nội dung phủ kín toàn trang.
     frac = black / float(H * W)
-    assert 0.45 <= frac <= 0.90, (
+    # BE.05: N-Up trống SL in 4 mẫu một lần; 3 ô đen giữ đúng phép đăng ký khuôn.
+    expected_fraction = 3 * 80.0 * 80.0 / ((200 * 2.83465) ** 2)
+    assert abs(frac - expected_fraction) < .005, (
         f"tỉ lệ mực đen={frac:.3f} (đo) bất thường — quá thấp=ô bị bỏ/trắng, "
         f"quá cao=registration hỏng (kéo full trang)")
 

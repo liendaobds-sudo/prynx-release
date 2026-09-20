@@ -302,8 +302,9 @@ export async function runProcessEngine(
                 gripperMargin: (isDieCut || isCnc) ? 0 : (settings.gripperMargin || 0),
                 marginMode: settings.marginMode || 'labels_only',
                 markType: caps.supportsMarks ? (settings.markType || 'none') : 'none',
-                markLength: settings.markLength || 5, markOffset: settings.markOffset || 3,
-                markThickness: settings.markThickness || 0.25,
+                // PARITY (audit 2026-09-20 §PAR20.01): dùng ?? thay vì || để bảo toàn giá trị 0
+                markLength: settings.markLength ?? 5, markOffset: settings.markOffset ?? 3,
+                markThickness: settings.markThickness ?? 0.25,
                 markStyle: settings.markStyle || 'default',
                 // CUT-BORDER (audit 2026-08-04 §CB.2): chỉ serialize cho Bình bài
                 // cắt xén; dấu xén và đường viền hoạt động độc lập.
@@ -427,7 +428,6 @@ export async function runProcessEngine(
                 bleed_mm: settings.bleed || 0,
                 split_gap_mm: Number(settings.splitGap ?? 0),
             });
-            console.warn('[CLUSTER-DEBUG-PROCESS] Sending backendSettings to backend:', JSON.stringify(backendSettings));
             const jobId = await startNupJobBackend(serverPath, backendSettings);
             void previewPerfLog('nup-export ACCEPTED', {
                 trace_id: settings.diagnosticTraceId || '',
@@ -915,12 +915,15 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
             ? Number(nativeBlob.nativeSize)
             : blob.size;
         if (settings.spawnNewTab && onSpawnTab) {
-            const outputFile = new File([blob], newFileName, { type: 'application/pdf' });
+            let outputFile: File = new File([blob], newFileName, { type: 'application/pdf' });
             if (nativeOutputPath) {
                 Object.defineProperty(outputFile, 'path', { value: nativeOutputPath });
                 if (outputBytes > 0) {
                     Object.defineProperty(outputFile, 'size', { value: outputBytes });
                 }
+            } else if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+                const { persistTempNativePdfFile } = await import('./nativeFileAccess');
+                outputFile = await persistTempNativePdfFile(await blob.arrayBuffer(), newFileName);
             }
             onSpawnTab(outputFile);
         } else {
@@ -932,6 +935,9 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
 
 
     try {
+        const FE_PAGE_LIMIT = 15;
+        const FE_SIZE_LIMIT = 15 * 1024 * 1024; // 15MB an toàn cho JS Heap (tránh OOM và GC thrashing)
+
         // RESIZE (audit 2026-08-01 §RT.11): nền động đi một backend job;
         // solid/không nền vẫn giữ fast-path frontend hiện có.
         const hasGapMode = !lockedAxis
@@ -1078,7 +1084,8 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
         const shouldUsePathBackend = !!sourcePath && (
             pathMustUseBackend
             || (typeof settings.targetDpi === 'number' && settings.targetDpi > 0)
-            || (pathMetadata?.page_count ?? 0) > 1000
+            || (pathMetadata?.page_count ?? 0) > 15
+            || (file.size || 0) > 15 * 1024 * 1024
             || autoDownsizeFromPath
         );
 
@@ -1158,7 +1165,7 @@ export async function runResize(ctx: ProcessContext, rawSettings: unknown): Prom
         };
 
         let resizedBlob: Blob;
-        if (wantDownsample || !canUseFrontend || totalPages > 1000 || (file.size || workingBytes.byteLength) > FE_SIZE_LIMIT) {
+        if (wantDownsample || !canUseFrontend || totalPages > FE_PAGE_LIMIT || (file.size || workingBytes.byteLength) > FE_SIZE_LIMIT) {
             resizedBlob = await runBackend();
         } else {
             try {

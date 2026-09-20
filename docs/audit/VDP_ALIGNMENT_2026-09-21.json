@@ -1,0 +1,29 @@
+{
+  "date": "2026-09-21",
+  "head": "0c8a347",
+  "scope": "VDP straight-text alignment, fit and LIVE/PNG/final-PDF parity",
+  "state": "OPEN_AWAITING_APPROVAL",
+  "production_changed_by_audit": false,
+  "evidence_level": "AUTO_ARTIFACT_NOT_TAURI_RUNTIME",
+  "source_sha256": {
+    "backend/app/workers/vdp_engine.py": "D3EC843FEA6DDF75DEED276CA5234C9F372B6877438D109F3BCFAE59CB81A51F",
+    "backend/app/workers/vdp_preview.py": "D4F26BF7F154A52B43DF6C34220A7A09E759B314E00E6CFE485B5F8549818604",
+    "backend/app/workers/vdp_text_picker.py": "EF3D48AD8CCD7C8C71A02CFA1775E15A45D8B7948F5F4A107F9FB597E2FE3363",
+    "desktop/src/components/workspace/LivePageFrame.tsx": "ED26CE564A575D6605D8E45F05AA4CFE51C1AFD87E5616D7E1CBD8EBA6B51C42",
+    "desktop/src/components/preprocess-tools/DataMergeTool.tsx": "B8A65BA0A0F1AB9B2850F690F0480AB6856531029121DDD1072C2231097B4B34"
+  },
+  "fixture": {"font_size_pt":32,"box_xy_pt":[100,75],"normal_wh_pt":[360,50],"narrow_width_pt":200,"low_height_pt":24,"browser_scale":0.75,"pdf_pixels_per_pt":2,"font_loading":"await explicit FontFace load", "base_cases":15,"extra_backend_cases":6,"css_control_cases":15,"final_pipeline_cases":1},
+  "findings": [
+    {"id":"VDPALIGN21.01","priority":1,"status":"CONFIRMED","level":"AUTO","cause":"oversize inline-block begins at parent left; scale applied around narrower parent center","wide_live_center_dx_px":{"Arial":43.5,"UTMEdwardianBold":27,"UTMViceroyJF":20},"wide_css_control_dx_px":{"Arial":-0.5,"UTMEdwardianBold":3,"UTMViceroyJF":0.5},"narrow_live_dx_px":[58,54,51.5]},
+    {"id":"VDPALIGN21.02","priority":1,"status":"CONFIRMED","level":"ARTIFACT","cause":"width-only fit, fixed browser baseline correction and fontSize-based output baseline do not contain glyph ink","normal_viceroy_bottom_overflow_pt":1.5,"low_field_bottom_overflow_pt":{"Arial":11,"UTMEdwardianBold":15.5,"UTMViceroyJF":14.5},"multiline_bottom_overflow_pt":{"Arial":14,"UTMEdwardianBold":18.5,"UTMViceroyJF":17.5}},
+    {"id":"VDPALIGN21.03","priority":2,"status":"CONFIRMED","level":"ARTIFACT","cause":"PDFium bbox left ignored when positioning text origin","edwardian_ink_bbox_pt":[105,93.5,464.5,127.5],"field_ltrb_pt":[100,75,460,125],"final_engine_bbox_identical":true},
+    {"id":"VDPALIGN21.04","priority":1,"status":"CONFIRMED","level":"ARTIFACT","cause":"PDFium output bypasses ReportLab preview layout; angle vs rotation contract mismatch","rotation90_preview_bbox_pt":[273.5,75,304.5,124],"rotation90_output_bbox_pt":[105,93.5,464.5,127.5],"leading2_y_delta_pt":16,"autofit_false":{"preview":"wraps into 2 lines","output":"1 line, left overflow21pt and right32pt"}}
+  ],
+  "tests":{"backend_passed":31,"frontend_passed":7,"browser_actual_component":true,"browser_control_modified_only_harness":true,"raster_measured":true},
+  "gaps":["Exact user field payload not captured","Tauri runtime and installer not exercised","Fit-height button not reproduced","Curves, fallback fonts, faux styles and out-of-page fields incomplete"],
+  "audit_units":[
+    {"id":"W4-VDPALIGN21-LIVE","entry":"DataMergeTool alignment/autoFit + vdpLivePreview","handler":"LivePageFrame resolveFieldLiveText","engine":"VdpAutoFitText","writer":"Chromium paint","artifact":"headless screenshots/DOM measurements","consumer":"viewer LIVE","contract":"CSS-mm to pt/px, natural width, ink bounds, alignment","level":"AUTO","next":"Fix then verify user file in Tauri"},
+    {"id":"W4-VDPALIGN21-PDF","entry":"api/vdp/generate","handler":"run_vdp_engine","engine":"process_chunk/PdfiumVdpTextRenderer","writer":"PDFium overlay + direct merge + final save","artifact":"actual fixture PDF raster measured","consumer":"PDF viewer/print","contract":"font bounds origin, baseline, fit, rotation, leading","level":"ARTIFACT","next":"Shared layout and final output regression tests"},
+    {"id":"W4-VDPALIGN21-PARITY","entry":"api/vdp/preview versus generate","handler":"render_record_preview versus process_chunk","engine":"ReportLab versus PDFium","writer":"PNG versus final PDF","artifact":"same-input measured images","consumer":"preview and exported page","contract":"rotation/lineHeight/autoFit line behavior","level":"ARTIFACT","next":"Unify placement then compare all modes"}
+  ]
+}

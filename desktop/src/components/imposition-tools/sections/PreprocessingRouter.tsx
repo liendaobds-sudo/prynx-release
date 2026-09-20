@@ -348,9 +348,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'logo_rebuild' && (
-                <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3 text-xs leading-relaxed text-violet-800 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-200">
-                    {tv('Workspace bên trái dùng để chọn ảnh, xác nhận bảng màu, tạo preview và tải SVG.')}
-                </div>
+                <div id={`logo-rebuild-sidebar-portal-${tabId}`} className="flex flex-col gap-4" />
             )}
 
             {activeTool === 'encrypt' && (

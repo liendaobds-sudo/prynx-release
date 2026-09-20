@@ -980,20 +980,38 @@ def process_chunk(args):
             _hom_clip = None
             if homogeneous_mode and is_die_cut:
                 _src_idx = p['src_page_idx']
-                if _src_idx not in _artwork_bbox_cache:
-                    _bb = None
+                # OVAL20.01 (audit 2026-09-20): Nếu các trang VDP có cùng kích thước khổ trang
+                # với trang master (MediaBox/page.rect lệch <= 1pt), các trang đã cùng hệ toạ độ.
+                # Kế thừa trực tiếp clip của khuôn master, giữ nguyên tỷ lệ scale 1.0 và vị trí
+                # gốc của từng trang — không dùng bbox của một chi tiết con để tự co/phóng cả trang.
+                _is_same_as_master_size = False
+                if homogeneous_master_idx is not None and _hom_master_die and _hom_master_die.get('rect'):
                     try:
-                        if _sh_mod is not None:
-                            _bb = _sh_mod.artwork_bbox(src_doc[_src_idx])
-                    except Exception as _e_bb:
-                        logger.debug(f"[HOMOGENEOUS] artwork_bbox page={_src_idx} lỗi: {_e_bb}", flush=True)
+                        _mp = src_doc[homogeneous_master_idx]
+                        _sp = src_doc[_src_idx]
+                        if abs(_sp.rect.width - _mp.rect.width) <= 1.0 and abs(_sp.rect.height - _mp.rect.height) <= 1.0:
+                            _is_same_as_master_size = True
+                    except Exception:
+                        _is_same_as_master_size = False
+
+                if _is_same_as_master_size:
+                    _hom_clip = pdf_lib.Rect(_hom_master_die['rect'])
+                else:
+                    if _src_idx not in _artwork_bbox_cache:
                         _bb = None
-                    _artwork_bbox_cache[_src_idx] = _bb
-                _bb = _artwork_bbox_cache[_src_idx]
-                if _bb is None:
-                    # Trang nội dung rỗng → bỏ ô an toàn (không render, không sập).
-                    continue
-                _hom_clip = pdf_lib.Rect(_bb.x0, _bb.y0, _bb.x1, _bb.y1)
+                        try:
+                            if _sh_mod is not None:
+                                _bb = _sh_mod.artwork_bbox(src_doc[_src_idx])
+                        except Exception as _e_bb:
+                            logger.debug(f"[HOMOGENEOUS] artwork_bbox page={_src_idx} lỗi: {_e_bb}", flush=True)
+                            _bb = None
+                        _artwork_bbox_cache[_src_idx] = _bb
+                    _bb = _artwork_bbox_cache[_src_idx]
+                    if _bb is None:
+                        # Trang nội dung rỗng → bỏ ô an toàn (không render, không sập).
+                        continue
+                    _hom_clip = pdf_lib.Rect(_bb.x0, _bb.y0, _bb.x1, _bb.y1)
+
                 # Seed đường bế MASTER cho ô này để Phase die-overlay vẽ khuôn ở mỗi ô.
                 if _hom_master_die is not None:
                     _ck = f"{job_id}_{_src_idx}"

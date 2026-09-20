@@ -21,8 +21,37 @@ from app.schemas.edit import ObjMeta
 
 logger = logging.getLogger(__name__)
 
+VALID_FONT_EXTENSIONS = ('.ttf', '.otf', '.ttc')
+
+COMMON_PDF_FONT_MAP = {
+    'arial': 'arial.ttf',
+    'helvetica': 'arial.ttf',
+    'times': 'times.ttf',
+    'times-roman': 'times.ttf',
+    'timesroman': 'times.ttf',
+    'times new roman': 'times.ttf',
+    'timesnewroman': 'times.ttf',
+    'courier': 'cour.ttf',
+    'courier new': 'cour.ttf',
+    'couriernew': 'cour.ttf',
+    'tahoma': 'tahoma.ttf',
+    'calibri': 'calibri.ttf',
+    'verdana': 'verdana.ttf',
+    'segoe ui': 'segoeui.ttf',
+    'segoeui': 'segoeui.ttf',
+    'georgia': 'georgia.ttf',
+    'trebuchet ms': 'trebuc.ttf',
+    'trebuchet': 'trebuc.ttf',
+    'impact': 'impact.ttf',
+    'comic sans ms': 'comic.ttf',
+    'comic sans': 'comic.ttf',
+}
+
+
 def _find_font_in_windows_registry(clean_name: str) -> Optional[str]:
-    """Tra cứu font đã đăng ký trong Windows Registry (cả hệ thống và user)."""
+    """Tra cứu font đã đăng ký trong Windows Registry (cả hệ thống và user).
+    Chỉ chấp nhận file định dạng vector (.ttf, .otf, .ttc), bỏ qua file bitmap (.fon).
+    """
     if not clean_name:
         return None
     try:
@@ -45,23 +74,29 @@ def _find_font_in_windows_registry(clean_name: str) -> Optional[str]:
                 # Pass 1: Khớp chính xác tên font
                 for i in range(num_values):
                     reg_name, val, _ = winreg.EnumValue(key, i)
+                    val_str = str(val)
+                    if not any(val_str.lower().endswith(ext) for ext in VALID_FONT_EXTENSIONS):
+                        continue
                     clean_reg = re.sub(r"\s*\([^)]*\)", "", reg_name).lower().replace("-", "").replace("_", "").replace(" ", "")
                     if clean_reg == target:
-                        if os.path.isabs(val) and os.path.isfile(val):
-                            return val
+                        if os.path.isabs(val_str) and os.path.isfile(val_str):
+                            return val_str
                         for bdir in base_dirs:
-                            p = os.path.join(bdir, val)
+                            p = os.path.join(bdir, val_str)
                             if os.path.isfile(p):
                                 return p
                 # Pass 2: Khớp chứa (substring)
                 for i in range(num_values):
                     reg_name, val, _ = winreg.EnumValue(key, i)
+                    val_str = str(val)
+                    if not any(val_str.lower().endswith(ext) for ext in VALID_FONT_EXTENSIONS):
+                        continue
                     clean_reg = re.sub(r"\s*\([^)]*\)", "", reg_name).lower().replace("-", "").replace("_", "").replace(" ", "")
                     if target in clean_reg or clean_reg in target:
-                        if os.path.isabs(val) and os.path.isfile(val):
-                            return val
+                        if os.path.isabs(val_str) and os.path.isfile(val_str):
+                            return val_str
                         for bdir in base_dirs:
-                            p = os.path.join(bdir, val)
+                            p = os.path.join(bdir, val_str)
                             if os.path.isfile(p):
                                 return p
         except Exception:
@@ -69,54 +104,68 @@ def _find_font_in_windows_registry(clean_name: str) -> Optional[str]:
     return None
 
 
-def _resolve_font_file(font_name: Optional[str]) -> Optional[str]:
-    """Tìm file font (.ttf, .otf, .ttc) trên hệ thống khớp với fontName."""
+def resolve_font_file(font_name: Optional[str]) -> Optional[str]:
+    """Tìm file font (.ttf, .otf, .ttc) trên hệ thống khớp với fontName.
+    Trả về đường dẫn tuyệt đối nếu tìm thấy, hoặc None nếu không có trên máy."""
     if not font_name:
         return None
-    clean_name = re.sub(r"^[A-Z]{6}\+", "", font_name)
+    raw_name = str(font_name).strip()
+    clean_name = re.sub(r"^[A-Z]{6}\+", "", raw_name).strip()
+    clean_target = clean_name.lower().replace("-", "").replace("_", "").replace(" ", "")
 
-    # 1. Tra cứu Windows Registry (chuẩn xác nhất cho mọi font cài đặt)
-    reg_path = _find_font_in_windows_registry(clean_name) or _find_font_in_windows_registry(font_name)
-    if reg_path:
-        return reg_path
-
-    # 2. Quét các thư mục font chuẩn
-    dirs = [
+    base_dirs = [
         r"C:\Windows\Fonts",
         os.path.expanduser(r"~\AppData\Local\Microsoft\Windows\Fonts"),
         r"C:\Program Files\Common Files\Adobe\Fonts",
         r"C:\Program Files (x86)\Common Files\Adobe\Fonts",
     ]
-    target = clean_name.lower().replace("-", "").replace("_", "").replace(" ", "")
 
-    for d in dirs:
+    # 1. Kiểm tra bảng font PDF tiêu chuẩn (Standard PDF fonts) để tránh nhầm font biến thể phụ
+    common_target = COMMON_PDF_FONT_MAP.get(clean_target) or COMMON_PDF_FONT_MAP.get(clean_name.lower())
+    if common_target:
+        for bdir in base_dirs:
+            p = os.path.join(bdir, common_target)
+            if os.path.isfile(p):
+                return p
+
+    # 2. Tra cứu Windows Registry (chuẩn xác nhất cho mọi font cài đặt kể cả tên có dấu cách)
+    reg_path = _find_font_in_windows_registry(clean_name) or _find_font_in_windows_registry(raw_name)
+    if reg_path:
+        return reg_path
+
+    # 3. Quét các thư mục font chuẩn - Pass 1: Khớp chính xác tên file (stem)
+    for d in base_dirs:
         if not os.path.isdir(d):
             continue
         try:
             for f in os.listdir(d):
                 stem, ext = os.path.splitext(f)
-                if ext.lower() not in (".ttf", ".otf", ".ttc"):
+                if ext.lower() not in VALID_FONT_EXTENSIONS:
                     continue
                 clean_stem = stem.lower().replace("-", "").replace("_", "").replace(" ", "")
-                if clean_stem == target:
+                if clean_stem == clean_target:
                     return os.path.join(d, f)
         except Exception:
             continue
 
-    for d in dirs:
+    # 4. Quét các thư mục font chuẩn - Pass 2: Khớp chứa (substring)
+    for d in base_dirs:
         if not os.path.isdir(d):
             continue
         try:
             for f in os.listdir(d):
                 stem, ext = os.path.splitext(f)
-                if ext.lower() not in (".ttf", ".otf", ".ttc"):
+                if ext.lower() not in VALID_FONT_EXTENSIONS:
                     continue
                 clean_stem = stem.lower().replace("-", "").replace("_", "").replace(" ", "")
-                if target in clean_stem or clean_stem in target:
+                if clean_target in clean_stem or clean_stem in clean_target:
                     return os.path.join(d, f)
         except Exception:
             continue
     return None
+
+
+_resolve_font_file = resolve_font_file
 
 
 def _extract_embedded_font_from_pdf(
@@ -482,16 +531,22 @@ def pick_text_to_vdp_field(
         c in "AĂÂBCDĐEÊGHIKLMNOÔƠPQRSTUƯVXY1234567890?/~`!@#$%^&*()_+"
         for c in content.upper()
     )
-    # Đỉnh cao nhất của chữ
-    top_pdf = max(by1, baseline_y + (effective_fs * 0.95 if has_ascender_or_accent else effective_fs * 0.75))
-    # Đáy thấp nhất của chữ
-    bottom_pdf = min(by0, baseline_y - (effective_fs * 0.28 if has_descender else 0.05 * effective_fs))
+    # [VDP BASELINE PARITY] Neo khung quanh baseline_y theo đúng công thức của ReportLab:
+    # Trong vdp_engine, ReportLab vẽ paragraph với baseline tại:
+    #   baseline_rl = bottom_pdf + (pt_h - effective_fs) / 2.0
+    # Để baseline_rl trùng khít 100.00% với baseline_y gốc của chữ trong PDF:
+    #   bottom_pdf = baseline_y - (pt_h - effective_fs) / 2.0
+    #   top_pdf    = baseline_y + (pt_h + effective_fs) / 2.0
+    need_top = max(by1, baseline_y + (effective_fs * 0.95 if has_ascender_or_accent else effective_fs * 0.75))
+    need_bottom = min(by0, baseline_y - (effective_fs * 0.28 if has_descender else 0.05 * effective_fs))
 
-    raw_h = max(1.0, top_pdf - bottom_pdf)
-    target_h = max(raw_h, effective_fs * 1.25)
-    diff = target_h - raw_h
-    top_pdf += diff / 2.0
-    bottom_pdf -= diff / 2.0
+    target_h = max(
+        effective_fs * 1.25,
+        2.0 * (need_top - baseline_y) - effective_fs,
+        2.0 * (baseline_y - need_bottom) + effective_fs,
+    )
+    bottom_pdf = baseline_y - (target_h - effective_fs) / 2.0
+    top_pdf = baseline_y + (target_h + effective_fs) / 2.0
 
     pt_h = target_h
     pt_top = cy1 - top_pdf
@@ -599,7 +654,7 @@ def pick_text_to_vdp_field(
         "fontColor": font_color_hex,
         "fontName": clean_font_name,
         "fontFile": font_file_path,
-        "alignment": "center" if is_curved else "left",
+        "alignment": "center",
         "autoFit": True,
         **({
             "curveMode": curve_mode,
@@ -653,6 +708,9 @@ def pick_text_to_vdp_field(
                     pdf,
                     all_obj_metas=all_objects,
                 )
+            # [VDP-TYPE0-LIVE-TEXT] Dọn dẹp dead Tf và ghost fonts trong template sạch
+            from app.workers.vdp_engine import _clean_template_dead_text_ops_and_fonts
+            _clean_template_dead_text_ops_and_fonts(target_page, pdf)
             pdf.save(output_path)
         cleaned_path = output_path
 
@@ -734,14 +792,17 @@ def auto_detect_vdp_tags(
             c in "AĂÂBCDĐEÊGHIKLMNOÔƠPQRSTUƯVXY1234567890?/~`!@#$%^&*()_+"
             for c in content.upper()
         )
-        top_pdf = max(by1, baseline_y + (effective_fs * 0.95 if has_ascender_or_accent else effective_fs * 0.75))
-        bottom_pdf = min(by0, baseline_y - (effective_fs * 0.28 if has_descender else 0.05 * effective_fs))
+        # [VDP BASELINE PARITY] Neo khung quanh baseline_y theo đúng công thức của ReportLab:
+        need_top = max(by1, baseline_y + (effective_fs * 0.95 if has_ascender_or_accent else effective_fs * 0.75))
+        need_bottom = min(by0, baseline_y - (effective_fs * 0.28 if has_descender else 0.05 * effective_fs))
 
-        raw_h = max(1.0, top_pdf - bottom_pdf)
-        target_h = max(raw_h, effective_fs * 1.25)
-        diff = target_h - raw_h
-        top_pdf += diff / 2.0
-        bottom_pdf -= diff / 2.0
+        target_h = max(
+            effective_fs * 1.25,
+            2.0 * (need_top - baseline_y) - effective_fs,
+            2.0 * (baseline_y - need_bottom) + effective_fs,
+        )
+        bottom_pdf = baseline_y - (target_h - effective_fs) / 2.0
+        top_pdf = baseline_y + (target_h + effective_fs) / 2.0
 
         pt_h = target_h
         pt_top = cy1 - top_pdf
@@ -769,7 +830,7 @@ def auto_detect_vdp_tags(
             "fontColor": font_color_hex,
             "fontName": clean_font_name,
             "fontFile": font_file_path,
-            "alignment": "left",
+            "alignment": "center",
             "autoFit": True,
         })
 
@@ -784,6 +845,9 @@ def auto_detect_vdp_tags(
                 pdf,
                 all_obj_metas=all_objects,
             )
+            # [VDP-TYPE0-LIVE-TEXT] Dọn dẹp dead Tf và ghost fonts trong template sạch
+            from app.workers.vdp_engine import _clean_template_dead_text_ops_and_fonts
+            _clean_template_dead_text_ops_and_fonts(target_page, pdf)
             pdf.save(output_path)
         cleaned_path = output_path
 

@@ -40,6 +40,12 @@ function createPdfBlobFromBytes(bytes: Uint8Array, invalidMessage: string): Blob
   return new Blob([toExactArrayBuffer(bytes)], { type: 'application/pdf' });
 }
 
+async function createOrPersistPdfFileFromBytes(bytes: Uint8Array, name: string, invalidMessage: string): Promise<File> {
+  if (!isCompletePdfBytes(bytes)) throw new Error(invalidMessage);
+  const { persistTempNativePdfFile } = await import('../lib/nativeFileAccess');
+  return persistTempNativePdfFile(toExactArrayBuffer(bytes), name);
+}
+
 function createPdfFileFromBytes(bytes: Uint8Array, name: string, invalidMessage: string): File {
   if (!isCompletePdfBytes(bytes)) throw new Error(invalidMessage);
   return new File([toExactArrayBuffer(bytes)], name, { type: 'application/pdf' });
@@ -91,7 +97,14 @@ export type CombineNode = {
   sizeKey?: string;
 };
 
-type CombineScaleMode = 'keep' | 'fit_a4' | 'fit_first';
+export type CombineScaleMode = 'keep' | 'fit_a4' | 'fit_a3' | 'fit_a5' | 'fit_sra3' | 'fit_first' | 'fixed_width' | 'fixed_height' | 'custom';
+
+export const COMBINE_PRESET_PAGE_SIZES_PT: Record<string, [number, number]> = {
+  fit_a4: [595.28, 841.89],     // 210 × 297 mm
+  fit_a3: [841.89, 1190.55],    // 297 × 420 mm
+  fit_a5: [419.53, 595.28],     // 148 × 210 mm
+  fit_sra3: [907.09, 1275.59],  // 320 × 450 mm
+};
 
 interface TriggerPrintDetail {
   tabId?: string;
@@ -310,6 +323,28 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
   }, []);
 
   const [scaleMode, setScaleMode] = useState<CombineScaleMode>('keep');
+  const [customTargetW, setCustomTargetW] = useState<number>(210);
+  const [customTargetH, setCustomTargetH] = useState<number>(297);
+
+  const resolveTargetPageSizePt = useCallback((firstSize: [number, number] | null): [number, number] | null => {
+    if (scaleMode === 'keep') return null;
+    if (scaleMode === 'fit_first') return firstSize;
+    if (scaleMode === 'fixed_width') {
+      const w = (customTargetW > 0 ? customTargetW : (firstSize ? firstSize[0] / 2.83465 : 210)) * 2.83465;
+      return [w, 0];
+    }
+    if (scaleMode === 'fixed_height') {
+      const h = (customTargetH > 0 ? customTargetH : (firstSize ? firstSize[1] / 2.83465 : 297)) * 2.83465;
+      return [0, h];
+    }
+    if (scaleMode === 'custom') {
+      const w = (customTargetW > 0 ? customTargetW : 210) * 2.83465;
+      const h = (customTargetH > 0 ? customTargetH : 297) * 2.83465;
+      return [w, h];
+    }
+    return COMBINE_PRESET_PAGE_SIZES_PT[scaleMode] || COMBINE_PRESET_PAGE_SIZES_PT.fit_a4;
+  }, [scaleMode, customTargetW, customTargetH]);
+
   /** Chia nhóm theo kích thước trang (như viewer hiển thị) — tick là sắp view ngay. */
   const [groupByPageSize, setGroupByPageSize] = useState(false);
   const [isGrouping, setIsGrouping] = useState(false);
@@ -762,14 +797,22 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
 
       if (scaleMode !== 'keep') {
         setStatusMsg(t('tabs.combine:dang_dong_bo_kho_giay'));
-        const targetSize = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
+        const fallbackSize = firstPageSize || COMBINE_PRESET_PAGE_SIZES_PT.fit_a4;
+        const resolved = resolveTargetPageSizePt(firstPageSize);
+        const targetSize = resolved
+          ? [
+              resolved[0] > 0 ? resolved[0] : fallbackSize[0],
+              resolved[1] > 0 ? resolved[1] : fallbackSize[1],
+            ]
+          : fallbackSize;
         const targetW = targetSize[0] / 2.83465;
         const targetH = targetSize[1] / 2.83465;
+        const pageSizeMode = scaleMode === 'fixed_width' ? 'fixed_width' : scaleMode === 'fixed_height' ? 'fixed_height' : 'fixed';
         const { resizePages } = await import('../lib/preprocessEngine/PageResizer');
-        finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all' });
+        finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all', pageSizeMode });
       }
 
-      const finalFile = createPdfFileFromBytes(finalBytes, 'Interleaved.pdf', t('lib.processHandlers:khong_ghep_duoc_pdf'));
+      const finalFile = await createOrPersistPdfFileFromBytes(finalBytes, 'Interleaved.pdf', t('lib.processHandlers:khong_ghep_duoc_pdf'));
       if (onSpawnTab) {
         onSpawnTab(finalFile);
         onResultsOpened?.();
@@ -826,13 +869,21 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
   ): Promise<Uint8Array> => {
     const finalDoc = await PDFDocument.create();
     let firstPageSize: [number, number] | null = null;
-    const A4_SIZE: [number, number] = [595.28, 841.89];
+    const fixedTargetPt = scaleMode !== 'keep' && scaleMode !== 'fit_first'
+      ? resolveTargetPageSizePt(null)
+      : null;
 
     for (let i = 0; i < flatNodes.length; i++) {
       const p = flatNodes[i];
 
       if (p.type === 'blank') {
-        const size = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
+        const fallbackSize = firstPageSize || COMBINE_PRESET_PAGE_SIZES_PT.fit_a4;
+        const size = fixedTargetPt
+          ? [
+              fixedTargetPt[0] > 0 ? fixedTargetPt[0] : fallbackSize[0],
+              fixedTargetPt[1] > 0 ? fixedTargetPt[1] : fallbackSize[1],
+            ]
+          : fallbackSize;
         const page = addRotatedBlankPage(finalDoc, size as [number, number], p.rotation || 0);
         if (!firstPageSize) firstPageSize = visiblePageSize(page);
         onNodeComplete?.(p);
@@ -841,10 +892,14 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
 
       if (!p.file) continue;
       if (isSupportedImageFileName(p.file.name)) {
-        // PERF (audit 2026-08-02 §B.1): nhúng thẳng vào finalDoc; tạo PDF ảnh tạm rồi
-        // copyPages làm đúng kết quả nhưng chiếm phần lớn thời gian của ca nhiều PNG.
+        // PERF (audit 2026-08-02 §B.1, audit 2026-09-19 §COMB.DIRECT_FIT): nhúng thẳng vào finalDoc;
+        // nếu có khổ đích (A4/A3/Custom/Fixed-W/Fixed-H...) thì vẽ trực tiếp vào khổ đích trong 1 lượt duy nhất!
+        // Loại bỏ hoàn toàn việc tạo file trung gian rồi gọi resizePages tốn RAM.
         const bytes = await getFileArrayBuffer(p.file);
-        const page = await appendImagePageToPdfDoc(finalDoc, bytes, p.file.name);
+        const currentDestPt = fixedTargetPt || (scaleMode === 'fit_first' ? firstPageSize || undefined : undefined);
+        const page = currentDestPt
+          ? await appendImagePageToPdfDoc(finalDoc, bytes, p.file.name, currentDestPt)
+          : await appendImagePageToPdfDoc(finalDoc, bytes, p.file.name);
         if (p.rotation) {
           page.setRotation(degrees(page.getRotation().angle + p.rotation));
         }
@@ -876,13 +931,23 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
     }
     let finalBytes = await finalDoc.save();
 
-    if (scaleMode !== 'keep') {
+    // Chỉ gọi resizePages nếu trong danh sách có trang PDF nguồn cần đồng bộ khổ.
+    // Nếu toàn bộ là ảnh thì đã được fit trực tiếp ở trên, bỏ qua bước này hoàn toàn!
+    const hasPdfPages = flatNodes.some(n => n.type !== 'blank' && n.file && !isSupportedImageFileName(n.file.name));
+    if (scaleMode !== 'keep' && hasPdfPages) {
       setStatusMsg(`${statusPrefix}${t('tabs.combine:dang_dong_bo_kho_giay')}`);
-      const targetSize = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
+      const fallbackSize = firstPageSize || COMBINE_PRESET_PAGE_SIZES_PT.fit_a4;
+      const targetSize = fixedTargetPt
+        ? [
+            fixedTargetPt[0] > 0 ? fixedTargetPt[0] : fallbackSize[0],
+            fixedTargetPt[1] > 0 ? fixedTargetPt[1] : fallbackSize[1],
+          ]
+        : fallbackSize;
       const targetW = targetSize[0] / 2.83465;
       const targetH = targetSize[1] / 2.83465;
+      const pageSizeMode = scaleMode === 'fixed_width' ? 'fixed_width' : scaleMode === 'fixed_height' ? 'fixed_height' : 'fixed';
       const { resizePages } = await import('../lib/preprocessEngine/PageResizer');
-      finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all' });
+      finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all', pageSizeMode });
     }
     return finalBytes;
   };
@@ -1074,19 +1139,6 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
         const sourceFiles = [
           ...new Set(flatNodes.flatMap(node => node.file ? [node.file] : [])),
         ];
-        console.info('[COMBINE]', {
-          stage: 'delegation_decision',
-          nodeCount: flatNodes.length,
-          sourceCount: sourceFiles.length,
-          imageNodeCount: flatNodes.filter(node =>
-            isSupportedImageFileName(node.file?.name || '')
-          ).length,
-          totalEncodedBytes: sourceFiles.reduce((sum, file) => sum + file.size, 0),
-          totalImagePixels,
-          systemTotalMemoryBytes: memoryStatus?.totalBytes ?? null,
-          systemAvailableMemoryBytes: memoryStatus?.availableBytes ?? null,
-          path: canDelegateMerge ? 'backend_manifest' : 'frontend',
-        });
         if (canDelegateMerge) {
           delegatedController = new AbortController();
           combineJobAbortRef.current = delegatedController;
@@ -1127,7 +1179,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
       // ── Không chia nhóm: 1 file → tab imposition (hành vi cũ) ──
       if (!groupByPageSize) {
         const finalBytes = await combineFlatNodes(flatNodes, loadedDocs, '', markCombineNodeCompleted);
-        const finalFile = createPdfFileFromBytes(finalBytes, 'Combined.pdf', t('lib.processHandlers:khong_ghep_duoc_pdf'));
+        const finalFile = await createOrPersistPdfFileFromBytes(finalBytes, 'Combined.pdf', t('lib.processHandlers:khong_ghep_duoc_pdf'));
         if (onSpawnTab) {
           onSpawnTab(finalFile);
           onResultsOpened?.();
@@ -1161,7 +1213,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
         const label = sizeKeyLabel(key);
         setStatusMsg(t('tabs.combine:dang_ghep_label_progress', { label, cur: gi, total: groups.size }));
         const bytes = await combineFlatNodes(groupNodes, loadedDocs, `[${label}] `, markCombineNodeCompleted);
-        const file = createPdfFileFromBytes(
+        const file = await createOrPersistPdfFileFromBytes(
           bytes,
           `Combined_${approximateSizeKeyFilenameToken(key)}.pdf`,
           t('lib.processHandlers:khong_ghep_duoc_pdf'),
@@ -1519,9 +1571,80 @@ export default function CombineTab({ initialFiles, onSpawnTab, onResultsOpened, 
               className="px-3 py-1.5 text-sm bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 rounded-md outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-700 dark:text-zinc-300"
             >
               <option value="keep">{t('tabs.combine:giu_nguyen_goc_khong_ep_kho')}</option>
-              <option value="fit_a4">{t('tabs.combine:chuan_hoa_ep_tat_ca_ve_kho_a4')}</option>
+              <option value="fit_a4">A4 (210 × 297 mm)</option>
+              <option value="fit_a3">A3 (297 × 420 mm)</option>
+              <option value="fit_a5">A5 (148 × 210 mm)</option>
+              <option value="fit_sra3">SRA3 (320 × 450 mm)</option>
               <option value="fit_first">{t('tabs.combine:chuan_hoa_bang_dung_trang_dau_tien')}</option>
+              <option value="fixed_width">{t('preprocess.pageResizer:cung_chieu_rong', 'Cùng chiều rộng')}</option>
+              <option value="fixed_height">{t('preprocess.pageResizer:cung_chieu_cao', 'Cùng chiều cao')}</option>
+              <option value="custom">Tùy chỉnh (W × H mm)</option>
             </select>
+
+            {scaleMode === 'fixed_width' && (
+              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-zinc-800/80 px-2 py-1 rounded-md border border-slate-200 dark:border-white/10" title="Chiều cao tự tính theo tỷ lệ từng file">
+                <span className="text-xs text-slate-500 dark:text-zinc-400 font-medium">Rộng:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  step="0.5"
+                  value={customTargetW}
+                  onChange={(e) => setCustomTargetW(Math.max(1, parseFloat(e.target.value) || 0))}
+                  placeholder="210"
+                  className="w-16 h-7 px-1.5 text-xs text-center font-medium bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded outline-none focus:border-blue-500"
+                  title="Chiều rộng cố định (mm)"
+                />
+                <span className="text-xs text-slate-400 font-medium">mm</span>
+              </div>
+            )}
+
+            {scaleMode === 'fixed_height' && (
+              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-zinc-800/80 px-2 py-1 rounded-md border border-slate-200 dark:border-white/10" title="Chiều rộng tự tính theo tỷ lệ từng file">
+                <span className="text-xs text-slate-500 dark:text-zinc-400 font-medium">Cao:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  step="0.5"
+                  value={customTargetH}
+                  onChange={(e) => setCustomTargetH(Math.max(1, parseFloat(e.target.value) || 0))}
+                  placeholder="297"
+                  className="w-16 h-7 px-1.5 text-xs text-center font-medium bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded outline-none focus:border-blue-500"
+                  title="Chiều cao cố định (mm)"
+                />
+                <span className="text-xs text-slate-400 font-medium">mm</span>
+              </div>
+            )}
+
+            {scaleMode === 'custom' && (
+              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-zinc-800/80 px-2 py-1 rounded-md border border-slate-200 dark:border-white/10">
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  step="0.5"
+                  value={customTargetW}
+                  onChange={(e) => setCustomTargetW(Math.max(1, parseFloat(e.target.value) || 0))}
+                  placeholder="W"
+                  className="w-16 h-7 px-1.5 text-xs text-center font-medium bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded outline-none focus:border-blue-500"
+                  title="Chiều rộng (mm)"
+                />
+                <span className="text-xs text-slate-500">×</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  step="0.5"
+                  value={customTargetH}
+                  onChange={(e) => setCustomTargetH(Math.max(1, parseFloat(e.target.value) || 0))}
+                  placeholder="H"
+                  className="w-16 h-7 px-1.5 text-xs text-center font-medium bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded outline-none focus:border-blue-500"
+                  title="Chiều cao (mm)"
+                />
+                <span className="text-xs text-slate-400 font-medium">mm</span>
+              </div>
+            )}
           </div>
 
           <label

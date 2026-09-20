@@ -136,6 +136,8 @@ export default function NumberingTool({
   const { t } = useTranslation();
     const isPickingVdpText = useWorkspaceStore(s => s.isPickingVdpText);
     const setIsPickingVdpText = useWorkspaceStore(s => s.setIsPickingVdpText);
+    const vdpLivePreview = useWorkspaceStore(s => s.vdpLivePreview);
+    const setVdpLivePreview = useWorkspaceStore(s => s.setVdpLivePreview);
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
     // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
@@ -598,6 +600,44 @@ export default function NumberingTool({
     // Huỷ request preview khi unmount
     useEffect(() => () => { previewAbortRef.current?.abort(); }, []);
 
+    // Đồng bộ ma trận số nhảy realtime lên view chính
+    useEffect(() => {
+        if (vdpFields.length === 0) {
+            setVdpLivePreview(prev => {
+                if (prev.totalRecords === 0 && prev.currentRecord === null) return prev;
+                return { ...prev, totalRecords: 0, currentRecord: null };
+            });
+            return;
+        }
+        try {
+            const matrix = generateDataMatrix();
+            if (matrix && matrix.length > 0) {
+                const safeIdx = Math.max(1, Math.min(matrix.length, previewIndex));
+                setVdpLivePreview({
+                    totalRecords: matrix.length,
+                    recordIndex: safeIdx,
+                    currentRecord: matrix[safeIdx - 1] || null,
+                    sourceTitle: `Số nhảy: Trang ${safeIdx}/${matrix.length}`,
+                });
+            }
+        } catch {
+            // Chưa đủ cấu hình dãy số
+        }
+    }, [vdpFields, generateDataMatrix, previewIndex, setVdpLivePreview]);
+
+    // Lắng nghe sự kiện đổi record từ view chính để đồng bộ về sidebar
+    useEffect(() => {
+        const handleIndexChange = (e: Event) => {
+            const ce = e as CustomEvent<{ index: number }>;
+            const idx = ce.detail?.index;
+            if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
+                setPreviewIndex(idx);
+            }
+        };
+        window.addEventListener('vdp-preview-index-change', handleIndexChange);
+        return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
+    }, [previewIndex]);
+
     const rawSequence = useMemo(() => generateSequence(), [generateSequence]);
 
     // Đảm bảo activeConfigSlotId hợp lệ
@@ -889,20 +929,26 @@ export default function NumberingTool({
                             const next = !isPickingVdpText;
                             setIsPickingVdpText(next);
                             if (next) {
-                                toast.info(t('Nhấp vào con số mẫu trên bản thiết kế để tự động chọn làm Slot số nhảy.'));
+                                toast.info(t('Chế độ chọn liên tục đã bật: Nhấp vào các con số mẫu trên bản thiết kế để làm Slot số nhảy, bấm "Xong" hoặc phím Esc khi hoàn tất.'));
                             }
                         }}
                         className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
                             isPickingVdpText
-                                ? 'bg-teal-500 text-white border-teal-600 ring-2 ring-teal-400 ring-offset-1 animate-pulse'
+                                ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
                                 : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/50 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
                         }`}
-                        title={t('preprocess.numbering:chon_so_mau_btn')}
+                        title={isPickingVdpText ? t('Hoàn tất chọn số mẫu (phím Esc)') : t('preprocess.numbering:chon_so_mau_btn')}
                     >
-                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        <span className="truncate">{isPickingVdpText ? t('Đang chọn...') : t('preprocess.numbering:chon_so_mau_btn')}</span>
+                        {isPickingVdpText ? (
+                            <svg className="w-4 h-4 shrink-0 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                        ) : (
+                            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                            </svg>
+                        )}
+                        <span className="truncate">{isPickingVdpText ? t('✓ Xong chọn số mẫu') : t('preprocess.numbering:chon_so_mau_btn')}</span>
                     </button>
 
                     <div 
@@ -934,7 +980,9 @@ export default function NumberingTool({
                                     <button
                                         key={f.id}
                                         type="button"
-                                        onClick={() => onSelectField?.([f.id])}
+                                        onClick={() => {
+                                            onSelectField?.([f.id]);
+                                        }}
                                         className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
                                             isSelected 
                                                 ? 'bg-indigo-600 text-white shadow-xs' 
@@ -1399,6 +1447,21 @@ export default function NumberingTool({
                         <span>{showSummaryText ? 'Thu gọn' : 'Xem dạng danh sách'}</span>
                     </button>
                 </div>
+
+                {/* Nút bật/tắt xem trực tiếp số nhảy trên view chính */}
+                <button
+                    type="button"
+                    onClick={() => setVdpLivePreview((prev: any) => ({ ...prev, enabled: !prev.enabled }))}
+                    className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
+                        vdpLivePreview.enabled
+                            ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
+                            : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
+                    }`}
+                    title={vdpLivePreview.enabled ? t('Bấm để tắt xem trước trên view chính') : t('Bật xem trước số nhảy thật trên view chính')}
+                >
+                    <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-teal-500'}`} />
+                    <span>{vdpLivePreview.enabled ? t('✓ Đang xem số nhảy thật trên View chính') : t('👁️ Bật xem trực tiếp trên View chính')}</span>
+                </button>
 
                 {/* Thanh điều hướng trang (Prev, Input page, Next, Nút Xem) */}
                 <div className="flex items-center gap-1.5">

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.utils.cutline_debug_log import log_cutline, CutlineTimer
+
 import asyncio
 import logging
 import os
@@ -76,11 +78,23 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
+from pydantic import BaseModel
+class CutlineDebugLogPayload(BaseModel):
+    source: str = "FE"
+    stage: str
+    message: str
+    fields: dict = {}
+
 router = APIRouter(
     prefix="/sticker-sheet",
     tags=["Sticker Sheet"],
     dependencies=[Depends(require_license)],
 )
+
+@router.post("/debug-log")
+async def cutline_debug_log_route(payload: CutlineDebugLogPayload):
+    log_cutline(payload.source, payload.stage, payload.message, **payload.fields)
+    return {"ok": True}
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 _SOURCE_EXTENSIONS = _IMAGE_EXTENSIONS | {".pdf"}
@@ -201,14 +215,14 @@ async def inspect_sticker_source_endpoint(
 
     def _inspect_and_store():
         try:
-            # UIUX (audit 2026-08-08 §UNIFIED.8): inspector chỉ đọc metadata/preview
-            # trong thread thường; AI và connected-components chưa được gọi ở bước này.
-            inspection = inspect_sticker_source(source_path, original_name)
-            return create_source_session(
-                source_path=source_path,
-                original_name=original_name,
-                inspection=inspection,
-            )
+            sz = os.path.getsize(source_path) if source_path and os.path.exists(source_path) else 0
+            with CutlineTimer("BACKEND", "INSPECT", f"file={original_name} upload={owned_upload}", size_mb=round(sz / (1024*1024), 2)):
+                inspection = inspect_sticker_source(source_path, original_name)
+                return create_source_session(
+                    source_path=source_path,
+                    original_name=original_name,
+                    inspection=inspection,
+                )
         finally:
             # UIUX (feedback 2026-08-19 §CUTPREVIEW.3): thread sở hữu file
             # upload tạm. Request bị hủy không được xóa file khi inspector

@@ -351,7 +351,7 @@ describe('useIncomingFileDispatcher', () => {
     expect(onOpenApp).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
     });
 
     expect(onOpenApp).toHaveBeenCalledTimes(1);
@@ -361,6 +361,70 @@ describe('useIncomingFileDispatcher', () => {
       '01-bia.pdf',
       '02-ruot.pdf',
     ]);
+  });
+
+  it('gom đủ 72 file ảnh từ Explorer qua nhiều đợt pending burst vào duy nhất 1 tab Combine', async () => {
+    let pendingCalls = 0;
+    const generateBatches = (startIdx: number, count: number) => {
+      const batches = [];
+      for (let i = 0; i < count; i++) {
+        const num = String(startIdx + i).padStart(2, '0');
+        batches.push({
+          batchId: `instance-${startIdx + i}`,
+          args: ['pdf-inspector.exe', '--prynx-action=combine', `C:\\Users\\Khanh Pham\\Desktop\\FBA Thang 7\\FBA-${num}.png`],
+        });
+      }
+      return batches;
+    };
+
+    systemMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'take_startup_system_file_batch') {
+        return {
+          batchId: 'startup-1',
+          args: ['pdf-inspector.exe', '--prynx-action=combine', 'C:\\Users\\Khanh Pham\\Desktop\\FBA Thang 7\\FBA-01.png'],
+        };
+      }
+      if (command === 'take_pending_system_file_batches') {
+        pendingCalls += 1;
+        // Đợt 1: 20 file (từ 2 đến 21)
+        if (pendingCalls === 1) return generateBatches(2, 20);
+        // Đợt 2: 25 file (từ 22 đến 46)
+        if (pendingCalls === 2) return generateBatches(22, 25);
+        // Đợt 3: 26 file còn lại (từ 47 đến 72)
+        if (pendingCalls === 3) return generateBatches(47, 26);
+        // Các đợt sau: rỗng (hàng đợi lắng)
+        return [];
+      }
+      if (command === 'stat_system_file') return { status: 'available', size: 1024 };
+      return null;
+    });
+
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+
+    const { onOpenApp } = renderDispatcher();
+    render(<SystemIntegrations />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onOpenApp).not.toHaveBeenCalled();
+
+    // Tiến trình burst 150ms qua 3 đợt (450ms) + 8 nhịp quiet rỗng (1200ms) = 1650ms.
+    // Tiến tới 2500ms để hàng đợi lắng hoàn toàn.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500);
+    });
+
+    expect(onOpenApp).toHaveBeenCalledTimes(1);
+    const [appId, payload] = onOpenApp.mock.calls[0];
+    expect(appId).toBe('combine_pdf');
+    expect(payload.files).toHaveLength(72);
+    expect(payload.files[0].name).toBe('FBA-01.png');
+    expect(payload.files[71].name).toBe('FBA-72.png');
   });
 
   it('Convert một ảnh từ argv cold-start mở thẳng Viewer sau khi poll đóng batch', async () => {
@@ -390,7 +454,7 @@ describe('useIncomingFileDispatcher', () => {
     expect(onOpenApp).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
     });
 
     expect(onOpenApp).toHaveBeenCalledTimes(1);

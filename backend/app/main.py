@@ -337,7 +337,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=[
         "X-OCR-Total-Pages", "X-OCR-Pages-With-Text", "X-OCR-Total-Words",
-        "X-Original-Size", "X-Output-Size", "X-Compression-Ratio",
+        "X-Original-Size", "X-Output-Size", "X-Optimized-Size", "X-Compression-Ratio",
         "X-Sticker-Width-MM", "X-Sticker-Height-MM", "X-Sticker-Boxes",
         "X-Sticker-Shape-Type", "X-Sticker-Shape-Params", "X-Sticker-Pages",
         "X-Sticker-Cut-Kind", "X-Sticker-Cut-Confidence", "X-Sticker-Warning",
