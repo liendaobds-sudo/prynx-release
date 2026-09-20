@@ -143,7 +143,7 @@ def test_capability_moi_khong_lam_thay_doi_bac_goi_cua_quyen_cu():
         "pdf.resize_batch", "pdf.office_batch", "pdf.trim_shift",
         "prepress.preflight", "prepress.convert_colors", "prepress.hairlines",
         "prepress.trapping", "prepress.cutline", "prepress.pdfx",
-        "prepress.paper_library",
+        "prepress.paper_library", "prepress.app_bridge",
         "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
         "impo.booklet", "impo.nup", "impo.diecut", "impo.cnc", "packaging.dieline",
         "util.bgremover", "util.upscale", "util.logo_rebuild", "qc.compare_pdf",

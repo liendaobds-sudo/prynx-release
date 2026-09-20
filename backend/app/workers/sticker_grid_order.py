@@ -112,6 +112,16 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
     left, right, top, bottom = [float(settings.get("margin" + side, 0) or 0) * MM
                                 for side in ("Left", "Right", "Top", "Bottom")]
     bottom = max(bottom, float(settings.get("gripperMargin", 0) or 0) * MM)
+    if settings.get("marginMode") == "include_marks" and settings.get("markType", "none") != "none":
+        _ml_raw = settings.get("markLength")
+        mark_len = float(5.0 if _ml_raw is None else _ml_raw) * MM
+        _mo_raw = settings.get("markOffset")
+        mark_off = float(3.0 if _mo_raw is None else _mo_raw) * MM
+        mark_space = mark_len + mark_off
+        left += mark_space
+        right += mark_space
+        top += mark_space
+        bottom += mark_space
     gap_x, gap_y = [float(settings.get(name, 0) or 0) * MM for name in ("gapX", "gapY")]
     usable_w, usable_h = width - left - right, height - top - bottom
     cell_w = max(dimensions[index][0] for index in quantities)

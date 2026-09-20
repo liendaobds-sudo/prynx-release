@@ -56,7 +56,7 @@ _ENFORCE_PATTERNS = (
 #: Danh sách này CỐ Ý ngắn và có kiểm hai chiều (xem
 #: `test_accepted_risk_client_only_khong_am_tham_lech`): thêm route backend cho một quyền
 #: ở đây mà không xoá khỏi danh sách ⇒ test đỏ, buộc cập nhật cả threat model.
-_CLIENT_ONLY_ACCEPTED_RISK = frozenset({"prepress.paper_library"})
+_CLIENT_ONLY_ACCEPTED_RISK = frozenset({"prepress.paper_library", "prepress.app_bridge"})
 
 
 def _python_sources() -> list[Path]:

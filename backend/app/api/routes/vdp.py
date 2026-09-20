@@ -1302,7 +1302,10 @@ def _register_cleaned_template(cleaned_path: str, original_name: str) -> tuple[s
 
 
 @router.post("/pick-text-field")
-async def vdp_pick_text_field(req: VdpPickTextFieldRequest):
+async def vdp_pick_text_field(
+    req: VdpPickTextFieldRequest,
+    _license_info: dict = Depends(require_license),
+):
     pdf_path, original_name = _resolve_vdp_template_file(req.fid)
     cleaned_path = None
     if req.removeOriginal:
@@ -1338,7 +1341,10 @@ async def vdp_pick_text_field(req: VdpPickTextFieldRequest):
 
 
 @router.post("/auto-detect-tags")
-async def vdp_auto_detect_tags(req: VdpAutoDetectTagsRequest):
+async def vdp_auto_detect_tags(
+    req: VdpAutoDetectTagsRequest,
+    _license_info: dict = Depends(require_license),
+):
     pdf_path, original_name = _resolve_vdp_template_file(req.fid)
     cleaned_path = None
     if req.removeOriginal:

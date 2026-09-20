@@ -2407,7 +2407,12 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _live_preview_page_count = int(getattr(req, 'total_pages', 0) or 0)
             if _live_preview_page_count <= 0:
                 _live_preview_page_count = int(doc.page_count or 0)
-            if (req.is_die_cut and req.imposer_mode != "cnc" and not req.page_sheet_mode
+            _has_quantity_intent = (
+                (req.target_quantity is not None and req.target_quantity != "" and int(req.target_quantity or 0) > 0)
+                or bool(req.target_quantities_by_page)
+            )
+            if (_has_quantity_intent
+                    and req.is_die_cut and req.imposer_mode != "cnc" and not req.page_sheet_mode
                     and req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat"):
                 from app.workers.sticker_nup_policy import sticker_order_quantities
                 effective_quantities = sticker_order_quantities(range(_live_preview_page_count), {

@@ -256,6 +256,8 @@ def run_nup_engine(
 ) -> str:
     """Own the rotated-source temporary file for the complete N-Up lifecycle."""
     settings, _ = _normalize_page_sheet_settings(settings)
+    from app.workers.sticker_nup_policy import validate_sticker_layout
+    validate_sticker_layout(settings)
     # FIX (audit 2026-08-05 §OC.2): bảo vệ cả caller nội bộ đi thẳng vào engine.
     from app.schemas.pont import normalize_pont_settings
     settings = normalize_pont_settings(settings)
@@ -3768,7 +3770,11 @@ def _run_nup_engine_impl(
             #    Ô k trên mọi tờ tạo 1 cọc; xén rời cọc rồi úp đúng thứ tự trang.
             #    sheet s, cell j → page = j * n_sheets + s  (n_sheets = ceil(n/cap)).
             #    KHÔNG dùng round-robin sequential; KHÔNG nhầm với target_quantity/capacity.
-            n_sheets = max(1, math.ceil(page_count / capacity))
+            from app.workers.nup_layout_solver import build_cut_stack_sheets
+            cut_stack_sheets = build_cut_stack_sheets(
+                page_count, capacity, fill_sheet=bool(page_sheet_mode),
+            )
+            n_sheets = len(cut_stack_sheets)
             _full_bw = max((c['x'] + c['width'] for c in _cells_np), default=0.0)
             _full_bh = max((c['y'] + c['height'] for c in _cells_np), default=0.0)
             if 'left' in _align_np:
@@ -3785,12 +3791,12 @@ def _run_nup_engine_impl(
                 _byb = margin_bottom + (sheet_usable_h - _full_bh) / 2
 
             precalculated_placements = {}
-            for _s in range(n_sheets):
+            for _s, _sheet_pages in enumerate(cut_stack_sheets):
                 _pls = []
-                for _j, _c in enumerate(_cells_np[:capacity]):
-                    _src = _j * n_sheets + _s
-                    if _src >= page_count:
-                        continue  # ô trống (trang không đủ)
+                for _j, _src in enumerate(_sheet_pages):
+                    if _j >= len(_cells_np):
+                        break
+                    _c = _cells_np[_j]
                     _ax = _bx + _c['x']
                     _ayb = _byb + (_full_bh - _c['y'] - _c['height'])
                     _pls.append({
