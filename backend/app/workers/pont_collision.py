@@ -484,26 +484,58 @@ def _try_whole_block_shift(placements: List[Dict], zones: List[box], base_poly: 
     hoặc None nếu không có (vd va chạm 2 góc đối nhau, hoặc khối đã kín khổ). Khôi phục logic
     'zoneSet → canh về phía đối diện, giữ nguyên N tem' của Illustrator gốc (bị lược khi port)."""
     bmin_x, bmin_y, bmax_x, bmax_y = get_placements_bbox(placements)
-    lo_x = margins.get('left', 0.0); hi_x = sheet_w - margins.get('right', 0.0)
-    lo_y = margins.get('bottom', 0.0); hi_y = sheet_h - margins.get('top', 0.0)
+    lo_x = margins.get('sheet_left', margins.get('left', 0.0))
+    hi_x = sheet_w - margins.get('sheet_right', margins.get('right', 0.0))
+    lo_y = margins.get('sheet_bottom', margins.get('bottom', 0.0))
+    hi_y = sheet_h - margins.get('sheet_top', margins.get('top', 0.0))
     # khoảng dịch hợp lệ để khối không tràn vùng in
     min_dx, max_dx = lo_x - bmin_x, hi_x - bmax_x
     min_dy, max_dy = lo_y - bmin_y, hi_y - bmax_y
-    steps = [0] + [v for k in range(1, 21) for v in (k, -k)]  # tới ±20mm
+
+    clearance = 0.05  # pt
+    x_offsets = {0.0}
+    y_offsets = {0.0}
+
+    # Thử các bước nhảy mm thông dụng (cả nguyên và nửa mm)
+    steps = [0.0] + [round(v * 0.5, 1) for k in range(1, 41) for v in (k, -k)]
+    for s_mm in steps:
+        s_pt = s_mm * MM_TO_PTS
+        if min_dx - 0.5 <= s_pt <= max_dx + 0.5:
+            x_offsets.add(s_pt)
+        if min_dy - 0.5 <= s_pt <= max_dy + 0.5:
+            y_offsets.add(s_pt)
+
+    # Thêm vector suy ra trực tiếp từ biên tem va chạm và vùng cấm boong
+    collided_indices = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
+    for idx in collided_indices:
+        p = placements[idx]
+        poly = get_item_polygon(p, base_poly) if base_poly is not None else box(
+            p['abs_x'], p['abs_y'], p['abs_x'] + p['width'], p['abs_y'] + p['height']
+        )
+        for z in zones:
+            if not poly.intersects(z):
+                continue
+            pmin_x, pmin_y, pmax_x, pmax_y = poly.bounds
+            zmin_x, zmin_y, zmax_x, zmax_y = z.bounds
+            for cand_dx in (zmin_x - pmax_x - clearance, zmax_x - pmin_x + clearance):
+                if min_dx - 0.5 <= cand_dx <= max_dx + 0.5:
+                    x_offsets.add(cand_dx)
+            for cand_dy in (zmin_y - pmax_y - clearance, zmax_y - pmin_y + clearance):
+                if min_dy - 0.5 <= cand_dy <= max_dy + 0.5:
+                    y_offsets.add(cand_dy)
+
     cands = []
-    for dx_mm in steps:
-        dx = dx_mm * MM_TO_PTS
+    for dx in x_offsets:
         if dx < min_dx - 0.5 or dx > max_dx + 0.5:
             continue
-        for dy_mm in steps:
-            dy = dy_mm * MM_TO_PTS
+        for dy in y_offsets:
             if dy < min_dy - 0.5 or dy > max_dy + 0.5:
+                continue
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
                 continue
             cands.append((dx * dx + dy * dy, dx, dy))
     cands.sort()  # thử phép dịch nhỏ trước
     for _, dx, dy in cands:
-        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-            continue  # (0,0) đã va chạm
         shifted = apply_shift(placements, dx, dy)
         if not detect_collisions(shifted, zones, base_poly, base_rect_pts, sheet_h):
             return shifted
@@ -1220,7 +1252,13 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
             out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
         return out
 
-    # ── KHÔNG lồng (lưới/tròn/chữ nhật/CUSTOM) → hành vi cũ: dồn cột / dồn hàng + canh giữa.
+    # ── KHÔNG lồng (lưới/tròn/chữ nhật/CUSTOM/L-shape):
+    # [AUDIT RECTPACK21 FIX 2026-09-21] Thử dịch cả khối cứng vào vùng trống trước để GIỮ TRỌN tem
+    # (mục 4 COLLISION_PLAYBOOK.md). Tránh xóa/dồn oan khi chỉ cần dịch nhẹ khỏi góc boong.
+    block_shift = _try_whole_block_shift(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+    if block_shift is not None:
+        return block_shift
+
     col_out = _resolve_by_columns(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
     row_out = _resolve_one_orientation(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
     if col_out is not None and len(col_out) >= len(row_out):

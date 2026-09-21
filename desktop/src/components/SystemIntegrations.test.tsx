@@ -93,6 +93,21 @@ describe('SystemIntegrations — mở file hệ thống', () => {
         expect(screen.queryByRole('status')).toBeNull();
     });
 
+    it('không hiện overlay khi drag-enter hoặc drag-over với paths rỗng (kéo text bôi đen)', async () => {
+        render(<SystemIntegrations />);
+        await waitFor(() => expect(mocks.listeners.has('tauri://drag-enter')).toBe(true));
+
+        act(() => mocks.listeners.get('tauri://drag-enter')?.({
+            payload: { paths: [] },
+        }));
+        expect(screen.queryByRole('status')).toBeNull();
+
+        act(() => mocks.listeners.get('tauri://drag-over')?.({
+            payload: { paths: [] },
+        }));
+        expect(screen.queryByRole('status')).toBeNull();
+    });
+
     it('chuyển native drag-drop PDF thành path-backed File bằng contract stat mới', async () => {
         const received = vi.fn();
         window.addEventListener('system-files-received', received);

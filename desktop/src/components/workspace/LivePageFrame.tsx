@@ -44,6 +44,7 @@ import type { ObjType, BBox, EditOp, ImageClipShape } from './editTypes';
 import type { SessionOpOutcome } from '../../hooks/useEditSession';
 import { FontSelector } from '../preprocess-tools/FontSelector';
 import { FloatingTextToolbar } from './FloatingTextToolbar';
+import { VdpRecordNavigatorBar } from './VdpRecordNavigatorBar';
 import { Lock, Check, X, RotateCcw, RotateCw, AlertTriangle, ImageUp, Trash2, Type, Shapes, Square, Circle, Triangle, Diamond, Pentagon, Hexagon, Octagon, Star, Heart, Plus } from 'lucide-react';
 import {
     pageWidthPtFromDim,
@@ -2033,14 +2034,16 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
     return (
         <span
             ref={containerRef}
-            className="w-full h-full overflow-visible"
+            className="w-full h-full overflow-visible select-none"
             style={{
                 display: 'flex',
                 alignItems: 'center',
+                userSelect: 'none',
+                WebkitUserSelect: 'none',
             }}
         >
             <span
-                className="whitespace-pre"
+                className="whitespace-pre select-none"
                 style={{
                     display: 'block',
                     width: isScaled ? `${naturalWidth}px` : '100%',
@@ -2058,9 +2061,11 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
                     textAlign: align,
                     transform: transformStyle,
                     transformOrigin: origin,
+                    userSelect: 'none',
+                    WebkitUserSelect: 'none',
                 }}
             >
-                <span ref={measureRef} style={{ display: 'inline-block' }}>
+                <span ref={measureRef} style={{ display: 'inline-block', userSelect: 'none', WebkitUserSelect: 'none' }} className="select-none">
                     {text}
                 </span>
             </span>
@@ -2219,6 +2224,8 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
                 fontWeight={fontWeight}
                 fontStyle={fontStyle}
                 letterSpacing={tracking}
+                className="select-none"
+                style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
             >
                 <textPath
                     key={pathId}
@@ -2696,6 +2703,7 @@ export const LivePageFrame = (props: any) => {
             if (p) applyVdpDrag(p.curX, p.curY);
         };
         const onMove = (e: PointerEvent) => {
+            e.preventDefault();
             if (!containerRef.current) return;
             const rect = containerRef.current.getBoundingClientRect();
             const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
@@ -2709,6 +2717,7 @@ export const LivePageFrame = (props: any) => {
             vdpPendingRef.current = null;
             vdpInteractionRef.current = null;
             setVdpInteraction(null);
+            window.getSelection()?.removeAllRanges();
         };
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', onUp);
@@ -5378,7 +5387,7 @@ export const LivePageFrame = (props: any) => {
         <div className="relative shrink-0" style={{ width: outerWidth }}>
         <div 
             ref={containerRef}
-            className={`${viewerDarkBackground ? 'bg-black ring-1 ring-white/20 shadow-[0_4px_30px_rgba(0,0,0,0.6)]' : 'bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5'} relative shrink-0 overflow-hidden group/pdf-frame ${isCropPanMode ? 'cursor-grab active:cursor-grabbing touch-none select-none' : isCropMode ? 'cursor-crosshair touch-none select-none' : 'select-text'}`}
+            className={`${viewerDarkBackground ? 'bg-black ring-1 ring-white/20 shadow-[0_4px_30px_rgba(0,0,0,0.6)]' : 'bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5'} relative shrink-0 overflow-hidden group/pdf-frame ${isCropPanMode ? 'cursor-grab active:cursor-grabbing touch-none select-none' : isCropMode ? 'cursor-crosshair touch-none select-none' : isVdpMode ? 'select-none' : 'select-text'}`}
             style={{
                 width: outerWidth,
                 height: outerHeight,
@@ -5396,7 +5405,7 @@ export const LivePageFrame = (props: any) => {
             onDoubleClick={handleEditDoubleClick}
             onMouseLeave={isCropMode ? undefined : handleMouseLeave}
         >
-            <div ref={pageContentRef} className="select-text" style={{
+            <div ref={pageContentRef} className={isVdpMode ? "select-none" : "select-text"} style={{
                 position: 'absolute',
                 width: displayWidth,
                 height: displayHeight,
@@ -6806,87 +6815,6 @@ export const LivePageFrame = (props: any) => {
                  );
              })()}
 
-             {/* VDP Live Preview Record Navigator Bar */}
-             {isVdpMode && !isPickingVdpText && vdpLivePreview && vdpLivePreview.totalRecords > 0 && isActiveFrame && (
-                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[68] pointer-events-auto bg-slate-900/95 text-white text-xs px-3 py-1.5 rounded-lg shadow-2xl border border-slate-700/80 flex items-center gap-2.5 backdrop-blur-md whitespace-nowrap select-none transition-all">
-                     {/* Toggle Bật/Tắt xem trước */}
-                     <button
-                         type="button"
-                         onClick={(e) => {
-                             e.stopPropagation();
-                             setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, enabled: !prev.enabled }));
-                         }}
-                         className={`px-2.5 py-1 rounded font-semibold text-[11px] flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95 ${
-                             vdpLivePreview.enabled
-                                 ? 'bg-teal-600 hover:bg-teal-500 text-white ring-1 ring-teal-400'
-                                 : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600/50'
-                         }`}
-                         title={vdpLivePreview.enabled ? t('Đang xem dữ liệu thật (Bấm để tắt)') : t('Bật xem trước dữ liệu biến đổi thời gian thực')}
-                     >
-                         <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-slate-400'}`} />
-                         <span>{vdpLivePreview.enabled ? t('👁️ Dữ liệu thật: BẬT') : t('👁️ Xem trước: TẮT')}</span>
-                     </button>
-
-                     <div className="h-4 w-px bg-slate-700" />
-
-                     {/* Điều hướng record: Trước / ô nhập / Sau */}
-                     <div className="flex items-center gap-1">
-                         <button
-                             type="button"
-                             disabled={vdpLivePreview.recordIndex <= 1}
-                             onClick={(e) => {
-                                 e.stopPropagation();
-                                 const next = Math.max(1, vdpLivePreview.recordIndex - 1);
-                                 setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: next }));
-                                 window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: next } }));
-                             }}
-                             className="h-6 w-6 flex items-center justify-center rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed border border-slate-700 transition-colors text-[10px]"
-                             title={t('Record trước (phím [)')}
-                         >
-                             ◀
-                         </button>
-
-                         <div className="flex items-center gap-1 px-1 text-[11px] font-mono">
-                             <span>Record</span>
-                             <input
-                                 type="number"
-                                 min={1}
-                                 max={vdpLivePreview.totalRecords}
-                                 value={vdpLivePreview.recordIndex}
-                                 onChange={(e) => {
-                                     const val = Math.max(1, Math.min(vdpLivePreview.totalRecords, Number(e.target.value) || 1));
-                                     setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: val }));
-                                     window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: val } }));
-                                 }}
-                                 onClick={(e) => e.stopPropagation()}
-                                 className="w-12 h-6 text-center bg-slate-800 border border-slate-600 rounded text-white font-bold text-xs focus:outline-none focus:border-teal-400"
-                             />
-                             <span className="text-slate-400">/ {vdpLivePreview.totalRecords.toLocaleString('vi-VN')}</span>
-                         </div>
-
-                         <button
-                             type="button"
-                             disabled={vdpLivePreview.recordIndex >= vdpLivePreview.totalRecords}
-                             onClick={(e) => {
-                                 e.stopPropagation();
-                                 const next = Math.min(vdpLivePreview.totalRecords, vdpLivePreview.recordIndex + 1);
-                                 setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: next }));
-                                 window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: next } }));
-                             }}
-                             className="h-6 w-6 flex items-center justify-center rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed border border-slate-700 transition-colors text-[10px]"
-                             title={t('Record sau (phím ])')}
-                         >
-                             ▶
-                         </button>
-                     </div>
-
-                     {vdpLivePreview.sourceTitle && (
-                         <span className="text-[10px] text-teal-300/80 max-w-[150px] truncate border-l border-slate-700 pl-2">
-                             {vdpLivePreview.sourceTitle}
-                         </span>
-                     )}
-                 </div>
-             )}
 
              {/* VDP Tool Overlay */}
              {vdpFields && vdpFields.length > 0 && pageDim && (() => {
@@ -6903,9 +6831,11 @@ export const LivePageFrame = (props: any) => {
                      return (
                          <div
                              key={field.id}
-                             className={`absolute group ${isSelected ? 'z-[60]' : 'z-[55] hover:z-[58]'} ${isSelected ? 'border border-[#0d99ff] bg-[#0d99ff]/[0.02]' : 'border border-dashed border-transparent hover:border-slate-400/80'} ${isVdpMode ? (isInteracting ? 'pointer-events-auto' : 'pointer-events-auto cursor-move') : 'pointer-events-none'}`}
+                             className={`absolute group select-none ${isSelected ? 'z-[60]' : 'z-[55] hover:z-[58]'} ${isSelected ? 'border border-[#0d99ff] bg-[#0d99ff]/[0.02]' : 'border border-dashed border-transparent hover:border-slate-400/80'} ${isVdpMode ? (isInteracting ? 'pointer-events-auto' : 'pointer-events-auto cursor-move') : 'pointer-events-none'}`}
                              style={{
-                                 left: x0, top: y0, width: w, height: h
+                                 left: x0, top: y0, width: w, height: h,
+                                 userSelect: 'none',
+                                 WebkitUserSelect: 'none',
                              }}
                              onDoubleClick={(e) => {
                                  if (field.type === 'text') {
@@ -6935,6 +6865,8 @@ export const LivePageFrame = (props: any) => {
                                  // qua (dành cho middle-pan) → chỉ chuột trái bắt đầu move.
                                  if (e.button !== 0) return;
                                  e.stopPropagation();
+                                 e.preventDefault();
+                                 window.getSelection()?.removeAllRanges();
                                  let newSelection = [...safeSelectedIds];
                                  
                                  // Handle Group Selection (if this field belongs to a group, select the whole group)
@@ -7097,8 +7029,8 @@ export const LivePageFrame = (props: any) => {
 
                              return (
                              <div
-                                  className={`absolute flex items-start justify-center pointer-events-none overflow-visible ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode' || field.type === 'text') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')}`}
-                                  style={rotStyle}
+                                  className={`absolute flex items-start justify-center pointer-events-none overflow-visible select-none ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode' || field.type === 'text') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')}`}
+                                  style={{ ...rotStyle, userSelect: 'none', WebkitUserSelect: 'none' }}
                               >
                                  {(field.type === 'qrcode' || field.type === 'barcode') && (
                                      <VdpPreviewImage
@@ -7208,11 +7140,14 @@ export const LivePageFrame = (props: any) => {
                                   return handles.map((handle) => (
                                       <div
                                           key={handle}
-                                          className={`absolute ${posMap[handle]} w-[7px] h-[7px] bg-white border border-[#0d99ff] rounded-none shadow-[0_1px_2px_rgba(0,0,0,0.15)] hover:scale-125 transition-transform hover:bg-[#0d99ff]/10 z-[65]`}
+                                          className={`absolute ${posMap[handle]} w-[7px] h-[7px] bg-white border border-[#0d99ff] rounded-none shadow-[0_1px_2px_rgba(0,0,0,0.15)] hover:scale-125 transition-transform hover:bg-[#0d99ff]/10 z-[65] select-none`}
+                                          style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
                                           onPointerDown={(e) => {
                                               // UIUX (audit 2026-07-27 §C-01) fix-verify: chỉ chuột trái resize.
                                               if (e.button !== 0) return;
                                               e.stopPropagation();
+                                              e.preventDefault();
+                                              window.getSelection()?.removeAllRanges();
                                               if (!containerRef.current) return;
                                               const rect = containerRef.current.getBoundingClientRect();
                                               const startCoords = getUnrotatedCoords(e.clientX, e.clientY, rect);
@@ -7458,6 +7393,14 @@ export const LivePageFrame = (props: any) => {
              })}
             </div>
         </div>
+
+        {/* VDP Live Preview Record Navigator Bar — đặt NGOÀI containerRef (tránh bị overflow-hidden cắt khi kéo ra ngoài trang) */}
+        {isVdpMode && !isPickingVdpText && vdpLivePreview && vdpLivePreview.totalRecords > 0 && isActiveFrame && (
+            <VdpRecordNavigatorBar
+                vdpLivePreview={vdpLivePreview}
+                setVdpLivePreview={setVdpLivePreview}
+            />
+        )}
 
         {/* Dimension Overlay — positioned OUTSIDE the page frame */}
         {detectedDimension && (

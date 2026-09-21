@@ -591,3 +591,40 @@ def test_auto_trim_user_unit_keeps_physical_dpi_margin_and_box(tmp_path):
     expected = [40.0 - margin_pt, 10.0 - margin_pt, 160.0 + margin_pt, 90.0 + margin_pt]
     assert physical_boxes[0] == pytest.approx(expected, abs=0.8)
     assert physical_boxes[1] == pytest.approx(expected, abs=0.8)
+
+
+def test_auto_trim_subtle_pastel_artwork_on_white_margin(tmp_path):
+    """Nội dung có nền màu pastel rất nhạt (vd RGB 243, 250, 252 - lệch 12 so với trắng 255)
+    nằm trên nền trang trắng tinh phải được xén sạch lề trắng 4 cạnh, không bị nhầm là gradient."""
+    source = tmp_path / "pastel_card_on_white.pdf"
+    pdf = pikepdf.Pdf.new()
+    pw, ph = 240.0, 200.0
+    page = pdf.add_blank_page(page_size=(pw, ph))
+    # Nền card xanh/xám nhạt RGB(0.953, 0.980, 0.988) = (243, 250, 252)
+    # Lề trắng: trái 15pt, dưới 10pt, rộng 210pt (lề phải 15pt), cao 180pt (lề trên 10pt)
+    page.obj[pikepdf.Name("/Contents")] = pikepdf.Stream(
+        pdf,
+        (
+            "q\n"
+            "0.953 0.980 0.988 rg\n"
+            "15 10 210 180 re f\n"
+            "0 0 0 rg\n"
+            "40 40 100 50 re f\n"  # nội dung bên trong
+            "Q\n"
+        ).encode("ascii"),
+    )
+    pdf.save(source)
+    pdf.close()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path
+    output = engine.auto_trim(str(source), trim_sides=["top", "bottom", "left", "right"])
+
+    with pikepdf.Pdf.open(output) as result:
+        mb = [float(v) for v in result.pages[0].MediaBox]
+        # Lề trái ~15, lề dưới ~10, lề phải ~225, lề trên ~190
+        assert mb[0] == pytest.approx(15.0, abs=1.5)
+        assert mb[1] == pytest.approx(10.0, abs=1.5)
+        assert mb[2] == pytest.approx(225.0, abs=1.5)
+        assert mb[3] == pytest.approx(190.0, abs=1.5)
+

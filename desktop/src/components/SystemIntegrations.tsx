@@ -344,10 +344,15 @@ export default function SystemIntegrations() {
 
             void register('tauri://drag-enter', payload => {
                 const paths = payloadPaths(payload);
-                const hasSupportedFile = paths.length === 0 || paths.some(path => isPdfOrImagePath(path) || isOfficePathOrName(path));
+                const hasSupportedFile = paths.length > 0 && paths.some(path => isPdfOrImagePath(path) || isOfficePathOrName(path));
                 if (hasSupportedFile) setIsGlobalDragActive(true);
             });
-            void register('tauri://drag-over', () => setIsGlobalDragActive(true));
+            void register('tauri://drag-over', payload => {
+                const paths = payloadPaths(payload);
+                if (paths.length > 0 && paths.some(path => isPdfOrImagePath(path) || isOfficePathOrName(path))) {
+                    setIsGlobalDragActive(true);
+                }
+            });
             void register('tauri://drag-leave', () => setIsGlobalDragActive(false));
             void register('tauri://drag-drop', payload => {
                 setIsGlobalDragActive(false);
@@ -366,7 +371,10 @@ export default function SystemIntegrations() {
 
         // 4. DOM fallback cho bản web/dev. Dropzone con đã preventDefault thì giữ quyền xử lý.
         let domDragDepth = 0;
-        const isDomFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types || []).includes('Files');
+        const isDomFileDrag = (event: DragEvent) => {
+            const types = Array.from(event.dataTransfer?.types || []);
+            return types.includes('Files') && !types.includes('text/plain');
+        };
         const onDomDragEnter = (event: DragEvent) => {
             if (!isDomFileDrag(event)) return;
             event.preventDefault();

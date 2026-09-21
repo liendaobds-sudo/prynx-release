@@ -162,12 +162,23 @@ def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req:
         sheet_h = req.sheet_h
         m_left_pt = getattr(req, 'margin_left', 0) or 0
         m_bottom_pt = getattr(req, 'margin_bottom', 0) or 0
+        m_top_pt = getattr(req, 'margin_top', None)
+        if m_top_pt is None:
+            m_top_pt = m_bottom_pt
+        m_right_pt = getattr(req, 'margin_right', None)
+        if m_right_pt is None:
+            m_right_pt = m_left_pt
         # margins KHỚP nup_process_chunk: top/bottom mặc định margin_bottom; left/right mặc định margin_left.
         margins = {
             'top': pc.get('marginTop') * MM_TO_PTS if pc.get('marginTop') is not None else m_bottom_pt,
             'bottom': pc.get('marginBottom') * MM_TO_PTS if pc.get('marginBottom') is not None else m_bottom_pt,
             'left': pc.get('marginLeft') * MM_TO_PTS if pc.get('marginLeft') is not None else m_left_pt,
             'right': pc.get('marginRight') * MM_TO_PTS if pc.get('marginRight') is not None else m_left_pt,
+            # [AUDIT RECTPACK21 FIX 2026-09-21] Lề in thực tế của tờ để resolver biết giới hạn dịch cả khối
+            'sheet_top': m_top_pt,
+            'sheet_bottom': m_bottom_pt,
+            'sheet_left': m_left_pt,
+            'sheet_right': m_right_pt,
         }
         zones = calculate_forbidden_zones(pc, margins, sheet_w, sheet_h)
         if not zones:

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
-import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, autoDetectVdpTags, type VdpFieldError, type VdpIssue, type VdpGating, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, validateVdp, downloadVdpErrorReport, autoDetectVdpTags, type VdpIssue, type VdpGating, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
 import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-04)
 import { confirmDialog } from '../ui/confirmDialog'; // UIUX (audit 2026-07-27 §D-06)
 import { ProgressBar } from '../ui/ProgressBar'; // UIUX (audit 2026-07-27 §D-07)
@@ -164,6 +164,60 @@ type DataMergeChange = Partial<DataMergeField>;
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Trích xuất danh sách các cột dữ liệu mà một trường VDP đã được ghép tới.
+ * Một trường được tính là đã ghép dữ liệu khi:
+ * 1. field.name trùng với một cột trong csvHeaders.
+ * 2. textContent chứa placeholder {Tên_Cột} hoặc {{Tên_Cột}} khớp với csvHeaders.
+ * 3. data (barcode/qr) chứa placeholder {Tên_Cột} khớp với csvHeaders.
+ * 4. imagePath (ảnh) chứa placeholder {Tên_Cột} khớp với csvHeaders.
+ */
+export function getFieldMappedColumns(
+    field: { name?: string; textContent?: string | null; data?: string; imagePath?: string },
+    csvHeaders: string[]
+): string[] {
+    if (!csvHeaders || csvHeaders.length === 0) return [];
+    const matched = new Set<string>();
+    const headerLowerMap = new Map<string, string>();
+    for (const h of csvHeaders) {
+        if (h && typeof h === 'string') {
+            headerLowerMap.set(h.trim().toLowerCase(), h);
+        }
+    }
+
+    // 1. Khớp theo tên trường (field.name)
+    if (field.name) {
+        const trimmed = field.name.trim().toLowerCase();
+        if (headerLowerMap.has(trimmed)) {
+            matched.add(headerLowerMap.get(trimmed)!);
+        }
+    }
+
+    // Regex trích tên cột từ placeholder {Cot}, {Cot[1]}, {Cot|upper}, {{Cot}}
+    const extractTokens = (text?: string | null) => {
+        if (!text) return;
+        const tokenRegex = /\{+([^{}|\[\]]+)(?:\[.*?\])?(?:\|.*?)?\}+/g;
+        let m: RegExpExecArray | null;
+        while ((m = tokenRegex.exec(text)) !== null) {
+            const tokenName = m[1].trim().toLowerCase();
+            if (headerLowerMap.has(tokenName)) {
+                matched.add(headerLowerMap.get(tokenName)!);
+            }
+        }
+    };
+
+    // 2. Khớp trong textContent
+    extractTokens(field.textContent);
+
+    // 3. Khớp trong data (barcode)
+    extractTokens(field.data);
+
+    // 4. Khớp trong imagePath (hình ảnh)
+    extractTokens(field.imagePath);
+
+    return Array.from(matched);
 }
 
 // Toán tử so sánh hỗ trợ (Req 2.9) — nhãn tiếng Việt.
@@ -551,18 +605,8 @@ export default function DataMergeTool({
     const [selectedSheet, setSelectedSheet] = useState<string>(''); // sheet đang đọc
     const [gsheetUrl, setGsheetUrl] = useState<string>('');         // link Google Sheets
 
-    // ── Xem trước record + điều hướng (task 14.3, Req 4.2/4.3/4.5/4.6/4.9/8.5) ──
+    // ── Chỉ số record đang xem realtime trên View chính ──
     const [previewIndex, setPreviewIndex] = useState(1);            // chỉ số yêu cầu (1-based)
-    const [previewImg, setPreviewImg] = useState<string | null>(null);   // data URL PNG
-    const [previewDims, setPreviewDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-    const [previewErrors, setPreviewErrors] = useState<VdpFieldError[]>([]);
-    const [previewRecordIndex, setPreviewRecordIndex] = useState(0);     // chỉ số đã render thực
-    const [previewLoading, setPreviewLoading] = useState(false);
-    const [previewProcessing, setPreviewProcessing] = useState(false);   // chỉ báo khi > 2s (Req 4.3)
-    const [previewMsg, setPreviewMsg] = useState('');
-    const previewAbortRef = useRef<AbortController | null>(null);
-    // Huỷ request preview đang chờ khi unmount để không rò rỉ (giữ UI mượt).
-    useEffect(() => () => { previewAbortRef.current?.abort(); }, []);
 
     // ── Gating validate + xuất báo cáo lỗi (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) ──
     const [validateGating, setValidateGating] = useState<VdpGating | null>(null); // null = chưa kiểm tra
@@ -1121,103 +1165,6 @@ export default function DataMergeTool({
         return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
     }, [previewIndex]);
 
-    // Gọi /vdp/preview bất đồng bộ cho record thứ `index` (1-based). Giữ UI phản
-    // hồi (không block), huỷ request cũ khi điều hướng nhanh, và chỉ hiện chỉ báo
-    // "đang xử lý" khi vượt 2 giây (Req 4.3, 8.5).
-    const runPreview = async (index: number) => {
-        if (!csvData || csvData.length === 0) {
-            setPreviewImg(null);
-            setPreviewErrors([]);
-            setPreviewMsg(t('preprocess.dataMerge:chua_co_du_lieu_nguon_de_xem_truoc'));
-            return;
-        }
-        const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
-        if (!templateFile) {
-            setPreviewMsg(t('preprocess.dataMerge:chua_co_file_pdf_template_de_xem_truoc'));
-            return;
-        }
-
-        // Huỷ request preview đang chờ (điều hướng nhanh không xếp hàng vô ích).
-        previewAbortRef.current?.abort();
-        const ac = new AbortController();
-        previewAbortRef.current = ac;
-
-        setPreviewLoading(true);
-        // Chỉ báo xử lý chỉ xuất hiện nếu request kéo dài > 2 giây (Req 4.3).
-        const slowTimer = setTimeout(() => {
-            if (!ac.signal.aborted) setPreviewProcessing(true);
-        }, 2000);
-
-        try {
-            const params: Parameters<typeof previewVdpRecord>[0] = {
-                fields: vdpFields,
-                requestedIndex: index,
-                template: templateFile,
-                hasHeader: csvHasHeader,
-                signal: ac.signal,
-            };
-            // Nguồn dữ liệu: xlsx/gsheet đọc lại để phủ toàn bộ record; còn lại
-            // gửi rows đã nạp sẵn (csv/manual nạp đủ dòng).
-            if (dataMode === 'xlsx' && xlsxFile) {
-                params.kind = 'xlsx';
-                params.file = xlsxFile;
-                if (selectedSheet) params.sheet = selectedSheet;
-            } else if (dataMode === 'gsheet' && gsheetUrl.trim()) {
-                params.kind = 'gsheet';
-                params.url = gsheetUrl.trim();
-            } else if (dataMode === 'csv' && lastCsvFileRef.current) {
-                params.kind = 'csv';
-                params.file = lastCsvFileRef.current;
-            } else {
-                params.rows = csvData;
-                params.columns = csvHeaders;
-            }
-
-            const result = await previewVdpRecord(params);
-            if (ac.signal.aborted) return;
-
-            if (result.empty_source) {
-                setPreviewImg(null);
-                setPreviewErrors([]);
-                setPreviewMsg(result.message || t('preprocess.dataMerge:nguon_du_lieu_rong_0_record'));
-                return;
-            }
-            setPreviewImg(result.image_png_base64 ? `data:image/png;base64,${result.image_png_base64}` : null);
-            setPreviewDims({ w: result.width, h: result.height });
-            setPreviewErrors(result.field_errors || []);
-            setPreviewRecordIndex(result.record_index);
-            // Nếu backend kẹp chỉ số, đồng bộ ô nhập về chỉ số thực tế (Req 4.5).
-            if (result.clamped) setPreviewIndex(result.record_index);
-            setPreviewMsg(result.message || '');
-        } catch (err: unknown) {
-            if (err instanceof DOMException && err.name === 'AbortError' || ac.signal.aborted) return;
-            setPreviewMsg(errorMessage(err) || t('preprocess.dataMerge:loi_tao_ban_xem_truoc'));
-        } finally {
-            clearTimeout(slowTimer);
-            if (!ac.signal.aborted) {
-                setPreviewLoading(false);
-                setPreviewProcessing(false);
-            }
-        }
-    };
-
-    // Điều hướng tới record `target` với kẹp ở hai biên + thông báo (Req 4.2, 4.5).
-    const goToPreview = (target: number) => {
-        if (previewTotal <= 0) {
-            setPreviewImg(null);
-            setPreviewErrors([]);
-            setPreviewMsg(t('preprocess.dataMerge:nguon_du_lieu_rong_0_record_khong_the'));
-            return;
-        }
-        let idx = target;
-        let clampMsg = '';
-        if (idx < 1) { idx = 1; clampMsg = t('preprocess.dataMerge:da_o_record_dau_tien'); }
-        else if (idx > previewTotal) { idx = previewTotal; clampMsg = t('preprocess.dataMerge:da_o_record_cuoi_cung'); }
-        setPreviewIndex(idx);
-        if (clampMsg) setPreviewMsg(clampMsg);
-        runPreview(idx);
-    };
-
     // ─── Gating validate + xuất báo cáo lỗi (task 14.4) ─────────────────────
     // Dựng tham số nguồn dữ liệu cho validate/error-report giống runPreview:
     // xlsx/gsheet đọc lại để phủ toàn bộ record; csv/manual gửi rows đã nạp sẵn.
@@ -1731,69 +1678,178 @@ export default function DataMergeTool({
             </VdpSection>
 
             {/* Field List */}
-            <VdpSection step="3" title={t('preprocess.dataMerge:danh_sach_truong')} badge={<span className="text-[11px] px-2 py-0.5 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full font-medium text-slate-600 dark:text-zinc-400">{vdpFields.length}</span>}>
-        <div className="max-h-[250px] overflow-y-auto space-y-2 pr-1 scroller-thin">
-            {vdpFields.length === 0 ? (
-                <div className="text-center text-xs text-slate-400 py-4 flex flex-col items-center gap-3">
-                    <span>{t('preprocess.dataMerge:keo_drag_mot_cong_cu_tu_tren_vao_trang')}</span>
-                </div>
-            ) : (
-                vdpFields.map(field => {
-                    const isSelected = selectedFieldId === field.id;
-                    return (
-                        <div
-                            key={field.id}
-                            onClick={() => {
-                                onSelectField?.([field.id]);
-                            }}
-                            className={`w-full text-left p-2.5 rounded border transition-colors cursor-pointer ${isSelected ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/30 dark:border-blue-700' : 'bg-white border-slate-200 hover:bg-slate-100 dark:bg-zinc-800 dark:border-zinc-700 dark:hover:bg-zinc-700'}`}
-                        >
-                            <div className="flex items-center justify-between">
-                                {isSelected ? (
-                                    <div className="flex-1 mr-2 relative" onClick={e => e.stopPropagation()}>
-                                        <input 
-                                            list="csv-headers-list"
-                                            value={field.name}
-                                            onChange={(e) => {
-                                                if (selectedFieldId === field.id) {
-                                                    updateSelectedField({ name: e.target.value });
-                                                }
-                                            }}
-                                            className="w-full h-8 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-600 rounded focus:outline-none focus:border-teal-500 transition-all shadow-sm"
-                                            placeholder={t('preprocess.dataMerge:ten_truong_khop_header_csv')}
-                                            autoFocus
-                                        />
-                                        <datalist id="csv-headers-list">
-                                            {csvHeaders.map(h => <option key={h} value={h} />)}
-                                        </datalist>
-                                    </div>
+            {(() => {
+                const mappedFieldsCount = vdpFields.filter(f => getFieldMappedColumns(f, csvHeaders).length > 0).length;
+                const totalFields = vdpFields.length;
+                const hasCsv = csvHeaders.length > 0;
+                return (
+                    <VdpSection 
+                        step="3" 
+                        title={t('preprocess.dataMerge:danh_sach_truong')} 
+                        defaultOpen
+                        badge={
+                            hasCsv && totalFields > 0 ? (
+                                mappedFieldsCount === totalFields ? (
+                                    <span className="text-[11px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700/80 rounded-full font-semibold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+                                        <svg className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                        <span>{mappedFieldsCount}/{totalFields} {t('preprocess.dataMerge:da_ghep', 'đã ghép')}</span>
+                                    </span>
                                 ) : (
-                                    <span className="font-semibold text-sm text-slate-800 dark:text-zinc-200 truncate pr-2">{field.name || t('preprocess.dataMerge:chua_dat_ten')}</span>
-                                )}
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                    <span className="text-[11px] px-1.5 py-0.5 bg-slate-100 dark:bg-zinc-700 rounded uppercase">{field.type}</span>
-                                    {isSelected && (
-                                        <button 
-                                            onClick={(e) => { e.stopPropagation(); deleteSelectedField(); }}
-                                            className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                            title={t('preprocess.dataMerge:xoa_truong_nay')}
-                                        >
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                                        </button>
-                                    )}
+                                    <span className="text-[11px] px-2 py-0.5 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full font-medium text-slate-600 dark:text-zinc-400">
+                                        {mappedFieldsCount}/{totalFields} {t('preprocess.dataMerge:da_ghep', 'đã ghép')}
+                                    </span>
+                                )
+                            ) : (
+                                <span className="text-[11px] px-2 py-0.5 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full font-medium text-slate-600 dark:text-zinc-400">{totalFields}</span>
+                            )
+                        }
+                    >
+                        <div className="max-h-[250px] overflow-y-auto space-y-2 pr-1 scroller-thin">
+                            {vdpFields.length === 0 ? (
+                                <div className="text-center text-xs text-slate-400 py-4 flex flex-col items-center gap-3">
+                                    <span>{t('preprocess.dataMerge:keo_drag_mot_cong_cu_tu_tren_vao_trang')}</span>
                                 </div>
-                            </div>
+                            ) : (
+                                vdpFields.map(field => {
+                                    const isSelected = selectedFieldId === field.id;
+                                    const mappedCols = getFieldMappedColumns(field, csvHeaders);
+                                    const isMapped = mappedCols.length > 0;
+                                    return (
+                                        <div
+                                            key={field.id}
+                                            onClick={() => {
+                                                onSelectField?.([field.id]);
+                                            }}
+                                            className={`w-full text-left p-2.5 rounded-lg border transition-all cursor-pointer ${
+                                                isSelected
+                                                    ? isMapped
+                                                        ? 'bg-blue-50/90 border-blue-400 border-l-4 border-l-emerald-500 dark:bg-blue-900/30 dark:border-blue-600 dark:border-l-emerald-400 shadow-sm'
+                                                        : 'bg-blue-50 border-blue-300 dark:bg-blue-900/30 dark:border-blue-700 shadow-sm'
+                                                    : isMapped
+                                                        ? 'bg-emerald-50/35 border-emerald-300/80 border-l-4 border-l-emerald-500 hover:bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/80 dark:border-l-emerald-400 dark:hover:bg-emerald-950/35 shadow-2xs'
+                                                        : 'bg-white border-slate-200 hover:bg-slate-100 dark:bg-zinc-800 dark:border-zinc-700 dark:hover:bg-zinc-700'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between">
+                                                {isSelected ? (
+                                                    <div className="flex items-center gap-1.5 flex-1 min-w-0 mr-2" onClick={e => e.stopPropagation()}>
+                                                        {isMapped && (
+                                                            <span 
+                                                                className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500 dark:bg-emerald-600 text-white shrink-0 shadow-2xs"
+                                                                title={t('preprocess.dataMerge:da_ghep_cot_x', { defaultValue: 'Đã ghép cột: {{cols}}', cols: mappedCols.join(', ') })}
+                                                            >
+                                                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3.5}>
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                                </svg>
+                                                            </span>
+                                                        )}
+                                                        <input 
+                                                            list="csv-headers-list"
+                                                            value={field.name}
+                                                            onChange={(e) => {
+                                                                if (selectedFieldId === field.id) {
+                                                                    updateSelectedField({ name: e.target.value });
+                                                                }
+                                                            }}
+                                                            className="w-full h-8 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-600 rounded focus:outline-none focus:border-teal-500 transition-all shadow-sm"
+                                                            placeholder={t('preprocess.dataMerge:ten_truong_khop_header_csv')}
+                                                            autoFocus
+                                                        />
+                                                        <datalist id="csv-headers-list">
+                                                            {csvHeaders.map(h => <option key={h} value={h} />)}
+                                                        </datalist>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                                                        {isMapped ? (
+                                                            <span 
+                                                                className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500 dark:bg-emerald-600 text-white shrink-0 shadow-2xs"
+                                                                title={t('preprocess.dataMerge:da_ghep_cot_x', { defaultValue: 'Đã ghép cột: {{cols}}', cols: mappedCols.join(', ') })}
+                                                            >
+                                                                <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3.5}>
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                                </svg>
+                                                            </span>
+                                                        ) : hasCsv ? (
+                                                            <span 
+                                                                className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-dashed border-slate-300 dark:border-zinc-600 text-slate-400 dark:text-zinc-500 shrink-0 text-[10px]"
+                                                                title={t('preprocess.dataMerge:chua_ghep_cot', 'Chưa ghép cột dữ liệu')}
+                                                            >
+                                                                ○
+                                                            </span>
+                                                        ) : null}
+                                                        <span className="font-semibold text-sm text-slate-800 dark:text-zinc-200 truncate">{field.name || t('preprocess.dataMerge:chua_dat_ten')}</span>
+                                                    </div>
+                                                )}
+                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                    {isMapped && !isSelected && (
+                                                        <span 
+                                                            className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-100/90 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-700/80 px-1.5 py-0.5 rounded shadow-2xs"
+                                                            title={t('preprocess.dataMerge:da_ghep_cot_x', { defaultValue: 'Đã ghép cột: {{cols}}', cols: mappedCols.join(', ') })}
+                                                        >
+                                                            <svg className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                            </svg>
+                                                            <span>{t('preprocess.dataMerge:da_ghep', 'Đã ghép')}</span>
+                                                        </span>
+                                                    )}
+                                                    <span className={`text-[11px] px-1.5 py-0.5 rounded uppercase font-medium ${
+                                                        isMapped 
+                                                            ? 'bg-emerald-100/80 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60' 
+                                                            : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300'
+                                                    }`}>
+                                                        {field.type}
+                                                    </span>
+                                                    {isSelected && (
+                                                        <button 
+                                                            onClick={(e) => { e.stopPropagation(); deleteSelectedField(); }}
+                                                            className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
+                                                            title={t('preprocess.dataMerge:xoa_truong_nay')}
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            )}
                         </div>
-                    );
-                })
-            )}
-        </div>
-            </VdpSection>
+                    </VdpSection>
+                );
+            })()}
 
             {/* Field Settings Editor: Tách làm 2 mục riêng biệt */}
             {/* ─── Mục 4: Ghép cột dữ liệu ─── */}
-            {selectedField && (
-                <VdpSection step="4" title={t('preprocess.dataMerge:ghep_cot_du_lieu', 'Ghép cột dữ liệu')} accent defaultOpen>
+            {selectedField && (() => {
+                const selectedFieldMappedCols = getFieldMappedColumns(selectedField, csvHeaders);
+                const isSelectedFieldMapped = selectedFieldMappedCols.length > 0;
+                return (
+                <VdpSection 
+                    step="4" 
+                    title={t('preprocess.dataMerge:ghep_cot_du_lieu', 'Ghép cột dữ liệu')} 
+                    accent 
+                    defaultOpen
+                    badge={
+                        csvHeaders.length > 0 ? (
+                            isSelectedFieldMapped ? (
+                                <span className="text-[11px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 rounded-full font-semibold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+                                    <svg className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    <span>{selectedFieldMappedCols[0]}</span>
+                                </span>
+                            ) : (
+                                <span className="text-[11px] px-2 py-0.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-full font-medium text-amber-700 dark:text-amber-300">
+                                    {t('preprocess.dataMerge:chua_ghep', 'Chưa ghép')}
+                                </span>
+                            )
+                        ) : undefined
+                    }
+                >
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-1 p-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
                             <span className="text-[12px] font-bold text-blue-700 dark:text-blue-400 block mb-1">{t('preprocess.dataMerge:cot_chinh_cua_o_nay')}</span>
@@ -1959,7 +2015,8 @@ export default function DataMergeTool({
                         )}
                     </div>
                 </VdpSection>
-            )}
+                );
+            })()}
 
             {/* ─── Mục 5: Định dạng & Vị trí ─── */}
             {selectedField && (
@@ -2340,143 +2397,8 @@ export default function DataMergeTool({
                 </VdpSection>
             )}
 
-            {/* Xem trước record + điều hướng + dấu lỗi (task 14.3, Req 4.2/4.3/4.5/4.6/4.9) */}
-            <VdpSection step="7" title={t('preprocess.dataMerge:xem_truoc_record')} defaultOpen={false}>
-                <div className="flex flex-col gap-3">
-                    {/* Nút bật/tắt xem trực tiếp trên view chính */}
-                    <button
-                        type="button"
-                        onClick={() => setVdpLivePreview({ enabled: !vdpLivePreview.enabled })}
-                        className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
-                            vdpLivePreview.enabled
-                                ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
-                                : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
-                        }`}
-                        title={vdpLivePreview.enabled ? t('Bấm để tắt xem trước trên view chính') : t('Bật xem trước dữ liệu thật trên view chính')}
-                    >
-                        <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-teal-500'}`} />
-                        <span>{vdpLivePreview.enabled ? t('✓ Đang xem dữ liệu thật trên View chính') : t('👁️ Bật xem trực tiếp trên View chính')}</span>
-                    </button>
-
-                    {/* Điều hướng record: Prev / ô chỉ số / Next + nút Xem */}
-                    <div className="flex items-center gap-2">
-                        <button
-                            type="button"
-                            onClick={() => goToPreview(previewIndex - 1)}
-                            disabled={previewLoading || previewTotal <= 0}
-                            title={t('preprocess.dataMerge:record_truoc')}
-                            className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                        >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
-                        </button>
-                        <div className="flex items-center gap-1 flex-1 min-w-0 justify-center">
-                            <input
-                                type="number"
-                                min={1}
-                                max={previewTotal || 1}
-                                value={previewIndex}
-                                onChange={(e) => setPreviewIndex(Math.max(1, Number(e.target.value) || 1))}
-                                onKeyDown={(e) => { if (e.key === 'Enter') goToPreview(previewIndex); }}
-                                className="h-8 w-16 px-2 text-[12px] text-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded focus:outline-none focus:border-teal-500 transition-all"
-                            />
-                            <span className="text-[12px] text-slate-500 dark:text-zinc-400 shrink-0">
-                                / {previewTotal > 0 ? previewTotal.toLocaleString('vi-VN') : 0}
-                            </span>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={() => goToPreview(previewIndex + 1)}
-                            disabled={previewLoading || previewTotal <= 0}
-                            title={t('preprocess.dataMerge:record_ke_tiep')}
-                            className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                        >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => goToPreview(previewIndex)}
-                            disabled={previewLoading || previewTotal <= 0}
-                            className="shrink-0 h-8 px-3 text-[12px] font-semibold bg-teal-600 hover:bg-teal-700 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded transition-colors"
-                        >
-                            {/* UIUX (audit 2026-07-27 §D-05) */}
-                            {t('preprocess.dataMerge:nut_xem', 'Xem')}
-                        </button>
-                    </div>
-
-                    {/* Thông báo (đã kẹp / nguồn rỗng / lỗi) */}
-                    {previewMsg && (
-                        <div className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 px-2 py-1.5 rounded leading-snug">
-                            {previewMsg}
-                        </div>
-                    )}
-
-                    {/* Khung ảnh xem trước + overlay dấu lỗi */}
-                    <div className="relative rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 overflow-hidden min-h-[120px] flex items-center justify-center">
-                        {previewImg ? (
-                            <div className="relative inline-block w-full">
-                                <img
-                                    src={previewImg}
-                                    alt={`Xem trước record ${previewRecordIndex}`}
-                                    className="block w-full h-auto select-none"
-                                    draggable={false}
-                                />
-                                {/* Dấu hiệu lỗi field: rect theo pixel ảnh → quy về % để
-                                    tự co giãn theo kích thước hiển thị (Req 4.6). */}
-                                {previewDims.w > 0 && previewDims.h > 0 && previewErrors.map((er, i) => (
-                                    <div
-                                        key={i}
-                                        title={`${er.kind}: ${er.field}${er.reason ? ' — ' + er.reason : ''}`}
-                                        className="absolute border-2 border-red-500 bg-red-500/15 pointer-events-auto"
-                                        style={{
-                                            left: `${(er.rect.x / previewDims.w) * 100}%`,
-                                            top: `${(er.rect.y / previewDims.h) * 100}%`,
-                                            width: `${(er.rect.w / previewDims.w) * 100}%`,
-                                            height: `${(er.rect.h / previewDims.h) * 100}%`,
-                                        }}
-                                    >
-                                        <span className="absolute -top-4 left-0 text-[9px] font-bold text-white bg-red-500 px-1 rounded-sm whitespace-nowrap">
-                                            {er.kind}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="text-[12px] text-slate-400 dark:text-zinc-500 py-8 px-3 text-center">
-                                {/* UIUX (audit 2026-07-27 §D-05) */}
-                                {t('preprocess.dataMerge:bam_xem_de_tao_ban_xem_truoc_record', 'Bấm "Xem" để tạo bản xem trước record.')}
-                            </div>
-                        )}
-
-                        {/* Chỉ báo đang xử lý — chỉ hiện khi vượt 2 giây (Req 4.3, 8.5) */}
-                        {previewProcessing && (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-[1px]">
-                                <svg className="animate-spin h-6 w-6 text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:dang_xu_ly_xem_truoc')}</span>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Liệt kê lỗi field của record đang xem (MISSING/ERR) */}
-                    {previewErrors.length > 0 && (
-                        <div className="flex flex-col gap-1">
-                            <span className="text-[11px] font-bold text-red-600 dark:text-red-400">
-                                {/* UIUX (audit 2026-07-27 §D-05) */}
-                                {t('preprocess.dataMerge:n_field_loi_o_record_nay', { defaultValue: '{{n}} field lỗi ở record này:', n: previewErrors.length })}
-                            </span>
-                            {previewErrors.map((er, i) => (
-                                <div key={i} className="text-[10px] text-slate-600 dark:text-zinc-400 leading-snug">
-                                    <span className="font-mono font-bold text-red-500">[{er.kind}]</span>{' '}
-                                    <span className="font-semibold">{er.field}</span>
-                                    {er.reason ? <span> — {er.reason}</span> : null}
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </VdpSection>
-
             {/* Kiểm tra trước khi chạy + xuất báo cáo lỗi CSV (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) */}
-            <VdpSection step="8" title={t('preprocess.dataMerge:kiem_tra_truoc_khi_chay')} defaultOpen={false}>
+            <VdpSection step="7" title={t('preprocess.dataMerge:kiem_tra_truoc_khi_chay')} defaultOpen={false}>
                 <div className="flex flex-col gap-3">
                     <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic leading-snug">
                         {t('preprocess.dataMerge:kiem_tra_placeholder_anh_bien_doi_va')}

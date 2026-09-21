@@ -237,6 +237,7 @@ export interface VdpLivePreviewState {
     totalRecords: number;
     currentRecord: Record<string, string> | null;
     sourceTitle?: string;
+    toolbarOffset?: { x: number; y: number };
 }
 
 export interface StickPreviewSettings {
@@ -794,6 +795,7 @@ export const createWorkspaceStore = (
         recordIndex: 1,
         totalRecords: 0,
         currentRecord: null,
+        toolbarOffset: { x: 0, y: 0 },
     },
 
     detectedShapeType: null,
@@ -1420,7 +1422,9 @@ export const createWorkspaceStore = (
             state.vdpLivePreview.recordIndex === next.recordIndex &&
             state.vdpLivePreview.totalRecords === next.totalRecords &&
             state.vdpLivePreview.currentRecord === next.currentRecord &&
-            state.vdpLivePreview.sourceTitle === next.sourceTitle
+            state.vdpLivePreview.sourceTitle === next.sourceTitle &&
+            state.vdpLivePreview.toolbarOffset?.x === next.toolbarOffset?.x &&
+            state.vdpLivePreview.toolbarOffset?.y === next.toolbarOffset?.y
         ) {
             return state;
         }

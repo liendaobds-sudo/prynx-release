@@ -1,0 +1,16 @@
+{
+  "date":"2026-09-21",
+  "head":"d3388be91d776b74cd873588c61aeac3c662fbb3",
+  "state":"OPEN_AWAITING_FIX_APPROVAL",
+  "production_modified":false,
+  "source":{"path":"D:/pdfcompare/test/Untitled-1.pdf","sha256":"f96a27c1a4f93d3e4b55d4187bdf3bc90d06de841b23aa3255b000f56d51d376","pages":1,"size_mm":[80.051275,64.99507222222222],"effective_shape":"RECTANGLE page fallback"},
+  "artifact":{"path":"C:/Users/Khanh Pham/AppData/Local/Temp/PrynX-dev/results/nup_b2d700fa.pdf","sha256":"788a96f1d447e9c25837416f73a4e10878f1d0950acb3630c675768c3c2102f3","pages":2,"artwork_clip_rectangles":21,"max_reproduction_delta_pt":0.0018472547245096393,"in_and_cut_visually_reviewed":true},
+  "settings":{"sheet_mm":[320,430],"usable_mm":[314,424],"effective_margins_mm":[3,3,3,3],"gap_mm":0,"bleed_mm":0,"split_gap_mm":0,"pont_size_mm":5,"pont_margin_mm":7,"pont_safety_mm":3},
+  "pipeline":[{"stage":"raw L-shape","count":24,"block_counts":[15,5,4],"overlap_pair_zero_based":[19,23],"overlap_mm2":1492.556303},{"stage":"sticker overlap cleanup","count":23,"block_counts":[15,4,4]},{"stage":"pont cleanup","count":21,"block_counts":[14,4,3]}],
+  "controls":{"python_raw_count":24,"installed_native_raw_count":24,"unrotated_grid_after_pont":18,"rotated_grid_after_pont":20},
+  "witness":{"count":23,"block_counts":[18,5,0],"main_origin_x_mm":3.5,"main_origin_y_formula":"(430-6*h)/2","right_origin_x_formula":"3.5+3*w","right_origin_y_formula":"(430-5*w)/2","overlaps":0,"outside_usable":0,"pont_violations":0,"min_clearance_to_padded_zone_mm":0.18804090853233565,"production_validators_passed":true,"global_optimum_proven":false},
+  "findings":[{"id":"RECTPACK21.01","priority":1,"status":"CONFIRMED","level":"ARTIFACT","cause":"Right-full-height and bottom-full-width fill regions overlap, raw invalid count wins before validation"},{"id":"RECTPACK21.02","priority":1,"status":"CONFIRMED","level":"ARTIFACT","cause":"Pont cleanup deletes/recenters winner without comparing valid two-block alternatives"}],
+  "units":[{"id":"W2-RECTPACK21-SR","entry":"GridPreview S&R optimal_auto rectangle","handler":"preview_layout branch A/B","engine":"layout_compute -> orchestrator -> shape_l_layout","writer":"finalize -> pont resolver -> precalculated nup writer","artifact":"job b2d700fa IN/CUT","consumer":"preview and print layout","contract":"point/mm; page box; non-overlap; final yield with marks; grid regularity","cases":"real source; raw/pruned/pont; two single-orientation grids; independent23 witness; Python/native","level":"ARTIFACT","next":"User approves fix; regression then GUI/release acceptance"}],
+  "tests":{"passed":53,"files":4,"production_code_changed":false,"native_rebuilt":false,"gui_replayed":false},
+  "source_hashes":{"shape_layouts.py":"6D4B7F7FC63DB00D6A8C9C3FFBE9E004C07001FBF4D00F9A86E679B7A75A4369","orchestrator.py":"C7AD99D131C0AD2E6214C894632B8191C9539ACD75C65B1BEA905E3224A13FFB","pont_collision.py":"FBF2E2CCA542A13E7CF8F7625B3866AABB09A21DBA5B612BDC16FFFDEEB0F286","shape.rs":"AD3A3026B7ABE1D7821B784610DC5BBC3DBD58136C3E5872E0D1CE4B62392D72"}
+}

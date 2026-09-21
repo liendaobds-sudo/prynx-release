@@ -619,13 +619,20 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
     """
     split_gap = secondary_gap if secondary_gap is not None else max(gap_x, gap_y)  # Use user gap directly, no forced 5mm minimum
 
-    def candidate_rank(total: int, width_used: float, height_used: float):
-        """Xếp hạng sản lượng trước, sau đó độ thoáng mép và độ gọn."""
+    def candidate_rank(
+        total: int,
+        width_used: float,
+        height_used: float,
+        n_blocks: int = 1,
+    ):
+        """Xếp hạng sản lượng trước, sau đó độ thoáng mép, ít khối hơn
+        và footprint nhỏ hơn [AUDIT RECTPACK21 FIX]."""
         spare_x = usable_w - width_used
         spare_y = usable_h - height_used
         return (
             total,
             min(spare_x, spare_y),
+            -n_blocks,
             -(width_used * height_used),
             -(width_used + height_used),
         )
@@ -637,11 +644,13 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
         best_total: int,
         best_width: float,
         best_height: float,
+        n_blocks: int = 1,
+        best_n_blocks: int = 1,
     ) -> bool:
         if total != best_total:
             return total > best_total
-        return candidate_rank(total, width_used, height_used) > candidate_rank(
-            best_total, best_width, best_height,
+        return candidate_rank(total, width_used, height_used, n_blocks) > candidate_rank(
+            best_total, best_width, best_height, best_n_blocks,
         )
 
     def try_config(main_w, main_h, fill_w, fill_h, primary_rotated):
@@ -650,6 +659,7 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
         best_items = []
         best_w = 0.0
         best_h = 0.0
+        best_n_blocks = 0
         has_best = False
 
         max_cols = max_grid.get('cols', 0)
@@ -669,71 +679,131 @@ def _py_solve_l_shape_layout(usable_w: float, usable_h: float, item_w: float, it
                 tbw = tc * main_w + max(0, tc - 1) * gap_x
                 tbh = tr * main_h + max(0, tr - 1) * gap_y
 
-                # Main block
-                main_items = []
+                # Khối chính (blockId = 0)
+                main_items_base = []
                 main_block = solve_grid_layout(tbw, tbh, main_w, main_h, gap_x, gap_y)
                 for item in main_block['items']:
                     item['isRotated'] = primary_rotated
                     item['blockId'] = 0
-                    main_items.append(item)
+                    main_items_base.append(item)
+                n_main = len(main_items_base)
 
-                # Right fill block (full height of usable area)
-                right_items = []
                 right_x = tbw + split_gap
                 right_w = usable_w - right_x
-                if right_w > fill_w - 0.01:
-                    fill_r = solve_grid_layout(right_w, usable_h, fill_w, fill_h, gap_x, gap_y)
-                    for item in fill_r['items']:
+                bottom_y = tbh + split_gap
+                bottom_h = usable_h - bottom_y
+
+                # [AUDIT RECTPACK21 FIX 2026-09-21]
+                # Phân hoạch vùng L còn lại thành 2 phương án chữ nhật KHÔNG giao nhau:
+                # Phân hoạch A (Phải full cao, Đáy hẹp theo chiều rộng khối chính):
+                #   - Khối phải: [right_x .. usable_w] x [0 .. usable_h]
+                #   - Khối đáy:  [0 .. tbw] x [bottom_y .. usable_h]
+                # Phân hoạch B (Đáy full rộng, Phải thấp theo chiều cao khối chính):
+                #   - Khối đáy:  [0 .. usable_w] x [bottom_y .. usable_h]
+                #   - Khối phải: [right_x .. usable_w] x [0 .. tbh]
+                # Đảm bảo 100% không bao giờ sinh tem tự chồng lấn ở góc phải-dưới.
+
+                partitions_to_try = []
+
+                # --- Phân hoạch A ---
+                r_items_A = []
+                if right_w > fill_w - 0.01 and usable_h > fill_h - 0.01:
+                    fill_r_A = solve_grid_layout(right_w, usable_h, fill_w, fill_h, gap_x, gap_y)
+                    for item in fill_r_A['items']:
                         item['x'] += right_x
                         item['isRotated'] = not primary_rotated
                         item['blockId'] = 1
-                        right_items.append(item)
+                        r_items_A.append(item)
 
-                # Bottom fill block (full width of usable area, below main block only)
-                bottom_items = []
-                bottom_y = tbh + split_gap
-                bottom_h = usable_h - bottom_y
-                if bottom_h > fill_h - 0.01:
-                    fill_b = solve_grid_layout(usable_w, bottom_h, fill_w, fill_h, gap_x, gap_y)
-                    for item in fill_b['items']:
+                b_items_A = []
+                if tbw > fill_w - 0.01 and bottom_h > fill_h - 0.01:
+                    fill_b_A = solve_grid_layout(tbw, bottom_h, fill_w, fill_h, gap_x, gap_y)
+                    for item in fill_b_A['items']:
                         item['y'] += bottom_y
                         item['isRotated'] = not primary_rotated
                         item['blockId'] = 2
-                        bottom_items.append(item)
+                        b_items_A.append(item)
 
-                if not right_items and bottom_items:
-                    fill_w_used = max((it['x'] + it['width'] for it in bottom_items), default=0)
-                    if tbw < fill_w_used:
-                        shift = (fill_w_used - tbw) / 2.0
-                        for it in main_items: it['x'] += shift
-                    elif fill_w_used < tbw:
-                        shift = (tbw - fill_w_used) / 2.0
-                        for it in bottom_items: it['x'] += shift
-                elif not bottom_items and right_items:
-                    fill_h_used = max((it['y'] + it['height'] for it in right_items), default=0)
-                    if tbh < fill_h_used:
-                        shift = (fill_h_used - tbh) / 2.0
-                        for it in main_items: it['y'] += shift
-                    elif fill_h_used < tbh:
-                        shift = (tbh - fill_h_used) / 2.0
-                        for it in right_items: it['y'] += shift
+                partitions_to_try.append(('A', r_items_A, b_items_A))
 
-                all_items = main_items + right_items + bottom_items
-                candidate_w = max(
-                    (it['x'] + it['width'] for it in all_items), default=0.0,
-                )
-                candidate_h = max(
-                    (it['y'] + it['height'] for it in all_items), default=0.0,
-                )
-                if not has_best or candidate_is_better(
-                    len(all_items), candidate_w, candidate_h,
-                    best_yield, best_w, best_h,
-                ):
-                    best_yield = len(all_items)
-                    best_items = all_items
-                    best_w = candidate_w
-                    best_h = candidate_h
-                    has_best = True
+                # --- Phân hoạch B ---
+                b_items_B = []
+                if usable_w > fill_w - 0.01 and bottom_h > fill_h - 0.01:
+                    fill_b_B = solve_grid_layout(usable_w, bottom_h, fill_w, fill_h, gap_x, gap_y)
+                    for item in fill_b_B['items']:
+                        item['y'] += bottom_y
+                        item['isRotated'] = not primary_rotated
+                        item['blockId'] = 2
+                        b_items_B.append(item)
+
+                r_items_B = []
+                if right_w > fill_w - 0.01 and tbh > fill_h - 0.01:
+                    fill_r_B = solve_grid_layout(right_w, tbh, fill_w, fill_h, gap_x, gap_y)
+                    for item in fill_r_B['items']:
+                        item['x'] += right_x
+                        item['isRotated'] = not primary_rotated
+                        item['blockId'] = 1
+                        r_items_B.append(item)
+
+                partitions_to_try.append(('B', r_items_B, b_items_B))
+
+                for part_name, right_items_cand, bottom_items_cand in partitions_to_try:
+                    import copy
+                    main_items = copy.deepcopy(main_items_base)
+                    right_items = copy.deepcopy(right_items_cand)
+                    bottom_items = copy.deepcopy(bottom_items_cand)
+
+                    # Canh giữa khối phụ / khối chính theo trục ghép
+                    if not right_items and bottom_items:
+                        fill_w_used = max((it['x'] + it['width'] for it in bottom_items), default=0)
+                        if tbw < fill_w_used:
+                            shift = (fill_w_used - tbw) / 2.0
+                            for it in main_items: it['x'] += shift
+                        elif fill_w_used < tbw:
+                            shift = (tbw - fill_w_used) / 2.0
+                            for it in bottom_items: it['x'] += shift
+                    elif not bottom_items and right_items:
+                        fill_h_used = max((it['y'] + it['height'] for it in right_items), default=0)
+                        if tbh < fill_h_used:
+                            shift = (fill_h_used - tbh) / 2.0
+                            for it in main_items: it['y'] += shift
+                        elif fill_h_used < tbh:
+                            shift = (tbh - fill_h_used) / 2.0
+                            for it in right_items: it['y'] += shift
+                    elif right_items and bottom_items:
+                        if part_name == 'A':
+                            fill_w_used = max((it['x'] + it['width'] for it in bottom_items), default=0)
+                            if fill_w_used < tbw:
+                                shift = (tbw - fill_w_used) / 2.0
+                                for it in bottom_items: it['x'] += shift
+                        else:
+                            fill_h_used = max((it['y'] + it['height'] for it in right_items), default=0)
+                            if fill_h_used < tbh:
+                                shift = (tbh - fill_h_used) / 2.0
+                                for it in right_items: it['y'] += shift
+
+                    all_items = main_items + right_items + bottom_items
+                    candidate_w = max(
+                        (it['x'] + it['width'] for it in all_items), default=0.0,
+                    )
+                    candidate_h = max(
+                        (it['y'] + it['height'] for it in all_items), default=0.0,
+                    )
+                    n_blocks = 1 + (1 if right_items else 0) + (1 if bottom_items else 0)
+                    n_primary = n_main if not primary_rotated else (len(all_items) - n_main)
+
+                    if not has_best or candidate_is_better(
+                        len(all_items), candidate_w, candidate_h,
+                        best_yield, best_w, best_h,
+                        n_blocks,
+                        best_n_blocks,
+                    ):
+                        best_yield = len(all_items)
+                        best_items = all_items
+                        best_w = candidate_w
+                        best_h = candidate_h
+                        best_n_blocks = n_blocks
+                        has_best = True
 
         return best_yield, best_items, best_w, best_h
 

@@ -809,27 +809,31 @@ fn l_candidate_is_better(
     total: usize,
     width_used: f64,
     height_used: f64,
+    n_blocks: usize,
     best_total: usize,
     best_width: f64,
     best_height: f64,
+    best_n_blocks: usize,
     usable_w: f64,
     usable_h: f64,
 ) -> bool {
     if total != best_total {
         return total > best_total;
     }
-    // Khi hòa sản lượng, chừa mép đều hơn trước rồi mới so footprint nhỏ hơn.
-    // Điều này tránh phương án cùng số tem nhưng cao/sát ốc được chọn chỉ vì
-    // nó xuất hiện trước trong vòng duyệt.
+    // Khi hòa sản lượng, chừa mép đều hơn trước rồi mới so số khối và footprint.
     let spare = (usable_w - width_used).min(usable_h - height_used);
     let best_spare = (usable_w - best_width).min(usable_h - best_height);
-    if spare != best_spare {
+    if (spare - best_spare).abs() > 1e-6 {
         return spare > best_spare;
+    }
+
+    if n_blocks != best_n_blocks {
+        return n_blocks < best_n_blocks;
     }
 
     let area = width_used * height_used;
     let best_area = best_width * best_height;
-    if area != best_area {
+    if (area - best_area).abs() > 1e-6 {
         return area < best_area;
     }
 
@@ -857,10 +861,10 @@ pub fn l_layout(
         gap_y: f64,
         split_gap: f64,
         primary_rotated: bool,
-    ) -> (usize, Vec<StickerItem>, f64, f64) {
+    ) -> (usize, Vec<StickerItem>, f64, f64, usize) {
         let max_grid = solve_grid_internal(usable_w, usable_h, main_w, main_h, gap_x, gap_y, false);
         if max_grid.is_empty() {
-            return (0, Vec::new(), 0.0, 0.0);
+            return (0, Vec::new(), 0.0, 0.0, 0);
         }
 
         let step_x = (main_w * 0.05).max(main_w + gap_x);
@@ -876,13 +880,14 @@ pub fn l_layout(
             0
         };
         if max_cols < 1 || max_rows < 1 {
-            return (0, Vec::new(), 0.0, 0.0);
+            return (0, Vec::new(), 0.0, 0.0, 0);
         }
 
         let mut best_yield = 0usize;
         let mut best_items: Vec<StickerItem> = Vec::new();
         let mut best_w = 0.0f64;
         let mut best_h = 0.0f64;
+        let mut best_n_blocks = 0usize;
 
         for reduce_c in 0..2.min(max_cols) {
             for reduce_r in 0..2.min(max_rows) {
@@ -898,17 +903,27 @@ pub fn l_layout(
                 let tbw = tc as f64 * main_w + (tc - 1) as f64 * gap_x;
                 let tbh = tr as f64 * main_h + (tr - 1) as f64 * gap_y;
 
-                let mut main_items =
+                let mut main_items_base =
                     solve_grid_internal(tbw, tbh, main_w, main_h, gap_x, gap_y, false);
-                for it in main_items.iter_mut() {
+                for it in main_items_base.iter_mut() {
                     it.is_rotated = primary_rotated;
                     it.block_id = 0;
                 }
 
                 let right_x = tbw + split_gap;
                 let right_w = usable_w - right_x;
-                let mut right_items = Vec::new();
-                if right_w > fill_w - TOL {
+                let bottom_y = tbh + split_gap;
+                let bottom_h = usable_h - bottom_y;
+
+                // [AUDIT RECTPACK21 FIX 2026-09-21]
+                // Phân hoạch vùng L còn lại thành 2 phương án chữ nhật KHÔNG giao nhau:
+                // Phân hoạch A (Phải full cao, Đáy hẹp theo chiều rộng khối chính)
+                // Phân hoạch B (Đáy full rộng, Phải thấp theo chiều cao khối chính)
+                let mut partitions = Vec::with_capacity(2);
+
+                // --- Phân hoạch A ---
+                let mut r_items_a = Vec::new();
+                if right_w > fill_w - TOL && usable_h > fill_h - TOL {
                     let mut ri =
                         solve_grid_internal(right_w, usable_h, fill_w, fill_h, gap_x, gap_y, false);
                     for it in ri.iter_mut() {
@@ -916,97 +931,148 @@ pub fn l_layout(
                         it.is_rotated = !primary_rotated;
                         it.block_id = 1;
                     }
-                    right_items = ri;
+                    r_items_a = ri;
                 }
-
-                let bottom_y = tbh + split_gap;
-                let bottom_h = usable_h - bottom_y;
-                let mut bottom_items = Vec::new();
-                if bottom_h > fill_h - TOL {
-                    let mut bi = solve_grid_internal(
-                        usable_w, bottom_h, fill_w, fill_h, gap_x, gap_y, false,
-                    );
+                let mut b_items_a = Vec::new();
+                if tbw > fill_w - TOL && bottom_h > fill_h - TOL {
+                    let mut bi =
+                        solve_grid_internal(tbw, bottom_h, fill_w, fill_h, gap_x, gap_y, false);
                     for it in bi.iter_mut() {
                         it.y += bottom_y;
                         it.is_rotated = !primary_rotated;
                         it.block_id = 2;
                     }
-                    bottom_items = bi;
+                    b_items_a = bi;
                 }
+                partitions.push(('A', r_items_a, b_items_a));
 
-                // Đồng bộ Python/Illustrator: khi chỉ có một khối phụ, canh
-                // tâm khối hẹp hơn theo trục ghép. Thiếu bước này làm layout
-                // Rust lệch trái ở gap=0 trước cả khi dò va chạm.
-                if right_items.is_empty() && !bottom_items.is_empty() {
-                    let fill_w_used = bottom_items
-                        .iter()
-                        .map(|it| it.x + it.width)
-                        .fold(0.0f64, f64::max);
-                    if tbw < fill_w_used {
-                        let shift = (fill_w_used - tbw) / 2.0;
-                        for it in main_items.iter_mut() {
-                            it.x += shift;
+                // --- Phân hoạch B ---
+                let mut b_items_b = Vec::new();
+                if usable_w > fill_w - TOL && bottom_h > fill_h - TOL {
+                    let mut bi =
+                        solve_grid_internal(usable_w, bottom_h, fill_w, fill_h, gap_x, gap_y, false);
+                    for it in bi.iter_mut() {
+                        it.y += bottom_y;
+                        it.is_rotated = !primary_rotated;
+                        it.block_id = 2;
+                    }
+                    b_items_b = bi;
+                }
+                let mut r_items_b = Vec::new();
+                if right_w > fill_w - TOL && tbh > fill_h - TOL {
+                    let mut ri =
+                        solve_grid_internal(right_w, tbh, fill_w, fill_h, gap_x, gap_y, false);
+                    for it in ri.iter_mut() {
+                        it.x += right_x;
+                        it.is_rotated = !primary_rotated;
+                        it.block_id = 1;
+                    }
+                    r_items_b = ri;
+                }
+                partitions.push(('B', r_items_b, b_items_b));
+
+                for (part_name, mut right_items, mut bottom_items) in partitions {
+                    let mut main_items = main_items_base.clone();
+
+                    if right_items.is_empty() && !bottom_items.is_empty() {
+                        let fill_w_used = bottom_items
+                            .iter()
+                            .map(|it| it.x + it.width)
+                            .fold(0.0f64, f64::max);
+                        if tbw < fill_w_used {
+                            let shift = (fill_w_used - tbw) / 2.0;
+                            for it in main_items.iter_mut() {
+                                it.x += shift;
+                            }
+                        } else if fill_w_used < tbw {
+                            let shift = (tbw - fill_w_used) / 2.0;
+                            for it in bottom_items.iter_mut() {
+                                it.x += shift;
+                            }
                         }
-                    } else if fill_w_used < tbw {
-                        let shift = (tbw - fill_w_used) / 2.0;
-                        for it in bottom_items.iter_mut() {
-                            it.x += shift;
+                    } else if bottom_items.is_empty() && !right_items.is_empty() {
+                        let fill_h_used = right_items
+                            .iter()
+                            .map(|it| it.y + it.height)
+                            .fold(0.0f64, f64::max);
+                        if tbh < fill_h_used {
+                            let shift = (fill_h_used - tbh) / 2.0;
+                            for it in main_items.iter_mut() {
+                                it.y += shift;
+                            }
+                        } else if fill_h_used < tbh {
+                            let shift = (tbh - fill_h_used) / 2.0;
+                            for it in right_items.iter_mut() {
+                                it.y += shift;
+                            }
+                        }
+                    } else if !right_items.is_empty() && !bottom_items.is_empty() {
+                        if part_name == 'A' {
+                            let fill_w_used = bottom_items
+                                .iter()
+                                .map(|it| it.x + it.width)
+                                .fold(0.0f64, f64::max);
+                            if fill_w_used < tbw {
+                                let shift = (tbw - fill_w_used) / 2.0;
+                                for it in bottom_items.iter_mut() {
+                                    it.x += shift;
+                                }
+                            }
+                        } else {
+                            let fill_h_used = right_items
+                                .iter()
+                                .map(|it| it.y + it.height)
+                                .fold(0.0f64, f64::max);
+                            if fill_h_used < tbh {
+                                let shift = (tbh - fill_h_used) / 2.0;
+                                for it in right_items.iter_mut() {
+                                    it.y += shift;
+                                }
+                            }
                         }
                     }
-                } else if bottom_items.is_empty() && !right_items.is_empty() {
-                    let fill_h_used = right_items
+
+                    let n_blocks = 1 + if right_items.is_empty() { 0 } else { 1 } + if bottom_items.is_empty() { 0 } else { 1 };
+                    let mut all_items = main_items;
+                    all_items.extend(right_items);
+                    all_items.extend(bottom_items);
+
+                    let candidate_w = all_items
                         .iter()
-                        .map(|it| it.y + it.height)
+                        .map(|i| i.x + i.width)
                         .fold(0.0f64, f64::max);
-                    if tbh < fill_h_used {
-                        let shift = (fill_h_used - tbh) / 2.0;
-                        for it in main_items.iter_mut() {
-                            it.y += shift;
-                        }
-                    } else if fill_h_used < tbh {
-                        let shift = (tbh - fill_h_used) / 2.0;
-                        for it in right_items.iter_mut() {
-                            it.y += shift;
-                        }
+                    let candidate_h = all_items
+                        .iter()
+                        .map(|i| i.y + i.height)
+                        .fold(0.0f64, f64::max);
+                    if l_candidate_is_better(
+                        all_items.len(),
+                        candidate_w,
+                        candidate_h,
+                        n_blocks,
+                        best_yield,
+                        best_w,
+                        best_h,
+                        best_n_blocks,
+                        usable_w,
+                        usable_h,
+                    ) {
+                        best_yield = all_items.len();
+                        best_w = candidate_w;
+                        best_h = candidate_h;
+                        best_n_blocks = n_blocks;
+                        best_items = all_items;
                     }
-                }
-
-                let mut all_items = main_items;
-                all_items.extend(right_items);
-                all_items.extend(bottom_items);
-
-                let candidate_w = all_items
-                    .iter()
-                    .map(|i| i.x + i.width)
-                    .fold(0.0f64, f64::max);
-                let candidate_h = all_items
-                    .iter()
-                    .map(|i| i.y + i.height)
-                    .fold(0.0f64, f64::max);
-                if l_candidate_is_better(
-                    all_items.len(),
-                    candidate_w,
-                    candidate_h,
-                    best_yield,
-                    best_w,
-                    best_h,
-                    usable_w,
-                    usable_h,
-                ) {
-                    best_yield = all_items.len();
-                    best_w = candidate_w;
-                    best_h = candidate_h;
-                    best_items = all_items;
                 }
             }
         }
-        (best_yield, best_items, best_w, best_h)
+        (best_yield, best_items, best_w, best_h, best_n_blocks)
     }
 
-    let (y1, items1, w1, h1) = try_config(
+    let (y1, items1, w1, h1, nb1) = try_config(
         usable_w, usable_h, item_w, item_h, item_h, item_w, gap_x, gap_y, split_gap, false,
     );
-    let (y2, items2, w2, h2) = try_config(
+    let (y2, items2, w2, h2, nb2) = try_config(
         usable_w, usable_h, item_h, item_w, item_w, item_h, gap_x, gap_y, split_gap, true,
     );
 
@@ -1014,7 +1080,7 @@ pub fn l_layout(
     // gap=0 có hai phương án cùng 27 tem. Chọn phương án gọn 410 mm thay vì
     // phương án cao 440 mm sát ốc; không phá hòa bằng thứ tự duyệt.
     let (best_items, best_w, best_h) =
-        if l_candidate_is_better(y2, w2, h2, y1, w1, h1, usable_w, usable_h) {
+        if l_candidate_is_better(y2, w2, h2, nb2, y1, w1, h1, nb1, usable_w, usable_h) {
             (items2, w2, h2)
         } else {
             (items1, w1, h1)

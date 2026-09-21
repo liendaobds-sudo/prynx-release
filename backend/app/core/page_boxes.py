@@ -420,7 +420,10 @@ def _find_edge_background_content_detection(
             continue
         saw_flat_side = True
 
-        tolerance = int(np.clip(round(edge_p95) + 8, 12, 36))
+        # UIUX (audit 2026-09-21): Cạnh viền số phẳng tinh (edge_p95 ≈ 0) cho phép tolerance
+        # xuống 8 để nhận diện được các artwork nền pastel rất nhạt (vd RGB 243, 250, 252 - lệch 12
+        # so với trắng tinh) mà không nhầm nền card là lề trắng rồi từ chối xén vì nhầm gradient.
+        tolerance = int(np.clip(round(edge_p95) + 8, 8, 36))
 
         # Gradient vuông góc có outer-line phẳng nhưng chuyển màu từ từ vào
         # trong trang. Viền dư thật phải có một bước chuyển đủ dứt khoát.
