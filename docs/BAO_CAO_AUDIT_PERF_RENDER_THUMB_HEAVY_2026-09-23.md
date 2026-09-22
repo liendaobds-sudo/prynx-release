@@ -190,6 +190,6 @@ Audit dừng ở đây theo quy trình PrynX. Đề nghị duyệt theo thứ t�
 | PPE ResourceCache | `SOURCE + AUTO + RUNTIME` | Session/Form/SMask tests và `PPE_SESSION_CACHE` hit/miss đã có |
 | Shared surface/GPU | `DEFERRED` | Runtime chưa chứng minh PNG/IPC là nút thắt; không triển khai mù |
 | Backend Compare | `AUTO + ARTIFACT` | 20 trang @150 DPI: 1.51×, parity đúng; cần corpus khách dài hơn |
-| Backend Export | `BASELINE` | RGB/CMYK 15 trang @150/300 DPI; chưa có file khách nặng/peak RSS |
+| Backend Export | `RUNTIME-PARTIAL` | File khách 5 trang: RGB 150/300 DPI đã có timing; CMYK bị gate RAM/kích thước đúng hợp đồng; chưa có peak RSS |
 
 Không đánh dấu hoàn tất toàn chiến dịch cho tới khi các hàng `RUNTIME-PARTIAL`, `BASELINE` có corpus/installed smoke tương ứng. Các file unrelated đang dirty vẫn nằm ngoài phạm vi và không bị stage.

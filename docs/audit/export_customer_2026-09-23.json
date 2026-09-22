@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "scope": "backend-export-images-customer-file-read-only",
+  "artifact": {
+    "name": "poster retro - Khắc Trung - 0854444414.pdf",
+    "sizeBytes": 63995596,
+    "sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+    "pages": 5
+  },
+  "runs": [
+    {
+      "dpi": 150,
+      "colorMode": "rgb",
+      "status": "ok",
+      "elapsedSeconds": 6.89,
+      "perPageMs": 1378.0,
+      "artifactBytes": 27099864
+    },
+    {
+      "dpi": 300,
+      "colorMode": "rgb",
+      "status": "ok",
+      "elapsedSeconds": 22.0144,
+      "perPageMs": 4402.88,
+      "artifactBytes": 61076919
+    },
+    {
+      "dpi": 150,
+      "colorMode": "cmyk",
+      "status": "rejected_memory_budget",
+      "error": "PPE raster estimate requires about 3865 MiB, above the 3547 MiB budget"
+    },
+    {
+      "dpi": 300,
+      "colorMode": "cmyk",
+      "status": "rejected_raster_dimensions",
+      "error": "PPE raster dimensions rejected at 7087x11811 @ 300 DPI"
+    }
+  ],
+  "limitations": [
+    "RGB timing is wall-clock from the existing read-only benchmark; no peak RSS was sampled.",
+    "CMYK rows are fail-fast PPE safety gates, not successful export timings."
+  ]
+}

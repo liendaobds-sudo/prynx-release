@@ -148,3 +148,13 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Cách đo: mở qua Tauri WebView/CDP, bật thumbnail panel qua đúng workspace store, đo Virtuoso scroller trước và sau khi scroll tới cuối; không dùng selector ngoài làm giả scroll container.
 - Kết quả: `docs/audit/thumbnail_stress_1000_2026-09-23.json`; initial **5 item DOM**, sau scroll **5 item DOM** (index **995–999**), `scrollHeight=202.484 px`, `clientHeight=689 px`; JS heap **86,3 → 90,2 MiB**; gate virtualizer **đạt**.
 - Kết luận: `VirtuosoGrid` đã giữ DOM theo viewport/overscan trên tài liệu 1.000 trang; không còn bằng chứng `pageOrder.map` mount toàn bộ. Đây là dev WebView smoke, chưa thay thế installed release/RSS toàn cây process.
+
+## Lô 14 — Export file khách RGB/CMYK
+
+- Benchmark: `scripts/benchmark_export_images.py` (read-only, output tạm tự dọn), report `docs/audit/export_customer_2026-09-23.json`.
+- File khách 5 trang, 61 MB, SHA-256 `574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1`:
+  - RGB 150 DPI: **6.890 s**, **1378 ms/trang**, artifact 25,8 MiB.
+  - RGB 300 DPI: **22.0144 s**, **4402.88 ms/trang**, artifact 58,2 MiB.
+  - CMYK 150 DPI: PPE **fail-fast** vì ước tính raster **3865 MiB (~3,8 GiB)** vượt ngân sách **3547 MiB**.
+  - CMYK 300 DPI: PPE **fail-fast** vì raster **7087×11811 @ 300 DPI** vượt gate kích thước.
+- Kết luận: RGB export chạy được nhưng chi phí tăng khoảng 3,2× khi tăng DPI; CMYK safety gate đang bảo vệ RAM đúng hợp đồng, chưa được coi là lỗi. Cần peak RSS và chiến lược tile/stripe cho CMYK nặng trước khi hạ gate.
