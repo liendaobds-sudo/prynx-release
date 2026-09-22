@@ -178,3 +178,18 @@ Audit dừng ở đây theo quy trình PrynX. Đề nghị duyệt theo thứ t�
 - Runtime probe cho thấy accurate request thường có `source_ms` thấp và `decode_ms=0`; vì vậy chưa có bằng chứng để ưu tiên shared-surface/GPU transport trước khi đo cache/resource hit ratio.
 - Telemetry `PPE_SESSION_CACHE` đã được thêm ở commit `f9a76b9`, nhưng binary chạy gần nhất chưa chứa telemetry này; cần chạy binary mới để đóng baseline cache.
 - Kết luận cập nhật: hướng PPE retained resource cache đã tồn tại một phần trong engine hiện tại; lô tiếp theo là đo và tối ưu cache/session có mục tiêu, không viết lại mù toàn bộ PPE.
+
+## 10. Ma trận trạng thái sau các lô đã duyệt
+
+| Phần kế hoạch | Trạng thái bằng chứng | Ghi chú |
+|---|---|---|
+| Baseline/telemetry | `ARTIFACT + RUNTIME` | Có script phân tích log, first-pixel/PPE/affinity/cache; corpus còn trộn nhiều phiên |
+| Document-affinity worker | `SOURCE + AUTO + RUNTIME` | Runtime có affinity hit; cần A/B cold sạch để chốt lợi ích RSS/open_ms |
+| First-pixel/target settle | `SOURCE + AUTO + RUNTIME` | Có settle 250ms, first-pixel warm khoảng 190–220ms; cần cold corpus chuẩn |
+| Thumbnail DOM/pipeline | `SOURCE + AUTO + RUNTIME-PARTIAL` | VirtuosoGrid + affinity; chưa đo 1.000 trang bằng installed build |
+| PPE ResourceCache | `SOURCE + AUTO + RUNTIME` | Session/Form/SMask tests và `PPE_SESSION_CACHE` hit/miss đã có |
+| Shared surface/GPU | `DEFERRED` | Runtime chưa chứng minh PNG/IPC là nút thắt; không triển khai mù |
+| Backend Compare | `AUTO + ARTIFACT` | 20 trang @150 DPI: 1.51×, parity đúng; cần corpus khách dài hơn |
+| Backend Export | `BASELINE` | RGB/CMYK 15 trang @150/300 DPI; chưa có file khách nặng/peak RSS |
+
+Không đánh dấu hoàn tất toàn chiến dịch cho tới khi các hàng `RUNTIME-PARTIAL`, `BASELINE` có corpus/installed smoke tương ứng. Các file unrelated đang dirty vẫn nằm ngoài phạm vi và không bị stage.
