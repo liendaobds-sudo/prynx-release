@@ -66,6 +66,15 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 
 - Runtime probe cho thấy 120 ms vẫn phát hai settle cách nhau ~208 ms; commit `3c02d26` đồng bộ settle lên 250 ms theo debounce zoom hiện tại. Verify lại: typecheck + LiveTile/renderPolicy **49/49 pass**.
 
+## Lô 7 — Telemetry PPE resource cache
+
+- Finding: cần kiểm chứng retained Form/Image/Page cache trước khi mở rộng engine.
+- File: `desktop/src-tauri/src/pdf_engine/render_worker.rs`.
+- Thay đổi: log `PPE_SESSION_CACHE` theo request/page/mode với image/form/page hits/misses; không ghi path.
+- Commit: `f9a76b9`.
+- Verify: `cargo check` + test affinity bằng `CARGO_TARGET_DIR` riêng đạt; `print_engine` session cache tests **8/8 pass**, Form parity **1/1**, SMask cache **1/1**.
+- Chưa đạt: cần binary mới chạy lại để lấy cache hit ratio thực tế trên file khách.
+
 ## Runtime probe — phiên người dùng 2026-09-23
 
 Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
