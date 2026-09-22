@@ -14,6 +14,8 @@ const RAW_OUTPUT = process.env.PRYNX_VIEWER_BASELINE_OUTPUT
   || '.tmp/ppe_viewer_baseline/webview-baseline.json';
 const OUTPUT = resolve(RAW_OUTPUT);
 const REQUIRE_STANDEE_HASH = process.env.PRYNX_VIEWER_BASELINE_REQUIRE_STANDEE_HASH !== '0';
+const EXPECTED_ENGINE_MODE = process.env.PRYNX_VIEWER_BASELINE_ENGINE_MODE || 'ppe-only';
+const ALLOW_COMPATIBILITY = process.env.PRYNX_VIEWER_BASELINE_ALLOW_COMPATIBILITY === '1';
 const POLL_MS = 16;
 const TIMEOUT_MS = 60_000;
 const SAMPLE_EDGE = 256;
@@ -39,9 +41,19 @@ const ipcTraceByPage = new WeakMap();
 const PERF_LOG_PATH = process.env.PRYNX_VIEWER_BASELINE_PERF_LOG
   || `${process.env.USERPROFILE || ''}\\Desktop\\PrynX_RenderPerf.log`;
 const EXPECTED_RUNTIME_ENV = {
-  PRYNX_VIEWER_ENGINE_MODE: 'ppe-only',
+  PRYNX_VIEWER_ENGINE_MODE: EXPECTED_ENGINE_MODE,
   PRYNX_VIEWER_SHADOW_RENDER: 'off-or-unset',
 };
+
+if (!['ppe-only', 'hybrid'].includes(EXPECTED_ENGINE_MODE)) {
+  throw new Error(`Engine mode baseline không hỗ trợ: ${EXPECTED_ENGINE_MODE}.`);
+}
+if (EXPECTED_ENGINE_MODE === 'hybrid' && !ALLOW_COMPATIBILITY) {
+  throw new Error(
+    'Compatibility smoke phải bật tường minh PRYNX_VIEWER_BASELINE_ALLOW_COMPATIBILITY=1; '
+    + 'baseline PPE-only vẫn là cổng chính thức.',
+  );
+}
 
 if (!process.env.PRYNX_VIEWER_BASELINE_PDF
   && process.env.PRYNX_VIEWER_BASELINE_SELF_TEST !== '1') {
@@ -208,6 +220,11 @@ function pipelineEvidenceFromIpcTrace(traceSnapshot) {
   const configUnexpected = configCalls.filter((call) => (
     call.status === 'fulfilled'
     && call.configPayloadValid === true
+    && (call.viewerEngineMode !== EXPECTED_ENGINE_MODE || call.viewerShadowEnabled !== false)
+  ));
+  const ppeOnlyConfigUnexpected = configCalls.filter((call) => (
+    call.status === 'fulfilled'
+    && call.configPayloadValid === true
     && (call.viewerEngineMode !== 'ppe-only' || call.viewerShadowEnabled !== false)
   ));
   const tracedRenderCalls = [...ppeCalls, ...displayCalls, ...shadowCalls];
@@ -221,6 +238,14 @@ function pipelineEvidenceFromIpcTrace(traceSnapshot) {
     && call.requestId.length > 0
     && call.pipelineIdentity === PPE_PIPELINE_ID
   ));
+  const allTracedCallsIdentified = tracedRenderCalls.every((call) => (
+    call.payloadParsed === true
+    && typeof call.requestId === 'string'
+    && call.requestId.length > 0
+  ));
+  const allTracedSourcePathsMatched = tracedRenderCalls.every((call) => (
+    normalizeWindowsPath(call.filePath || '') === normalizeWindowsPath(PDF_PATH)
+  ));
   const engineConfigSourcePathMatched = viewerConfig?.sourcePathMatched === true;
   const engineConfigCurrent = engineConfigSourcePathMatched
     && viewerConfig?.validatedResetSequence === traceSnapshot?.resetSequence;
@@ -229,6 +254,56 @@ function pipelineEvidenceFromIpcTrace(traceSnapshot) {
     (latest, call) => Math.max(latest, Number(call.completedAt) || 0),
     0,
   );
+  const displayFulfilled = displayCalls.filter((call) => call.status === 'fulfilled');
+  const displayRejected = displayCalls.filter((call) => call.status === 'rejected');
+  const displayPending = displayCalls.filter((call) => call.status === 'pending');
+  const verifiedPpeOnly = ppeFulfilled.length > 0
+    && ppeRejected.length === 0
+    && ppePending.length === 0
+    && ppeStaleSequence.length === 0
+    && displayStaleSequence.length === 0
+    && shadowStaleSequence.length === 0
+    && displayCalls.length === 0
+    && shadowCalls.length === 0
+    && configRejected.length === 0
+    && configPending.length === 0
+    && configInvalid.length === 0
+    && ppeOnlyConfigUnexpected.length === 0
+    && allPpeCallsIdentified
+    && uniqueRequestIds.size === tracedRenderCalls.length
+    && ppeCalls.every((call) => (
+      normalizeWindowsPath(call.filePath || '') === normalizeWindowsPath(PDF_PATH)
+    ))
+    && viewerConfig?.viewerEngineMode === 'ppe-only'
+    && viewerConfig?.viewerShadowEnabled === false
+    && engineConfigCurrent;
+  // PERF (audit 2026-09-23 §WEBVIEW-COMPAT): chỉ dùng cho smoke chẩn đoán
+  // fixture không có PPE capability. Không thay thế cổng PPE-only chính thức;
+  // mọi request vẫn phải định danh/path đúng, không pending, không shadow,
+  // và chỉ cho phép PPE reject rồi lùi sang PDFium display.
+  const verifiedCompatibility = ppeCalls.length > 0
+    && (ppeFulfilled.length > 0 || displayFulfilled.length > 0)
+    && (ppeRejected.length === 0 || displayFulfilled.length > 0)
+    && ppePending.length === 0
+    && displayPending.length === 0
+    && displayRejected.length === 0
+    && ppeStaleSequence.length === 0
+    && displayStaleSequence.length === 0
+    && shadowStaleSequence.length === 0
+    && shadowCalls.length === 0
+    && configRejected.length === 0
+    && configPending.length === 0
+    && configInvalid.length === 0
+    && configUnexpected.length === 0
+    && allTracedCallsIdentified
+    && allTracedSourcePathsMatched
+    && uniqueRequestIds.size === tracedRenderCalls.length
+    && viewerConfig?.viewerEngineMode === 'hybrid'
+    && viewerConfig?.viewerShadowEnabled === false
+    && engineConfigCurrent;
+  const verifiedRuntimePipeline = EXPECTED_ENGINE_MODE === 'hybrid'
+    ? verifiedCompatibility
+    : verifiedPpeOnly;
   const sanitizeRequestId = (requestId) => (typeof requestId === 'string' && requestId
     ? createHash('sha256').update(requestId).digest('hex').slice(0, 16)
     : null);
@@ -247,9 +322,12 @@ function pipelineEvidenceFromIpcTrace(traceSnapshot) {
     engineConfigPendingCount: configPending.length,
     engineConfigInvalidCount: configInvalid.length,
     engineConfigUnexpectedCount: configUnexpected.length,
+    engineConfigPpeOnlyUnexpectedCount: ppeOnlyConfigUnexpected.length,
     requestIds: ppeCalls.map((call) => sanitizeRequestId(call.requestId)).filter(Boolean),
     pipelineIdentities: [...new Set(ppeCalls.map((call) => call.pipelineIdentity).filter(Boolean))],
     allPpeCallsIdentified,
+    allTracedCallsIdentified,
+    allTracedSourcePathsMatched,
     requestIdsUnique: uniqueRequestIds.size === tracedRenderCalls.length,
     viewerEngineMode: viewerConfig?.viewerEngineMode ?? null,
     viewerShadowEnabled: viewerConfig?.viewerShadowEnabled ?? null,
@@ -260,31 +338,18 @@ function pipelineEvidenceFromIpcTrace(traceSnapshot) {
     fulfilledDurationsMs: ppeFulfilled
       .filter((call) => Number.isFinite(call.completedAt))
       .map((call) => Math.round(call.completedAt - call.startedAt)),
+    displayFulfilledCount: displayFulfilled.length,
+    displayRejectedCount: displayRejected.length,
+    displayPendingCount: displayPending.length,
+    compatibilityFallbackCount: Math.min(ppeRejected.length, displayFulfilled.length),
     sourcePathsMatched: ppeCalls.every((call) => (
       normalizeWindowsPath(call.filePath || '') === normalizeWindowsPath(PDF_PATH)
     )),
     payloadsParsed: ppeCalls.every((call) => call.payloadParsed === true),
     latestPpeCompletedAt,
-    verifiedPpeOnly: ppeFulfilled.length > 0
-      && ppeRejected.length === 0
-      && ppePending.length === 0
-      && ppeStaleSequence.length === 0
-      && displayStaleSequence.length === 0
-      && shadowStaleSequence.length === 0
-      && displayCalls.length === 0
-      && shadowCalls.length === 0
-      && configRejected.length === 0
-      && configPending.length === 0
-      && configInvalid.length === 0
-      && configUnexpected.length === 0
-      && allPpeCallsIdentified
-      && uniqueRequestIds.size === tracedRenderCalls.length
-      && ppeCalls.every((call) => (
-        normalizeWindowsPath(call.filePath || '') === normalizeWindowsPath(PDF_PATH)
-      ))
-      && viewerConfig?.viewerEngineMode === 'ppe-only'
-      && viewerConfig?.viewerShadowEnabled === false
-      && engineConfigCurrent,
+    verifiedPpeOnly,
+    verifiedCompatibility,
+    verifiedRuntimePipeline,
     scope: 'target-webview-cdp-network-ipc-trace',
   };
 }
@@ -2057,7 +2122,7 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
   conflictingConfigTrace.calls.push({ ...fulfilled, resetSequence: 12 });
   const conflictingConfigEvidence = pipelineEvidenceFromIpcTrace(conflictingConfigTrace);
   if (conflictingConfigEvidence.verifiedPpeOnly
-    || conflictingConfigEvidence.engineConfigUnexpectedCount !== 1) {
+    || conflictingConfigEvidence.engineConfigPpeOnlyUnexpectedCount !== 1) {
     throw new Error('pipeline evidence self-test fail: conflicting config responses');
   }
   if (pipelineEvidenceFromIpcTrace(trace([
@@ -2199,7 +2264,9 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
   config: {
     runs: RUNS,
     pairs: RUNS / 2,
-    baselineKind: SMOKE_MODE ? 'cleanup-smoke' : 'official',
+    baselineKind: SMOKE_MODE
+      ? (ALLOW_COMPATIBILITY ? 'compatibility-smoke' : 'cleanup-smoke')
+      : (ALLOW_COMPATIBILITY ? 'compatibility-diagnostic' : 'official'),
     transitions: ['cold-open', 'warm-zoom'],
     pollMs: POLL_MS,
     timeoutMs: TIMEOUT_MS,
@@ -2209,11 +2276,15 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
     measurementScope: MEASUREMENT_SCOPE,
     thumbnailPolicy: 'new-viewer-default-closed-and-verified-per-run',
     expectedRuntimeEnv: EXPECTED_RUNTIME_ENV,
+    allowCompatibilityFallback: ALLOW_COMPATIBILITY,
     requireStandeeHash: REQUIRE_STANDEE_HASH,
   },
   sessionEvidence: {
     pipelineScope: 'target-webview-cdp-network-ipc-trace',
-    engineModeGate: 'ppe-only',
+    engineModeGate: EXPECTED_ENGINE_MODE,
+    compatibilityGate: ALLOW_COMPATIBILITY
+      ? 'diagnostic-only-ppe-reject-may-fallback-to-display'
+      : 'disabled',
     shadowGate: false,
     nativePerfLogScope: 'global-file-bounded-by-offset-supplemental',
     thumbnailBaselineStatus: 'separate-runtime-gate-required',
@@ -2361,9 +2432,9 @@ try {
       if (!run.sourceKeyCaptured) {
         throw new Error(`Lượt ${index + 1} không khóa được identity file đang hiển thị.`);
       }
-      if (!run.pipelineEvidence?.verifiedPpeOnly) {
+      if (!run.pipelineEvidence?.verifiedRuntimePipeline) {
         throw new Error(
-          `Lượt ${index + 1} không có bằng chứng PPE-only sạch: `
+          `Lượt ${index + 1} không có bằng chứng pipeline ${EXPECTED_ENGINE_MODE} sạch: `
           + `mode=${run.pipelineEvidence?.viewerEngineMode}, `
           + `ppe_ok=${run.pipelineEvidence?.ppeFulfilledCount}, `
           + `ppe_rejected=${run.pipelineEvidence?.ppeRejectedCount}, `
@@ -2373,6 +2444,8 @@ try {
           + `config_invalid=${run.pipelineEvidence?.engineConfigInvalidCount}, `
           + `config_unexpected=${run.pipelineEvidence?.engineConfigUnexpectedCount}, `
           + `display=${run.pipelineEvidence?.displayCallCount}, `
+          + `display_fulfilled=${run.pipelineEvidence?.displayFulfilledCount}, `
+          + `display_rejected=${run.pipelineEvidence?.displayRejectedCount}, `
           + `shadow=${run.pipelineEvidence?.shadowCallCount}.`,
         );
       }
@@ -2443,7 +2516,7 @@ try {
       run.valid === true
       && run.sourceKeyCaptured === true
       && transitionPassesPixelGate(run)
-      && run.pipelineEvidence?.verifiedPpeOnly
+      && run.pipelineEvidence?.verifiedRuntimePipeline
       && (run.label !== 'cold-open' || run.pipelineEvidence?.engineConfigCapturedInRun)
       && run.thumbnailEvidence?.verified
     )),

@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 2,
+  "scope": "end-to-end-webview-main-page-thumbnail-closed",
+  "timingUnit": "ms",
+  "artifact": {
+    "name": "poster retro - Khắc Trung - 0854444414.pdf",
+    "sizeBytes": 63995596,
+    "sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+    "pathStored": false,
+    "matchesAuditedStandee": false
+  },
+  "config": {
+    "runs": 2,
+    "pairs": 1,
+    "baselineKind": "cleanup-smoke",
+    "transitions": [
+      "cold-open",
+      "warm-zoom"
+    ],
+    "pollMs": 16,
+    "timeoutMs": 60000,
+    "stableFrames": 2,
+    "stableFrameRule": "distinct-screenshot-captures",
+    "screenshotIntervalMs": 60,
+    "measurementScope": "main-page-thumbnail-closed",
+    "thumbnailPolicy": "new-viewer-default-closed-and-verified-per-run",
+    "expectedRuntimeEnv": {
+      "PRYNX_VIEWER_ENGINE_MODE": "ppe-only",
+      "PRYNX_VIEWER_SHADOW_RENDER": "off-or-unset"
+    },
+    "allowCompatibilityFallback": false,
+    "requireStandeeHash": false
+  },
+  "sessionEvidence": {
+    "pipelineScope": "target-webview-cdp-network-ipc-trace",
+    "engineModeGate": "ppe-only",
+    "compatibilityGate": "disabled",
+    "shadowGate": false,
+    "nativePerfLogScope": "global-file-bounded-by-offset-supplemental",
+    "thumbnailBaselineStatus": "separate-runtime-gate-required",
+    "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+    "initialMeasuredTabCount": 0
+  },
+  "limitations": [
+    "FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.",
+    "Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.",
+    "PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame."
+  ],
+  "runs": [
+    {
+      "index": 1,
+      "cacheIdentityKind": "pdf-url",
+      "coldReset": {
+        "namespaceCleared": true,
+        "namespaceHasCachedTile": false,
+        "documentClosed": false,
+        "error": null,
+        "documentCacheState": "already-empty"
+      },
+      "thumbnailEvidence": {
+        "verified": true,
+        "reason": null,
+        "matchingStoreCount": 1
+      },
+      "label": "cold-open",
+      "trigger": {
+        "accepted": 1,
+        "size": 63995596,
+        "note": "dispatcher schedules a 50ms batch flush before tab creation"
+      },
+      "shellMs": 1066,
+      "fspMs": 1473,
+      "fcvfMs": null,
+      "blankGapTotalMs": 407,
+      "blankGapMaxMs": 407,
+      "blankGapOpen": true,
+      "blankGapCurrentMs": 55576,
+      "timeoutStage": "fcvf",
+      "stableFrames": 1,
+      "sourceKeyCaptured": true,
+      "harnessObservation": {
+        "screenshotCount": 10,
+        "screenshotTotalMs": 2703,
+        "triggerOverheadMs": 4
+      },
+      "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+      "pipelineEvidence": {
+        "ppeCallCount": 26,
+        "ppeFulfilledCount": 16,
+        "ppeRejectedCount": 10,
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 3,
+        "engineConfigObservedCallCount": 3,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "engineConfigPpeOnlyUnexpectedCount": 0,
+        "requestIds": [
+          "223d0d2d25ddbe97",
+          "180f288b42d55db4",
+          "a6393a5788526e2f",
+          "6be4946749da52ad",
+          "24da095f393d4f15",
+          "359e5e4a207bfe3c",
+          "f640ce0d5c7b4187",
+          "850f1ba048e4aa65",
+          "82d5247522fd77f5",
+          "cad288678ac33cb1",
+          "0082deae34dced87",
+          "59d4bd0a338cfc6e",
+          "607cfbec1c2954c5",
+          "233e52e2e86342af",
+          "6b7707020d257665",
+          "149c6ee88717a058",
+          "9b0570aa3db7618c",
+          "cc9080850e84564b",
+          "0e4431d4a7bafa06",
+          "0c2e16784b73d7ec",
+          "61b785db07026f17",
+          "743cb624497f6271",
+          "16903a8f10f1f6e4",
+          "7a8d5ff5688c793a",
+          "87d5e678e437be0e",
+          "015a73dccd2df47a"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "allTracedCallsIdentified": true,
+        "allTracedSourcePathsMatched": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": true,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          745,
+          358,
+          2775,
+          820,
+          843,
+          318,
+          436,
+          705,
+          1789,
+          1095,
+          746,
+          849,
+          983,
+          1355,
+          1204,
+          1294
+        ],
+        "displayFulfilledCount": 0,
+        "displayRejectedCount": 0,
+        "displayPendingCount": 0,
+        "compatibilityFallbackCount": 0,
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 14891.9977,
+        "verifiedPpeOnly": false,
+        "verifiedCompatibility": false,
+        "verifiedRuntimePipeline": false,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "nativePerfEvidence": {
+        "available": true,
+        "ppeResultCount": 16,
+        "displayResultCount": 0,
+        "scope": "global-log-supplemental-not-request-correlated"
+      },
+      "final": {
+        "identity": {
+          "fileName": "poster retro - Khắc Trung - 0854444414.pdf",
+          "phase": "workspace",
+          "numPages": 5,
+          "sourceKeyStored": false
+        },
+        "dom": {
+          "shell": true,
+          "pageRect": {
+            "x": 383.015625,
+            "y": 181,
+            "width": 339.671875,
+            "height": 657
+          },
+          "visibleRect": {
+            "x": 383.015625,
+            "y": 181,
+            "width": 339.671875,
+            "height": 657
+          },
+          "tiles": [],
+          "coverageRatio": 0,
+          "sharpCoverageRatio": 0,
+          "sharp": false,
+          "devicePixelRatio": 1,
+          "page": 5,
+          "rotation": 0
+        },
+        "compositor": {
+          "captured": false,
+          "hasContent": true,
+          "signature": "7ee5eec1",
+          "nonWhiteRatio": 0.9963490604575164,
+          "chromaticRatio": 0.9851664624183006,
+          "lumaRange": 226,
+          "contentBounds": {
+            "leftRatio": 0,
+            "topRatio": 0,
+            "rightRatio": 1,
+            "bottomRatio": 1
+          }
+        },
+        "frameEvidence": null
+      },
+      "measuredTabId": "imposition-1790119625455-diu",
+      "valid": false,
+      "validationError": "Error: Lượt 1 không có bằng chứng pipeline ppe-only sạch: mode=ppe-only, ppe_ok=16, ppe_rejected=10, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, display_fulfilled=0, display_rejected=0, shadow=0."
+    }
+  ],
+  "consoleErrors": [],
+  "badHttp": [],
+  "processMemory": {
+    "status": "not-measured-by-cdp-harness",
+    "scope": "whole-application-tree-required-separately"
+  },
+  "complete": false,
+  "failure": {
+    "message": "Error: Lượt 1 không có bằng chứng pipeline ppe-only sạch: mode=ppe-only, ppe_ok=16, ppe_rejected=10, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, display_fulfilled=0, display_rejected=0, shadow=0.",
+    "completedRuns": 1,
+    "validRuns": 0
+  }
+}

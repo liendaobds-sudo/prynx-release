@@ -129,3 +129,14 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Fixture CMYK/TAC: shell **982 ms**, first visible **1.239 s**, compositor có content; PPE 2 fulfilled/2 rejected, nên không đạt gate PPE-only.
 - Fixture PDF tối giản: shell **740 ms**, first visible **944 ms**, compositor có content; PPE 2 fulfilled/2 rejected.
 - Kết luận: harness/runtime path hoạt động và fail-closed đúng; các fixture repo không phù hợp gate `ppe-only` tuyệt đối (capability reject), chưa có corpus Standee hash chính thức để đóng installed smoke. Không hạ gate để che lỗi capability.
+
+## Lô 12 — Smoke file khách + compatibility gate tường minh
+
+- File: `scripts/ppe_viewer_webview_baseline.mjs`.
+- Thay đổi: thêm `PRYNX_VIEWER_BASELINE_ENGINE_MODE=hybrid` kết hợp cờ bắt buộc `PRYNX_VIEWER_BASELINE_ALLOW_COMPATIBILITY=1` cho chẩn đoán; cổng mặc định vẫn `ppe-only`. Compatibility chỉ hợp lệ khi request được định danh/path đúng, không pending/shadow, và PPE reject thực sự có display fallback; không nới pixel gate chính thức.
+- Verify: self-test mặc định và self-test compatibility **đạt**.
+- File khách `test/poster retro - Khắc Trung - 0854444414.pdf` (SHA-256 `574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1`, 5 trang):
+  - PPE-only smoke: shell **1.066 s**, FSP **1.473 s**, 16 fulfilled/10 rejected, không display fallback; fail-closed vì không đạt PPE-only frame gate.
+  - Hybrid diagnostic smoke: shell **1.059 s**, FSP **4.099 s**, 3 fulfilled/2 rejected, không display fallback; fail-closed vì compatibility reject không có PDFium fallback và FCVF timeout.
+- Reports: `docs/audit/viewer_smoke_customer_2026-09-23.json`, `docs/audit/viewer_smoke_customer_hybrid_2026-09-23.json`.
+- Kết luận: file khách này chưa chứng minh được đường render hoàn chỉnh trong cả hai mode; không được dùng làm KPI P95. Cần corpus PPE Standee chuẩn để đóng installed gate và một corpus capability-reject có fallback thật để đo hybrid.
