@@ -97,3 +97,11 @@ Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56
 - Priority promotion đã chạy thật (`tile-priority-promote` với `previous_priority=100 → priority=10`) và không cần hủy bitmap đang chờ.
 
 Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request accurate 56 → 68 → 92 DPI và có stale/cancel ở các generation cũ. Đây là mục tiêu lô kế tiếp: ổn định target DPI/first-frame để giảm render thừa, không hạ chất lượng cuối.
+
+## Lô 8 — Script baseline runtime tái lập
+
+- File: `scripts/report_viewer_perf.ps1`.
+- Commit: `25fa56c`.
+- Cách chạy: `powershell -ExecutionPolicy Bypass -File scripts/report_viewer_perf.ps1 -Tail 50000`.
+- Probe 50.000 dòng hiện tại: bootstrap P50/P95 **66/457 ms**; PPE total P50/P95 **156/833 ms**; first-pixel native→decode P50/P95 **289/1.069 ms**; affinity hit/assign/drop **534/115/21**; image cache hit ratio **14,04%** trong cửa sổ này.
+- Đây là baseline tự động hóa, chưa phải P95 sản phẩm vì log trộn nhiều tài liệu/phiên; dùng để so sánh binary tiếp theo.
