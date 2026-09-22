@@ -3892,6 +3892,8 @@ export const LivePageFrame = (props: any) => {
             ? displayDevicePixelRatio
             : 1;
         const fullPageTargetRenderZoom = computeRenderZoom(zoom);
+        const accurateLayoutSettled = isActiveFrame
+            || Math.abs(renderZoom - fullPageTargetRenderZoom) <= 0.01;
         const scrollViewport = containerRef.current?.closest('.acro-scroll') as HTMLElement | null;
         const viewportWidth = scrollViewport?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
         const viewportHeight = scrollViewport?.clientHeight || (typeof window !== 'undefined' ? window.innerHeight : 0);
@@ -3969,12 +3971,14 @@ export const LivePageFrame = (props: any) => {
             accurateColorPage,
             needsTiling,
             accurateBaseWithinSurfaceBudget,
+            accurateLayoutSettled,
         );
         const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
             shouldRenderBasePage,
             accurateColorPage,
             needsTiling,
             accurateBaseWithinSurfaceBudget,
+            accurateLayoutSettled,
         ) || renderAccurateUnderlay;
         const accuratePageCommitKey = `${viewerTraceHash(`${pdfUrl || nativeFilePath || 'memory'}:${originalPageNum}`)}:${originalPageNum}`;
         const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
@@ -5493,6 +5497,8 @@ export const LivePageFrame = (props: any) => {
                     : 1;
                 const scrollViewport = containerRef.current?.closest('.acro-scroll') as HTMLElement | null;
                 const fullPageTargetRenderZoom = computeRenderZoom(zoom);
+                const accurateLayoutSettled = isActiveFrame
+                    || Math.abs(renderZoom - fullPageTargetRenderZoom) <= 0.01;
                 const directFullPageSurface = shouldUseViewerDirectFullPageSurface(
                     accurateColorPage,
                     fullPageTargetRenderZoom,
@@ -5607,12 +5613,14 @@ export const LivePageFrame = (props: any) => {
                     accurateColorPage,
                     needsTiling,
                     accurateBaseWithinSurfaceBudget,
+                    accurateLayoutSettled,
                 );
                 const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
                     shouldRenderBasePage,
                     accurateColorPage,
                     needsTiling,
                     accurateBaseWithinSurfaceBudget,
+                    accurateLayoutSettled,
                 ) || renderAccurateUnderlay;
                 const displayBaseReadyKey = `${displayFileKey}:${originalPageNum}:${bgZoom}`;
                 const displayBaseReady = baseDisplayReadyKey === displayBaseReadyKey;

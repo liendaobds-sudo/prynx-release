@@ -215,6 +215,11 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(shouldRequestViewerAccurateBase(false, true, false, false)).toBe(false);
     });
 
+    it('không dựng accurate base nền khi layout DPI chưa ổn định', () => {
+        expect(shouldRenderViewerAccurateBaseTile(true, true, false, true, false)).toBe(false);
+        expect(shouldRenderViewerAccurateBaseTile(true, true, false, true, true)).toBe(true);
+    });
+
     it('giữ viewport nét tới khi surface toàn trang mới đã decode xong', () => {
         expect(shouldMountViewerViewportLayer(false, true, true, true, false)).toBe(true);
         expect(shouldMountViewerViewportLayer(false, true, true, true, true)).toBe(false);

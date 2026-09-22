@@ -77,13 +77,15 @@ export function shouldRenderViewerAccurateBaseTile(
     accurateColorPage: boolean,
     needsTiling: boolean,
     fullPageWithinSurfaceBudget = true,
+    layoutSettled = true,
 ): boolean {
     // Zoom thường dùng full-page PPE; zoom cao giao cho viewport PPE để không raster
     // hai bitmap lớn cùng lúc. Trang rủi ro không có lớp PDFium nằm dưới.
     return shouldRenderBasePage
         && accurateColorPage
         && !needsTiling
-        && fullPageWithinSurfaceBudget;
+        && fullPageWithinSurfaceBudget
+        && layoutSettled;
 }
 
 export function shouldRenderViewerAccurateUnderlay(
@@ -91,11 +93,13 @@ export function shouldRenderViewerAccurateUnderlay(
     accurateColorPage: boolean,
     needsTiling: boolean,
     underlayWithinSurfaceBudget: boolean,
+    layoutSettled = true,
 ): boolean {
     return shouldRenderBasePage
         && accurateColorPage
         && needsTiling
-        && underlayWithinSurfaceBudget;
+        && underlayWithinSurfaceBudget
+        && layoutSettled;
 }
 
 export function selectViewerAccurateBaseZoom(
