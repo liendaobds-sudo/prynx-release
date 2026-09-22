@@ -44,3 +44,14 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Commit: `4682ccc`.
 - Verify: `cargo check` đạt; test `document_affinity` **1/1 pass**.
 - Chưa đạt: cần chạy binary mới trên file khách để thu `open_ms`, `queue_ms`, affinity hit/assign/drop và peak RSS.
+
+## Runtime probe — phiên người dùng 2026-09-23
+
+Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
+
+- PDF 44 trang: bootstrap **43 ms**, full metadata **53 ms**; page 1 PPE 92 DPI `total_ms=193`, first-pixel khoảng **418 ms sau `pdf-load-start`**; page 2/page 3 first-pixel lần lượt khoảng **1.97 s / 2.76 s** khi các trang accurate được dựng nối tiếp.
+- Cùng PDF: affinity background chuyển sang `hit lane=background:4`; thumbnail page 1–5 trả khoảng **9–53 ms**.
+- PDF 123 trang: bootstrap **52 ms**, page 1 display render `10–20 ms`, first-pixel khoảng **136 ms**; thumbnail các trang đầu khoảng **153–236 ms**, affinity `hit lane=background:0`.
+- Priority promotion đã chạy thật (`tile-priority-promote` với `previous_priority=100 → priority=10`) và không cần hủy bitmap đang chờ.
+
+Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request accurate 56 → 68 → 92 DPI và có stale/cancel ở các generation cũ. Đây là mục tiêu lô kế tiếp: ổn định target DPI/first-frame để giảm render thừa, không hạ chất lượng cuối.
