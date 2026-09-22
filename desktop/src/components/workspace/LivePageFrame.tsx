@@ -351,6 +351,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     const previousOnRenderReadyRef = useRef(onRenderReady);
     const renderPriorityRef = useRef(renderPriority);
     renderPriorityRef.current = renderPriority;
+    const previousRenderPriorityRef = useRef(renderPriority);
     const showLoadStatusRef = useRef(showLoadStatus);
     showLoadStatusRef.current = showLoadStatus;
     useEffect(() => {
@@ -398,6 +399,19 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             ...extra,
         });
     }, []);
+    useEffect(() => {
+        const previous = previousRenderPriorityRef.current;
+        previousRenderPriorityRef.current = renderPriority;
+        if (previous < 100 || renderPriority >= 100 || !renderOwnerId) return;
+        // PERF (audit 2026-09-23 §R23.06): prefetch đang chờ mà trang trở thành
+        // active phải được nâng lane ngay trên hàng đợi. Không hủy/dựng lại cùng
+        // bitmap vì request coordinator vẫn có thể coalesce nó.
+        nativeRenderCoordinator.promoteGroup(renderOwnerId, renderGroupKey, renderPriority);
+        traceTileEvent('tile-priority-promote', {
+            previous_priority: previous,
+            priority: renderPriority,
+        });
+    }, [renderGroupKey, renderOwnerId, renderPriority, traceTileEvent]);
     const readTileDomRect = useCallback((): Record<string, number> => {
         const rect = tileRef.current?.getBoundingClientRect();
         if (!rect) return {};

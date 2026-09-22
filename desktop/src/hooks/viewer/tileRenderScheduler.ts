@@ -141,6 +141,18 @@ export class TileRenderScheduler<T> {
         return promise;
     }
 
+    promoteGroup(ownerId: string, groupKey: string, priority: number): void {
+        if (!Number.isFinite(priority)) return;
+        let changed = false;
+        for (const task of this.queued) {
+            if (task.ownerId !== ownerId || task.groupKey !== groupKey) continue;
+            if (priority >= task.priority) continue;
+            task.priority = priority;
+            changed = true;
+        }
+        if (changed) this.schedulePump();
+    }
+
     cancelOwner(ownerId: string): void {
         const reason = new CancelledTileRenderError();
         this.rejectQueuedOwner(ownerId, reason);

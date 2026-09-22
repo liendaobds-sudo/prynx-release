@@ -110,7 +110,7 @@ export interface RenderPngOptions {
 }
 
 export interface RenderCoordinatorOptions {
-    scheduler?: Pick<TileRenderScheduler<ArrayBuffer>, 'enqueue' | 'cancelOwner' | 'cancelGroup'>;
+    scheduler?: Pick<TileRenderScheduler<ArrayBuffer>, 'enqueue' | 'promoteGroup' | 'cancelOwner' | 'cancelGroup'>;
     now?: Clock;
     report?: Reporter;
     cancelPhysical?: PhysicalCanceller;
@@ -279,7 +279,7 @@ export function normalizeRenderRotation(rotation: number): 0 | 90 | 180 | 270 {
 export class RenderCoordinator {
     private readonly scheduler: Pick<
         TileRenderScheduler<ArrayBuffer>,
-        'enqueue' | 'cancelOwner' | 'cancelGroup'
+        'enqueue' | 'promoteGroup' | 'cancelOwner' | 'cancelGroup'
     >;
     private readonly now: Clock;
     private readonly report: Reporter;
@@ -424,6 +424,24 @@ export class RenderCoordinator {
             }
             this.groups.delete(scopeKey);
         }
+    }
+
+    promoteGroup(ownerId: string, groupKey: string, priority: number): void {
+        if (!Number.isFinite(priority)) return;
+        const scopeKey = `${ownerId}\u0000${groupKey}`;
+        const group = this.groups.get(scopeKey);
+        if (group) {
+            for (const trace of group.traces) {
+                if (trace.finalReported || trace.runStartedAt !== null) continue;
+                if (priority >= trace.request.priority) continue;
+                trace.request.priority = priority;
+                trace.request.purpose = renderPurpose(priority, trace.request.color.pipeline);
+            }
+        }
+        // PERF (audit 2026-09-23 §R23.06): trang prefetch trở thành active phải
+        // được nâng lane khi còn nằm trong hàng đợi, không hủy rồi dựng lại cùng
+        // bitmap. Native worker nhận request priority/purpose đã được cập nhật ở trên.
+        this.scheduler.promoteGroup(ownerId, groupKey, priority);
     }
 
     cancelGroup(ownerId: string, groupKey: string): void {

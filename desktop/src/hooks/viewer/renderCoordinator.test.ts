@@ -40,6 +40,7 @@ function requestInput(overrides: Partial<RenderCoordinatorRequestInput> = {}): R
 function immediateScheduler() {
     return {
         enqueue: async (task: { run: () => Promise<ArrayBuffer> }) => task.run(),
+        promoteGroup: vi.fn(),
         cancelOwner: vi.fn(),
         cancelGroup: vi.fn(),
     };

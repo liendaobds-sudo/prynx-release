@@ -298,6 +298,49 @@ describe('TileRenderScheduler', () => {
         expect(interactiveRun).toHaveBeenCalledTimes(1);
     });
 
+    it('nâng lane task đang chờ mà không hủy hoặc chạy lại closure', async () => {
+        const scheduler = new TileRenderScheduler<string>(1);
+        const blockerGate = deferred<string>();
+        const order: string[] = [];
+        const blocker = scheduler.enqueue({
+            requestKey: 'blocker',
+            groupKey: 'blocker',
+            ownerId: 'other-tab',
+            priority: 0,
+            run: () => blockerGate.promise,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const prefetched = scheduler.enqueue({
+            requestKey: 'prefetched',
+            groupKey: 'page-2',
+            ownerId: 'tab-1',
+            priority: 100,
+            run: async () => {
+                order.push('prefetched');
+                return 'prefetched';
+            },
+        });
+        const later = scheduler.enqueue({
+            requestKey: 'later',
+            groupKey: 'page-3',
+            ownerId: 'tab-1',
+            priority: 100,
+            run: async () => {
+                order.push('later');
+                return 'later';
+            },
+        });
+
+        scheduler.promoteGroup('tab-1', 'page-2', 0);
+        blockerGate.resolve('blocker');
+        await expect(blocker).resolves.toBe('blocker');
+        await expect(prefetched).resolves.toBe('prefetched');
+        await expect(later).resolves.toBe('later');
+        expect(order).toEqual(['prefetched', 'later']);
+    });
+
     it('hủy toàn bộ công việc nền chưa chạy khi viewer đóng hoặc đổi file', async () => {
         const scheduler = new TileRenderScheduler<string>();
         const gate = deferred<string>();
