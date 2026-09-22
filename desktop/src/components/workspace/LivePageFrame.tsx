@@ -331,7 +331,9 @@ interface EditPreviewLayer {
 }
 
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
-const ACCURATE_TARGET_SETTLE_MS = 120;
+// Đồng bộ với debounce zoom 250 ms của Viewer để gom trọn một đợt fit/resize,
+// không phát target DPI trung gian sau khi first-frame đã phủ khung.
+const ACCURATE_TARGET_SETTLE_MS = 250;
 
 export function shouldSettleAccurateTarget(input: {
     accurateOnly: boolean;
