@@ -120,3 +120,4 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - RGB PNG từng trang: **0,412s**, khoảng **27,5 ms/trang**, artifact 149 KiB.
 - CMYK TIFF/PPE từng trang: **1,390s**, khoảng **92,7 ms/trang**, artifact 9,54 MiB.
 - Đây là baseline nhỏ, chưa phải file khách nặng; chưa tối ưu song song export vì PDFium vẫn phải serialize trong một document và chưa có số đo peak RAM trên corpus lớn.
+- Cùng corpus @300 DPI: RGB **1,132s / 75,5 ms-trang**, CMYK **1,605s / 107,0 ms-trang**; scale tăng nhưng vẫn chưa cho thấy Export cần thêm process vô điều kiện.
