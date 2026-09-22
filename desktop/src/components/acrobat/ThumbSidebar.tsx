@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
-import type { VirtuosoHandle } from 'react-virtuoso';
+import { VirtuosoGrid, type VirtuosoHandle } from 'react-virtuoso';
 import { useThumbSidebar } from './useThumbSidebar';
 import {
     createThumbnailRenderRequest,
@@ -165,6 +165,7 @@ interface ThumbSidebarProps {
     /** Preview in-memory theo trang; thumbnail dùng lại, không render PDF thêm. */
     editSessionPreviews?: readonly SessionPreview[];
     cutlinePreviews?: Partial<Record<number, ThumbnailCutlinePreviewItem>>;
+    renderDocumentToken?: string | null;
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
@@ -557,8 +558,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     );
     const displayThumbBase = Math.max(40, fittedThumbBase);
 
-    // thumbRev: pdfUrl đổi sau mỗi edit-commit → force re-render IPC + revoke blob cũ.
-    const thumbRev = pdfUrl || '';
+    // thumbRev: pdfUrl đổi sau mỗi edit-commit hoặc renderDocumentToken đổi sau khi LiveLink tải lại → force re-render IPC + revoke blob cũ.
+    const thumbRev = `${pdfUrl || ''}|${props.renderDocumentToken || ''}`;
     // PERF (feedback 2026-08-21 §EDIT.THUMB1): nhóm một lần theo trang nguồn.
     // MemoThumbItem chỉ so slice của chính trang đó nên edit trang 2 không làm hàng
     // trăm thumbnail khác render lại; đồng thời không phát thêm request PDFium.
@@ -746,12 +747,22 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                         data-pdf-url={pdfUrl || undefined}
                         data-file-name={file?.name || undefined}
                     >
-                        <div className="flex flex-wrap gap-4 justify-center px-2 py-4 w-full max-w-full box-border">
-                            {/* PERF (audit 2026-08-22 §UX.TH.08): không cắt danh sách theo
-                                cap 1000. IntersectionObserver + isLoadable mới là cổng
-                                dựng ảnh; mọi trang vẫn tồn tại để Ctrl+A, tìm trang và
-                                điều hướng không bị "chọn được nhưng không nhìn thấy". */}
-                            {pageOrder.map((originalPageNum, index) => {
+                        {/* PERF (audit 2026-09-23 §R23.05): pageOrder lớn không được giữ
+                            toàn bộ thumbnail trong DOM. VirtuosoGrid chỉ mount viewport +
+                            overscan; pageOrder vẫn đầy đủ nên Ctrl+A, tìm trang và điều
+                            hướng không đổi hợp đồng. */}
+                        <VirtuosoGrid
+                            totalCount={pageOrder.length}
+                            increaseViewportBy={{ top: 300, bottom: 300 }}
+                            className="w-full h-full"
+                            listClassName="flex flex-wrap gap-4 justify-center px-2 py-4 w-full max-w-full box-border"
+                            itemClassName="flex-[0_0_auto] max-w-full"
+                            computeItemKey={(index) => pageInstanceIds[index]
+                                ? `thumb-${pageInstanceIds[index]}`
+                                : `thumb-${index}-${pageOrder[index]}`}
+                            itemContent={(index) => {
+                                const originalPageNum = pageOrder[index];
+                                if (originalPageNum === undefined) return null;
                                 const logicalPageLabel = index + 1;
                                 const isSelected = selectedIndices.has(index);
                                 const isActive = activePage === logicalPageLabel;
@@ -762,9 +773,6 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
 
                                 return (
                                     <MemoThumbItem
-                                        key={pageInstanceIds[index]
-                                            ? `thumb-${pageInstanceIds[index]}`
-                                            : `thumb-${index}-${originalPageNum}`}
                                         index={index}
                                         originalPageNum={originalPageNum}
                                         logicalPageLabel={logicalPageLabel}
@@ -801,8 +809,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         }}
                                     />
                                 );
-                            })}
-                        </div>
+                            }}
+                        />
                     </div>
                     <div
                         className="absolute top-0 -right-2 w-2 h-full cursor-col-resize z-50 hover:bg-blue-500/30 transition-colors"
