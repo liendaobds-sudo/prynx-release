@@ -140,3 +140,11 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
   - Hybrid diagnostic smoke: shell **1.059 s**, FSP **4.099 s**, 3 fulfilled/2 rejected, không display fallback; fail-closed vì compatibility reject không có PDFium fallback và FCVF timeout.
 - Reports: `docs/audit/viewer_smoke_customer_2026-09-23.json`, `docs/audit/viewer_smoke_customer_hybrid_2026-09-23.json`.
 - Kết luận: file khách này chưa chứng minh được đường render hoàn chỉnh trong cả hai mode; không được dùng làm KPI P95. Cần corpus PPE Standee chuẩn để đóng installed gate và một corpus capability-reject có fallback thật để đo hybrid.
+
+## Lô 13 — Installed thumbnail stress 1.000 trang
+
+- File: `scripts/thumbnail_webview_stress.mjs`.
+- Fixture: `.tmp/thumbnail-stress-1000.pdf`, 1.000 trang vector nhẹ (không commit fixture).
+- Cách đo: mở qua Tauri WebView/CDP, bật thumbnail panel qua đúng workspace store, đo Virtuoso scroller trước và sau khi scroll tới cuối; không dùng selector ngoài làm giả scroll container.
+- Kết quả: `docs/audit/thumbnail_stress_1000_2026-09-23.json`; initial **5 item DOM**, sau scroll **5 item DOM** (index **995–999**), `scrollHeight=202.484 px`, `clientHeight=689 px`; JS heap **86,3 → 90,2 MiB**; gate virtualizer **đạt**.
+- Kết luận: `VirtuosoGrid` đã giữ DOM theo viewport/overscan trên tài liệu 1.000 trang; không còn bằng chứng `pageOrder.map` mount toàn bộ. Đây là dev WebView smoke, chưa thay thế installed release/RSS toàn cây process.
