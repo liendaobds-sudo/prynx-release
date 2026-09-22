@@ -81,6 +81,12 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Accurate page 1 có `PPE_NATIVE_RESULT total_ms` khoảng **190 ms**, `source_ms` vài ms và `decode_ms=0`; first-pixel end-to-end khoảng **200–220 ms** trong lượt warm này. Chưa có bằng chứng để ưu tiên shared-surface/GPU transport.
 - Form cache của corpus này chưa có hit vì file không đi qua Form XObject; cần corpus Form/SMask riêng trước khi tối ưu tiếp.
 
+### Runtime probe sau settle 250ms + PPE cache telemetry
+
+- Binary mới đã ghi `delay_ms=250` và phát target cuối ở generation cuối; page 1 accurate đạt khoảng **190–210 ms PPE/first-pixel** trong lượt warm.
+- Ba event settle gần nhau là các effect layout cùng debounce; chỉ request cuối commit bitmap, các request cũ bị cancel/stale nhanh, không phát thêm bitmap sai.
+- `PPE_SESSION_CACHE` cho thấy cache image warm hoạt động (`image_hits=4`, `image_misses=3` ở page 1; hit tiếp tục tăng ở page sau). Đây là bằng chứng runtime cho retained resource cache hiện tại.
+
 ## Runtime probe — phiên người dùng 2026-09-23
 
 Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
