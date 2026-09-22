@@ -71,9 +71,9 @@ Hệ quả: page chính, thumbnail và prefetch của cùng một PDF có thể 
 
 `LivePageFrame.tsx:3913-3999,5551-5712` có display base, accurate base/underlay và `TileLayer`; mỗi surface có `fileKey/groupKey` riêng. Runtime đã ghi `tile-effect-cleanup`, request attempt 1→2, `viewport-layer-empty/mount/unmount` và render-coordinator stale/cancel khi đổi trang/khổ viewport. Đây là trade-off correctness hiện tại, nhưng làm người dùng thấy loading lại khi geometry/active page đổi nhanh.
 
-### §R23.07 — `[CONFIRMED]` P1 / M — PPE chưa giữ display list/resource graph đủ lâu
+### §R23.07 — `[PARTIAL / RE-AUDIT]` P1 / M — PPE đã có resource cache nhưng chưa phải retained scene graph đầy đủ
 
-Audit PPE trước đã xác nhận: session mở toàn tài liệu và dựng page descriptors; ảnh giao viewport vẫn giải mã toàn nguồn; Form/Pattern/Font/Shading chưa có cache compiled sống xuyên mọi renderer. Vì vậy cùng PDF/scene nhưng đổi DPI/clip vẫn lặp parse/replay. Nguồn: `print_engine/src/session.rs`, `page.rs`, `content/interp.rs`, và `BAO_CAO_AUDIT_PPE_NATIVE_VIEWER_2026-08-13.md:123-211`.
+Source hiện tại đã có `RenderSession::ResourceCache` LRU cho Image/Form (`print_engine/src/session.rs:269-473`) và `render_page_descriptor` truyền cache qua renderer (`print_engine/src/session.rs:1015-1024`). Test session/Form/SMask đã đạt; runtime mới cũng ghi image cache hit. Phần còn mở là PageProgram/Pattern/Font/Shading và decode ảnh theo viewport chưa được giữ thành một scene graph/mipmap bất biến xuyên mọi renderer. Vì vậy không được gọi đây là “chưa có cache”; finding còn lại chỉ là chi phí replay/resource chưa được đo đầy đủ trên corpus khách.
 
 ### §R23.08 — `[CONFIRMED]` P2 / M — Backend file nặng đúng tính responsive nhưng throughput còn tuần tự
 
