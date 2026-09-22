@@ -172,3 +172,9 @@ Giữ route mỏng + scheduler hiện có; thêm process/document affinity, stre
 
 Audit dừng ở đây theo quy trình PrynX. Đề nghị duyệt theo thứ tự **Lô 0 → Lô 1 → Lô 2 → Lô 3**, sau đó mới quyết định đầu tư PPE SceneCompiler/SurfacePool. Không sửa trực tiếp trước khi có chốt duyệt và baseline sạch.
 
+## 9. Re-audit current source sau các lô đầu
+
+- `print_engine::RenderSession` hiện đã có `ResourceCache` sống theo session, LRU chung cho Image/Form và kiểm save-over; các test session cache **8/8**, Form parity **1/1**, SMask cache **1/1** đạt.
+- Runtime probe cho thấy accurate request thường có `source_ms` thấp và `decode_ms=0`; vì vậy chưa có bằng chứng để ưu tiên shared-surface/GPU transport trước khi đo cache/resource hit ratio.
+- Telemetry `PPE_SESSION_CACHE` đã được thêm ở commit `f9a76b9`, nhưng binary chạy gần nhất chưa chứa telemetry này; cần chạy binary mới để đóng baseline cache.
+- Kết luận cập nhật: hướng PPE retained resource cache đã tồn tại một phần trong engine hiện tại; lô tiếp theo là đo và tối ưu cache/session có mục tiêu, không viết lại mù toàn bộ PPE.
