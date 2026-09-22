@@ -64,6 +64,8 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Verify: typecheck đạt; LiveTile + renderPolicy **49/49 pass**.
 - Chưa đạt: runtime A/B trên cùng PDF; giữ kế hoạch tiến tới retained scene/resource cache sau baseline.
 
+- Runtime probe cho thấy 120 ms vẫn phát hai settle cách nhau ~208 ms; commit `3c02d26` đồng bộ settle lên 250 ms theo debounce zoom hiện tại. Verify lại: typecheck + LiveTile/renderPolicy **49/49 pass**.
+
 ## Runtime probe — phiên người dùng 2026-09-23
 
 Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
