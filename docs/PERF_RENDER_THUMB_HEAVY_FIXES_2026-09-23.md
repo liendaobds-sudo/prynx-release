@@ -75,6 +75,12 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Verify: `cargo check` + test affinity bằng `CARGO_TARGET_DIR` riêng đạt; `print_engine` session cache tests **8/8 pass**, Form parity **1/1**, SMask cache **1/1**.
 - Chưa đạt: cần binary mới chạy lại để lấy cache hit ratio thực tế trên file khách.
 
+### Runtime probe sau khi bật PPE_SESSION_CACHE
+
+- Binary mới đã ghi telemetry thật. Lượt lạnh trên tài liệu 44 trang ghi `image_hits=0`, `image_misses` tăng theo trang; lượt ấm sau đó page 1 ghi **4 hit / 3 miss**, các trang kế tiếp tiếp tục tăng hit — session/resource cache đang được tái sử dụng.
+- Accurate page 1 có `PPE_NATIVE_RESULT total_ms` khoảng **190 ms**, `source_ms` vài ms và `decode_ms=0`; first-pixel end-to-end khoảng **200–220 ms** trong lượt warm này. Chưa có bằng chứng để ưu tiên shared-surface/GPU transport.
+- Form cache của corpus này chưa có hit vì file không đi qua Form XObject; cần corpus Form/SMask riêng trước khi tối ưu tiếp.
+
 ## Runtime probe — phiên người dùng 2026-09-23
 
 Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
