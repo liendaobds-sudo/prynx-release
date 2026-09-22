@@ -55,6 +55,15 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Chưa đạt: cần chạy lại cùng PDF khách để xác nhận số stale/cancel và số lượt PPE giảm.
 - Telemetry settle thêm tại commit `f696438` để phiên runtime kế tiếp ghi rõ lúc gom target DPI.
 
+## Lô 6 — Hoãn accurate base nền đến khi layout ổn định
+
+- Bằng chứng runtime mới: event `tile-accurate-target-settle` đã xuất hiện; trang accurate nền vẫn có request 68 DPI rồi 92 DPI sau khi active/layout đổi.
+- Files: `LivePageFrame.tsx`, `livePageFramePolicy.ts`, test LiveTile.
+- Thay đổi: accurate base/underlay nền chỉ được dựng khi `renderZoom` khớp target hiện tại; trang active không bị gate này.
+- Commit: `30ea519`.
+- Verify: typecheck đạt; LiveTile + renderPolicy **49/49 pass**.
+- Chưa đạt: runtime A/B trên cùng PDF; giữ kế hoạch tiến tới retained scene/resource cache sau baseline.
+
 ## Runtime probe — phiên người dùng 2026-09-23
 
 Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
