@@ -112,3 +112,11 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Corpus 20 trang A4 @150 DPI, workers 1→4: elapsed **3.049s → 2.022s (1.51×)**, first-page **0.493s → 0.512s**, artifact **9.1 MiB** parity `True`, peak working set **254 → 353 MiB**.
 - Kết luận: pipeline process-level Compare hiện đã hoạt động đúng và scale có lợi cho tổng job; không mở thêm worker vô điều kiện. First-page không nhanh hơn, nên nút thắt first-page vẫn thuộc render/metadata riêng.
 - Corpus nhỏ 5 trang @72 DPI: workers 4 đạt 1.66× nhưng workers 2 nhiễu chậm hơn; không dùng số nhỏ làm KPI.
+
+## Lô 10 — Baseline backend Export ảnh
+
+- Script: `scripts/benchmark_export_images.py`, commit `04d71a4`.
+- Corpus: `backend/tests/preflight_fixtures/pdfs/13_multipage_15.pdf`, 15 trang @150 DPI.
+- RGB PNG từng trang: **0,412s**, khoảng **27,5 ms/trang**, artifact 149 KiB.
+- CMYK TIFF/PPE từng trang: **1,390s**, khoảng **92,7 ms/trang**, artifact 9,54 MiB.
+- Đây là baseline nhỏ, chưa phải file khách nặng; chưa tối ưu song song export vì PDFium vẫn phải serialize trong một document và chưa có số đo peak RAM trên corpus lớn.
