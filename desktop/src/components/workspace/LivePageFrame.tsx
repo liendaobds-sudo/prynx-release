@@ -1179,6 +1179,9 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             // trong lúc layout/fit còn dao động. Chờ một nhịp ngắn để gom các
             // target DPI trung gian (56→68→92) thành đúng một lượt target cuối;
             // không hạ DPI và không trì hoãn frame đầu đã có.
+            traceTileEvent('tile-accurate-target-settle', {
+                delay_ms: ACCURATE_TARGET_SETTLE_MS,
+            });
             accurateTargetSettleRef.current = setTimeout(() => {
                 accurateTargetSettleRef.current = null;
                 if (mountedRef.current) el._loadTile?.();
