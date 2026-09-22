@@ -1496,6 +1496,8 @@ fn render_accurate_png(
     }
     let transient = !pool.entries.contains_key(&key)
         && limit.is_some_and(|value| pool.entries.len() >= value.max(1));
+    let cache_mode = if transient { "transient" } else { "session" };
+    let mut cache_stats = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     let options = || {
         RenderOptions::softproof()
             // COLOR (feedback 2026-08-10 §VIEWER.C1): Viewer thường phải giống
@@ -1563,6 +1565,15 @@ fn render_accurate_png(
             options(),
             raster_clip,
         );
+        let stats = entry.session.resource_cache_stats();
+        cache_stats = (
+            stats.image_hits,
+            stats.image_misses,
+            stats.form_hits,
+            stats.form_misses,
+            stats.page_hits,
+            stats.page_misses,
+        );
         if result.is_err()
             && pool
                 .entries
@@ -1591,6 +1602,18 @@ fn render_accurate_png(
             )))
         }
     };
+    crate::perf_log(&format!(
+        "PPE_SESSION_CACHE request_id={} page={} mode={} image_hits={} image_misses={} form_hits={} form_misses={} page_hits={} page_misses={}",
+        request.request_id,
+        request.page,
+        cache_mode,
+        cache_stats.0,
+        cache_stats.1,
+        cache_stats.2,
+        cache_stats.3,
+        cache_stats.4,
+        cache_stats.5,
+    ));
     cancel_token.check()?;
     if let Some((reason, detail)) = classify_unsupported_warnings(&rendered.warnings) {
         return Err(AccurateWorkerFailure::Unsupported {
