@@ -2603,6 +2603,13 @@ fn document_affinity_key(document: &RenderDocumentIdentity) -> String {
     format!("{}\u{0}{}", document.path, document.token)
 }
 
+fn document_affinity_tag(affinity_key: &str) -> String {
+    // Telemetry không ghi path PDF; mã băm ngắn đủ để ghép các phase của cùng
+    // một snapshot trong log runtime mà không lộ tên file khách hàng.
+    let digest = hex::encode(sha2::Sha256::digest(affinity_key.as_bytes()));
+    digest[..12].to_string()
+}
+
 fn clear_document_affinity_for_path(
     affinities: &mut HashMap<String, WorkerLane>,
     file_path: &str,
@@ -2629,6 +2636,10 @@ fn forget_document_affinity(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if affinities.get(affinity_key).copied() == Some(lane) {
         affinities.remove(affinity_key);
+        crate::perf_log(&format!(
+            "RENDER_WORKER_AFFINITY action=drop lane={lane:?} document={}",
+            document_affinity_tag(affinity_key)
+        ));
     }
 }
 
@@ -2938,6 +2949,13 @@ fn dispatch_worker_request(
                 .get(key)
                 .copied()
         }) {
+            if let Some(key) = affinity_key.as_deref() {
+                crate::perf_log(&format!(
+                    "RENDER_WORKER_AFFINITY action=hit lane=background:{} document={}",
+                    index,
+                    document_affinity_tag(key)
+                ));
+            }
             // Cùng PDF đã có worker sở hữu cache: chờ đúng worker đó thay vì
             // chuyển sang lane khác rồi trả giá cold-open lần nữa.
             let mut guard = manager.backgrounds[index]
@@ -2963,6 +2981,13 @@ fn dispatch_worker_request(
                 Ok(mut guard) => {
                     let lane = WorkerLane::Background(index);
                     remember_document_affinity(manager, affinity_key.as_deref(), lane);
+                    if let Some(key) = affinity_key.as_deref() {
+                        crate::perf_log(&format!(
+                            "RENDER_WORKER_AFFINITY action=assign lane=background:{} document={}",
+                            index,
+                            document_affinity_tag(key)
+                        ));
+                    }
                     let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
                     if result.is_err() {
                         if let Some(key) = affinity_key.as_deref() {
@@ -2975,6 +3000,13 @@ fn dispatch_worker_request(
                     let mut guard = poisoned.into_inner();
                     let lane = WorkerLane::Background(index);
                     remember_document_affinity(manager, affinity_key.as_deref(), lane);
+                    if let Some(key) = affinity_key.as_deref() {
+                        crate::perf_log(&format!(
+                            "RENDER_WORKER_AFFINITY action=assign lane=background:{} document={}",
+                            index,
+                            document_affinity_tag(key)
+                        ));
+                    }
                     let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
                     if result.is_err() {
                         if let Some(key) = affinity_key.as_deref() {
@@ -2991,6 +3023,13 @@ fn dispatch_worker_request(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let lane = WorkerLane::Background(start);
         remember_document_affinity(manager, affinity_key.as_deref(), lane);
+        if let Some(key) = affinity_key.as_deref() {
+            crate::perf_log(&format!(
+                "RENDER_WORKER_AFFINITY action=assign lane=background:{} document={}",
+                start,
+                document_affinity_tag(key)
+            ));
+        }
         let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
         if result.is_err() {
             if let Some(key) = affinity_key.as_deref() {
@@ -3999,6 +4038,9 @@ mod tests {
         assert!(affinities
             .keys()
             .all(|key| key.starts_with("C:\\jobs\\other.pdf")));
+        let tag = document_affinity_tag("C:\\jobs\\sample.pdf\u{0}100:200:300");
+        assert_eq!(tag.len(), 12);
+        assert!(!tag.contains("sample"));
     }
 
     #[test]
