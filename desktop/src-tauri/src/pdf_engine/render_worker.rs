@@ -2568,6 +2568,10 @@ struct RenderWorkerManager {
     interactive: Mutex<Option<RenderWorkerClient>>,
     backgrounds: Vec<Mutex<Option<RenderWorkerClient>>>,
     next_background: AtomicUsize,
+    /// PERF (audit 2026-09-23 §R23.02): giữ các request nền của cùng một
+    /// snapshot PDF trên cùng worker để tái dùng DOC_CACHE/page LRU thay vì
+    /// round-robin rồi mở/parse lại tài liệu ở process khác.
+    document_affinity: Mutex<HashMap<String, WorkerLane>>,
     shared_lane_gate: SharedLanePriorityGate,
 }
 
@@ -2579,6 +2583,7 @@ impl RenderWorkerManager {
                 .map(|_| Mutex::new(None))
                 .collect(),
             next_background: AtomicUsize::new(0),
+            document_affinity: Mutex::new(HashMap::new()),
             shared_lane_gate: SharedLanePriorityGate::new(),
         }
     }
@@ -2590,6 +2595,56 @@ static RENDER_WORKER_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 fn render_worker_manager() -> &'static RenderWorkerManager {
     RENDER_WORKER_MANAGER
         .get_or_init(|| RenderWorkerManager::new(configured_background_lane_count()))
+}
+
+fn document_affinity_key(document: &RenderDocumentIdentity) -> String {
+    // Path có thể chứa dấu '|', nên dùng NUL làm dấu phân cách nội bộ thay vì
+    // ghép chuỗi mơ hồ. Token đã mang size/mtime/ctime của snapshot nguồn.
+    format!("{}\u{0}{}", document.path, document.token)
+}
+
+fn clear_document_affinity_for_path(
+    affinities: &mut HashMap<String, WorkerLane>,
+    file_path: &str,
+) {
+    let prefix = format!("{}\u{0}", file_path);
+    affinities.retain(|key, _| !key.starts_with(&prefix));
+}
+
+fn render_request_document_affinity(request: &RenderWorkerRequest) -> Option<String> {
+    match request {
+        RenderWorkerRequest::Render(render) => Some(document_affinity_key(&render.document)),
+        _ => None,
+    }
+}
+
+fn forget_document_affinity(
+    manager: &RenderWorkerManager,
+    affinity_key: &str,
+    lane: WorkerLane,
+) {
+    let mut affinities = manager
+        .document_affinity
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if affinities.get(affinity_key).copied() == Some(lane) {
+        affinities.remove(affinity_key);
+    }
+}
+
+fn remember_document_affinity(
+    manager: &RenderWorkerManager,
+    affinity_key: Option<&str>,
+    lane: WorkerLane,
+) {
+    let Some(affinity_key) = affinity_key else {
+        return;
+    };
+    manager
+        .document_affinity
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(affinity_key.to_string(), lane);
 }
 
 fn cancel_active_render_request(request_id: &str) -> bool {
@@ -2871,29 +2926,62 @@ fn dispatch_worker_request(
     let purpose = request_purpose(request);
     let use_background_lane =
         purpose != RenderPurpose::Interactive && !manager.backgrounds.is_empty();
+    let affinity_key = render_request_document_affinity(request);
 
     if use_background_lane {
         let lane_count = manager.backgrounds.len();
+        if let Some(WorkerLane::Background(index)) = affinity_key.as_ref().and_then(|key| {
+            manager
+                .document_affinity
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(key)
+                .copied()
+        }) {
+            // Cùng PDF đã có worker sở hữu cache: chờ đúng worker đó thay vì
+            // chuyển sang lane khác rồi trả giá cold-open lần nữa.
+            let mut guard = manager.backgrounds[index]
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let result = dispatch_locked_worker(
+                &mut guard,
+                WorkerLane::Background(index),
+                request,
+                cancellation,
+            );
+            if result.is_err() {
+                if let Some(key) = affinity_key.as_deref() {
+                    forget_document_affinity(manager, key, WorkerLane::Background(index));
+                }
+            }
+            return result;
+        }
         let start = manager.next_background.fetch_add(1, Ordering::Relaxed) % lane_count;
         for offset in 0..lane_count {
             let index = (start + offset) % lane_count;
             match manager.backgrounds[index].try_lock() {
                 Ok(mut guard) => {
-                    return dispatch_locked_worker(
-                        &mut guard,
-                        WorkerLane::Background(index),
-                        request,
-                        cancellation,
-                    );
+                    let lane = WorkerLane::Background(index);
+                    remember_document_affinity(manager, affinity_key.as_deref(), lane);
+                    let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
+                    if result.is_err() {
+                        if let Some(key) = affinity_key.as_deref() {
+                            forget_document_affinity(manager, key, lane);
+                        }
+                    }
+                    return result;
                 }
                 Err(TryLockError::Poisoned(poisoned)) => {
                     let mut guard = poisoned.into_inner();
-                    return dispatch_locked_worker(
-                        &mut guard,
-                        WorkerLane::Background(index),
-                        request,
-                        cancellation,
-                    );
+                    let lane = WorkerLane::Background(index);
+                    remember_document_affinity(manager, affinity_key.as_deref(), lane);
+                    let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
+                    if result.is_err() {
+                        if let Some(key) = affinity_key.as_deref() {
+                            forget_document_affinity(manager, key, lane);
+                        }
+                    }
+                    return result;
                 }
                 Err(TryLockError::WouldBlock) => {}
             }
@@ -2901,12 +2989,15 @@ fn dispatch_worker_request(
         let mut guard = manager.backgrounds[start]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        return dispatch_locked_worker(
-            &mut guard,
-            WorkerLane::Background(start),
-            request,
-            cancellation,
-        );
+        let lane = WorkerLane::Background(start);
+        remember_document_affinity(manager, affinity_key.as_deref(), lane);
+        let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
+        if result.is_err() {
+            if let Some(key) = affinity_key.as_deref() {
+                forget_document_affinity(manager, key, lane);
+            }
+        }
+        return result;
     }
 
     // PERF (audit 2026-08-08 §RENDER.2): tier <8 GiB không spawn process nền riêng.
@@ -3091,6 +3182,14 @@ pub fn close_document_with_policy(file_path: &str) -> Result<WorkerAttempt<bool>
     let Some(manager) = RENDER_WORKER_MANAGER.get() else {
         return Ok(WorkerAttempt::Completed(closed));
     };
+    // Snapshot đã đóng thì lease affinity cũng phải biến mất; lần mở sau có
+    // thể dùng worker khác và token mới, không được trỏ vào lane cũ.
+    let mut affinities = manager
+        .document_affinity
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    clear_document_affinity_for_path(&mut affinities, file_path);
+    drop(affinities);
     let mut first_error: Option<String> = None;
     let mut close_slot = |slot: &Mutex<Option<RenderWorkerClient>>| {
         let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -3868,6 +3967,38 @@ mod tests {
         assert_eq!(parse_background_lane_override(Some(" 12 ")), Some(12));
         assert_eq!(parse_background_lane_override(Some("257")), None);
         assert_eq!(parse_background_lane_override(Some("sai")), None);
+    }
+
+    #[test]
+    fn document_affinity_tach_snapshot_va_don_dung() {
+        let first = RenderDocumentIdentity {
+            path: "C:\\jobs\\sample.pdf".to_string(),
+            size_bytes: "100".to_string(),
+            modified_nanos: "200".to_string(),
+            created_nanos: "300".to_string(),
+            token: "100:200:300".to_string(),
+        };
+        let second = RenderDocumentIdentity {
+            token: "101:201:301".to_string(),
+            ..first.clone()
+        };
+        let first_key = document_affinity_key(&first);
+        let second_key = document_affinity_key(&second);
+        assert_ne!(first_key, second_key);
+
+        let mut affinities = HashMap::from([
+            (first_key, WorkerLane::Background(0)),
+            (second_key, WorkerLane::Background(1)),
+            (
+                "C:\\jobs\\other.pdf\u{0}1:2:3".to_string(),
+                WorkerLane::Background(0),
+            ),
+        ]);
+        clear_document_affinity_for_path(&mut affinities, &first.path);
+        assert_eq!(affinities.len(), 1);
+        assert!(affinities
+            .keys()
+            .all(|key| key.starts_with("C:\\jobs\\other.pdf")));
     }
 
     #[test]
