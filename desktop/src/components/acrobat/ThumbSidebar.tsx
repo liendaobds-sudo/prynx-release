@@ -10,7 +10,13 @@ import {
     ensurePdfJsThumbnail,
     getPdfJsThumbnailDocument,
 } from '../../hooks/viewer/usePdfLoader';
-import { nativeTileRenderScheduler } from '../../hooks/viewer/tileRenderScheduler';
+import {
+    nativeRenderCoordinator,
+    renderDocumentIdentity,
+    renderPipelineIdentity,
+    renderPurpose,
+} from '../../hooks/viewer/renderCoordinator';
+import { viewerTraceHash } from '../../lib/previewPerfLog';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -111,6 +117,8 @@ interface MemoThumbItemProps {
     pdfUrl: string | null;
     file: ThumbFile | null;
     thumbRev: string;
+    thumbnailOwnerId: string;
+    renderDocumentToken?: string | null;
     pageCount: number;
     isLoadable: boolean;
     isViewerActive?: boolean;
@@ -174,7 +182,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         index, originalPageNum, logicalPageLabel,
         isSelected, isActive, isDragged, showCopyBadge, showCopyDropBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
-        pdfUrl, file, thumbRev, pageCount, isLoadable, isViewerActive, registerRef,
+        pdfUrl, file, thumbRev, thumbnailOwnerId, renderDocumentToken, pageCount, isLoadable, isViewerActive, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews, cutlinePreview,
         viewerDarkBackground,
     } = props;
@@ -224,7 +232,6 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
     const [nativePreview, setNativePreview] = useState<{ key: string; url: string } | null>(null);
     const [nativeRenderErrorKey, setNativeRenderErrorKey] = useState<string | null>(null);
     const [nativeRetryNonce, setNativeRetryNonce] = useState(0);
-    const thumbRenderOwnerId = `thumbnail:${useId()}`;
     const needsNativeRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
         && '__TAURI_INTERNALS__' in window && !!file?.path && originalPageNum > 0;
     const needsPdfJsRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
@@ -265,41 +272,62 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         if (!needsNativeRender) return;
         let cancelled = false;
         let ownBlobUrl: string | null = null;
-        const requestId = `thumb-${globalThis.crypto?.randomUUID?.()
-            ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
+        let activeRequestId: string | null = null;
         const groupKey = `thumbnail:${originalPageNum}`;
         (async () => {
             let src: string | null = null;
             try {
-                // PERF (audit 2026-08-08 §RENDER.2): thumbnail đi lane nền riêng;
-                // scheduler vẫn giữ một slot dự phòng để trang đang xem luôn tới được
-                // interactive worker và có thể preempt nền trên máy ít RAM.
-                const bytes = await nativeTileRenderScheduler.enqueue({
-                    ownerId: thumbRenderOwnerId,
-                    groupKey,
-                    requestKey: `${thumbRenderOwnerId}|${file.path}|${originalPageNum}|${optimalZoom.toFixed(3)}`,
-                    priority: 500,
-                    run: async () => {
+                const nativeFilePath = file?.path;
+                if (!nativeFilePath) throw new Error('Thumbnail thiếu đường dẫn PDF native.');
+                const document = renderDocumentIdentity(
+                    nativeFilePath,
+                    file,
+                    renderDocumentToken,
+                );
+                const source = await nativeRenderCoordinator.renderPng({
+                    request: {
+                        ownerId: thumbnailOwnerId,
+                        groupKey,
+                        generationKey: nativeRequestKey,
+                        purpose: renderPurpose(500, 'display'),
+                        priority: 500,
+                        document,
+                        page: originalPageNum,
+                        rotation: 0,
+                        raster: { kind: 'scale', scale: optimalZoom, clip: null },
+                        color: { pipeline: 'display', profileId: null, intent: null },
+                        pipelineIdentity: renderPipelineIdentity('display'),
+                        soundness: 'display-preview',
+                    },
+                    render: async request => {
+                        activeRequestId = request.requestId;
                         const { invoke } = await import('@tauri-apps/api/core');
                         return invoke<ArrayBuffer>('render_pdf_page', {
-                            filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
+                            filePath: nativeFilePath, page: originalPageNum, zoom: optimalZoom, rotation: 0,
                             clipX: null, clipY: null, clipW: null, clipH: null,
                             requestContext: {
-                                requestId,
-                                ownerId: thumbRenderOwnerId,
-                                groupKey,
-                                generation: 1,
-                                purpose: 'background',
-                                priority: 500,
-                                pipelineIdentity: 'pdfium-display-png-v1',
+                                requestId: request.requestId,
+                                ownerId: request.ownerId,
+                                groupKey: request.groupKey,
+                                generation: request.generation,
+                                purpose: request.purpose,
+                                priority: request.priority,
+                                pipelineIdentity: request.pipelineIdentity,
                             },
                         });
                     },
+                    // Thumbnail dùng chung đường encode/coalesce với page display;
+                    // Blob URL chỉ sống theo component hiện tại và được revoke bên dưới.
+                    encode: bytes => {
+                        const blob = new Blob([bytes], { type: 'image/png' });
+                        return {
+                            url: URL.createObjectURL(blob),
+                            byteLength: blob.size,
+                        };
+                    },
                 });
-                // COLOR (audit 2026-08-07 §GV.1): command native trả PNG lossless;
-                // khai báo đúng MIME để thumbnail và trang chính cùng hợp đồng transport.
-                ownBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
-                src = ownBlobUrl;
+                ownBlobUrl = source.url;
+                src = source.url;
             } catch {
                 // UIUX (audit 2026-08-22 §UX.S.01): báo lỗi có thể thử lại thay vì
                 // giữ spinner vô hạn khi PDFium/Tauri gặp lỗi tạm thời.
@@ -314,13 +342,15 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         })();
         return () => {
             cancelled = true;
-            nativeTileRenderScheduler.cancelOwner(thumbRenderOwnerId);
-            void import('@tauri-apps/api/core')
-                .then(({ invoke }) => invoke('cancel_pdf_render', { requestId }))
-                .catch(() => undefined);
+            nativeRenderCoordinator.cancelGroup(thumbnailOwnerId, groupKey);
+            if (activeRequestId) {
+                void import('@tauri-apps/api/core')
+                    .then(({ invoke }) => invoke('cancel_pdf_render', { requestId: activeRequestId }))
+                    .catch(() => undefined);
+            }
             if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
         };
-    }, [needsNativeRender, nativeRequestKey, nativeRetryNonce, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbRenderOwnerId]);
+    }, [needsNativeRender, nativeRequestKey, nativeRetryNonce, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbnailOwnerId, renderDocumentToken]);
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -469,6 +499,8 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         prev.isViewerActive === next.isViewerActive &&
         prev.pdfUrl === next.pdfUrl &&
         prev.thumbRev === next.thumbRev &&
+        prev.thumbnailOwnerId === next.thumbnailOwnerId &&
+        prev.renderDocumentToken === next.renderDocumentToken &&
         prev.pageCount === next.pageCount &&
         prev.workflowStatus === next.workflowStatus &&
         prev.viewerDarkBackground === next.viewerDarkBackground &&
@@ -502,6 +534,7 @@ function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
 
 export function ThumbSidebar(props: ThumbSidebarProps) {
   const { t } = useTranslation();
+    const thumbSidebarInstanceId = useId();
     const {
         pageOrder, setPageOrder,
         pageInstanceIds, setPageInstanceIds,
@@ -560,6 +593,12 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
 
     // thumbRev: pdfUrl đổi sau mỗi edit-commit hoặc renderDocumentToken đổi sau khi LiveLink tải lại → force re-render IPC + revoke blob cũ.
     const thumbRev = `${pdfUrl || ''}|${props.renderDocumentToken || ''}`;
+    // PERF (audit 2026-09-24 §R23.04): mọi thumbnail trong cùng tab chia sẻ
+    // một owner coordinator đã băm; group vẫn tách theo trang để hủy đúng item.
+    const thumbnailOwnerId = React.useMemo(
+        () => `thumbnail:${viewerTraceHash(`${file?.path || pdfUrl || 'memory'}:${thumbRev}:${thumbSidebarInstanceId}`)}`,
+        [file?.path, pdfUrl, thumbRev, thumbSidebarInstanceId],
+    );
     // PERF (feedback 2026-08-21 §EDIT.THUMB1): nhóm một lần theo trang nguồn.
     // MemoThumbItem chỉ so slice của chính trang đó nên edit trang 2 không làm hàng
     // trăm thumbnail khác render lại; đồng thời không phát thêm request PDFium.
@@ -787,6 +826,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         thumbBaseWidth={displayThumbBase}
                                         pdfUrl={pdfUrl}
                                         thumbRev={thumbRev}
+                                        thumbnailOwnerId={thumbnailOwnerId}
+                                        renderDocumentToken={props.renderDocumentToken}
                                         pageCount={numPages}
                                         file={file}
                                         isLoadable={thumbsGateOpen && (index < 12 || visibleThumbs.has(index))}

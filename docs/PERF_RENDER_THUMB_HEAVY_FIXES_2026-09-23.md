@@ -158,3 +158,11 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
   - CMYK 150 DPI: PPE **fail-fast** vì ước tính raster **3865 MiB (~3,8 GiB)** vượt ngân sách **3547 MiB**.
   - CMYK 300 DPI: PPE **fail-fast** vì raster **7087×11811 @ 300 DPI** vượt gate kích thước.
 - Kết luận: RGB export chạy được nhưng chi phí tăng khoảng 3,2× khi tăng DPI; CMYK safety gate đang bảo vệ RAM đúng hợp đồng, chưa được coi là lỗi. Cần peak RSS và chiến lược tile/stripe cho CMYK nặng trước khi hạ gate.
+
+## Lô 15 — Thumbnail native đi qua RenderCoordinator
+
+- Finding: `§R23.04`/`§R23.05` — thumbnail đã virtualize DOM nhưng còn gọi `render_pdf_page` trực tiếp qua scheduler riêng.
+- File: `desktop/src/components/acrobat/ThumbSidebar.tsx`.
+- Thay đổi: thumbnail native dùng `RenderCoordinator` với document identity, generation key, display pipeline và owner dùng chung trong cùng tab; group vẫn tách theo trang để cancel đúng item. Blob encode vẫn lossless PNG, physical cancel dùng đúng `requestId` do coordinator cấp.
+- Verify: `npm run typecheck` đạt; Vitest `thumbnailPipeline`, `renderCoordinator`, `ThumbSidebar.aiStatus`: **19/19 pass**.
+- Giới hạn: native worker/session vẫn là đường process hiện tại; chưa có shared RGBA surface và chưa có release A/B chứng minh RSS/P95 trên corpus khách.
