@@ -53,6 +53,7 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Commit: `8b13216`.
 - Verify: `npm run typecheck` đạt; LiveTile **26/26 pass**.
 - Chưa đạt: cần chạy lại cùng PDF khách để xác nhận số stale/cancel và số lượt PPE giảm.
+- Telemetry settle thêm tại commit `f696438` để phiên runtime kế tiếp ghi rõ lúc gom target DPI.
 
 ## Runtime probe — phiên người dùng 2026-09-23
 
