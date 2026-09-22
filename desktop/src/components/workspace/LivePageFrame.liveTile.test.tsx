@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LiveTile } from './LivePageFrame';
+import { LiveTile, shouldSettleAccurateTarget } from './LivePageFrame';
 import {
     shouldEnableViewerViewportAccurateTile,
     shouldMountViewerViewportLayer,
@@ -41,6 +41,7 @@ type GetTileUrl = (
 
 afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     clearTileUrlCache();
     vi.restoreAllMocks();
 });
@@ -70,6 +71,30 @@ describe('viewer first-frame pipeline policy', () => {
         })).toBe(false);
         expect(viewerBootstrapUsesPpeForPageOne({ viewerEngineMode: 'hybrid' })).toBe(true);
         expect(viewerBootstrapUsesPpeForPageOne({ viewerEngineMode: 'ppe-only' })).toBe(true);
+    });
+
+    it('chỉ settle target accurate khi đã có first-frame và params mới khác params đã tải', () => {
+        expect(shouldSettleAccurateTarget({
+            accurateOnly: true,
+            adoptedInitialFrame: true,
+            hasLoadedOnce: true,
+            loadedParams: 'frame-56',
+            currentParams: 'frame-92',
+        })).toBe(true);
+        expect(shouldSettleAccurateTarget({
+            accurateOnly: true,
+            adoptedInitialFrame: true,
+            hasLoadedOnce: true,
+            loadedParams: 'frame-92',
+            currentParams: 'frame-92',
+        })).toBe(false);
+        expect(shouldSettleAccurateTarget({
+            accurateOnly: false,
+            adoptedInitialFrame: true,
+            hasLoadedOnce: true,
+            loadedParams: 'frame-56',
+            currentParams: 'frame-92',
+        })).toBe(false);
     });
 });
 

@@ -331,6 +331,20 @@ interface EditPreviewLayer {
 }
 
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+const ACCURATE_TARGET_SETTLE_MS = 120;
+
+export function shouldSettleAccurateTarget(input: {
+    accurateOnly: boolean;
+    adoptedInitialFrame: boolean;
+    hasLoadedOnce: boolean;
+    loadedParams: string;
+    currentParams: string;
+}): boolean {
+    return input.accurateOnly
+        && input.adoptedInitialFrame
+        && input.hasLoadedOnce
+        && input.loadedParams !== input.currentParams;
+}
 // Export ở mức component để regression test không cho hiện PDFium trong cold-open PPE.
 export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
     const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
@@ -508,9 +522,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     const inFlightRequestRef = useRef<{ params: string; attempt: number } | null>(null);
     const preloadRef = useRef<HTMLImageElement|null>(null);
     const accurateDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const accurateTargetSettleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const cachedRenderReadyParamsRef = useRef<string | null>(null);
     const ownedBlobUrlsRef = useRef(new Set<string>());
     const hasLoadedOnce = useRef(false);
+    const adoptedInitialFrameRef = useRef(false);
     const displayedScaleRef = useRef(0);
     const displayedColorRankRef = useRef(0);
     const displayedSurfaceRef = useRef('');
@@ -647,6 +663,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // khi Workspace mount. Nhận thẳng làm target hiện tại, không phát lại PPE.
         loadedParamsRef.current = currentParams;
         cachedRenderReadyParamsRef.current = currentParams;
+        adoptedInitialFrameRef.current = true;
         displayedScaleRef.current = zoom;
         displayedColorRankRef.current = requestedColorRank;
         displayedSurfaceRef.current = surfaceParams;
@@ -1150,8 +1167,30 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // Gọi _loadTile() ĐỒNG BỘ ngay trong effect (không phụ thuộc observer/paint)
         // để tile luôn được nạp tức thì. Observer vẫn giữ làm dự phòng cho tile cuộn xa;
         // _loadTile có guard nên gọi 2 lần là vô hại.
-        el._loadTile?.();
+        const settleAccurateTarget = shouldSettleAccurateTarget({
+            accurateOnly,
+            adoptedInitialFrame: adoptedInitialFrameRef.current,
+            hasLoadedOnce: hasLoadedOnce.current,
+            loadedParams: loadedParamsRef.current,
+            currentParams,
+        });
+        if (settleAccurateTarget) {
+            // PERF (audit 2026-09-23 §R23.06): first-frame prime đã phủ khung
+            // trong lúc layout/fit còn dao động. Chờ một nhịp ngắn để gom các
+            // target DPI trung gian (56→68→92) thành đúng một lượt target cuối;
+            // không hạ DPI và không trì hoãn frame đầu đã có.
+            accurateTargetSettleRef.current = setTimeout(() => {
+                accurateTargetSettleRef.current = null;
+                if (mountedRef.current) el._loadTile?.();
+            }, ACCURATE_TARGET_SETTLE_MS);
+        } else {
+            el._loadTile?.();
+        }
         return () => {
+            if (accurateTargetSettleRef.current !== null) {
+                clearTimeout(accurateTargetSettleRef.current);
+                accurateTargetSettleRef.current = null;
+            }
             if (accurateDelayRef.current !== null) {
                 clearTimeout(accurateDelayRef.current);
                 accurateDelayRef.current = null;
@@ -1202,6 +1241,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             if (accurateDelayRef.current !== null) {
                 clearTimeout(accurateDelayRef.current);
                 accurateDelayRef.current = null;
+            }
+            if (accurateTargetSettleRef.current !== null) {
+                clearTimeout(accurateTargetSettleRef.current);
+                accurateTargetSettleRef.current = null;
             }
             if (preloadRef.current) {
                 preloadRef.current.onload = null;
