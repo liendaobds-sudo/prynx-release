@@ -1,0 +1,115 @@
+param(
+    [string]$LogPath = (Join-Path $env:USERPROFILE 'Desktop\PrynX_RenderPerf.log'),
+    [int]$Tail = 0
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+if (-not (Test-Path -LiteralPath $LogPath)) {
+    throw "Không tìm thấy log Viewer: $LogPath"
+}
+
+$lines = if ($Tail -gt 0) {
+    @(Get-Content -LiteralPath $LogPath -Tail $Tail)
+} else {
+    @(Get-Content -LiteralPath $LogPath)
+}
+
+$bootstrapMs = @()
+$firstPixelMs = @()
+$ppeTotalMs = @()
+$ppeSemWaitMs = @()
+$ppeWorkerQueueMs = @()
+$cacheImageHits = @()
+$cacheImageMisses = @()
+$cacheFormHits = @()
+$cacheFormMisses = @()
+$affinity = @{ assign = 0; hit = 0; drop = 0 }
+$counts = @{
+    pdfLoadStart = 0
+    tileSlow = 0
+    stale = 0
+    cancelled = 0
+    priorityPromote = 0
+}
+
+function Get-Stats([object[]]$Values) {
+    $numbers = @($Values | ForEach-Object { [double]$_ } | Sort-Object)
+    if ($numbers.Count -eq 0) { return $null }
+    $p50Index = [Math]::Min($numbers.Count - 1, [Math]::Floor(($numbers.Count - 1) * 0.50))
+    $p95Index = [Math]::Min($numbers.Count - 1, [Math]::Floor(($numbers.Count - 1) * 0.95))
+    return [ordered]@{
+        count = $numbers.Count
+        min = $numbers[0]
+        p50 = $numbers[$p50Index]
+        p95 = $numbers[$p95Index]
+        max = $numbers[$numbers.Count - 1]
+    }
+}
+
+foreach ($line in $lines) {
+    if ($line -match 'FE VIEWER_TRACE (\{.*\})') {
+        try {
+            $event = $matches[1] | ConvertFrom-Json
+            switch ([string]$event.event) {
+                'pdf-load-start' { $counts.pdfLoadStart++ }
+                'pdf-bootstrap-ready' {
+                    if ($null -ne $event.bootstrap_ms) { $bootstrapMs += [double]$event.bootstrap_ms }
+                }
+                'tile-first-pixel' {
+                    if ($null -ne $event.native_to_decode_ms) { $firstPixelMs += [double]$event.native_to_decode_ms }
+                }
+                'tile-slow' { $counts.tileSlow++ }
+                'tile-priority-promote' { $counts.priorityPromote++ }
+            }
+        } catch {
+            # Log nhiều worker có thể bị xen byte; bỏ qua JSON hỏng, giữ các phase khác.
+        }
+    }
+
+    if ($line -match 'render-coordinator-result .*"status":"stale"') { $counts.stale++ }
+    if ($line -match 'render-coordinator-result .*"status":"cancelled"') { $counts.cancelled++ }
+    if ($line -match 'PPE_NATIVE_RESULT .*total_ms=(\d+) sem_wait_ms=(\d+) worker_queue_ms=(\d+)') {
+        $ppeTotalMs += [double]$matches[1]
+        $ppeSemWaitMs += [double]$matches[2]
+        $ppeWorkerQueueMs += [double]$matches[3]
+    }
+    if ($line -match 'PPE_SESSION_CACHE .*image_hits=(\d+) image_misses=(\d+) form_hits=(\d+) form_misses=(\d+)') {
+        $cacheImageHits += [double]$matches[1]
+        $cacheImageMisses += [double]$matches[2]
+        $cacheFormHits += [double]$matches[3]
+        $cacheFormMisses += [double]$matches[4]
+    }
+    if ($line -match 'RENDER_WORKER_AFFINITY action=(assign|hit|drop)') {
+        $affinity[$matches[1]]++
+    }
+}
+
+$imageHitTotal = ($cacheImageHits | Measure-Object -Sum).Sum
+$imageMissTotal = ($cacheImageMisses | Measure-Object -Sum).Sum
+$formHitTotal = ($cacheFormHits | Measure-Object -Sum).Sum
+$formMissTotal = ($cacheFormMisses | Measure-Object -Sum).Sum
+$imageDenominator = $imageHitTotal + $imageMissTotal
+$formDenominator = $formHitTotal + $formMissTotal
+
+[ordered]@{
+    log = (Resolve-Path -LiteralPath $LogPath).Path
+    lines = $lines.Count
+    counts = $counts
+    bootstrap_ms = Get-Stats $bootstrapMs
+    first_pixel_native_to_decode_ms = Get-Stats $firstPixelMs
+    ppe_total_ms = Get-Stats $ppeTotalMs
+    ppe_sem_wait_ms = Get-Stats $ppeSemWaitMs
+    ppe_worker_queue_ms = Get-Stats $ppeWorkerQueueMs
+    cache = [ordered]@{
+        image_hits = $imageHitTotal
+        image_misses = $imageMissTotal
+        image_hit_ratio = if ($imageDenominator -gt 0) { [Math]::Round($imageHitTotal / $imageDenominator, 4) } else { $null }
+        form_hits = $formHitTotal
+        form_misses = $formMissTotal
+        form_hit_ratio = if ($formDenominator -gt 0) { [Math]::Round($formHitTotal / $formDenominator, 4) } else { $null }
+    }
+    affinity = $affinity
+} | ConvertTo-Json -Depth 6
+
