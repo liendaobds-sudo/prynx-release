@@ -45,6 +45,15 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Verify: `cargo check` đạt; test `document_affinity` **1/1 pass**.
 - Chưa đạt: cần chạy binary mới trên file khách để thu `open_ms`, `queue_ms`, affinity hit/assign/drop và peak RSS.
 
+## Lô 5 — Gom target DPI sau first-frame
+
+- Finding: chuỗi stale/cancel 56 → 68 → 92 DPI trong cold-open runtime probe.
+- Files: `desktop/src/components/workspace/LivePageFrame.tsx` và test LiveTile.
+- Thay đổi: khi đã có first-frame prime, trì hoãn 120 ms cho target accurate kế tiếp để gom các thay đổi layout/fit liên tiếp; không trì hoãn frame đầu và không hạ DPI cuối.
+- Commit: `8b13216`.
+- Verify: `npm run typecheck` đạt; LiveTile **26/26 pass**.
+- Chưa đạt: cần chạy lại cùng PDF khách để xác nhận số stale/cancel và số lượt PPE giảm.
+
 ## Runtime probe — phiên người dùng 2026-09-23
 
 Nguồn: `%USERPROFILE%\Desktop\PrynX_RenderPerf.log`, lượt cuối lúc 04:56. Đây là probe runtime thật, chưa phải P95 corpus.
