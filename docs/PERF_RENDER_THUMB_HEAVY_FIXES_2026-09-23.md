@@ -105,3 +105,10 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Cách chạy: `powershell -ExecutionPolicy Bypass -File scripts/report_viewer_perf.ps1 -Tail 50000`.
 - Probe 50.000 dòng hiện tại: bootstrap P50/P95 **66/457 ms**; PPE total P50/P95 **156/833 ms**; first-pixel native→decode P50/P95 **289/1.069 ms**; affinity hit/assign/drop **534/115/21**; image cache hit ratio **14,04%** trong cửa sổ này.
 - Đây là baseline tự động hóa, chưa phải P95 sản phẩm vì log trộn nhiều tài liệu/phiên; dùng để so sánh binary tiếp theo.
+
+## Lô 9 — Re-audit backend Compare file dài
+
+- Benchmark có sẵn: `scripts/benchmark_compare_pipeline.py`, chạy DEV_MODE với token benchmark; không sửa production.
+- Corpus 20 trang A4 @150 DPI, workers 1→4: elapsed **3.049s → 2.022s (1.51×)**, first-page **0.493s → 0.512s**, artifact **9.1 MiB** parity `True`, peak working set **254 → 353 MiB**.
+- Kết luận: pipeline process-level Compare hiện đã hoạt động đúng và scale có lợi cho tổng job; không mở thêm worker vô điều kiện. First-page không nhanh hơn, nên nút thắt first-page vẫn thuộc render/metadata riêng.
+- Corpus nhỏ 5 trang @72 DPI: workers 4 đạt 1.66× nhưng workers 2 nhiễu chậm hơn; không dùng số nhỏ làm KPI.
