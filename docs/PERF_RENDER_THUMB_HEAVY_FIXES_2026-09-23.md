@@ -35,3 +35,12 @@ Phạm vi theo `BAO_CAO_AUDIT_PERF_RENDER_THUMB_HEAVY_2026-09-23.md`.
 - Commit: `295700b`.
 - Verify: `npm run typecheck` đạt; Vitest scheduler/coordinator/LiveTile: **48/48 pass**.
 - Chưa đạt: runtime A/B trên file khách để xác nhận queue_ms/first-pixel giảm; request đã chạy trong worker không thể bị đổi lane giữa chừng và vẫn cần telemetry.
+
+## Lô 4 — Telemetry affinity worker an toàn
+
+- Finding: hỗ trợ đo `§R23.02`/`§R23.06`.
+- File: `desktop/src-tauri/src/pdf_engine/render_worker.rs`.
+- Thay đổi: ghi `RENDER_WORKER_AFFINITY` với action/lane và mã băm 12 ký tự của snapshot tài liệu; không ghi path hay tên file khách hàng.
+- Commit: `4682ccc`.
+- Verify: `cargo check` đạt; test `document_affinity` **1/1 pass**.
+- Chưa đạt: cần chạy binary mới trên file khách để thu `open_ms`, `queue_ms`, affinity hit/assign/drop và peak RSS.
