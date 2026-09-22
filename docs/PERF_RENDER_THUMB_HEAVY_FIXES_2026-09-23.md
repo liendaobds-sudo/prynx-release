@@ -121,3 +121,11 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - CMYK TIFF/PPE từng trang: **1,390s**, khoảng **92,7 ms/trang**, artifact 9,54 MiB.
 - Đây là baseline nhỏ, chưa phải file khách nặng; chưa tối ưu song song export vì PDFium vẫn phải serialize trong một document và chưa có số đo peak RAM trên corpus lớn.
 - Cùng corpus @300 DPI: RGB **1,132s / 75,5 ms-trang**, CMYK **1,605s / 107,0 ms-trang**; scale tăng nhưng vẫn chưa cho thấy Export cần thêm process vô điều kiện.
+
+## Lô 11 — Installed/WebView smoke gate
+
+- Harness: `scripts/ppe_viewer_webview_baseline.mjs`, chạy qua CDP trên Tauri dev mới với thumbnail đóng.
+- Fixture RGB 15 trang: shell **764 ms**, PPE 3 fulfilled/3 rejected; harness fail-closed vì capability không sạch.
+- Fixture CMYK/TAC: shell **982 ms**, first visible **1.239 s**, compositor có content; PPE 2 fulfilled/2 rejected, nên không đạt gate PPE-only.
+- Fixture PDF tối giản: shell **740 ms**, first visible **944 ms**, compositor có content; PPE 2 fulfilled/2 rejected.
+- Kết luận: harness/runtime path hoạt động và fail-closed đúng; các fixture repo không phù hợp gate `ppe-only` tuyệt đối (capability reject), chưa có corpus Standee hash chính thức để đóng installed smoke. Không hạ gate để che lỗi capability.
