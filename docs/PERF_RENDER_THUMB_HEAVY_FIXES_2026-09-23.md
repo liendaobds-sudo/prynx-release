@@ -194,3 +194,10 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - RGB 300 DPI **22.7286 s**, peak working set **2985.164 MiB**, private **3009.695 MiB** (718 mẫu).
 - Artifact bytes khớp baseline trước (27,099,864 / 61,076,919); benchmark compile đạt. Report `docs/audit/export_customer_memory_2026-09-24.json`.
 - Kết luận: 300 DPI có peak xấp xỉ 3 GiB cho 5 trang file này; không đủ cơ sở mở song song Export vô điều kiện. Cần tile/stripe hoặc giảm peak copy trước khi tăng concurrency.
+
+## Lô 19 — Cancel độc lập thumbnail nhân bản
+
+- Finding: cùng một `originalPageNum` có thể xuất hiện nhiều vị trí sau thao tác nhân bản; group chỉ theo page khiến cleanup một item hủy nhầm item còn lại.
+- File: `desktop/src/components/acrobat/ThumbSidebar.tsx`.
+- Thay đổi: group coordinator dùng `thumbnail:<index>:<originalPageNum>`; owner/document session vẫn dùng chung để giữ affinity, nhưng lifecycle/cancel tách theo vị trí.
+- Verify: `npm run typecheck` đạt; Vitest thumbnail/coordinator/AI badge **20/20 pass**.

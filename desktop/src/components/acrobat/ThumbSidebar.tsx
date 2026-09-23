@@ -273,7 +273,10 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         let cancelled = false;
         let ownBlobUrl: string | null = null;
         let activeRequestId: string | null = null;
-        const groupKey = `thumbnail:${originalPageNum}`;
+        // Mỗi vị trí thumbnail có lifecycle riêng; cùng originalPageNum có thể
+        // xuất hiện nhiều lần sau thao tác nhân bản. Owner vẫn dùng chung session,
+        // nhưng cleanup một bản sao không được hủy bitmap của bản sao khác.
+        const groupKey = `thumbnail:${index}:${originalPageNum}`;
         (async () => {
             let src: string | null = null;
             try {
