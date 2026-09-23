@@ -29,6 +29,7 @@ use print_engine::page::{PageBox, RasterClip};
 use print_engine::{CancelToken, PpeError, RenderSession, RenderWarnings};
 
 mod response_router;
+mod work_queue;
 
 pub const RENDER_WORKER_MAGIC: [u8; 4] = *b"PXRW";
 pub const RENDER_WORKER_PROTOCOL_VERSION: u16 = 4;
@@ -1922,6 +1923,12 @@ enum WorkerInput {
         frame: RenderWorkerFrame<RenderWorkerRequest>,
         cancel_token: Option<CancelToken>,
     },
+    RenderComplete {
+        wire_request_id: u64,
+        logical_request_id: String,
+        response: RenderResponse,
+        payload: Vec<u8>,
+    },
     Eof,
     Fatal(String),
 }
@@ -2014,6 +2021,7 @@ pub fn run_worker_stdio() -> i32 {
     start_accurate_session_sweeper();
     let active_tokens = Arc::new(Mutex::new(HashMap::<String, CancelToken>::new()));
     let (input_sender, input_receiver) = mpsc::channel();
+    let completion_sender = input_sender.clone();
     let reader_tokens = Arc::clone(&active_tokens);
     if std::thread::Builder::new()
         .name("prynx-render-worker-control".to_string())
@@ -2026,16 +2034,65 @@ pub fn run_worker_stdio() -> i32 {
     let stdout = io::stdout();
     let mut writer = stdout.lock();
     let mut handshaken = false;
+    let mut queue: work_queue::WorkQueue<(RenderWorkerFrame<RenderWorkerRequest>, Option<CancelToken>)> =
+        work_queue::WorkQueue::new(configured_background_lane_count().saturating_add(1));
+    let mut running = HashMap::<u64, std::thread::JoinHandle<()>>::new();
     loop {
-        let (frame, cancel_token) = match input_receiver.recv() {
+        let (frame, cancel_token) = loop {
+            if let Some(work_queue::ReadyWork { payload: (frame, cancel_token), concurrent }) = queue.take_ready() {
+                if !concurrent { break (frame, cancel_token); }
+                let RenderWorkerRequest::Render(request) = frame.header else {
+                    unreachable!("chỉ PPE được đưa vào hàng đợi song song");
+                };
+                let wire_request_id = frame.request_id;
+                let sender = completion_sender.clone();
+                let spawned = std::thread::Builder::new().name("prynx-ppe-raster".into()).spawn(move || {
+                    let logical_request_id = request.request_id.clone();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
+                        render_response(request, cancel_token.as_ref())));
+                    let message = match result {
+                        Ok((response, payload)) => WorkerInput::RenderComplete {
+                            wire_request_id, logical_request_id, response, payload },
+                        Err(_) => WorkerInput::Fatal("PPE panic; dừng worker, không dùng lại cache chưa xác minh.".into()),
+                    };
+                    let _ = sender.send(message);
+                });
+                match spawned {
+                    Ok(handle) => {
+                        if running.insert(wire_request_id, handle).is_some() {
+                            eprintln!("[PXRW] wire ID đang chạy bị trùng"); return 2;
+                        }
+                    }
+                    Err(error) => { eprintln!("[PXRW] không tạo được job PPE: {error}"); return 2; }
+                }
+                continue;
+            }
+            match input_receiver.recv() {
             Ok(WorkerInput::Frame {
                 frame,
                 cancel_token,
-            }) => (frame, cancel_token),
+            }) => {
+                let priority = match &frame.header {
+                    RenderWorkerRequest::Render(request) if handshaken
+                        && request.color.pipeline == RenderColorPipeline::Accurate =>
+                            Some((request_purpose(&frame.header) != RenderPurpose::Interactive, request.priority)),
+                    _ => None,
+                };
+                queue.push((frame, cancel_token), priority);
+            }
+            Ok(WorkerInput::RenderComplete { wire_request_id, logical_request_id, response, payload }) => {
+                let Some(handle) = running.remove(&wire_request_id) else { return 2; };
+                if handle.join().is_err() { return 2; }
+                queue.finish();
+                active_tokens.lock().unwrap_or_else(|p| p.into_inner()).remove(&logical_request_id);
+                if write_frame(&mut writer, RenderWorkerFrameKind::Response, wire_request_id,
+                    &RenderWorkerResponse::Render(response), &payload).is_err() { return 3; }
+            }
             Ok(WorkerInput::Eof) | Err(_) => return 0,
             Ok(WorkerInput::Fatal(error)) => {
                 eprintln!("[PXRW] protocol fatal: {error}");
                 return 2;
+            }
             }
         };
         if frame.kind != RenderWorkerFrameKind::Request {
@@ -4204,6 +4261,84 @@ pub fn shutdown_render_worker() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "probe dispatcher pipe cần worker mới, PRYNX_RENDER_WORKER_TEST_PDF là poster khách"]
+    fn worker_dispatcher_ppe_song_song_cancel_va_close_barrier() {
+        assert!(configured_background_lane_count() > 0, "probe cần ít nhất hai slot raster");
+        let mut client = spawn_render_worker_client(WorkerLane::Interactive).unwrap();
+        let path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF").unwrap();
+        let token = crate::pdf_file_identity_token(crate::pdf_file_identity(&path).unwrap());
+        let make = |id: &str, page: i32, dpi: f32| {
+            let mut request = validation_request(&path, token.clone());
+            request.request_id = id.into();
+            request.session_owner_id = Some(format!("dispatch-owner-{page}"));
+            request.page = page;
+            request.raster = RenderRaster::Dpi { dpi, clip: None };
+            request.color = RenderColor { pipeline: RenderColorPipeline::Accurate,
+                profile_id: Some("fogra39".into()), intent: Some("relative".into()) };
+            request.pipeline_identity = RENDER_WORKER_ACCURATE_PIPELINE_ID.into();
+            request.soundness = RenderSoundness::ColorVerified;
+            RenderWorkerRequest::Render(request)
+        };
+        let receive = |ticket: PendingClientResponse| ticket.response
+            .recv_timeout(Duration::from_secs(60)).expect("response không được treo")
+            .expect("pipe phải giữ nguyên");
+        let assert_ready = |frame: &RenderWorkerFrame<RenderWorkerResponse>| {
+            assert!(matches!(&frame.header, RenderWorkerResponse::Render(response)
+                if response.status == RenderResponseStatus::Ready), "{:?}", frame.header);
+        };
+        let origin = Instant::now();
+        let main = client.begin_request(&make("dispatch-main", 1, 92.0), None).unwrap();
+        let thumb = client.begin_request(&make("dispatch-thumb", 2, 24.0), None).unwrap();
+        let thumb = receive(thumb);
+        let thumbnail_ms = origin.elapsed().as_millis();
+        assert_ready(&thumb);
+        assert!(matches!(main.response.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "thumbnail phải trả trước main đang raster: child serial chưa đạt contract");
+        let main = receive(main);
+        let main_ms = origin.elapsed().as_millis();
+        assert_ready(&main);
+        assert_eq!(hex::encode(sha2::Sha256::digest(&main.payload)),
+            "033c1ab2b4c01f9fccd7e2de4d100180de263085071c620104cf1ecbaa7b38f7");
+        assert_eq!(hex::encode(sha2::Sha256::digest(&thumb.payload)),
+            "ff3a75147afa9084a36b97760850b1d829dec317ef152d7b43447e4a8f07cb90");
+
+        let before_close = client.begin_request(&make("dispatch-before-close", 1, 92.0), None).unwrap();
+        let close = client.begin_request(&RenderWorkerRequest::CloseDocument(DocumentRequest {
+            request_id: "dispatch-close".into(), owner_id: "dispatch-probe".into(), file_path: path.clone(),
+        }), None).unwrap();
+        let after_close = client.begin_request(&make("dispatch-after-close", 2, 24.0), None).unwrap();
+        assert!(matches!(receive(close).header, RenderWorkerResponse::CloseDocument(response) if response.ok));
+        let before = before_close.response.try_recv().expect("close phải đứng sau completion cũ").unwrap();
+        drop(before_close);
+        assert_ready(&before);
+        assert_eq!(before.payload, main.payload);
+        let after = receive(after_close);
+        assert_ready(&after);
+        assert_eq!(after.payload, thumb.payload);
+
+        let cancelled = client.begin_request(&make("dispatch-cancel-one", 1, 92.0), None).unwrap();
+        let survivor = client.begin_request(&make("dispatch-survivor", 2, 24.0), None).unwrap();
+        assert!(cancel_render_request("dispatch-cancel-one"));
+        assert!(matches!(receive(cancelled).header, RenderWorkerResponse::Render(response)
+            if response.status == RenderResponseStatus::Cancelled));
+        let survivor = receive(survivor);
+        assert_ready(&survivor);
+        assert_eq!(survivor.payload, thumb.payload);
+        let report = serde_json::json!({"scope":"real worker pipe + dispatcher + PPE + PNG; not manager concurrent admission or UI",
+            "worker_pid":client.child_pid,"thumbnail_finished_ms":thumbnail_ms,"main_finished_ms":main_ms,
+            "response_out_of_order":true,"close_barrier":true,"isolated_cancel":true,"png_parity":true,
+            "background_lanes":configured_background_lane_count(),
+            "parent_sha256":sha256_file(&std::env::current_exe().unwrap()).unwrap(),
+            "worker_sha256":sha256_file(Path::new(&std::env::var("PRYNX_RENDER_WORKER_TEST_EXE").unwrap())).unwrap(),
+            "pdf_sha256":sha256_file(Path::new(&path)).unwrap()});
+        eprintln!("WORKER_DISPATCHER_PROBE {report}");
+        if let Ok(path) = std::env::var("PRYNX_WORKER_DISPATCHER_REPORT") {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
+            serde_json::to_writer_pretty(&mut file, &report).unwrap();
+        }
+    }
+
     #[test]
     #[ignore = "probe pipe thật cần PRYNX_RENDER_WORKER_TEST_EXE/PDF; chỉ worker test"]
     fn client_nhieu_ticket_mot_pipe_va_crash_danh_thuc_moi_waiter() {

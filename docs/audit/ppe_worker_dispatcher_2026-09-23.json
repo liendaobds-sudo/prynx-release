@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "scope": "worker dispatcher PPE concurrency over real framed pipe; parent manager still serial",
+  "source_base": "b268aa5",
+  "tests": {
+    "worker_unit_passed": 62,
+    "ignored_runtime": 9,
+    "cargo_check": "passed (17 existing warnings)",
+    "headless_example_build": "passed"
+  },
+  "source_sha256": {
+    "desktop/src-tauri/src/pdf_engine/render_worker.rs": "14315d8edca891d6e8464effce0e46c61f791750fc3efa0df73aa95bbf739845",
+    "desktop/src-tauri/src/pdf_engine/render_worker/work_queue.rs": "8fa2ab8816f3b0e3ea8a4df7e3a60ef0f0a366ae75e1fd93b2b511bf59aef395"
+  },
+  "evidence": {
+    "ppe_worker_dispatcher_green_2026-09-23": {
+      "background_lanes": 8,
+      "close_barrier": true,
+      "isolated_cancel": true,
+      "main_finished_ms": 2292,
+      "parent_sha256": "69854e4cc4de0c8738775ce5e8c36a69bb5c1ed3fd8108ece736ff65a8b2072e",
+      "pdf_sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+      "png_parity": true,
+      "response_out_of_order": true,
+      "scope": "real worker pipe + dispatcher + PPE + PNG; not manager concurrent admission or UI",
+      "thumbnail_finished_ms": 333,
+      "worker_pid": 3448,
+      "worker_sha256": "f51634b6b79dec588d0f3beda573ab6199f1d64e5c45d5b9fd920891993aac4f"
+    },
+    "ppe_dispatcher_one_slot_2026-09-23": {
+      "background_lanes": 0,
+      "pdf_sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+      "probe": "PPEBX.C-parent-manager-priority",
+      "rows": [
+        {
+          "active_finished_ms": 4451,
+          "active_lane": "Interactive",
+          "active_page": 1,
+          "active_parent_wall_ms": 4413,
+          "active_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+          "active_priority": 10,
+          "active_registered_ms": 2408,
+          "active_submitted_ms": 38,
+          "active_worker_pid": 26328,
+          "active_worker_timing": {
+            "cache_ms": 0,
+            "encode_ms": 161,
+            "queue_ms": 0,
+            "render_ms": 1885,
+            "total_ms": 2057,
+            "wait_ms": 0
+          },
+          "background_preemptions": 0,
+          "dpi": 96,
+          "prefetch_finished_ms": 2392,
+          "prefetch_lane": "Interactive",
+          "prefetch_page": 1,
+          "prefetch_parent_wall_ms": 2392,
+          "prefetch_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+          "prefetch_priority": 20,
+          "prefetch_registered_ms": 38,
+          "prefetch_worker_pid": 26328,
+          "prefetch_worker_timing": {
+            "cache_ms": 0,
+            "encode_ms": 165,
+            "queue_ms": 0,
+            "render_ms": 2126,
+            "total_ms": 2354,
+            "wait_ms": 0
+          },
+          "sample": 0
+        },
+        {
+          "active_finished_ms": 2315,
+          "active_lane": "Interactive",
+          "active_page": 1,
+          "active_parent_wall_ms": 2314,
+          "active_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+          "active_priority": 10,
+          "active_registered_ms": 61,
+          "active_submitted_ms": 1,
+          "active_worker_pid": 26328,
+          "active_worker_timing": {
+            "cache_ms": 0,
+            "encode_ms": 166,
+            "queue_ms": 0,
+            "render_ms": 2084,
+            "total_ms": 2264,
+            "wait_ms": 0
+          },
+          "background_preemptions": 1,
+          "dpi": 96,
+          "prefetch_finished_ms": 4344,
+          "prefetch_lane": "Interactive",
+          "prefetch_page": 1,
+          "prefetch_parent_wall_ms": 4344,
+          "prefetch_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+          "prefetch_priority": 100,
+          "prefetch_registered_ms": 1,
+          "prefetch_worker_pid": 26328,
+          "prefetch_worker_timing": {
+            "cache_ms": 0,
+            "encode_ms": 169,
+            "queue_ms": 0,
+            "render_ms": 1847,
+            "total_ms": 2027,
+            "wait_ms": 0
+          },
+          "sample": 0
+        }
+      ],
+      "samples_per_priority": 1,
+      "serial_document_affinity": false,
+      "worker_sha256": "f51634b6b79dec588d0f3beda573ab6199f1d64e5c45d5b9fd920891993aac4f"
+    },
+    "ppe_worker_dispatcher_red_2026-09-23": "\r\nrunning 1 test\r\n\r\nthread 'pdf_engine::render_worker::tests::worker_dispatcher_ppe_song_song_cancel_va_close_barrier' (18600) panicked at src\\pdf_engine\\render_worker.rs:4296:9:\r\nthumbnail phải trả trước main đang raster: child serial chưa đạt contract\r\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\r\ntest pdf_engine::render_worker::tests::worker_dispatcher_ppe_song_song_cancel_va_close_barrier ... FAILED\r\n\r\nfailures:\r\n\r\nfailures:\r\n    pdf_engine::render_worker::tests::worker_dispatcher_ppe_song_song_cancel_va_close_barrier\r\n\r\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 323 filtered out; finished in 2.54s\r\n\r\n\r\n",
+    "ppe_dispatcher_pdfium_2026-09-23": "\r\nrunning 1 test\r\ntest pdf_engine::render_worker::tests::parent_manager_spawn_va_render_pdf_that ... ok\r\n\r\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 323 filtered out; finished in 0.48s\r\n\r\n\r\n",
+    "ppe_dispatcher_cancel_2026-09-23": "\r\nrunning 1 test\r\nPPE worker 96 DPI: total=2359ms render=Some(2128)ms encode=Some(165)ms bytes=2635902\r\nPPE worker warm 96 DPI: total=1989ms render=Some(1819)ms encode=Some(158)ms bytes=2635902\r\nPPE cooperative cancel: 3ms, worker pid=27784 vẫn sống\r\nPPE sau cancel: total=1955ms render=Some(1784)ms encode=Some(158)ms\r\ntest pdf_engine::render_worker::tests::parent_manager_render_ppe_accurate_pdf_that ... ok\r\n\r\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 323 filtered out; finished in 6.38s\r\n\r\n\r\n"
+  },
+  "limitations": [
+    "Not yet parent concurrent admission or UI/sidebar.",
+    "No P95, multi-document total-RAM or broad >=16GB non-regression claim.",
+    "Capacity follows configured background lanes +1, no DPI change; one-slot control tested separately.",
+    "PDFium/bootstrap/metadata/lifecycle requests are barriers; cannot overlap PPE. Parent app still old EXE."
+  ]
+}
