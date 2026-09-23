@@ -112,6 +112,33 @@ describe('RenderCoordinator — contract và vòng đời bitmap', () => {
         }));
     });
 
+    it('chốt trace source-only cho thumbnail sau khi encode Blob URL', async () => {
+        const report = vi.fn();
+        const coordinator = new RenderCoordinator({
+            scheduler: immediateScheduler(),
+            report,
+        });
+        const source = await coordinator.renderPng({
+            request: requestInput({
+                ownerId: 'thumbnail:document-a',
+                groupKey: 'thumbnail:1',
+                generationKey: 'thumbnail-1',
+                purpose: 'background',
+                priority: 500,
+            }),
+            render: async () => new Uint8Array([1, 2, 3]).buffer,
+            encode: bytes => ({ url: 'blob:thumbnail', byteLength: bytes.byteLength }),
+        });
+
+        coordinator.markEncoded(source);
+
+        expect(report).toHaveBeenCalledWith('result', expect.objectContaining({
+            status: 'ready',
+            owner_id: 'thumbnail:document-a',
+            decode_ms: null,
+        }));
+    });
+
     it('resultKey chỉ phụ thuộc pixel kết quả và tách đúng identity/color/clip x=0', async () => {
         const captured: RenderCoordinatorRequest[] = [];
         const renderOnce = async (input: RenderCoordinatorRequestInput) => {

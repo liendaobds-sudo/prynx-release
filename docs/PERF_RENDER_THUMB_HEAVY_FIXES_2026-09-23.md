@@ -166,3 +166,9 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Thay đổi: thumbnail native dùng `RenderCoordinator` với document identity, generation key, display pipeline và owner dùng chung trong cùng tab; group vẫn tách theo trang để cancel đúng item. Blob encode vẫn lossless PNG, physical cancel dùng đúng `requestId` do coordinator cấp.
 - Verify: `npm run typecheck` đạt; Vitest `thumbnailPipeline`, `renderCoordinator`, `ThumbSidebar.aiStatus`: **19/19 pass**.
 - Giới hạn: native worker/session vẫn là đường process hiện tại; chưa có shared RGBA surface và chưa có release A/B chứng minh RSS/P95 trên corpus khách.
+
+### Runtime verify sau Lô 15
+
+- Fixture 1.000 trang vẫn đạt virtualizer gate: 5 item DOM đầu/cuối, cuối index 999.
+- Log native ghi `RENDER_WORKER_AFFINITY action=hit lane=background:1` và thumbnail page 997–1000 `CACHE_HIT tier=disk`; document-affinity đang được dùng thật.
+- Bổ sung `markEncoded` cho thumbnail để chốt trace source-only, tránh giữ coordinator group sau khi Blob URL đã sẵn sàng.

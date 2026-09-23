@@ -394,6 +394,23 @@ export class RenderCoordinator {
         this.reportFinal(trace, current ? 'ready' : 'stale');
     }
 
+    /**
+     * Chốt consumer chỉ dùng Blob URL (thumbnail/PDF export) sau khi encode xong.
+     * Các consumer canvas gọi markDecoded để đo decode thật; không được để trace
+     * thumbnail treo trong group chỉ vì không có LiveTile decode callback.
+     */
+    markEncoded(source: TileUrlSource): void {
+        const trace = this.sourceTraces.get(source);
+        if (!trace || trace.finalReported) return;
+        trace.bitmapWidth = Number.isFinite(source.width) && (source.width ?? 0) >= 0
+            ? source.width!
+            : null;
+        trace.bitmapHeight = Number.isFinite(source.height) && (source.height ?? 0) >= 0
+            ? source.height!
+            : null;
+        this.reportFinal(trace, this.isLatest(trace) ? 'ready' : 'stale');
+    }
+
     markDecodeFailed(source: TileUrlSource): void {
         const trace = this.sourceTraces.get(source);
         if (!trace || trace.finalReported) return;

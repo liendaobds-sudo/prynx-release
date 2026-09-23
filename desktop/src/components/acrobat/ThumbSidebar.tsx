@@ -326,6 +326,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                         };
                     },
                 });
+                nativeRenderCoordinator.markEncoded(source);
                 ownBlobUrl = source.url;
                 src = source.url;
             } catch {
