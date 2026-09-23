@@ -160,6 +160,9 @@ export interface DieCutSettings extends BaseSettings {
     tileGapX?: number;
     tileGapY?: number;
     clusterNesting?: boolean;
+    clusterCutCmyk?: [number, number, number, number];
+    clusterCutFullSheet?: boolean;
+    clusterPostDieCutMarks?: boolean;
     
     separateCutPage?: boolean;
     pontsOnCutFile?: boolean;

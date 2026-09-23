@@ -410,6 +410,47 @@ describe('runProcessEngine N-Up native fast path', () => {
         expect(readArtifactLeaseToken(committedBlob)).toBe(ARTIFACT_LEASE_TOKEN);
     });
 
+    it('chuyển tiếp clusterCutCmyk, clusterCutFullSheet và clusterPostDieCutMarks sang backendSettings khi chia cụm', async () => {
+        const commitWorkingFile = vi.fn().mockResolvedValue(undefined);
+        const context: ProcessContext = {
+            file: new File(['source'], 'input.pdf', { type: 'application/pdf' }),
+            onSpawnTab: vi.fn(),
+            commitWorkingFile,
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(),
+            getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\input.pdf'),
+        };
+
+        await runProcessEngine(
+            context,
+            {
+                impositionMode: ImpositionMode.NUp,
+                sheetWidth: 320,
+                sheetHeight: 450,
+                groupingStrategy: 'cluster_tile',
+                clusterTileW: 148,
+                clusterTileH: 210,
+                clusterCutCmyk: [100, 0, 0, 0],
+                clusterCutFullSheet: true,
+                clusterPostDieCutMarks: true,
+            } as unknown as import('./pdfImposer').ProcessingSettings,
+            false,
+        );
+
+        expect(api.startNupJobBackend).toHaveBeenCalledWith(
+            'D:\\input.pdf',
+            expect.objectContaining({
+                clusterCutCmyk: [100, 0, 0, 0],
+                clusterCutFullSheet: true,
+                clusterPostDieCutMarks: true,
+            }),
+        );
+    });
+
     it('gắn lease token lên File khi Bình tem bế mở tab mới', async () => {
         const onSpawnTab = vi.fn();
         const context: ProcessContext = {

@@ -51,7 +51,10 @@ from app.core.perf_sampler import (
 from app.workers.imposition_pdf_form import DIE_STRIPPED_FORM_VARIANT, PT_PER_MM
 from app.workers.imposition_affine import compose_render_ctm_mm
 from app.workers import pdf_wrapper as pdf_lib
-from app.workers.nup_diecut import extract_page_die_cut_path_items
+from app.workers.nup_diecut import (
+    extract_page_die_cut_path_items,
+    extract_page_die_cut_path_groups,
+)
 from app.workers.nup_artwork import (
     ManifestArtworkContractError,
     ManifestPartContext,
@@ -537,11 +540,12 @@ def _cut_rings_stream(
 
 
 def _cut_path_items_stream(
-    path_groups: Sequence[Sequence[Any]],
+    path_groups: Sequence[Any],
     *,
     placement: Any,
+    page: pikepdf.Page | None = None,
 ) -> str:
-    """Vẽ CUT từ path vector nguồn, giữ nguyên các đoạn Bézier ``c``.
+    """Vẽ CUT từ path vector nguồn, giữ nguyên các đoạn Bézier ``c`` và màu gốc.
 
     ``cutContour`` trong RenderBundle là polygon để solver/NFP làm việc. Nếu
     writer lấy lại polygon đó, mọi cubic đã bị lấy mẫu thành nhiều đoạn ``l``.
@@ -585,11 +589,73 @@ def _cut_path_items_stream(
         )
 
     operations: list[str] = []
-    for group_index, group in enumerate(path_groups):
+    has_any_custom_style = False
+    for group_index, raw_group in enumerate(path_groups):
+        has_custom_style = False
+        group_prologue = ""
+        group_epilogue = ""
+        if isinstance(raw_group, Mapping):
+            group = raw_group.get("items") or ()
+            grp_color = raw_group.get("color")
+            grp_width = raw_group.get("width") or 0.5
+            grp_spot = raw_group.get("spot_name")
+            if (grp_color is not None or grp_spot is not None) and page is not None:
+                has_custom_style = True
+                has_any_custom_style = True
+                width_pt = float(grp_width)
+                if grp_spot:
+                    clean_name = str(grp_spot).strip().lstrip("/")
+                    # [SPOT-COLOR-PRESERVE 2026-09-22]: Bảo tồn màu alternate thật của spot.
+                    # Nếu màu bị tàng hình (trắng thuần RGB/CMYK), fallback về Magenta CMYK (0,1,0,0).
+                    raw_col = grp_color or (0.0, 1.0, 0.0, 0.0)
+                    if len(raw_col) == 3 and all(float(v) > 0.9 for v in raw_col):
+                        raw_col = (0.0, 1.0, 0.0, 0.0)
+                    elif len(raw_col) == 4 and all(float(v) < 0.1 for v in raw_col):
+                        raw_col = (0.0, 1.0, 0.0, 0.0)
+                    alt_col = [float(c) for c in raw_col]
+                    pdf_space = pikepdf.Name.DeviceCMYK if len(alt_col) == 4 else pikepdf.Name.DeviceRGB
+                    tint_transform = pikepdf.Dictionary(
+                        FunctionType=2,
+                        Domain=[0.0, 1.0],
+                        C0=[0.0] * len(alt_col),
+                        C1=alt_col,
+                        N=1.0,
+                    )
+                    colorspace = pikepdf.Array([
+                        pikepdf.Name.Separation,
+                        pikepdf.Name("/" + clean_name),
+                        pdf_space,
+                        tint_transform,
+                    ])
+                    cs_res = page.add_resource(colorspace, pikepdf.Name.ColorSpace)
+                    cs_text = str(cs_res)
+                    if not cs_text.startswith("/"):
+                        cs_text = "/" + cs_text
+                    group_prologue = f"q\n{_format_number(width_pt)} w\n{cs_text} CS\n1 SCN\n"
+                    group_epilogue = "S\nQ\n"
+                elif grp_color:
+                    c_list = [float(c) for c in grp_color]
+                    if len(c_list) == 4:
+                        color_op = " ".join(_format_number(v) for v in c_list) + " K"
+                    elif len(c_list) == 1:
+                        color_op = f"{_format_number(c_list[0])} G"
+                    else:
+                        color_op = " ".join(_format_number(v) for v in c_list) + " RG"
+                    group_prologue = f"q\n{_format_number(width_pt)} w\n{color_op}\n"
+                    group_epilogue = "S\nQ\n"
+        else:
+            group = raw_group
+
         if not isinstance(group, Sequence):
             raise ManifestRenderContractError(
                 f"cut path group[{group_index}] không phải mảng."
             )
+        if not group:
+            continue
+
+        if has_custom_style and group_prologue:
+            operations.extend(group_prologue.strip().splitlines())
+
         current: tuple[float, float] | None = None
         subpath_open = False
         for item_index, item in enumerate(group):
@@ -683,9 +749,15 @@ def _cut_path_items_stream(
             # `closePath` không nằm trong path items của parser; mọi đường bế
             # semantic đều là vòng kín nên đóng rõ ràng trước khi stroke.
             operations.append("h")
+        if has_custom_style and group_epilogue:
+            operations.extend(group_epilogue.strip().splitlines())
+        elif has_any_custom_style:
+            operations.append("S")
+
     if not operations:
         return ""
-    operations.append("S")
+    if not has_any_custom_style:
+        operations.append("S")
     return "\n".join(operations) + "\n"
 
 
@@ -1707,7 +1779,7 @@ def render_production_nesting(
     # CUT của true-shape cần giữ các lệnh Bézier gốc. Mở mỗi snapshot tối đa một
     # lần trong job; nguồn không có vector semantic sẽ rơi về polygon manifest.
     source_documents: dict[str, Any] = {}
-    source_cut_paths: dict[tuple[str, int], tuple[tuple[Any, ...], ...]] = {}
+    source_cut_paths: dict[tuple[str, int], tuple[Any, ...]] = {}
 
     def _part_context(part: Mapping[str, Any], side: str) -> ManifestPartContext:
         key = (part["partId"], side)
@@ -1717,7 +1789,7 @@ def render_production_nesting(
             )
         return part_contexts[key]
 
-    def _cut_path_groups(locator_id: str, page_index: int) -> tuple[tuple[Any, ...], ...]:
+    def _cut_path_groups(locator_id: str, page_index: int) -> tuple[Any, ...]:
         key = (locator_id, page_index)
         cached = source_cut_paths.get(key)
         if cached is not None:
@@ -1726,7 +1798,9 @@ def render_production_nesting(
         if source_document is None:
             source_document = pdf_lib.open(str(source_paths[locator_id]))
             source_documents[locator_id] = source_document
-        groups = extract_page_die_cut_path_items(source_document[page_index])
+        groups = extract_page_die_cut_path_groups(source_document[page_index])
+        if not groups:
+            groups = extract_page_die_cut_path_items(source_document[page_index])
         source_cut_paths[key] = groups
         return groups
 
@@ -1754,7 +1828,9 @@ def render_production_nesting(
                 page = output.add_blank_page(page_size=(width_pt, height_pt))
                 frame = _sheet_frame(bundle, side)
                 instance_ids: list[str] = []
-                if side == CUT_SIDE:
+                def _build_sheet_cut_stream(
+                    target_frame: Sequence[Any], *, record_instances: bool = False
+                ) -> str:
                     prologue = _cut_stroke_prologue(cut_style, page=page)
                     stream_parts = ["q\n", prologue]
                     for placement in sheet_placements:
@@ -1770,7 +1846,7 @@ def render_production_nesting(
                         resolved = resolve_manifest_artwork_placement(
                             placement=placement,
                             part=context,
-                            sheet_frame=frame,
+                            sheet_frame=target_frame,
                             side=CUT_SIDE,
                             render_bundle_hash=render_bundle_hash,
                         )
@@ -1782,18 +1858,24 @@ def render_production_nesting(
                             field="cutContour",
                         )
                         path_groups = ()
-                        if flow.get("tool") == "sticker_imposer":
+                        if flow.get("tool") in ("sticker_imposer", "cnc_imposer"):
                             path_groups = _cut_path_groups(
                                 resolved.locator_id,
                                 resolved.page_binding.page_index,
                             )
                         stream_parts.append(
-                            _cut_path_items_stream(path_groups, placement=resolved)
+                            _cut_path_items_stream(path_groups, placement=resolved, page=page)
                             if path_groups
                             else _cut_rings_stream(rings, origin=(0.0, 0.0))
                         )
-                        instance_ids.append(resolved.instance_id)
+                        if record_instances:
+                            instance_ids.append(resolved.instance_id)
                     stream_parts.append("Q\n")
+                    return "".join(stream_parts)
+
+                if side == CUT_SIDE:
+                    cut_stream = _build_sheet_cut_stream(frame, record_instances=True)
+                    stream_parts = [cut_stream]
                     if side in pont_sides:
                         if pont_layer_context is not None:
                             _attach_pont_page_properties(page, pont_layer_context)
@@ -1849,6 +1931,16 @@ def render_production_nesting(
                             die_filter=cut_style.get("sourceFilter"),
                         )
                         instance_ids.append(resolved.instance_id)
+                    # [SEPARATE_CUT_PAGE=FALSE]: Nếu người dùng không tách trang khuôn riêng,
+                    # vẽ đè các đường bế (CUT) lên trên trang in (artwork) với màu Spot/Overprint.
+                    if side == "front" and CUT_SIDE not in sides:
+                        cut_frame = _sheet_frame(bundle, CUT_SIDE)
+                        cut_stream = _build_sheet_cut_stream(
+                            cut_frame, record_instances=False
+                        )
+                        page.contents_add(
+                            pikepdf.Stream(output, cut_stream.encode("ascii"))
+                        )
                     if side in pont_sides:
                         # Vẽ ốc SAU artwork để không bị hình đè lên. Ốc là dấu canh của
                         # thợ, phải nhìn thấy được.

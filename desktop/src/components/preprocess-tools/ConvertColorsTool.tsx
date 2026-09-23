@@ -288,6 +288,28 @@ const COLOR_HELP: ToolHelp = {
   printNote: 'Chuyển CMYK quan trọng nhất cho IN OFFSET. In nhanh (kỹ thuật số) nhiều máy nhận RGB nên có thể không cần.',
 };
 
+function getProfileBadge(id: string, t: (key: string, opts?: { defaultValue?: string }) => string): string {
+  const key = `preprocess.convertColors:profile_badge_${id}`;
+  const translated = t(key, { defaultValue: '' });
+  return translated && translated !== key ? translated : '';
+}
+
+function getProfileHint(id: string, description: string, t: (key: string, opts?: { defaultValue?: string }) => string): string {
+  const key = `preprocess.convertColors:profile_hint_${id}`;
+  const translated = t(key, { defaultValue: '' });
+  if (translated && translated !== key) return translated;
+  return description || '';
+}
+
+function getIntentHint(intent: OutputPreviewRenderingIntent, t: (key: string, opts?: { defaultValue?: string }) => string): string {
+  const key = `preprocess.convertColors:intent_hint_${intent}`;
+  const translated = t(key, { defaultValue: '' });
+  if (translated && translated !== key) return translated;
+  return intent === 'relative'
+    ? t('preprocess.convertColors:relative_bpc_khuyen_nghi')
+    : t('preprocess.convertColors:chon_intent_theo_noi_dung');
+}
+
 // Module-level: định nghĩa trong render body sẽ tạo type mới mỗi render → remount
 // (mất focus/animation của subtree). Nhận selected/onSelect qua props để giữ closure.
 function ModeCard({ selected, icon, label, desc, onSelect }: {
@@ -753,12 +775,8 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
       setError(t('preprocess.convertColors:ho_so_mau_khong_kha_dung'));
       return;
     }
-    if (mode === 'cmyk' && (!previewFresh || !previewResponse || !previewRecord)) {
-      setError(t('preprocess.convertColors:can_xem_truoc_moi_truoc_khi_thuc_thi'));
-      return;
-    }
-    const executionOptions = mode === 'cmyk'
-      ? previewRecord!.transformOptions
+    const executionOptions = (mode === 'cmyk' && previewFresh && previewRecord)
+      ? previewRecord.transformOptions
       : colorTransformOptions(currentPreviewSettings);
     setRunning(true);
     setResult(null);
@@ -920,7 +938,7 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
               >
                 {profiles.map(profile => (
                   <option key={profile.id} value={profile.id} disabled={!profile.available}>
-                    {profile.name}{profile.available ? '' : ` (${t('preprocess.convertColors:chua_cai')})`}
+                    {profile.name}{getProfileBadge(profile.id, t)}{profile.available ? '' : ` (${t('preprocess.convertColors:chua_cai')})`}
                   </option>
                 ))}
                 {profiles.length === 0 && (
@@ -929,10 +947,11 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
                   </option>
                 )}
               </select>
-              {selectedProfile?.description && (
-                <span className="sr-only">
-                  {selectedProfile.description}
-                </span>
+              {selectedProfile && (
+                <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-indigo-100 bg-indigo-50/60 p-1.5 text-[10.5px] leading-snug text-slate-600 dark:border-indigo-900/40 dark:bg-indigo-950/20 dark:text-zinc-300">
+                  <span className="shrink-0 text-[11px]">💡</span>
+                  <span>{getProfileHint(selectedProfile.id, selectedProfile.description, t)}</span>
+                </div>
               )}
               {profilesLoadFailed && (
                 <span className="mt-1 block text-[10px] leading-snug text-amber-600 dark:text-amber-400">
@@ -981,12 +1000,11 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
                   </option>
                 ))}
               </select>
-              <span className="sr-only">
-                {renderingIntent === 'relative'
-                  ? t('preprocess.convertColors:relative_bpc_khuyen_nghi')
-                  : t('preprocess.convertColors:chon_intent_theo_noi_dung')}
-                </span>
-              </label>
+              <div className="mt-1 flex items-start gap-1 rounded bg-slate-50 px-1.5 py-1 text-[9.5px] leading-tight text-slate-500 dark:bg-zinc-800/60 dark:text-zinc-400">
+                <span className="shrink-0 text-slate-400">ℹ️</span>
+                <span>{getIntentHint(renderingIntent, t)}</span>
+              </div>
+            </label>
 
 
             <div className="space-y-1.5 border-t border-indigo-100 pt-2 dark:border-indigo-900/50">
@@ -1040,7 +1058,7 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
                 type="button"
                 onClick={() => void runPreview('manual')}
                 disabled={previewLoading || profileUnavailable}
-                className="min-w-0 flex-1 rounded-lg bg-indigo-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                className="min-w-0 flex-1 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2 text-[11px] font-bold text-indigo-700 shadow-sm hover:bg-indigo-100 dark:border-indigo-800/60 dark:bg-indigo-950/30 dark:text-indigo-300 disabled:opacity-50"
               >
                 {previewLoading
                   ? t('preprocess.convertColors:dang_phan_tich_mau')
@@ -1279,14 +1297,8 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
         </>
       )}
 
-      {mode === 'cmyk' && !previewFresh && (
-        <p className="text-center text-[9px] font-medium text-amber-600 dark:text-amber-400">
-          {t('preprocess.convertColors:can_xem_truoc_moi_truoc_khi_thuc_thi')}
-        </p>
-      )}
-
       {/* ═══ THỰC THI ═══ */}
-      <button onClick={run} disabled={running || profileUnavailable || (mode === 'cmyk' && !previewFresh)}
+      <button onClick={run} disabled={running || profileUnavailable}
         className="w-full px-2.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[13px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
         {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>) : (<>{t('preprocess.common:run')}</>)}
       </button>

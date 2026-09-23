@@ -201,7 +201,7 @@ class ShapeBuilder:
         })
         return font_key
 
-    def finish(self, color=(0, 0, 0, 1), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None, line_join=None):
+    def finish(self, color=(0, 0, 0, 1), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None, line_join=None, spot_name=None):
         # Phòng thủ: caller có thể truyền color=None (vd path chỉ-tô). Tránh len(None).
         if color is None:
             color = (0, 0, 0, 1)
@@ -215,7 +215,30 @@ class ShapeBuilder:
                 preamble.append(f"{fill[0]} {fill[1]} {fill[2]} {fill[3]} k")
             else:
                 preamble.append(f"{fill[0]} {fill[1]} {fill[2]} rg")
-        if len(color) == 4:
+
+        if spot_name:
+            clean_name = str(spot_name).strip().lstrip("/")
+            col_list = [float(c) for c in color]
+            tint_transform = pikepdf.Dictionary(
+                FunctionType=2,
+                Domain=[0.0, 1.0],
+                C0=[0.0] * len(col_list),
+                C1=col_list,
+                N=1.0,
+            )
+            cs_array = pikepdf.Array([
+                pikepdf.Name.Separation,
+                pikepdf.Name("/" + clean_name),
+                pikepdf.Name.DeviceCMYK if len(col_list) == 4 else pikepdf.Name.DeviceRGB,
+                tint_transform,
+            ])
+            cs_res = self.pike_page.add_resource(cs_array, pikepdf.Name.ColorSpace)
+            cs_text = str(cs_res)
+            if not cs_text.startswith("/"):
+                cs_text = "/" + cs_text
+            preamble.append(f"{cs_text} CS")
+            preamble.append("1.0 SCN")
+        elif len(color) == 4:
             preamble.append(f"{color[0]} {color[1]} {color[2]} {color[3]} K")
         else:
             preamble.append(f"{color[0]} {color[1]} {color[2]} RG")

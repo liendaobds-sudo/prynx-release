@@ -544,8 +544,10 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
     _straight_len = sum(e['length'] for e in merged)
     _coverage = (_straight_len / _perim) if _perim > 0 else 0.0
 
-    if _coverage < _MIN_STRAIGHT_COVERAGE and len(samples) >= 8:
-        # Cong chiếm ưu thế: nhận TRÒN/ELIP qua score đa tín hiệu (không AND cứng).
+    # Kiểm tra TRÒN/ELIP qua score đa tín hiệu (PCA fit residual, radial CV, shoelace area ratio).
+    # Áp dụng cho mọi hình cong, kể cả khi đường cong bị chia thành nhiều phân đoạn nhỏ
+    # (vd 96 cubic beziers từ bù xén hoặc AI export) khiến coverage cạnh thẳng bị tính cao giả tạo.
+    if len(samples) >= 8:
         ratio = _shoelace_area_ratio(samples, total_w, total_h)
         if _accept_ellipse_like(
             samples, n_curve_segments=_n_curve_segments, area_ratio=ratio
@@ -558,7 +560,8 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
                 "ellipse_score": _sc,
                 **{k: v for k, v in _det.items() if k in ("residual", "radial_cv")},
             }
-        return None, None
+        if _coverage < _MIN_STRAIGHT_COVERAGE:
+            return None, None
 
     # Count horizontal edges (normalized tolerance ~2 deg)
     h_count = sum(1 for e in merged if abs(e["dy"] / e["length"]) < 0.035)

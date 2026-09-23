@@ -48,6 +48,9 @@ def build_chunk_worker_metadata(
     alternate_rotation: str,
     diagnostic_trace_id: str = "",
     diagnostic_job_id: str = "",
+    cluster_cut_cmyk: list | tuple | None = None,
+    cluster_cut_full_sheet: bool = False,
+    cluster_post_die_cut_marks: bool = True,
 ) -> dict[str, Any]:
     """Đóng gói metadata worker mà không làm trôi đuôi tuple N-Up legacy."""
     return {
@@ -59,6 +62,9 @@ def build_chunk_worker_metadata(
         } or None,
         "options": {
             "alternate_rotation": alternate_rotation,
+            "cluster_cut_cmyk": cluster_cut_cmyk,
+            "cluster_cut_full_sheet": cluster_cut_full_sheet,
+            "cluster_post_die_cut_marks": cluster_post_die_cut_marks,
         },
         "diagnostic": {
             "_diagnostic_trace_id": diagnostic_trace_id,

@@ -550,10 +550,23 @@ export const imposePdfViaBackend = async (
     settings: ProcessingSettings,
     setStatus: (message: string) => void,
     outputDir?: string,
+    signal?: AbortSignal,
 ): Promise<{ outputPath: string; report: string; blob: Blob }> => {
 
     setStatus(i18n.t('lib.pdfImposer:dang_tinh_toan_so_do_binh_trang'));
     const runtimeSettings = asRuntimeSettings(settings);
+    const planJobId = typeof globalThis.crypto?.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : 'booklet-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    const requestCancel = () => {
+        void fetch(BACKEND_API + '/api/imposition/cancel-plan/' + encodeURIComponent(planJobId), {
+            method: 'POST',
+        }).catch(() => undefined);
+    };
+    if (signal) {
+        signal.addEventListener('abort', requestCancel, { once: true });
+        if (signal.aborted) requestCancel();
+    }
 
     // Defense-in-depth: không cho knob Offset ẩn rò vào job Digital.
     const isOffsetBooklet = runtimeSettings.paperClassification === 'offset'
@@ -572,6 +585,7 @@ export const imposePdfViaBackend = async (
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: sourcePdfPath }),
+        signal,
     }).catch(() => null);
 
     let pageCount = 0;
@@ -594,7 +608,7 @@ export const imposePdfViaBackend = async (
     } else {
         // Fallback: nạp nhẹ bằng pdf-lib chỉ để lấy metadata (không embed)
         setStatus(i18n.t('lib.pdfImposer:dang_trich_xuat_du_lieu_tap_tin'));
-        const buffer = await (await fetch(sourcePdfPath)).arrayBuffer();
+        const buffer = await (await fetch(sourcePdfPath, { signal })).arrayBuffer();
         const srcPdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
         pageCount = srcPdf.getPageCount();
         const pages = srcPdf.getPages();
@@ -803,8 +817,10 @@ export const imposePdfViaBackend = async (
         body: JSON.stringify({
             plan: instructionSet,
             source_pdf_path: sourcePdfPath,
+            job_id: planJobId,
             return_output_path: preferNativePath,
         }),
+        signal,
     });
 
     if (!response.ok) {

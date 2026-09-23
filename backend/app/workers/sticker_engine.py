@@ -11554,12 +11554,8 @@ class StickerEngine:
                         and crop_box[2] > crop_box[0]
                         and crop_box[3] > crop_box[1]
                     ):
-                        # MediaBox cũng phải siết theo CropBox. Nhiều RIP/renderer mặc
-                        # định hiển thị MediaBox (không phải CropBox); nếu chỉ set CropBox
-                        # thì chúng vẫn cho thấy canvas trắng kỹ thuật ở bên ngoài.
                         page_out.MediaBox = pikepdf.Array(crop_box)
                         page_out.CropBox = pikepdf.Array(crop_box)
-                        page_out.BleedBox = pikepdf.Array(crop_box)
                     
                     # Generate Meta for this page.
                     # Dùng bounds GỐC của dieline_poly (trước khi cộng max_expansion_pts)

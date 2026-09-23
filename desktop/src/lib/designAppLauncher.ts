@@ -69,13 +69,112 @@ export async function pickDesignAppExe(
     return undefined;
 }
 
+import { PDFName, type PDFDocument, type PDFPage } from 'pdf-lib';
+
+/**
+ * Chuẩn hoá toạ độ trang PDF về gốc (0, 0) nếu MediaBox hoặc CropBox bị offset.
+ * Đảm bảo khi mở trong Adobe Illustrator hoặc CorelDRAW:
+ * - Artboard được tạo khớp chính xác 1:1 với vùng hiển thị (viewport).
+ * - Nội dung vẽ không bị trôi dạt/lệch xuống đáy Artboard.
+ * - Xóa PieceInfo (Illustrator Private Data) cũ để Illustrator không khôi phục toạ độ lệch cũ.
+ */
+export function normalizePageBoxes(page: PDFPage): boolean {
+    const mediaBox = page.getMediaBox();
+    const hasCrop = page.node.has(PDFName.of('CropBox'));
+    const cropBox = hasCrop ? page.getCropBox() : mediaBox;
+
+    // Vùng nhìn thấy thực tế (effective visual box)
+    const originX = cropBox.x;
+    const originY = cropBox.y;
+    const width = cropBox.width;
+    const height = cropBox.height;
+
+    // Kiểm tra xem toạ độ gốc có bị lệch khỏi (0, 0) hay không (ngưỡng 0.01 pt ~ 0.0035 mm)
+    const isOffsetX = Math.abs(originX) > 0.01;
+    const isOffsetY = Math.abs(originY) > 0.01;
+    const mediaOffsetX = Math.abs(mediaBox.x) > 0.01;
+    const mediaOffsetY = Math.abs(mediaBox.y) > 0.01;
+
+    if (!isOffsetX && !isOffsetY && !mediaOffsetX && !mediaOffsetY) {
+        return false;
+    }
+
+    // Tịnh tiến content stream về gốc (0, 0)
+    page.translateContent(-originX, -originY);
+
+    // Đặt lại MediaBox về gốc (0, 0)
+    page.setMediaBox(0, 0, width, height);
+
+    // Đặt lại CropBox nếu có
+    if (hasCrop) {
+        page.setCropBox(0, 0, width, height);
+    }
+
+    // Tịnh tiến các box khác nếu có
+    if (page.node.has(PDFName.of('TrimBox'))) {
+        const tb = page.getTrimBox();
+        page.setTrimBox(tb.x - originX, tb.y - originY, tb.width, tb.height);
+    }
+    if (page.node.has(PDFName.of('BleedBox'))) {
+        const bb = page.getBleedBox();
+        page.setBleedBox(bb.x - originX, bb.y - originY, bb.width, bb.height);
+    }
+    if (page.node.has(PDFName.of('ArtBox'))) {
+        const ab = page.getArtBox();
+        page.setArtBox(ab.x - originX, ab.y - originY, ab.width, ab.height);
+    }
+
+    // Xóa PieceInfo trên trang vì dữ liệu private cũ của Illustrator chứa toạ độ offset cũ
+    page.node.delete(PDFName.of('PieceInfo'));
+
+    return true;
+}
+
+/**
+ * Quét toàn bộ tài liệu PDF và chuẩn hoá tất cả các trang bị lệch gốc toạ độ.
+ * Trả về true nếu có ít nhất một trang được chuẩn hoá.
+ */
+export function normalizePdfDocument(doc: PDFDocument): boolean {
+    let anyModified = false;
+    const pages = doc.getPages();
+    for (const p of pages) {
+        const modified = normalizePageBoxes(p);
+        if (modified) {
+            anyModified = true;
+        }
+    }
+    if (anyModified) {
+        if (doc.catalog.has(PDFName.of('PieceInfo'))) {
+            doc.catalog.delete(PDFName.of('PieceInfo'));
+        }
+    }
+    return anyModified;
+}
+
 /**
  * Đảm bảo tài liệu PDF có đường dẫn tệp thực tế trên đĩa (native path).
  * Nếu file chỉ ở dạng Blob/In-memory trong WebView, sẽ ghi nhanh vào thư mục tạm.
+ * Tự động chuẩn hoá toạ độ trang về (0, 0) nếu phát hiện file bị offset MediaBox/CropBox.
  */
 export async function ensurePathBackedPdf(file: File | Blob, originalName?: string): Promise<string> {
     const candidatePath = (file as File & { path?: string }).path;
     if (candidatePath && typeof candidatePath === 'string') {
+        try {
+            const { getFileArrayBuffer } = await import('./utils');
+            const { PDFDocument } = await import('pdf-lib');
+            const { invoke } = await import('@tauri-apps/api/core');
+            const origBuffer = new Uint8Array(await getFileArrayBuffer(file, candidatePath));
+            if (origBuffer.length > 0) {
+                const doc = await PDFDocument.load(origBuffer, { ignoreEncryption: true });
+                const modified = normalizePdfDocument(doc);
+                if (modified) {
+                    const normalizedBytes = await doc.save();
+                    await invoke('write_file_atomic', { path: candidatePath, contents: normalizedBytes });
+                }
+            }
+        } catch (checkErr) {
+            console.warn('[DesignBridge][ensurePathBackedPdf] Bỏ qua chuẩn hoá toạ độ đĩa do lỗi:', checkErr);
+        }
         return candidatePath;
     }
 
@@ -93,13 +192,24 @@ export async function ensurePathBackedPdf(file: File | Blob, originalName?: stri
         .replace(/[\\/:*?"<>|]/g, '_')
         .replace(/\.pdf$/i, '');
     const fullPath = await join(tDir, `prynx_edit_${Date.now()}_${safeName}.pdf`);
-    console.info('[DesignBridge][ensurePathBackedPdf] Ghi file tạm để mở app ngoài:', fullPath);
     const buffer = new Uint8Array(await getFileArrayBuffer(file));
     if (buffer.length === 0) {
         throw new Error('Không thể chuẩn bị file: Dữ liệu PDF rỗng (0 bytes).');
     }
-    await invoke('write_file_atomic', { path: fullPath, contents: buffer });
-    console.info('[DesignBridge][ensurePathBackedPdf] Đã ghi thành công file tạm!');
+
+    let finalBuffer: Uint8Array<ArrayBufferLike> = buffer;
+    try {
+        const { PDFDocument } = await import('pdf-lib');
+        const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+        const modified = normalizePdfDocument(doc);
+        if (modified) {
+            finalBuffer = await doc.save();
+        }
+    } catch (normErr) {
+        console.warn('[DesignBridge][ensurePathBackedPdf] Không thể chuẩn hoá toạ độ buffer in-memory:', normErr);
+    }
+
+    await invoke('write_file_atomic', { path: fullPath, contents: finalBuffer });
     return fullPath;
 }
 
@@ -111,7 +221,6 @@ export async function launchDesignApp(
     which: 'illustrator' | 'corel',
     filePath: string,
 ): Promise<void> {
-    console.info('[DesignBridge][launchDesignApp] Chuẩn bị mở ứng dụng:', { which, filePath });
     const isTauri = typeof window !== 'undefined'
         && Boolean(window.__TAURI_INTERNALS__ || (window as Window & { __PRYNX_INVOKE__?: unknown }).__PRYNX_INVOKE__ || (window as Window & { __TAURI__?: unknown }).__TAURI__);
     if (!isTauri) {
@@ -124,33 +233,25 @@ export async function launchDesignApp(
     if (!appPath) {
         const detected = await detectInstalledDesignApps();
         appPath = detected[which];
-        console.info('[DesignBridge][launchDesignApp] Đường dẫn tự dò:', appPath);
-    } else {
-        console.info('[DesignBridge][launchDesignApp] Đường dẫn tùy chỉnh:', appPath);
     }
 
     if (!appPath) {
-        console.info('[DesignBridge][launchDesignApp] Chưa có đường dẫn, mở hộp thoại chọn .exe...');
         appPath = await pickDesignAppExe(which);
     }
 
     if (!appPath) {
-        console.warn('[DesignBridge][launchDesignApp] Người dùng hủy chọn ứng dụng.');
         return; // Người dùng hủy chọn
     }
 
     const { invoke } = await import('@tauri-apps/api/core');
-    console.info('[DesignBridge][launchDesignApp] Gọi launch_external_app:', { appPath, filePath });
 
     try {
         await invoke('launch_external_app', { appPath, filePath });
-        console.info('[DesignBridge][launchDesignApp] Khởi chạy ứng dụng thành công!');
     } catch (launchError) {
         console.error('[DesignBridge][launchDesignApp] Lỗi khi launch_external_app:', launchError);
         const errStr = String(launchError ?? '');
         const needsReauthorization = /chưa được cấp quyền/i.test(errStr);
         if (needsReauthorization) {
-            console.info('[DesignBridge][launchDesignApp] Cần cấp quyền lại, mở hộp thoại chọn lại .exe...');
             const repicked = await pickDesignAppExe(which);
             if (repicked) {
                 await invoke('launch_external_app', { appPath: repicked, filePath });
@@ -171,15 +272,6 @@ export async function extractPagesForExternalEdit(
     originalName?: string,
     fallbackPath?: string,
 ): Promise<{ tempFilePath: string; pageIndices: number[] }> {
-    console.info('[DesignBridge][extractPagesForExternalEdit] Bắt đầu:', {
-        fileName: (file as File).name,
-        fileSize: file.size,
-        fileType: file.type,
-        path: (file as any)?.path,
-        fallbackPath,
-        pageIndices,
-    });
-
     if (pageIndices.length === 0) {
         throw new Error('Chưa chọn trang để sửa.');
     }
@@ -200,13 +292,8 @@ export async function extractPagesForExternalEdit(
     const { getFileArrayBuffer } = await import('./utils');
 
     const effectivePath = (file as any)?.path || fallbackPath;
-    console.info('[DesignBridge][extractPagesForExternalEdit] Đọc buffer từ file, effectivePath:', effectivePath);
     const srcArrayBuffer = await getFileArrayBuffer(file, effectivePath);
     const srcBytes = new Uint8Array(srcArrayBuffer);
-    console.info('[DesignBridge][extractPagesForExternalEdit] Kết quả đọc buffer:', {
-        byteLength: srcBytes.length,
-        header: srcBytes.length >= 5 ? String.fromCharCode(...srcBytes.subarray(0, 5)) : 'QUÁ NGẮN HOẶC RỖNG',
-    });
 
     if (srcBytes.length === 0) {
         throw new Error(`Dữ liệu PDF rỗng (0 bytes). Đường dẫn: ${effectivePath || 'không xác định'}.`);
@@ -214,14 +301,22 @@ export async function extractPagesForExternalEdit(
 
     const srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
     const pageCount = srcDoc.getPageCount();
-    console.info('[DesignBridge][extractPagesForExternalEdit] Load PDF thành công, tổng trang:', pageCount);
 
     const validIndices = pageIndices
         .filter(idx => Number.isInteger(idx) && idx >= 0 && idx < pageCount)
         .sort((a, b) => a - b);
+    const invalidIndices = pageIndices.filter(idx => !Number.isInteger(idx) || idx < 0 || idx >= pageCount);
+    if (invalidIndices.length > 0) {
+        console.warn('[DesignBridge][extractPagesForExternalEdit] CẢNH BÁO: Có chỉ số trang yêu cầu vượt ngoài phạm vi PDF thật trên đĩa (tổng trang=' + pageCount + '):', {
+            invalidIndices,
+            requestedIndices: pageIndices,
+        });
+    }
 
     if (validIndices.length === 0) {
-        throw new Error('Các trang được chọn không tồn tại trong tài liệu.');
+        const errMsg = `Các trang được chọn (${pageIndices.join(', ')}) không tồn tại trong tài liệu PDF thật trên đĩa (${pageCount} trang).`;
+        console.error('[DesignBridge][extractPagesForExternalEdit] ' + errMsg);
+        throw new Error(errMsg);
     }
 
     const outDoc = await PDFDocument.create();
@@ -232,14 +327,21 @@ export async function extractPagesForExternalEdit(
         // [LIVE-LINK AI FIX]: Chỉ xóa PieceInfo khi tài liệu gốc có nhiều trang (pageCount > 1)
         // để Adobe Illustrator khi mở file tạm không bị nạp ngược toàn bộ các artboards cũ của file gốc.
         // Với tài liệu đơn trang (pageCount === 1), giữ nguyên PieceInfo để Illustrator giữ Live Text và layer gốc.
+        // Tuy nhiên, nếu trang có toạ độ bị offset và được chuẩn hoá về (0, 0), bắt buộc phải xóa PieceInfo
+        // để Illustrator không phục hồi toạ độ artboard cũ.
         const shouldStripPieceInfo = pageCount > 1;
+        let anyNormalized = false;
         copiedPages.forEach(p => {
-            if (shouldStripPieceInfo) {
+            const normalized = normalizePageBoxes(p);
+            if (normalized) {
+                anyNormalized = true;
+            }
+            if (shouldStripPieceInfo || normalized) {
                 p.node.delete(PDFName.of('PieceInfo'));
             }
             outDoc.addPage(p);
         });
-        if (shouldStripPieceInfo && outDoc.catalog.has(PDFName.of('PieceInfo'))) {
+        if ((shouldStripPieceInfo || anyNormalized) && outDoc.catalog.has(PDFName.of('PieceInfo'))) {
             outDoc.catalog.delete(PDFName.of('PieceInfo'));
         }
     } finally {
@@ -247,7 +349,6 @@ export async function extractPagesForExternalEdit(
     }
 
     const extractedBytes = await outDoc.save();
-    console.info('[DesignBridge][extractPagesForExternalEdit] Trích trang xong (đã làm sạch PieceInfo), dung lượng PDF mới:', extractedBytes.length);
 
     const safeBase = (originalName || (file as File).name || 'document')
         .replace(/[\\/:*?"<>|]/g, '_')
@@ -258,9 +359,7 @@ export async function extractPagesForExternalEdit(
 
     const tDir = await tempDir();
     const tempFilePath = await join(tDir, `prynx_${safeBase}_${pageLabel}_${Date.now()}.pdf`);
-    console.info('[DesignBridge][extractPagesForExternalEdit] Đang ghi file tạm:', tempFilePath);
     await invoke('write_file_atomic', { path: tempFilePath, contents: extractedBytes });
-    console.info('[DesignBridge][extractPagesForExternalEdit] Ghi file tạm thành công!');
 
     return { tempFilePath, pageIndices: validIndices };
 }
@@ -273,21 +372,34 @@ export async function mergeEditedPagesIntoDocument(
     editedBytes: Uint8Array,
     pageIndices: number[],
 ): Promise<Uint8Array> {
-    console.info('[DesignBridge][mergeEditedPagesIntoDocument] Bắt đầu gộp trang:', {
-        originalLength: originalBytes.length,
-        editedLength: editedBytes.length,
-        pageIndices,
-    });
     const { PDFDocument, PDFName } = await import('pdf-lib');
     const {
         beginOptionalContentTransfer,
         finishOptionalContentTransfer,
     } = await import('./pdfOptionalContent');
 
-    const mainDoc = await PDFDocument.load(originalBytes, { ignoreEncryption: true });
-    const editedDoc = await PDFDocument.load(editedBytes, { ignoreEncryption: true });
+    let mainDoc: any;
+    let editedDoc: any;
+    try {
+        mainDoc = await PDFDocument.load(originalBytes, { ignoreEncryption: true });
+    } catch (loadOrigErr) {
+        console.error('[DesignBridge][mergeEditedPagesIntoDocument] Lỗi đọc PDF tài liệu gốc:', loadOrigErr);
+        throw new Error('Không thể đọc dữ liệu PDF gốc để gộp trang: ' + String(loadOrigErr));
+    }
+    try {
+        editedDoc = await PDFDocument.load(editedBytes, { ignoreEncryption: true });
+    } catch (loadEditedErr) {
+        console.error('[DesignBridge][mergeEditedPagesIntoDocument] Lỗi đọc PDF từ Illustrator/Corel (có thể file chưa lưu xong hoặc bị khóa):', loadEditedErr);
+        throw new Error('Không thể đọc dữ liệu PDF đã sửa từ ứng dụng thiết kế: ' + String(loadEditedErr));
+    }
 
+    const editedPageCount = editedDoc.getPageCount();
     const sortedIndices = [...pageIndices].sort((a, b) => a - b);
+
+    if (editedPageCount !== sortedIndices.length) {
+        console.warn(`[DesignBridge][mergeEditedPagesIntoDocument] CẢNH BÁO: Số trang file sửa (${editedPageCount}) không khớp số trang đích cần gộp (${sortedIndices.length})!`);
+    }
+
     const ocTransfer = beginOptionalContentTransfer([editedDoc], { preserveUnreferencedOcgs: true });
 
     try {
@@ -299,6 +411,8 @@ export async function mergeEditedPagesIntoDocument(
             if (targetIdx < mainDoc.getPageCount()) {
                 mainDoc.insertPage(targetIdx, newPage);
                 mainDoc.removePage(targetIdx + 1);
+            } else {
+                console.error(`[DesignBridge][mergeEditedPagesIntoDocument] LỖI: targetIdx ${targetIdx} vượt quá số trang tài liệu chính ${mainDoc.getPageCount()}!`);
             }
         }
         // Xóa PieceInfo ở cấp Catalog của tài liệu gốc vì đã có trang được cập nhật độc lập
@@ -309,6 +423,7 @@ export async function mergeEditedPagesIntoDocument(
         finishOptionalContentTransfer(ocTransfer, mainDoc);
     }
 
-    return await mainDoc.save();
+    const savedBytes = await mainDoc.save();
+    return savedBytes;
 }
 

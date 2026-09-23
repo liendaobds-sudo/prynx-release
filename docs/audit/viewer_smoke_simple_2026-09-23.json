@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 2,
+  "scope": "end-to-end-webview-main-page-thumbnail-closed",
+  "timingUnit": "ms",
+  "artifact": {
+    "name": "ppe_smoke_simple.pdf",
+    "sizeBytes": 1397,
+    "sha256": "9d70a5a13f2d88a95126563a3cfca08a6428c782550106a20627575fa928e9c9",
+    "pathStored": false,
+    "matchesAuditedStandee": false
+  },
+  "config": {
+    "runs": 2,
+    "pairs": 1,
+    "baselineKind": "cleanup-smoke",
+    "transitions": [
+      "cold-open",
+      "warm-zoom"
+    ],
+    "pollMs": 16,
+    "timeoutMs": 60000,
+    "stableFrames": 2,
+    "stableFrameRule": "distinct-screenshot-captures",
+    "screenshotIntervalMs": 60,
+    "measurementScope": "main-page-thumbnail-closed",
+    "thumbnailPolicy": "new-viewer-default-closed-and-verified-per-run",
+    "expectedRuntimeEnv": {
+      "PRYNX_VIEWER_ENGINE_MODE": "ppe-only",
+      "PRYNX_VIEWER_SHADOW_RENDER": "off-or-unset"
+    },
+    "requireStandeeHash": false
+  },
+  "sessionEvidence": {
+    "pipelineScope": "target-webview-cdp-network-ipc-trace",
+    "engineModeGate": "ppe-only",
+    "shadowGate": false,
+    "nativePerfLogScope": "global-file-bounded-by-offset-supplemental",
+    "thumbnailBaselineStatus": "separate-runtime-gate-required",
+    "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+    "initialMeasuredTabCount": 0
+  },
+  "limitations": [
+    "FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.",
+    "Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.",
+    "PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame."
+  ],
+  "runs": [
+    {
+      "index": 1,
+      "cacheIdentityKind": "pdf-url",
+      "coldReset": {
+        "namespaceCleared": true,
+        "namespaceHasCachedTile": false,
+        "documentClosed": false,
+        "error": null,
+        "documentCacheState": "already-empty"
+      },
+      "thumbnailEvidence": {
+        "verified": true,
+        "reason": null,
+        "matchingStoreCount": 1
+      },
+      "label": "cold-open",
+      "trigger": {
+        "accepted": 1,
+        "size": 1397,
+        "note": "dispatcher schedules a 50ms batch flush before tab creation"
+      },
+      "shellMs": 740,
+      "fspMs": 944,
+      "fcvfMs": null,
+      "blankGapTotalMs": 0,
+      "blankGapMaxMs": 0,
+      "blankGapOpen": true,
+      "blankGapCurrentMs": 59041,
+      "timeoutStage": "fcvf",
+      "stableFrames": 1,
+      "sourceKeyCaptured": true,
+      "harnessObservation": {
+        "screenshotCount": 1,
+        "screenshotTotalMs": 204,
+        "triggerOverheadMs": 5
+      },
+      "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+      "pipelineEvidence": {
+        "ppeCallCount": 4,
+        "ppeFulfilledCount": 2,
+        "ppeRejectedCount": 2,
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 3,
+        "engineConfigObservedCallCount": 3,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "requestIds": [
+          "5cec684bb9d4f991",
+          "f99b5d082e404b83",
+          "552b21c0ac514107",
+          "3775ddabd8d5d74f"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": true,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          100,
+          63
+        ],
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 1239.6212,
+        "verifiedPpeOnly": false,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "nativePerfEvidence": {
+        "available": true,
+        "ppeResultCount": 2,
+        "displayResultCount": 0,
+        "scope": "global-log-supplemental-not-request-correlated"
+      },
+      "final": {
+        "identity": {
+          "fileName": "ppe_smoke_simple.pdf",
+          "phase": "workspace",
+          "numPages": 1,
+          "sourceKeyStored": false
+        },
+        "dom": {
+          "shell": true,
+          "pageRect": {
+            "x": 320,
+            "y": 180.90625,
+            "width": 464.265625,
+            "height": 657
+          },
+          "visibleRect": {
+            "x": 320,
+            "y": 180.90625,
+            "width": 464.265625,
+            "height": 657
+          },
+          "tiles": [],
+          "coverageRatio": 0,
+          "sharpCoverageRatio": 0,
+          "sharp": false,
+          "devicePixelRatio": 1,
+          "page": 1,
+          "rotation": 0
+        },
+        "compositor": {
+          "captured": false,
+          "hasContent": true,
+          "signature": "c9597370",
+          "nonWhiteRatio": 0.8108723958333334,
+          "chromaticRatio": 0.8108506944444445,
+          "lumaRange": 105,
+          "contentBounds": {
+            "leftRatio": 0.06111111111111111,
+            "topRatio": 0.0390625,
+            "rightRatio": 0.9444444444444444,
+            "bottomRatio": 0.95703125
+          }
+        },
+        "frameEvidence": null
+      },
+      "measuredTabId": "imposition-1790118864348-ie3",
+      "valid": false,
+      "validationError": "Error: Lượt 1 không có bằng chứng PPE-only sạch: mode=ppe-only, ppe_ok=2, ppe_rejected=2, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, shadow=0."
+    }
+  ],
+  "consoleErrors": [],
+  "badHttp": [],
+  "processMemory": {
+    "status": "not-measured-by-cdp-harness",
+    "scope": "whole-application-tree-required-separately"
+  },
+  "complete": false,
+  "failure": {
+    "message": "Error: Lượt 1 không có bằng chứng PPE-only sạch: mode=ppe-only, ppe_ok=2, ppe_rejected=2, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, shadow=0.",
+    "completedRuns": 1,
+    "validRuns": 0
+  }
+}

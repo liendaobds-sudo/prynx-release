@@ -448,3 +448,37 @@ def calculate_hex_tiling_col_stagger(usable_w, usable_h, item_w, item_h, gap_x, 
         except Exception:
             pass
     return _py_calculate_hex_tiling_col_stagger(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+
+
+def calculate_diagonal_stagger_layout(usable_w: float, usable_h: float, item_w: float, item_h: float, gap_x: float, gap_y: float) -> Dict[str, Any]:
+    """
+    So le chéo góc đối đỉnh (Diagonal Corner Pair) cho hình tròn/elip.
+    Khi khổ giấy hẹp (không đủ cho 2 cột/hàng tổ ong 60°/30° chuẩn),
+    tận dụng tối đa đường chéo của tờ in để xếp đúng 2 con tem đối góc mà không va chạm.
+    TUYỆT ĐỐI KHÔNG sinh dải ziczac > 2 con vì các con cùng cột sẽ bị đè lên nhau.
+    """
+    if usable_w < item_w - MY_SCRIPT_TOLERANCE or usable_h < item_h - MY_SCRIPT_TOLERANCE:
+        return {'totalItems': 0, 'items': [], 'widthUsed': 0, 'heightUsed': 0}
+
+    d_safe = max(item_w, item_h) + max(gap_x, gap_y)
+    dx_avail = usable_w - item_w
+    dy_avail = usable_h - item_h
+
+    if dx_avail >= -MY_SCRIPT_TOLERANCE and dy_avail >= -MY_SCRIPT_TOLERANCE:
+        dist_sq = max(0.0, dx_avail)**2 + max(0.0, dy_avail)**2
+        if dist_sq >= (d_safe - MY_SCRIPT_TOLERANCE)**2:
+            return {
+                'totalItems': 2,
+                'items': [
+                    {'c': 0, 'r': 0, 'x': 0.0, 'y': 0.0, 'width': item_w, 'height': item_h, 'isRotated': False},
+                    {'c': 1, 'r': 1, 'x': max(0.0, dx_avail), 'y': max(0.0, dy_avail), 'width': item_w, 'height': item_h, 'isRotated': False},
+                ],
+                'widthUsed': usable_w,
+                'heightUsed': usable_h,
+                'itemActualW': item_w,
+                'itemActualH': item_h,
+                'strategyUsed': 'staggered_diagonal',
+            }
+
+    return {'totalItems': 0, 'items': [], 'widthUsed': 0, 'heightUsed': 0}
+

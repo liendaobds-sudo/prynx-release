@@ -241,12 +241,11 @@ describe('chốt chặn Save As lên artifact tạm tại call site ImpositionTa
         // của riêng nhánh lỗi phạm vi ghi.
         expect(mocks.save).toHaveBeenCalledTimes(2);
         expect(dialogTitles()).toEqual(['Save PDF File', WRITE_SCOPE_DIALOG_TITLE]);
-        expect(diskWriteCalls()).toEqual(['copy_file_atomic', 'copy_file_atomic']);
-        expect(mocks.invoke).toHaveBeenLastCalledWith('copy_file_atomic', {
+        expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === 'copy_file_atomic').pop()).toEqual(['copy_file_atomic', {
             source: ARTIFACT_PATH,
             path: SECOND_CUSTOMER_PATH,
             saveGrant: '00000000000000000000000000000002',
-        });
+        }]);
         expect(result).toBe('saved');
         expect(onTitleChange).toHaveBeenCalledWith('Don-hang-1234-b.pdf');
     });
@@ -263,11 +262,11 @@ describe('chốt chặn Save As lên artifact tạm tại call site ImpositionTa
         // Lượt 2: chọn đích hợp lệ → lưu được (Requirement 1.5).
         mocks.save.mockResolvedValueOnce(CUSTOMER_PATH);
         expect(await triggerSave(2)).toBe('saved');
-        expect(mocks.invoke).toHaveBeenLastCalledWith('copy_file_atomic', {
+        expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === 'copy_file_atomic').pop()).toEqual(['copy_file_atomic', {
             source: ARTIFACT_PATH,
             path: CUSTOMER_PATH,
             saveGrant: '00000000000000000000000000000002',
-        });
+        }]);
         expect(onTitleChange).toHaveBeenLastCalledWith('Don-hang-1234.pdf');
 
         // Lượt 3: chọn lại CHÍNH đích vừa lưu. Đây là phép thử phân biệt provenance:

@@ -477,7 +477,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     viewerEngineMode,
                 );
             const useAccuratePipeline = requestsAccuratePipeline
-                && !(viewerEngineMode === 'hybrid'
+                && !(viewerEngineMode !== 'ppe-only'
                     && compatibilityPagesRef.current.pages.has(pageNum));
             const colorPipeline: RenderColorPipeline = useAccuratePipeline ? 'accurate' : 'display';
             const normalizedRotation = normalizeRenderRotation(rotation || 0);
@@ -662,7 +662,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                 } catch (nativeError) {
                                     const unsupported = parsePpeUnsupportedStatus(nativeError);
                                     if (unsupported) {
-                                        if (viewerEngineMode !== 'hybrid') throw nativeError;
+                                        if (viewerEngineMode === 'ppe-only') throw nativeError;
                                         // CORRECTNESS (audit 2026-08-10 §L7B): chỉ
                                         // capability thiếu mới được lùi PDFium. PPE chưa
                                         // trả byte nào nên một frame chỉ có đúng một engine.
@@ -726,6 +726,16 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                 || error instanceof CancelledTileRenderError
                             ) {
                                 throw new CancelledTileRenderError();
+                            }
+                            const unsupported = parsePpeUnsupportedStatus(error);
+                            if (unsupported && viewerEngineMode !== 'ppe-only') {
+                                compatibilityPagesRef.current.pages.add(pageNum);
+                                setAccurateColorFailure(null);
+                                console.info('[VIEWER-ENGINE] PPE compatibility lane (outer catch)', {
+                                    page: pageNum,
+                                    reason: unsupported.reason,
+                                });
+                                return invokeDisplayPng(request);
                             }
                             const message = renderErrorMessage(error);
                             setAccurateColorFailure({ fileIdentity: accurateRenderIdentity, message });

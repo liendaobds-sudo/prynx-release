@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import io
 import os
+import logging
 import tempfile
 import uuid
 from dataclasses import dataclass, field as dc_field
 from typing import Any, List, Mapping, Optional, Sequence, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.vdp_engine import (
@@ -34,7 +37,9 @@ from app.workers.vdp_engine import (
     _register_font_family,
     _resolve_system_font,
     render_one_record,
+    run_vdp_engine,
 )
+from app.schemas.vdp import VdpField
 
 
 @dataclass
@@ -169,6 +174,10 @@ def render_record_preview(
     index, clamped = clamp_index(requested_index, total)
     row = dict(rows[index - 1])
     fields_dict = [_as_dict(f) for f in fields]
+    logger.debug(
+        "[VDP][PREVIEW] render_record_preview: req_idx=%d, clamped_idx=%d, total=%d, fields_count=%d",
+        requested_index, index, total, len(fields_dict),
+    )
 
     # Chuẩn hoá CropBox→MediaBox (sau Crop) để preview khớp output — CÙNG phép
     # canonical như run_vdp_engine, giữ parity preview ↔ bản in.
@@ -198,7 +207,9 @@ def render_record_preview(
         field_rects = _compute_field_rects(fields_dict)
         field_font_variants = _register_preview_fonts(fields_dict)
 
-        # Vẽ overlay dữ liệu biến đổi lên canvas ReportLab phủ toàn MediaBox.
+        # Collect lỗi field bằng cùng primitive layout của engine. Ảnh cuối phải
+        # lấy từ run_vdp_engine, không từ overlay ReportLab riêng, để preview và
+        # PDF output dùng cùng renderer PDFium/ReportLab.
         from reportlab.pdfgen import canvas
 
         buf = io.BytesIO()
@@ -211,23 +222,27 @@ def render_record_preview(
         c.showPage()
         c.save()
 
-        # Ghép overlay lên trang nền template (giữ nội dung tĩnh của template).
-        out_doc = pdf_lib.open()
-        out_doc._pdf.pages.append(doc_template._pdf.pages[t_idx])
-        page = out_doc[len(out_doc) - 1]
-        overlay_pdf = pdf_lib.open(stream=buf.getvalue())
-        page.show_pdf_page(page.rect, overlay_pdf, 0)
-
         tmp_path = os.path.join(tempfile.gettempdir(), f"vdp_preview_{uuid.uuid4().hex}.pdf")
-        out_doc.save(tmp_path)
-        out_doc.close()
+        preview_fields = [
+            field if isinstance(field, VdpField) else VdpField(**field)
+            for field in fields_dict
+        ]
+        # VDP23.01 (audit 2026-09-23): chạy đúng writer production cho một record;
+        # không dựng một PDF preview khác bằng ReportLab rồi gọi đó là parity.
+        run_vdp_engine(
+            template_path,
+            preview_fields,
+            [row],
+            tmp_path,
+            job_id=f"preview_{uuid.uuid4().hex}",
+        )
 
         # Rasterize trang ghép → PNG bằng pypdfium2 (scale = pixel/point).
         import pypdfium2 as pdfium
 
         pdf = pdfium.PdfDocument(tmp_path)
         try:
-            page_r = pdf[0]
+            page_r = pdf[t_idx]
             bitmap = page_r.render(scale=scale)
             pil_img = bitmap.to_pil()
             img_w, img_h = pil_img.size

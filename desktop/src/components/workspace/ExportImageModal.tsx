@@ -77,6 +77,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
     formatRef.current = format;
     const [dpi, setDpi] = useState(150);
     const [colorMode, setColorMode] = useState<'rgb' | 'gray' | 'cmyk'>('rgb');
+    const [cmykProfile, setCmykProfile] = useState<string>('auto');
     const [rangeMode, setRangeMode] = useState<RangeMode>('all');
     const [customRange, setCustomRange] = useState('');
     const [multipageTiff, setMultipageTiff] = useState(false);
@@ -265,6 +266,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                 fileId: resolvedFileId,
                 filePath: resolvedFilePath,
                 colorMode,
+                cmykProfile: colorMode === 'cmyk' ? cmykProfile : undefined,
                 pages,
                 includeBleed,
                 signal: controller.signal,
@@ -477,9 +479,49 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                             <label className={radioRow}><input type="radio" name="color" checked={colorMode === 'cmyk'} onChange={() => { setColorMode('cmyk'); if (format === 'png' || format === 'webp') setFormat('tiff'); setScaleRows(rows => rows.map(row => (row.format === 'png' || row.format === 'webp') ? { ...row, format: 'tiff' } : row)); }} disabled={busy} />CMYK</label>
                         </div>
                         {colorMode === 'cmyk' && (
-                            <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                                CMYK dùng PPE ink-space (FOGRA39). PNG/WebP không hỗ trợ — chỉ TIFF/JPEG.
-                            </p>
+                            <div className="mt-2.5 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 text-xs">
+                                <label className="text-[11px] font-bold text-amber-800 dark:text-amber-300 uppercase block mb-1.5">
+                                    Hồ sơ màu CMYK (ICC Profile)
+                                </label>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-zinc-200">
+                                        <input
+                                            type="radio"
+                                            name="cmykProfile"
+                                            value="auto"
+                                            checked={cmykProfile === 'auto'}
+                                            onChange={() => setCmykProfile('auto')}
+                                            disabled={busy}
+                                        />
+                                        <span><strong>Tự động</strong> (Theo OutputIntent file gốc / FOGRA39)</span>
+                                    </label>
+                                    <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-zinc-200">
+                                        <input
+                                            type="radio"
+                                            name="cmykProfile"
+                                            value="fogra39"
+                                            checked={cmykProfile === 'fogra39'}
+                                            onChange={() => setCmykProfile('fogra39')}
+                                            disabled={busy}
+                                        />
+                                        <span>ISO Coated v2 (FOGRA39)</span>
+                                    </label>
+                                    <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-zinc-200">
+                                        <input
+                                            type="radio"
+                                            name="cmykProfile"
+                                            value="none"
+                                            checked={cmykProfile === 'none'}
+                                            onChange={() => setCmykProfile('none')}
+                                            disabled={busy}
+                                        />
+                                        <span>Không nhúng ICC (Untagged - Giống Illustrator mặc định)</span>
+                                    </label>
+                                </div>
+                                <p className="mt-2 text-[10.5px] text-amber-700 dark:text-amber-400">
+                                    Chế độ CMYK trích xuất trực tiếp từ PPE ink-space. PNG/WebP không hỗ trợ — chỉ TIFF/JPEG.
+                                </p>
+                            </div>
                         )}
                         <p className="mt-1 text-[11px] text-slate-400 dark:text-zinc-500">
                             {t('misc.exportImage:alpha_flatten_white_note')}

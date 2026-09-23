@@ -11,6 +11,7 @@ interface UseLiveLinkWatcherOptions {
     filePath?: string | null;
     enabled?: boolean;
     onFileChanged: () => void;
+    debounceMs?: number;
 }
 
 /**
@@ -22,11 +23,13 @@ export function useLiveLinkWatcher({
     filePath,
     enabled = true,
     onFileChanged,
+    debounceMs = 150,
 }: UseLiveLinkWatcherOptions) {
     const lastWatchedPathRef = useRef<string | null>(null);
     const lastModifiedRef = useRef<number | null>(null);
     const lastSizeRef = useRef<number | null>(null);
     const isCheckingRef = useRef(false);
+    const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const onFileChangedRef = useRef(onFileChanged);
     if (onFileChangedRef && 'current' in onFileChangedRef) {
         onFileChangedRef.current = onFileChanged;
@@ -37,6 +40,10 @@ export function useLiveLinkWatcher({
             lastWatchedPathRef.current = null;
             lastModifiedRef.current = null;
             lastSizeRef.current = null;
+            if (debounceTimerRef.current) {
+                clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+            }
             return;
         }
 
@@ -45,6 +52,10 @@ export function useLiveLinkWatcher({
             lastWatchedPathRef.current = filePath;
             lastModifiedRef.current = null;
             lastSizeRef.current = null;
+            if (debounceTimerRef.current) {
+                clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+            }
         }
 
         let cancelled = false;
@@ -54,7 +65,10 @@ export function useLiveLinkWatcher({
             isCheckingRef.current = true;
             try {
                 const stat = await invoke<SystemFileStatResult>('stat_system_file', { path: filePath });
-                if (cancelled || stat.status !== 'available') return;
+                if (cancelled) return;
+                if (stat.status !== 'available') {
+                    return;
+                }
 
                 const currentMod = stat.modified_ms ?? null;
                 const currentSize = stat.size;
@@ -74,12 +88,17 @@ export function useLiveLinkWatcher({
                     lastModifiedRef.current = currentMod;
                     lastSizeRef.current = currentSize;
 
-                    // Chờ nhẹ 150ms để ứng dụng ngoài (Illustrator) xả hết buffer ghi đĩa
-                    setTimeout(() => {
+                    // Hủy timer trước đó nếu có sự kiện dồn dập
+                    if (debounceTimerRef.current) {
+                        clearTimeout(debounceTimerRef.current);
+                    }
+
+                    // Chờ debounce để ứng dụng ngoài (Illustrator/Corel) xả hết buffer ghi đĩa
+                    debounceTimerRef.current = setTimeout(() => {
                         if (cancelled) return;
                         const notify = onFileChangedRef?.current || onFileChanged;
                         notify();
-                    }, 150);
+                    }, debounceMs);
                 }
             } catch {
                 // Thư mục hoặc tệp tạm thời không đọc được trong lúc ghi
@@ -106,8 +125,12 @@ export function useLiveLinkWatcher({
 
         return () => {
             cancelled = true;
+            if (debounceTimerRef.current) {
+                clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+            }
             window.removeEventListener('focus', handleFocus);
             clearInterval(interval);
         };
-    }, [filePath, enabled]);
+    }, [filePath, enabled, debounceMs]);
 }

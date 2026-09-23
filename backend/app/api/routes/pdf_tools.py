@@ -1456,7 +1456,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         StickerEngine,
         compute_cut_bleed_offsets,
     )
-    from app.workers.sticker_page_canvas import restore_sticker_page_canvas
+    from app.workers.sticker_page_canvas import (
+        normalize_sticker_tight_crop_origin,
+        restore_sticker_page_canvas,
+    )
     form = await request.form()
     file_id = form.get("file_id")
     file_path = form.get("file_path")
@@ -1962,6 +1965,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                     output_path,
                     expansion_pts=page_expansion_pts,
                 )
+            elif do_crop_to_sticker and selected_objects_by_page is None and not do_rectangle_mode:
+                normalize_sticker_tight_crop_origin(output_path)
             # Giữ tạo output trong một lượt admission, không xếp hàng lại cho watermark.
             _safe_watermark(output_path, license_info)
             return meta, engine_seconds

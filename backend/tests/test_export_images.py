@@ -450,6 +450,98 @@ def test_cmyk_jpeg_is_four_channel(tmp_path):
         assert im.info.get("icc_profile") is not None, "JPEG CMYK thiếu ICC profile"
 
 
+def test_schema_accepts_cmyk_profile():
+    """EXPORT (audit 2026-09-21 §EXPCOLOR21): schema hỗ trợ cmyk_profile mặc định 'auto'."""
+    req = ExportImagesRequest(output_dir="/tmp", color_mode="cmyk", format="jpeg")
+    assert req.cmyk_profile == "auto"
+
+    req2 = ExportImagesRequest(output_dir="/tmp", color_mode="cmyk", format="jpeg", cmyk_profile="none")
+    assert req2.cmyk_profile == "none"
+
+    batch_req = ExportImagesBatchRequest(
+        jobs=[ExportImageBatchJob(output_dir="/tmp", format="jpeg", dpi=150)],
+        color_mode="cmyk",
+        cmyk_profile="gracol",
+    )
+    assert batch_req.cmyk_profile == "gracol"
+
+
+def test_extract_pdf_output_intent_cmyk_icc_without_intent(tmp_path):
+    """EXPORT (audit 2026-09-21 §EXPCOLOR21): PDF không có OutputIntent trả về None."""
+    src = _make_pdf(tmp_path, 1)
+    extracted = export_route._extract_pdf_output_intent_cmyk_icc(src)
+    assert extracted is None
+
+
+def test_extract_pdf_output_intent_cmyk_icc_with_intent(tmp_path):
+    """EXPORT (audit 2026-09-21 §EXPCOLOR21): trích xuất đúng bytes ICC từ OutputIntent."""
+    import pikepdf
+    src = _make_pdf(tmp_path, 1)
+    profile_data = export_route._get_cmyk_icc_bytes("fogra39")
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        icc_stream = pdf.make_stream(profile_data)
+        icc_stream["/N"] = 4
+        oi = pdf.make_indirect({
+            "/Type": pikepdf.Name("/OutputIntent"),
+            "/S": pikepdf.Name("/GTS_PDFX"),
+            "/OutputConditionIdentifier": pikepdf.String("FOGRA39"),
+            "/DestOutputProfile": icc_stream,
+        })
+        pdf.Root["/OutputIntents"] = pdf.make_indirect([oi])
+        pdf.save(src)
+
+    extracted = export_route._extract_pdf_output_intent_cmyk_icc(src)
+    assert extracted is not None
+    assert extracted == profile_data
+
+
+@_requires_cmyk_native
+def test_cmyk_export_untagged_has_no_icc_profile(tmp_path):
+    """EXPORT (audit 2026-09-21 §EXPCOLOR21): cmyk_profile='none' xuất ảnh không nhúng profile."""
+    from PIL import Image
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out_untagged")
+    files = render_pdf_to_images(
+        src, out, fmt="jpeg", dpi=72, color_mode="cmyk", cmyk_profile="none"
+    )
+    assert len(files) == 1
+    with Image.open(files[0]) as im:
+        assert im.mode == "CMYK"
+        assert im.info.get("icc_profile") is None, "Ảnh untagged không được chứa ICC profile"
+
+
+@_requires_cmyk_native
+def test_cmyk_export_auto_embeds_source_intent_icc(tmp_path):
+    """EXPORT (audit 2026-09-21 §EXPCOLOR21): cmyk_profile='auto' nhúng OutputIntent của file PDF."""
+    import pikepdf
+    from PIL import Image
+
+    src = _make_pdf(tmp_path, 1)
+    profile_data = export_route._get_cmyk_icc_bytes("fogra39")
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        icc_stream = pdf.make_stream(profile_data)
+        icc_stream["/N"] = 4
+        oi = pdf.make_indirect({
+            "/Type": pikepdf.Name("/OutputIntent"),
+            "/S": pikepdf.Name("/GTS_PDFX"),
+            "/OutputConditionIdentifier": pikepdf.String("TestProfile"),
+            "/DestOutputProfile": icc_stream,
+        })
+        pdf.Root["/OutputIntents"] = pdf.make_indirect([oi])
+        pdf.save(src)
+
+    out = str(tmp_path / "out_auto")
+    files = render_pdf_to_images(
+        src, out, fmt="jpeg", dpi=72, color_mode="cmyk", cmyk_profile="auto"
+    )
+    assert len(files) == 1
+    with Image.open(files[0]) as im:
+        assert im.mode == "CMYK"
+        embedded = im.info.get("icc_profile")
+        assert embedded is not None
+        assert embedded == profile_data
+
+
 @_requires_cmyk_native
 def test_cmyk_300dpi_trang_khach_chay_duoc_tren_low_tier_sach(
     tmp_path,
@@ -641,3 +733,74 @@ def test_batch_schema_limits_number_of_jobs():
             file_path="source.pdf",
             jobs=[{"output_dir": "out", "format": "png", "dpi": 150}] * 9,
         )
+
+
+def test_grayscale_export_colorimetric_accuracy(tmp_path):
+    """EXPORT (audit 2026-09-22 §EXPCOLOR21.03): Grayscale chuyển trắc màu LittleCMS sang Gray Gamma 2.2."""
+    from PIL import Image
+    from reportlab.pdfgen.canvas import Canvas
+
+    src = str(tmp_path / "red_block.pdf")
+    canvas = Canvas(src, pagesize=(100, 100))
+    canvas.setFillColorRGB(1.0, 0.0, 0.0)  # Đỏ tươi sRGB
+    canvas.rect(0, 0, 100, 100, fill=1, stroke=0)
+    canvas.save()
+
+    out = str(tmp_path / "out_gray")
+    files = render_pdf_to_images(src, out, fmt="png", dpi=72, color_mode="gray")
+    assert len(files) == 1
+
+    with Image.open(files[0]) as im:
+        assert im.mode == "L"
+        # Đỏ tươi sRGB (255,0,0) khi chuyển trắc màu sang Gray Gamma 2.2 đạt mức 129
+        # (công thức ITU-R 601 luma cũ cho 76, sai lệch tới 53 đơn vị)
+        val = im.getpixel((50, 50))
+        assert val in range(127, 131), f"Kỳ vọng mức xám trắc màu ~129, nhận được {val}"
+
+
+def test_webp_grayscale_export_valid_icc(tmp_path):
+    """EXPORT (audit 2026-09-22 §EXPCOLOR21.04): WebP Grayscale lưu container hợp lệ, không gây lỗi CMS."""
+    import io
+    from PIL import Image, ImageCms
+
+    src = _make_pdf(tmp_path, 1)
+    out = str(tmp_path / "out_webp_gray")
+    files = render_pdf_to_images(src, out, fmt="webp", dpi=72, color_mode="gray")
+    assert len(files) == 1
+
+    with Image.open(files[0]) as im:
+        icc = im.info.get("icc_profile")
+        assert icc is not None, "WebP phải có ICC profile"
+        profile = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        # Không được ném lỗi 'cannot build transform'
+        transform = ImageCms.buildTransform(
+            profile, ImageCms.createProfile("sRGB"), im.mode, "RGB"
+        )
+        assert transform is not None
+
+
+def test_resolve_ppe_cmyk_profile_wires_output_intent(tmp_path):
+    """EXPORT (audit 2026-09-22 §EXPCOLOR22.01): OutputIntent được materialize và truyền vào PPE."""
+    import pikepdf
+    from app.core.icc_profiles import resolve_cmyk_profile_path
+
+    src = _make_pdf(tmp_path, 1)
+    profile_data = export_route._get_cmyk_icc_bytes("fogra39")
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        icc_stream = pdf.make_stream(profile_data)
+        icc_stream["/N"] = 4
+        oi = pdf.make_indirect({
+            "/Type": pikepdf.Name("/OutputIntent"),
+            "/S": pikepdf.Name("/GTS_PDFX"),
+            "/OutputConditionIdentifier": pikepdf.String("TestOI"),
+            "/DestOutputProfile": icc_stream,
+        })
+        pdf.Root["/OutputIntents"] = pdf.make_indirect([oi])
+        pdf.save(src)
+
+    resolved = export_route._resolve_ppe_cmyk_profile(src, "auto")
+    assert os.path.isfile(resolved), "Phải trả về file path profile hợp lệ"
+    # Kiểm tra resolve_cmyk_profile_path chấp nhận trực tiếp path này
+    cmyk_path = resolve_cmyk_profile_path(resolved)
+    assert cmyk_path == resolved
+

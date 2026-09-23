@@ -670,6 +670,56 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         unmount();
     });
 
+    it('current mode lùi PDFium khi PPE trả unsupported và nhớ capability theo trang', async () => {
+        transportMocks.invoke.mockImplementation((command: string) => {
+            if (command === 'render_ppe_page') {
+                return Promise.reject(new Error(
+                    'PPE_NATIVE_UNSUPPORTED:{"reason":"unsupported_transparency","detail":"Trang dùng transparency PPE chưa dựng exact."}',
+                ));
+            }
+            if (command === 'render_pdf_page') {
+                return Promise.resolve(new Uint8Array([137, 80, 78, 71, 13, 10]).buffer);
+            }
+            return Promise.resolve(true);
+        });
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: {
+                path: 'D:\\jobs\\current-transparency.pdf',
+                name: 'current-transparency.pdf',
+                type: 'application/pdf',
+            },
+            pdfRef: null,
+            pdfUrl: 'localfile://current-transparency',
+            activePage: 1,
+            isActive: true,
+            accurateColorEnabled: true,
+            accurateColorPages: [1],
+            viewerEngineMode: 'current',
+        }));
+
+        await result.current.getTileUrl(
+            1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' },
+        );
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
+            .toHaveLength(1);
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
+            .toHaveLength(1);
+        expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
+        expect(result.current.accurateColorError).toBeNull();
+
+        await result.current.getTileUrl(
+            1, 0, 1.25, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' },
+        );
+        // Lần 2 bỏ qua PPE vì đã nhớ trong compatibilityPagesRef
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
+            .toHaveLength(1);
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
+            .toHaveLength(2);
+        unmount();
+    });
+
     it('ppe-only fail-loud khi capability chưa được PPE hỗ trợ', async () => {
         transportMocks.invoke.mockImplementation((command: string) => {
             if (command === 'render_ppe_page') {

@@ -41,6 +41,10 @@ from app.core.nesting_imposition_bundle import (
     build_imposition_render_bundle_v2,
 )
 from app.core.nesting_manifest_store import NestingManifestStore, StoredNestingManifest
+from app.core.nesting_production_adapter import (
+    CANONICAL_DECIMAL_PLACES,
+    RenderPolygonV1,
+)
 from app.core.nesting_production_orchestrator import (
     ProductionCommitFence,
     ProductionNestingInput,
@@ -170,6 +174,8 @@ class ProductionNestingJobInput:
     placement_zones: tuple[PartPlacementZoneSpec, ...] = ()
     #: gapX/gapY của UI → clearance.partToPart.
     part_gap: AxisGapMm = field(default_factory=AxisGapMm)
+    #: Bù xén (bleed) mong muốn, mm. Dùng để mở rộng artwork clip path theo ngân sách nửa gap.
+    bleed_mm: float = 0.0
     #: Khoảng hở tới mép vùng in. Mặc định 0: lề tờ đã trừ vào usable area rồi,
     #: cộng lại lần nữa là double-count.
     sheet_edge_gap: AxisGapMm = field(default_factory=AxisGapMm)
@@ -379,6 +385,13 @@ def _validate(value: ProductionNestingJobInput) -> None:
         raise _error("Simplex yêu cầu flip_edge='none'.")
     if value.duplex_mode == "duplex" and value.tool != "cnc_imposer":
         raise _error("Chỉ Bình CNC hỗ trợ duplex.")
+    if (
+        isinstance(value.bleed_mm, bool)
+        or not isinstance(value.bleed_mm, (int, float))
+        or not math.isfinite(value.bleed_mm)
+        or value.bleed_mm < 0.0
+    ):
+        raise _error("bleed_mm phải là số hữu hạn không âm.")
 
 
 def _die_dimensions_mm(
@@ -556,12 +569,109 @@ def _public_request(
     return request
 
 
-def _clearance(value: ProductionNestingJobInput) -> dict[str, dict[str, float]]:
+def derive_artwork_clip_path(
+    polygon: RenderPolygonV1,
+    retained_bleed_mm: float | AxisGapMm,
+) -> RenderPolygonV1:
+    """Nở đa giác đường bế theo phần bleed được phép giữ lại.
+
+    BXHAND21.03: Với nguồn đã bù bleed và khoảng hở tem > 0, artwork clip path
+    phải nở ra tối đa nửa khoảng hở theo từng trục để giữ lại vòng màu bù mà
+    không lấn sang vùng của tem láng giềng. Scalar vẫn được nhận để tương thích
+    với helper/caller cũ; production truyền ``AxisGapMm``.
+    """
+    if isinstance(retained_bleed_mm, AxisGapMm):
+        bleed_x = max(0.0, float(retained_bleed_mm.x_mm))
+        bleed_y = max(0.0, float(retained_bleed_mm.y_mm))
+    else:
+        bleed_x = bleed_y = max(0.0, float(retained_bleed_mm))
+    if max(bleed_x, bleed_y) <= 1e-6:
+        return polygon
+
+    from shapely.geometry import Polygon
+
+    original = Polygon(polygon.outer, polygon.holes)
+    if original.is_empty or not original.is_valid:
+        return polygon
+
+    if abs(bleed_x - bleed_y) <= 1e-6:
+        buffered = original.buffer(bleed_x, join_style=2, mitre_limit=2.0)
+    else:
+        # BXHAND (audit 2026-09-23 §BXHAND23.03): hở X/Y có thể khác nhau.
+        # Scale về hệ chuẩn trước khi buffer để không lấy min(X,Y) cho cả hai trục.
+        # Hai trục đều dương ở production; ca hở bằng 0 giữ contract clip sát trục đó.
+        from shapely import affinity
+
+        normalized = affinity.scale(
+            original,
+            xfact=1.0 / max(bleed_x, 1e-6),
+            yfact=1.0 / max(bleed_y, 1e-6),
+            origin=(0.0, 0.0),
+        )
+        buffered = affinity.scale(
+            normalized.buffer(1.0, join_style=2, mitre_limit=2.0),
+            xfact=bleed_x,
+            yfact=bleed_y,
+            origin=(0.0, 0.0),
+        )
+    if not buffered.is_valid:
+        buffered = buffered.buffer(0)
+    if buffered.is_empty or not buffered.is_valid:
+        return polygon
+
+    if buffered.geom_type == "MultiPolygon":
+        buffered = max(buffered.geoms, key=lambda g: g.area)
+
+    if buffered.geom_type != "Polygon":
+        return polygon
+
+    outer = tuple(
+        (
+            round(float(x), CANONICAL_DECIMAL_PLACES),
+            round(float(y), CANONICAL_DECIMAL_PLACES),
+        )
+        for x, y in tuple(buffered.exterior.coords)[:-1]
+    )
+    if len(outer) < 3:
+        return polygon
+
+    holes = tuple(
+        tuple(
+            (
+                round(float(x), CANONICAL_DECIMAL_PLACES),
+                round(float(y), CANONICAL_DECIMAL_PLACES),
+            )
+            for x, y in tuple(interior.coords)[:-1]
+        )
+        for interior in buffered.interiors
+        if len(interior.coords) > 3
+    )
+
+    return RenderPolygonV1(outer=outer, holes=holes)
+
+
+def _clearance(
+    value: ProductionNestingJobInput,
+    retained_bleed_mm: float | AxisGapMm = 0.0,
+) -> dict[str, dict[str, float]]:
+    if isinstance(retained_bleed_mm, AxisGapMm):
+        bleed_x = max(0.0, float(retained_bleed_mm.x_mm))
+        bleed_y = max(0.0, float(retained_bleed_mm.y_mm))
+    else:
+        bleed_x = bleed_y = max(0.0, float(retained_bleed_mm))
+    part_to_part_x = max(0.0, value.part_gap.x_mm - 2.0 * bleed_x)
+    part_to_part_y = max(0.0, value.part_gap.y_mm - 2.0 * bleed_y)
+    part_to_part = AxisGapMm(x_mm=part_to_part_x, y_mm=part_to_part_y)
+
     obstacle = value.obstacle_gap if value.obstacle_gap is not None else value.part_gap
+    obstacle_x = max(0.0, obstacle.x_mm - bleed_x)
+    obstacle_y = max(0.0, obstacle.y_mm - bleed_y)
+    part_to_obstacle = AxisGapMm(x_mm=obstacle_x, y_mm=obstacle_y)
+
     return {
-        "partToPart": value.part_gap.to_contract(),
+        "partToPart": part_to_part.to_contract(),
         "partToSheetEdge": value.sheet_edge_gap.to_contract(),
-        "partToObstacle": obstacle.to_contract(),
+        "partToObstacle": part_to_obstacle.to_contract(),
     }
 
 
@@ -627,8 +737,33 @@ def solve_production_nesting_job(
             pins[part.part_id] = pin
             geometry[part.part_id] = _resolve_geometry(part, pin, tool=value.tool)
 
+        # BXHAND21.03: Giữ lại phần bleed nguồn trong ngân sách nửa khoảng hở tem
+        # để không bị clip mất vòng bù khi bình true-shape nesting.
+        if (
+            value.part_gap.x_mm > 0.0
+            and value.part_gap.y_mm > 0.0
+            and value.bleed_mm > 0.0
+        ):
+            retained_bleed_mm = AxisGapMm(
+                x_mm=min(value.part_gap.x_mm / 2.0, float(value.bleed_mm)),
+                y_mm=min(value.part_gap.y_mm / 2.0, float(value.bleed_mm)),
+            )
+        else:
+            retained_bleed_mm = AxisGapMm()
+
+        artwork_clip_paths = {
+            part.part_id: derive_artwork_clip_path(
+                geometry[part.part_id].polygon,
+                retained_bleed_mm,
+            )
+            for part in value.parts
+        }
+
+        # Footprint đóng gói phải phủ cả cutContour lẫn artworkClipPath (bất biến
+        # của adapter containment). Clearance solver được trừ đi 2 * retained_bleed
+        # để khoảng cách giữa hai đường dao cắt vẫn bảo toàn đúng part_gap.
         footprints = {
-            part.part_id: derive_packing_footprint(geometry[part.part_id].polygon)
+            part.part_id: derive_packing_footprint(artwork_clip_paths[part.part_id])
             for part in value.parts
         }
         _assert_order_area_feasible(value, footprints)
@@ -648,7 +783,7 @@ def solve_production_nesting_job(
                     # `cut_contour` giữ nguyên từng đỉnh: dao cắt đúng đường của file.
                     packing_footprint=footprints[part.part_id],
                     cut_contour=polygon,
-                    artwork_clip_path=polygon,
+                    artwork_clip_path=artwork_clip_paths[part.part_id],
                     die_dimensions_mm=_die_dimensions_mm(
                         part,
                         geometry[part.part_id],
@@ -666,7 +801,7 @@ def solve_production_nesting_job(
             request_revision=int(value.request_revision),
             public_request=_public_request(value, geometry, footprints),
             render_bundle=built.render_bundle,
-            clearance=_clearance(value),
+            clearance=_clearance(value, retained_bleed_mm),
             fixed_obstacles=tuple(value.fixed_obstacles),
             source_pins=built.source_pins,
             alignment=value.align,

@@ -196,6 +196,10 @@ def job_identity_key(job: Any) -> tuple:
         str(job.grouping_intent),
         tuple(sorted(_placement_zone_key(zone) for zone in job.placement_zones)),
         _gap_key(job.part_gap),
+        # BXHAND (audit 2026-09-23 §NEST23.02): retained bleed thay đổi
+        # artworkClipPath/footprint/clearance, nên không được dùng lại manifest
+        # của job có độ bù xén khác.
+        float(getattr(job, "bleed_mm", 0.0)),
         _gap_key(job.sheet_edge_gap),
         None if job.obstacle_gap is None else _gap_key(job.obstacle_gap),
         tuple(

@@ -32,7 +32,10 @@ from app.workers.sticker_engine import (
     should_presmooth_cutline_alpha,
     compute_cut_bleed_offsets,
 )
-from app.workers.sticker_page_canvas import restore_sticker_page_canvas
+from app.workers.sticker_page_canvas import (
+    normalize_sticker_tight_crop_origin,
+    restore_sticker_page_canvas,
+)
 
 
 STICKER_PAGE_PADDING_MM = 0.25
@@ -1227,6 +1230,8 @@ def _build_cutline_pdf_from_pngs(
             str(output_path),
             expansion_pts=_page_expansion_points(cut_mode, offset_mm, bleed_mm),
         )
+    else:
+        normalize_sticker_tight_crop_origin(str(output_path))
     return output_path
 
 
@@ -1800,6 +1805,8 @@ def export_sticker_sheet(
                 str(output_path),
                 expansion_pts=_page_expansion_points(cut_mode, offset_mm, bleed_mm),
             )
+        else:
+            normalize_sticker_tight_crop_origin(str(output_path))
         return StickerSheetExportResult(
             path=output_path,
             filename=(

@@ -522,7 +522,7 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
 
     openColorAdvancedOptions();
     const runButton = screen.getByRole('button', { name: 'run' }) as HTMLButtonElement;
-    expect(runButton.disabled).toBe(true);
+    expect(runButton.disabled).toBe(false);
     expect(screen.queryByRole('button', { name: 'sang_nhe_2' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'goi_y_can_bang_trang' }));
@@ -534,7 +534,7 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
     )).toBe(false);
     expect((screen.getByRole('slider', { name: 'bu_sang_lstar' }) as HTMLInputElement).value)
       .toBe('0');
-    expect(runButton.disabled).toBe(true);
+    expect(runButton.disabled).toBe(false);
     expect(screen.getByText(/306\.70%/)).not.toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'ap_dung_goi_y_an_toan' }));
@@ -853,8 +853,7 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
       viewerPageRotations: [0, 0],
     });
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: 'run' }) as HTMLButtonElement).disabled)
-        .toBe(true);
+      expect(screen.queryByTestId('color-preview-stale')).not.toBeNull();
     });
 
     fireEvent.click(
@@ -1442,5 +1441,95 @@ describe('giu thong bao sau khi cap nhat PDF tren viewer', () => {
     await waitFor(() => {
       expect(screen.queryByText('luu_thanh_cong', { exact: false })).toBeNull();
     });
+  });
+
+  it('cho phép Thực thi chuyển màu CMYK trực tiếp mà không bắt buộc phải bấm xem trước', async () => {
+    const onFileFixed = vi.fn();
+    const store = createWorkspaceStore();
+    uploadPDF.mockResolvedValueOnce({ id: 'direct-cmyk-doc' });
+    authenticatedFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/icc-profiles')) {
+        return jsonResponse({
+          profiles: [
+            { id: 'fogra39', name: 'FOGRA39', description: 'Coated', available: true },
+          ],
+        });
+      }
+      if (url.includes('/preflight/convert-colors')) {
+        return jsonResponse({
+          success: true,
+          output_filename: 'direct-cmyk.pdf',
+          log: [{ status: 'success', message: 'OK', duration_ms: 10 }],
+        });
+      }
+      if (url.includes('/download/')) return blobResponse();
+      throw new Error('Unexpected request: ' + url);
+    });
+
+    render(
+      <WorkspaceContext.Provider value={store}>
+        <ConvertColorsTool
+          pdfFile={new File(['input'], 'input.pdf', { type: 'application/pdf' })}
+          onFileFixed={onFileFixed}
+        />
+      </WorkspaceContext.Provider>,
+    );
+
+    const runButton = await screen.findByRole('button', { name: 'run' });
+    expect((runButton as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(runButton);
+    await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
+
+    const convertCall = authenticatedFetch.mock.calls.find(
+      ([input]) => String(input).endsWith('/preflight/convert-colors'),
+    );
+    expect(convertCall).toBeDefined();
+    expect(JSON.parse(String(convertCall?.[1]?.body))).toMatchObject({
+      icc_profile: 'fogra39',
+      conversions: ['rgb_to_cmyk'],
+    });
+  });
+
+  it('hiển thị chú thích nghiệp vụ và huy hiệu cho hồ sơ màu và rendering intent', async () => {
+    const store = createWorkspaceStore();
+    authenticatedFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/icc-profiles')) {
+        return jsonResponse({
+          profiles: [
+            { id: 'fogra39', name: 'ISO Coated v2 (FOGRA39)', description: 'Giấy couché', available: true },
+            { id: 'swop', name: 'US Web Coated (SWOP) v2', description: 'Web offset', available: true },
+          ],
+        });
+      }
+      throw new Error('Unexpected request: ' + url);
+    });
+
+    render(
+      <WorkspaceContext.Provider value={store}>
+        <ConvertColorsTool
+          pdfFile={new File(['input'], 'input.pdf', { type: 'application/pdf' })}
+        />
+      </WorkspaceContext.Provider>,
+    );
+
+    const profileSelect = await screen.findByRole('combobox', { name: 'ho_so_mau_dich' });
+    expect(profileSelect).toBeDefined();
+
+    // Option text contains badge
+    expect(screen.getByText(/profile_badge_fogra39/)).toBeDefined();
+
+    // Contextual hint box for selected profile
+    expect(screen.getByText(/profile_hint_fogra39/)).toBeDefined();
+
+    // Open advanced options and check intent hint
+    openColorAdvancedOptions();
+    expect(screen.getByText(/intent_hint_relative/)).toBeDefined();
+
+    // Change profile to swop and check that hint updates
+    fireEvent.change(profileSelect, { target: { value: 'swop' } });
+    expect(screen.getByText(/profile_hint_swop/)).toBeDefined();
   });
 });

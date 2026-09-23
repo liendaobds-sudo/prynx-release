@@ -279,6 +279,7 @@ export default function StickerTool({
     );
     const productType = controlledProductType ?? internalProductType;
     const setTaskMode = useImposerSettingsStore(s => s.setTaskMode);
+    const setBleed = useImposerSettingsStore(s => s.setBleed);
     const openImpositionTool = (toolKey: 'booklet' | 'nup' | 'sticker_imposer') => {
         const definition = findToolByUniqueKey(toolKey);
         if (!definition) {
@@ -292,6 +293,10 @@ export default function StickerTool({
         requestToolActivation(definition, () => {
             setActiveDashboardTool(toolKey);
             setTaskMode(toolKey);
+            // BXHAND21.01: Bàn giao giá trị bù xén sang Bình tem bế / N-up để không bị clip mất vòng bù
+            if (bleedMm > 0) {
+                setBleed(bleedMm);
+            }
         });
     };
 

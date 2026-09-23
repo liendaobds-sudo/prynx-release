@@ -33,6 +33,12 @@ type PreviewNestingProgress = Omit<NestingPreviewJobProgress, "progress"> & {
   progress?: number;
 };
 
+// PARITY (audit 2026-08-29 §NEST-PARITY-1): phải đúng hệt backend. Hằng rút gọn
+// 2.83465 làm 320 mm thành 320.000488889 mm sau vòng đổi đơn vị, đủ làm miss
+// session identity và buộc export solve lại.
+const MM_TO_PT = 72 / 25.4;
+const PT_TO_MM = 1 / MM_TO_PT;
+
 export interface GridPreviewProps {
   /** Tab nền vẫn mounted; false phải dừng job và cấm kết quả cũ ghi vào store. */
   isActive?: boolean;
@@ -104,6 +110,9 @@ export interface GridPreviewProps {
   groupingStrategy?: string;
   clusterCombineMode?: string;
   clusterNesting?: boolean;
+  clusterCutCmyk?: [number, number, number, number];
+  clusterCutFullSheet?: boolean;
+  clusterPostDieCutMarks?: boolean;
   clusterSizingMode?: string;
   clusterCols?: number;
   clusterRows?: number;
@@ -1443,6 +1452,9 @@ export default function GridPreview(props: GridPreviewProps) {
     groupingStrategy,
     clusterCombineMode,
     clusterNesting,
+    clusterCutCmyk,
+    clusterCutFullSheet,
+    clusterPostDieCutMarks,
     clusterSizingMode,
     clusterCols,
     clusterRows,
@@ -1468,6 +1480,9 @@ export default function GridPreview(props: GridPreviewProps) {
     diagnosticTraceId = "",
     onDiagnosticEvent,
   } = props;
+
+  const usableW = Math.max(0, sheetWidth - marginLeft - marginRight);
+  const usableH = Math.max(0, sheetHeight - marginTop - marginBottom);
 
   // INKING (audit 2026-08-12 §INK-DIE-03): tem vuông/chữ nhật dùng cùng cờ
   // xoay với PDF; hình khác/CNC/nguyên tấm vẫn bị khóa phòng thủ tại đây.
@@ -1513,6 +1528,18 @@ export default function GridPreview(props: GridPreviewProps) {
         targetQuantity,
         targetQuantitiesByPage,
         shapeParamsByPage,
+        columns,
+        rows,
+        itemW: typeof itemWPt === "number" && itemWPt > 0 ? itemWPt * PT_TO_MM : itemW,
+        itemH: typeof itemHPt === "number" && itemHPt > 0 ? itemHPt * PT_TO_MM : itemH,
+        sheetWidth,
+        sheetHeight,
+        marginLeft,
+        marginRight,
+        marginTop,
+        marginBottom,
+        usableW,
+        usableH,
       }),
     [
       imposerMode,
@@ -1534,6 +1561,20 @@ export default function GridPreview(props: GridPreviewProps) {
       targetQuantity,
       targetQuantitiesByPage,
       shapeParamsByPage,
+      columns,
+      rows,
+      itemW,
+      itemH,
+      itemWPt,
+      itemHPt,
+      sheetWidth,
+      sheetHeight,
+      marginLeft,
+      marginRight,
+      marginTop,
+      marginBottom,
+      usableW,
+      usableH,
     ],
   );
 
@@ -1742,9 +1783,6 @@ export default function GridPreview(props: GridPreviewProps) {
     return {};
   };
 
-  const usableW = Math.max(0, sheetWidth - marginLeft - marginRight);
-  const usableH = Math.max(0, sheetHeight - marginTop - marginBottom);
-
   // Parse shape props if provided as JSON string
   const shapePropsParsed = useMemo(() => {
     if (!shapeParams) return null;
@@ -1763,11 +1801,6 @@ export default function GridPreview(props: GridPreviewProps) {
   // unit consistency with shape_props (bodyW, smallD, etc.).
   // Then convert the response back to mm for SVG rendering.
   // ==========================================
-  // PARITY (audit 2026-08-29 §NEST-PARITY-1): phải đúng hệt backend. Hằng rút gọn
-  // 2.83465 làm 320 mm thành 320.000488889 mm sau vòng đổi đơn vị, đủ làm miss
-  // session identity và buộc export solve lại.
-  const MM_TO_PT = 72 / 25.4;
-  const PT_TO_MM = 1 / MM_TO_PT;
 
   // Generation id — chặn response cũ (10 trang) ghi đè response mới (4 trang).
   const previewGenRef = useRef(0);
@@ -1940,6 +1973,9 @@ export default function GridPreview(props: GridPreviewProps) {
       grp: groupingStrategy,
       ccm: clusterCombineMode,
       cn: clusterNesting !== false,
+      ccmyk: clusterCutCmyk,
+      cfs: !!clusterCutFullSheet,
+      cpdm: clusterPostDieCutMarks !== false,
       csm: clusterSizingMode,
       cc: clusterCols,
       cr: clusterRows,
@@ -2008,6 +2044,9 @@ export default function GridPreview(props: GridPreviewProps) {
     groupingStrategy,
     clusterCombineMode,
     clusterNesting,
+    clusterCutCmyk,
+    clusterCutFullSheet,
+    clusterPostDieCutMarks,
     clusterSizingMode,
     clusterCols,
     clusterRows,
@@ -2474,6 +2513,9 @@ export default function GridPreview(props: GridPreviewProps) {
           grouping_strategy: groupingStrategy,
           cluster_combine_mode: clusterCombineMode,
           cluster_nesting: clusterNesting !== false,
+          cluster_cut_cmyk: clusterCutCmyk,
+          cluster_cut_full_sheet: !!clusterCutFullSheet,
+          cluster_post_die_cut_marks: clusterPostDieCutMarks !== false,
           cluster_sizing_mode: clusterSizingMode,
           cluster_cols: clusterCols,
           cluster_rows: clusterRows,
@@ -3253,6 +3295,15 @@ export default function GridPreview(props: GridPreviewProps) {
   const cutVpx = cutSegmentsPx.length === 0 ? (_cutLines?.v || []).map((v) => pad + v * scale) : [];
   const cutHpx = cutSegmentsPx.length === 0 ? (_cutLines?.h || []).map((h) => pad + (sheetHeight - h) * scale) : [];
 
+  const clusterCutHex = useMemo(() => {
+    if (!clusterCutCmyk) return undefined;
+    const [c, m, y, k] = clusterCutCmyk;
+    const r = Math.round(255 * (1 - c / 100) * (1 - k / 100));
+    const g = Math.round(255 * (1 - m / 100) * (1 - k / 100));
+    const b = Math.round(255 * (1 - y / 100) * (1 - k / 100));
+    return `rgb(${r}, ${g}, ${b})`;
+  }, [clusterCutCmyk]);
+
   // Lật gương Mặt sau theo cạnh lật (CNC). Mặc định long-edge = lật ngang.
   const _isCncPreview = !!layoutResult?.isCncPreview;
   const _cncShortFlip =
@@ -3298,6 +3349,207 @@ export default function GridPreview(props: GridPreviewProps) {
 
   // Mặt sau dùng CHÍNH ô mặt trước — phản chiếu do backGroupTransform đảm nhiệm.
   const cncBackCells = svgCells;
+
+  // ==========================================
+  // Render realistic pont marks (Ốc bế định vị & Thanh canh giấy)
+  // Khớp 100% với nup_marks._draw_ponts_on_page trong backend.
+  // ==========================================
+  const renderPontMarks = () => {
+    const isPontActive = Boolean(pontType && pontType !== "none");
+    if (!isPontActive) return null;
+
+    const effectiveConfig: PontConfig = {
+      ...DEFAULT_PONT_CONFIG,
+      ...(pontConfig || {}),
+      ...(pontType === "corner" ? { shape: "l_corner" as const } : {}),
+      ...(pontType === "5mm" ? { shape: "circle" as const, size: 5.0 } : {}),
+    };
+
+    const pShape = effectiveConfig.shape || "circle";
+    const pRadiusMm = (Number(effectiveConfig.size) || 5.0) / 2.0;
+    const rPx = Math.max(1.2, pRadiusMm * scale);
+    const thickPx = Math.max(0.75, (Number(effectiveConfig.thickness) || 0.5) * scale);
+
+    const mTop = Number(effectiveConfig.marginTop ?? 7.0);
+    const mBot = Number(effectiveConfig.marginBottom ?? 7.0);
+    const mLeft = Number(effectiveConfig.marginLeft ?? 7.0);
+    const mRight = Number(effectiveConfig.marginRight ?? 7.0);
+
+    const cxL = pad + (mLeft + pRadiusMm) * scale;
+    const cxR = pad + (sheetWidth - mRight - pRadiusMm) * scale;
+    const cyT = pad + (mTop + pRadiusMm) * scale;
+    const cyB = pad + (sheetHeight - mBot - pRadiusMm) * scale;
+
+    const centers: Array<[number, number, "TL" | "TR" | "BL" | "BR"]> = [
+      [cxL, cyT, "TL"],
+      [cxR, cyT, "TR"],
+      [cxL, cyB, "BL"],
+      [cxR, cyB, "BR"],
+    ];
+
+    const markElements = centers.map(([cx, cy, loc], idx) => {
+      if (pShape === "circle") {
+        return (
+          <circle
+            key={`pont_${loc}_${idx}`}
+            cx={cx}
+            cy={cy}
+            r={rPx}
+            fill="#0f172a"
+            className="dark:fill-white"
+          />
+        );
+      }
+
+      let pts = "";
+      if (pShape === "l_inverted") {
+        if (loc === "TL") {
+          pts = `${cx + rPx},${cy - rPx} ${cx + rPx},${cy + rPx} ${cx - rPx},${cy + rPx}`;
+        } else if (loc === "TR") {
+          pts = `${cx - rPx},${cy - rPx} ${cx - rPx},${cy + rPx} ${cx + rPx},${cy + rPx}`;
+        } else if (loc === "BL") {
+          pts = `${cx + rPx},${cy + rPx} ${cx + rPx},${cy - rPx} ${cx - rPx},${cy - rPx}`;
+        } else {
+          pts = `${cx - rPx},${cy + rPx} ${cx - rPx},${cy - rPx} ${cx + rPx},${cy - rPx}`;
+        }
+      } else if (pShape === "l_corner") {
+        if (loc === "TL") {
+          pts = `${cx - rPx},${cy + rPx} ${cx - rPx},${cy - rPx} ${cx + rPx},${cy - rPx}`;
+        } else if (loc === "TR") {
+          pts = `${cx + rPx},${cy + rPx} ${cx + rPx},${cy - rPx} ${cx - rPx},${cy - rPx}`;
+        } else if (loc === "BL") {
+          pts = `${cx - rPx},${cy - rPx} ${cx - rPx},${cy + rPx} ${cx + rPx},${cy + rPx}`;
+        } else {
+          pts = `${cx + rPx},${cy - rPx} ${cx + rPx},${cy + rPx} ${cx - rPx},${cy + rPx}`;
+        }
+      }
+
+      return (
+        <polyline
+          key={`pont_${loc}_${idx}`}
+          points={pts}
+          fill="none"
+          stroke="#0f172a"
+          strokeWidth={thickPx}
+          strokeLinejoin="miter"
+          strokeLinecap="square"
+          className="dark:stroke-white"
+        />
+      );
+    });
+
+    const renderGuide = (
+      key: string,
+      enabled: boolean,
+      pos: string,
+      lengthMm: number,
+      thickMm: number,
+      offXMm: number,
+      offYMm: number,
+    ) => {
+      if (!enabled || lengthMm <= 0) return null;
+      const gThick = Math.max(0.75, (thickMm || 0.5) * scale);
+      let x1 = 0;
+      let y1 = 0;
+      let x2 = 0;
+      let y2 = 0;
+      if (pos === "TL") {
+        x1 = pad + offXMm * scale;
+        y1 = pad + offYMm * scale;
+        x2 = pad + (offXMm + lengthMm) * scale;
+        y2 = pad + offYMm * scale;
+      } else if (pos === "TR") {
+        x1 = pad + (sheetWidth - offXMm - lengthMm) * scale;
+        y1 = pad + offYMm * scale;
+        x2 = pad + (sheetWidth - offXMm) * scale;
+        y2 = pad + offYMm * scale;
+      } else if (pos === "BL") {
+        x1 = pad + offXMm * scale;
+        y1 = pad + (sheetHeight - offYMm) * scale;
+        x2 = pad + (offXMm + lengthMm) * scale;
+        y2 = pad + (sheetHeight - offYMm) * scale;
+      } else if (pos === "BR") {
+        x1 = pad + (sheetWidth - offXMm - lengthMm) * scale;
+        y1 = pad + (sheetHeight - offYMm) * scale;
+        x2 = pad + (sheetWidth - offXMm) * scale;
+        y2 = pad + (sheetHeight - offYMm) * scale;
+      } else {
+        return null;
+      }
+
+      return (
+        <line
+          key={key}
+          x1={x1}
+          y1={y1}
+          x2={x2}
+          y2={y2}
+          stroke="#0f172a"
+          strokeWidth={gThick}
+          strokeLinecap="square"
+          className="dark:stroke-white"
+        />
+      );
+    };
+
+    const g1 = renderGuide(
+      "guide_1",
+      Boolean(effectiveConfig.guide1Enabled),
+      effectiveConfig.guide1Pos || "BL",
+      Number(effectiveConfig.guide1Length ?? 20),
+      Number(effectiveConfig.guide1Thickness ?? 0.5),
+      Number(effectiveConfig.guide1OffX ?? 0),
+      Number(effectiveConfig.guide1OffY ?? 0),
+    );
+
+    const g2 = renderGuide(
+      "guide_2",
+      Boolean(effectiveConfig.guide2Enabled),
+      effectiveConfig.guide2Pos || "BR",
+      Number(effectiveConfig.guide2Length ?? 20),
+      Number(effectiveConfig.guide2Thickness ?? 0.5),
+      Number(effectiveConfig.guide2OffX ?? 0),
+      Number(effectiveConfig.guide2OffY ?? 0),
+    );
+
+    return (
+      <g className="pointer-events-none" id="preview-pont-marks">
+        {markElements}
+        {g1}
+        {g2}
+      </g>
+    );
+  };
+
+  // Dấu canh in 2 mặt (Duplex Align Marks cho CNC)
+  const renderCncDuplexMarks = () => {
+    if (!cncDuplexMarks) return null;
+    const marginMm = 3.0;
+    const rMm = 1.5;
+    const halfLenMm = 2.5;
+    const rPx = Math.max(1, rMm * scale);
+    const halfPx = Math.max(2, halfLenMm * scale);
+    const thickPx = Math.max(0.5, 0.2 * scale);
+
+    const centers = [
+      { x: pad + (sheetWidth / 2) * scale, y: pad + marginMm * scale },
+      { x: pad + (sheetWidth / 2) * scale, y: pad + (sheetHeight - marginMm) * scale },
+      { x: pad + marginMm * scale, y: pad + (sheetHeight / 2) * scale },
+      { x: pad + (sheetWidth - marginMm) * scale, y: pad + (sheetHeight / 2) * scale },
+    ];
+
+    return (
+      <g className="pointer-events-none" id="preview-cnc-duplex-marks" opacity={0.85}>
+        {centers.map((c, i) => (
+          <React.Fragment key={`cnc_duplex_mark_${i}`}>
+            <circle cx={c.x} cy={c.y} r={rPx} fill="none" stroke="#0f172a" strokeWidth={thickPx} className="dark:stroke-white" />
+            <line x1={c.x - halfPx} y1={c.y} x2={c.x + halfPx} y2={c.y} stroke="#0f172a" strokeWidth={thickPx} className="dark:stroke-white" />
+            <line x1={c.x} y1={c.y - halfPx} x2={c.x} y2={c.y + halfPx} stroke="#0f172a" strokeWidth={thickPx} className="dark:stroke-white" />
+          </React.Fragment>
+        ))}
+      </g>
+    );
+  };
   const activeSheetLabel = layoutResult?.orderSummary
     ? t('imposition.gridPreview:bo_cuc_va_so_lan_in', {
         n: activeSheet + 1, total: layoutResult.orderSummary.templateCount,
@@ -3692,8 +3944,13 @@ export default function GridPreview(props: GridPreviewProps) {
                   />
 
                   {/* Đường xén guillotine giữa các cụm/vùng (chia cụm) */}
-                  {(cutVpx.length > 0 || cutHpx.length > 0) && (
-                    <g stroke="#0ea5e9" strokeWidth={0.7} strokeDasharray="5,3" opacity={0.85}>
+                  {(cutVpx.length > 0 || cutHpx.length > 0) && (clusterPostDieCutMarks !== false || clusterCutFullSheet) && (
+                    <g
+                      stroke={clusterCutHex || "#0ea5e9"}
+                      strokeWidth={clusterCutFullSheet ? 1 : 0.7}
+                      strokeDasharray={clusterCutFullSheet ? undefined : "5,3"}
+                      opacity={0.9}
+                    >
                       {cutVpx.map((x, i) => (
                         <line key={`cv${i}`} x1={x} y1={pad} x2={x} y2={pad + sheetHeight * scale} />
                       ))}
@@ -3715,152 +3972,25 @@ export default function GridPreview(props: GridPreviewProps) {
                     marginBottom > 0 ||
                     marginLeft > 0 ||
                     marginRight > 0) && (
-                    <g>
-                      <rect
-                        x={uaX}
-                        y={uaY}
-                        width={uaW}
-                        height={uaH}
-                        fill="none"
-                        stroke="#94a3b8"
-                        strokeWidth={0.5}
-                        strokeDasharray="3,2"
-                        rx={1}
-                        ry={1}
-                      />
-
-                      {/* Crop Marks (Boong/Ốc) Visuals */}
-                      <g
-                        stroke="#ef4444"
-                        strokeWidth={0.8}
-                        fill="none"
-                        opacity={0.7}
-                      >
-                        {pontConfig?.shape === "circle" ? (
-                          <>
-                            <circle cx={uaX} cy={uaY} r={3} />
-                            <line
-                              x1={uaX - 6}
-                              y1={uaY}
-                              x2={uaX + 6}
-                              y2={uaY}
-                              strokeWidth={0.4}
-                            />
-                            <line
-                              x1={uaX}
-                              y1={uaY - 6}
-                              x2={uaX}
-                              y2={uaY + 6}
-                              strokeWidth={0.4}
-                            />
-
-                            <circle cx={uaX + uaW} cy={uaY} r={3} />
-                            <line
-                              x1={uaX + uaW - 6}
-                              y1={uaY}
-                              x2={uaX + uaW + 6}
-                              y2={uaY}
-                              strokeWidth={0.4}
-                            />
-                            <line
-                              x1={uaX + uaW}
-                              y1={uaY - 6}
-                              x2={uaX + uaW}
-                              y2={uaY + 6}
-                              strokeWidth={0.4}
-                            />
-
-                            <circle cx={uaX} cy={uaY + uaH} r={3} />
-                            <line
-                              x1={uaX - 6}
-                              y1={uaY + uaH}
-                              x2={uaX + 6}
-                              y2={uaY + uaH}
-                              strokeWidth={0.4}
-                            />
-                            <line
-                              x1={uaX}
-                              y1={uaY + uaH - 6}
-                              x2={uaX}
-                              y2={uaY + uaH + 6}
-                              strokeWidth={0.4}
-                            />
-
-                            <circle cx={uaX + uaW} cy={uaY + uaH} r={3} />
-                            <line
-                              x1={uaX + uaW - 6}
-                              y1={uaY + uaH}
-                              x2={uaX + uaW + 6}
-                              y2={uaY + uaH}
-                              strokeWidth={0.4}
-                            />
-                            <line
-                              x1={uaX + uaW}
-                              y1={uaY + uaH - 6}
-                              x2={uaX + uaW}
-                              y2={uaY + uaH + 6}
-                              strokeWidth={0.4}
-                            />
-                          </>
-                        ) : (
-                          <>
-                            {/* Top-Left */}
-                            <line
-                              x1={uaX - 10}
-                              y1={uaY}
-                              x2={uaX - 2}
-                              y2={uaY}
-                            />
-                            <line
-                              x1={uaX}
-                              y1={uaY - 10}
-                              x2={uaX}
-                              y2={uaY - 2}
-                            />
-                            {/* Top-Right */}
-                            <line
-                              x1={uaX + uaW + 2}
-                              y1={uaY}
-                              x2={uaX + uaW + 10}
-                              y2={uaY}
-                            />
-                            <line
-                              x1={uaX + uaW}
-                              y1={uaY - 10}
-                              x2={uaX + uaW}
-                              y2={uaY - 2}
-                            />
-                            {/* Bottom-Left */}
-                            <line
-                              x1={uaX - 10}
-                              y1={uaY + uaH}
-                              x2={uaX - 2}
-                              y2={uaY + uaH}
-                            />
-                            <line
-                              x1={uaX}
-                              y1={uaY + uaH + 2}
-                              x2={uaX}
-                              y2={uaY + uaH + 10}
-                            />
-                            {/* Bottom-Right */}
-                            <line
-                              x1={uaX + uaW + 2}
-                              y1={uaY + uaH}
-                              x2={uaX + uaW + 10}
-                              y2={uaY + uaH}
-                            />
-                            <line
-                              x1={uaX + uaW}
-                              y1={uaY + uaH + 2}
-                              x2={uaX + uaW}
-                              y2={uaY + uaH + 10}
-                            />
-                          </>
-                        )}
-                      </g>
-                    </g>
+                    <rect
+                      x={uaX}
+                      y={uaY}
+                      width={uaW}
+                      height={uaH}
+                      fill="none"
+                      stroke="#94a3b8"
+                      strokeWidth={0.5}
+                      strokeDasharray="3,2"
+                      rx={1}
+                      ry={1}
+                    />
                   )}
+
+                  {/* Ốc bế định vị (Registration Marks) & Thanh canh giấy */}
+                  {renderPontMarks()}
+
+                  {/* Dấu canh in 2 mặt (CNC Duplex Marks) */}
+                  {renderCncDuplexMarks()}
 
                   {/* Cells */}
                   {visibleCells.map((c) => {
@@ -3984,152 +4114,22 @@ export default function GridPreview(props: GridPreviewProps) {
                         marginBottom > 0 ||
                         marginLeft > 0 ||
                         marginRight > 0) && (
-                        <g>
-                          <rect
-                            x={uaX}
-                            y={uaY}
-                            width={uaW}
-                            height={uaH}
-                            fill="none"
-                            stroke="#94a3b8"
-                            strokeWidth={0.5}
-                            strokeDasharray="3,2"
-                            rx={1}
-                            ry={1}
-                          />
-
-                          {/* Crop Marks */}
-                          <g
-                            stroke="#ef4444"
-                            strokeWidth={0.8}
-                            fill="none"
-                            opacity={0.7}
-                          >
-                            {pontConfig?.shape === "circle" ? (
-                              <>
-                                <circle cx={uaX} cy={uaY} r={3} />
-                                <line
-                                  x1={uaX - 6}
-                                  y1={uaY}
-                                  x2={uaX + 6}
-                                  y2={uaY}
-                                  strokeWidth={0.4}
-                                />
-                                <line
-                                  x1={uaX}
-                                  y1={uaY - 6}
-                                  x2={uaX}
-                                  y2={uaY + 6}
-                                  strokeWidth={0.4}
-                                />
-
-                                <circle cx={uaX + uaW} cy={uaY} r={3} />
-                                <line
-                                  x1={uaX + uaW - 6}
-                                  y1={uaY}
-                                  x2={uaX + uaW + 6}
-                                  y2={uaY}
-                                  strokeWidth={0.4}
-                                />
-                                <line
-                                  x1={uaX + uaW}
-                                  y1={uaY - 6}
-                                  x2={uaX + uaW}
-                                  y2={uaY + 6}
-                                  strokeWidth={0.4}
-                                />
-
-                                <circle cx={uaX} cy={uaY + uaH} r={3} />
-                                <line
-                                  x1={uaX - 6}
-                                  y1={uaY + uaH}
-                                  x2={uaX + 6}
-                                  y2={uaY + uaH}
-                                  strokeWidth={0.4}
-                                />
-                                <line
-                                  x1={uaX}
-                                  y1={uaY + uaH - 6}
-                                  x2={uaX}
-                                  y2={uaY + uaH + 6}
-                                  strokeWidth={0.4}
-                                />
-
-                                <circle cx={uaX + uaW} cy={uaY + uaH} r={3} />
-                                <line
-                                  x1={uaX + uaW - 6}
-                                  y1={uaY + uaH}
-                                  x2={uaX + uaW + 6}
-                                  y2={uaY + uaH}
-                                  strokeWidth={0.4}
-                                />
-                                <line
-                                  x1={uaX + uaW}
-                                  y1={uaY + uaH - 6}
-                                  x2={uaX + uaW}
-                                  y2={uaY + uaH + 6}
-                                  strokeWidth={0.4}
-                                />
-                              </>
-                            ) : (
-                              <>
-                                {/* Top-Left */}
-                                <line
-                                  x1={uaX - 10}
-                                  y1={uaY}
-                                  x2={uaX - 2}
-                                  y2={uaY}
-                                />
-                                <line
-                                  x1={uaX}
-                                  y1={uaY - 10}
-                                  x2={uaX}
-                                  y2={uaY - 2}
-                                />
-                                {/* Top-Right */}
-                                <line
-                                  x1={uaX + uaW + 2}
-                                  y1={uaY}
-                                  x2={uaX + uaW + 10}
-                                  y2={uaY}
-                                />
-                                <line
-                                  x1={uaX + uaW}
-                                  y1={uaY - 10}
-                                  x2={uaX + uaW}
-                                  y2={uaY - 2}
-                                />
-                                {/* Bottom-Left */}
-                                <line
-                                  x1={uaX - 10}
-                                  y1={uaY + uaH}
-                                  x2={uaX - 2}
-                                  y2={uaY + uaH}
-                                />
-                                <line
-                                  x1={uaX}
-                                  y1={uaY + uaH + 2}
-                                  x2={uaX}
-                                  y2={uaY + uaH + 10}
-                                />
-                                {/* Bottom-Right */}
-                                <line
-                                  x1={uaX + uaW + 2}
-                                  y1={uaY + uaH}
-                                  x2={uaX + uaW + 10}
-                                  y2={uaY + uaH}
-                                />
-                                <line
-                                  x1={uaX + uaW}
-                                  y1={uaY + uaH + 2}
-                                  x2={uaX + uaW}
-                                  y2={uaY + uaH + 10}
-                                />
-                              </>
-                            )}
-                          </g>
-                        </g>
+                        <rect
+                          x={uaX}
+                          y={uaY}
+                          width={uaW}
+                          height={uaH}
+                          fill="none"
+                          stroke="#94a3b8"
+                          strokeWidth={0.5}
+                          strokeDasharray="3,2"
+                          rx={1}
+                          ry={1}
+                        />
                       )}
+
+                      {/* Dấu canh in 2 mặt (CNC Duplex Marks) trên Mặt Sau */}
+                      {renderCncDuplexMarks()}
 
                       {/* Cells */}
                       {cncBackCells.map((c) => {

@@ -413,3 +413,120 @@ def _artwork_stroke_ops(page) -> int:
 
     walk(page.obj.get("/Resources"))
     return total
+
+
+def test_strip_multi_die_and_process_color_in_form(tmp_path):
+    """Bóc tách đồng thời cả đường bế spot và đường bế màu process trong Form."""
+    import hashlib
+    from app.workers.imposition_pdf_form import (
+        DIE_STRIPPED_FORM_VARIANT,
+        ManifestPageBinding,
+        embed_manifest_page_form,
+    )
+    from app.workers.imposition_affine import Affine2D
+
+    src_file = tmp_path / "multi_die_test.pdf"
+    src_pdf = pikepdf.Pdf.new()
+    page = src_pdf.add_blank_page(page_size=(200, 200))
+
+    # Add CutContour spot colorspace
+    cs_dict = pikepdf.Array([
+        pikepdf.Name.Separation,
+        pikepdf.Name("/CutContour"),
+        pikepdf.Name.DeviceCMYK,
+        pikepdf.Dictionary(
+            FunctionType=2,
+            Domain=[0.0, 1.0],
+            C0=[0.0, 0.0, 0.0, 0.0],
+            C1=[0.0, 1.0, 0.0, 0.0],
+            N=1.0,
+        ),
+    ])
+    cs_res = page.add_resource(cs_dict, pikepdf.Name.ColorSpace)
+
+    # Content stream: 1 CutContour path + 1 Yellow RGB path
+    stream_content = f"""
+{cs_res} CS 1 SCN
+10 10 m 190 10 l 190 190 l 10 190 l h S
+1 1 0 RG
+50 50 m 150 50 l 150 150 l 50 150 l h S
+""".strip()
+    page.contents_add(pikepdf.Stream(src_pdf, stream_content.encode("ascii")))
+    src_pdf.save(src_file)
+
+    digest = hashlib.sha256(src_file.read_bytes()).hexdigest()
+    revision = f"sha256:{digest}"
+
+    from app.core.nesting_source_pin import _inspect_pdf
+    metadata = _inspect_pdf(src_file)[0].to_binding_metadata()
+    metadata["sourceReferencePointMm"] = [0.0, 0.0]
+    binding = ManifestPageBinding.from_mapping(metadata)
+
+    dest_pdf = pikepdf.Pdf.new()
+    dest_page = dest_pdf.add_blank_page(page_size=(300, 300))
+
+    embedded = embed_manifest_page_form(
+        dest_pdf,
+        source_path=str(src_file),
+        locator_id="test-locator",
+        source_revision=revision,
+        binding=binding,
+        form_variant=DIE_STRIPPED_FORM_VARIANT,
+        die_filter={"mode": "spot", "spotNames": ["cutcontour"]},
+    )
+
+    raw_form = embedded.xobject.read_bytes().decode("latin-1")
+    # Cả hai nét bế đều phải bị chuyển thành 'h n' (neutralized), không còn 'h S'
+    assert "h S" not in raw_form, f"Form vẫn còn toán tử 'h S': {raw_form}"
+
+
+@requires_real_source
+def test_no_separate_cut_page_draws_cut_on_front_page(tmp_path, _env):
+    """Khi separateCutPage=False: chỉ 1 trang in, đường bế vẽ đè lên trang in."""
+    from app.workers.nup_true_shape_nesting import run_true_shape_nesting
+
+    output = tmp_path / "no-separate-cut.pdf"
+    run_true_shape_nesting(
+        str(SOURCE),
+        str(output),
+        _settings(
+            separateCutPage=False,
+            targetQuantitiesByPage={"0": 4},
+            detectedShapesByPage={"0": "CUSTOM"},
+        ),
+        "parity_no_sep",
+    )
+
+    assert output.is_file()
+    with pikepdf.Pdf.open(str(output)) as pdf:
+        # 1. Chỉ có đúng 1 trang in duy nhất (không tách trang bế riêng)
+        assert len(pdf.pages) == 1, f"Kỳ vọng 1 trang nhưng có {len(pdf.pages)} trang"
+        front_page = pdf.pages[0]
+
+        # 2. Trang in có ít nhất 2 content streams (1 stream form artwork + 1 stream CUT vector đè lên)
+        contents = front_page.get("/Contents")
+        if isinstance(contents, pikepdf.Array):
+            page_stream_texts = [stream.read_bytes().decode("latin-1") for stream in contents]
+        else:
+            page_stream_texts = [contents.read_bytes().decode("latin-1")]
+
+        full_page_text = "\n".join(page_stream_texts)
+
+        # 3. Phải có toán tử vẽ đường bế (vector stroke 'S') trên trang in
+        assert "S\n" in full_page_text or "\nS" in full_page_text or " S " in full_page_text, (
+            "Trang in không chứa toán tử stroke đường bế!"
+        )
+
+        # 4. Kiểm tra ColorSpace: đường bế có Spot Color hoặc ColorSpace Separation (/CutContour)
+        color_spaces = front_page.Resources.get("/ColorSpace")
+        assert color_spaces is not None, "Trang in thiếu ColorSpace cho đường bế!"
+        # Tên kênh dao nằm ở phần tử thứ 2 của mảng Separation: [/Separation /CutContour ...]
+        has_cut_spot = False
+        for cs_obj in color_spaces.values():
+            if isinstance(cs_obj, pikepdf.Array) and len(cs_obj) >= 2:
+                if "Cut" in str(cs_obj[1]):
+                    has_cut_spot = True
+                    break
+        assert has_cut_spot, f"ColorSpace không chứa kênh dao bế: {list(color_spaces.values())}"
+
+

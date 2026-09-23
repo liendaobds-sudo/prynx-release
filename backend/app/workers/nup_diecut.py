@@ -328,6 +328,15 @@ def _select_page_die_cut_paths(src_page, *, allow_page_fallback=True):
     """
 
     try:
+        from app.workers.die_detection import select_die_path, DetectionConfig
+        die_path = select_die_path(src_page, DetectionConfig().die_channel_names)
+        if die_path and die_path.get("groups"):
+            target_color = die_path.get("color")
+            return tuple(die_path["groups"]), target_color
+    except Exception:
+        pass
+
+    try:
         paths = src_page.extract_vector_paths()
         if not paths:
             return (), None
@@ -389,10 +398,23 @@ def _select_page_die_cut_paths(src_page, *, allow_page_fallback=True):
             key=lambda path: path['rect'].width * path['rect'].height,
         )
         target_color = largest_path.get('color')
-        return tuple(
+        largest_rect = largest_path['rect']
+        pad = 2.0
+
+        def _rects_touch(a, b, p):
+            return not (a.x1 + p < b.x0 or b.x1 + p < a.x0 or
+                        a.y1 + p < b.y0 or b.y1 + p < a.y0)
+
+        # Giới hạn không gian: chỉ gom các nét bế nằm trong hoặc tiếp xúc trực tiếp với largest_rect
+        selected = [
             path for path in target_paths
-            if path.get('color') == target_color
-        ), target_color
+            if _rects_touch(largest_rect, path['rect'], pad)
+            and (
+                path.get('color') == target_color
+                or path.get('spot_name') is not None
+            )
+        ]
+        return tuple(selected or [largest_path]), target_color
     except Exception as exc:
         import logging
 
@@ -402,23 +424,39 @@ def _select_page_die_cut_paths(src_page, *, allow_page_fallback=True):
         return (), None
 
 
-def extract_page_die_cut_path_items(src_page):
-    """Trả path items gốc của đường bế đã chọn, giữ nguyên Bézier cubic.
+def extract_page_die_cut_path_groups(src_page):
+    """Trả về danh sách các nhóm đường bế với đầy đủ thông tin màu sắc và kênh spot.
 
-    Solver vẫn dùng :func:`extract_page_die_cut_polygon` để có polygon cho
-    collision/NFP. Writer production dùng hàm này song song để không dựng lại
-    CUT từ các đỉnh polygon đã lấy mẫu, vốn làm đường cong phình node.
+    Mỗi nhóm: {'items': tuple(...), 'color': tuple(...), 'width': float, 'spot_name': str | None}
     """
-
     paths, _target_color = _select_page_die_cut_paths(
         src_page,
         allow_page_fallback=False,
     )
-    return tuple(
-        tuple(path.get('items') or ())
-        for path in paths
-        if path.get('items')
-    )
+    groups = []
+    for path in paths:
+        items = tuple(path.get('items') or ())
+        if items:
+            groups.append({
+                'items': items,
+                'rect': path.get('rect'),
+                'color': path.get('color'),
+                'width': path.get('width', 0.5),
+                'spot_name': path.get('spot_name'),
+                'closePath': bool(path.get('closePath')),
+            })
+    return tuple(groups)
+
+
+def extract_page_die_cut_path_items(src_page):
+    """Trả path items gốc của đường bế đã chọn, giữ nguyên Bézier cubic.
+
+    P1 FIX (audit-true-shape-bezier 2026-07-29): không lấy lại từ polygon
+    collision/NFP. Writer production dùng hàm này song song để không dựng lại
+    CUT từ các đỉnh polygon đã lấy mẫu, vốn làm đường cong phình node.
+    """
+    groups = extract_page_die_cut_path_groups(src_page)
+    return tuple(g['items'] for g in groups if g.get('items'))
 
 
 def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
@@ -432,6 +470,10 @@ def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
     ``True`` để giữ LỖ KHUÔN (cửa sổ, lỗ treo) cho đường manifest production.
     """
 
+    cached_poly = getattr(src_page, '_cached_die_cut_poly', None)
+    if isinstance(cached_poly, dict) and keep_holes in cached_poly:
+        return cached_poly[keep_holes]
+
     from shapely.ops import unary_union
 
     try:
@@ -443,14 +485,12 @@ def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
         polys = []
 
         for p in target_paths:
-
-            if p.get('color') == target_color:
-
-                poly_part = _path_items_to_polygon(p.get('items', []), keep_holes=keep_holes)
-
-                if poly_part and poly_part.is_valid and not poly_part.is_empty:
-
-                    polys.append(poly_part)
+            items = p.get('items', [])
+            if not items:
+                continue
+            poly_part = _path_items_to_polygon(items, keep_holes=keep_holes)
+            if poly_part and poly_part.is_valid and not poly_part.is_empty:
+                polys.append(poly_part)
 
         if not polys:
 
@@ -462,6 +502,13 @@ def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
 
             return None
 
+        try:
+            if not isinstance(getattr(src_page, '_cached_die_cut_poly', None), dict):
+                src_page._cached_die_cut_poly = {}
+            src_page._cached_die_cut_poly[keep_holes] = poly
+        except Exception:
+            pass
+
         return poly
 
     except Exception as e:
@@ -471,6 +518,8 @@ def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
         logging.getLogger(__name__).warning(f"Error extracting page die cut polygon: {e}")
 
         return None
+
+_NFP_OVERLAP_CACHE = {}  # LRU cache: (doc_path, xref, gap_key) -> result
 
 def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
@@ -486,6 +535,34 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
     logger = logging.getLogger(__name__)
 
+    gap_key = round(float(gap_pt or 0.0), 2)
+    inst_cache = getattr(src_page, '_cached_head_to_tail', None)
+    if isinstance(inst_cache, dict) and gap_key in inst_cache:
+        return inst_cache[gap_key]
+
+    doc_path = getattr(getattr(src_page, 'doc', None), '_path', None)
+    xref = getattr(src_page, 'xref', None)
+    global_key = (doc_path, xref, gap_key) if (doc_path or xref) else None
+    if global_key and global_key in _NFP_OVERLAP_CACHE:
+        res = _NFP_OVERLAP_CACHE[global_key]
+        if isinstance(inst_cache, dict):
+            inst_cache[gap_key] = res
+        return res
+
+    def _memo_return(result):
+        if not isinstance(inst_cache, dict):
+            try:
+                src_page._cached_head_to_tail = {gap_key: result}
+            except Exception:
+                pass
+        else:
+            inst_cache[gap_key] = result
+        if global_key:
+            if len(_NFP_OVERLAP_CACHE) >= 128:
+                _NFP_OVERLAP_CACHE.pop(next(iter(_NFP_OVERLAP_CACHE)))
+            _NFP_OVERLAP_CACHE[global_key] = result
+        return result
+
     try:
 
         zoom = 2.0 
@@ -498,7 +575,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         if not paths:
 
-            return ({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None)
+            return _memo_return(({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None))
 
         valid_paths = [p for p in paths if p['rect'].width > 5 and p['rect'].height > 5]
 
@@ -532,7 +609,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         if not valid_paths:
 
-            return ({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None)
+            return _memo_return(({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None))
 
         filtered = [p for p in valid_paths if abs(p['rect'].width - src_page.rect.width) > 2 or abs(p['rect'].height - src_page.rect.height) > 2]
 
@@ -563,35 +640,22 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         # We group all paths that share the same stroke color as the largest path to capture the FULL cutline.
 
-        target_color = largest_path.get('color')
-
-        from shapely.ops import unary_union
-
-        polys = []
-
-        # Gộp mọi path KHÔNG-nền cùng màu với đường khuôn đã chọn (SSOT) để bắt
-        # TRỌN cutline (contour + chi tiết). 'filtered' = paths đã loại nền full-page.
-        # (Trước dùng 'target_paths'; biến đó đã bỏ khi chuyển sang _select_from_paths
-        # — fix regression NameError khiến head-to-tail luôn rơi về CUSTOM.)
-        for p in filtered:
-
-            if p.get('color') == target_color:
-
-                poly_part = _path_items_to_polygon(p.get('items', []))
-
-                if poly_part and poly_part.is_valid and not poly_part.is_empty:
-
-                    polys.append(poly_part)
-
-        if not polys:
-
-            return ({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None)            
-
-        poly = unary_union(polys)
-
-        if poly.is_empty:
-
-            return ({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None)
+        # Tái dùng polygon từ extract_page_die_cut_polygon (đã gộp trọn vẹn cả group đường bế + cache)
+        poly = extract_page_die_cut_polygon(src_page, keep_holes=False)
+        if poly is None or poly.is_empty:
+            target_color = largest_path.get('color')
+            from shapely.ops import unary_union
+            polys = []
+            for p in filtered:
+                if p.get('color') == target_color:
+                    poly_part = _path_items_to_polygon(p.get('items', []))
+                    if poly_part and poly_part.is_valid and not poly_part.is_empty:
+                        polys.append(poly_part)
+            if not polys:
+                return _memo_return(({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None))
+            poly = unary_union(polys)
+            if poly.is_empty:
+                return _memo_return(({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None))
 
         # Cần simplify sớm để chống nghẽn CPU cho các phép buffer/intersects sau này.
         poly = poly.simplify(2.0, preserve_topology=True)
@@ -742,6 +806,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
                 rot_placed = affinity.translate(rot_at_origin, xoff=dx, yoff=dy)
 
                 cluster = base_at_origin.union(rot_placed)
+                cluster = cluster.simplify(2.0, preserve_topology=True)
 
                 c_minx, c_miny, c_maxx, c_maxy = cluster.bounds
 
@@ -1054,13 +1119,13 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
             p6_col_params = None
 
-        return (p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type.name, shape_props, poly_unscaled)
+        return _memo_return((p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type.name, shape_props, poly_unscaled))
 
     except Exception as e:
 
         logger.warning(f"Error in true shape nesting overlap: {e}")
 
-        return ({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None)
+        return _memo_return(({'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, {'dx': 0, 'dy': 0, 'dx_outer': 0, 'dy_outer': 0}, None, None, None, None, "CUSTOM", {}, None))
 
 
 
@@ -1074,11 +1139,16 @@ def _find_largest_die_path(page):
     Import trễ để tránh phụ thuộc vòng.
     """
 
+    cached = getattr(page, '_cached_largest_die', None)
+    if cached is not None:
+        return cached
+
+    res = None
     try:
 
         from app.workers.die_detection import select_die_path, DetectionConfig
 
-        return select_die_path(page, DetectionConfig().die_channel_names)
+        res = select_die_path(page, DetectionConfig().die_channel_names)
 
     except Exception:
 
@@ -1116,4 +1186,10 @@ def _find_largest_die_path(page):
 
         target = stroke if stroke else valid
 
-        return max(target, key=lambda p: p['rect'].width * p['rect'].height)
+        res = max(target, key=lambda p: p['rect'].width * p['rect'].height) if target else None
+
+    try:
+        page._cached_largest_die = res
+    except Exception:
+        pass
+    return res

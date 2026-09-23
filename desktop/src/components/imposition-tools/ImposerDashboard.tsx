@@ -299,7 +299,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     // PARITY (audit 2026-09-05 §PV26.1): Bình trang không chia nhóm; cả preview,
     // bảng sức chứa và export phải cùng cấu hình hiệu lực. Không ghi đè profile
     // để Dàn nhiều mẫu vẫn nhớ cách chia nhóm khi người dùng chuyển tác vụ lại.
-    const effectiveGroupingStrategy = s.taskMode === 'step_repeat'
+    const effectiveGroupingStrategy = s.gridStrategy === 'manual'
+        ? 'none'
+        : s.taskMode === 'step_repeat'
         ? (s.groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'none')
         : (dieGeometryMode || s.markType === 'guillotine' ? s.groupingStrategy : 'none');
     const effectiveAlign = resolveEffectiveImpositionAlign(pageSheetMode, s.align);
@@ -962,6 +964,20 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     }, [stickerUnitAvailability.forceSticker, s.impositionUnit, s.setImpositionUnit]);
 
     useEffect(() => {
+        // UIUX (audit 2026-09-23 §BXHAND23.01): chỉ Từng tem mới cấm ráp xấp.
+        // `impositionUnit='sticker'` là giá trị mặc định của cả N-Up, nên dùng nó
+        // làm điều kiện độc lập sẽ nuốt `cut_stacks/ratio_stack` của N-Up và
+        // Nguyên tấm (page_sheet) ngay sau khi Dashboard mount.
+        if (
+            activeTool === 'sticker_imposer'
+            && s.impositionUnit !== 'page_sheet'
+            && (s.layoutType === 'cut_stacks' || s.layoutType === 'ratio_stack')
+        ) {
+            s.setLayoutType('sequential');
+        }
+    }, [activeTool, s.impositionUnit, s.layoutType, s.setLayoutType]);
+
+    useEffect(() => {
         if (
             activeTool !== 'sticker_imposer'
             || s.cutType !== 'one_dao'
@@ -1118,6 +1134,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     const _bleedAutoFileRef = useRef<string | null>(null);
     useEffect(() => {
         if (!pdfFile) return;
+        // Tem bế và CNC: kích thước theo đường bế/khuôn, bù xén tự động theo nửa khoảng hở (không lấy theo TrimBox/BleedBox).
         if (activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer') return;
         const isPdf = pdfFile.type === 'application/pdf' || pdfFile.name?.toLowerCase().endsWith('.pdf');
         if (!isPdf) return;
@@ -1786,6 +1803,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 clusterSizingMode: s.clusterSizingMode, clusterCols: s.clusterCols,
                 clusterRows: s.clusterRows, tileGapX: s.tileGapX, tileGapY: s.tileGapY,
                 clusterNesting: s.clusterNesting,
+                clusterCutCmyk: s.clusterCutCmyk,
+                clusterCutFullSheet: s.clusterCutFullSheet,
+                clusterPostDieCutMarks: s.clusterPostDieCutMarks,
                 hiddenOcgLayerIds: unmaterializedHiddenOcgLayerIds,
             });
         }
@@ -1794,9 +1814,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
     // ═══ Preset Callbacks ═══
     const getCurrentSettings = useCallback((): ImpositionPresetDraft => ({
         taskMode: s.taskMode === 'booklet' ? 'booklet' : 'nup',
-        paper: { formsize: s.formsize, customSheetWidth: s.customSheetWidth, customSheetHeight: s.customSheetHeight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight, marginMode: s.marginMode },
+        paper: { formsize: s.formsize, customSheetWidth: s.customSheetWidth, customSheetHeight: s.customSheetHeight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight, marginMode: s.marginMode, classification: s.paperClassification },
         marks: { markType: s.markType, markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness, markStyle: s.marksConfig.style === 2 ? 'style2' as const : 'style1' as const },
-        booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, gutterMargin: s.gutterMargin, blankPlacement: s.blankPlacement, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.paperClassification === 'offset' ? (s.foldPattern || undefined) : undefined, gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined } : undefined,
+        booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, gutterMargin: s.gutterMargin, blankPlacement: s.blankPlacement, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.foldPattern || '', gripperMargin: s.gripperMargin, separateCover: s.separateCover, coverPageCount: s.coverPageCount, autoCatalog: s.autoCatalog, bookReportDisplay: s.bookReportDisplay } : undefined,
         nup: s.taskMode !== 'booklet' ? {
             // UIUX (audit 2026-08-03 §MG-AUTO): preset nhớ ý định ráp cùng khổ;
             // mixed được suy lại từ file lúc nạp, không trở thành sở thích dính lâu dài.
@@ -1808,6 +1828,8 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow,
             align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount,
             clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode,
+            clusterCutCmyk: s.clusterCutCmyk, clusterCutFullSheet: s.clusterCutFullSheet,
+            clusterPostDieCutMarks: s.clusterPostDieCutMarks,
             cutBorder: { ...s.cutBorder },
         } : undefined,
     }), [s, effectiveAlternateRotation]);
@@ -1822,16 +1844,22 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             s.setFormsize(p.formsize); s.setCustomSheetWidth(p.customSheetWidth); s.setCustomSheetHeight(p.customSheetHeight);
             s.setBleed(p.bleed); s.setGapX(p.gapX); s.setGapY(p.gapY); s.setSpreadDistribution(p.spreadDistribution || 'clustered');
             s.setMarginTop(p.marginTop); s.setMarginBottom(p.marginBottom); s.setMarginLeft(p.marginLeft); s.setMarginRight(p.marginRight); s.setMarginMode(p.marginMode);
+            if (p.classification !== undefined) s.setPaperClassification(p.classification);
             s.setMarkType(preset.marks.markType);
             if (preset.booklet) {
                 s.setSignatureMode(preset.booklet.signatureMode); s.setFoliosize(preset.booklet.foliosize);
                 s.setPaperThickness(preset.booklet.paperThickness); s.setScaleMode(preset.booklet.scaleMode);
-                // BOOKLET (audit 2026-07-31 §B.1): preset cũ thiếu field thì giữ mặc định hiện tại.
+                // BOOKLET (audit 2026-09-23 §BOOK.04): preset mới phải khôi phục cả
+                // ngữ cảnh bìa/report/catalog; preset cũ thiếu field thì giữ state cũ.
                 if (preset.booklet.gutterMargin !== undefined) s.setGutterMargin(preset.booklet.gutterMargin);
                 if (preset.booklet.blankPlacement !== undefined) s.setBlankPlacement(preset.booklet.blankPlacement);
                 s.setInterleave(preset.booklet.interleave);
-                if (preset.booklet.foldPattern) s.setFoldPattern(preset.booklet.foldPattern);
-                if (preset.booklet.gripperMargin) s.setGripperMargin(preset.booklet.gripperMargin);
+                if (preset.booklet.foldPattern !== undefined) s.setFoldPattern(preset.booklet.foldPattern);
+                if (preset.booklet.gripperMargin !== undefined) s.setGripperMargin(preset.booklet.gripperMargin);
+                if (preset.booklet.separateCover !== undefined) s.setSeparateCover(preset.booklet.separateCover);
+                if (preset.booklet.coverPageCount !== undefined) s.setCoverPageCount(preset.booklet.coverPageCount);
+                if (preset.booklet.autoCatalog !== undefined) s.setAutoCatalog(preset.booklet.autoCatalog);
+                if (preset.booklet.bookReportDisplay !== undefined) s.setBookReportDisplay(preset.booklet.bookReportDisplay);
             }
             if (preset.nup) {
                 s.setLayoutType(
@@ -1865,6 +1893,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 s.setClusterGap(preset.nup.clusterGap); s.setClusterGapMode(preset.nup.clusterGapMode);
                 // Preset cũ thiếu field phải TẮT viền; không giữ trạng thái đang bật.
                 s.setCutBorder(preset.nup.cutBorder || DEFAULT_CUT_BORDER_CONFIG);
+                if (preset.nup.clusterCutCmyk) s.setClusterCutCmyk(preset.nup.clusterCutCmyk);
+                if (preset.nup.clusterCutFullSheet !== undefined) s.setClusterCutFullSheet(preset.nup.clusterCutFullSheet);
+                if (preset.nup.clusterPostDieCutMarks !== undefined) s.setClusterPostDieCutMarks(preset.nup.clusterPostDieCutMarks);
             }
         });
     }, [onActiveToolChange, requestWorkspaceToolActivation, s]);
@@ -2190,6 +2221,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 groupingStrategy={effectiveGroupingStrategy}
                                 clusterCombineMode={s.clusterCombineMode}
                                 clusterNesting={s.clusterNesting}
+                                clusterCutCmyk={s.clusterCutCmyk}
+                                clusterCutFullSheet={s.clusterCutFullSheet}
+                                clusterPostDieCutMarks={s.clusterPostDieCutMarks}
                                 clusterSizingMode={s.clusterSizingMode}
                                 clusterCols={s.clusterCols} clusterRows={s.clusterRows}
                                 clusterTileW={s.clusterTileW} clusterTileH={s.clusterTileH}

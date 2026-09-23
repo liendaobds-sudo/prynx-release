@@ -455,3 +455,28 @@ def test_real_hammer_dumbbell_still_detected_after_tip_gate():
     """Cổng mũi-nhọn KHÔNG được phá búa/tạ thật (cán bề rộng hữu hạn)."""
     assert classify_shape(_bar_poly(200, 60, 24, two_heads=False))["shape_type"] is ShapeType.HAMMER
     assert classify_shape(_bar_poly(200, 60, 24, two_heads=True))["shape_type"] is ShapeType.DUMBBELL
+
+
+def test_dense_bezier_ellipse_detected_as_circle_ellipse():
+    """Hình elip xấp xỉ bởi nhiều cung cubic Bezier nhỏ (vd 96 cung từ Bù xén hoặc AI export)
+    phải được nhận diện chính xác là CIRCLE_ELLIPSE thay vì rớt về CUSTOM."""
+    n_segs = 96
+    cx, cy = 226.77, 141.73
+    rx, ry = 226.77, 141.73  # 160x100mm
+    dtheta = 2 * math.pi / n_segs
+    # Hệ số cung bezier cho góc dtheta nhỏ
+    k = 4 / 3 * math.tan(dtheta / 4)
+    items = []
+    for i in range(n_segs):
+        th0 = i * dtheta
+        th1 = (i + 1) * dtheta
+        p0 = P(cx + rx * math.cos(th0), cy + ry * math.sin(th0))
+        p3 = P(cx + rx * math.cos(th1), cy + ry * math.sin(th1))
+        # Tiếp tuyến tại p0 và p3
+        cp1 = P(p0.x - k * rx * math.sin(th0), p0.y + k * ry * math.cos(th0))
+        cp2 = P(p3.x + k * rx * math.sin(th1), p3.y - k * ry * math.cos(th1))
+        items.append(("c", p0, cp1, cp2, p3))
+
+    res = classify_shape(items)
+    assert res["shape_type"] is ShapeType.CIRCLE_ELLIPSE
+

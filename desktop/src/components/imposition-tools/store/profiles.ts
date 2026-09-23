@@ -15,6 +15,7 @@ export const ALGO_PROFILE_KEYS: string[] = [
     'clusterDistribution', 'clusterBorder',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
     'clusterCombineMode', 'tileGapX', 'tileGapY', 'clusterNesting',
+    'clusterCutCmyk', 'clusterCutFullSheet', 'clusterPostDieCutMarks',
     // cutType / dieSizeMode / dieOffsetMm: KHÔNG profile — luôn mặc định khi vào tem bế/CNC
     // (user tự chọn 1 Dao nếu cần; không nhớ lần trước).
     'fillBlockGap', 'pontType', 'pontConfig',

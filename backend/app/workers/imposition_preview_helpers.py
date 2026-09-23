@@ -35,6 +35,17 @@ def build_pont_base_poly(page, result: dict, req: Any, shape_type_hint: str = No
 
         return scale(Point(0, 0).buffer(1.0, resolution=64), xfact=width / 2.0, yfact=height / 2.0)
     try:
+        from app.workers.nup_diecut import extract_page_die_cut_polygon
+        poly = extract_page_die_cut_polygon(page)
+        if poly is not None and poly.is_valid and not poly.is_empty:
+            from shapely.affinity import translate
+            bounds = poly.bounds
+            cx = (bounds[0] + bounds[2]) / 2.0
+            cy = (bounds[1] + bounds[3]) / 2.0
+            return translate(poly, -cx, -cy)
+    except Exception:
+        pass
+    try:
         from app.workers.pont_collision import build_shapely_polygon_from_paths
 
         paths = page.extract_vector_paths()

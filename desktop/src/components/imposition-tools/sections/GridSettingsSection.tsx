@@ -653,7 +653,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     </div>
                 </div>
 
-                {/* Moved Bleed here — ẩn cho Bế tem & CNC (kích thước lấy từ ĐƯỜNG KHUÔN BẾ, bleed không tác dụng) */}
+                {/* Bleed (Tràn lề) — chỉ hiện cho Cắt xén dao N-Up (cần trim/bleed box).
+                    Ẩn hoàn toàn cho Bế tem (kích thước theo đường bế, bù xén tự động theo nửa khoảng hở) và CNC. */}
                 {!dieGeometryMode && (
                   <div className="flex-1 min-w-0">
                     {/* UIUX (audit 2026-07-27 §B-08): label hardcode 'BLEED' → i18n tiếng Việt */}
@@ -702,6 +703,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 )}
             </div>
           </div>
+
           {/* moved gridStrategy === "manual" block above */}
 
 
@@ -765,6 +767,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <input
+                data-testid="global-imposition-quantity"
                 type="number"
                 min="0"
                 value={quantityApplies ? (targetQuantity === 0 ? "" : targetQuantity) : ""}
@@ -783,9 +786,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 style={{ paddingLeft: "9px", paddingRight: "8px" }}
                 placeholder={
                   !quantityApplies
-                    // UIUX (audit 2026-07-27 \§B-08): bỏ chuỗi unicode-escape \→ tiếng Việt có dấu qua i18n
+                    // UIUX (audit 2026-07-27 §B-08): bỏ chuỗi unicode-escape → tiếng Việt có dấu qua i18n
                     ? t('imposition.gridSettings:khong_ap_dung_cho_xep_chong', 'Không áp dụng cho Xếp chồng')
-                    // UIUX (audit 2026-07-29): hướng dẫn 0 = tự lấp đầy chuyển vào placeholder.
+                    : (taskMode === 'nup' || taskMode === 'sticker_imposer')
+                    ? t('imposition.gridSettings:nhap_sl_moi_loai', 'Trống = 1 mẫu mỗi loại')
                     : t('imposition.gridSettings:chu_thich_0_tu_lap_day', '(0 = tự lấp đầy tờ)')
                 }
               />
@@ -796,7 +800,9 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   title={t('imposition.gridSettings:cai_dat_so_luong_in_rieng_cho_tung')}
                 >
                   <svg
-                    className={`w-4 h-4 transition-transform duration-200 ${showPageQuantities ? "rotate-180" : ""}`}
+                    className={`w-4 h-4 transition-transform duration-200 ${
+                      showPageQuantities ? "rotate-180 text-indigo-600" : ""
+                    }`}
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -816,9 +822,27 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           </div>
 
           {!quantityApplies && (
-            <div className="pl-[107px] text-[11px] leading-snug text-slate-500 dark:text-zinc-400">
-              {/* UIUX (audit 2026-07-27 \§B-08): bỏ chuỗi unicode-escape \→ tiếng Việt có dấu qua i18n */}
-              {t('imposition.gridSettings:xep_chong_moi_trang_mot_lan', 'Xếp chồng dùng mỗi trang PDF đúng một lần; số lượng không áp dụng.')}
+            <div className="pl-[107px] text-[11px] leading-snug text-slate-500 dark:text-zinc-400 space-y-1">
+              {pageSheetMode ? (
+                <>
+                  <div>
+                    {t('imposition.gridSettings:xep_chong_lap_kin_co_ban_du', 'Xếp chồng lấp kín mọi tờ. Bản in bù lặp từ trang đầu, nằm cuối bộ sau khi gom cọc; số lượng không áp dụng.')}
+                  </div>
+                  {previewCapacity > 0 && sourceTotalPages > 0 && (() => {
+                    const total = Math.ceil(sourceTotalPages / previewCapacity) * previewCapacity;
+                    const extra = total - sourceTotalPages;
+                    return (
+                      <div data-testid="cut-stack-fill-summary" className="font-medium text-indigo-600 dark:text-indigo-400">
+                        {`Tổng: ${total} bản, gồm ${extra} bản in bù.`}
+                      </div>
+                    );
+                  })()}
+                </>
+              ) : (
+                <div>
+                  {t('imposition.gridSettings:xep_chong_moi_trang_mot_lan', 'Xếp chồng dùng mỗi trang PDF đúng một lần; số lượng không áp dụng.')}
+                </div>
+              )}
             </div>
           )}
           {quantityApplies && showPageQuantities && sourceTotalPages > 1 && (

@@ -207,6 +207,60 @@ def _job_has_special_shape(settings: Mapping[str, Any]) -> bool:
     return False
 
 
+def _is_item_too_large_for_multiple(settings: Mapping[str, Any]) -> bool:
+    """Kiểm tra tem có quá lớn so với tờ giấy đến mức không thể chứa >= 2 con trên tờ không."""
+    try:
+        w = float(settings.get("itemW") or settings.get("item_w") or 0.0)
+        h = float(settings.get("itemH") or settings.get("item_h") or 0.0)
+        if w <= 0.0 or h <= 0.0:
+            return False
+
+        sw = float(settings.get("sheetWidth") or settings.get("sheet_w") or 0.0)
+        sh = float(settings.get("sheetHeight") or settings.get("sheet_h") or 0.0)
+        ml = float(settings.get("marginLeft") or settings.get("margin_left") or 0.0)
+        mr = float(settings.get("marginRight") or settings.get("margin_right") or 0.0)
+        mt = float(settings.get("marginTop") or settings.get("margin_top") or 0.0)
+        mb = float(settings.get("marginBottom") or settings.get("margin_bottom") or 0.0)
+
+        uw = float(settings.get("usableW") or settings.get("usable_w") or 0.0)
+        uh = float(settings.get("usableH") or settings.get("usable_h") or 0.0)
+        if uw <= 0.0 or uh <= 0.0:
+            if sw > 0.0 and sh > 0.0:
+                uw = sw - ml - mr
+                uh = sh - mt - mb
+        if uw <= 0.0 or uh <= 0.0:
+            return False
+
+        fits_normal = w <= uw + 0.1 and h <= uh + 0.1
+        fits_rotated = h <= uw + 0.1 and w <= uh + 0.1
+        if not fits_normal and not fits_rotated:
+            return True
+
+        item_area = w * h
+        usable_area = uw * uh
+        if item_area > usable_area * 0.5:
+            if fits_normal and not fits_rotated:
+                if w * 2.0 > uw + 0.1 and h * 2.0 > uh + 0.1:
+                    return True
+            if fits_rotated and not fits_normal:
+                if h * 2.0 > uw + 0.1 and w * 2.0 > uh + 0.1:
+                    return True
+            normal_cant_fit = (w * 2.0 > uw + 0.1) and (h * 2.0 > uh + 0.1)
+            rotated_cant_fit = (h * 2.0 > uw + 0.1) and (w * 2.0 > uh + 0.1)
+            if normal_cant_fit and rotated_cant_fit:
+                return True
+
+        min_item = min(w, h)
+        max_usable = max(uw, uh)
+        min_usable = min(uw, uh)
+        if min_item * 2.0 > max_usable + 0.1 and min_item > min_usable * 0.5:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
 def route_true_shape(settings: Mapping[str, Any]) -> bool:
     """Có TỰ ĐỘNG định tuyến job sang true-shape nesting không (§B10).
 
@@ -243,6 +297,27 @@ def route_true_shape(settings: Mapping[str, Any]) -> bool:
             return False
         if str(settings.get("cutType") or "").strip().lower() == "one_dao":
             return False  # 1 Dao = cắt chữ nhật (xem rectangle_inking_is_allowed): tiler cũ
+
+        # 1 Tem: Khi chỉ có 1 tem trên 1 tờ hoặc lưới 1x1, không bao giờ cần chạy solver nesting nặng
+        try:
+            tq = settings.get("targetQuantity")
+            if tq is not None and int(tq) == 1:
+                return False
+            cols = settings.get("columns")
+            rows = settings.get("rows")
+            if cols is not None and rows is not None and int(cols) == 1 and int(rows) == 1:
+                return False
+            tqbp = settings.get("targetQuantitiesByPage")
+            if isinstance(tqbp, Mapping):
+                pos_vals = [int(v) for v in tqbp.values() if int(v or 0) > 0]
+                if len(pos_vals) == 1 and pos_vals[0] == 1:
+                    return False
+            # Sức chứa <= 1: Nếu kích thước tem chiếm quá lớn so với tờ giấy, không bao giờ chạy solver nặng
+            if _is_item_too_large_for_multiple(settings):
+                return False
+        except Exception:
+            pass
+
         if _unsupported_true_shape_reason(settings) is not None:
             return False
         return _job_has_special_shape(settings)
@@ -1024,6 +1099,15 @@ def _assemble_nesting_job(
         # S&R xuất một tờ đại diện cho mỗi mẫu; số lượng chỉ chọn mẫu tham gia.
         artifact_settings = {**settings, "exportUniqueSheets": True}
 
+    # BXHAND21.03: Với tem bế, thợ in không cần nhập ô tràn lề; nếu settings
+    # không truyền bleed (hoặc = 0), tự động suy ra bleed_mm từ nửa khoảng hở tem
+    # để giữ lại tối đa phần bù màu ngoài đường bế có sẵn trong file.
+    raw_bleed_mm = max(0.0, float(settings.get("bleed") or 0.0))
+    if raw_bleed_mm <= 0.0 and tool == "sticker_imposer" and gap_x > 0 and gap_y > 0:
+        effective_bleed_mm = min(gap_x / 2.0, gap_y / 2.0)
+    else:
+        effective_bleed_mm = raw_bleed_mm
+
     return ProductionNestingJobInput(
         manifest_id=_manifest_id(),
         tool=tool,
@@ -1064,6 +1148,7 @@ def _assemble_nesting_job(
         grouping_intent=grouping_intent,
         placement_zones=placement_zones,
         part_gap=AxisGapMm(gap_x, gap_y),
+        bleed_mm=effective_bleed_mm,
         duplex_mode="duplex" if cnc_duplex else "simplex",
         flip_edge=flip_edge,
         duplex_registration=duplex_registration,

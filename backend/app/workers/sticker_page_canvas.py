@@ -226,3 +226,78 @@ def restore_sticker_page_canvas(
                 os.unlink(temp_path)
             except OSError:
                 pass
+
+
+def normalize_sticker_tight_crop_origin(pdf_path: str | os.PathLike) -> bool:
+    """Chuẩn hóa hệ toạ độ của file PDF tem bế tight-crop về gốc (0, 0).
+
+    Khi người dùng xuất tem chế độ cắt theo tem (do_crop_to_sticker=True),
+    StickerEngine siết MediaBox/CropBox ôm sát tem nhưng có toạ độ gốc offset
+    [x0, y0, x1, y1] (x0 > 0, y0 > 0).
+    Hàm này dịch chuyển Content Stream lùi (-x0, -y0) và đặt lại MediaBox/CropBox
+    về [0.0, 0.0, W, H] để Adobe Illustrator, CorelDRAW và các RIP mở file
+    tạo Artboard khớp 1:1, không bị lệch toạ độ xuống đáy artboard.
+    """
+    path_str = str(pdf_path)
+    if not os.path.isfile(path_str):
+        return False
+
+    output_dir = os.path.dirname(os.path.abspath(path_str)) or "."
+    temp_path: str | None = None
+    modified = False
+
+    try:
+        with pikepdf.Pdf.open(path_str) as pdf:
+            for page in pdf.pages:
+                page_obj = page.obj
+                media = _read_box(page_obj, "/MediaBox", fallback=page.mediabox)
+                crop = _read_box(page_obj, "/CropBox", fallback=media)
+
+                shift_x = float(crop[0])
+                shift_y = float(crop[1])
+                norm_w = float(crop[2] - crop[0])
+                norm_h = float(crop[3] - crop[1])
+
+                if abs(shift_x) > 1e-4 or abs(shift_y) > 1e-4:
+                    modified = True
+                    if "/Contents" in page_obj and page_obj.Contents is not None:
+                        if isinstance(page_obj.Contents, pikepdf.Array):
+                            raw_stream = b"\n".join(s.read_bytes() for s in page_obj.Contents)
+                        else:
+                            raw_stream = page_obj.Contents.read_bytes()
+                        shifted_stream = (
+                            f"q 1 0 0 1 {-shift_x:.4f} {-shift_y:.4f} cm\n".encode("ascii")
+                            + raw_stream
+                            + b"\nQ\n"
+                        )
+                        page_obj.Contents = pdf.make_stream(shifted_stream)
+
+                    norm_box = (0.0, 0.0, norm_w, norm_h)
+                    page_obj["/MediaBox"] = _as_array(norm_box)
+                    page_obj["/CropBox"] = _as_array(norm_box)
+                    if "/BleedBox" in page_obj:
+                        page_obj["/BleedBox"] = _as_array(norm_box)
+                    for key in ("/TrimBox", "/ArtBox"):
+                        if key in page_obj:
+                            b = _read_box(page_obj, key)
+                            page_obj[key] = _as_array(
+                                (b[0] - shift_x, b[1] - shift_y, b[2] - shift_x, b[3] - shift_y)
+                            )
+
+            if not modified:
+                return False
+
+            fd, temp_path = tempfile.mkstemp(suffix=".pdf", dir=output_dir)
+            os.close(fd)
+            pdf.save(temp_path)
+
+        os.replace(temp_path, path_str)
+        temp_path = None
+        return True
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+

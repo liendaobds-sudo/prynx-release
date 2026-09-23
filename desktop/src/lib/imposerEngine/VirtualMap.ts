@@ -45,8 +45,9 @@ export const generateBindingMap = (
 
     // Map each 1-based logical reading slot → source page index (or null = blank padding).
     // 'end'    : blanks go at the tail of the reading order (last pages / back cover).
-    // 'center' : blanks go at the innermost pages (physical center of the book), which is
-    //            the print-shop default so cover and early pages are never blank.
+    // 'center' : với saddle/continuous blanks đi vào vùng trung tâm vật lý của cuốn;
+    //            riêng thread được dựng lại theo tép ở block bên dưới để không chen
+    //            giữa hai tép.
     const blankCount = paddedPageCount - effectivePageCount;
     const logicalToSrc: (number | null)[] = new Array(paddedPageCount);
     if (blankPlacement === 'center' && blankCount > 0) {
@@ -60,6 +61,35 @@ export const generateBindingMap = (
     } else {
         for (let i = 0; i < paddedPageCount; i++) {
             logicalToSrc[i] = i < effectivePageCount ? i : null;
+        }
+    }
+
+    // [BOOKLET FIX 2026-09-23 §BOOK.02/§BOOK.03] Với khâu chỉ, folio là giới hạn
+    // thật của từng tép. Không gộp tép 4 trang vào tép trước; nếu chọn "Giữa sách"
+    // thì chỉ đặt blank vào tép cuối đang thiếu trang, không chen giữa toàn cuốn.
+    if (bindingMode === 'thread') {
+        const validFolioSize = foliosize > 0 && foliosize % 4 === 0 ? foliosize : 16;
+        logicalToSrc.fill(null);
+        let sourceCursor = 0;
+        let logicalCursor = 0;
+        while (logicalCursor < paddedPageCount) {
+            const signatureSize = Math.min(validFolioSize, paddedPageCount - logicalCursor);
+            const realCount = Math.min(signatureSize, Math.max(0, effectivePageCount - sourceCursor));
+            const blankCountInSignature = signatureSize - realCount;
+            const realPages = Array.from({ length: realCount }, (_, i) => sourceCursor + i);
+            const insertAt = blankPlacement === 'center' && blankCountInSignature > 0
+                ? Math.floor(realCount / 2)
+                : realCount;
+            const segment = [
+                ...realPages.slice(0, insertAt),
+                ...Array<number | null>(blankCountInSignature).fill(null),
+                ...realPages.slice(insertAt),
+            ];
+            for (let i = 0; i < signatureSize; i++) {
+                logicalToSrc[logicalCursor + i] = segment[i] ?? null;
+            }
+            sourceCursor += realCount;
+            logicalCursor += signatureSize;
         }
     }
 
@@ -163,18 +193,10 @@ export const generateBindingMap = (
         let globalSheetIndex = 0;
         let signatureIndex = 1;
         const sigCounts: Record<number, number> = {};
-        let modifiedLastSig = false;
 
         while (pagesProcessed < paddedPageCount) {
             const pagesRemaining = paddedPageCount - pagesProcessed;
-            let currentSigPageCount = Math.min(validFolioSize, pagesRemaining);
-            
-            // Optimization for commercial printing: Never leave a single 4-page signature at the end if we can merge it.
-            // If the remaining pages after this signature would be exactly 4 pages, just combine them into this signature.
-            if (pagesRemaining - currentSigPageCount === 4) {
-                 currentSigPageCount = pagesRemaining;
-                 modifiedLastSig = true;
-            }
+            const currentSigPageCount = Math.min(validFolioSize, pagesRemaining);
 
             sigCounts[currentSigPageCount] = (sigCounts[currentSigPageCount] || 0) + 1;
 
@@ -208,9 +230,6 @@ export const generateBindingMap = (
             .join(', ');
             
         report = `Báo cáo chia tép: Tổng cộng ${details}.`;
-        if (modifiedLastSig) {
-            report += ` (Hệ thống đã tự động gộp 4 trang dư cuối cùng vào tay sách liền trước để tránh rách chỉ khi kẹp lên máy khâu).`;
-        }
     }
 
     return { sheets, report };

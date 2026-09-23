@@ -42,6 +42,12 @@ export interface NupSlice {
     setTileGapX: (v: number) => void;
     tileGapY: number;
     setTileGapY: (v: number) => void;
+    clusterCutCmyk: [number, number, number, number];
+    setClusterCutCmyk: (v: [number, number, number, number]) => void;
+    clusterCutFullSheet: boolean;
+    setClusterCutFullSheet: (v: boolean) => void;
+    clusterPostDieCutMarks: boolean;
+    setClusterPostDieCutMarks: (v: boolean) => void;
     clusterNesting: boolean;
     setClusterNesting: (v: boolean) => void;
     showGapSettings: boolean;
@@ -86,7 +92,7 @@ export const NUP_PERSIST_KEYS = [
     'layoutType', 'columns', 'rows', 'gridStrategy', 'alternateRotation', 'groupingStrategy', 'cutBorder',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
-    'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge',
+    'tileGapX', 'tileGapY', 'clusterCutCmyk', 'clusterCutFullSheet', 'clusterPostDieCutMarks', 'clusterNesting', 'duplexFlow', 'duplexFlipEdge',
     'mixedExcessPercent', 'align',
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode', 'clusterDistribution',
     'clusterBorder',
@@ -154,6 +160,12 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     setTileGapX: (v) => set({ tileGapX: v }),
     tileGapY: 0,
     setTileGapY: (v) => set({ tileGapY: v }),
+    clusterCutCmyk: [0, 0, 0, 100],
+    setClusterCutCmyk: (v) => set({ clusterCutCmyk: v }),
+    clusterCutFullSheet: false,
+    setClusterCutFullSheet: (v) => set({ clusterCutFullSheet: v }),
+    clusterPostDieCutMarks: true,
+    setClusterPostDieCutMarks: (v) => set({ clusterPostDieCutMarks: v }),
     clusterNesting: true,
     setClusterNesting: (v) => set({ clusterNesting: v }),
     showGapSettings: false,

@@ -393,4 +393,44 @@ describe('shouldUseTrueShapeNesting — auto-route đồng bộ backend route_tr
     expect(use({ shapesByPage: {} })).toBe(true);
     expect(use({ shapesByPage: undefined })).toBe(true);
   });
+
+  it('CA ÂM: targetQuantity == 1 hoặc lưới 1x1 → false (không cần chạy nesting nặng)', () => {
+    expect(use({ targetQuantity: 1 })).toBe(false);
+    expect(use({ targetQuantity: '1' })).toBe(false);
+    expect(use({ columns: 1, rows: 1 })).toBe(false);
+    expect(use({ targetQuantitiesByPage: { 0: 1 } })).toBe(false);
+  });
+
+  it('CA ÂM: tem kích thước quá lớn so với tờ in (sức chứa <= 1) → false', () => {
+    // Kích thước tem trong ca thực tế: 466.2 x 280.9mm trên tờ 493 x 317mm (usable 483 x 307mm)
+    expect(
+      use({
+        itemW: 466.2,
+        itemH: 280.9,
+        sheetWidth: 493,
+        sheetHeight: 317,
+        marginLeft: 5,
+        marginRight: 5,
+        marginTop: 5,
+        marginBottom: 5,
+      }),
+    ).toBe(false);
+  });
+
+  it('CA DƯƠNG: tem nhỏ thông thường trên tờ in lớn → true', () => {
+    // Tem nhỏ 50 x 50mm trên tờ 493 x 317mm (chứa được rất nhiều tem)
+    expect(
+      use({
+        itemW: 50,
+        itemH: 50,
+        sheetWidth: 493,
+        sheetHeight: 317,
+        marginLeft: 5,
+        marginRight: 5,
+        marginTop: 5,
+        marginBottom: 5,
+      }),
+    ).toBe(true);
+  });
 });
+

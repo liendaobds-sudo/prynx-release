@@ -522,14 +522,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             if (!file) return;
             const { getFileArrayBuffer } = await import('../lib/utils');
             const effectivePath = (file as { path?: string })?.path || selectionFileId || undefined;
-            console.info('[AcrobatViewer][triggerInstantPreflight] Bắt đầu quét nhanh:', {
-                targetPages,
-                fileName: file.name,
-                effectivePath,
-            });
             const pdfBytes = new Uint8Array(await getFileArrayBuffer(file, effectivePath));
             if (!pdfBytes || pdfBytes.length === 0) {
-                console.warn('[AcrobatViewer][triggerInstantPreflight] pdfBytes rỗng, bỏ qua quét');
                 return;
             }
 
@@ -537,73 +531,129 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             const res = await runInstantPreflight(pdfBytes, {
                 targetPages: targetPages && targetPages.length > 0 ? targetPages : undefined,
             });
-            console.info('[AcrobatViewer][triggerInstantPreflight] Kết quả quét:', res);
             setInstantPreflightResult(res);
         } catch (error) {
             console.warn('[AcrobatViewer][triggerInstantPreflight] Lỗi quét kiểm tra:', error);
         }
     }, [file, selectionFileId]);
 
-    // LIVE LINK: Tự động tải lại trang khi tệp PDF được lưu bởi Illustrator / CorelDRAW
-    // Bỏ qua các tệp tạm nội bộ (ví dụ: vdp_clean_*.pdf, vdp_tags_*.pdf, vdp_templates)
-    // và các tệp sinh tự động trong workspace để tránh vòng lặp reload không mong muốn.
+    // LIVE LINK (BỊ ĐỘNG): Tự động tải lại trang khi tệp PDF gốc trên đĩa được lưu bởi ứng dụng ngoài
+    // Bỏ qua các tệp tạm nội bộ hoặc tệp sinh tự động, và nhường cho activeBridgeSession nếu đang theo dõi cùng tệp.
     const isInternalTempPath = Boolean(
         file?.path && /[\\/]vdp_templates[\\/]|vdp_clean_[0-9a-fA-F]+|vdp_tags_[0-9a-fA-F]+|[\\/]PrynX-dev[\\/]results[\\/]/i.test(file.path)
     );
     const isGeneratedFile = isGeneratedWorkspaceFile(file);
 
+    interface ActiveBridgeSession {
+        targetFilePath: string;
+        mode: 'selection' | 'all';
+        pageIndices?: number[];
+        sourceFilePath?: string;
+        isTempInMemoryFile?: boolean;
+        appName: 'illustrator' | 'corel';
+    }
+
+    const [activeBridgeSession, setActiveBridgeSession] = useState<ActiveBridgeSession | null>(null);
+
+    // Xóa phiên bắc cầu khi người dùng chuyển sang file khác trong viewer
+    useEffect(() => {
+        setActiveBridgeSession(null);
+    }, [file?.name, (file as { path?: string })?.path]);
+
+    const isActiveSessionWatchingSameFile = Boolean(
+        activeBridgeSession?.targetFilePath && file?.path && activeBridgeSession.targetFilePath === file.path
+    );
+
     useLiveLinkWatcher({
         filePath: file?.path,
-        enabled: Boolean(file?.path && !file?.isInMemory && !isInternalTempPath && !isGeneratedFile),
+        enabled: Boolean(file?.path && !file?.isInMemory && !isInternalTempPath && !isGeneratedFile && !isActiveSessionWatchingSameFile),
         onFileChanged: () => {
-            console.info('[AcrobatViewer][LiveLink] Tệp gốc đã thay đổi, nạp lại viewer:', file?.path);
             retryLoad();
             void triggerInstantPreflight();
         },
     });
 
-    const [partialEditSession, setPartialEditSession] = useState<{
-        tempFilePath: string;
-        pageIndices: number[];
-        sourceFilePath?: string;
-    } | null>(null);
-
-    // LIVE LINK: Tự động gộp trang đã sửa từ Illustrator / CorelDRAW vào tài liệu gốc
+    // LIVE LINK (CHỦ ĐỘNG): Lắng nghe sự kiện lưu từ Illustrator / CorelDRAW khi người dùng bấm mở sửa
+    // Hỗ trợ CẢ sửa từng trang riêng biệt (gộp lại vào file gốc) LẪN sửa toàn bộ file (kể cả tem trong results/ và tem 1 trang).
     useLiveLinkWatcher({
-        filePath: partialEditSession?.tempFilePath,
-        enabled: Boolean(partialEditSession?.tempFilePath),
+        filePath: activeBridgeSession?.targetFilePath,
+        enabled: Boolean(activeBridgeSession?.targetFilePath),
         onFileChanged: async () => {
-            if (!partialEditSession || !file) return;
-            const effectiveSourcePath = partialEditSession.sourceFilePath || (file as { path?: string })?.path || selectionFileId;
-            console.info('[AcrobatViewer][LiveLink] Trang sửa riêng đã thay đổi:', {
-                tempFilePath: partialEditSession.tempFilePath,
-                effectiveSourcePath,
-                pageIndices: partialEditSession.pageIndices,
-            });
-            try {
+            if (!activeBridgeSession || !file) return;
+            const effectiveSourcePath = activeBridgeSession.sourceFilePath || (file as { path?: string })?.path || selectionFileId;
+            const appDisplayName = activeBridgeSession.appName === 'illustrator' ? 'Illustrator' : 'CorelDRAW';
+
+            // Hàm đọc buffer an toàn kèm retry để tránh xung đột IO khi ứng dụng ngoài đang giữ khóa ghi
+            const readBufferWithRetry = async (path: string, maxRetries = 3, delayMs = 150): Promise<Uint8Array> => {
                 const { fetchLocalFileBuffer } = await import('../lib/localFileTransport');
-                const { mergeEditedPagesIntoDocument } = await import('../lib/designAppLauncher');
-                const { getFileArrayBuffer } = await import('../lib/utils');
-                const { invoke } = await import('@tauri-apps/api/core');
-
-                const editedBytes = new Uint8Array(await fetchLocalFileBuffer(partialEditSession.tempFilePath));
-                const origBytes = new Uint8Array(await getFileArrayBuffer(file, effectiveSourcePath));
-
-                console.info('[AcrobatViewer][LiveLink] Gộp', editedBytes.length, 'bytes vào tài liệu', origBytes.length, 'bytes');
-                const mergedBytes = await mergeEditedPagesIntoDocument(
-                    origBytes,
-                    editedBytes,
-                    partialEditSession.pageIndices,
-                );
-
-                if (effectiveSourcePath) {
-                    console.info('[AcrobatViewer][LiveLink] Ghi file gốc:', effectiveSourcePath);
-                    await invoke('write_file_atomic', { path: effectiveSourcePath, contents: mergedBytes });
+                let lastErr: unknown;
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        const buf = await fetchLocalFileBuffer(path);
+                        if (buf && buf.byteLength > 0) return new Uint8Array(buf);
+                    } catch (err) {
+                        lastErr = err;
+                    }
+                    if (attempt < maxRetries) {
+                        await new Promise(res => setTimeout(res, delayMs));
+                    }
                 }
-                retryLoad();
-                void triggerInstantPreflight(partialEditSession.pageIndices.map(i => i + 1));
-            } catch (error) {
-                console.error('[AcrobatViewer][LiveLink] Lỗi khi tự động gộp trang đã sửa:', error);
+                throw lastErr || new Error(`Không thể đọc tệp ${path} sau ${maxRetries} lần thử`);
+            };
+
+            if (activeBridgeSession.mode === 'selection') {
+                if (!activeBridgeSession.pageIndices || activeBridgeSession.pageIndices.length === 0) {
+                    console.warn('[DesignBridge][LiveLink] Chế độ selection nhưng pageIndices rỗng, bỏ qua');
+                    return;
+                }
+                try {
+                    const { mergeEditedPagesIntoDocument } = await import('../lib/designAppLauncher');
+                    const { getFileArrayBuffer } = await import('../lib/utils');
+                    const { invoke } = await import('@tauri-apps/api/core');
+
+                    const editedBytes = await readBufferWithRetry(activeBridgeSession.targetFilePath);
+                    const origBytes = new Uint8Array(await getFileArrayBuffer(file, effectiveSourcePath));
+                    const mergedBytes = await mergeEditedPagesIntoDocument(
+                        origBytes,
+                        editedBytes,
+                        activeBridgeSession.pageIndices,
+                    );
+
+                    if (effectiveSourcePath) {
+                        await invoke('write_file_atomic', { path: effectiveSourcePath, contents: mergedBytes });
+                    } else {
+                        console.warn('[DesignBridge][LiveLink] effectiveSourcePath rỗng, cập nhật in-memory file');
+                        setFile(new File([mergedBytes as unknown as BlobPart], file.name, { type: 'application/pdf' }));
+                    }
+                    retryLoad();
+                    void triggerInstantPreflight(activeBridgeSession.pageIndices.map(i => i + 1));
+                    toast.success(t('misc.viewerContextMenu:da_dong_bo_trang_sua', {
+                        app: appDisplayName,
+                        defaultValue: `Đã cập nhật trang sửa từ ${appDisplayName} vào PrynX!`,
+                    }));
+                } catch (error) {
+                    console.error('[DesignBridge][LiveLink] Lỗi khi tự động gộp trang đã sửa:', error);
+                    const errMsg = error instanceof Error ? error.message : String(error);
+                    toast.error(`[Live Link] Không thể gộp trang đã sửa: ${errMsg}`);
+                }
+            } else {
+                // mode === 'all'
+                try {
+                    if (activeBridgeSession.isTempInMemoryFile) {
+                        const updatedBytes = await readBufferWithRetry(activeBridgeSession.targetFilePath);
+                        setFile(new File([updatedBytes as unknown as BlobPart], file.name, { type: 'application/pdf' }));
+                    }
+                    retryLoad();
+                    void triggerInstantPreflight();
+                    toast.success(t('misc.viewerContextMenu:da_dong_bo_toan_bo_file', {
+                        app: appDisplayName,
+                        defaultValue: `Đã cập nhật thay đổi từ ${appDisplayName}!`,
+                    }));
+                } catch (error) {
+                    console.error('[DesignBridge][LiveLink] Lỗi khi làm mới toàn bộ file:', error);
+                    const errMsg = error instanceof Error ? error.message : String(error);
+                    toast.error(`[Live Link] Không thể cập nhật file từ ${appDisplayName}: ${errMsg}`);
+                }
             }
         },
     });
@@ -616,46 +666,50 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             return;
         }
         const effectiveFilePath = (file as { path?: string })?.path || selectionFileId || undefined;
-        console.info('[AcrobatViewer][handleEditInApp] Khởi chạy ứng dụng đồ họa:', {
-            which,
-            mode,
-            fileName: file.name,
-            fileSize: file.size,
-            filePath: (file as { path?: string })?.path,
-            selectionFileId,
-            effectiveFilePath,
-            selectedIndices: Array.from(selectedIndices),
-        });
+        const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b);
+        const totalPages = pageOrder.length || numPages;
+        // Chuyển đổi chính xác từ visual index sang 0-based physical page index trong PDF
+        const mappedPhysicalIndices = Array.from(new Set(
+            sortedSel.map(idx => (pageOrder[idx] !== undefined ? pageOrder[idx] - 1 : idx))
+        )).filter(idx => idx >= 0).sort((a, b) => a - b);
+
         try {
             const { launchDesignApp, ensurePathBackedPdf, extractPagesForExternalEdit } = await import('../lib/designAppLauncher');
-            const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b);
-            const totalPages = pageOrder.length || numPages;
             const isPartial = mode === 'selection' || (mode !== 'all' && totalPages > 1 && sortedSel.length > 0 && sortedSel.length < totalPages);
 
-            if (isPartial && sortedSel.length > 0) {
-                console.info('[AcrobatViewer][handleEditInApp] Chế độ sửa từng trang riêng biệt:', sortedSel);
+            if (isPartial && mappedPhysicalIndices.length > 0) {
                 const { tempFilePath, pageIndices } = await extractPagesForExternalEdit(
                     file,
-                    sortedSel,
+                    mappedPhysicalIndices,
                     file.name,
                     effectiveFilePath,
                 );
-                setPartialEditSession({
-                    tempFilePath,
+                setActiveBridgeSession({
+                    targetFilePath: tempFilePath,
+                    mode: 'selection',
                     pageIndices,
                     sourceFilePath: effectiveFilePath,
+                    appName: which,
                 });
                 await launchDesignApp(which, tempFilePath);
             } else {
-                console.info('[AcrobatViewer][handleEditInApp] Chế độ sửa toàn bộ file');
-                setPartialEditSession(null);
                 const targetPath = await ensurePathBackedPdf(file, file.name);
+                const isTempInMemoryFile = Boolean(!file?.path || file?.isInMemory);
+                setActiveBridgeSession({
+                    targetFilePath: targetPath,
+                    mode: 'all',
+                    sourceFilePath: targetPath,
+                    isTempInMemoryFile,
+                    appName: which,
+                });
                 await launchDesignApp(which, targetPath);
             }
         } catch (error) {
-            console.error('[AcrobatViewer][handleEditInApp] Lỗi khi khởi chạy ứng dụng thiết kế:', error);
+            console.error('[DesignBridge][handleEditInApp] Lỗi khi khởi chạy ứng dụng thiết kế:', error);
+            const errMsg = error instanceof Error ? error.message : String(error);
+            toast.error(`Không thể mở ${which === 'illustrator' ? 'Illustrator' : 'CorelDRAW'}: ${errMsg}`);
         }
-    }, [file, selectedIndices, pageOrder.length, numPages, selectionFileId]);
+    }, [file, selectedIndices, pageOrder, numPages, selectionFileId, t]);
 
     // PERF (audit 2026-08-08 §RENDER.1): metadata pha B có thể đổi khổ các trang đứng
     // trước trang active. Giữ đúng điểm neo viewport qua commit hình học để không nhảy
@@ -2830,6 +2884,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                              editSessionPreviews={editSession?.previews}
                              pageWorkflowStatuses={pageWorkflowStatuses}
                              cutlinePreviews={cutlinePreviews}
+                             renderDocumentToken={loaderRenderDocumentToken}
                         />
                     )}
 

@@ -3988,6 +3988,13 @@ def _run_nup_engine_impl(
                 alternate_rotation=alternate_rotation,
                 diagnostic_trace_id=_diagnostic_trace_id,
                 diagnostic_job_id=_diagnostic_job_id,
+                cluster_cut_cmyk=settings.get('clusterCutCmyk') or settings.get('cluster_cut_cmyk'),
+                cluster_cut_full_sheet=bool(settings.get('clusterCutFullSheet') or settings.get('cluster_cut_full_sheet')),
+                cluster_post_die_cut_marks=(
+                    bool(settings['clusterPostDieCutMarks'])
+                    if 'clusterPostDieCutMarks' in settings
+                    else bool(settings.get('cluster_post_die_cut_marks', True))
+                ),
             ),
 
             (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất (trộn mẫu)

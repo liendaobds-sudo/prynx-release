@@ -79,8 +79,14 @@ class Page:
     def rotation(self):
         return int(self._page.get("/Rotate", 0))
 
+    def _invalidate_caches(self):
+        self._vp_cache = None
+        self._cached_largest_die = None
+        self._cached_head_to_tail = None
+        self._cached_die_cut_poly = None
+
     def clean_contents(self):
-        self._vp_cache = None  # nội dung thay đổi → bỏ cache vector paths
+        self._invalidate_caches()
         try:
             self._page.contents_coalesce()
         except Exception:
@@ -124,7 +130,7 @@ class Page:
         return get_pixmap(self._page, doc_path, page_idx, scale)
 
     def show_pdf_page(self, rect, src_doc, page_idx, rotate=0, clip=None, keep_proportion=False, out_clip=None, mirror_x=False, mirror_y=False, out_clip_path=None):
-        self._vp_cache = None  # ghi nội dung trang đích → bỏ cache
+        self._invalidate_caches()  # ghi nội dung trang đích → bỏ cache
         show_pdf_page(self.doc._pdf, self._page, rect, src_doc._pdf, page_idx, rotate, clip, keep_proportion, out_clip, mirror_x, mirror_y, out_clip_path)
 
     def new_shape(self):
@@ -132,7 +138,7 @@ class Page:
 
     def insert_text(self, point=None, text="", fontsize=11, fontname="helv",
                     color=(0, 0, 0, 1), render_mode=0, oc=None):
-        self._vp_cache = None  # ghi nội dung → bỏ cache
+        self._invalidate_caches()  # ghi nội dung → bỏ cache
         return insert_text(self.doc._pdf, self._page, point, text, fontsize, fontname, color, render_mode, oc)
 
     def set_trimbox(self, rect):

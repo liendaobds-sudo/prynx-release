@@ -616,6 +616,12 @@ def draw_tile_cut_marks(
     mark_thickness: float = 0.71,  # độ dày nét (pts), default ~0.25mm
     mark_style: str = 'default',   # 'default' (nét đơn) | 'japanese' (nét đôi トンボ)
     bleed_pt: float = 0.0,         # khoảng bù xén (pts) — dùng cho khoảng cách nét đôi
+    cmyk_color: tuple | list | None = None, # (C, M, Y, K) 0..100 hoặc 0..1
+    full_sheet: bool = False,      # Kéo dài đường cắt hết 2 mép đối nhau của khổ giấy
+    sheet_w: float = 0.0,          # Khổ giấy (pts)
+    sheet_h: float = 0.0,          # Khổ giấy (pts)
+    oc: Any = None,                # OCG xref
+    post_die_cut_marks: bool = True,  # Dấu bế xong xén (vạch xén kiểu cũ tại mép và khe cụm)
 ):
     """
     Vẽ dấu xén guillotine tại các đường biên giữa các cụm.
@@ -650,90 +656,121 @@ def draw_tile_cut_marks(
     int_v = [x for x in v_cuts if x not in (min_x, max_x)]
     int_h = [y for y in h_cuts if y not in (min_y, max_y)]
 
-    shape = out_page.new_shape()
+    if post_die_cut_marks:
+        shape = out_page.new_shape()
 
-    is_japanese = mark_style == 'japanese' and bleed_pt > 0.01
+        is_japanese = mark_style == 'japanese' and bleed_pt > 0.01
 
-    def is_corner(vx, hy):
-        return vx in (min_x, max_x) and hy in (min_y, max_y)
+        def is_corner(vx, hy):
+            return vx in (min_x, max_x) and hy in (min_y, max_y)
 
-    def tick_v(x, y0, y1):
-        """Nét dọc tại hoành độ x (chạy theo trục y). Nét đôi straddle x ±bleed."""
-        if is_japanese:
-            shape.draw_line(Point(x - bleed_pt, y0), Point(x - bleed_pt, y1))
-            shape.draw_line(Point(x + bleed_pt, y0), Point(x + bleed_pt, y1))
-        else:
-            shape.draw_line(Point(x, y0), Point(x, y1))
+        def tick_v(x, y0, y1):
+            """Nét dọc tại hoành độ x (chạy theo trục y). Nét đôi straddle x ±bleed."""
+            if is_japanese:
+                shape.draw_line(Point(x - bleed_pt, y0), Point(x - bleed_pt, y1))
+                shape.draw_line(Point(x + bleed_pt, y0), Point(x + bleed_pt, y1))
+            else:
+                shape.draw_line(Point(x, y0), Point(x, y1))
 
-    def tick_h(y, x0, x1):
-        """Nét ngang tại tung độ y (chạy theo trục x). Nét đôi straddle y ±bleed."""
-        if is_japanese:
-            shape.draw_line(Point(x0, y - bleed_pt), Point(x1, y - bleed_pt))
-            shape.draw_line(Point(x0, y + bleed_pt), Point(x1, y + bleed_pt))
-        else:
-            shape.draw_line(Point(x0, y), Point(x1, y))
+        def tick_h(y, x0, x1):
+            """Nét ngang tại tung độ y (chạy theo trục x). Nét đôi straddle y ±bleed."""
+            if is_japanese:
+                shape.draw_line(Point(x0, y - bleed_pt), Point(x1, y - bleed_pt))
+                shape.draw_line(Point(x0, y + bleed_pt), Point(x1, y + bleed_pt))
+            else:
+                shape.draw_line(Point(x0, y), Point(x1, y))
 
-    # ── Marks along TOP outer edge (min_y) ──
-    # Nét thẳng đứng, kéo LÊN TRÊN (y nhỏ hơn), bỏ qua 2 góc trái-phải
-    for vx in v_cuts:
-        if is_corner(vx, min_y):
-            continue
-        tick_v(vx, min_y - mark_off, min_y - mark_off - mark_len)
-
-    # ── Marks along BOTTOM outer edge (max_y) ──
-    for vx in v_cuts:
-        if is_corner(vx, max_y):
-            continue
-        tick_v(vx, max_y + mark_off, max_y + mark_off + mark_len)
-
-    # ── Marks along LEFT outer edge (min_x) ──
-    # Nét nằm ngang, kéo sang TRÁI, bỏ qua 2 góc trên-dưới
-    for hy in h_cuts:
-        if is_corner(min_x, hy):
-            continue
-        tick_h(hy, min_x - mark_off, min_x - mark_off - mark_len)
-
-    # ── Marks along RIGHT outer edge (max_x) ──
-    for hy in h_cuts:
-        if is_corner(max_x, hy):
-            continue
-        tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)
-
-    # ── Internal vertical cuts (between tile columns) ──
-    for vx in int_v:
-        for hy in h_cuts:
-            # Tick ngang hướng sang trái
-            tick_h(hy, vx - mark_off, vx - mark_off - mark_len)
-            # Tick ngang hướng sang phải
-            tick_h(hy, vx + mark_off, vx + mark_off + mark_len)
-        # Cũng vẽ nét dọc ra ngoài biên trên/dưới
-        tick_v(vx, min_y - mark_off, min_y - mark_off - mark_len)
-        tick_v(vx, max_y + mark_off, max_y + mark_off + mark_len)
-
-    # ── Internal horizontal cuts (between tile rows) ──
-    for hy in int_h:
+        # ── Marks along TOP outer edge (min_y) ──
+        # Nét thẳng đứng, kéo LÊN TRÊN (y nhỏ hơn), bỏ qua 2 góc trái-phải
         for vx in v_cuts:
-            # Tick dọc hướng lên trên
-            tick_v(vx, hy - mark_off, hy - mark_off - mark_len)
-            # Tick dọc hướng xuống dưới
-            tick_v(vx, hy + mark_off, hy + mark_off + mark_len)
-        # Nét ngang ra ngoài biên trái/phải
-        tick_h(hy, min_x - mark_off, min_x - mark_off - mark_len)
-        tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)
+            if is_corner(vx, min_y):
+                continue
+            tick_v(vx, min_y - mark_off, min_y - mark_off - mark_len)
 
-    shape.finish(color=(1, 1, 1, 1), fill=None, width=mark_thickness)  # registration (mọi kẽm)
-    shape.commit()  # commit to page
+        # ── Marks along BOTTOM outer edge (max_y) ──
+        for vx in v_cuts:
+            if is_corner(vx, max_y):
+                continue
+            tick_v(vx, max_y + mark_off, max_y + mark_off + mark_len)
 
-    # Đường nét đứt (dashed line) phân ranh giới xuyên suốt giữa các cụm
-    if int_v or int_h:
-        dash_shape = out_page.new_shape()
+        # ── Marks along LEFT outer edge (min_x) ──
+        # Nét nằm ngang, kéo sang TRÁI, bỏ qua 2 góc trên-dưới
+        for hy in h_cuts:
+            if is_corner(min_x, hy):
+                continue
+            tick_h(hy, min_x - mark_off, min_x - mark_off - mark_len)
+
+        # ── Marks along RIGHT outer edge (max_x) ──
+        for hy in h_cuts:
+            if is_corner(max_x, hy):
+                continue
+            tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)
+
+        # ── Internal vertical cuts (between tile columns) ──
         for vx in int_v:
-            dash_shape.draw_line(Point(vx, min_y), Point(vx, max_y))
+            for hy in h_cuts:
+                # Tick ngang hướng sang trái
+                tick_h(hy, vx - mark_off, vx - mark_off - mark_len)
+                # Tick ngang hướng sang phải
+                tick_h(hy, vx + mark_off, vx + mark_off + mark_len)
+            # Cũng vẽ nét dọc ra ngoài biên trên/dưới
+            tick_v(vx, min_y - mark_off, min_y - mark_off - mark_len)
+            tick_v(vx, max_y + mark_off, max_y + mark_off + mark_len)
+
+        # ── Internal horizontal cuts (between tile rows) ──
         for hy in int_h:
-            dash_shape.draw_line(Point(min_x, hy), Point(max_x, hy))
-        dash_thick = max(0.2, round(mark_thickness * 0.75, 2))
-        dash_shape.finish(color=(1, 1, 1, 1), fill=None, width=dash_thick, dashes=[4, 4])
-        dash_shape.commit()
+            for vx in v_cuts:
+                # Tick dọc hướng lên trên
+                tick_v(vx, hy - mark_off, hy - mark_off - mark_len)
+                # Tick dọc hướng xuống dưới
+                tick_v(vx, hy + mark_off, hy + mark_off + mark_len)
+            # Nét ngang ra ngoài biên trái/phải
+            tick_h(hy, min_x - mark_off, min_x - mark_off - mark_len)
+            tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)
+
+        shape_kwargs = {'color': (1, 1, 1, 1), 'fill': None, 'width': mark_thickness}
+        if oc is not None:
+            shape_kwargs['oc'] = oc
+        shape.finish(**shape_kwargs)  # registration (mọi kẽm)
+        shape.commit()  # commit to page
+
+    # Đường phân ranh giới xuyên suốt giữa các cụm (nét đứt hoặc cắt hết khổ CNC)
+    if int_v or int_h:
+        cut_color = (1, 1, 1, 1)
+        if cmyk_color is not None and len(cmyk_color) >= 4:
+            if any(float(v) > 1.0 for v in cmyk_color[:4]):
+                cut_color = tuple(max(0.0, min(1.0, float(v) / 100.0)) for v in cmyk_color[:4])
+            else:
+                cut_color = tuple(max(0.0, min(1.0, float(v))) for v in cmyk_color[:4])
+
+        if full_sheet:
+            dash_shape = out_page.new_shape()
+            y_top = 0.0
+            y_bot = sheet_h if sheet_h > 0 else max_y
+            x_left = 0.0
+            x_right = sheet_w if sheet_w > 0 else max_x
+            for vx in int_v:
+                dash_shape.draw_line(Point(vx, y_top), Point(vx, y_bot))
+            for hy in int_h:
+                dash_shape.draw_line(Point(x_left, hy), Point(x_right, hy))
+            dash_thick = mark_thickness
+            dash_kwargs = {'color': cut_color, 'fill': None, 'width': dash_thick}
+            if oc is not None:
+                dash_kwargs['oc'] = oc
+            dash_shape.finish(**dash_kwargs)
+            dash_shape.commit()
+        elif post_die_cut_marks:
+            dash_shape = out_page.new_shape()
+            for vx in int_v:
+                dash_shape.draw_line(Point(vx, min_y), Point(vx, max_y))
+            for hy in int_h:
+                dash_shape.draw_line(Point(min_x, hy), Point(max_x, hy))
+            dash_thick = max(0.2, round(mark_thickness * 0.75, 2))
+            dash_kwargs = {'color': cut_color, 'fill': None, 'width': dash_thick, 'dashes': [4, 4]}
+            if oc is not None:
+                dash_kwargs['oc'] = oc
+            dash_shape.finish(**dash_kwargs)
+            dash_shape.commit()
 
     logger.info(
         f"[CLUSTER_TILE] Drew tile cut marks (style={mark_style}): "

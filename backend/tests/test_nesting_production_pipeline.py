@@ -676,3 +676,96 @@ def test_lo_khuon_di_tu_bo_do_den_lop_cut_cua_artifact(workdir: Path) -> None:
     assert " Do" not in cut_stream
     assert " f\n" not in cut_stream
     assert " f*" not in cut_stream
+
+
+def test_derive_artwork_clip_path_va_clearance_bu_xen():
+    """BXHAND21.03: Kiểm tra mở rộng artwork clip path theo retained bleed và điều chỉnh clearance."""
+    from unittest.mock import MagicMock
+    from shapely.geometry import Polygon
+    from app.core.nesting_production_adapter import RenderPolygonV1
+    from app.core.nesting_production_pipeline import (
+        AxisGapMm,
+        ProductionNestingJobInput,
+        _clearance,
+        derive_artwork_clip_path,
+    )
+
+    poly = RenderPolygonV1(
+        outer=((0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)),
+        holes=(),
+    )
+    # bleed = 0 -> không đổi
+    same = derive_artwork_clip_path(poly, 0.0)
+    assert same == poly
+
+    # bleed = 1.0 -> nở 1mm mỗi bên
+    expanded = derive_artwork_clip_path(poly, 1.0)
+    assert expanded != poly
+    sh_orig = Polygon(poly.outer)
+    sh_exp = Polygon(expanded.outer)
+    assert sh_exp.covers(sh_orig)
+    assert sh_exp.area > sh_orig.area
+
+    # Kiểm tra _clearance: part_gap = 2mm, retained_bleed = 1mm -> partToPart = 0mm (không double count)
+    dummy_input = MagicMock(spec=ProductionNestingJobInput)
+    dummy_input.part_gap = AxisGapMm(2.0, 2.0)
+    dummy_input.sheet_edge_gap = AxisGapMm(0.0, 0.0)
+    dummy_input.obstacle_gap = None
+
+    c = _clearance(dummy_input, retained_bleed_mm=1.0)
+    assert c["partToPart"] == {"xMm": 0.0, "yMm": 0.0}
+    assert c["partToObstacle"] == {"xMm": 1.0, "yMm": 1.0}
+
+    asymmetric = derive_artwork_clip_path(poly, AxisGapMm(2.0, 1.0))
+    assert max(x for x, _ in asymmetric.outer) >= 42.0
+    assert max(y for _, y in asymmetric.outer) >= 41.0
+
+
+@requires_engine
+def test_true_shape_nesting_retains_bleed_in_bundle(workdir: Path):
+    """BXHAND21.03: True-shape nesting với gap 2mm và bleed 2mm phải nở artwork clip path 1mm."""
+    from dataclasses import replace
+    from shapely.geometry import Polygon
+    from app.core.nesting_production_pipeline import AxisGapMm, solve_production_nesting_job
+
+    job = replace(
+        _job(workdir, quantity=2, max_sheets=1),
+        part_gap=AxisGapMm(2.0, 2.0),
+        bleed_mm=2.0,
+    )
+    session = solve_production_nesting_job(job)
+    bundle = session.solved.production_request.render_bundle
+    part = bundle["parts"][0]
+
+    cut_contour = part["cutContour"]["outer"]
+    clip_path = part["artworkClipPath"]["outer"]
+
+    # artworkClipPath PHẢI khác cutContour và có diện tích lớn hơn
+    sh_cut = Polygon(cut_contour)
+    sh_clip = Polygon(clip_path)
+
+    assert sh_clip.covers(sh_cut)
+    assert sh_clip.area > sh_cut.area
+
+
+def test_assemble_nesting_job_tu_dong_bu_xen_theo_nua_gap():
+    """BXHAND21.03: Khi settings không có bleed (hoặc bleed=0), _assemble_nesting_job tự động lấy nửa khoảng hở."""
+    from app.workers.nup_true_shape_nesting import _assemble_nesting_job
+
+    job = _assemble_nesting_job(
+        source_path="dummy.pdf",
+        settings={
+            "sheetWidth": 320.0,
+            "sheetHeight": 430.0,
+            "gapX": 2.0,
+            "gapY": 2.0,
+        },
+        tool="sticker_imposer",
+        pages=[0],
+        layout_intent="autofill_single_sheet",
+        quantities={},
+        report_requested_quantity=None,
+        shapes={},
+    )
+    # Tự động suy ra bleed_mm = min(2.0/2, 2.0/2) = 1.0mm
+    assert job.bleed_mm == 1.0

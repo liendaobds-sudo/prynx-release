@@ -328,6 +328,46 @@ function calculateStaggeredHexLayoutCore(
     };
 }
 
+function calculateDiagonalStaggerLayout(
+    usableW: number, usableH: number,
+    itemW: number, itemH: number,
+    gapX: number, gapY: number,
+    blockId: number, offsetX: number, offsetY: number, isRotated: boolean
+): NupBlock {
+    const TOL = 0.001;
+    const emptyBlock: NupBlock = { id: blockId, cols: 0, rows: 0, startX: offsetX, startY: offsetY, width: 0, height: 0, isRotated, cells: [] };
+    if (itemW <= TOL || itemH <= TOL) return emptyBlock;
+    if (usableW < itemW - TOL || usableH < itemH - TOL) return emptyBlock;
+
+    const dSafe = Math.max(itemW, itemH) + Math.max(gapX, gapY);
+    const dxAvail = usableW - itemW;
+    const dyAvail = usableH - itemH;
+
+    // CHỈ xếp 2 con đối góc (Corner Pair). Tuyệt đối không sinh dải ziczac > 2 con
+    // vì dải ziczac 2 cột sẽ làm các con cùng cột va chạm nếu dyStep < dSafe / 2.
+    if (dxAvail >= -TOL && dyAvail >= -TOL) {
+        const distSq = Math.max(0, dxAvail) ** 2 + Math.max(0, dyAvail) ** 2;
+        if (distSq >= (dSafe - TOL) ** 2) {
+            return {
+                id: blockId,
+                cols: 2,
+                rows: 2,
+                startX: offsetX,
+                startY: offsetY,
+                width: usableW,
+                height: usableH,
+                isRotated,
+                cells: [
+                    { c: 0, r: 0, x: offsetX, y: offsetY, width: itemW, height: itemH, isRotated, blockId },
+                    { c: 1, r: 1, x: offsetX + Math.max(0, dxAvail), y: offsetY + Math.max(0, dyAvail), width: itemW, height: itemH, isRotated, blockId },
+                ]
+            };
+        }
+    }
+
+    return emptyBlock;
+}
+
 
 function calculateHammerColLayout(
     usableW: number, usableH: number,
@@ -1196,9 +1236,25 @@ export function solveOptimalNupLayout(
             const stag = calculateStaggeredHexLayoutCore(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, false);
             const stagRot = calculateStaggeredHexLayoutCore(usableW, usableH, origH, origW, gapY, gapX, 0, 0, 0, true);
             for (const c of stagRot.cells) { c.isRotated = true; }
+
+            const colOrigRaw = calculateStaggeredHexLayoutCore(usableH, usableW, origH, origW, gapY, gapX, 0, 0, 0, false);
+            const colRotRaw = calculateStaggeredHexLayoutCore(usableH, usableW, origW, origH, gapX, gapY, 0, 0, 0, true);
+            const transposeBlock = (b: NupBlock): NupBlock => {
+                const cells = b.cells.map(c => ({ ...c, x: c.y, y: c.x, width: c.height, height: c.width }));
+                return { ...b, width: b.height, height: b.width, cells };
+            };
+            const colOrig = transposeBlock(colOrigRaw);
+            const colRot = transposeBlock(colRotRaw);
+            for (const c of colRot.cells) { c.isRotated = true; }
+
             const grid = calculateBasicGrid(usableW, usableH, origW, origH, gapX, gapY, false, 0, 0, 0);
             const gridRot = calculateBasicGrid(usableW, usableH, origH, origW, gapX, gapY, true, 0, 0, 0);
-            const candidates = [stag, stagRot, grid, gridRot];
+
+            const diag = calculateDiagonalStaggerLayout(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, false);
+            const diagRot = calculateDiagonalStaggerLayout(usableW, usableH, origH, origW, gapY, gapX, 0, 0, 0, true);
+            for (const c of diagRot.cells) { c.isRotated = true; }
+
+            const candidates = [stag, stagRot, colOrig, colRot, diag, diagRot, grid, gridRot];
             let best = candidates[0];
             for (const c of candidates) { if (c.cells.length > best.cells.length) best = c; }
             if (best.cells.length > 0) {
@@ -1374,7 +1430,11 @@ export function solveOptimalNupLayout(
         const colOrig = transposeBlock(colOrigRaw);
         const colRot = transposeBlock(colRotRaw);
 
-        const candidates = [rowOrig, rowRot, colOrig, colRot];
+        const diag = calculateDiagonalStaggerLayout(usableW, usableH, origW, origH, gapX, gapY, 0, 0, 0, false);
+        const diagRot = calculateDiagonalStaggerLayout(usableW, usableH, origH, origW, gapY, gapX, 0, 0, 0, true);
+        for (const c of diagRot.cells) { c.isRotated = true; }
+
+        const candidates = [rowOrig, rowRot, colOrig, colRot, diag, diagRot];
         let best = candidates[0];
         for (const c of candidates) {
             if (c.cells.length > best.cells.length) best = c;

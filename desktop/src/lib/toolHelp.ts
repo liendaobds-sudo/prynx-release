@@ -100,7 +100,7 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
       ]},
       { heading: 'Cách hoạt động', items: [
         'Quét hệ màu RGB/CMYK, font nhúng, DPI ảnh, transparency, bleed.',
-        'Liệt kê lỗi kèm nút auto-fix giống PitStop.',
+        'Liệt kê chi tiết lỗi kèm tính năng tự động sửa lỗi nhanh 1 chạm.',
       ]},
     ],
     printNote: 'Gần như bắt buộc cho offset. In nhanh vẫn nên kiểm hệ màu và font nhúng.',
@@ -194,14 +194,14 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
   },
   sticker_imposer: {
     title: 'Bình Tem Bế',
-    tagline: 'Bình bản tem bế: xếp so le tổ ong, chừa lề kẹp.',
+    tagline: 'Bình bản tem bế: xếp so le tối ưu khổ, chừa lề kẹp.',
     sections: [
       { heading: 'Khi nào dùng', items: [
         'Tem decal dạng tờ hoặc cuộn cần bình tối ưu giấy.',
         'Ghép nhiều loại kích thước tem trên cùng tờ.',
       ]},
       { heading: 'Cách hoạt động', items: [
-        'Hỗ trợ xếp so le tổ ong (Staggered Hex), chừa lề kẹp bế.',
+        'Hỗ trợ bình so le tối ưu diện tích in, chừa lề kẹp bế.',
       ]},
     ],
   },

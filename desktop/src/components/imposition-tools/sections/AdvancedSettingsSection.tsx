@@ -248,6 +248,9 @@ export default function AdvancedSettingsSection({
         tileGapX: state.tileGapX, setTileGapX: state.setTileGapX,
         tileGapY: state.tileGapY, setTileGapY: state.setTileGapY,
         clusterNesting: state.clusterNesting, setClusterNesting: state.setClusterNesting,
+        clusterCutCmyk: state.clusterCutCmyk, setClusterCutCmyk: state.setClusterCutCmyk,
+        clusterCutFullSheet: state.clusterCutFullSheet, setClusterCutFullSheet: state.setClusterCutFullSheet,
+        clusterPostDieCutMarks: state.clusterPostDieCutMarks, setClusterPostDieCutMarks: state.setClusterPostDieCutMarks,
         // Alignment
         align: state.align, setAlign: state.setAlign,
         // Marks
@@ -1446,6 +1449,113 @@ export default function AdvancedSettingsSection({
                                             </div>
                                         </div>
                                     )}
+
+                                    {/* Đường cắt phân chia cụm */}
+                                    <div className="border-t border-slate-200 dark:border-white/10 pt-3 flex flex-col gap-2.5">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-300 uppercase tracking-wide">
+                                                {t('imposition.advancedSettings:duong_cat_chia_cum', 'Đường cắt chia cụm')}
+                                            </label>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="text-[11px] text-slate-400">{t('imposition.advancedSettings:xem_mau', 'Màu:')}</span>
+                                                <div
+                                                    className="w-4 h-4 rounded border border-slate-300 dark:border-white/20 shadow-sm"
+                                                    style={{
+                                                        backgroundColor: (() => {
+                                                            const [c, m, y, k] = s.clusterCutCmyk || [0, 0, 0, 100];
+                                                            const r = Math.round(255 * (1 - c / 100) * (1 - k / 100));
+                                                            const g = Math.round(255 * (1 - m / 100) * (1 - k / 100));
+                                                            const b = Math.round(255 * (1 - y / 100) * (1 - k / 100));
+                                                            return `rgb(${r}, ${g}, ${b})`;
+                                                        })()
+                                                    }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        {/* CMYK inputs */}
+                                        <div className="grid grid-cols-4 gap-1.5">
+                                            {(['C', 'M', 'Y', 'K'] as const).map((ch, idx) => {
+                                                const currentCmyk = s.clusterCutCmyk || [0, 0, 0, 100];
+                                                return (
+                                                    <div key={ch} className="flex items-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded px-1.5 py-1">
+                                                        <span className="text-[10px] font-bold text-slate-400 w-3 shrink-0">{ch}</span>
+                                                        <input
+                                                            type="number"
+                                                            min={0}
+                                                            max={100}
+                                                            step={1}
+                                                            value={currentCmyk[idx]}
+                                                            onChange={(e) => {
+                                                                const val = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)));
+                                                                const next = [...currentCmyk] as [number, number, number, number];
+                                                                next[idx] = val;
+                                                                s.setClusterCutCmyk(next);
+                                                            }}
+                                                            className="w-full text-[12px] font-mono text-right bg-transparent focus:outline-none p-0"
+                                                        />
+                                                        <span className="text-[10px] text-slate-400 ml-0.5">%</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* Quick preset buttons */}
+                                        <div className="flex items-center gap-1 flex-wrap">
+                                            {[
+                                                { label: 'K100 (Đen)', cmyk: [0, 0, 0, 100] as [number, number, number, number] },
+                                                { label: 'M100 Y100 (Đỏ ThruCut)', cmyk: [0, 100, 100, 0] as [number, number, number, number] },
+                                                { label: 'C100 (Cyan)', cmyk: [100, 0, 0, 0] as [number, number, number, number] },
+                                                { label: 'All 100 (Đăng ký)', cmyk: [100, 100, 100, 100] as [number, number, number, number] },
+                                            ].map((preset) => (
+                                                <button
+                                                    key={preset.label}
+                                                    type="button"
+                                                    onClick={() => s.setClusterCutCmyk(preset.cmyk)}
+                                                    className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200/70 hover:bg-slate-300 dark:bg-white/10 dark:hover:bg-white/20 text-slate-700 dark:text-zinc-200 transition-colors"
+                                                >
+                                                    {preset.label}
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        {/* Checkbox Dấu bế xong xén & Cắt hết khổ giấy */}
+                                        <div className="mt-1 space-y-2">
+                                            <label className="flex items-start gap-2 cursor-pointer select-none">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={s.clusterPostDieCutMarks ?? true}
+                                                    onChange={(e) => s.setClusterPostDieCutMarks(e.target.checked)}
+                                                    className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                                />
+                                                <div className="flex flex-col">
+                                                    <span className="text-[12px] font-medium text-slate-700 dark:text-zinc-200">
+                                                        {t('imposition.advancedSettings:dau_be_xong_xen', 'Dấu bế xong xén')}
+                                                    </span>
+                                                    <span className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                                        {t('imposition.advancedSettings:dau_be_xong_xen_desc', 'Vẽ các vạch dấu xén tại mép giấy và ranh giới phân cách giữa các cụm để canh dao xén chia rời cụm sau khi bế.')}
+                                                    </span>
+                                                </div>
+                                            </label>
+
+                                            <label className="flex items-start gap-2 cursor-pointer select-none">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={s.clusterCutFullSheet ?? false}
+                                                    onChange={(e) => s.setClusterCutFullSheet(e.target.checked)}
+                                                    className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                                />
+                                                <div className="flex flex-col">
+                                                    <span className="text-[12px] font-medium text-slate-700 dark:text-zinc-200">
+                                                        {t('imposition.advancedSettings:cat_het_kho_giay', 'Cắt đứt hết khổ giấy (máy bế CNC chia rời cụm)')}
+                                                    </span>
+                                                    <span className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                                        {t('imposition.advancedSettings:cat_het_kho_giay_desc', 'Kéo dài đường cắt phân cách ra tận 2 mép đối diện của tờ giấy để dao bế CNC cắt đứt rời các cụm trực tiếp, không cần dùng dao xén.')}
+                                                    </span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>

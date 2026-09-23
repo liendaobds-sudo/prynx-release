@@ -126,6 +126,26 @@ describe('VirtualMap — Thread', () => {
         expect(indices).toHaveLength(48);
         expect(new Set(indices).size).toBe(48);
     });
+
+    it('foliosize là giới hạn cứng: 20 trang với folio 16 thành 16 + 4', () => {
+        const { sheets, report } = generateBindingMap(20, 'thread', 16);
+        expect(sheets.filter(sheet => sheet.signatureIndex === 1)).toHaveLength(4);
+        expect(sheets.filter(sheet => sheet.signatureIndex === 2)).toHaveLength(1);
+        expect(report).toContain('1 tép 4 trang');
+        expect(report).not.toContain('20 trang');
+    });
+
+    it('blank giữa sách chỉ nằm trong tép cuối đang thiếu trang', () => {
+        const { sheets } = generateBindingMap(34, 'thread', 16, 'center');
+        const blanks = sheets
+            .flatMap(sheet => [sheet.front.left, sheet.front.right, sheet.back.left, sheet.back.right])
+            .filter(slot => slot.srcIndex === null);
+        expect(blanks).toHaveLength(2);
+        expect(new Set(blanks.map(slot => slot.logicalIndex))).toEqual(new Set([34, 35]));
+        expect(sheets.filter(sheet => sheet.signatureIndex === 1)).toHaveLength(4);
+        expect(sheets.filter(sheet => sheet.signatureIndex === 2)).toHaveLength(4);
+        expect(sheets.filter(sheet => sheet.signatureIndex === 3)).toHaveLength(1);
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

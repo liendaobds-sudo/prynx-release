@@ -49,6 +49,8 @@ def compute_sticker_layout_for_page(
 
     alternate_rotation: str = 'none',
 
+    target_quantity: int = None,
+
 ) -> dict:
 
     """
@@ -333,25 +335,21 @@ def compute_sticker_layout_for_page(
 
     base_poly = None
 
-    # PERF (audit 2026-07-29 §PERF-IMPO-01): `optimal_auto` với CUSTOM tường minh
-    # chỉ xét grid/L-shape; orchestrator không dùng bộ tham số NFP p5/p6 cho khối
-    # chính. Bỏ phép binary-search Shapely đắt tiền, nhưng vẫn trích polygon thật ở
-    # fallback bên dưới để giữ nguyên kiểm tra va chạm. `head_to_tail` vẫn phải tính.
+    # PERF: Khi strategy == 'optimal_auto' và shape là CUSTOM:
+    # Orchestrator chỉ xét grid/L-shape; không dùng bộ tham số NFP p5/p6.
+    # Bỏ phép binary-search Shapely đắt tiền (~365ms), vẫn trích polygon thật ở
+    # fallback bên dưới để kiểm tra va chạm. `head_to_tail` vẫn phải tính.
     _skip_unused_custom_nfp = (
         strategy == 'optimal_auto'
-        and shape_type_override == 'CUSTOM'
         and shape_type == 'CUSTOM'
     )
 
-    # PERF (audit 2026-07-29 §PERF-IMPO-02): với loại hình đã được Detection
-    # xác định rõ, `optimal_auto` chỉ tải NFP khi orchestrator thật sự thử một
-    # candidate head-to-tail/fill. Auto-detect và head_to_tail vẫn tính ngay để
-    # giữ nguyên bước tinh chỉnh shape và hành vi nghiệp vụ.
+    # PERF: Với các loại hình khác trong optimal_auto, chỉ tải NFP lazily khi
+    # solver thật sự cần thử candidate head_to_tail/fill.
     _lazy_nfp_context = None
     _defer_explicit_shape_nfp = (
         not _is_one_dao
         and strategy == 'optimal_auto'
-        and bool(shape_type_override)
         and shape_type != 'CUSTOM'
         and hasattr(page, 'extract_vector_paths')
     )
@@ -510,6 +508,14 @@ def compute_sticker_layout_for_page(
         else 'none'
     )
     result = apply_alternate_rotation(result, _effective_alternate_rotation)
+
+    # 1 Tem: Khi người dùng yêu cầu đúng 1 tem trên tờ, chỉ giữ đúng 1 ô
+    if target_quantity == 1 and result.get('items'):
+        result['items'] = result['items'][:1]
+        result['totalItems'] = 1
+        it0 = result['items'][0]
+        result['widthUsed'] = it0.get('width', trim_w)
+        result['heightUsed'] = it0.get('height', trim_h)
 
     # Attach metadata for callers
 

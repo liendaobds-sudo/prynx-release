@@ -287,6 +287,36 @@ def test_master_die_inheritance_keeps_valid_die_signal():
     assert inherited.shapes[1].props["inheritedFromPage"] == 0
 
 
+def test_master_die_inheritance_with_fallback_vector_artwork_pages():
+    """Trang master có CutContour (separation) + các trang sau chỉ có vector artwork
+    (source='vector', confidence=0.5) → kế thừa thành công khuôn master và hasValidDie=True.
+    """
+    from app.workers.die_detection import (
+        DetectionResult, DetectedShape, Trim, PageDetectionStatus,
+        apply_master_die_inheritance, to_legacy_response,
+    )
+    from app.workers.shape_types import ShapeType
+
+    master = DetectedShape(
+        page=0, type=ShapeType.CIRCLE_ELLIPSE, props={"area_ratio": 0.78},
+        trim=Trim(50.0, 50.0), poly=((0, 0), (50, 0), (50, 50), (0, 50)),
+        source="separation", confidence=1.0,
+    )
+    artwork_page = DetectedShape(
+        page=1, type=ShapeType.RECTANGLE, props={},
+        trim=Trim(50.0, 50.0), poly=((0, 0), (50, 0), (50, 50), (0, 50)),
+        source="vector", confidence=0.5,
+    )
+    shapes = [master, artwork_page]
+    statuses = [PageDetectionStatus(0, True, "separation"), PageDetectionStatus(1, True, "vector")]
+    result = DetectionResult(shapes=shapes, statuses=statuses, total_pages=2, success_pages=2)
+
+    inherited = apply_master_die_inheritance(result)
+    assert inherited.shapes[1].type == ShapeType.CIRCLE_ELLIPSE
+    assert inherited.shapes[1].props.get("inheritedFromPage") == 0
+    assert to_legacy_response(inherited)["hasValidDie"] is True
+
+
 def test_batch_single_mold_master_one_type():
     """Master ở giữa file được chọn từ inheritedFromPage, không từ page đầu."""
     pages = [
@@ -385,3 +415,45 @@ def test_batch_capacity_endpoint_is_sync_to_avoid_blocking_event_loop():
     import inspect
 
     assert not inspect.iscoroutinefunction(imposition.preview_layouts_batch)
+
+
+def test_select_from_paths_preserves_full_page_cutcontour():
+    """Đường bế có tên CutContour chiếm trọn kích thước trang (vd tem 160x100 trên trang 160x100)
+    không được bị coi là background box và lọc bỏ khi trang có nét vẽ phụ nhỏ bên trong."""
+    from app.workers.die_detection import _select_from_paths, DetectionConfig
+    from collections import namedtuple
+
+    Rect = namedtuple("Rect", ["x0", "y0", "x1", "y1", "width", "height"])
+    page_rect = Rect(0, 0, 453.54, 283.46, 453.54, 283.46)
+
+    # Nét phụ nhỏ bên trong (không spot, màu thường)
+    inner_path = {
+        "rect": Rect(100, 100, 200, 150, 100, 50),
+        "type": "s",
+        "fill": None,
+        "color": (0.2, 0.4, 0.7),
+        "spot_name": None,
+        "items": [("l", (100, 100), (200, 150))],
+    }
+    # Đường bế CutContour kích thước bằng toàn bộ trang
+    full_cut_path = {
+        "rect": Rect(-0.5, -0.5, 453.54, 283.46, 454.04, 283.96),
+        "type": "s",
+        "fill": None,
+        "color": (0.0, 1.0, 0.0, 0.0),
+        "spot_name": "CutContour",
+        "items": [("c", (0, 0), (10, 10), (20, 20), (30, 30))],
+    }
+
+    cfg = DetectionConfig()
+    selected, matched_by_spot, is_fallback = _select_from_paths(
+        [inner_path, full_cut_path],
+        page_rect,
+        cfg.die_channel_names,
+        cfg.die_colors,
+        cfg.die_color_tol,
+    )
+    assert selected is not None
+    assert selected.get("spot_name") == "CutContour"
+    assert matched_by_spot is True
+

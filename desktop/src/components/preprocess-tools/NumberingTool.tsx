@@ -46,7 +46,32 @@ export interface FieldSequenceConfig {
   setStartStr: string;
   seqTotal: number;
   seqStart: number;
-  formatTemplate: string;
+    formatTemplate: string;
+}
+
+function sequenceSeed(cfg: FieldSequenceConfig): number {
+  // NUM (audit 2026-09-23 §NUM23.01): preview, live-view và output đều gọi
+  // computeSequenceFromConfig nhiều lần. Seed phải phụ thuộc cấu hình, không phụ
+  // thuộc Math.random(), nếu không bật Shuffle sẽ làm mỗi consumer có một dãy khác.
+  const source = JSON.stringify([
+    cfg.genMethod, cfg.startNum, cfg.endNum, cfg.increment, cfg.padZero,
+    cfg.padLength, cfg.prefix, cfg.suffix, cfg.setTotal, cfg.setStartStr,
+    cfg.seqTotal, cfg.seqStart, cfg.formatTemplate,
+  ]);
+  let hash = 2166136261;
+  for (let i = 0; i < source.length; i += 1) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
 }
 
 export function computeSequenceFromConfig(cfg: FieldSequenceConfig): string[] {
@@ -114,8 +139,9 @@ export function computeSequenceFromConfig(cfg: FieldSequenceConfig): string[] {
   if (rawSequence.length === 0) return [];
 
   if (cfg.isShuffle) {
+    const random = seededRandom(sequenceSeed(cfg));
     for (let i = rawSequence.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(random() * (i + 1));
       [rawSequence[i], rawSequence[j]] = [rawSequence[j], rawSequence[i]];
     }
   }

@@ -183,6 +183,15 @@ describe('serializeBookletPlan — phase-2 contract', () => {
         }
     });
 
+    it('khổ phase-2 nhỏ hơn spread → fail-closed thay vì phát tọa độ âm', () => {
+        expect(() => build({
+            bindingMode: 'saddle',
+            chainNup: true,
+            sheetWidth: 200,
+            sheetHeight: 200,
+        })).toThrow(/Khổ tờ không đủ chứa spread phase-2/);
+    });
+
     it('28p Digital ignores a persisted Offset pattern and keeps 14 Step & Repeat plates', () => {
         const p = buildForPages(28, {
             imposerMode: 'guillotine', paperClassification: 'in_nhanh',
@@ -378,7 +387,7 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
 
     it('cut_stack nhiều cọc (stackDepth>1) → collation cell*depth liên tục khi xén chồng', () => {
         // khổ chỉ chứa 2 cell, 16p (B=4) → stackDepth=2, 2 tờ × 2 mặt = 4 plates
-        const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 460, sheetHeight: 165, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
+        const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 460, sheetHeight: 175, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
         const A = p.phase2!.plates.filter((_: Phase2Plate, i: number) => i % 2 === 0); // mặt A các tờ
         // cell0 qua các tờ (depth) → booklet sheet 0,1 ; cell1 → 2,3
         // mặt A surface = 2*bsi: tờ1 cell0=surf0, cell1=surf4 ; tờ2 cell0=surf2, cell1=surf6

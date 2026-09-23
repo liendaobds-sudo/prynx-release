@@ -455,6 +455,10 @@ def vdp_background_task_spooled(
             job["status"] = "processing"
 
         data = _load_spooled_vdp_data(data_path, data_format, has_header)
+        logger.debug(
+            "[VDP][TASK] Spooled task starting: job_id=%s, total_records=%d, format=%s",
+            job_id, len(data), data_format,
+        )
         if _vdp_is_cancelled(job):
             raise VdpCancelledError("VDP job cancelled")
         with _VDP_JOBS_LOCK:
@@ -530,6 +534,10 @@ async def start_vdp_job(
         if not isinstance(fields_parsed, list):
             raise ValueError("Fields must be an array")
         vdp_fields = [VdpField(**field) for field in fields_parsed]
+        logger.debug(
+            "[VDP][API] generate received: job_id=%s, feature_id=%s, fields_count=%d",
+            job_id, execution_feature, len(vdp_fields),
+        )
 
         normalized_format = data_format.strip().lower()
         if normalized_format not in {"csv", "json"}:
@@ -568,6 +576,23 @@ async def start_vdp_job(
                 raise HTTPException(status_code=400, detail="File tải lên không phải PDF hợp lệ")
         else:
             raise HTTPException(status_code=400, detail="No file or file_path provided")
+
+        try:
+            import pikepdf
+            with pikepdf.open(template_path) as _tpl_pdf:
+                logger.debug("[VDP][API] Template PDF info: pages=%d", len(_tpl_pdf.pages))
+                if len(_tpl_pdf.pages) > 0:
+                    _p0 = _tpl_pdf.pages[0]
+                    logger.debug("[VDP][API] Page 0 boxes/rotation: media=%s crop=%s rotate=%s", _p0.get('/MediaBox'), _p0.get('/CropBox'), _p0.get('/Rotate'))
+                    if '/Resources' in _p0:
+                        logger.debug("[VDP][API] Page 0 resource categories: %s", list(_p0.Resources.keys()))
+                        if '/ColorSpace' in _p0.Resources:
+                            logger.debug("[VDP][API] Page 0 color-space names: %s", list(_p0.Resources.ColorSpace.keys()))
+                        if '/ExtGState' in _p0.Resources:
+                            for _gk, _gv in list(_p0.Resources.ExtGState.items())[:5]:
+                                logger.debug("[VDP][API] Page 0 ExtGState name=%s", _gk)
+        except Exception as _e:
+            logger.debug("[VDP][API] Template inspection failed: %s", _e)
 
         vdp_jobs[job_id] = {
             "status": "queued",
@@ -1082,6 +1107,10 @@ async def preview_vdp(
     Dùng chung ``render_record_preview`` để bảo toàn parity preview ↔ output.
     """
     vdp_fields = _parse_fields(fields)
+    logger.debug(
+        "[VDP][PREVIEW] request index=%d, fields_count=%d",
+        requested_index, len(vdp_fields),
+    )
     rows = await _form_or_file_text(rows, rows_file)
     table = await _resolve_table(
         kind, file, url, text, sheet, has_header, rows, columns
@@ -1242,8 +1271,34 @@ class VdpAutoDetectTagsRequest(BaseModel):
 
 
 _VDP_CLEANED_TEMPLATES: dict[str, tuple[str, str]] = {}
+_VDP_CLEANED_TEMPLATE_CREATED: dict[str, float] = {}
+_VDP_CLEANED_TEMPLATE_TTL_SECONDS = 24 * 60 * 60
+_VDP_CLEANED_TEMPLATE_MAX_ENTRIES = 256
+
+
+def _purge_cleaned_template_registry() -> None:
+    """Dọn registry in-memory, không xoá file lease-owned ở đây."""
+    now = time.time()
+    stale = [
+        fid for fid, (path, _name) in _VDP_CLEANED_TEMPLATES.items()
+        if not os.path.isfile(path)
+        or now - _VDP_CLEANED_TEMPLATE_CREATED.get(fid, now) > _VDP_CLEANED_TEMPLATE_TTL_SECONDS
+    ]
+    for fid in stale:
+        _VDP_CLEANED_TEMPLATES.pop(fid, None)
+        _VDP_CLEANED_TEMPLATE_CREATED.pop(fid, None)
+
+    if len(_VDP_CLEANED_TEMPLATES) > _VDP_CLEANED_TEMPLATE_MAX_ENTRIES:
+        overflow = len(_VDP_CLEANED_TEMPLATES) - _VDP_CLEANED_TEMPLATE_MAX_ENTRIES
+        for fid in sorted(
+            _VDP_CLEANED_TEMPLATES,
+            key=lambda key: _VDP_CLEANED_TEMPLATE_CREATED.get(key, now),
+        )[:overflow]:
+            _VDP_CLEANED_TEMPLATES.pop(fid, None)
+            _VDP_CLEANED_TEMPLATE_CREATED.pop(fid, None)
 
 def _resolve_vdp_template_file(fid_or_path: str) -> tuple[str, str]:
+    _purge_cleaned_template_registry()
     if fid_or_path in _VDP_CLEANED_TEMPLATES:
         cand_path, cand_name = _VDP_CLEANED_TEMPLATES[fid_or_path]
         if os.path.isfile(cand_path):
@@ -1268,6 +1323,7 @@ def _resolve_vdp_template_file(fid_or_path: str) -> tuple[str, str]:
 
 
 def _register_cleaned_template(cleaned_path: str, original_name: str) -> tuple[str, str, str]:
+    _purge_cleaned_template_registry()
     filename = os.path.basename(cleaned_path)
     fid = f"cleaned_{uuid.uuid4().hex[:12]}"
     lease = None
@@ -1297,6 +1353,7 @@ def _register_cleaned_template(cleaned_path: str, original_name: str) -> tuple[s
         logger.warning("Không thể lưu DB cho cleaned template (bỏ qua nếu chạy standalone không DB): %s", exc)
 
     _VDP_CLEANED_TEMPLATES[fid] = (os.path.abspath(cleaned_path), original_name)
+    _VDP_CLEANED_TEMPLATE_CREATED[fid] = time.time()
     url = result_access_url(f"/results/vdp_templates/{filename}")
     return fid, url, lease
 

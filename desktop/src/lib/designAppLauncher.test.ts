@@ -146,4 +146,135 @@ describe('designAppLauncher partial page edit and merge', () => {
         expect(extractedDoc.getPageCount()).toBe(1);
         expect(extractedDoc.getPage(0).node.has(PDFName.of('PieceInfo'))).toBe(true);
     });
+
+    it('normalizePageBoxes chuẩn hoá toạ độ trang bị offset về gốc (0, 0) và tịnh tiến các Box', async () => {
+        const { normalizePageBoxes } = await import('./designAppLauncher');
+        const { PDFName } = await import('pdf-lib');
+        const doc = await PDFDocument.create();
+        const p = doc.addPage();
+        // Giả lập file tem bế có MediaBox offset x=50, y=80, w=300, h=400
+        p.setMediaBox(50, 80, 300, 400);
+        p.setTrimBox(60, 90, 280, 380);
+        p.setBleedBox(55, 85, 290, 390);
+
+        const pieceInfo = doc.context.obj({
+            Illustrator: doc.context.obj({ Private: doc.context.obj({ NumBlock: 1 }) }),
+        });
+        p.node.set(PDFName.of('PieceInfo'), pieceInfo);
+
+        const modified = normalizePageBoxes(p);
+        expect(modified).toBe(true);
+
+        // MediaBox phải về [0, 0, 300, 400]
+        const mb = p.getMediaBox();
+        expect(mb.x).toBe(0);
+        expect(mb.y).toBe(0);
+        expect(mb.width).toBe(300);
+        expect(mb.height).toBe(400);
+
+        // TrimBox phải được tịnh tiến tương ứng
+        const tb = p.getTrimBox();
+        expect(tb.x).toBe(10); // 60 - 50
+        expect(tb.y).toBe(10); // 90 - 80
+        expect(tb.width).toBe(280);
+        expect(tb.height).toBe(380);
+
+        // BleedBox phải được tịnh tiến tương ứng
+        const bb = p.getBleedBox();
+        expect(bb.x).toBe(5); // 55 - 50
+        expect(bb.y).toBe(5); // 85 - 80
+
+        // PieceInfo phải bị xóa
+        expect(p.node.has(PDFName.of('PieceInfo'))).toBe(false);
+
+        // Trang đã chuẩn nếu gọi lại thì trả về false
+        const secondCall = normalizePageBoxes(p);
+        expect(secondCall).toBe(false);
+    });
+
+    it('extractPagesForExternalEdit tự động chuẩn hoá toạ độ và xoá PieceInfo khi trang bị offset dù là tài liệu đơn trang', async () => {
+        const { extractPagesForExternalEdit } = await import('./designAppLauncher');
+        const { PDFName } = await import('pdf-lib');
+        const doc = await PDFDocument.create();
+        const p1 = doc.addPage();
+        p1.setMediaBox(15.2, 28.4, 400, 300); // Lệch gốc toạ độ
+
+        const pieceInfo = doc.context.obj({
+            Illustrator: doc.context.obj({ Private: doc.context.obj({ NumBlock: 1 }) }),
+        });
+        p1.node.set(PDFName.of('PieceInfo'), pieceInfo);
+        doc.catalog.set(PDFName.of('PieceInfo'), pieceInfo);
+        const bytes = await doc.save();
+
+        let savedBytes: Uint8Array | null = null;
+        (window as unknown as { __TAURI_INTERNALS__?: { invoke: unknown } }).__TAURI_INTERNALS__ = {
+            invoke: vi.fn(async (cmd: string, args?: { path?: string; contents?: Uint8Array; paths?: string[] }) => {
+                if (cmd === 'plugin:path|resolve_directory') return 'C:\\Temp';
+                if (cmd === 'plugin:path|join' && args?.paths) return args.paths.join('\\');
+                if (cmd === 'write_file_atomic' && args?.contents) {
+                    savedBytes = args.contents;
+                    return undefined;
+                }
+                return undefined;
+            }),
+        };
+
+        const fakeFile = {
+            name: 'sticker_offset.pdf',
+            arrayBuffer: async () => bytes.buffer.slice(0),
+        } as unknown as File;
+
+        await extractPagesForExternalEdit(fakeFile, [0], 'sticker_offset.pdf');
+        expect(savedBytes).not.toBeNull();
+        const extractedDoc = await PDFDocument.load(savedBytes!);
+        expect(extractedDoc.getPageCount()).toBe(1);
+
+        const outPage = extractedDoc.getPage(0);
+        const mb = outPage.getMediaBox();
+        expect(mb.x).toBe(0);
+        expect(mb.y).toBe(0);
+        expect(mb.width).toBeCloseTo(400, 1);
+        expect(mb.height).toBeCloseTo(300, 1);
+
+        // PieceInfo phải bị xóa để Illustrator không nạp lại toạ độ offset cũ
+        expect(outPage.node.has(PDFName.of('PieceInfo'))).toBe(false);
+        expect(extractedDoc.catalog.has(PDFName.of('PieceInfo'))).toBe(false);
+    });
+
+    it('ensurePathBackedPdf tự động chuẩn hoá toạ độ file in-memory bị offset trước khi ghi file tạm', async () => {
+        const { ensurePathBackedPdf } = await import('./designAppLauncher');
+        const doc = await PDFDocument.create();
+        const p = doc.addPage();
+        p.setMediaBox(30, 45, 250, 180);
+        const bytes = await doc.save();
+
+        let savedBytes: Uint8Array | null = null;
+        (window as unknown as { __TAURI_INTERNALS__?: { invoke: unknown } }).__TAURI_INTERNALS__ = {
+            invoke: vi.fn(async (cmd: string, args?: { path?: string; contents?: Uint8Array; paths?: string[] }) => {
+                if (cmd === 'plugin:path|resolve_directory') return 'C:\\Temp';
+                if (cmd === 'plugin:path|join' && args?.paths) return args.paths.join('\\');
+                if (cmd === 'write_file_atomic' && args?.contents) {
+                    savedBytes = args.contents;
+                    return undefined;
+                }
+                return undefined;
+            }),
+        };
+
+        const fakeFile = {
+            name: 'in_memory_offset.pdf',
+            arrayBuffer: async () => bytes.buffer.slice(0),
+        } as unknown as File;
+
+        const fullPath = await ensurePathBackedPdf(fakeFile, 'in_memory_offset.pdf');
+        expect(fullPath).toContain('in_memory_offset');
+        expect(savedBytes).not.toBeNull();
+
+        const loaded = await PDFDocument.load(savedBytes!);
+        const mb = loaded.getPage(0).getMediaBox();
+        expect(mb.x).toBe(0);
+        expect(mb.y).toBe(0);
+        expect(mb.width).toBeCloseTo(250, 1);
+        expect(mb.height).toBeCloseTo(180, 1);
+    });
 });

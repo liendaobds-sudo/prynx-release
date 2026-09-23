@@ -16,6 +16,7 @@ import contextlib
 import time
 import asyncio
 import uuid
+import threading
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -59,6 +60,11 @@ from app.workers.imposition_preview_helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/imposition", tags=["Imposition"], dependencies=[Depends(require_license)])
+
+# BOOKLET (audit 2026-09-23 §BOOK.05): giữ vé hủy riêng cho từng plan JSON;
+# không dùng cờ toàn cục vì nhiều tab có thể bình đồng thời.
+_PLAN_CANCEL_EVENTS: dict[str, threading.Event] = {}
+_PLAN_CANCEL_LOCK = threading.Lock()
 
 
 class ImposeJobAccessResponse(ImposeJobStartResponse, JobAccessResponse):
@@ -164,6 +170,7 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
     
     plan = body.get("plan")
     source_override = body.get("source_pdf_path")
+    plan_job_id = str(body.get("job_id") or uuid.uuid4().hex)
     
     if not plan:
         raise HTTPException(status_code=400, detail="Missing 'plan' in request body.")
@@ -181,7 +188,10 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
         source_override = _validate_file_path(_plan_src)
     
     try:
-        output_path = await PlanExecutor.execute(plan, source_override)
+        cancel_event = threading.Event()
+        with _PLAN_CANCEL_LOCK:
+            _PLAN_CANCEL_EVENTS[plan_job_id] = cancel_event
+        output_path = await PlanExecutor.execute(plan, source_override, cancel_event=cancel_event)
         if body.get("return_output_path"):
             return {
                 "success": True,
@@ -197,6 +207,21 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
         raise_http(e, "Thực thi kế hoạch bình thất bại")
     except Exception as e:
         raise_http(e, "Thực thi kế hoạch bình thất bại")
+    finally:
+        with _PLAN_CANCEL_LOCK:
+            _PLAN_CANCEL_EVENTS.pop(plan_job_id, None)
+
+
+@router.post("/cancel-plan/{plan_job_id}")
+async def cancel_plan_json(plan_job_id: str, license_info: dict = Depends(require_feature("impo.booklet"))):
+    """Đánh dấu plan JSON đang chạy để PlanExecutor dừng ở boundary an toàn kế tiếp."""
+    del license_info
+    with _PLAN_CANCEL_LOCK:
+        cancel_event = _PLAN_CANCEL_EVENTS.get(plan_job_id)
+        if cancel_event is None:
+            return {"success": False, "job_id": plan_job_id, "status": "not_found"}
+        cancel_event.set()
+    return {"success": True, "job_id": plan_job_id, "status": "cancel_requested"}
 
 # GS-SUNSET (audit 2026-08-08 §GS.4): ba route preview Python cũ đã được cách ly.
 # Viewer hiện dùng PDFium/PPE; không khôi phục một lớp preview backend thứ ba.
@@ -1523,6 +1548,9 @@ class PreviewLayoutRequest(BaseModel):
     cluster_h: float = Field(default=0, ge=0, le=10000)
     tile_gap_x: float = Field(default=0, ge=0, le=10000)
     tile_gap_y: float = Field(default=0, ge=0, le=10000)
+    cluster_cut_cmyk: Optional[List[float]] = None
+    cluster_cut_full_sheet: Optional[bool] = False
+    cluster_post_die_cut_marks: Optional[bool] = True
     task_mode: str = "nup"
     # 0 = chưa gửi / không biết → dùng doc.page_count. >0 = số trang viewer (sau xóa/sắp).
     total_pages: int = Field(default=0, ge=0, le=200000)
@@ -1831,6 +1859,16 @@ async def create_nesting_preview_job(
         # §B10-5: cổng chất lượng có thể phải dựng preview ĐƯỜNG CŨ trong worker; đường cũ
         # tự kiểm entitlement nên phải mang theo license đã kiểm ở đây.
         license_info=license_info,
+    )
+    logger.info(
+        "[PREVIEW-JOB-SUBMIT] job_id=%s task_mode=%s shape=%s target_qty=%s cols=%s rows=%s path=%s",
+        snapshot.job_id,
+        req.task_mode,
+        req.shape_type,
+        req.target_quantity,
+        req.cols,
+        req.rows,
+        os.path.basename(str(source_path or req.path or req.file_id or "")),
     )
     return {"job_id": snapshot.job_id, "status": snapshot.status}
 
@@ -2208,6 +2246,17 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     # `peek()` kho phiên, nên trước bản vá nó LUÔN no-op vì chưa ai tạo phiên ⇒ process con
     # solve lại từ đầu. Preview tạo phiên ⇒ export nạp đúng manifest đó rồi render.
     if str(req.strategy or "").strip() == "true_shape_nesting":
+        import time as _t_nest_mod
+        _t0_nest = _t_nest_mod.perf_counter()
+        logger.info(
+            "[PREVIEW-NESTING-START] shape=%s target_qty=%s cols=%s rows=%s task_mode=%s path=%s",
+            req.shape_type,
+            req.target_quantity,
+            req.cols,
+            req.rows,
+            req.task_mode,
+            os.path.basename(str(req.path or req.file_id or "")),
+        )
         from app.core.nesting_preview_capacity import build_nesting_preview
 
         # BẤT BIẾN: chiến lược ĐO của cổng và chiến lược TRẢ VỀ phải là MỘT. Lệch nhau thì
@@ -2235,11 +2284,18 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             return preview_layout(req.model_copy(update=updates), license_info)
 
         try:
-            return build_nesting_preview(
+            _nest_res = build_nesting_preview(
                 req,
                 source_path=_nesting_source,
                 legacy_preview_for_page=_legacy_preview_for_page,
             )
+            logger.info(
+                "[PREVIEW-NESTING-DONE] elapsed=%.1fms items=%s sheets=%s",
+                (_t_nest_mod.perf_counter() - _t0_nest) * 1000.0,
+                _nest_res.get("totalItems"),
+                _nest_res.get("sheetsNeeded", 1),
+            )
+            return _nest_res
         except GridBeatsNestingSignal as signal:
             # §B10-5 CỔNG CHẤT LƯỢNG: nesting xếp được ÍT hơn (hoặc bằng) đường cũ ⇒ trả
             # preview của đường cũ. "Xếp tối ưu" không bao giờ được tệ hơn "Lưới đơn giản".
@@ -2281,6 +2337,9 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _T_PREVIEW_START = _t_mod.perf_counter()
             def _plog(_lbl):
                 elapsed = (_t_mod.perf_counter() - _T_PREVIEW_START) * 1000.0
+                # PERF (audit 2026-09-23 §PERF23.01): checkpoint chi tiết chỉ bật
+                # ở DEBUG; INFO chỉ dành cho summary cuối request để không ghi I/O
+                # theo từng mốc trong route preview nóng.
                 logger.debug("[PREVIEW-TIMING] %-32s +%7.1fms", _lbl, elapsed)
                 _perf("PREVIEW", _lbl, ms_from_start=elapsed)
 
@@ -3065,7 +3124,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     if lp is not None and _odt is None:
                         try:
                             _die_poly_by_page[pi] = _normalize_polygon_to_unit(
-                                _bspfp(pg.extract_vector_paths(), pg.rect))
+                                _bspfp([lp], pg.rect))
                         except Exception:
                             _die_poly_by_page[pi] = None
                         if lp.get('items'):
@@ -4110,6 +4169,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         die_size_mode=_dsm_a,
                         die_offset_mm=_dom_a,
                         alternate_rotation=_preview_alternate_rotation,
+                        target_quantity=getattr(req, 'target_quantity', None),
                     )
                 try:
                     result, _layout_reused = _get_or_compute_sticker_layout(
@@ -4142,10 +4202,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 try:
                     _outline = base_poly
                     if _outline is None:
-                        from app.workers.pont_collision import build_shapely_polygon_from_paths
-                        _paths = page.extract_vector_paths()
-                        if _paths:
-                            _outline = build_shapely_polygon_from_paths(_paths, page.rect)
+                        from app.workers.nup_diecut import extract_page_die_cut_polygon
+                        _outline = extract_page_die_cut_polygon(page)
                     die_polygon_norm = _normalize_polygon_to_unit(_outline)
                 except Exception as _e:
                     logger.debug("die polygon extract failed: %s", _e)
@@ -4208,6 +4266,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     # Bình trang cắt xén: mọi ô là loại thumbnail đang chọn.
                     # Không có pageIdx, frontend mặc định 0 nên luôn hiện loại 1.
                     items = [{**item, 'pageIdx': _viewer_page_idx} for item in items]
+                    if getattr(req, 'target_quantity', 0) == 1 or (getattr(req, 'cols', 0) == 1 and getattr(req, 'rows', 0) == 1):
+                        items = items[:1]
                 _plog(f"RETURN branch E (relative grid, {_capacity} items)")
                 return {
                     "success": True,
@@ -4227,6 +4287,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _mt = getattr(req, 'margin_top', 0) or 0
             placements = finalize_placements(items, req.usable_w, req.usable_h, _ml, _mb, _mt, page_idx)
             placements = resolve_pont_collisions_on_placements(placements, req, base_poly)
+            if getattr(req, 'target_quantity', 0) == 1 or (getattr(req, 'cols', 0) == 1 and getattr(req, 'rows', 0) == 1):
+                placements = placements[:1]
 
             abs_cells = []
             max_w = 0.0

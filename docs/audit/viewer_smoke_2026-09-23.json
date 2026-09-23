@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 2,
+  "scope": "end-to-end-webview-main-page-thumbnail-closed",
+  "timingUnit": "ms",
+  "artifact": {
+    "name": "13_multipage_15.pdf",
+    "sizeBytes": 3695,
+    "sha256": "f9dc4b82d7df06005afcc0be5ad54bb7a4c7e0259c600d9583fece51ec71ec5a",
+    "pathStored": false,
+    "matchesAuditedStandee": false
+  },
+  "config": {
+    "runs": 2,
+    "pairs": 1,
+    "baselineKind": "cleanup-smoke",
+    "transitions": [
+      "cold-open",
+      "warm-zoom"
+    ],
+    "pollMs": 16,
+    "timeoutMs": 60000,
+    "stableFrames": 2,
+    "stableFrameRule": "distinct-screenshot-captures",
+    "screenshotIntervalMs": 60,
+    "measurementScope": "main-page-thumbnail-closed",
+    "thumbnailPolicy": "new-viewer-default-closed-and-verified-per-run",
+    "expectedRuntimeEnv": {
+      "PRYNX_VIEWER_ENGINE_MODE": "ppe-only",
+      "PRYNX_VIEWER_SHADOW_RENDER": "off-or-unset"
+    },
+    "requireStandeeHash": false
+  },
+  "sessionEvidence": {
+    "pipelineScope": "target-webview-cdp-network-ipc-trace",
+    "engineModeGate": "ppe-only",
+    "shadowGate": false,
+    "nativePerfLogScope": "global-file-bounded-by-offset-supplemental",
+    "thumbnailBaselineStatus": "separate-runtime-gate-required",
+    "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+    "initialMeasuredTabCount": 0
+  },
+  "limitations": [
+    "FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.",
+    "Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.",
+    "PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame."
+  ],
+  "runs": [
+    {
+      "index": 1,
+      "cacheIdentityKind": "pdf-url",
+      "coldReset": {
+        "namespaceCleared": true,
+        "namespaceHasCachedTile": false,
+        "documentClosed": false,
+        "error": null,
+        "documentCacheState": "already-empty"
+      },
+      "thumbnailEvidence": {
+        "verified": true,
+        "reason": null,
+        "matchingStoreCount": 1
+      },
+      "label": "cold-open",
+      "trigger": {
+        "accepted": 1,
+        "size": 3695,
+        "note": "dispatcher schedules a 50ms batch flush before tab creation"
+      },
+      "shellMs": 764,
+      "fspMs": null,
+      "fcvfMs": null,
+      "blankGapTotalMs": 0,
+      "blankGapMaxMs": 0,
+      "blankGapOpen": true,
+      "blankGapCurrentMs": 58991,
+      "timeoutStage": "fsp",
+      "stableFrames": 0,
+      "sourceKeyCaptured": true,
+      "harnessObservation": {
+        "screenshotCount": 1,
+        "screenshotTotalMs": 261,
+        "triggerOverheadMs": 8
+      },
+      "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+      "pipelineEvidence": {
+        "ppeCallCount": 6,
+        "ppeFulfilledCount": 3,
+        "ppeRejectedCount": 3,
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 3,
+        "engineConfigObservedCallCount": 3,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "requestIds": [
+          "8e452fd8d6bcdae3",
+          "aa6df9dfa0816045",
+          "018c132dac0565ed",
+          "33cd2ccbc1e2f374",
+          "e0064be89190d325",
+          "7f97c80ef9f4003f"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": true,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          87,
+          181,
+          70
+        ],
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 2108.0893,
+        "verifiedPpeOnly": false,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "nativePerfEvidence": {
+        "available": true,
+        "ppeResultCount": 3,
+        "displayResultCount": 0,
+        "scope": "global-log-supplemental-not-request-correlated"
+      },
+      "final": {
+        "identity": {
+          "fileName": "13_multipage_15.pdf",
+          "phase": "workspace",
+          "numPages": 15,
+          "sourceKeyStored": false
+        },
+        "dom": {
+          "shell": true,
+          "pageRect": {
+            "x": 299.015625,
+            "y": 180.71875,
+            "width": 507.671875,
+            "height": 657
+          },
+          "visibleRect": {
+            "x": 299.015625,
+            "y": 180.71875,
+            "width": 507.671875,
+            "height": 657
+          },
+          "tiles": [],
+          "coverageRatio": 0,
+          "sharpCoverageRatio": 0,
+          "sharp": false,
+          "devicePixelRatio": 1,
+          "page": 1,
+          "rotation": 0
+        },
+        "compositor": {
+          "captured": false,
+          "hasContent": false,
+          "signature": "1e1be5a4",
+          "nonWhiteRatio": 0,
+          "chromaticRatio": 0,
+          "lumaRange": 0,
+          "contentBounds": null
+        },
+        "frameEvidence": null
+      },
+      "measuredTabId": "imposition-1790118458127-qv5",
+      "valid": false,
+      "validationError": "Error: Lượt 1 không có bằng chứng PPE-only sạch: mode=ppe-only, ppe_ok=3, ppe_rejected=3, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, shadow=0."
+    }
+  ],
+  "consoleErrors": [],
+  "badHttp": [],
+  "processMemory": {
+    "status": "not-measured-by-cdp-harness",
+    "scope": "whole-application-tree-required-separately"
+  },
+  "complete": false,
+  "failure": {
+    "message": "Error: Lượt 1 không có bằng chứng PPE-only sạch: mode=ppe-only, ppe_ok=3, ppe_rejected=3, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, shadow=0.",
+    "completedRuns": 1,
+    "validRuns": 0
+  }
+}

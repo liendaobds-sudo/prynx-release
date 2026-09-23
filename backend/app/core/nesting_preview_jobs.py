@@ -265,6 +265,7 @@ class NestingPreviewJobRegistry:
         record.progress = progress
 
     async def _run_job(self, record: _PreviewJobRecord) -> None:
+        t_run_start = time.perf_counter()
         try:
             with self._lock:
                 if record.cancel_event.is_set() or record.terminal:
@@ -277,6 +278,7 @@ class NestingPreviewJobRegistry:
                     **(record.progress or {}),
                     "phase": "running",
                 }
+            logger.info("[NESTING-JOB-START] job=%s owner=%s", record.job_id[:8], record.owner[:8])
 
             result = await run_in_threadpool(
                 self._runner,
@@ -305,6 +307,13 @@ class NestingPreviewJobRegistry:
                     "phase": "completed",
                     "progress": 1.0,
                 }
+                elapsed_ms = (time.perf_counter() - t_run_start) * 1000.0
+                logger.info(
+                    "[NESTING-JOB-COMPLETE] job=%s elapsed=%.1fms items=%s",
+                    record.job_id[:8],
+                    elapsed_ms,
+                    result.get("totalItems", len(result.get("cells", []))) if isinstance(result, dict) else "?",
+                )
         except BaseException as exc:  # mọi lỗi phải thành trạng thái truy vấn được
             with self._lock:
                 cancelled = record.cancel_event.is_set() or isinstance(
@@ -315,6 +324,8 @@ class NestingPreviewJobRegistry:
                 if cancelled:
                     record.cancel_event.set()
                     self._finalize_cancelled_locked(record)
+                    elapsed_ms = (time.perf_counter() - t_run_start) * 1000.0
+                    logger.info("[NESTING-JOB-CANCELLED] job=%s elapsed=%.1fms", record.job_id[:8], elapsed_ms)
                     return
                 if record.terminal:
                     return
@@ -334,6 +345,14 @@ class NestingPreviewJobRegistry:
                     **(record.progress or {}),
                     "phase": "failed",
                 }
+                elapsed_ms = (time.perf_counter() - t_run_start) * 1000.0
+                logger.info(
+                    "[NESTING-JOB-FAILED] job=%s elapsed=%.1fms code=%s error=%s",
+                    record.job_id[:8],
+                    elapsed_ms,
+                    record.error_code,
+                    record.message,
+                )
 
     def get(self, job_id: str, owner: str) -> PreviewJobSnapshot | None:
         with self._lock:

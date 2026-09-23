@@ -292,6 +292,81 @@ export function unsupportedTrueShapeReason(
 }
 
 /**
+ * Kiểm tra xem kích thước một con tem có quá lớn đến mức không thể chứa >= 2 con trên tờ giấy hay không.
+ *
+ * Nếu một con tem chiếm diện tích quá 50% vùng in được của tờ giấy và không thể xoay/lồng
+ * để xếp 2 con theo bất kỳ hướng nào, sức chứa tối đa của tờ chắc chắn <= 1.
+ * Khi đó không cần thiết và không nên chạy solver nesting đắt tiền.
+ */
+export function isItemTooLargeForMultiple(params: {
+  itemW?: number | null;
+  itemH?: number | null;
+  usableW?: number | null;
+  usableH?: number | null;
+  sheetWidth?: number | null;
+  sheetHeight?: number | null;
+  marginLeft?: number | null;
+  marginRight?: number | null;
+  marginTop?: number | null;
+  marginBottom?: number | null;
+}): boolean {
+  const w = Number(params.itemW || 0);
+  const h = Number(params.itemH || 0);
+  if (w <= 0 || h <= 0) return false;
+
+  let uW = Number(params.usableW || 0);
+  let uH = Number(params.usableH || 0);
+  if (uW <= 0 || uH <= 0) {
+    const sw = Number(params.sheetWidth || 0);
+    const sh = Number(params.sheetHeight || 0);
+    if (sw > 0 && sh > 0) {
+      const ml = Number(params.marginLeft || 0);
+      const mr = Number(params.marginRight || 0);
+      const mt = Number(params.marginTop || 0);
+      const mb = Number(params.marginBottom || 0);
+      uW = sw - ml - mr;
+      uH = sh - mt - mb;
+    }
+  }
+  if (uW <= 0 || uH <= 0) return false;
+
+  // Trường hợp tem không vừa tờ giấy ở cả 2 hướng (sức chứa = 0)
+  const fitsNormal = w <= uW + 0.1 && h <= uH + 0.1;
+  const fitsRotated = h <= uW + 0.1 && w <= uH + 0.1;
+  if (!fitsNormal && !fitsRotated) return true;
+
+  const itemArea = w * h;
+  const usableArea = uW * uH;
+
+  // 1. Diện tích tem chiếm > 50% diện tích phần in được:
+  // Tổng diện tích bounding box của 2 con tem vượt quá 100% diện tích tờ.
+  if (itemArea > usableArea * 0.5) {
+    // Nếu chỉ vừa theo 1 hướng (không thể xoay), và hướng đó không thể xếp 2 con:
+    if (fitsNormal && !fitsRotated) {
+      if (w * 2 > uW + 0.1 && h * 2 > uH + 0.1) return true;
+    }
+    if (fitsRotated && !fitsNormal) {
+      if (h * 2 > uW + 0.1 && w * 2 > uH + 0.1) return true;
+    }
+    // Nếu ở cả 2 hướng đều không thể xếp 2 con cạnh nhau:
+    const normalCantFit2 = w * 2 > uW + 0.1 && h * 2 > uH + 0.1;
+    const rotatedCantFit2 = h * 2 > uW + 0.1 && w * 2 > uH + 0.1;
+    if (normalCantFit2 && rotatedCantFit2) return true;
+  }
+
+  // 2. Kích thước cạnh quá lớn:
+  // Cạnh ngắn nhất của tem lớn hơn 50% cạnh dài nhất của tờ VÀ lớn hơn 50% cạnh ngắn của tờ
+  const minItem = Math.min(w, h);
+  const maxUsable = Math.max(uW, uH);
+  const minUsable = Math.min(uW, uH);
+  if (minItem * 2 > maxUsable + 0.1 && minItem > minUsable * 0.5) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Có TỰ ĐỘNG định tuyến job sang true-shape nesting không — bản sao FRONTEND của
  * `route_true_shape` backend (`backend/app/workers/nup_true_shape_nesting.py`).
  *
@@ -307,6 +382,18 @@ export function shouldUseTrueShapeNesting(params: TrueShapeCompatibilityIntent &
   targetQuantity?: number | string | null;
   targetQuantitiesByPage?: Record<number, number> | null;
   shapeParamsByPage?: Record<number, unknown> | null;
+  columns?: number | string | null;
+  rows?: number | string | null;
+  itemW?: number | null;
+  itemH?: number | null;
+  usableW?: number | null;
+  usableH?: number | null;
+  sheetWidth?: number | null;
+  sheetHeight?: number | null;
+  marginLeft?: number | null;
+  marginRight?: number | null;
+  marginTop?: number | null;
+  marginBottom?: number | null;
 }): boolean {
   const {
     enabled,
@@ -322,6 +409,24 @@ export function shouldUseTrueShapeNesting(params: TrueShapeCompatibilityIntent &
   if (pageSheetMode === true) return false;
   if (String(layoutType || '').trim() === 'mixed_guillotine') return false;
   if (String(gridStrategy || '').trim() !== DEFAULT_GRID_STRATEGY) return false;
+
+  // 1 Tem: Khi chỉ có 1 tem trên 1 tờ hoặc lưới 1x1, KHÔNG bao giờ cần chạy solver nesting nặng
+  const rawTargetQty = Number(params.targetQuantity);
+  const rawCols = Number((params as { columns?: number | string | null }).columns);
+  const rawRows = Number((params as { rows?: number | string | null }).rows);
+  if (rawTargetQty === 1 || (rawCols === 1 && rawRows === 1)) {
+    return false;
+  }
+  if (params.targetQuantitiesByPage) {
+    const vals = Object.values(params.targetQuantitiesByPage).filter((v) => Number(v) > 0);
+    if (vals.length === 1 && vals[0] === 1) {
+      return false;
+    }
+  }
+  // Sức chứa <= 1: Nếu kích thước tem chiếm quá lớn so với tờ giấy, không bao giờ chạy solver nặng
+  if (isItemTooLargeForMultiple(params)) {
+    return false;
+  }
   // PARITY (audit 2026-08-29 §MAP-NEST-03): cùng thứ tự/default với backend guard.
   if (unsupportedTrueShapeReason(params) !== null) return false;
   const task = String(params.taskMode || 'nup').trim().toLowerCase();

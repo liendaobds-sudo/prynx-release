@@ -9,6 +9,7 @@ from .grid_layouts import (
     solve_grid_layout,
     calculate_staggered_hex_layout,
     calculate_staggered_vertical_layout,
+    calculate_diagonal_stagger_layout,
     calculate_hex_tiling_row_stagger,
     calculate_hex_tiling_col_stagger,
 )
@@ -269,15 +270,57 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             p2 = solve_grid_layout(usable_w, usable_h, item_h, item_w, gap_x, gap_y)
             p3 = calculate_staggered_hex_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
             p4 = calculate_staggered_hex_layout(usable_w, usable_h, item_h, item_w, gap_y, gap_x)
+            p5 = calculate_staggered_vertical_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            p6 = calculate_staggered_vertical_layout(usable_w, usable_h, item_h, item_w, gap_y, gap_x)
+            p7 = calculate_diagonal_stagger_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            p8 = calculate_diagonal_stagger_layout(usable_w, usable_h, item_h, item_w, gap_y, gap_x)
             
             candidates = [
                 (p1, False, 'grid'),
                 (p2, True, 'grid'),
                 (p3, False, 'staggered'),
                 (p4, True, 'staggered'),
+                (p5, False, 'staggered_vertical'),
+                (p6, True, 'staggered_vertical'),
+                (p7, False, 'staggered_diagonal'),
+                (p8, True, 'staggered_diagonal'),
             ]
-            candidates.sort(key=lambda x: (x[0]['totalItems'], -x[0]['widthUsed']*x[0]['heightUsed']), reverse=True)
-            configs = [candidates[0]]
+            def _circle_has_collision(items, iw, ih, gx, gy):
+                if len(items) <= 1:
+                    return False
+                ew = iw + gx - 0.05
+                eh = ih + gy - 0.05
+                if ew <= 0 or eh <= 0:
+                    return False
+                n_items = len(items)
+                for i in range(n_items):
+                    xi, yi = items[i]['x'], items[i]['y']
+                    for j in range(i + 1, n_items):
+                        dx = (items[j]['x'] - xi) / ew
+                        dy = (items[j]['y'] - yi) / eh
+                        if dx * dx + dy * dy < 0.999:
+                            return True
+                return False
+
+            def _circle_sort_key(x):
+                cfg, rot, strat = x
+                bonus = 0.10 if strat == 'grid' else (0.05 if strat in ('staggered', 'staggered_vertical') else 0.0)
+                return (cfg['totalItems'], bonus, -cfg['widthUsed'] * cfg['heightUsed'])
+
+            valid_candidates = []
+            for cfg, rot, strat in candidates:
+                curr_w = item_h if rot else item_w
+                curr_h = item_w if rot else item_h
+                curr_gx = gap_y if rot else gap_x
+                curr_gy = gap_x if rot else gap_y
+                if not _circle_has_collision(cfg.get('items', []), curr_w, curr_h, curr_gx, curr_gy):
+                    valid_candidates.append((cfg, rot, strat))
+
+            if not valid_candidates:
+                valid_candidates = [(p1, False, 'grid')]
+
+            valid_candidates.sort(key=_circle_sort_key, reverse=True)
+            configs = [valid_candidates[0]]
 
         elif shape_type == 'RECTANGLE':
             # Chữ nhật / 1 Dao LETA: chỉ lưới + L-shape (fill block). KHÔNG head_to_tail
@@ -348,7 +391,7 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
                     base_w = item_w + gap_x
                     if eff_w > 0 and eff_w < base_w * 0.98:
                         bonus = ((base_w - eff_w) / base_w) * 0.05
-            elif strategy in ('staggered', 'hex_tiling', 'row_alt', 'col_alt'):
+            elif strategy in ('staggered', 'staggered_vertical', 'staggered_diagonal', 'hex_tiling', 'row_alt', 'col_alt'):
                 bonus = 0.05
                 
             score = (items, bonus, -area)
@@ -493,19 +536,63 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
         p2 = calculate_staggered_hex_layout(usable_w, usable_h, item_h, item_w, gap_y, gap_x)
         p3 = calculate_staggered_vertical_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
         p4 = calculate_staggered_vertical_layout(usable_w, usable_h, item_h, item_w, gap_y, gap_x)
+        p5 = calculate_diagonal_stagger_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+        p6 = calculate_diagonal_stagger_layout(usable_w, usable_h, item_h, item_w, gap_y, gap_x)
         
         candidates = [
             (p1, False),
             (p2, True),
             (p3, False),
-            (p4, True)
+            (p4, True),
+            (p5, False),
+            (p6, True),
         ]
-        candidates.sort(key=lambda x: (x[0]['totalItems'], -x[0]['widthUsed']*x[0]['heightUsed']), reverse=True)
-        best, is_rotated = candidates[0]
+        def _circle_has_collision(items, iw, ih, gx, gy):
+            if len(items) <= 1:
+                return False
+            ew = iw + gx - 0.05
+            eh = ih + gy - 0.05
+            if ew <= 0 or eh <= 0:
+                return False
+            n_items = len(items)
+            for i in range(n_items):
+                xi, yi = items[i]['x'], items[i]['y']
+                for j in range(i + 1, n_items):
+                    dx = (items[j]['x'] - xi) / ew
+                    dy = (items[j]['y'] - yi) / eh
+                    if dx * dx + dy * dy < 0.999:
+                        return True
+            return False
+
+        def _stag_sort_key(x):
+            cfg, rot = x
+            is_regular = (cfg is p1 or cfg is p2 or cfg is p3 or cfg is p4)
+            bonus = 0.05 if is_regular else 0.0
+            return (cfg['totalItems'], bonus, -cfg['widthUsed'] * cfg['heightUsed'])
+
+        valid_cands = []
+        for cfg, rot in candidates:
+            curr_w = item_h if rot else item_w
+            curr_h = item_w if rot else item_h
+            curr_gx = gap_y if rot else gap_x
+            curr_gy = gap_x if rot else gap_y
+            if not _circle_has_collision(cfg.get('items', []), curr_w, curr_h, curr_gx, curr_gy):
+                valid_cands.append((cfg, rot))
+        if not valid_cands:
+            valid_cands = [(p1, False)]
+
+        valid_cands.sort(key=_stag_sort_key, reverse=True)
+        best, is_rotated = valid_cands[0]
         
         if is_rotated:
             for item in best['items']:
                 item['isRotated'] = True
+        if best is p5 or best is p6:
+            best['strategyUsed'] = 'staggered_diagonal'
+        elif best is p3 or best is p4:
+            best['strategyUsed'] = 'staggered_vertical'
+        else:
+            best['strategyUsed'] = 'staggered'
         return best
     else: # grid
         p1 = solve_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)

@@ -10,6 +10,7 @@ Trước đây KHÔNG có test cho lớp này (audit #B1). Các test:
 import asyncio
 import io
 import os
+import threading
 
 import pytest
 
@@ -258,6 +259,85 @@ def test_user_unit_is_applied_once_through_phase2(tmp_path):
     output = _run(plan, src)
     fractions = _dark_fraction_by_quadrant(output, (10, 10, 210, 110))
     assert min(fractions) > 0.02, fractions
+
+
+def test_phase2_out_of_bounds_placement_fails_closed(tmp_path):
+    src = _make_source(tmp_path, ['plain'])
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 566.93,
+        'height_pt': 566.93,
+        'front': {
+            'placements': [{
+                'source_page': 0,
+                'x_pt': 0,
+                'y_pt': 0,
+                'scale': 1.0,
+                'rotation_deg': 0,
+                'native_angle': 0,
+            }],
+            'marks': [],
+        },
+    }])
+    plan['phase2'] = {
+        'mode': 'step_repeat',
+        'spread_w_pt': 1190.56,
+        'spread_h_pt': 841.89,
+        'plates': [{
+            'width_pt': 566.93,
+            'height_pt': 566.93,
+            'placements': [{
+                'spread_index': 0,
+                'x_pt': -311.815,
+                'y_pt': -137.48,
+                'rotation_deg': 0,
+            }],
+            'marks': [],
+        }],
+    }
+
+    with pytest.raises(PlanExecutionError, match='Placement phase-2 vượt khổ tờ'):
+        PlanExecutor._execute_sync(plan, src)
+
+
+def test_booklet_cancel_event_fails_before_render(tmp_path):
+    src = _make_source(tmp_path, ['plain'])
+    cancel_event = threading.Event()
+    cancel_event.set()
+    plan = _plan(src, str(tmp_path / 'out'), [])
+
+    with pytest.raises(PlanExecutionError, match='Tác vụ Bình sách đã được hủy'):
+        PlanExecutor._execute_sync(plan, src, cancel_event=cancel_event)
+
+
+def test_book_report_stamp_failure_fails_closed(tmp_path, monkeypatch):
+    src = _make_source(tmp_path, ['plain'])
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 200,
+        'height_pt': 200,
+        'front': {
+            'placements': [{'source_page': 0, 'x_pt': 10, 'y_pt': 10, 'scale': 1.0}],
+            'marks': [],
+        },
+    }])
+    plan['book_report'] = {
+        'enabled': True,
+        'text': 'DH-001',
+        'position': 'top',
+        'offset_x_mm': 5,
+        'offset_y_mm': 5,
+        'font_size': 8,
+        'centered': True,
+    }
+    from app.workers import nup_report
+
+    def fail_stamp(*_args, **_kwargs):
+        raise RuntimeError('stamp failed')
+
+    monkeypatch.setattr(nup_report, 'stamp_reports_on_pdf', fail_stamp)
+    with pytest.raises(PlanExecutionError, match='report sách/tạp chí'):
+        PlanExecutor._execute_sync(plan, src)
 
 
 def test_user_rotation_reaches_phase2_source_sink_exactly_once(tmp_path, monkeypatch):

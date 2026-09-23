@@ -43,6 +43,101 @@ MM_TO_PTS = 2.83465
 logger = logging.getLogger(__name__)
 
 
+def _draw_die_items_to_shape(cut_shape, items, die_rect, abs_x, abs_y, is_rotated=False, is_rotated_180=False):
+    """Vẽ các item vector của một đường bế lên cut_shape theo toạ độ ô."""
+    for item in items:
+        cmd = item[0]
+        if cmd == 'l':
+            p1 = pdf_lib.Point(item[1])
+            p2 = pdf_lib.Point(item[2])
+            if is_rotated and is_rotated_180:
+                t1 = pdf_lib.Point(abs_x + (die_rect.y1 - p1.y), abs_y + p1.x - die_rect.x0)
+                t2 = pdf_lib.Point(abs_x + (die_rect.y1 - p2.y), abs_y + p2.x - die_rect.x0)
+            elif is_rotated_180:
+                t1 = pdf_lib.Point(abs_x + (die_rect.x1 - p1.x), abs_y + (die_rect.y1 - p1.y))
+                t2 = pdf_lib.Point(abs_x + (die_rect.x1 - p2.x), abs_y + (die_rect.y1 - p2.y))
+            elif is_rotated:
+                t1 = pdf_lib.Point(abs_x + (p1.y - die_rect.y0), abs_y + (die_rect.x1 - p1.x))
+                t2 = pdf_lib.Point(abs_x + (p2.y - die_rect.y0), abs_y + (die_rect.x1 - p2.x))
+            else:
+                t1 = pdf_lib.Point(abs_x + (p1.x - die_rect.x0), abs_y + (p1.y - die_rect.y0))
+                t2 = pdf_lib.Point(abs_x + (p2.x - die_rect.x0), abs_y + (p2.y - die_rect.y0))
+            cut_shape.draw_line(t1, t2)
+
+        elif cmd == 'c':
+            pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
+            transformed = []
+            for pt in pts:
+                if is_rotated and is_rotated_180:
+                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
+                elif is_rotated_180:
+                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
+                elif is_rotated:
+                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
+                else:
+                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+            cut_shape.draw_bezier(transformed[0], transformed[1], transformed[2], transformed[3])
+
+        elif cmd == 're':
+            r = pdf_lib.Rect(item[1])
+            if is_rotated and is_rotated_180:
+                nr = pdf_lib.Rect(
+                    abs_x + (die_rect.y1 - r.y1), abs_y + r.x0 - die_rect.x0,
+                    abs_x + (die_rect.y1 - r.y0), abs_y + r.x1 - die_rect.x0
+                )
+            elif is_rotated_180:
+                nr = pdf_lib.Rect(
+                    abs_x + (die_rect.x1 - r.x1), abs_y + (die_rect.y1 - r.y1),
+                    abs_x + (die_rect.x1 - r.x0), abs_y + (die_rect.y1 - r.y0)
+                )
+            elif is_rotated:
+                nr = pdf_lib.Rect(
+                    abs_x + (r.y0 - die_rect.y0), abs_y + (die_rect.x1 - r.x1),
+                    abs_x + (r.y1 - die_rect.y0), abs_y + (die_rect.x1 - r.x0)
+                )
+            else:
+                nr = pdf_lib.Rect(
+                    abs_x + (r.x0 - die_rect.x0), abs_y + (r.y0 - die_rect.y0),
+                    abs_x + (r.x1 - die_rect.x0), abs_y + (r.y1 - die_rect.y0)
+                )
+            cut_shape.draw_rect(nr)
+
+        elif cmd == 'qu':
+            quad = item[1]
+            quad_pts = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
+                        pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
+            transformed = []
+            for pt in quad_pts:
+                if is_rotated and is_rotated_180:
+                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
+                elif is_rotated_180:
+                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
+                elif is_rotated:
+                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
+                else:
+                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+            for qi in range(4):
+                cut_shape.draw_line(transformed[qi], transformed[(qi + 1) % 4])
+
+
+def _resolve_die_group_color(color):
+    """Bảo tồn màu gốc; chỉ fallback Magenta CMYK khi màu tàng hình (trắng thuần / đen mờ)."""
+    if not color:
+        return (0, 1, 0, 0)
+    col = tuple(float(c) for c in color)
+    is_invisible = False
+    if len(col) == 4:
+        if (col[0] < 0.1 and col[1] < 0.1 and col[2] < 0.1 and col[3] < 0.1) or (col[3] > 0.9 and col[0] < 0.1 and col[1] < 0.1 and col[2] < 0.1):
+            is_invisible = True
+    elif len(col) == 3:
+        if (col[0] < 0.1 and col[1] < 0.1 and col[2] < 0.1) or (col[0] > 0.9 and col[1] > 0.9 and col[2] > 0.9):
+            is_invisible = True
+    elif len(col) == 1:
+        if col[0] < 0.1 or col[0] > 0.9:
+            is_invisible = True
+    return (0, 1, 0, 0) if is_invisible else col
+
+
 def _should_recompute_repeat_layout(layout_type, precalculated_placements):
     return layout_type == 'repeat' and precalculated_placements is None
 
@@ -242,6 +337,9 @@ def process_chunk(args):
     alternate_rotation = normalize_alternate_rotation(
         worker_options.get("alternate_rotation", "none")
     )
+    cluster_cut_cmyk = worker_options.get("cluster_cut_cmyk")
+    cluster_cut_full_sheet = bool(worker_options.get("cluster_cut_full_sheet", False))
+    cluster_post_die_cut_marks = bool(worker_options.get("cluster_post_die_cut_marks", True))
     _chunk_diecut_inking = rectangle_inking_is_allowed(
         is_die_cut=bool(is_die_cut),
         page_sheet_mode=bool(page_sheet_mode),
@@ -961,8 +1059,12 @@ def process_chunk(args):
             if is_die_cut or page_sheet_mode
             else {}
         )
-        _clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
-        _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
+        if is_die_cut:
+            _clip_off_x = min(gap_x / 2.0, bleed_pt) if (gap_x > 0 and bleed_pt > 0) else (gap_x / 2.0 if gap_x > 0 else 0.0)
+            _clip_off_y = min(gap_y / 2.0, bleed_pt) if (gap_y > 0 and bleed_pt > 0) else (gap_y / 2.0 if gap_y > 0 else 0.0)
+        else:
+            _clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
+            _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
         # Fallback khung trang không có đường bế thật nên không phụ thuộc bleed
         # đang lưu ẩn trên UI; chỉ nửa khoảng hở thật mới giới hạn va chạm artwork.
         _fallback_gap_half_x = max(0.0, gap_x / 2.0)
@@ -1120,7 +1222,17 @@ def process_chunk(args):
             shape.commit()
         # MARKS (audit 2026-08-01 §DXM.1/§DXM.2): `none` phải tắt mọi dấu.
         # Mixed dùng segment tách zone thật; cluster_tile cũ vẫn dùng lưới {v,h}.
-        _should_draw_cluster_marks = sheet_idx in chunk_cluster_tile_cuts and (mark_type != 'none' or grouping_strategy == 'cluster_tile')
+        _has_separate_cut_page = bool(
+            separate_cut_page
+            and (is_die_cut or page_sheet_mode)
+            and placements
+        )
+        _should_draw_cluster_marks = sheet_idx in chunk_cluster_tile_cuts and (
+            mark_type != 'none'
+            or grouping_strategy == 'cluster_tile'
+            or is_die_cut
+            or cluster_post_die_cut_marks
+        )
         if _should_draw_cluster_marks:
             _ctcl = chunk_cluster_tile_cuts[sheet_idx]
             _draw_cluster_marks = (
@@ -1128,14 +1240,25 @@ def process_chunk(args):
                 if 'segments' in _ctcl
                 else draw_tile_cut_marks
             )
-            _draw_cluster_marks(
-                out_page, _ctcl,
-                mark_off=float(mark_off),
-                mark_len=float(mark_len),
-                mark_thickness=float(mark_thick),
-                mark_style=mark_style,
-                bleed_pt=float(bleed_pt),
-            )
+            _draw_kwargs = {
+                'mark_off': float(mark_off),
+                'mark_len': float(mark_len),
+                'mark_thickness': float(mark_thick),
+                'mark_style': mark_style,
+                'bleed_pt': float(bleed_pt),
+            }
+            if _draw_cluster_marks is draw_tile_cut_marks:
+                _draw_kwargs['cmyk_color'] = cluster_cut_cmyk
+                # Quy tắc nghiệp vụ:
+                # - "Dấu bế xong xén" (cluster_post_die_cut_marks) nằm ở TRANG IN (out_page).
+                # - "Cắt đứt hết khổ" (cluster_cut_full_sheet) nằm ở TRANG BẾ (out_page_cut).
+                # Khi có trang bế riêng (_has_separate_cut_page), out_page tuyệt đối không vẽ
+                # đường cắt đứt hết khổ CNC (full_sheet=False). Đường cắt này chỉ nằm ở out_page_cut.
+                _draw_kwargs['full_sheet'] = cluster_cut_full_sheet if not _has_separate_cut_page else False
+                _draw_kwargs['post_die_cut_marks'] = cluster_post_die_cut_marks
+                _draw_kwargs['sheet_w'] = float(sheet_w)
+                _draw_kwargs['sheet_h'] = float(sheet_h)
+            _draw_cluster_marks(out_page, _ctcl, **_draw_kwargs)
 
         # Create OCG layer on the main page if we are drawing marks directly on it
         main_ocg_xref = None
@@ -1194,7 +1317,7 @@ def process_chunk(args):
             _draw_ponts_on_page(out_page, placements, pont_config, sheet_w, sheet_h, margin_left, margin_bottom, ocg_xref=None)
 
         # Extract default die_color and die_width from first available cache for 1-dao
-        global_die_color = (0, 1, 1, 0)  # Default to Red (CMYK, không dùng RGB)
+        global_die_color = (0, 1, 0, 0)  # Default to Magenta (CMYK, không dùng RGB)
         global_die_width = MIN_DIE_STROKE_WIDTH_PT
 
         for p in placements:
@@ -1220,7 +1343,7 @@ def process_chunk(args):
                         global_die_width = resolve_die_stroke_width(cached.get('width'))
                         break
                     else:
-                        global_die_color = (0, 1, 1, 0) # Fallback to red (CMYK) if black/white
+                        global_die_color = (0, 1, 0, 0) # Fallback to Magenta (CMYK) if black/white
                         global_die_width = resolve_die_stroke_width(cached.get('width'))
                         break
 
@@ -1254,108 +1377,36 @@ def process_chunk(args):
                 if not cached:
                     continue
 
-                die_items = cached['items']
                 die_rect = cached['rect']
-                die_color = cached.get('color')
-                if not die_color:
-                    die_color = (0, 1, 1, 0)  # CMYK đỏ (không RGB)
-                else:
-                    is_invisible = False
-                    if len(die_color) == 4:
-                        if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1 and die_color[3] < 0.1) or (die_color[3] > 0.9):
-                            is_invisible = True
-                    elif len(die_color) == 3:
-                        if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1) or (die_color[0] > 0.9 and die_color[1] > 0.9 and die_color[2] > 0.9):
-                            is_invisible = True
-                    elif len(die_color) == 1:
-                        if die_color[0] < 0.1 or die_color[0] > 0.9:
-                            is_invisible = True
-                            
-                    if is_invisible:
-                        die_color = (0, 1, 1, 0)
-                die_width = resolve_die_stroke_width(cached.get('width'))
-
                 abs_x = p['abs_x']
                 abs_y = p['original_cell_y']
                 is_rotated = cell.get('isRotated', False)
                 is_rotated_180 = cell.get('isRotated180', False)
 
-                for item in die_items:
-                    cmd = item[0]
+                groups = cached.get('groups')
+                if not groups:
+                    groups = [{
+                        'items': cached.get('items', []),
+                        'color': cached.get('color'),
+                        'width': cached.get('width', 0.5),
+                        'spot_name': cached.get('spot_name'),
+                    }]
 
-                    if cmd == 'l':
-                        p1 = pdf_lib.Point(item[1])
-                        p2 = pdf_lib.Point(item[2])
-                        if is_rotated and is_rotated_180:
-                            t1 = pdf_lib.Point(abs_x + (die_rect.y1 - p1.y), abs_y + p1.x - die_rect.x0)
-                            t2 = pdf_lib.Point(abs_x + (die_rect.y1 - p2.y), abs_y + p2.x - die_rect.x0)
-                        elif is_rotated_180:
-                            t1 = pdf_lib.Point(abs_x + (die_rect.x1 - p1.x), abs_y + (die_rect.y1 - p1.y))
-                            t2 = pdf_lib.Point(abs_x + (die_rect.x1 - p2.x), abs_y + (die_rect.y1 - p2.y))
-                        elif is_rotated:
-                            t1 = pdf_lib.Point(abs_x + (p1.y - die_rect.y0), abs_y + (die_rect.x1 - p1.x))
-                            t2 = pdf_lib.Point(abs_x + (p2.y - die_rect.y0), abs_y + (die_rect.x1 - p2.x))
-                        else:
-                            t1 = pdf_lib.Point(abs_x + (p1.x - die_rect.x0), abs_y + (p1.y - die_rect.y0))
-                            t2 = pdf_lib.Point(abs_x + (p2.x - die_rect.x0), abs_y + (p2.y - die_rect.y0))
-                        cut_shape_main.draw_line(t1, t2)
-
-                    elif cmd == 'c':
-                        pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
-                        transformed = []
-                        for pt in pts:
-                            if is_rotated and is_rotated_180:
-                                transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
-                            elif is_rotated_180:
-                                transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
-                            elif is_rotated:
-                                transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
-                            else:
-                                transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
-                        cut_shape_main.draw_bezier(transformed[0], transformed[1], transformed[2], transformed[3])
-
-                    elif cmd == 're':
-                        r = pdf_lib.Rect(item[1])
-                        if is_rotated and is_rotated_180:
-                            nr = pdf_lib.Rect(
-                                abs_x + (die_rect.y1 - r.y1), abs_y + r.x0 - die_rect.x0,
-                                abs_x + (die_rect.y1 - r.y0), abs_y + r.x1 - die_rect.x0
-                            )
-                        elif is_rotated_180:
-                            nr = pdf_lib.Rect(
-                                abs_x + (die_rect.x1 - r.x1), abs_y + (die_rect.y1 - r.y1),
-                                abs_x + (die_rect.x1 - r.x0), abs_y + (die_rect.y1 - r.y0)
-                            )
-                        elif is_rotated:
-                            nr = pdf_lib.Rect(
-                                abs_x + (r.y0 - die_rect.y0), abs_y + (die_rect.x1 - r.x1),
-                                abs_x + (r.y1 - die_rect.y0), abs_y + (die_rect.x1 - r.x0)
-                            )
-                        else:
-                            nr = pdf_lib.Rect(
-                                abs_x + (r.x0 - die_rect.x0), abs_y + (r.y0 - die_rect.y0),
-                                abs_x + (r.x1 - die_rect.x0), abs_y + (r.y1 - die_rect.y0)
-                            )
-                        cut_shape_main.draw_rect(nr)
-
-                    elif cmd == 'qu':
-                        quad = item[1]
-                        quad_pts = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
-                                    pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
-                        transformed = []
-                        for pt in quad_pts:
-                            if is_rotated and is_rotated_180:
-                                transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
-                            elif is_rotated_180:
-                                transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
-                            elif is_rotated:
-                                transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
-                            else:
-                                transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
-                        for qi in range(4):
-                            cut_shape_main.draw_line(transformed[qi], transformed[(qi + 1) % 4])
-
-                cut_shape_main.finish(color=die_color, width=die_width, closePath=False, oc=main_ocg_xref)
+                for grp in groups:
+                    grp_items = grp.get('items') or []
+                    if not grp_items:
+                        continue
+                    grp_color = _resolve_die_group_color(grp.get('color') or cached.get('color'))
+                    grp_width = resolve_die_stroke_width(grp.get('width') or cached.get('width'))
+                    grp_spot = grp.get('spot_name')
+                    _draw_die_items_to_shape(
+                        cut_shape_main, grp_items, die_rect, abs_x, abs_y,
+                        is_rotated=is_rotated, is_rotated_180=is_rotated_180,
+                    )
+                    cut_shape_main.finish(
+                        color=grp_color, width=grp_width, closePath=False,
+                        oc=main_ocg_xref, spot_name=grp_spot,
+                    )
 
             cut_shape_main.commit()
 
@@ -1420,39 +1471,20 @@ def process_chunk(args):
                     if not cached:
                         continue
 
-                    die_items = cached['items']
                     die_rect = cached['rect']
-                    die_color = cached.get('color')
-                    # Fallback to Red for invisible colors (black, white, near-black, near-white)
-                    # Spot colors often get parsed as white (1,1,1) or black (0,0,0)
-                    if not die_color:
-                        die_color = (0, 1, 1, 0)
-                    else:
-                        is_invisible = False
-                        if len(die_color) == 4: # CMYK
-                            if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1 and die_color[3] < 0.1) or (die_color[3] > 0.9):
-                                is_invisible = True
-                        elif len(die_color) == 3: # RGB
-                            if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1) or (die_color[0] > 0.9 and die_color[1] > 0.9 and die_color[2] > 0.9):
-                                is_invisible = True
-                        elif len(die_color) == 1: # Grayscale
-                            if die_color[0] < 0.1 or die_color[0] > 0.9:
-                                is_invisible = True
-                                
-                        if is_invisible:
-                            die_color = (0, 1, 1, 0)  # Red (CMYK) for visibility
-                    die_width = resolve_die_stroke_width(cached.get('width'))
-
-                    # Calculate offset: where this placement's trim rect is on the output page
                     abs_x = p['abs_x']
                     abs_y = p['original_cell_y']
-                    item_w = p.get('width', cell.get('width', 0))
-                    item_h = p.get('height', cell.get('height', 0))
-
-                    # The die_rect is relative to the source page. 
-                    # We need to map it to the output page position.
                     is_rotated = cell.get('isRotated', False)
                     is_rotated_180 = cell.get('isRotated180', False)
+
+                    groups = cached.get('groups')
+                    if not groups:
+                        groups = [{
+                            'items': cached.get('items', []),
+                            'color': cached.get('color'),
+                            'width': cached.get('width', 0.5),
+                            'spot_name': cached.get('spot_name'),
+                        }]
 
                     if page_sheet_mode:
                         # The cell represents the page trim, not the union bbox
@@ -1462,102 +1494,54 @@ def process_chunk(args):
                             guillotine_source_clips.get(src_page_idx_c)
                             or src_doc[src_page_idx_c].rect
                         )
-                        draw_die_lines_for_placement(
+                        for grp in groups:
+                            grp_items = grp.get('items') or []
+                            if not grp_items:
+                                continue
+                            grp_color = _resolve_die_group_color(grp.get('color') or cached.get('color'))
+                            grp_width = resolve_die_stroke_width(grp.get('width') or cached.get('width'))
+                            grp_spot = grp.get('spot_name')
+                            draw_die_lines_for_placement(
+                                cut_shape,
+                                grp_items,
+                                source_rect,
+                                abs_x - bleed_pt,
+                                abs_y - bleed_pt,
+                                is_rotated=is_rotated,
+                                is_rotated_180=is_rotated_180,
+                            )
+                            cut_shape.finish(
+                                color=grp_color,
+                                width=grp_width,
+                                closePath=False,
+                                oc=ocg_xref,
+                                spot_name=grp_spot,
+                            )
+                        continue
+
+                    for grp in groups:
+                        grp_items = grp.get('items') or []
+                        if not grp_items:
+                            continue
+                        grp_color = _resolve_die_group_color(grp.get('color') or cached.get('color'))
+                        grp_width = resolve_die_stroke_width(grp.get('width') or cached.get('width'))
+                        grp_spot = grp.get('spot_name')
+                        _draw_die_items_to_shape(
                             cut_shape,
-                            die_items,
-                            source_rect,
-                            abs_x - bleed_pt,
-                            abs_y - bleed_pt,
+                            grp_items,
+                            die_rect,
+                            abs_x,
+                            abs_y,
                             is_rotated=is_rotated,
                             is_rotated_180=is_rotated_180,
                         )
                         cut_shape.finish(
-                            color=die_color,
-                            width=die_width,
+                            color=grp_color,
+                            width=grp_width,
                             closePath=False,
                             oc=ocg_xref,
+                            spot_name=grp_spot,
                         )
-                        continue
-
-                    for item in die_items:
-                        cmd = item[0]  # 'l' (line), 'c' (curve), 're' (rect), 'qu' (quad)
-
-                        if cmd == 'l':  # line: (cmd, p1, p2)
-                            p1 = pdf_lib.Point(item[1])
-                            p2 = pdf_lib.Point(item[2])
-                            if is_rotated and is_rotated_180:
-                                t1 = pdf_lib.Point(abs_x + (die_rect.y1 - p1.y), abs_y + p1.x - die_rect.x0)
-                                t2 = pdf_lib.Point(abs_x + (die_rect.y1 - p2.y), abs_y + p2.x - die_rect.x0)
-                            elif is_rotated_180:
-                                t1 = pdf_lib.Point(abs_x + (die_rect.x1 - p1.x), abs_y + (die_rect.y1 - p1.y))
-                                t2 = pdf_lib.Point(abs_x + (die_rect.x1 - p2.x), abs_y + (die_rect.y1 - p2.y))
-                            elif is_rotated:
-                                t1 = pdf_lib.Point(abs_x + (p1.y - die_rect.y0), abs_y + (die_rect.x1 - p1.x))
-                                t2 = pdf_lib.Point(abs_x + (p2.y - die_rect.y0), abs_y + (die_rect.x1 - p2.x))
-                            else:
-                                t1 = pdf_lib.Point(abs_x + (p1.x - die_rect.x0), abs_y + (p1.y - die_rect.y0))
-                                t2 = pdf_lib.Point(abs_x + (p2.x - die_rect.x0), abs_y + (p2.y - die_rect.y0))
-                            cut_shape.draw_line(t1, t2)
-
-                        elif cmd == 'c':  # cubic bezier: (cmd, p1, p2, p3, p4)
-                            pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
-                            transformed = []
-                            for pt in pts:
-                                if is_rotated and is_rotated_180:
-                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
-                                elif is_rotated_180:
-                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
-                                elif is_rotated:
-                                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
-                                else:
-                                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
-                            cut_shape.draw_bezier(transformed[0], transformed[1], transformed[2], transformed[3])
-
-                        elif cmd == 're':  # rect: (cmd, rect)
-                            r = pdf_lib.Rect(item[1])
-                            if is_rotated and is_rotated_180:
-                                nr = pdf_lib.Rect(
-                                    abs_x + (die_rect.y1 - r.y1), abs_y + r.x0 - die_rect.x0,
-                                    abs_x + (die_rect.y1 - r.y0), abs_y + r.x1 - die_rect.x0
-                                )
-                            elif is_rotated_180:
-                                nr = pdf_lib.Rect(
-                                    abs_x + (die_rect.x1 - r.x1), abs_y + (die_rect.y1 - r.y1),
-                                    abs_x + (die_rect.x1 - r.x0), abs_y + (die_rect.y1 - r.y0)
-                                )
-                            elif is_rotated:
-                                nr = pdf_lib.Rect(
-                                    abs_x + (r.y0 - die_rect.y0), abs_y + (die_rect.x1 - r.x1),
-                                    abs_x + (r.y1 - die_rect.y0), abs_y + (die_rect.x1 - r.x0)
-                                )
-                            else:
-                                nr = pdf_lib.Rect(
-                                    abs_x + (r.x0 - die_rect.x0), abs_y + (r.y0 - die_rect.y0),
-                                    abs_x + (r.x1 - die_rect.x0), abs_y + (r.y1 - die_rect.y0)
-                                )
-                            cut_shape.draw_rect(nr)
-
-                        elif cmd == 'qu':  # quad: (cmd, Quad(ul, ur, ll, lr))
-                            quad = item[1]
-                            # Quad has 4 points: upper_left, upper_right, lower_left, lower_right
-                            quad_pts = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
-                                        pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
-                            transformed = []
-                            for pt in quad_pts:
-                                if is_rotated and is_rotated_180:
-                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
-                                elif is_rotated_180:
-                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
-                                elif is_rotated:
-                                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
-                                else:
-                                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
-                            # Draw quad as closed polygon (4 edges)
-                            for qi in range(4):
-                                cut_shape.draw_line(transformed[qi], transformed[(qi + 1) % 4])
-
-                    # Finish the complete die-cut path for this placement with stroke (no fill), assign to OCG layer
-                    cut_shape.finish(color=die_color, width=die_width, closePath=False, oc=ocg_xref)
 
                 cut_shape.commit()
 
@@ -1576,6 +1560,25 @@ def process_chunk(args):
                 )
                 
                 draw_one_dao_cuts(out_page_cut, cut_segs_cut, color=global_die_color, stroke_width=global_die_width, oc=ocg_xref)
+
+            # Draw cluster dividing cut lines on the cut page for CNC machine (chỉ khi bật cắt đứt CNC)
+            if sheet_idx in chunk_cluster_tile_cuts and cluster_cut_full_sheet:
+                _ctcl = chunk_cluster_tile_cuts[sheet_idx]
+                if 'segments' not in _ctcl:
+                    draw_tile_cut_marks(
+                        out_page_cut, _ctcl,
+                        mark_off=float(mark_off),
+                        mark_len=float(mark_len),
+                        mark_thickness=float(mark_thick),
+                        mark_style=mark_style,
+                        bleed_pt=float(bleed_pt),
+                        cmyk_color=cluster_cut_cmyk,
+                        full_sheet=True,
+                        post_die_cut_marks=False,
+                        sheet_w=float(sheet_w),
+                        sheet_h=float(sheet_h),
+                        oc=ocg_xref,
+                    )
 
 
 

@@ -86,6 +86,7 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
         str(key): int(value)
         for key, value in (getattr(req, "target_quantities_by_page", None) or {}).items()
     }
+
     shapes = {
         str(key): value
         for key, value in (getattr(req, "detected_shapes_by_page", None) or {}).items()
@@ -128,6 +129,8 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
         # PARITY (audit 2026-08-29 §MAP-NEST-01): quantity chung là mặc định cho
         # mọi trang; override theo trang (kể cả 0) được merge tại một SSOT backend.
         "targetQuantity": int(getattr(req, "target_quantity", 0) or 0),
+        "columns": int(getattr(req, "cols", 0) or 0),
+        "rows": int(getattr(req, "rows", 0) or 0),
         "targetQuantitiesByPage": quantities,
         "detectedShapesByPage": shapes,
         "detectedShapeParamsByPage": shape_params,
@@ -151,6 +154,64 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
             getattr(req, "pont_type", None), getattr(req, "pont_config", None)
         ),
     }
+
+
+def _single_item_page_for_fast_path(settings: Mapping[str, Any]) -> int | None:
+    """Trả trang duy nhất đủ điều kiện fast-path một item, hoặc ``None``.
+
+    NEST (audit 2026-09-23 §NEST23.01): ``targetQuantity`` là số lượng mặc định
+    cho *mọi* trang tham gia, không phải tổng số item của cả tài liệu. Không được
+    rẽ tắt về callback trang 0 khi settings đã mô tả nhiều trang.
+    """
+
+    raw_overrides = settings.get("targetQuantitiesByPage") or {}
+    overrides: dict[int, int] = {}
+    if isinstance(raw_overrides, Mapping):
+        for key, value in raw_overrides.items():
+            try:
+                overrides[int(key)] = int(value or 0)
+            except (TypeError, ValueError):
+                return None
+
+    known_pages: set[int] = set(overrides)
+    for field in ("detectedShapesByPage", "detectedShapeParamsByPage"):
+        raw_pages = settings.get(field) or {}
+        if isinstance(raw_pages, Mapping):
+            try:
+                known_pages.update(int(key) for key in raw_pages)
+            except (TypeError, ValueError):
+                return None
+
+    try:
+        global_quantity = int(settings.get("targetQuantity", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+
+    if global_quantity > 0:
+        if not known_pages:
+            known_pages.add(0)
+        positive_pages = [
+            page for page in known_pages
+            if overrides.get(page, global_quantity) > 0
+        ]
+        quantity_for_page = {
+            page: overrides.get(page, global_quantity) for page in positive_pages
+        }
+    else:
+        positive_pages = [page for page, quantity in overrides.items() if quantity > 0]
+        quantity_for_page = {page: overrides[page] for page in positive_pages}
+
+    # columns/rows=1 cũng chỉ được rẽ tắt khi contract xác định đúng một trang;
+    # nhiều trang vẫn phải đi qua solver/session để giữ membership và pageIdx.
+    single_item_signal = (
+        global_quantity == 1
+        or settings.get("reportRequestedQuantity") == 1
+        or (settings.get("columns") == 1 and settings.get("rows") == 1)
+    )
+    if not single_item_signal or len(positive_pages) != 1:
+        return None
+    page = positive_pages[0]
+    return page if quantity_for_page.get(page) == 1 else None
 
 
 def _pont_settings(pont_type: Any, pont_config: Any) -> dict[str, Any]:
@@ -355,6 +416,29 @@ def build_nesting_preview(
             raise_if_cancelled=_raise_if_cancelled,
         )
 
+    # 1 Tem: Nếu chỉ cần đúng 1 tem trên tờ hoặc lưới 1x1 và có legacy preview callback,
+    # trả ngay kết quả 1 tem mà KHÔNG cần dispatch Rust solver (tránh trễ 8-14s GA).
+    _single_item_page = _single_item_page_for_fast_path(settings)
+    if _single_item_page is not None and legacy_preview_for_page is not None:
+        candidate = legacy_preview_for_page(_single_item_page)
+        if isinstance(candidate, Mapping) and bool(candidate.get("success")):
+            cells = [
+                {**dict(cell), "pageIdx": _single_item_page}
+                for cell in (candidate.get("cells") or ())[:1]
+                if isinstance(cell, Mapping)
+            ]
+            if cells:
+                return {
+                    "success": True,
+                    "totalItems": len(cells),
+                    "overallWidth": candidate.get("overallWidth", float(settings.get("sheetWidth", 0)) * PT_PER_MM),
+                    "overallHeight": candidate.get("overallHeight", float(settings.get("sheetHeight", 0)) * PT_PER_MM),
+                    "strategyUsed": str(candidate.get("strategyUsed") or "optimal_auto"),
+                    "cells": cells,
+                    "absPlacement": candidate.get("absPlacement", True),
+                    "sheetsNeeded": 1,
+                }
+
     job_build_started = time.perf_counter()
     job = build_true_shape_nesting_job(source_path, settings, job_id=job_id)
     _raise_if_cancelled()
@@ -411,6 +495,15 @@ def build_nesting_preview(
     lookup_finished = time.perf_counter()
     _raise_if_cancelled()
     session = lookup.session
+    logger.info(
+        "[NESTING-CAPACITY-TIMING] job_build=%.1fms session_lookup=%.1fms total=%.1fms reused=%s parts=%d capacity=%s",
+        job_build_wall_ms,
+        (lookup_finished - lookup_started) * 1000.0,
+        (time.perf_counter() - started) * 1000.0,
+        lookup.reused,
+        len(job.parts),
+        session_capacity(session),
+    )
 
     # PERF (audit 2026-09-02 §PERF-NEST-05/07): quyết định quality gate phải hoàn
     # tất trên snapshot pin ngay sau solve, trước khi trả chi phí chiếu placement.
@@ -810,6 +903,60 @@ def _build_step_repeat_preview(
     jobs = build_true_shape_nesting_jobs(source_path, settings, job_id=job_id)
     if not jobs:  # pragma: no cover - build luôn trả ≥1 job cho S&R
         raise ValueError("Không dựng được job nào cho Bình trang (S&R).")
+
+    # 1 Tem: Nếu mỗi job chỉ cần đúng 1 tem trên tờ hoặc tem quá lớn chỉ chứa được 1 tem,
+    # trả ngay kết quả 1 tem mà KHÔNG cần dispatch Rust solver (tránh trễ 20s/khuôn).
+    _single_item_requested = (
+        settings.get("targetQuantity") == 1
+        or settings.get("reportRequestedQuantity") == 1
+        or all(int(getattr(j.parts[0], "quantity", 0) or 0) == 1 for j in jobs)
+    )
+    if _single_item_requested and legacy_preview_for_page is not None:
+        sheets: list[dict[str, Any]] = []
+        placed_by_page: dict[str, int] = {}
+        total_sheets = 0
+        for design_index, job in enumerate(jobs):
+            page_index = int(job.parts[0].page_index)
+            candidate = legacy_preview_for_page(page_index)
+            if isinstance(candidate, Mapping) and bool(candidate.get("success")):
+                cells = [
+                    {**dict(cell), "pageIdx": page_index}
+                    for cell in (candidate.get("cells") or ())[:1]
+                    if isinstance(cell, Mapping)
+                ]
+                placed_by_page[str(page_index)] = 1
+                sheets.append({
+                    "cells": cells,
+                    "overallWidth": float(candidate.get("overallWidth") or float(job.sheet_width_mm) * PT_PER_MM),
+                    "overallHeight": float(candidate.get("overallHeight") or float(job.sheet_height_mm) * PT_PER_MM),
+                    "totalItems": len(cells),
+                    "strategyUsed": str(candidate.get("strategyUsed") or "optimal_auto"),
+                    "absPlacement": True,
+                    "physicalSheetIndex": design_index,
+                    "runCount": 1,
+                })
+                total_sheets += 1
+        if sheets:
+            return {
+                "success": True,
+                "totalItems": sum(s["totalItems"] for s in sheets),
+                "overallWidth": sheets[0]["overallWidth"],
+                "overallHeight": sheets[0]["overallHeight"],
+                "strategyUsed": sheets[0]["strategyUsed"],
+                "cells": sheets[0]["cells"],
+                "absPlacement": True,
+                "isMixedPreview": len(jobs) > 1,
+                "sheetsNeeded": total_sheets,
+                "placedByPage": placed_by_page,
+                "sheets": sheets,
+                "orderSummary": {
+                    "templateCount": len(sheets),
+                    "physicalSheetCount": total_sheets,
+                    "requestedCount": len(jobs),
+                    "placedCount": len(jobs),
+                },
+                "coordinateSpace": "sheet_abs_pt",
+            }
 
     store = get_preview_session_store()
     # PERF/PARITY (audit 2026-09-01 §PERF-NEST-01): mọi preview S&R nhiều mẫu

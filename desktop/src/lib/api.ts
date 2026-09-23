@@ -689,6 +689,7 @@ export async function exportImages(params: {
   format: 'png' | 'jpeg' | 'tiff' | 'webp';
   dpi: number;
   colorMode: 'rgb' | 'gray' | 'cmyk';
+  cmykProfile?: string;
   pages?: number[] | null;
   multipageTiff?: boolean;
   jpegQuality?: number;
@@ -706,6 +707,7 @@ export async function exportImages(params: {
       format: params.format,
       dpi: params.dpi,
       color_mode: params.colorMode,
+      cmyk_profile: params.cmykProfile ?? 'auto',
       pages: params.pages ?? null,
       multipage_tiff: params.multipageTiff ?? false,
       jpeg_quality: params.jpegQuality ?? 90,
@@ -735,6 +737,7 @@ export async function exportImagesBatch(params: {
   fileId?: string;
   filePath?: string;
   colorMode: 'rgb' | 'gray' | 'cmyk';
+  cmykProfile?: string;
   pages?: number[] | null;
   includeBleed?: boolean;
   jobs: ExportImageBatchJob[];
@@ -747,6 +750,7 @@ export async function exportImagesBatch(params: {
       file_id: params.fileId ?? null,
       file_path: params.filePath ?? null,
       color_mode: params.colorMode,
+      cmyk_profile: params.cmykProfile ?? 'auto',
       pages: params.pages ?? null,
       include_bleed: params.includeBleed ?? true,
       jobs: params.jobs.map(job => ({

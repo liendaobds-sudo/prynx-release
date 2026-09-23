@@ -226,7 +226,19 @@ def _find_file(profile_id: str, filenames: list[str]) -> Path | None:
 @lru_cache(maxsize=32)
 def resolve_profile_path(profile_id: str) -> str | None:
     """Return absolute path to an ICC file, or None if missing."""
-    key = (profile_id or "").strip().lower()
+    key = (profile_id or "").strip()
+    if not key:
+        key = "fogra39"
+    # EXPORT (audit 2026-09-22 §EXPCOLOR22.01): nếu profile_id là đường dẫn file ICC thật
+    # (ví dụ OutputIntent trích xuất), dùng trực tiếp đường dẫn đã resolve.
+    try:
+        candidate = Path(key)
+        if candidate.is_file():
+            return str(candidate.resolve())
+    except (OSError, ValueError):
+        pass
+
+    key = key.lower()
     if key in ("auto", ""):
         key = "fogra39"
     info = PROFILE_REGISTRY.get(key)

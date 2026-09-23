@@ -104,6 +104,132 @@ def _spot_key(spot_name):
     return parts or None
 
 
+def _find_all_page_die_spots(page_or_dict, die_names_lower=None):
+    """Quét toàn bộ /Resources/ColorSpace của trang và Form XObject để tìm TẤT CẢ các kênh Spot bế."""
+    if die_names_lower is None:
+        die_names_lower = _die_channel_names_lower()
+
+    found_spots = set()
+
+    def _inspect_cs(cs_val):
+        try:
+            if not cs_val or len(cs_val) < 2:
+                return
+            cs_type = str(cs_val[0])
+            if cs_type == "/Separation":
+                name = str(cs_val[1]).lstrip("/")
+                if name.lower() in die_names_lower:
+                    found_spots.add(name)
+                else:
+                    from app.workers.die_detection import _match_die_channel
+                    if _match_die_channel(name, die_names_lower):
+                        found_spots.add(name)
+            elif cs_type == "/DeviceN":
+                names = cs_val[1]
+                for n in names:
+                    name_str = str(n).lstrip("/")
+                    from app.workers.die_detection import _match_die_channel
+                    if _match_die_channel(name_str, die_names_lower):
+                        found_spots.add(name_str)
+        except Exception:
+            pass
+
+    def _walk(resources, depth=0):
+        if resources is None or depth > 6:
+            return
+        try:
+            spaces = resources.get("/ColorSpace")
+            if spaces is not None:
+                for _k, cs_val in spaces.items():
+                    _inspect_cs(cs_val)
+        except Exception:
+            pass
+        try:
+            xobjects = resources.get("/XObject")
+            if xobjects is not None:
+                for _k, child in xobjects.items():
+                    try:
+                        if "/Form" in str(child.get("/Subtype", "")):
+                            _walk(child.get("/Resources"), depth + 1)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    try:
+        res = page_or_dict.get("/Resources") if hasattr(page_or_dict, "get") else None
+        _walk(res)
+    except Exception:
+        pass
+    return found_spots
+
+
+def _build_strip_targets(cached, pike_page=None):
+    """Xây dựng danh sách toàn diện (target_color, target_spot, target_items) để tẩy sạch đường bế.
+
+    Quy chuẩn:
+    1. Hợp nhất (union) items của tất cả các group có cùng (color, spot_name).
+    2. Bổ sung tất cả các spot trong all_spots.
+    3. Bổ sung tất cả các màu trong all_colors.
+    4. Quét toàn diện ColorSpace của trang pike_page để thêm mọi kênh Separation bế (Crease, KissCut, ThruCut...).
+    """
+    targets_map = {}  # key: (color_tuple_or_None, spot_name_or_None) -> list of items or None
+    cached = cached or {}
+
+    groups = cached.get('groups') or []
+    for g in groups:
+        c = g.get('color')
+        s = g.get('spot_name')
+        its = g.get('items')
+        if c is not None:
+            c = tuple(round(float(x), 3) for x in c)
+        if c is None and s is None:
+            continue
+        key = (c, s)
+        if key not in targets_map:
+            targets_map[key] = list(its) if its else None
+        elif its:
+            if targets_map[key] is None:
+                targets_map[key] = list(its)
+            else:
+                targets_map[key].extend(its)
+
+    if not targets_map:
+        c = cached.get('color')
+        s = cached.get('spot_name')
+        its = cached.get('items')
+        if c is not None:
+            c = tuple(round(float(x), 3) for x in c)
+        if c is not None or s is not None:
+            targets_map[(c, s)] = list(its) if its else None
+
+    # Bổ sung các spot trong all_spots
+    all_spots = cached.get('all_spots') or []
+    for s in all_spots:
+        if s and not any(k[1] == s for k in targets_map):
+            targets_map[(None, s)] = None
+
+    # Bổ sung các màu trong all_colors
+    all_colors = cached.get('all_colors') or []
+    for c in all_colors:
+        if c:
+            c_tuple = tuple(round(float(x), 3) for x in c)
+            if not any(k[0] == c_tuple for k in targets_map):
+                targets_map[(c_tuple, None)] = None
+
+    # Quét ColorSpace trực tiếp trên pike_page (nếu có)
+    if pike_page is not None:
+        try:
+            page_spots = _find_all_page_die_spots(pike_page)
+            for s in page_spots:
+                if s and not any(k[1] == s for k in targets_map):
+                    targets_map[(None, s)] = None
+        except Exception:
+            pass
+
+    return [(c, s, its) for (c, s), its in targets_map.items()]
+
+
 # NEST (audit 2026-08-28 §A1.2): số toạ độ bắt buộc của từng lệnh path.
 # 'l' = 2 điểm, 'c' = 4 điểm Bezier, 're' = 2 góc đối. Sai arity nghĩa là dữ
 # liệu không đáng tin, phải bỏ qua chứ không đoán bù.
@@ -149,9 +275,11 @@ def _path_item_coords(item):
     return coords
 
 
-def _path_item_key(item, tolerance=0.1):
+def _path_item_key(item, tolerance=0.5):
     """Khoá hình học ổn định theo dung sai cho một path item đã parse.
 
+    Hỗ trợ chuẩn hoá đường vẽ 2 chiều (forward/reverse) cho line 'l' và Bezier 'c',
+    giúp so khớp chính xác khi stream và detection đảo chiều vector.
     Trả ``None`` khi item không mang hình học đáng tin — không bao giờ ném lỗi,
     vì hàm này nằm trong vòng quét content stream của mọi job bình.
     """
@@ -170,16 +298,21 @@ def _path_item_key(item, tolerance=0.1):
         # vẫn cho cùng khoá.
         x0, y0, x1, y1 = coords
         coords = [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+    elif command == 'l' and len(coords) == 4:
+        # Chuẩn hoá 2 đầu mút đoạn thẳng: dù vẽ p0->p1 hay p1->p0 đều ra cùng khoá
+        x0, y0, x1, y1 = coords
+        if (x0, y0) > (x1, y1):
+            coords = [x1, y1, x0, y0]
+    elif command == 'c' and len(coords) == 8:
+        # Chuẩn hoá đường cong Bézier: đảo chiều cả cặp control point nếu đầu mút đảo chiều
+        x0, y0, cp1x, cp1y, cp2x, cp2y, x1, y1 = coords
+        if (x0, y0) > (x1, y1):
+            coords = [x1, y1, cp2x, cp2y, cp1x, cp1y, x0, y0]
     return (command, *(int(round(value / tolerance)) for value in coords))
 
 
-def _numeric_path_item_key(item, tolerance=0.1):
-    """Giữ tên cũ nhưng dùng CHUNG một cách khoá.
-
-    Hai hàm khoá song song từng là gốc của lỗi: bên target đọc dạng object, bên
-    candidate đọc dạng số, lệch một dạng là mất khớp toàn bộ.
-    """
-
+def _numeric_path_item_key(item, tolerance=0.5):
+    """Giữ tên cũ nhưng dùng CHUNG một cách khoá."""
     return _path_item_key(item, tolerance)
 
 
@@ -251,6 +384,16 @@ def strip_color_from_stream(
         die_names_lower = _die_channel_names_lower()
 
     target_spot_key = _spot_key(target_spot)
+    if page_height is None:
+        try:
+            mb = page_or_xobj.get('/MediaBox')
+            if mb is None and hasattr(page_or_xobj, 'mediabox'):
+                mb = page_or_xobj.mediabox
+            if mb is not None and len(mb) >= 4:
+                page_height = float(mb[3] - mb[1])
+        except Exception:
+            pass
+
     try:
         resources = page_or_xobj.get('/Resources')
         if resources is None:
@@ -261,12 +404,23 @@ def strip_color_from_stream(
         resources = inherited_resources
 
     def _spot_of(cs_token):
-        if resources is None or not cs_token:
+        if not cs_token:
             return None
-        try:
-            return _resolve_spot_name(cs_token, resources, None)
-        except Exception:
-            return None
+        if resources is not None:
+            try:
+                name = _resolve_spot_name(cs_token, resources, None)
+                if name:
+                    return name
+            except Exception:
+                pass
+        if inherited_resources is not None and inherited_resources is not resources:
+            try:
+                name = _resolve_spot_name(cs_token, inherited_resources, None)
+                if name:
+                    return name
+            except Exception:
+                pass
+        return None
 
     def _transform(x, y, matrix):
         a, b, c, d, e, f = matrix
@@ -449,7 +603,6 @@ def strip_color_from_stream(
 
             if (
                 not match
-                and not target_spot_key
                 and current_stroke_color
                 and target_color
                 and len(current_stroke_color) == len(target_color)
@@ -577,6 +730,9 @@ def strip_color_from_form_tree(
         xobjects = resources.get('/XObject')
         if xobjects is not None:
             isolated['/XObject'] = _copy_dictionary(xobjects)
+        if parent_resources is not None:
+            if '/ColorSpace' not in isolated and '/ColorSpace' in parent_resources:
+                isolated['/ColorSpace'] = parent_resources['/ColorSpace']
         if owner_pdf is not None:
             if isinstance(node, pikepdf.Page):
                 node.obj['/Resources'] = isolated
@@ -616,17 +772,24 @@ def strip_color_from_form_tree(
 
         resources = _effective_resources(node, parent_resources)
         called_forms = []
-        direct_changed = strip_color_from_stream(
-            node,
-            target_color,
-            target_spot=target_spot,
-            inherited_resources=resources,
-            strict=strict,
-            target_items=target_items,
-            page_height=page_height,
-            initial_ctm=context_ctm,
-            called_forms_out=called_forms,
-        )
+        try:
+            direct_changed = strip_color_from_stream(
+                node,
+                target_color,
+                target_spot=target_spot,
+                inherited_resources=resources,
+                strict=strict,
+                target_items=target_items,
+                page_height=page_height,
+                initial_ctm=context_ctm,
+                called_forms_out=called_forms,
+            )
+        except TypeError:
+            direct_changed = strip_color_from_stream(
+                node,
+                target_color,
+                target_spot=target_spot,
+            )
         changed = direct_changed or changed
 
         if not called_forms:
@@ -1018,50 +1181,43 @@ def place_one_artwork(
                     try:
                         _lp = find_largest_die_path(src_page)
                         if _lp:
-                            _cached = {
-                                'color': _lp.get('color', (0, 1, 1, 0)),
-                                'spot_name': _lp.get('spot_name'),
-                            }
                             die_items_cache[_ck] = {
                                 'items': _lp.get('items', []),
                                 'rect': _lp['rect'],
-                                'color': _cached['color'],
+                                'color': _lp.get('color', (0, 1, 1, 0)),
                                 'width': _lp.get('width', 0.5),
-                                'spot_name': _cached.get('spot_name'),
+                                'spot_name': _lp.get('spot_name'),
+                                'groups': _lp.get('groups', []),
+                                'all_colors': _lp.get('all_colors', []),
+                                'all_spots': _lp.get('all_spots', []),
                             }
+                            _cached = die_items_cache[_ck]
                     except Exception:
                         _cached = None
-                _tcol = _cached.get('color') if _cached else None
-                _tspot = _cached.get('spot_name') if _cached else None
                 pike_page = src_doc._pdf.pages[src_page_idx]
                 pike_page.contents_coalesce()
-                contents = pike_page.get('/Contents')
-                if contents is not None:
+                try:
+                    media_box = getattr(pike_page, 'mediabox', None) or pike_page.get('/MediaBox')
+                    page_height = float(media_box[3] - media_box[1]) if media_box is not None else None
+                except Exception:
+                    page_height = None
+                strip_targets = _build_strip_targets(_cached, pike_page)
+                for local_target_color, local_target_spot, target_items in strip_targets:
                     try:
-                        strip_color_from_stream(pike_page, _tcol, target_spot=_tspot)
+                        strip_color_from_form_tree(
+                            pike_page,
+                            local_target_color,
+                            target_spot=local_target_spot,
+                            strict=False,
+                            target_items=target_items,
+                            page_height=page_height,
+                            owner_pdf=src_doc._pdf,
+                        )
                     except Exception as e_c:
                         logger.debug(
-                            f"[STRIP_DIECUT/HOM] page={src_page_idx} content strip error: {e_c}",
+                            f"[STRIP_DIECUT/HOM] page={src_page_idx} target={local_target_spot}/{local_target_color} error: {e_c}",
                             flush=True,
                         )
-                try:
-                    resources = pike_page.get('/Resources')
-                    if resources:
-                        xobjects = resources.get('/XObject')
-                        if xobjects:
-                            for _name, xobj in xobjects.items():
-                                try:
-                                    subtype = str(xobj.get('/Subtype', ''))
-                                    if '/Form' in subtype:
-                                        strip_color_from_stream(
-                                            xobj, _tcol, target_spot=_tspot)
-                                except Exception:
-                                    pass
-                except Exception as e_xo:
-                    logger.debug(
-                        f"[STRIP_DIECUT/HOM] page={src_page_idx} XObject scan error: {e_xo}",
-                        flush=True,
-                    )
             except Exception as e:
                 logger.debug(
                     f"[STRIP_DIECUT/HOM] page={src_page_idx} FAILED: {e}", flush=True)
@@ -1190,6 +1346,9 @@ def place_one_artwork(
                     'width': largest_path.get('width', 0.5),
                     'spot_name': largest_path.get('spot_name'),
                     'is_page_fallback': bool(largest_path.get('is_page_fallback')),
+                    'groups': largest_path.get('groups', []),
+                    'all_colors': largest_path.get('all_colors', []),
+                    'all_spots': largest_path.get('all_spots', []),
                 }
             else:
                 die_items_cache[cache_key] = None
@@ -1200,24 +1359,21 @@ def place_one_artwork(
             and not cached_cut.get('is_page_fallback')
             and src_page_idx not in local_stripped_pages
         ):
-            target_color = cached_cut.get('color')
-            target_spot = cached_cut.get('spot_name')
             try:
                 pike_page = src_doc._pdf.pages[src_page_idx]
                 pike_page.contents_coalesce()
-                media_box = pike_page.mediabox
-                did_strip = strip_color_from_form_tree(
-                    pike_page,
-                    target_color,
-                    target_spot=target_spot,
-                    strict=True,
-                    target_items=cached_cut.get('items'),
-                    page_height=float(media_box[3] - media_box[1]),
-                    owner_pdf=src_doc._pdf,
-                )
-                if not did_strip:
-                    raise RuntimeError(
-                        "Không tìm thấy toán tử vẽ khuôn tương ứng trong cây Form."
+                media_box = getattr(pike_page, 'mediabox', None) or pike_page.get('/MediaBox')
+                page_height = float(media_box[3] - media_box[1]) if media_box is not None else None
+                strip_targets = _build_strip_targets(cached_cut, pike_page)
+                for target_color, target_spot, target_items in strip_targets:
+                    strip_color_from_form_tree(
+                        pike_page,
+                        target_color,
+                        target_spot=target_spot,
+                        strict=False,
+                        target_items=target_items,
+                        page_height=float(media_box[3] - media_box[1]),
+                        owner_pdf=src_doc._pdf,
                     )
                 local_stripped_pages.add(src_page_idx)
             except Exception as exc:
@@ -1296,14 +1452,19 @@ def place_one_artwork(
                     # truyền vào strip để gỡ đúng đường bế khi tách trang khuôn.
                     'spot_name': largest_path.get('spot_name'),
                     'is_page_fallback': bool(largest_path.get('is_page_fallback')),
+                    'groups': largest_path.get('groups', []),
+                    'all_colors': largest_path.get('all_colors', []),
+                    'all_spots': largest_path.get('all_spots', []),
                 }
             else:
                 die_items_cache[cache_key] = None
 
-        # Strip die-cut paths khỏi trang nguồn (để không in lên artwork khi tách trang khuôn)
+        # [STRIP-DIECUT 2026-09-22]: Strip die-cut paths khỏi trang nguồn để không in trùng lên artwork.
+        # Khi is_die_cut=True (dù tách trang khuôn hay vẽ OCG layer), đường bế luôn được tách riêng
+        # để tránh tạo 2 đường bế song song lệch nhau (double cutline).
         _cached_before_strip = die_items_cache.get(cache_key) or {}
         if (
-            (separate_cut_page or cut_type == 'one_dao')
+            (is_die_cut or separate_cut_page or cut_type == 'one_dao')
             and src_page_idx not in local_stripped_pages
             and not _cached_before_strip.get('is_page_fallback')
         ):
@@ -1311,41 +1472,30 @@ def place_one_artwork(
             try:
                 pike_page = src_doc._pdf.pages[src_page_idx]
                 pike_page.contents_coalesce()
-                _cached = die_items_cache.get(cache_key)
-                local_target_color = _cached.get('color') if _cached else None
-                # Spot bế THẬT của file này (tên có thể lạ, ngoài danh sách chuẩn) →
-                # truyền vào strip để xoá đúng đường bế kể cả file tạo sẵn đường cắt.
-                local_target_spot = _cached.get('spot_name') if _cached else None
-                _stripped = False
-                contents = pike_page.get('/Contents')
-                if contents is not None:
-                    try:
-                        # CHỈ dùng parser chính xác (theo màu bế + tên kênh spot chuẩn).
-                        # ĐÃ BỎ regex _PAT_A/_PAT_B: chúng xoá mọi khối q..CS..Q nên cắt
-                        # nhầm cả họa tiết artwork vẽ trong colorspace đặt tên (ICCBased/
-                        # Separation) → mất nét thiết kế (audit bảo toàn nội dung 2026-07-07).
-                        if strip_color_from_stream(pike_page, local_target_color, target_spot=local_target_spot):
-                            _stripped = True
-                    except Exception as e_c:
-                        logger.debug(f"[STRIP_DIECUT] page={src_page_idx} content strip error: {e_c}", flush=True)
                 try:
-                    import pikepdf
-                    resources = pike_page.get('/Resources')
-                    if resources:
-                        xobjects = resources.get('/XObject')
-                        if xobjects:
-                            for name, xobj in xobjects.items():
-                                try:
-                                    xobj_resolved = xobj
-                                    subtype = str(xobj_resolved.get('/Subtype', ''))
-                                    if '/Form' in subtype:
-                                        # Chỉ parser chính xác (đã bỏ regex quá rộng — xem trên).
-                                        if strip_color_from_stream(xobj_resolved, local_target_color, target_spot=local_target_spot):
-                                            _stripped = True
-                                except Exception:
-                                    pass
-                except Exception as e_xo:
-                    logger.debug(f"[STRIP_DIECUT] page={src_page_idx} XObject scan error: {e_xo}", flush=True)
+                    media_box = getattr(pike_page, 'mediabox', None) or pike_page.get('/MediaBox')
+                    page_height = float(media_box[3] - media_box[1]) if media_box is not None else None
+                except Exception:
+                    page_height = None
+                _cached = die_items_cache.get(cache_key) or {}
+                strip_targets = _build_strip_targets(_cached, pike_page)
+
+                for local_target_color, local_target_spot, target_items in strip_targets:
+                    try:
+                        strip_color_from_form_tree(
+                            pike_page,
+                            local_target_color,
+                            target_spot=local_target_spot,
+                            strict=False,
+                            target_items=target_items,
+                            page_height=page_height,
+                            owner_pdf=src_doc._pdf,
+                        )
+                    except Exception as e_c:
+                        logger.debug(
+                            f"[STRIP_DIECUT] page={src_page_idx} target={local_target_spot}/{local_target_color} error: {e_c}",
+                            flush=True,
+                        )
             except Exception as e:
                 logger.debug(f"[STRIP_DIECUT] page={src_page_idx} FAILED: {e}", flush=True)
 

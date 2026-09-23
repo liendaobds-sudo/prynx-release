@@ -32,6 +32,10 @@ class ExportImagesRequest(BaseModel):
     format: Literal["png", "jpeg", "tiff", "webp"] = "png"
     dpi: int = Field(default=150, ge=36, le=1200, description="Độ phân giải 36–1200 DPI")
     color_mode: Literal["rgb", "gray", "cmyk"] = "rgb"
+    cmyk_profile: Optional[str] = Field(
+        default="auto",
+        description="Hồ sơ ICC CMYK: auto (theo OutputIntent/FOGRA39), fogra39, gracol, swop, none/untagged",
+    )
     pages: Optional[List[int]] = None  # 1-based; None = tất cả
     multipage_tiff: bool = False
     jpeg_quality: int = Field(default=90, ge=1, le=100, description="Chất lượng JPEG 1–100")
@@ -56,6 +60,10 @@ class ExportImagesBatchRequest(BaseModel):
     file_id: Optional[str] = None
     file_path: Optional[str] = None
     color_mode: Literal["rgb", "gray", "cmyk"] = "rgb"
+    cmyk_profile: Optional[str] = Field(
+        default="auto",
+        description="Hồ sơ ICC CMYK: auto (theo OutputIntent/FOGRA39), fogra39, gracol, swop, none/untagged",
+    )
     pages: Optional[List[int]] = None
     include_bleed: bool = True
     jobs: List[ExportImageBatchJob] = Field(min_length=1, max_length=8)

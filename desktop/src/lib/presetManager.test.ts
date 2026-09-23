@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createPreset } from './presetManager';
+import { DEFAULT_BOOK_REPORT_CONFIG } from '../components/imposition-tools/types';
 
 describe('presetManager — Bình sách In nhanh', () => {
     it('giữ lề gáy và vị trí trang trắng trong preset', () => {
@@ -17,6 +18,7 @@ describe('presetManager — Bình sách In nhanh', () => {
                 marginLeft: 5,
                 marginRight: 5,
                 marginMode: 'labels_only',
+                classification: 'in_nhanh',
             },
             marks: { markType: 'guillotine' },
             booklet: {
@@ -27,11 +29,19 @@ describe('presetManager — Bình sách In nhanh', () => {
                 blankPlacement: 'center',
                 scaleMode: 'fit',
                 interleave: 'normal',
+                separateCover: true,
+                coverPageCount: 4,
+                autoCatalog: false,
+                bookReportDisplay: { ...DEFAULT_BOOK_REPORT_CONFIG, enabled: true, titleText: 'Tạp chí tháng 7' },
             },
         });
 
+        expect(preset.paper.classification).toBe('in_nhanh');
         expect(preset.booklet?.gutterMargin).toBe(7);
         expect(preset.booklet?.blankPlacement).toBe('center');
+        expect(preset.booklet?.separateCover).toBe(true);
+        expect(preset.booklet?.coverPageCount).toBe(4);
+        expect(preset.booklet?.bookReportDisplay?.titleText).toBe('Tạp chí tháng 7');
     });
 
     it('giữ intent Xếp tự do tách biệt với Chia đều diện tích', () => {

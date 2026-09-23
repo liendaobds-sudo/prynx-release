@@ -31,6 +31,7 @@ import pytest
 from app.core.nesting_preview_capacity import (
     PT_PER_MM,
     build_nesting_preview,
+    _single_item_page_for_fast_path,
     settings_from_preview_request,
 )
 from app.core.nesting_preview_session import (
@@ -164,6 +165,32 @@ def test_giu_shape_params_theo_trang_giong_export():
     )
 
     assert settings["detectedShapeParamsByPage"] == params
+
+
+def test_fast_path_quantity_chung_mot_khong_lam_roi_cac_trang():
+    """NEST23.01: global=1 trên ba trang không được rẽ tắt về trang 0."""
+
+    settings = settings_from_preview_request(
+        _request(
+            target_quantity=1,
+            target_quantities_by_page={},
+            detected_shapes_by_page={"0": "CUSTOM", "1": "CUSTOM", "2": "CUSTOM"},
+        )
+    )
+
+    assert _single_item_page_for_fast_path(settings) is None
+
+
+def test_fast_path_chi_chay_khi_con_mot_trang_duong():
+    settings = settings_from_preview_request(
+        _request(
+            target_quantity=1,
+            target_quantities_by_page={"0": 0, "1": 0, "2": 1},
+            detected_shapes_by_page={"0": "CUSTOM", "1": "CUSTOM", "2": "CUSTOM"},
+        )
+    )
+
+    assert _single_item_page_for_fast_path(settings) == 2
 
 
 def _full_report_display() -> dict:

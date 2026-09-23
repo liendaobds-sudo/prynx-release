@@ -6,6 +6,7 @@
  */
 
 import type { GridStrategyKind } from '../components/imposition-tools/types';
+import type { BookReportDisplayConfig } from '../components/imposition-tools/types';
 
 // ─── Preset Interface ───
 export interface ImpositionPreset {
@@ -32,6 +33,8 @@ export interface ImpositionPreset {
     marginRight: number;
     marginMode: 'labels_only' | 'include_marks';
     spreadDistribution?: 'clustered' | 'even';
+    /** BOOKLET (audit 2026-09-23 §BOOK.04): giữ ngữ cảnh In nhanh/Offset của preset. */
+    classification?: 'offset' | 'in_nhanh';
   };
   
   // Thiết lập marks (chung)
@@ -44,7 +47,7 @@ export interface ImpositionPreset {
   };
   
   // Booklet settings (chỉ khi taskMode = 'booklet')
-  booklet?: {
+    booklet?: {
     signatureMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
     foliosize: number;
     paperThickness: number;
@@ -53,9 +56,14 @@ export interface ImpositionPreset {
     blankPlacement?: 'end' | 'center';
     scaleMode: '100' | 'fit' | 'chain_nup' | 'cut_stack';
     interleave: 'normal' | 'all_fronts_first' | 'reverse_backs' | 'reverse_backs_180';
-    foldPattern?: string;
-    gripperMargin?: number;
-  };
+        foldPattern?: string;
+        gripperMargin?: number;
+        /** BOOKLET (audit 2026-09-23 §BOOK.04): các field ảnh hưởng trực tiếp output. */
+        separateCover?: boolean;
+        coverPageCount?: number;
+        autoCatalog?: boolean;
+        bookReportDisplay?: BookReportDisplayConfig;
+    };
   
   // N-Up settings (chỉ khi taskMode = 'nup')
   nup?: {
@@ -73,6 +81,9 @@ export interface ImpositionPreset {
     clusterGap: number;
     clusterGapMode: 'item' | 'mark';
     groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
+    clusterCutCmyk?: [number, number, number, number];
+    clusterCutFullSheet?: boolean;
+    clusterPostDieCutMarks?: boolean;
     /** Tùy chọn để preset cũ vẫn nạp được và mặc định về tắt. */
     cutBorder?: {
       enabled: boolean;

@@ -304,7 +304,8 @@ export function usePdfLoader({
     const tileCacheNamespace = pdfUrl || nativeFilePath;
 
     const retryLoad = useCallback(() => {
-        loadGenerationRef.current += 1;
+        const nextGen = loadGenerationRef.current + 1;
+        loadGenerationRef.current = nextGen;
         cancelledSourceRef.current = null;
         const task = loadingTaskRef.current;
         loadingTaskRef.current = null;

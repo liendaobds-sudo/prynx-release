@@ -183,9 +183,20 @@ def page_has_die(page: Any, *, min_score: float = _DIE_SCORE_MIN) -> bool:
         r = p.get("rect") if isinstance(p, dict) else None
         if r is None or r.width <= 5 or r.height <= 5:
             continue
-        # Bỏ nền phủ kín trang (không phải đường bế).
+        # Bỏ nền phủ kín trang (không phải đường bế) NẾU không mang tín hiệu bế (CutContour, spot, màu bế).
         if abs(r.width - rect.width) <= 2 and abs(r.height - rect.height) <= 2:
-            continue
+            from app.workers.die_detection import (
+                _match_die_channel, _is_genuine_spot, _color_matches_die
+            )
+            spot = p.get("spot_name")
+            col = p.get("color")
+            has_die_sig = (
+                _match_die_channel(spot, names_lower)
+                or _is_genuine_spot(spot)
+                or _color_matches_die(col, cfg.die_colors, cfg.die_color_tol)
+            )
+            if not has_die_sig:
+                continue
         try:
             strong, _weak, _by_spot = _score_die_candidate(
                 p, rect, names_lower, cfg.die_colors, cfg.die_color_tol

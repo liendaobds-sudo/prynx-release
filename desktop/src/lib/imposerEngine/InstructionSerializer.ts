@@ -417,6 +417,8 @@ export interface SpreadGridLayout {
     frameH: number;
     cols: number;
     rows: number;
+    /** false khi khổ tờ có thật nhưng không chứa nổi một spread sau khi trừ lề/nhíp. */
+    fits: boolean;
     /** Gốc dưới-trái (pt) của ô lưới (col, row); row 0 = hàng dưới cùng. */
     cellPos: (col: number, row: number) => { x: number; y: number };
 }
@@ -448,11 +450,38 @@ export function computeSpreadGrid(
     if (gridRatio < 1 && sheetRatio > 1.05) isRotated = true;
     else if (gridRatio > 1 && sheetRatio < 0.95) isRotated = true;
 
-    const frameW = isRotated ? sheetH : sheetW;
-    const frameH = isRotated ? sheetW : sheetH;
+    let frameW = isRotated ? sheetH : sheetW;
+    let frameH = isRotated ? sheetW : sheetH;
 
-    const usableW = frameW - marginLeftPt - marginRightPt;
-    const usableH = frameH - effectiveBottomPt - marginTopPt;
+    const fitsFrame = (w: number, h: number) => (
+        w - marginLeftPt - marginRightPt >= spreadW
+        && h - effectiveBottomPt - marginTopPt >= spreadH
+    );
+    // Nếu heuristic tỉ lệ chọn sai hướng nhưng hướng còn lại vừa, dùng hướng vừa.
+    // Nếu cả hai hướng đều không vừa, trả fits=false để serializer fail-closed.
+    if (hasPress && !fitsFrame(frameW, frameH)) {
+        const alternateW = isRotated ? sheetW : sheetH;
+        const alternateH = isRotated ? sheetH : sheetW;
+        if (fitsFrame(alternateW, alternateH)) {
+            isRotated = !isRotated;
+            frameW = alternateW;
+            frameH = alternateH;
+        }
+    }
+
+    let usableW = frameW - marginLeftPt - marginRightPt;
+    let usableH = frameH - effectiveBottomPt - marginTopPt;
+    const fits = !hasPress || fitsFrame(frameW, frameH);
+    if (!fits) {
+        return {
+            frameW,
+            frameH,
+            cols: 0,
+            rows: 0,
+            fits: false,
+            cellPos: () => ({ x: 0, y: 0 }),
+        };
+    }
     const cols = Math.max(1, Math.floor((usableW + gapXPt) / (spreadW + gapXPt)));
     const rows = Math.max(1, Math.floor((usableH + gapYPt) / (spreadH + gapYPt)));
     const gridW = cols * spreadW + (cols - 1) * gapXPt;
@@ -463,7 +492,7 @@ export function computeSpreadGrid(
         x: oX + c * (spreadW + gapXPt),
         y: oY + (rows - 1 - r) * (spreadH + gapYPt),
     });
-    return { frameW, frameH, cols, rows, cellPos };
+    return { frameW, frameH, cols, rows, fits: true, cellPos };
 }
 
 function buildPhase2(
@@ -517,8 +546,8 @@ function buildPhase2(
     else if (gridRatio > 1 && sheetRatio < 0.95) isRotated = true;
 
     // Khung dựng lưới (logic): nếu xoay thì hoán W/H tờ in.
-    const frameW = isRotated ? sheetH : sheetW;
-    const frameH = isRotated ? sheetW : sheetH;
+    let frameW = isRotated ? sheetH : sheetW;
+    let frameH = isRotated ? sheetW : sheetH;
 
     const black: [number, number, number, number] = [0, 0, 0, 1];
     const red: [number, number, number, number] = [0, 1, 1, 0]; // Magenta+Yellow ≈ Đỏ (CMYK) cho dấu gấp gáy
@@ -556,14 +585,36 @@ function buildPhase2(
 
     // usableW/H trong khung logic (fold_pattern dùng để căn giữa lưới even).
     const effectiveBottomPt = Math.max(gripperPt, marginBottomPt);
-    const usableW = frameW - marginLeftPt - marginRightPt;
-    const usableH = frameH - effectiveBottomPt - marginTopPt;
+    let usableW = frameW - marginLeftPt - marginRightPt;
+    let usableH = frameH - effectiveBottomPt - marginTopPt;
 
     // Lưới đơn (step_repeat / cut_stack) — dùng CHUNG computeSpreadGrid với preview.
     const simpleGrid = computeSpreadGrid(
         spreadW, spreadH, pressW, pressH,
         gapXPt, gapYPt, marginLeftPt, marginRightPt, marginTopPt, gripperPt, marginBottomPt,
     );
+    const failPhase2Fit = () => {
+        throw new Error(tv(
+            'Khổ tờ không đủ chứa spread phase-2 sau khi trừ lề/nhíp. Hãy chọn khổ lớn hơn hoặc chuyển về 1 cuốn/tờ.',
+        ));
+    };
+    if (mode !== 'fold_pattern') {
+        if (!simpleGrid.fits) failPhase2Fit();
+        // Dùng đúng frame do SSOT grid chọn, kể cả khi phải đổi hướng để vừa.
+        frameW = simpleGrid.frameW;
+        frameH = simpleGrid.frameH;
+    } else if (pattern && hasPress) {
+        const foldGrid = computeSpreadGrid(
+            gW, gH, pressW, pressH,
+            gapXPt, gapYPt, marginLeftPt, marginRightPt, marginTopPt, gripperPt, marginBottomPt,
+        );
+        if (!foldGrid.fits) failPhase2Fit();
+        frameW = foldGrid.frameW;
+        frameH = foldGrid.frameH;
+        isRotated = frameW !== sheetW || frameH !== sheetH;
+    }
+    usableW = frameW - marginLeftPt - marginRightPt;
+    usableH = frameH - effectiveBottomPt - marginTopPt;
     const simpleCols = simpleGrid.cols;
     const simpleRows = simpleGrid.rows;
     const simpleCellPos = simpleGrid.cellPos;

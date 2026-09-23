@@ -716,3 +716,13 @@ it('BE.04 nạp state/preset cũ cũng được chuẩn hóa trước khi thực
     executeWithAppliedPreview();
     expect(onStartNup).toHaveBeenCalledWith(expect.objectContaining({layoutType:'sequential',targetQuantity:100}));
 });
+
+it.each([
+    ['nup', 'sticker'],
+    ['sticker_imposer', 'page_sheet'],
+] as const)('BXHAND23.01 Dashboard giữ %s/%s ở Xếp chồng', async (activeTool, impositionUnit) => {
+    const { store } = mountDashboard(activeTool, 'nup', 'none');
+    act(() => store.setState({ impositionUnit, layoutType: 'cut_stacks' }));
+    await settleDashboard();
+    expect(store.getState().layoutType).toBe('cut_stacks');
+});

@@ -80,6 +80,9 @@ type ProcessEngineSettings = ProcessingSettings & {
     clusterSizingMode?: 'dims' | 'split_cols' | 'split_rows';
     clusterCombineMode?: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
     clusterNesting?: boolean;
+    clusterCutCmyk?: [number, number, number, number];
+    clusterCutFullSheet?: boolean;
+    clusterPostDieCutMarks?: boolean;
     tileGapX?: number;
     tileGapY?: number;
     separateCutPage?: boolean;
@@ -373,6 +376,9 @@ export async function runProcessEngine(
                 clusterSizingMode: settings.clusterSizingMode || 'dims',
                 clusterCombineMode: settings.taskMode === 'step_repeat' ? 'replicate_mixed' : (settings.clusterCombineMode || 'replicate_mixed'),
                 clusterNesting: settings.clusterNesting !== false,
+                clusterCutCmyk: settings.clusterCutCmyk,
+                clusterCutFullSheet: settings.clusterCutFullSheet,
+                clusterPostDieCutMarks: settings.clusterPostDieCutMarks !== false,
                 tileGapX: settings.tileGapX || 0,
                 tileGapY: settings.tileGapY || 0,
                 separateCutPage: isPageSheet
@@ -547,6 +553,10 @@ export async function runProcessEngine(
             // Sticker and other modes may use activeDashboardTool or separate paths.
             setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_du_lieu_qua_backend_unified'));
             const { imposePdfViaBackend } = await import('../lib/pdfImposer');
+            // [BOOKLET FIX 2026-09-23 §BOOK.05] Bình sách có vé hủy riêng; AbortSignal
+            // đồng thời gọi cancel-plan để PlanExecutor dừng ở boundary an toàn kế tiếp.
+            const bookletAbortController = new AbortController();
+            ctx.setCancelHandler?.(async () => { bookletAbortController.abort(); });
             let serverPath: string;
             const filePath = (file as FileWithPath).path;
             if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ && filePath) {
@@ -557,7 +567,7 @@ export async function runProcessEngine(
                 const { uploadFileForNup } = await import('../lib/api');
                 serverPath = await uploadFileForNup(file);
             }
-            const result = await imposePdfViaBackend(serverPath, settings, setProcessStatus);
+            const result = await imposePdfViaBackend(serverPath, settings, setProcessStatus, undefined, bookletAbortController.signal);
             const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
 
             const nativeOutputPath = (

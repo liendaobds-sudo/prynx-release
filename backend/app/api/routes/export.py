@@ -234,6 +234,24 @@ def _get_gray_icc_bytes() -> bytes:
     return _GRAY_ICC_BYTES
 
 
+_SRGB_TO_GRAY_TRANSFORM = None
+
+
+def _get_srgb_to_gray_transform():
+    """LittleCMS transform từ sRGB sang Gray Gamma 2.2 để chuyển Grayscale trắc màu chuẩn (audit 2026-09-22 §EXPCOLOR21.03)."""
+    global _SRGB_TO_GRAY_TRANSFORM
+    if _SRGB_TO_GRAY_TRANSFORM is None:
+        import io
+        from PIL import ImageCms
+
+        srgb_p = ImageCms.ImageCmsProfile(io.BytesIO(_get_srgb_icc_bytes()))
+        gray_p = ImageCms.ImageCmsProfile(io.BytesIO(_get_gray_icc_bytes()))
+        _SRGB_TO_GRAY_TRANSFORM = ImageCms.buildTransform(
+            srgb_p, gray_p, "RGB", "L", renderingIntent=1
+        )
+    return _SRGB_TO_GRAY_TRANSFORM
+
+
 def _sanitize_base_name(value: Optional[str], fallback: str) -> str:
     """Chuẩn hóa tên file, không cho ``base_name`` tạo đường dẫn ngoài thư mục đích."""
     raw = os.path.basename((value or "").strip())
@@ -305,23 +323,110 @@ async def _watch_export_disconnect(request: Request, cancel_event: threading.Eve
 
 
 
-# ── CMYK production helpers (audit 2026-07-30 §IMG-04 lô 4) ──────────────────
+# ── CMYK production helpers (audit 2026-07-30 §IMG-04 lô 4, audit 2026-09-21 EXPCOLOR21) ──
 
-_CMYK_ICC_BYTES: bytes | None = None
+_CMYK_ICC_CACHE: dict[str, bytes] = {}
 
 
 def _get_cmyk_icc_bytes(profile_id: str = "fogra39") -> bytes:
-    """Đọc profile CMYK bundle (FOGRA39 mặc định) ra bytes để nhúng vào output."""
-    global _CMYK_ICC_BYTES
-    if _CMYK_ICC_BYTES is not None:
-        return _CMYK_ICC_BYTES
+    """Đọc profile CMYK bundle (FOGRA39 mặc định) hoặc hệ thống ra bytes để nhúng vào output."""
+    key = (profile_id or "fogra39").strip().lower()
+    if key in _CMYK_ICC_CACHE:
+        return _CMYK_ICC_CACHE[key]
     from app.core.icc_profiles import resolve_cmyk_profile_path
-    path = resolve_cmyk_profile_path(profile_id)
+
+    path = resolve_cmyk_profile_path(key)
     if not path:
-        raise FileNotFoundError(f"Không tìm được profile CMYK '{profile_id}'")
+        # Fallback về fogra39 nếu profile yêu cầu không tìm thấy
+        logger.warning("Không tìm thấy profile CMYK '%s', fallback về FOGRA39", key)
+        path = resolve_cmyk_profile_path("fogra39")
+    if not path:
+        raise FileNotFoundError(f"Không tìm được profile CMYK '{profile_id}' hoặc fallback FOGRA39")
     with open(path, "rb") as f:
-        _CMYK_ICC_BYTES = f.read()
-    return _CMYK_ICC_BYTES
+        data = f.read()
+    _CMYK_ICC_CACHE[key] = data
+    return data
+
+
+def _extract_pdf_output_intent_cmyk_icc(src_path: str) -> bytes | None:
+    """Trích xuất bytes ICC profile CMYK từ OutputIntent của PDF nguồn nếu có.
+
+    Theo ISO 32000-1 §14.11.5 (Output Intents):
+    - Catalog (/Root) có mảng /OutputIntents.
+    - Mỗi intent có /DestOutputProfile là stream ICC profile.
+    - Header ICC: bytes 36:40 là b"acsp", bytes 16:20 là b"CMYK".
+    """
+    import pikepdf
+
+    try:
+        with pikepdf.open(src_path) as pdf:
+            output_intents = pdf.Root.get("/OutputIntents")
+            if not output_intents:
+                return None
+            for intent in output_intents:
+                dest_stream = intent.get("/DestOutputProfile")
+                if dest_stream is None:
+                    continue
+                try:
+                    raw_bytes = bytes(dest_stream.read_bytes())
+                except Exception:
+                    continue
+                if len(raw_bytes) >= 128:
+                    if raw_bytes[36:40] == b"acsp" and raw_bytes[16:20] == b"CMYK":
+                        logger.info(
+                            "Phát hiện OutputIntent CMYK ICC profile (%d bytes) trong %s",
+                            len(raw_bytes),
+                            os.path.basename(src_path),
+                        )
+                        return raw_bytes
+    except Exception as exc:
+        logger.warning("Không trích xuất được OutputIntent ICC từ %s: %s", src_path, exc)
+    return None
+
+
+def _resolve_export_cmyk_icc(src_path: str, cmyk_profile: Optional[str] = "auto") -> bytes | None:
+    """Xác định bytes ICC profile CMYK cần nhúng vào ảnh xuất.
+
+    - "none" / "untagged": Không nhúng ICC (giống Illustrator mặc định, untagged CMYK).
+    - "auto": Ưu tiên trích xuất OutputIntent CMYK từ file PDF nguồn. Nếu file không có,
+              fallback về ISO Coated v2 (FOGRA39).
+    - <profile_id>: Lấy profile cụ thể (fogra39, gracol, swop...).
+    """
+    key = (cmyk_profile or "auto").strip().lower()
+    if key in ("none", "untagged"):
+        return None
+    if key == "auto":
+        extracted = _extract_pdf_output_intent_cmyk_icc(src_path)
+        if extracted is not None:
+            return extracted
+        return _get_cmyk_icc_bytes("fogra39")
+    return _get_cmyk_icc_bytes(key)
+
+
+def _resolve_ppe_cmyk_profile(src_path: str, cmyk_profile: Optional[str] = "auto") -> str:
+    """Xác định profile CMYK truyền vào PPE render (audit 2026-09-22 §EXPCOLOR22.01).
+
+    - Nếu là profile_id cụ thể (fogra39, gracol, swop...), dùng id đó.
+    - Nếu 'auto' hoặc 'none'/'untagged': nếu PDF có OutputIntent hợp lệ, trích xuất
+      bytes ra file tạm để PPE ColorManager nạp đúng profile đó; nếu không có,
+      fallback về 'fogra39'.
+    """
+    key = (cmyk_profile or "auto").strip().lower()
+    if key in ("auto", "none", "untagged"):
+        extracted = _extract_pdf_output_intent_cmyk_icc(src_path)
+        if extracted:
+            import hashlib
+            from pathlib import Path
+
+            tmp_dir = Path(tempfile.gettempdir()) / "PrynX" / "icc"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            h = hashlib.sha256(extracted).hexdigest()[:16]
+            target = tmp_dir / f"oi_{h}.icc"
+            if not target.is_file():
+                target.write_bytes(extracted)
+            return str(target.resolve())
+        return "fogra39"
+    return key
 
 
 def _render_cmyk_pages(
@@ -335,11 +440,12 @@ def _render_cmyk_pages(
     base_name: Optional[str],
     cancel_event: Optional[threading.Event],
     include_bleed: bool,
+    cmyk_profile: Optional[str] = "auto",
 ) -> List[str]:
     """Render CMYK production bằng PPE ink-space — KHÔNG đi qua RGB.
 
     PPE render trong không gian mực, gộp spot, trả CMYK 4 kênh. Caller nhúng
-    profile ICC (FOGRA39 mặc định) khi ghi TIFF/JPEG.
+    profile ICC (OutputIntent file gốc, FOGRA39, hoặc untagged) khi ghi TIFF/JPEG.
     """
     from PIL import Image
     from app.core.print_engine.facade import export_cmyk as ppe_export_cmyk
@@ -349,7 +455,8 @@ def _render_cmyk_pages(
     os.makedirs(output_dir, exist_ok=True)
     source_base = os.path.splitext(os.path.basename(src_path))[0]
     base_nm = _sanitize_base_name(base_name, source_base)
-    icc_bytes = _get_cmyk_icc_bytes()
+    icc_bytes = _resolve_export_cmyk_icc(src_path, cmyk_profile)
+    ppe_cmyk_profile = _resolve_ppe_cmyk_profile(src_path, cmyk_profile)
 
     # Đếm tổng trang bằng pypdfium2 (nhẹ, chỉ mở header)
     import pypdfium2 as pdfium
@@ -374,7 +481,13 @@ def _render_cmyk_pages(
         # PDFium/PPE đều nhận tọa độ raw; UserUnit phải đi vào DPI hiệu dụng
         # để số pixel đầu ra vẫn đúng kích thước vật lý người dùng chọn.
         effective_dpi = dpi * user_units[pno - 1]
-        result = ppe_export_cmyk(src_path, pno, dpi=effective_dpi, page_box=page_box)
+        result = ppe_export_cmyk(
+            src_path,
+            pno,
+            dpi=effective_dpi,
+            page_box=page_box,
+            cmyk_profile_id=ppe_cmyk_profile,
+        )
         # EXPORT (re-audit 2026-07-31 §RA-02): output chế bản không được phép
         # âm thầm giao trang mà PPE đã đánh dấu thiếu mực hoặc sai hình học.
         if result.get("ink_unsound"):
@@ -466,6 +579,7 @@ def render_pdf_to_images(
     base_name: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
     include_bleed: bool = True,
+    cmyk_profile: Optional[str] = "auto",
 ) -> List[str]:
     """Render các trang PDF thành ảnh và ghi ra ``output_dir``.
 
@@ -474,11 +588,12 @@ def render_pdf_to_images(
         output_dir: thư mục đích (tạo nếu chưa có).
         fmt: 'png' | 'jpeg' | 'tiff'.
         dpi: độ phân giải (clamp _MIN_DPI.._MAX_DPI).
-        color_mode: 'rgb' | 'gray'.
+        color_mode: 'rgb' | 'gray' | 'cmyk'.
         pages: danh sách số trang 1-based; None = tất cả.
         multipage_tiff: gộp mọi trang vào 1 file TIFF (chỉ khi fmt='tiff').
         jpeg_quality: chất lượng JPEG (1..100).
         base_name: tên gốc cho file ảnh; None → lấy từ tên PDF.
+        cmyk_profile: hồ sơ CMYK khi color_mode='cmyk' (auto, fogra39, gracol, none/untagged).
 
     Returns:
         Danh sách đường dẫn file ảnh đã ghi.
@@ -509,6 +624,7 @@ def render_pdf_to_images(
         return _render_cmyk_pages(
             src_path, output_dir, fmt, dpi, pages, multipage_tiff,
             jpeg_quality, base_name, cancel_event, include_bleed,
+            cmyk_profile=cmyk_profile,
         )
 
     pil_mode = "L" if color_mode == "gray" else "RGB"
@@ -588,8 +704,16 @@ def render_pdf_to_images(
                             # widget tương tác khác với đường CMYK PPE.
                             draw_annots=False,
                         )
-                        # ``convert`` tạo buffer độc lập; đóng handle ngay trong khóa.
-                        img = bitmap.to_pil().convert(pil_mode)
+                        # EXPORT (audit 2026-09-22 §EXPCOLOR21.03):
+                        # Dùng LittleCMS trắc màu (Colorimetric) từ sRGB sang Gray Gamma 2.2
+                        # thay vì ITU-R 601 luma (.convert('L')) thô sơ để khớp trắc màu Photoshop.
+                        raw_pil = bitmap.to_pil()
+                        if color_mode == "gray":
+                            from PIL import ImageCms
+                            rgb_source = raw_pil.convert("RGB")
+                            img = ImageCms.applyTransform(rgb_source, _get_srgb_to_gray_transform())
+                        else:
+                            img = raw_pil.convert(pil_mode)
                     finally:
                         if page is not None and original_crop is not None:
                             page.set_cropbox(*original_crop)
@@ -628,6 +752,13 @@ def render_pdf_to_images(
                         save_kwargs = dict(dpi=(dpi, dpi), icc_profile=icc_bytes)
                         if fmt == "webp":
                             save_kwargs["quality"] = jpeg_quality
+                            # EXPORT (audit 2026-09-22 §EXPCOLOR21.04):
+                            # Pillow lưu WebP 3 kênh RGB. Gắn profile 1 kênh GRAY sẽ gây lỗi
+                            # 'cannot build transform' khi mở trong Photoshop/LittleCMS.
+                            # Chuyển img sang RGB (R=G=B) và gắn sRGB profile để tương thích 100%.
+                            if color_mode == "gray":
+                                img = img.convert("RGB")
+                                save_kwargs["icc_profile"] = _get_srgb_icc_bytes()
                         _save_image_atomic(
                             img, out_path, save_fmt, **save_kwargs,
                         )
@@ -713,6 +844,7 @@ async def export_images(req: ExportImagesRequest, request: Request):
             req.base_name,
             cancel_event,
             req.include_bleed,
+            req.cmyk_profile,
             queue_cancelled=cancel_event.is_set,
             memory_required_mb=estimated_peak_mb,
             memory_budget_provider=_export_memory_budget_mb,
@@ -751,6 +883,7 @@ def _render_image_batch(
     pages: Optional[List[int]],
     include_bleed: bool,
     cancel_event: threading.Event,
+    cmyk_profile: Optional[str] = "auto",
 ) -> List[str]:
     """Render batch nguyên tử; lỗi/hủy sẽ xóa mọi file batch đã tạo."""
     written: List[str] = []
@@ -770,6 +903,7 @@ def _render_image_batch(
                 base_name=job.base_name,
                 cancel_event=cancel_event,
                 include_bleed=include_bleed,
+                cmyk_profile=cmyk_profile,
             )
             written.extend(files)
         return written
@@ -816,6 +950,7 @@ async def export_images_batch(req: ExportImagesBatchRequest, request: Request):
             req.pages,
             req.include_bleed,
             cancel_event,
+            req.cmyk_profile,
             queue_cancelled=cancel_event.is_set,
             memory_required_mb=estimated_peak_mb,
             memory_budget_provider=_export_memory_budget_mb,

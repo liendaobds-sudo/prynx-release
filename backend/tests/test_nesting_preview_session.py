@@ -119,6 +119,7 @@ class _FakeJob:
     grouping_intent: str = "free_gang"
     placement_zones: tuple = ()
     part_gap: _FakeGap = field(default_factory=lambda: _FakeGap(2.0, 3.0))
+    bleed_mm: float = 0.0
     sheet_edge_gap: _FakeGap = field(default_factory=_FakeGap)
     obstacle_gap: _FakeGap | None = None
     fixed_obstacles: tuple = ()
@@ -1073,6 +1074,7 @@ def test_peek_khong_solve(job):
         {"duplex_registration": True},
         {"part_gap": _FakeGap(4.0, 3.0)},
         {"part_gap": _FakeGap(2.0, 9.0)},
+        {"bleed_mm": 2.0},
         {"sheet_edge_gap": _FakeGap(1.0, 1.0)},
         {"obstacle_gap": _FakeGap(1.0, 2.0)},
         {"margin_mm": {"left": 9.0, "right": 5.0, "top": 5.0, "bottom": 5.0}},

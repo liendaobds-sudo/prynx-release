@@ -1,0 +1,19 @@
+{
+  "date":"2026-09-21",
+  "head":"703ffc2604ad5e5ff0ef391d9684e05688693c2b",
+  "scope":"Customer files D:/pdfcompare/test/xuat anh plus screenshot CMYK300JPEG90",
+  "production_modified":false,
+  "new_supplied_cmyk":{"file":"prynx-cmyk.jpg.jpg","sha256":"b60f72f177681fd71ba92d67d5f22785b3ac187005a53bad19b2900d10e791b0","size":[6732,3189],"mode":"CMYK","dpi":300,"jpeg_quality_matches":90,"icc":"Coated FOGRA39","icc_sha256":"da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77","production_probe_filebytes_identical":true,"mode_switch_issue_in_this_new_file":"DISPROVED","flat_blue_cmyk8":[254,213,5,105],"ai_flat_blue_cmyk8":[254,214,5,105],"whole_image_within_1_fraction":0.9616550840334803,"whole_image_within_5_fraction":0.9807374093246486,"whole_image_mae_per_channel":[2.885225402532137,2.9939838873489473,0.08675520817903641,1.289202643817773],"max_channel_delta":255,"same_fogra_relative_BPC_srgb":{"prynx":[22,41,100],"illustrator":[23,40,100]},"production_fix_applied":false},
+  "evidence_level":"ARTIFACT_NOT_GUI_REPLAY_OR_PRINT",
+  "source_hashes":{"file goc.pdf":"494beea5d09f1d35d0f8d8fad6698d702deb5a0b0735179fd15207376b7bf40b","illustrator.jpg":"41b1ccdbb1efd18f6397ed2435eef792029e30b4c9c12e40563dc33aa5a93479","prynx.jpg":"7e853f1e44f99e7d9fd985b4a5abbdf56b0fdb1f87363f3f4ee3573d8b8c00f3"},
+  "source_profile":{"name":"GRACoL2013_CRPC6.icc","size":3462308,"sha256":"4ebbfad6bc9cfc033fdafdd8ac5df8159208932cb16d9a6596d349ae7ab50443"},
+  "supplied":{"prynx":{"size":[6733,3189],"mode":"RGB","icc":"sRGB built-in","icc_bytes":588,"dpi":300},"illustrator":{"size":[6732,3189],"mode":"CMYK","icc":null,"adobe_transform":2}},
+  "reproduction":{"rgb300q100":{"decoded_pixels_identical_to_supplied":true,"mae":0,"max_channel_delta":0,"quantization_identical":true},"rgb300q90":{"mae":0.1550096918228692,"identical_pixel_fraction":0.8983516643452213},"cmyk300q90":{"mode":"CMYK","size":[6732,3189],"icc":"Coated FOGRA39"}},
+  "flat_blue":{"roi":[3500,100,6400,260],"source_percent":[99.6,83.5,2.0,41.2],"illustrator_median_cmyk8":[254,214,5,105],"reproduced_prynx_median_cmyk8":[254,213,5,105],"mean_abs_channel_difference":[0,1,0,0],"supplied_prynx_rgb":[7,40,107]},
+  "profile_interpretations":{"cmyk8":[254,213,5,105],"relative_BPC_off":{"GRACoL":[44,56,104],"FOGRA39":[39,52,104],"SWOP":[42,59,112]},"relative_BPC_on_GRACoL":[30,46,100],"GS_GRACoL_relative_BPC_source_float":[31,46,99],"unmanaged_CMYK_to_RGB":[1,25,147]},
+  "explicit_source_overprint":false,
+  "customer_findings":[{"id":"CUSTOMER-EXPCOLOR21.01","status":"CONFIRMED","kind":"artifact settings mismatch, not yet a UI bug","detail":"Supplied RGB100 file exactly reproduced, screenshot shows CMYK90"},{"id":"EXPCOLOR21.01","status":"CONFIRMED_CUSTOMER_EXTENSION","detail":"Source OI GRACoL is not used consistently by RGB export or CMYK tagging"},{"id":"EXPCOLOR21.02","status":"NOT_APPLICABLE_AS_PRIMARY_CAUSE_IN_THIS_SAMPLE","detail":"No explicit overprint found; synthetic finding still stands"}],
+  "source_files_unchanged":true,
+  "tests_this_turn":{"passed":3,"deselected":36,"typecheck_or_build":false},
+  "audit_unit":{"id":"W3-EXPCOLOR21-CUSTOMER","entry":"ExportImageModal screenshot and provided artifacts","handler":"exportImagesBatch -> render_pdf_to_images","engine":"PDFiumRGB / PPECmyk","writer":"PillowJPEG with mode-specific ICC","artifact":"provided pair and3fresh QA exports","consumer":"ICC-aware reader/RIP","contract":"color_mode,quality,sourceOutputIntent,destinationICC","level":"ARTIFACT","next":"Fresh screenshot-matched GUI output and source-profile policy fix"}
+}

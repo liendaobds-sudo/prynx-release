@@ -6,7 +6,10 @@ import hashlib
 import pikepdf
 import pytest
 
-from app.workers.sticker_page_canvas import restore_sticker_page_canvas
+from app.workers.sticker_page_canvas import (
+    normalize_sticker_tight_crop_origin,
+    restore_sticker_page_canvas,
+)
 
 
 MM_TO_PT = 72.0 / 25.4
@@ -343,3 +346,30 @@ def test_sticker_engine_only_expands_selected_pages(tmp_path):
         assert first == pytest.approx([0.0, 0.0, 120.0, 80.0])
         assert second[2] - second[0] > 120.0
         assert second[3] - second[1] > 80.0
+
+
+def test_normalize_sticker_tight_crop_origin(tmp_path):
+    """ARTBOARD-ORIGIN: File tight crop có offset toạ độ được chuẩn hoá về (0, 0)."""
+    target = tmp_path / "tight_crop_offset.pdf"
+    with pikepdf.Pdf.new() as pdf:
+        page = pdf.add_blank_page(page_size=(300.0, 200.0))
+        page.MediaBox = pikepdf.Array([50.0, 80.0, 250.0, 180.0])
+        page.CropBox = pikepdf.Array([50.0, 80.0, 250.0, 180.0])
+        page.TrimBox = pikepdf.Array([60.0, 90.0, 240.0, 170.0])
+        page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(b"1 0 0 rg 50 80 200 100 re f\n")
+        pdf.save(target)
+
+    normalized = normalize_sticker_tight_crop_origin(target)
+    assert normalized is True
+
+    with pikepdf.Pdf.open(target) as pdf:
+        p = pdf.pages[0]
+        assert _box(p, "/MediaBox") == pytest.approx([0.0, 0.0, 200.0, 100.0])
+        assert _box(p, "/CropBox") == pytest.approx([0.0, 0.0, 200.0, 100.0])
+        assert _box(p, "/TrimBox") == pytest.approx([10.0, 10.0, 190.0, 90.0])
+        contents = p.Contents.read_bytes()
+        assert b"q 1 0 0 1 -50.0000 -80.0000 cm" in contents
+
+    # Gọi lần hai khi toạ độ đã ở (0, 0) thì không sửa gì
+    assert normalize_sticker_tight_crop_origin(target) is False
+

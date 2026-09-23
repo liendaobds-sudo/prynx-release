@@ -46,7 +46,7 @@ RAW_FORM_VARIANT = "artwork-raw"
 #: đúng lỗi người dùng báo. Biến thể này materialize thật: nhúng Form rồi bỏ nét bế trong
 #: chính content stream của Form đã nhúng, chứ không đổi cache key để giả lập.
 DIE_STRIPPED_FORM_VARIANT = "artwork-die-stripped"
-DIE_STRIP_POLICY_VERSION = "nesting-die-strip-v1"
+DIE_STRIP_POLICY_VERSION = "nesting-die-strip-v2"
 IMAGE_NORMALIZER_POLICY_VERSION = "adobe-embed-v1"
 OCG_IMPORT_POLICY_VERSION = "pdf-ops-ocg-v1-strict-check"
 
@@ -500,7 +500,15 @@ def _die_strip_target(die_filter: Mapping[str, Any]) -> tuple[Any, str | None]:
     raise ManifestPdfFormError(f"sourceFilter.mode không hỗ trợ: {mode!r}.")
 
 
-def _strip_die_from_page(source_page: Any, strip_target: tuple[Any, str | None]) -> None:
+def _strip_die_from_page(
+    source_page: Any,
+    strip_target: tuple[Any, str | None],
+    *,
+    source_pdf: Any = None,
+    source_path: str | Path | None = None,
+    page_index: int = 0,
+    die_filter: Mapping[str, Any] | None = None,
+) -> None:
     """Bỏ nét bế trên TRANG NGUỒN trước khi biến nó thành Form.
 
     Tách ở đây, không tách sau khi nhúng: `strip_color_from_stream` là bộ đi content
@@ -508,21 +516,57 @@ def _strip_die_from_page(source_page: Any, strip_target: tuple[Any, str | None])
     Form đã nhúng thì không bỏ được nét nào.
     """
 
-    from app.workers.nup_artwork import strip_color_from_stream
+    from app.workers.nup_artwork import _build_strip_targets, strip_color_from_stream
 
-    target_color, target_spot = strip_target
-    if target_spot:
-        # Đo được: khớp tên kênh là PHÂN BIỆT hoa/thường. File khách khai `CutContour`
-        # còn `cutStyle.sourceFilter.spotNames` mặc định là `cutcontour`, nên gọi thẳng
-        # thì không bỏ được nét nào. Resolve tên THẬT trên trang trước khi tách.
-        target_spot = _resolve_actual_spot_name(source_page, target_spot)
-    try:
-        strip_color_from_stream(source_page, target_color, target_spot=target_spot)
-    except Exception as exc:
-        raise ManifestPdfFormError(
-            "Không tách được nét bế khỏi artwork; dừng thay vì in đường bế lên trang in."
-        ) from exc
-    _strip_die_from_form(source_page.obj, (target_color, target_spot))
+    targets_to_strip: list[tuple[Any, str | None, Any | None]] = []
+    if source_pdf is not None:
+        try:
+            from app.workers.pdf_wrapper import Document
+            from app.workers.nup_diecut import extract_page_die_cut_path_groups
+
+            doc_wrapper = Document(source_pdf, path=str(source_path) if source_path else None)
+            if 0 <= page_index < len(doc_wrapper):
+                page_wrapper = doc_wrapper[page_index]
+                groups = extract_page_die_cut_path_groups(page_wrapper)
+                if groups:
+                    cached_data: dict[str, Any] = {"groups": groups}
+                    if die_filter:
+                        mode = die_filter.get("mode")
+                        if mode == "spot":
+                            names = die_filter.get("spotNames")
+                            if isinstance(names, Sequence) and not isinstance(names, (str, bytes)):
+                                cached_data["all_spots"] = [
+                                    str(n).strip().lstrip("/") for n in names if str(n).strip()
+                                ]
+                        elif mode == "process":
+                            process = die_filter.get("processColor")
+                            if isinstance(process, Mapping) and "components" in process:
+                                cached_data["all_colors"] = [
+                                    tuple(float(v) for v in process["components"])
+                                ]
+                    extracted_targets = _build_strip_targets(cached_data, source_page)
+                    if extracted_targets:
+                        targets_to_strip.extend(extracted_targets)
+        except Exception:
+            logger.debug("Lỗi trích xuất groups đường bế để strip trong Form", exc_info=True)
+
+    if not targets_to_strip:
+        target_color, target_spot = strip_target
+        targets_to_strip.append((target_color, target_spot, None))
+
+    for t_col, t_spot, t_items in targets_to_strip:
+        actual_spot = t_spot
+        if actual_spot:
+            actual_spot = _resolve_actual_spot_name(source_page, actual_spot)
+        try:
+            strip_color_from_stream(
+                source_page, t_col, target_spot=actual_spot, target_items=t_items
+            )
+        except Exception as exc:
+            raise ManifestPdfFormError(
+                "Không tách được nét bế khỏi artwork; dừng thay vì in đường bế lên trang in."
+            ) from exc
+        _strip_die_from_form(source_page.obj, (t_col, actual_spot, t_items))
 
 
 def _resolve_actual_spot_name(source_page: Any, requested: str) -> str:
@@ -579,7 +623,7 @@ def _resolve_actual_spot_name(source_page: Any, requested: str) -> str:
     return found[0] if found else requested
 
 
-def _strip_die_from_form(form: Any, strip_target: tuple[Any, str | None]) -> None:
+def _strip_die_from_form(form: Any, strip_target: tuple[Any, ...]) -> None:
     """Bỏ nét bế khỏi Form đã nhúng, đệ quy vào Form con.
 
     Import muộn vì `nup_artwork` phụ thuộc module này — import ở đầu file sẽ tạo vòng.
@@ -587,9 +631,13 @@ def _strip_die_from_form(form: Any, strip_target: tuple[Any, str | None]) -> Non
 
     from app.workers.nup_artwork import strip_color_from_stream
 
-    target_color, target_spot = strip_target
+    target_color = strip_target[0]
+    target_spot = strip_target[1]
+    target_items = strip_target[2] if len(strip_target) > 2 else None
     try:
-        strip_color_from_stream(form, target_color, target_spot=target_spot)
+        strip_color_from_stream(
+            form, target_color, target_spot=target_spot, target_items=target_items
+        )
     except Exception as exc:
         raise ManifestPdfFormError(
             "Không tách được nét bế khỏi artwork; dừng thay vì in đường bế lên trang in."
@@ -608,7 +656,9 @@ def _strip_die_from_form(form: Any, strip_target: tuple[Any, str | None]) -> Non
             except Exception:
                 continue
             try:
-                strip_color_from_stream(child, target_color, target_spot=target_spot)
+                strip_color_from_stream(
+                    child, target_color, target_spot=target_spot, target_items=target_items
+                )
             except Exception:
                 logger.debug("Không tách nét bế trong Form con.", exc_info=True)
     except Exception:
@@ -695,7 +745,14 @@ def embed_manifest_page_form(
                 raise ManifestPdfFormError(
                     "Không gộp được content stream nguồn để tách nét bế."
                 ) from exc
-            _strip_die_from_page(source_page, strip_target)
+            _strip_die_from_page(
+                source_page,
+                strip_target,
+                source_pdf=source_pdf,
+                source_path=source_path,
+                page_index=binding.page_index,
+                die_filter=die_filter,
+            )
         try:
             form = source_page.as_form_xobject(handle_transformations=False)
         except TypeError as exc:

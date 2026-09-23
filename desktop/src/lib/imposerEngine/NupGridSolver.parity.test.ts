@@ -98,4 +98,34 @@ describe('NupGridSolver simple_auto khớp imposition_core (Rust)', () => {
             expect(layout.cells.length, `case '${parityCase.name}'`).toBe(layout.totalItems);
         }
     });
+
+    it('tem tròn khổ A4 hẹp tự động xếp so le chéo góc 2 con khi lưới/tổ ong chỉ ra 1 con', () => {
+        const layout = solveOptimalNupLayout(
+            185, 245, 126, 126, 2, 2,
+            'optimal_auto', 0, 0, 14.17,
+            'CIRCLE_ELLIPSE'
+        );
+        expect(layout.totalItems).toBe(2);
+        expect(layout.cells.length).toBe(2);
+    });
+
+    it('tem tròn trên khổ A4 không bao giờ có bất kỳ 2 con nào đè lên nhau', () => {
+        for (let d = 40; d <= 140; d += 10) {
+            const layout = solveOptimalNupLayout(
+                185, 245, d, d, 2, 2,
+                'optimal_auto', 0, 0, 14.17,
+                'CIRCLE_ELLIPSE'
+            );
+            const cells = layout.cells;
+            const minSafe = d + 2 - 0.05;
+            const minSafeSq = minSafe * minSafe;
+            for (let i = 0; i < cells.length; i++) {
+                for (let j = i + 1; j < cells.length; j++) {
+                    const distSq = (cells[j].x - cells[i].x) ** 2 + (cells[j].y - cells[i].y) ** 2;
+                    expect(distSq).toBeGreaterThanOrEqual(minSafeSq);
+                }
+            }
+        }
+    });
 });
+

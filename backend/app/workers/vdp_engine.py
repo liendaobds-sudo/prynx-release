@@ -231,22 +231,24 @@ class PdfiumVdpTextRenderer:
                 self._font_handles[font_path] = fh
                 return fh
         except Exception as exc:
-            logger.warning(f"[VDP-TYPE0] Lỗi nạp font {font_path} vào PDFium: {exc}")
+            logger.debug("[VDP][TYPE0] Lỗi nạp font vào PDFium: %s", exc)
         return None
 
     @staticmethod
     def _hex_or_cmyk_to_rgba(color_spec) -> tuple[int, int, int, int]:
+        out = (0, 0, 0, 255)
         if isinstance(color_spec, str) and color_spec.startswith('#'):
             h = color_spec.lstrip('#')
             if len(h) == 6:
-                return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255
+                out = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
         elif isinstance(color_spec, (list, tuple)) and len(color_spec) == 4:
             cv, mv, yv, kv = color_spec
             r = int(255 * (1.0 - float(cv)) * (1.0 - float(kv)))
             g = int(255 * (1.0 - float(mv)) * (1.0 - float(kv)))
             b = int(255 * (1.0 - float(yv)) * (1.0 - float(kv)))
-            return max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)), 255
-        return 0, 0, 0, 255
+            out = (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)), 255)
+        logger.debug("[VDP][COLOR] converted color spec type=%s -> rgba=%s", type(color_spec).__name__, out)
+        return out
 
     def add_text_field(
         self,
@@ -269,9 +271,14 @@ class PdfiumVdpTextRenderer:
             return True
         fh = self._get_or_load_font(font_path)
         if not fh:
+            logger.debug("[VDP][PDFIUM-TEXT] Failed to load requested font file")
             return False
 
         r, g, b, a = self._hex_or_cmyk_to_rgba(color)
+        logger.debug(
+            "[VDP][PDFIUM-TEXT] add_text_field: text_length=%d, fs=%s, rgba=(%d,%d,%d,%d), xywh=(%.1f,%.1f,%.1f,%.1f), align='%s'",
+            len(str(text)), fontsize, r, g, b, a, x_pts, y_pts, w_pts, h_pts, alignment,
+        )
         lines = str(text).split('\n') or ['']
         n_lines = len(lines)
         leading = float(fontsize) * float(line_height or 1.0)
@@ -390,6 +397,17 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> Non
         out_pdf.pages.append(ov_pdf.pages[0])
         temp_page = out_pdf.pages[-1]
 
+        target_res_keys = list(target_page_obj.get('/Resources', {}).keys()) if '/Resources' in target_page_obj else []
+        ov_res_keys = list(temp_page.Resources.keys()) if '/Resources' in temp_page else []
+        logger.debug(
+            "[VDP][MERGE] overlay_size=%d, target_resource_categories=%d, overlay_resource_categories=%d",
+            len(overlay_bytes), len(target_res_keys), len(ov_res_keys),
+        )
+        if '/Resources' in target_page_obj and '/ColorSpace' in target_page_obj.Resources:
+            logger.debug("[VDP][MERGE] target color-space count=%d", len(target_page_obj.Resources.ColorSpace.keys()))
+        if '/Resources' in temp_page and '/ColorSpace' in temp_page.Resources:
+            logger.debug("[VDP][MERGE] overlay color-space count=%d", len(temp_page.Resources.ColorSpace.keys()))
+
         # 1. Ghép resources (Font, XObject, ExtGState, ColorSpace...)
         if "/Resources" in temp_page:
             if "/Resources" not in target_page_obj:
@@ -402,7 +420,11 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> Non
                     for k, v in cat_dict.items():
                         if k not in res_dest[cat]:
                             res_dest[cat][k] = v
-            # [VDP-TYPE0-LIVE-TEXT] Bổ sung /FontFamily cho các font VDP vừa ghép để Illustrator nhận diện cả theo Family
+            # [VDP-TYPE0-LIVE-TEXT] Bổ sung /FontFamily và chuẩn hoá CIDFontType2 chuẩn ISO 32000-1:
+            # FPDFText_LoadFont của PDFium xuất DescendantFont Subtype=/CIDFontType0 và gán font vào /FontFile,
+            # nhưng file font nhúng thực tế lại là TrueType (magic \x00\x01\x00\x00 hoặc 'true').
+            # Trình hiển thị nghiêm ngặt (PPE / Print Engine, Acrobat, Poppler) sẽ coi là font hỏng và KHÔNG HIỆN CHỮ!
+            # Do đó phải chuẩn hoá: Subtype -> /CIDFontType2, thêm /CIDToGIDMap /Identity, và chuyển /FontFile -> /FontFile2.
             if "/Font" in res_dest:
                 for f_key, f_obj in list(res_dest["/Font"].items()):
                     try:
@@ -425,8 +447,23 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> Non
                                         if '/FontFamily' not in fd:
                                             fd['/FontFamily'] = pikepdf.String(fam_name)
                                     break
-                    except Exception:
-                        pass
+
+                        if f_obj.get('/Subtype') == '/Type0' and '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
+                            df = f_obj.DescendantFonts[0]
+                            fd = df.get('/FontDescriptor')
+                            if fd and '/FontFile' in fd:
+                                raw_ff = fd['/FontFile'].read_bytes()
+                                if raw_ff.startswith(b'\x00\x01\x00\x00') or raw_ff.startswith(b'true'):
+                                    df['/Subtype'] = pikepdf.Name('/CIDFontType2')
+                                    df['/CIDToGIDMap'] = pikepdf.Name('/Identity')
+                                    fd['/FontFile2'] = fd['/FontFile']
+                                    del fd['/FontFile']
+                                elif raw_ff.startswith(b'OTTO'):
+                                    df['/Subtype'] = pikepdf.Name('/CIDFontType0')
+                                    fd['/FontFile3'] = fd['/FontFile']
+                                    del fd['/FontFile']
+                    except Exception as _fe:
+                        logger.warning("Lỗi chuẩn hoá CIDFont %s: %s", f_key, _fe)
 
         # 2. Nối stream vẽ trực tiếp vào mảng /Contents
         ov_c = temp_page.get("/Contents")
@@ -438,7 +475,20 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> Non
             elif not isinstance(new_contents, pikepdf.Array):
                 new_contents = pikepdf.Array([new_contents])
                 target_page_obj["/Contents"] = new_contents
+
+            # Inspect stream before append
+            if len(new_contents) > 0:
+                try:
+                    last_s = new_contents[-1]
+                    s_bytes = last_s.read_bytes() if hasattr(last_s, 'read_bytes') else b''
+                    logger.debug("[VDP][MERGE] target stream count=%d, last stream bytes=%d", len(new_contents), len(s_bytes))
+                except Exception as _e:
+                    logger.debug("[VDP][MERGE] Could not read last target stream: %s", _e)
+
+            ov_bytes = ov_c.read_bytes() if hasattr(ov_c, 'read_bytes') else b''
+            logger.debug("[VDP][MERGE] appending overlay stream bytes=%d", len(ov_bytes))
             new_contents.append(ov_c)
+            logger.debug("[VDP][MERGE] final target contents streams=%d", len(new_contents))
 
         # 3. Xoá trang tạm khỏi out_doc
         del out_pdf.pages[-1]
@@ -1001,6 +1051,10 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
         try:
             font_color_hex = (field.get('fontColor') or '#000000')
             text_color = cmyk_color(font_color_hex)  # CMYK → đen pure-K (#4)
+            logger.debug(
+                "[VDP][REPORTLAB] Field name=%s type=%s text_length=%d fontName=%s fontSize=%s",
+                field.get('name'), field.get('type'), len(str(val)), field.get('fontName'), field.get('fontSize'),
+            )
 
             # ── Rotation: xoay nội dung quanh tâm box. Frontend đã hoán đổi w/h
             #    cho field dọc (90/270), nên footprint vẽ = hoán đổi ngược lại. ──
@@ -1196,6 +1250,22 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 font_file = field.get('fontFile')
                 if not font_file or not os.path.exists(font_file):
                     font_file = _resolve_system_font(field.get('fontName'))
+
+                # VDP23.02 (audit 2026-09-23): không thay font yêu cầu bằng
+                # Helvetica/Arial âm thầm. Preview ghi lỗi tại field; output
+                # không có error_sink sẽ fail-closed để tránh in sai typeface.
+                requested_font = field.get('fontName') or field.get('fontFile')
+                if requested_font and not font_file:
+                    reason = f"Không tìm thấy font yêu cầu: {requested_font}"
+                    if error_sink is not None:
+                        error_sink.append({
+                            'field': field.get('name', ''),
+                            'kind': 'ERR',
+                            'reason': reason,
+                            'rect': dict(report_rect),
+                        })
+                        continue
+                    raise ValueError(reason)
 
                 # #7 Chọn font THẬT theo fontStyle nếu có biến thể Bold/Italic;
                 # chỉ dùng faux cho phần KHÔNG có file font tương ứng.
@@ -1437,8 +1507,17 @@ def process_chunk(args) -> str:
                     font_file = field.get('fontFile')
                     if not font_file or not os.path.exists(font_file):
                         font_file = _resolve_system_font(field.get('fontName'))
-                    if not font_file or not os.path.exists(font_file):
+                    # Không có fontName/fontFile = font mặc định của VDP, giữ
+                    # fallback Arial tương thích ngược. Chỉ font được yêu cầu
+                    # tường minh mới fail-closed ở nhánh ReportLab bên dưới.
+                    if not font_file and not (field.get('fontName') or field.get('fontFile')):
                         font_file = _resolve_system_font('Arial')
+
+                    if count < 3:
+                        logger.debug(
+                            "[VDP][CHUNK] Record %d field=%s font_resolved=%s",
+                            count, field.get('name'), bool(font_file and os.path.exists(font_file)),
+                        )
 
                     fs_style = str(field.get('fontStyle') or 'regular').lower()
                     want_bold = 'bold' in fs_style
@@ -1487,8 +1566,16 @@ def process_chunk(args) -> str:
                         if success:
                             handled_by_pdfium.add(f_id)
 
+            if count < 3:
+                logger.debug(
+                    "[VDP][CHUNK] Record %d: handled_text_fields=%d, has_text=%s",
+                    count, len(handled_by_pdfium), pdfium_renderer.has_text,
+                )
+
             if pdfium_renderer.has_text:
                 text_pdf_bytes = pdfium_renderer.build_pdf_bytes()
+                if count < 3:
+                    logger.debug("[VDP][CHUNK] Record %d: merging text overlay bytes=%d", count, len(text_pdf_bytes))
                 _merge_overlay_direct(out_doc._pdf, page._page.obj, text_pdf_bytes)
         finally:
             pdfium_renderer.close()
@@ -1496,6 +1583,8 @@ def process_chunk(args) -> str:
         # [VDP-TYPE0-LIVE-TEXT] 2. Các trường còn lại (barcode, QR, image, curved text, hoặc text thiếu font file)
         # tiếp tục được vẽ qua ReportLab và ghép trực tiếp không qua Form XObject.
         remaining_fields = [f for idx, f in enumerate(fields_dict) if f.get('id', str(idx)) not in handled_by_pdfium]
+        if count < 3 and remaining_fields:
+            logger.debug("[VDP][CHUNK] Record %d: remaining_field_count=%d", count, len(remaining_fields))
         if remaining_fields:
             buf = io.BytesIO()
             c = canvas.Canvas(buf, pagesize=(pw, ph))
@@ -1887,6 +1976,10 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
     template_path, _canon_tmp = _canonicalize_template_to_cropbox(template_path)
     canonical_temp_path = template_path if _canon_tmp else None
     abort_if_requested()
+    logger.debug(
+        "[VDP][ENGINE] START: template=%s, output=%s, records=%d, workers=%d, chunks=%d",
+        os.path.basename(template_path), os.path.basename(output_path), len(data), num_workers, num_chunks,
+    )
     logger.info(
         "[VDP] %s records=%d chunks=%d active_workers=%d chunk_size=%d",
         worker_reason,
@@ -1972,6 +2065,29 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
                     embed_watermark(pdf, _wm_license, _wm_hwid)
                 except Exception as e:
                     logger.error(f"VDP watermark failed: {e}")
+
+            # [VDP-TYPE0-LIVE-TEXT] Chuẩn hoá toàn diện font Type0 thành CIDFontType2 theo chuẩn ISO 32000-1
+            for p in pdf.pages:
+                if "/Resources" in p and "/Font" in p.Resources:
+                    for fk, f_obj in list(p.Resources.Font.items()):
+                        try:
+                            if f_obj.get('/Subtype') == '/Type0' and '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
+                                df = f_obj.DescendantFonts[0]
+                                fd = df.get('/FontDescriptor')
+                                if fd and '/FontFile' in fd:
+                                    raw_ff = fd['/FontFile'].read_bytes()
+                                    if raw_ff.startswith(b'\x00\x01\x00\x00') or raw_ff.startswith(b'true'):
+                                        df['/Subtype'] = pikepdf.Name('/CIDFontType2')
+                                        df['/CIDToGIDMap'] = pikepdf.Name('/Identity')
+                                        fd['/FontFile2'] = fd['/FontFile']
+                                        del fd['/FontFile']
+                                    elif raw_ff.startswith(b'OTTO'):
+                                        df['/Subtype'] = pikepdf.Name('/CIDFontType0')
+                                        fd['/FontFile3'] = fd['/FontFile']
+                                        del fd['/FontFile']
+                        except Exception:
+                            pass
+
             # Ghi atomic: temp cùng thư mục rồi os.replace (tránh hỏng output nếu chết giữa chừng).
             _fd, _tmp = _tempfile.mkstemp(suffix=".pdf", dir=_os.path.dirname(output_path) or ".")
             _os.close(_fd)
@@ -1985,4 +2101,8 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
         logger.error(f"VDP optimize/watermark pass failed: {e}")
 
     abort_if_requested()
+    logger.debug(
+        "[VDP][ENGINE] finished output=%s size=%d bytes",
+        os.path.basename(output_path), os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+    )
     return output_path

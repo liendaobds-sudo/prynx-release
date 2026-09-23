@@ -480,3 +480,31 @@ def test_page_has_die_magenta_vs_black_content(tmp_path):
 
     assert die_master is True, "trang khuôn magenta phải được nhận là CÓ đường bế"
     assert die_content is False, "trang artwork đen KHÔNG được nhầm là có đường bế"
+
+
+def test_page_has_die_full_page_cutcontour_preserved(tmp_path):
+    """Đường bế CutContour chiếm trọn khổ trang (vd tem 160x100 trên trang 160x100)
+    vẫn phải được nhận diện là có đường bế thật để kích hoạt homogeneous plan."""
+    from app.workers import pdf_wrapper as pdf_lib
+    import app.workers.sticker_homogeneous as sh
+
+    doc = pdf_lib.open()
+    p0 = doc.new_page(width=453.54, height=283.46)
+    # Đường bế ôm sát biên trang
+    s0 = p0.new_shape()
+    s0.draw_rect(pdf_lib.Rect(0.0, 0.0, 453.54, 283.46))
+    s0.finish(color=(0.0, 1.0, 0.0, 0.0), width=1.0)
+    s0.commit()
+
+    out = tmp_path / "full_page_die.pdf"
+    doc.save(str(out))
+    doc.close()
+
+    d2 = pdf_lib.open(str(out))
+    try:
+        has_die = sh.page_has_die(d2[0])
+    finally:
+        d2.close()
+
+    assert has_die is True
+

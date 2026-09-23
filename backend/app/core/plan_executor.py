@@ -14,6 +14,7 @@ import contextlib
 import math
 import logging
 import os
+import threading
 from typing import List, Optional, Tuple
 
 from app.workers import pdf_wrapper as pdf_lib
@@ -85,18 +86,26 @@ class PlanExecutor:
     """
 
     @staticmethod
-    async def execute(instruction_json: dict, source_pdf_path: str = None) -> str:
+    async def execute(
+        instruction_json: dict,
+        source_pdf_path: str = None,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         """Run the synchronous PDF renderer off the event loop with a heavy slot."""
         from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
 
         return await run_scheduled_in_threadpool(
             "booklet", PlanExecutor._execute_sync,
-            instruction_json, source_pdf_path,
+            instruction_json, source_pdf_path, cancel_event,
         )
 
 
     @staticmethod
-    def _execute_sync(instruction_json: dict, source_pdf_path: str = None) -> str:
+    def _execute_sync(
+        instruction_json: dict,
+        source_pdf_path: str = None,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         """
         Execute an imposition plan.
 
@@ -120,6 +129,8 @@ class PlanExecutor:
             perf_stages = None
 
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PlanExecutionError("Tác vụ Bình sách đã được hủy.")
             version = instruction_json.get("version", "1.0")
             src_path = source_pdf_path or instruction_json["source_pdf_path"]
             # Ép TUYỆT ĐỐI: output_path được trả về frontend và Rust native renderer
@@ -178,6 +189,8 @@ class PlanExecutor:
                 spread_h = float(phase2["spread_h_pt"])
                 temp_doc = pdf_lib.open()
                 for sheet_data in sheets:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise PlanExecutionError("Tác vụ Bình sách đã được hủy.")
                     front = sheet_data.get("front") or {"placements": [], "marks": []}
                     tp = temp_doc.new_page(width=spread_w, height=spread_h)
                     _render_placements(
@@ -193,6 +206,8 @@ class PlanExecutor:
                 plates = phase2.get("plates", [])
                 logger.info(f"PlanExecutor: phase2={phase2.get('mode')} {n_spreads} spreads -> {len(plates)} plates.")
                 for plate in plates:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise PlanExecutionError("Tác vụ Bình sách đã được hủy.")
                     pw = float(plate["width_pt"])
                     ph = float(plate["height_pt"])
                     op = output_doc.new_page(width=pw, height=ph)
@@ -208,6 +223,20 @@ class PlanExecutor:
                             box_w, box_h = spread_h, spread_w
                         else:
                             box_w, box_h = spread_w, spread_h
+                        # [BOOKLET FIX 2026-09-23 §BOOK.01] Phase-2 không được nuốt
+                        # placement âm hoặc tràn khổ. Planner mới đã fail-closed, nhưng
+                        # backend vẫn phải chặn payload cũ/stale để không xuất PDF trắng.
+                        fit_epsilon = 0.5
+                        if (
+                            x < -fit_epsilon
+                            or y < -fit_epsilon
+                            or x + box_w > pw + fit_epsilon
+                            or y + box_h > ph + fit_epsilon
+                        ):
+                            raise PlanExecutionError(
+                                "Placement phase-2 vượt khổ tờ sau khi tính lề/nhíp; "
+                                "đã dừng để tránh xuất PDF sai."
+                            )
                         # x_pt/y_pt theo gốc PDF bottom-left của bbox → đổi sang top-left.
                         pike_y = ph - y - box_h
                         dest = pdf_lib.Rect(x, pike_y, x + box_w, pike_y + box_h)
@@ -216,6 +245,8 @@ class PlanExecutor:
                         _draw_marks_batched(op, plate["marks"], ph)
             else:
                 for sheet_data in sheets:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise PlanExecutionError("Tác vụ Bình sách đã được hủy.")
                     sheet_idx = sheet_data["sheet_index"]
                     sheet_w = sheet_data["width_pt"]
                     sheet_h = sheet_data["height_pt"]
@@ -244,6 +275,8 @@ class PlanExecutor:
             report_page_count = output_doc.page_count
             # Append separately handled source pages (for example, detached covers).
             for item in instruction_json.get('append_source_pages', []):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise PlanExecutionError("Tác vụ Bình sách đã được hủy.")
                 if isinstance(item, int):
                     src_idx, user_rotation = item, 0
                 else:
@@ -342,7 +375,12 @@ class PlanExecutor:
                         os.replace(report_tmp, output_path)
                         report_tmp = None
                 except Exception as report_error:
-                    logger.warning("PlanExecutor book report failed: %s", report_error)
+                    # [BOOKLET FIX 2026-09-23 §BOOK.S2] Report là một phần hợp đồng
+                    # artifact sách; không trả thành công với file thiếu thông tin sản xuất.
+                    logger.error("PlanExecutor book report failed: %s", report_error, exc_info=True)
+                    raise PlanExecutionError(
+                        "Không thể đóng dấu report sách/tạp chí vào PDF; đã dừng để tránh xuất file thiếu thông tin."
+                    ) from report_error
                 finally:
                     if report_tmp and os.path.exists(report_tmp):
                         try:

@@ -1,0 +1,24 @@
+{
+  "date":"2026-09-21",
+  "head":"703ffc2604ad5e5ff0ef391d9684e05688693c2b",
+  "state":"OPEN_AWAITING_APPROVAL",
+  "production_modified":false,
+  "native_sha256":"950b45c85538aef1b59ce4b02bc6a2d01de7b9ce9cf34bb3741a79e580115f44",
+  "source_sha256":{"export.py":"ceea9dd4e4c815bba4a99a1b7e14d3b50957b84bfa1b2a03a11a2b3f48ace165","facade.py":"fba5fb5ef5be2a6b6143220d5e86e66a002a4ef69bfc9d66284f3382f76cb48a","space.rs":"ba885c1a0f3b657415163b1faae12714afc2f1ea231be445f06689edb6819866","print_engine_py.rs":"2673a081fbe8374aca5ae3e4f9ffd887d440f4a922c02eaab330e67f3c84bab7"},
+  "corpus":{"pdf_fixtures":8,"base_export_images":20,"extra_300dpi_images":2,"modes":["RGB","CMYK","gray"],"formats":["png","tiff","jpeg","webp"],"synthetic_no_customer_data":true,"oracle":"LCMS source/destination profiles plus Ghostscript10.04.0 overprint simulate"},
+  "findings":[
+    {"id":"EXPCOLOR21.01","priority":1,"status":"CONFIRMED","level":"ARTIFACT","cause":"ICCBased4 source profile bypassed for ink preservation, output always taggedFOGRA39","swop_magenta_source_srgb":[236,0,140],"prynx_fogra_magenta_srgb":[230,0,126],"source_cyan_srgb":[0,174,239],"prynx_cyan_srgb":[0,159,227],"deltaE76_Lab8bit":[5.987,6.176,5.114,3.0,3.088,5.291],"vector_and_image_reproduced":true,"output_intent_switch_also_ignored_in_probes":true},
+    {"id":"EXPCOLOR21.02","priority":1,"status":"CONFIRMED","level":"ARTIFACT","cause":"RGB raster loses overprint while CMYK defaults simulationon","rgb_overlap":[237,2,140],"cmyk_overlap":[255,255,0,0],"cmyk_proof_srgb":[49,39,131],"ghostscript_srgb":[49,39,131],"persists_300dpi":true},
+    {"id":"EXPCOLOR21.03","priority":2,"status":"CONFIRMED","level":"ARTIFACT","cause":"nonICC RGBtoL followed by GrayGamma2.2 tagging","prynx_gray_RGB_primaries":[76,150,29],"lcms_gray22_RGB_primaries":[129,219,71]},
+    {"id":"EXPCOLOR21.04","priority":2,"status":"CONFIRMED","level":"ARTIFACT","cause":"WebP pixel modeRGB with profile spaceGRAY","consumer_error":"PIL.ImageCms.PyCMSError: cannot build transform"}
+  ],
+  "controls":{"embedded_RGB_profile_honored":true,"adobe_rgb_green_sample":[0,154,99],"srgb_green_sample":[51,153,102],"cmyk_is_native_four_channel_not_Pillow_RGB_roundtrip":true,"icc_profiles_present":true},
+  "tests":{"backend_passed":70,"frontend_passed":10,"diagnostic_assertion_groups":7,"typecheck_or_build_run":false,"Adobe_GUI_AB":false,"physical_print_measured":false},
+  "units":[
+    {"id":"W3-EXPCOLOR21-CMYK","entry":"ExportImageModal CMYK","handler":"export images/batch","engine":"PPE export_cmyk","writer":"Pillow TIFF/JPEG + FOGRA39ICC","artifact":"readback image samples and ICC","consumer":"color-managed importer/RIP","contract":"source profile vs destination profile, preserve ink vs preserve appearance","level":"ARTIFACT","next":"Separate export policy from ink-accurate and pairedAdobe acceptance"},
+    {"id":"W3-EXPCOLOR21-RGB","entry":"ExportImageModal RGB","handler":"render_pdf_to_images","engine":"PDFium render","writer":"Pillow RGB+sRGB","artifact":"overprintPNG72/300dpi versus GS","consumer":"raster print","contract":"overprint semantics and sourceICC","level":"ARTIFACT","next":"Consistent print-color policy and customerfixture"},
+    {"id":"W3-EXPCOLOR21-GRAY","entry":"ExportImageModal Grayscale","handler":"render_pdf_to_images","engine":"PDFium plus PillowconvertL","writer":"PillowPNG/JPEG/TIFF/WebP","artifact":"readback L/RGB mode, ICCGRAY, pixel values","consumer":"LCMS/profile-aware readers","contract":"ICCtransform and channel/profile consistency","level":"ARTIFACT","next":"Gray transform and WebP format guard"}
+  ],
+  "gaps":["No paired customer Adobe/PrynX outputs","No exact customer export settings or RIP/driver profile","No physical print or spectrophotometer","Complex transparency, spot and other render fidelity not exhaustively audited"],
+  "sources":["https://helpx.adobe.com/illustrator/using/exporting-artwork.html","https://helpx.adobe.com/photoshop/using/printing-color-management-photoshop1.html","https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.convert","https://ghostscript.readthedocs.io/en/master/Use.html"]
+}

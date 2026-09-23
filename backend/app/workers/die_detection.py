@@ -45,8 +45,13 @@ class DetectionConfig:
     die_channel_names: tuple[str, ...] = (
         "CutContour", "Cut Contour", "CutLine", "Cut Line", "Cut",
         "Dieline", "Die Line", "DieLine", "Die", "DieCut", "Die Cut",
-        "Thru-cut", "Thru Cut", "Thrucut",
-        "Kiss", "Kiss Cut", "KissCut",
+        "Thru-cut", "Thru Cut", "Thrucut", "Through Cut", "ThroughCut",
+        "Kiss", "Kiss Cut", "KissCut", "Kiss-cut",
+        "Demi", "Be Demi", "Bế Demi", "BeDemi", "BếDemi", "Cat Demi", "Cắt Demi",
+        "Rot", "Be Rot", "Bế Rớt", "BeRot", "BếRớt",
+        "Dut", "Be Dut", "Bế Đứt", "BeDut", "BếĐứt",
+        "HalfCut", "Half Cut", "Half-Cut",
+        "Khuon", "Khuôn", "Khuon Be", "Khuôn Bế", "Duong Be", "Đường Bế",
         "Crease", "Perforate", "Perf",
         "Stanc", "Decoupe",
     )
@@ -369,7 +374,7 @@ def apply_master_die_inheritance(result: DetectionResult) -> DetectionResult:
     if n < 2 or len(statuses) != n:
         return result
 
-    master_idxs = [i for i, s in enumerate(shapes) if _shape_has_die_geometry(s)]
+    master_idxs = [i for i, s in enumerate(shapes) if _shape_has_confirmed_die_geometry(s)]
     if len(master_idxs) != 1:
         return result
 
@@ -381,7 +386,7 @@ def apply_master_die_inheritance(result: DetectionResult) -> DetectionResult:
 
     for i, s in enumerate(shapes):
         st = statuses[i]
-        if i == mi or _shape_has_die_geometry(s):
+        if i == mi or _shape_has_confirmed_die_geometry(s):
             new_shapes.append(s)
             new_statuses.append(st)
             continue
@@ -397,7 +402,7 @@ def apply_master_die_inheritance(result: DetectionResult) -> DetectionResult:
                 poly=tuple(master.poly or ()),
                 # Giữ nguồn 'vector' để raster fallback không quét lại 20+ trang.
                 source="vector",
-                confidence=max(0.5, min(0.95, float(master.confidence or 0.8) * 0.9)),
+                confidence=max(0.6, min(0.95, float(master.confidence or 0.8) * 0.9)),
             )
         )
         new_statuses.append(
@@ -852,15 +857,24 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     if not stroke_only:
         return None, False, False
 
-    filtered = [
-        p for p in stroke_only
-        if not (abs(p["rect"].width - page_rect.width) <= 2
-                and abs(p["rect"].height - page_rect.height) <= 2)
-    ]
-    candidates = filtered if filtered else stroke_only
-
     names_lower = frozenset(n.strip().lower() for n in (die_channel_names or ()))
     order = _paint_order_map(paths)
+
+    # Lọc bỏ khung viền trang (background box) nếu nét vẽ chỉ là khung bao quanh trang
+    # mà KHÔNG mang tên kênh khuôn (CutContour, dieline...) hay spot bế thật, hay màu bế.
+    # Đường bế của tem tròn/elip/chữ nhật full khổ trang (vd 160x100 trên trang 160x100)
+    # mang CutContour hoặc màu bế quy ước BẮT BUỘC phải được giữ lại.
+    filtered = [
+        p for p in stroke_only
+        if not (
+            abs(p["rect"].width - page_rect.width) <= 2
+            and abs(p["rect"].height - page_rect.height) <= 2
+            and not _match_die_channel(p.get("spot_name"), names_lower)
+            and not _is_genuine_spot(p.get("spot_name"))
+            and not _color_matches_die(p.get("color"), die_colors, die_color_tol)
+        )
+    ]
+    candidates = filtered if filtered else stroke_only
 
     scored = []  # (strong, weak, area, paint_order, by_spot, path)
     for p in candidates:
@@ -913,16 +927,18 @@ def _is_background(path, page_rect) -> bool:
     return (abs(r.width - page_rect.width) <= 2 and abs(r.height - page_rect.height) <= 2)
 
 
-def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.06):
-    """Gom MỌI path cùng "layer bế" với anchor → một khuôn (R3.5 mở rộng).
+def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.06, die_channel_names=()):
+    """Gom MỌI path thuộc về khuôn bế của anchor → một nhóm khuôn (R3.5 mở rộng).
 
-    Mô hình đúng: 1 khuôn = tất cả nét cùng kênh spot (hoặc cùng màu bế), KHÔNG
-    phải 1 path đơn. Nhờ vậy khuôn nhiều vòng (chữ O / donut / nét cắt trong) giữ
-    đủ mọi vòng khi vẽ trang Khuôn và khi tính bbox.
-
-    Chỉ gộp khi anchor có TÍN HIỆU bế rõ (spot riêng, hoặc khớp màu bế) — tránh
-    nuốt nhầm nét artwork khi anchor chỉ là fallback "stroke lớn nhất".
+    Mô hình đúng: 1 con tem có thể chứa nhiều đường bế (vd: bế đứt ngoài ThruCut,
+    bế demi trong KissCut, đường cấn Crease) mang các màu sắc hoặc kênh Spot khác nhau.
+    Gom đầy đủ mọi nét bế thuộc con tem đó để giữ nguyên màu gốc và xuất đúng khuôn.
     """
+    if die_channel_names:
+        names_lower = frozenset(n.lower() for n in die_channel_names if n)
+    else:
+        names_lower = frozenset(n.lower() for n in DetectionConfig().die_channel_names if n)
+
     anchor_spot_key = _die_group_key_spot(anchor.get("spot_name"))
     # Chỉ stroke color — không dùng fill (mảng màu) để gộp layer bế.
     anchor_col = anchor.get("color")
@@ -931,47 +947,50 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
     if anchor_spot_key is None and not anchor_is_diecolor:
         return [anchor]  # không tín hiệu bế → giữ 1 path (an toàn)
 
-    # Ứng viên: cùng layer bế + stroke-only (không nuốt mảng tô cùng màu).
+    # Ứng viên: có tín hiệu bế + stroke-only (không nuốt mảng tô).
     def _is_member_candidate(p):
         if p is anchor:
             return True
         if not _is_stroke_only_path(p):
             return False
-        # [DIE-SPOT-DENY 2026-07-28] Nét lớp gia công không được gộp vào khuôn —
-        # nhánh gộp theo MÀU chỉ so màu + kề nhau, nên nét trắng/phủ UV trùng màu
-        # bế sẽ phình bbox khuôn nếu không chặn ở đây.
+        # [DIE-SPOT-DENY 2026-07-28] Nét lớp gia công không được gộp vào khuôn
         if _is_non_die_spot(p.get("spot_name")):
             return False
         r = p["rect"]
-        if r.width <= 5 or r.height <= 5 or _is_background(p, page_rect):
+        # [DIE-CANDIDATE FIX 2026-09-22]: Đường cấn (Crease) hoặc đường bế đứt thẳng ngang/dọc
+        # có thể có chiều rộng hoặc chiều cao bằng 0. Chỉ loại các nét chấm/vụn quá nhỏ (cả 2 chiều <= 5pt).
+        if max(r.width, r.height) <= 5 or _is_background(p, page_rect):
             return False
-        if anchor_spot_key is not None:
-            return _die_group_key_spot(p.get("spot_name")) == anchor_spot_key
-        # [DIE-TINT 2026-07-28] Nhóm theo MÀU chỉ gồm nét KHÔNG spot — cùng lý do như
-        # lúc chấm điểm: `color` của nét spot là tint, tint 0 trùng đen (0,0,0).
-        if p.get("spot_name") is not None:
-            return False
-        return _color_matches_die(p.get("color"), die_colors, die_color_tol)
+
+        p_spot = p.get("spot_name")
+        # 1. Cùng spot key với anchor (vd cùng kênh bế, donut nhiều vòng)
+        if anchor_spot_key is not None and _die_group_key_spot(p_spot) == anchor_spot_key:
+            return True
+        # 2. Hoặc mang tên kênh bế chuẩn (KissCut, ThruCut, Crease, CutContour...)
+        if p_spot is not None and _match_die_channel(p_spot, names_lower):
+            return True
+        # 3. Hoặc khớp màu bế chuẩn (Red, Cyan, Magenta, Black...)
+        # Cho phép tham gia nếu màu khớp màu bế chuẩn (kể cả khi p_spot là tên riêng không thuộc non-die spot)
+        if _color_matches_die(p.get("color"), die_colors, die_color_tol):
+            return True
+        return False
 
     candidates = [p for p in paths if _is_member_candidate(p)]
 
-    # Spot-key riêng = kênh bế dành riêng → mọi nét cùng key CHẮC là 1 khuôn (kể cả
-    # rời rạc). Gộp toàn bộ (giữ hành vi cũ, đúng cho chữ O/donut nhiều vòng).
-    if anchor_spot_key is not None:
-        return candidates or [anchor]
-
-    # Gộp theo MÀU bế (file không có spot riêng, vd magenta/đen/xanh/vàng quy ước):
-    # chỉ so màu dễ NUỐT logo/chữ artwork cùng màu ở chỗ khác (audit bảo toàn nội dung
-    # 2026-07-07). Giới hạn theo KHÔNG GIAN: lan dần từ anchor, chỉ thu path có bbox
-    # chồng/kề (pad nhỏ) với nhóm hiện tại → viền ngoài + vòng trong + nét cắt lân cận
-    # được gộp; mảng cùng màu bế rời rạc ở góc khác bị loại.
+    # Lan dần từ anchor theo không gian:
+    # BẮT BUỘC: Gom tất cả candidate nằm trong hoặc chạm/kề bbox của nhóm hiện tại.
+    # Tuyệt đối không gom theo spot_name mà bỏ qua không gian, vì sẽ nuốt toàn bộ các
+    # con tem khác trên cùng trang hoặc các mark rời rạc ở góc xa vào làm 1 cụm.
     def _rects_touch(a, b, pad):
         return not (a.x1 + pad < b.x0 or b.x1 + pad < a.x0 or
                     a.y1 + pad < b.y0 or b.y1 + pad < a.y0)
 
-    pad = 0.02 * max(page_rect.width, page_rect.height)  # ~2% khổ: đủ nối nét kề, không nối góc xa
+    # Dung sai pad: tính theo kích thước anchor (con tem), giới hạn tối đa 5pt (~1.76mm)
+    # để nối các subpath kề nhau hoặc nếp cấn chạm viền cắt, nhưng không nhảy sang tem bên cạnh.
+    anchor_r = anchor["rect"]
+    pad = min(5.0, max(1.5, 0.02 * max(anchor_r.width, anchor_r.height)))
     group = [anchor]
-    group_rect = anchor["rect"]
+    group_rect = anchor_r
     Rect = type(group_rect)
     remaining = [p for p in candidates if p is not anchor]
     changed = True
@@ -996,18 +1015,53 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
 def _merge_die_paths(members):
     """Hợp nhất nhiều path bế thành 1 dict path: gộp items, bbox bao tất cả.
 
-    Giữ color/width/type/spot của member đầu (anchor) cho việc vẽ nét; closePath
-    = True nếu bất kỳ member kín.
+    Bổ sung trường `groups` lưu từng đường bế riêng biệt (kèm items, color, width, spot_name)
+    để hỗ trợ giữ nguyên màu gốc và đa đường bế (bế đứt / bế demi / cấn).
     """
     if not members:
         return None
     if len(members) == 1:
-        return members[0]
+        base = dict(members[0])
+        base["groups"] = [{
+            "items": base.get("items", []) or [],
+            "rect": base.get("rect"),
+            "color": base.get("color"),
+            "width": base.get("width", 0.5),
+            "spot_name": base.get("spot_name"),
+            "closePath": bool(base.get("closePath")),
+        }]
+        base["all_colors"] = [base.get("color")] if base.get("color") else []
+        base["all_spots"] = [base.get("spot_name")] if base.get("spot_name") else []
+        return base
+
     base = dict(members[0])
     items = []
+    groups = []
+    all_colors = []
+    all_spots = []
     for m in members:
-        items.extend(m.get("items", []) or [])
+        m_items = m.get("items", []) or []
+        items.extend(m_items)
+        m_col = m.get("color")
+        m_w = m.get("width", 0.5)
+        m_spot = m.get("spot_name")
+        groups.append({
+            "items": m_items,
+            "rect": m.get("rect"),
+            "color": m_col,
+            "width": m_w,
+            "spot_name": m_spot,
+            "closePath": bool(m.get("closePath")),
+        })
+        if m_col and m_col not in all_colors:
+            all_colors.append(m_col)
+        if m_spot and m_spot not in all_spots:
+            all_spots.append(m_spot)
+
     base["items"] = items
+    base["groups"] = groups
+    base["all_colors"] = all_colors
+    base["all_spots"] = all_spots
     r0 = members[0]["rect"]
     Rect = type(r0)
     x0 = min(m["rect"].x0 for m in members)
@@ -1037,7 +1091,7 @@ def select_die_path(page, die_channel_names=(), die_colors=None, die_color_tol=0
     anchor, _, _ = _select_from_paths(paths, page.rect, die_channel_names, die_colors, die_color_tol)
     if anchor is None:
         return None
-    members = _collect_die_group(paths, anchor, page.rect, die_colors, die_color_tol)
+    members = _collect_die_group(paths, anchor, page.rect, die_colors, die_color_tol, die_channel_names=die_channel_names)
     return _merge_die_paths(members)
 
 
@@ -1075,6 +1129,36 @@ def _same_color_group_poly(page, target_color, paths=None, *, keep_holes=False):
         return merged
     except Exception:
         return None
+
+
+def _paths_to_group_poly(target_paths, *, keep_holes=False):
+    """Hợp nhất (union) toàn bộ các đường khuôn trong nhóm (group) thành 1 đa giác.
+
+    Xử lý đúng khi tem có nhiều đường bế khác màu (vd ThruCut + KissCut) cùng thuộc
+    một khối khuôn thống nhất.
+    """
+    try:
+        from app.workers.nup_diecut import _path_items_to_polygon
+        from shapely.ops import unary_union
+    except Exception:
+        return None
+    if not target_paths:
+        return None
+    polys = []
+    for p in target_paths:
+        poly_part = _path_items_to_polygon(p.get("items", []), keep_holes=keep_holes)
+        if poly_part is not None and poly_part.is_valid and not poly_part.is_empty:
+            polys.append(poly_part)
+    if not polys:
+        return None
+    try:
+        merged = unary_union(polys)
+        if merged.is_empty:
+            return None
+        return merged
+    except Exception:
+        return None
+
 
 
 def _polygon_to_page_contour(
@@ -1182,7 +1266,7 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
     # (vd contour + chi tiết), extent của NHÓM ĐÃ GỘP mới phản ánh đủ; anchor đơn
     # có thể thiếu (audit shape-detection #3). Ca 1 subpath → GIỮ NGUYÊN cách cũ
     # (sample contour anchor) để không đổi kết quả phổ biến.
-    _members = _collect_die_group(paths, largest, page.rect, die_colors, die_color_tol)
+    _members = _collect_die_group(paths, largest, page.rect, die_colors, die_color_tol, die_channel_names=die_channel_names)
     if len(_members) > 1:
         _mr = _merge_die_paths(_members)["rect"]
         visual_w = _mr.width
@@ -1208,21 +1292,19 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
     if rot in (90, 270):
         visual_w, visual_h = visual_h, visual_w
 
-    # poly: ưu tiên union các subpath cùng màu (R3.5); fallback dùng samples.
-    target_color = largest.get("color") if largest.get("color") is not None else largest.get("fill")
-    poly = _same_color_group_poly(page, target_color, paths=paths)
-    # NEST (audit 2026-08-28 §CONTOUR.1): giữ contour tuyệt đối TRƯỚC khi
-    # `_poly_to_trim_coords` xoá origin. Chỉ Polygon rõ ràng mới vào production.
-    #
-    # NEST (audit 2026-08-28 §A4b-3): contour production phải giữ LỖ KHUÔN, nhưng
-    # `DetectedShape.poly` của lane legacy thì KHÔNG được đổi. Đo thật cho thấy bật
-    # cờ trên cùng một lượt làm `poly` đổi biểu diễn đỉnh (5→8 điểm, cùng hình) và
-    # khuôn lồng nhiều tầng thành MultiPolygon ⇒ contour fail-closed. Vì vậy chạy
-    # lượt riêng cho contour, `paths` tái dùng nên không trích vector lại; nếu lượt
-    # giữ lỗ không cho Polygon rõ ràng thì lùi về đúng hành vi cũ, không hồi quy.
-    poly_holed = _same_color_group_poly(
-        page, target_color, paths=paths, keep_holes=True
-    )
+    # poly: ưu tiên union TOÀN BỘ các đường bế trong nhóm khuôn đã chọn (largest.get("groups")),
+    # đảm bảo mọi đường bế trong cùng 1 group (vd ThruCut + KissCut) là 1 thực thể thống nhất.
+    # Fallback union theo màu nếu không có danh sách nhóm.
+    _group_paths = largest.get("groups")
+    if _group_paths:
+        poly = _paths_to_group_poly(_group_paths, keep_holes=False)
+        poly_holed = _paths_to_group_poly(_group_paths, keep_holes=True)
+    else:
+        target_color = largest.get("color") if largest.get("color") is not None else largest.get("fill")
+        poly = _same_color_group_poly(page, target_color, paths=paths, keep_holes=False)
+        poly_holed = _same_color_group_poly(
+            page, target_color, paths=paths, keep_holes=True
+        )
     page_contour = _polygon_to_page_contour(poly_holed, page_idx)
     if page_contour is None:
         page_contour = _polygon_to_page_contour(poly, page_idx)

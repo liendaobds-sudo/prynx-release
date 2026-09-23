@@ -190,6 +190,9 @@ export interface NupSettings {
     clusterRows?: number;
     tileGapX?: number;
     tileGapY?: number;
+    clusterCutCmyk?: [number, number, number, number];
+    clusterCutFullSheet?: boolean;
+    clusterPostDieCutMarks?: boolean;
     splitGap?: number;
     /** PARITY-DIAG (audit 2026-08-12 §SRPARITY.1): nối đúng preview với job xuất. */
     diagnosticTraceId?: string;

@@ -31,29 +31,75 @@ _TOKEN_RE = re.compile(
 _DEVICE_SPACES = {"/DeviceRGB", "/DeviceCMYK", "/DeviceGray", "/Pattern", "/G", "/RGB", "/CMYK"}
 
 
-def _resolve_spot_name(name_token, resources, pdf):
+def _extract_alt_color_from_cs(cs):
+    """Trích xuất màu alternate thật từ định nghĩa ColorSpace Separation/DeviceN.
+
+    [SPOT-COLOR-PRESERVE 2026-09-22]: Đọc /C1 từ tintTransform function (Type 2 exponential)
+    hoặc fallback theo alternateSpace. Giúp bảo toàn màu gốc (e.g. Magenta CMYK (0,1,0,0) hoặc
+    màu spot do thiết kế/bù xén định nghĩa) thay vì bị biến thành trắng RGB hay đỏ cờ.
+    """
+    if not isinstance(cs, (pikepdf.Array, list)) or len(cs) < 4:
+        return None
+    try:
+        alt_space = str(cs[2])
+        tint_transform = cs[3]
+
+        c1 = None
+        if hasattr(tint_transform, 'get'):
+            c1 = tint_transform.get('/C1')
+            if c1 is None:
+                c1 = tint_transform.get(pikepdf.Name.C1)
+        elif hasattr(tint_transform, '__getitem__'):
+            try:
+                c1 = tint_transform['/C1']
+            except Exception:
+                pass
+
+        if c1 is not None:
+            try:
+                vals = tuple(float(v) for v in c1)
+                if len(vals) in (1, 3, 4):
+                    return vals
+            except Exception:
+                pass
+
+        if 'CMYK' in alt_space:
+            return (0.0, 1.0, 0.0, 0.0)
+        elif 'RGB' in alt_space:
+            return (1.0, 0.0, 1.0)
+        elif 'Gray' in alt_space:
+            return (0.0, 0.0, 0.0)
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_spot_info(name_token, resources, pdf):
     """Tra colorspace theo tên (vd '/CS0') trong Resources/ColorSpace.
 
-    Trả tên kênh khuôn (chuỗi, không gồm dấu '/') nếu là Separation/DeviceN,
-    ngược lại None. DeviceN nhiều kênh → nối bằng '+' để matcher tách kiểm tra.
+    Trả về tuple: (spot_name, alt_color)
+    - spot_name: tên kênh khuôn (chuỗi, không gồm dấu '/') nếu là Separation/DeviceN, ngược lại None.
+    - alt_color: tuple float màu alternate thật từ tintTransform /C1 (e.g. (0.0, 1.0, 0.0, 0.0)), hoặc None.
     """
     if not name_token or resources is None:
-        return None
+        return None, None
     if name_token in _DEVICE_SPACES:
-        return None
+        return None, None
     try:
         cs_dict = resources.get("/ColorSpace")
         if cs_dict is None:
-            return None
+            return None, None
         cs = cs_dict.get(name_token)
         if cs is None:
-            return None
+            return None, None
         # cs có thể là Array: [/Separation name alt tint] hoặc [/DeviceN [names] alt tint]
-        if isinstance(cs, pikepdf.Array) and len(cs) >= 2:
+        if isinstance(cs, (pikepdf.Array, list)) and len(cs) >= 2:
             kind = str(cs[0])
             if kind == "/Separation":
                 nm = str(cs[1])
-                return nm[1:] if nm.startswith("/") else nm
+                clean_name = nm[1:] if nm.startswith("/") else nm
+                alt_color = _extract_alt_color_from_cs(cs)
+                return clean_name, alt_color
             if kind == "/DeviceN":
                 names = cs[1]
                 out = []
@@ -63,10 +109,22 @@ def _resolve_spot_name(name_token, resources, pdf):
                         out.append(s[1:] if s.startswith("/") else s)
                 except TypeError:
                     pass
-                return "+".join(out) if out else None
+                clean_name = "+".join(out) if out else None
+                alt_color = _extract_alt_color_from_cs(cs)
+                return clean_name, alt_color
     except Exception:
-        return None
-    return None
+        return None, None
+    return None, None
+
+
+def _resolve_spot_name(name_token, resources, pdf):
+    """Tra colorspace theo tên (vd '/CS0') trong Resources/ColorSpace.
+
+    Trả tên kênh khuôn (chuỗi, không gồm dấu '/') nếu là Separation/DeviceN,
+    ngược lại None. DeviceN nhiều kênh → nối bằng '+' để matcher tách kiểm tra.
+    """
+    spot_name, _ = _resolve_spot_info(name_token, resources, pdf)
+    return spot_name
 
 
 def _make_drawing(items, stroke_color, fill_color, width, draw_type, closed,
@@ -193,12 +251,14 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
     fill_color = None
     stroke_width = 1.0
     stroke_spot = None       # tên kênh khuôn cho nét (R3.6)
+    stroke_spot_color = None # màu alternate thật của kênh nét (SPOT-COLOR-PRESERVE 2026-09-22)
     fill_spot = None         # tên kênh khuôn cho vùng tô
+    fill_spot_color = None   # màu alternate thật của kênh tô
     last_name = None         # token /Name gần nhất (toán hạng cho cs/CS/Do)
 
     base_ctm = list(ctm0) if ctm0 else [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
     ctm_stack = [list(base_ctm)]
-    spot_stack = []          # lưu (stroke_spot, fill_spot) cho q/Q (Fix H)
+    spot_stack = []          # lưu (stroke_spot, stroke_spot_color, fill_spot, fill_spot_color) cho q/Q
     current_ctm = list(base_ctm)
 
     def transform(px, py):
@@ -233,18 +293,16 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
 
         if tok == 'q':
             ctm_stack.append(list(current_ctm))
-            # Lưu CẢ spot-state (stroke/fill) cùng ctm: PDF q/Q lưu/khôi phục toàn
-            # graphics-state gồm colorspace. Trước đây chỉ stack ctm → sau Q colorspace
-            # thật đã đổi lại nhưng stroke_spot/fill_spot giữ giá trị trong q → path sau
-            # gắn sai spot_name → phân loại nhầm die (Fix H, audit bảo toàn nội dung 2026-07-07).
-            spot_stack.append((stroke_spot, fill_spot))
+            # Lưu CẢ spot-state (stroke/fill/color) cùng ctm: PDF q/Q lưu/khôi phục toàn
+            # graphics-state gồm colorspace (Fix H + SPOT-COLOR-PRESERVE).
+            spot_stack.append((stroke_spot, stroke_spot_color, fill_spot, fill_spot_color))
             num_stack.clear()
         elif tok == 'Q':
             if len(ctm_stack) > 1:
                 ctm_stack.pop()
                 current_ctm = list(ctm_stack[-1])
             if spot_stack:
-                stroke_spot, fill_spot = spot_stack.pop()
+                stroke_spot, stroke_spot_color, fill_spot, fill_spot_color = spot_stack.pop()
             num_stack.clear()
         elif tok == 'cm':
             if len(num_stack) >= 6:
@@ -372,57 +430,71 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
             if len(num_stack) >= 3:
                 stroke_color = (num_stack[-3], num_stack[-2], num_stack[-1])
             stroke_spot = None
+            stroke_spot_color = None
             num_stack.clear()
         elif tok == 'rg':
             if len(num_stack) >= 3:
                 fill_color = (num_stack[-3], num_stack[-2], num_stack[-1])
             fill_spot = None
+            fill_spot_color = None
             num_stack.clear()
         elif tok == 'K':
             if len(num_stack) >= 4:
                 stroke_color = (num_stack[-4], num_stack[-3], num_stack[-2], num_stack[-1])
             stroke_spot = None
+            stroke_spot_color = None
             num_stack.clear()
         elif tok == 'k':
             if len(num_stack) >= 4:
                 fill_color = (num_stack[-4], num_stack[-3], num_stack[-2], num_stack[-1])
             fill_spot = None
+            fill_spot_color = None
             num_stack.clear()
         elif tok == 'G':
             if len(num_stack) >= 1:
                 g = num_stack[-1]
                 stroke_color = (g, g, g)
             stroke_spot = None
+            stroke_spot_color = None
             num_stack.clear()
         elif tok == 'g':
             if len(num_stack) >= 1:
                 g = num_stack[-1]
                 fill_color = (g, g, g)
             fill_spot = None
+            fill_spot_color = None
             num_stack.clear()
 
         elif tok == 'CS':
-            stroke_spot = _resolve_spot_name(last_name, resources, pdf)
+            stroke_spot, stroke_spot_color = _resolve_spot_info(last_name, resources, pdf)
+            if stroke_spot_color:
+                stroke_color = stroke_spot_color
             num_stack.clear()
         elif tok == 'cs':
-            fill_spot = _resolve_spot_name(last_name, resources, pdf)
+            fill_spot, fill_spot_color = _resolve_spot_info(last_name, resources, pdf)
+            if fill_spot_color:
+                fill_color = fill_spot_color
             num_stack.clear()
 
-        # [DIE-TINT 2026-07-28] Một toán hạng của SCN/scn là TINT khi colorspace là
-        # Separation/DeviceN (0 = không mực, 1 = đủ mực) — KHÔNG mang thông tin sắc
-        # màu. Ở đây vẫn ghi thành (g, g, g) để giữ nguyên hợp đồng "màu 3 hoặc 4
-        # thành phần" mà các module vẽ đang dựa vào (pdf_ops.Shape.finish index
-        # color[1]/color[2], cnc_render._resolve_die_color). Việc phân biệt tint với
-        # màu thật được làm ở tầng nhận diện: die_detection bỏ qua so-khớp-màu khi
-        # path nằm trên kênh spot, vì (0,0,0) ở đây chỉ là tint 0 chứ không phải đen.
+        # [SPOT-COLOR-PRESERVE 2026-09-22]: Nếu colorspace là Separation/DeviceN (stroke_spot),
+        # toán hạng tint (1 số) được ánh xạ về đúng màu alternate thật của kênh spot (từ tintTransform /C1
+        # hoặc fallback Magenta CMYK (0,1,0,0) chuẩn ngành in). Tuyệt đối không gán bừa (g, g, g)
+        # làm đường bế biến thành trắng RGB (1,1,1) dẫn đến tàng hình hoặc bị ép thành đỏ cờ.
         elif tok in ('SC', 'SCN'):
             if len(num_stack) >= 4:
                 stroke_color = tuple(num_stack[-4:])
             elif len(num_stack) >= 3:
                 stroke_color = tuple(num_stack[-3:])
             elif len(num_stack) >= 1:
-                g = num_stack[-1]
-                stroke_color = (g, g, g)
+                tint = num_stack[-1]
+                if stroke_spot:
+                    alt = stroke_spot_color or (0.0, 1.0, 0.0, 0.0)
+                    if abs(tint - 1.0) < 1e-4:
+                        stroke_color = alt
+                    else:
+                        stroke_color = tuple(c * tint for c in alt)
+                else:
+                    stroke_color = (tint, tint, tint)
             num_stack.clear()
         elif tok in ('sc', 'scn'):
             if len(num_stack) >= 4:
@@ -430,8 +502,15 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
             elif len(num_stack) >= 3:
                 fill_color = tuple(num_stack[-3:])
             elif len(num_stack) >= 1:
-                g = num_stack[-1]
-                fill_color = (g, g, g)
+                tint = num_stack[-1]
+                if fill_spot:
+                    alt = fill_spot_color or (0.0, 1.0, 0.0, 0.0)
+                    if abs(tint - 1.0) < 1e-4:
+                        fill_color = alt
+                    else:
+                        fill_color = tuple(c * tint for c in alt)
+                else:
+                    fill_color = (tint, tint, tint)
             num_stack.clear()
 
         elif tok == 'Do':

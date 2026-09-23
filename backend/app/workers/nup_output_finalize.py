@@ -586,6 +586,8 @@ def _append_strategy_summary(context: NupOutputContext, report_lines: list[str])
         "dumbbell_illustrator": "Khuôn tạ (Đầu đuôi xen kẽ)",
         "hammer_illustrator": "Khuôn búa (Chữ T xen kẽ)",
         "grid": "Lưới đơn giản",
+        "staggered_diagonal": "So le chéo góc (Tổ ong thích ứng)",
+        "staggered_vertical": "So le theo cột (Tổ ong đứng)",
         "staggered": "So le (Tổ ong)",
         "head_to_tail": "Đầu đuôi (Ghép ngàm)",
         "l_shape": "Ghép L-Shape",
