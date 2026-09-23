@@ -186,7 +186,7 @@ Audit dừng ở đây theo quy trình PrynX. Đề nghị duyệt theo thứ t�
 | Baseline/telemetry | `ARTIFACT + RUNTIME` | Có script phân tích log, first-pixel/PPE/affinity/cache; corpus còn trộn nhiều phiên |
 | Document-affinity worker | `SOURCE + AUTO + RUNTIME` | Runtime có affinity hit; cần A/B cold sạch để chốt lợi ích RSS/open_ms |
 | First-pixel/target settle | `SOURCE + AUTO + RUNTIME` | Có settle 250ms, first-pixel warm khoảng 190–220ms; cần cold corpus chuẩn |
-| Thumbnail DOM/pipeline | `SOURCE + AUTO + RUNTIME-PARTIAL` | Dev WebView 1.000 trang: 5 item DOM đầu/cuối; RenderCoordinator + document-affinity hit đã có runtime proof; release/RSS toàn cây process và shared RGBA vẫn pending |
+| Thumbnail DOM/pipeline | `SOURCE + AUTO + RUNTIME-PARTIAL` | Dev WebView 1.000 trang: 5 item DOM đầu/cuối; coordinator/affinity proof + peak RSS toàn cây 1.075 GiB; release/installer, corpus nặng và shared RGBA vẫn pending |
 | PPE ResourceCache | `SOURCE + AUTO + RUNTIME` | Session/Form/SMask tests và `PPE_SESSION_CACHE` hit/miss đã có |
 | Shared surface/GPU | `DEFERRED` | Runtime chưa chứng minh PNG/IPC là nút thắt; không triển khai mù |
 | Backend Compare | `AUTO + ARTIFACT` | 20 trang @150 DPI: 1.51×, parity đúng; cần corpus khách dài hơn |
