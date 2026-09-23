@@ -13,7 +13,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -27,6 +27,8 @@ use print_engine::content::RenderOptions;
 use print_engine::oc::OptionalContentUsage;
 use print_engine::page::{PageBox, RasterClip};
 use print_engine::{CancelToken, PpeError, RenderSession, RenderWarnings};
+
+mod response_router;
 
 pub const RENDER_WORKER_MAGIC: [u8; 4] = *b"PXRW";
 pub const RENDER_WORKER_PROTOCOL_VERSION: u16 = 4;
@@ -2269,14 +2271,38 @@ struct RenderWorkerClient {
     child: Arc<Mutex<Child>>,
     child_pid: u32,
     stdin: Arc<Mutex<ChildStdin>>,
-    stdout: ChildStdout,
+    responses: Arc<response_router::ResponseRouter>,
     next_request_id: u64,
     lane: WorkerLane,
 }
 
+#[derive(Debug)]
 enum ClientRequestError {
     Cancelled,
     Transport(String),
+}
+
+struct PendingClientResponse {
+    response: mpsc::Receiver<response_router::ResponseResult>,
+    logical_request_id: Option<String>,
+    child_pid: u32,
+    wire_request_id: u64,
+}
+
+impl PendingClientResponse {
+    fn wait(self) -> Result<RenderWorkerFrame<RenderWorkerResponse>, ClientRequestError> {
+        self.response.recv()
+            .map_err(|error| ClientRequestError::Transport(format!("Reader worker đã dừng: {error}")))?
+            .map_err(ClientRequestError::Transport)
+    }
+}
+
+impl Drop for PendingClientResponse {
+    fn drop(&mut self) {
+        if let Some(request_id) = &self.logical_request_id {
+            unregister_active_render_request(request_id, self.child_pid, self.wire_request_id);
+        }
+    }
 }
 
 impl RenderWorkerClient {
@@ -2285,6 +2311,16 @@ impl RenderWorkerClient {
         request: &RenderWorkerRequest,
         cancellation: Option<&AtomicBool>,
     ) -> Result<RenderWorkerFrame<RenderWorkerResponse>, ClientRequestError> {
+        self.begin_request(request, cancellation)?.wait()
+    }
+
+    /// Ghi trọn request rồi trả ticket để caller nhả slot trước khi chờ.
+    /// Đường tuần tự cũ cũng dùng router này, không có hai reader stdout.
+    fn begin_request(
+        &mut self,
+        request: &RenderWorkerRequest,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<PendingClientResponse, ClientRequestError> {
         if let Some(status) = self
             .child
             .lock()
@@ -2301,7 +2337,8 @@ impl RenderWorkerClient {
             )));
         }
         let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(||
+            ClientRequestError::Transport("Worker đã hết miền wire request ID.".into()))?;
         let cancellable_request = match request {
             RenderWorkerRequest::Render(render) => Some((
                 render.request_id.clone(),
@@ -2326,6 +2363,8 @@ impl RenderWorkerClient {
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Err(ClientRequestError::Cancelled);
         }
+        // Đăng ký trước write: reply có thể đến ngay sau flush.
+        let response = self.responses.register(request_id).map_err(ClientRequestError::Transport)?;
         let write_result = {
             let mut stdin = self
                 .stdin
@@ -2340,9 +2379,9 @@ impl RenderWorkerClient {
             )
         };
         if let Err(error) = write_result {
-            return Err(ClientRequestError::Transport(format!(
-                "Không gửi được request display worker: {error}"
-            )));
+            let error = format!("Không gửi được request display worker: {error}");
+            self.responses.fail(error.clone());
+            return Err(ClientRequestError::Transport(error));
         }
         if let Some((logical_id, purpose, cooperative_cancel)) = cancellable_request.as_ref() {
             register_active_render_request(
@@ -2363,21 +2402,9 @@ impl RenderWorkerClient {
                 cancel_active_render_request(logical_id);
             }
         }
-        let response_result = read_frame::<_, RenderWorkerResponse>(&mut self.stdout);
-        if let Some((logical_id, _, _)) = cancellable_request.as_ref() {
-            unregister_active_render_request(logical_id, self.child_pid);
-        }
-        let response = response_result.map_err(|error| {
-            ClientRequestError::Transport(format!(
-                "Không đọc được response display worker: {error}"
-            ))
-        })?;
-        if response.kind != RenderWorkerFrameKind::Response || response.request_id != request_id {
-            return Err(ClientRequestError::Transport(
-                "Display worker trả sai loại/request ID frame.".to_string(),
-            ));
-        }
-        Ok(response)
+        Ok(PendingClientResponse { response,
+            logical_request_id: cancellable_request.map(|(id, _, _)| id),
+            child_pid: self.child_pid, wire_request_id: request_id })
     }
 
     fn terminate(&mut self) {
@@ -2387,7 +2414,12 @@ impl RenderWorkerClient {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = child.kill();
         let _ = child.wait();
+        self.responses.fail("Worker đã được đóng.".into());
     }
+}
+
+impl Drop for RenderWorkerClient {
+    fn drop(&mut self) { self.terminate(); }
 }
 
 #[derive(Clone)]
@@ -2415,13 +2447,13 @@ fn register_active_render_request(request_id: &str, lease: ActiveRenderLease) {
         .insert(request_id.to_string(), lease);
 }
 
-fn unregister_active_render_request(request_id: &str, child_pid: u32) {
+fn unregister_active_render_request(request_id: &str, child_pid: u32, wire_request_id: u64) {
     let mut active = active_render_requests()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if active
         .get(request_id)
-        .is_some_and(|lease| lease.child_pid == child_pid)
+        .is_some_and(|lease| lease.child_pid == child_pid && lease.wire_request_id == wire_request_id)
     {
         active.remove(request_id);
     }
@@ -3110,10 +3142,14 @@ fn spawn_render_worker_client(lane: WorkerLane) -> Result<RenderWorkerClient, St
         child: Arc::new(Mutex::new(child)),
         child_pid,
         stdin: Arc::new(Mutex::new(stdin)),
-        stdout,
+        responses: Arc::new(response_router::ResponseRouter::default()),
         next_request_id: 1,
         lane,
     };
+    let responses = Arc::clone(&client.responses);
+    std::thread::Builder::new().name("prynx-render-worker-responses".into())
+        .spawn(move || responses.read_responses(stdout))
+        .map_err(|error| format!("Không khởi tạo được reader response worker: {error}"))?;
     let frame = client
         .request(
             &RenderWorkerRequest::Hello(HelloRequest {
@@ -4168,6 +4204,50 @@ pub fn shutdown_render_worker() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "probe pipe thật cần PRYNX_RENDER_WORKER_TEST_EXE/PDF; chỉ worker test"]
+    fn client_nhieu_ticket_mot_pipe_va_crash_danh_thuc_moi_waiter() {
+        let mut client = spawn_render_worker_client(WorkerLane::Interactive).unwrap();
+        let old_pid = client.child_pid;
+        let first = client.begin_request(&RenderWorkerRequest::Ping { nonce: "first".into() }, None).unwrap();
+        let second = client.begin_request(&RenderWorkerRequest::Ping { nonce: "second".into() }, None).unwrap();
+        let second_reply = second.wait().unwrap();
+        let first_reply = first.wait().unwrap();
+        assert!(matches!(second_reply.header, RenderWorkerResponse::Pong { nonce, worker_pid }
+            if nonce == "second" && worker_pid == old_pid));
+        assert!(matches!(first_reply.header, RenderWorkerResponse::Pong { nonce, worker_pid }
+            if nonce == "first" && worker_pid == old_pid));
+        let path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF").unwrap();
+        let token = crate::pdf_file_identity_token(crate::pdf_file_identity(&path).unwrap());
+        let request = |id: &str| {
+            let mut render = validation_request(&path, token.clone());
+            render.request_id = id.into();
+            render.session_owner_id = Some("pipe-probe-session".into());
+            render.raster = RenderRaster::Dpi { dpi: 96.0, clip: None };
+            render.color = RenderColor { pipeline: RenderColorPipeline::Accurate,
+                profile_id: Some("fogra39".into()), intent: Some("relative".into()) };
+            render.pipeline_identity = RENDER_WORKER_ACCURATE_PIPELINE_ID.into();
+            render.soundness = RenderSoundness::ColorVerified;
+            RenderWorkerRequest::Render(render)
+        };
+        let first = client.begin_request(&request("pipe-crash-first"), None).unwrap();
+        let second = client.begin_request(&request("pipe-crash-second"), None).unwrap();
+        // Dừng đúng child của probe, không dùng tên process hoặc PID app.
+        client.child.lock().unwrap().kill().unwrap();
+        for ticket in [first, second] {
+            assert!(matches!(ticket.response.recv_timeout(Duration::from_secs(5)).unwrap(), Err(_)));
+        }
+        assert!(!active_render_requests().lock().unwrap().contains_key("pipe-crash-first"));
+        assert!(!active_render_requests().lock().unwrap().contains_key("pipe-crash-second"));
+        assert!(client.begin_request(&RenderWorkerRequest::Ping { nonce: "dead".into() }, None).is_err());
+        drop(client);
+        let mut restart = spawn_render_worker_client(WorkerLane::Interactive).unwrap();
+        assert_ne!(restart.child_pid, old_pid);
+        assert!(matches!(restart.request(&RenderWorkerRequest::Ping { nonce: "restart".into() }, None).unwrap().header,
+            RenderWorkerResponse::Pong { nonce, .. } if nonce == "restart"));
+        eprintln!("PIPE_MULTIPLEX_PROBE old_pid={old_pid} restart_pid={} queued_tickets=2 reverse_wait=true crash_woke_all=true", restart.child_pid);
+    }
+
     #[test]
     fn accurate_pool_pin_chong_sweep_nhung_last_owner_van_dong_snapshot() {
         let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"),

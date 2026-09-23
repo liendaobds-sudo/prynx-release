@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "scope": "parent client response routing; child stdio and manager admission still serial",
+  "source_base": "8c439cc",
+  "parent_sha256": "20ee3c382bfc0b3bbdb4fd286ef0935cbd5c6c8dbd723b35bd033890a259c2a0",
+  "worker_sha256": "17e61d936c8760d8a58df027a9a633765bb420bba7ce9a088448bad5c11faee3",
+  "tests": {
+    "unit_passed": 59,
+    "manual_ignored": 8,
+    "cargo_check": "passed (17 existing warnings)"
+  },
+  "limitations": [
+    "Runtime reverse-wait proves independent mailboxes, not that the serial child emitted frames out of order. Actual reversed delivery is covered by unit tests.",
+    "No promotion of simultaneous raster scheduling or document-affinity mode in this batch.",
+    "No app UI/installer rebuild, no full corpus/P95 or RAM non-regression claim."
+  ],
+  "source_sha256": {
+    "desktop/src-tauri/src/pdf_engine/render_worker.rs": "aae583074cfc86f30c4a83c38ee19c9bc389f3ce216c6e182598206069e6cede",
+    "desktop/src-tauri/src/pdf_engine/render_worker/response_router.rs": "d52da83d2d735900788f6ec738dd215816e4f741dde3cff9d90e53afe5be1b78"
+  },
+  "logs": {
+    "ppe_response_router_pipe_probe_2026-09-23": "\r\nrunning 1 test\r\nPIPE_MULTIPLEX_PROBE old_pid=8524 restart_pid=4340 queued_tickets=2 reverse_wait=true crash_woke_all=true\r\ntest pdf_engine::render_worker::tests::client_nhieu_ticket_mot_pipe_va_crash_danh_thuc_moi_waiter ... ok\r\n\r\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 319 filtered out; finished in 0.09s\r\n\r\n\r\n",
+    "ppe_response_router_cancel_probe_2026-09-23": "\r\nrunning 1 test\r\nPPE worker 96 DPI: total=2301ms render=Some(2078)ms encode=Some(160)ms bytes=2635902\r\nPPE worker warm 96 DPI: total=2017ms render=Some(1845)ms encode=Some(160)ms bytes=2635902\r\nPPE cooperative cancel: 4ms, worker pid=18512 vẫn sống\r\nPPE sau cancel: total=1988ms render=Some(1816)ms encode=Some(161)ms\r\ntest pdf_engine::render_worker::tests::parent_manager_render_ppe_accurate_pdf_that ... ok\r\n\r\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 319 filtered out; finished in 6.38s\r\n\r\n\r\n",
+    "ppe_response_router_pdfium_2026-09-23": "\r\nrunning 1 test\r\ntest pdf_engine::render_worker::tests::parent_manager_spawn_va_render_pdf_that ... ok\r\n\r\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 319 filtered out; finished in 0.50s\r\n\r\n\r\n"
+  },
+  "preemption": {
+    "background_lanes": 0,
+    "pdf_sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+    "probe": "PPEBX.C-parent-manager-priority",
+    "rows": [
+      {
+        "active_finished_ms": 4345,
+        "active_lane": "Interactive",
+        "active_page": 1,
+        "active_parent_wall_ms": 4304,
+        "active_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+        "active_priority": 10,
+        "active_registered_ms": 2341,
+        "active_submitted_ms": 40,
+        "active_worker_pid": 37324,
+        "active_worker_timing": {
+          "cache_ms": 0,
+          "encode_ms": 157,
+          "queue_ms": 0,
+          "render_ms": 1840,
+          "total_ms": 2009,
+          "wait_ms": 0
+        },
+        "background_preemptions": 0,
+        "dpi": 96,
+        "prefetch_finished_ms": 2333,
+        "prefetch_lane": "Interactive",
+        "prefetch_page": 1,
+        "prefetch_parent_wall_ms": 2333,
+        "prefetch_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+        "prefetch_priority": 20,
+        "prefetch_registered_ms": 40,
+        "prefetch_worker_pid": 37324,
+        "prefetch_worker_timing": {
+          "cache_ms": 0,
+          "encode_ms": 159,
+          "queue_ms": 0,
+          "render_ms": 2070,
+          "total_ms": 2292,
+          "wait_ms": 0
+        },
+        "sample": 0
+      },
+      {
+        "active_finished_ms": 2303,
+        "active_lane": "Interactive",
+        "active_page": 1,
+        "active_parent_wall_ms": 2301,
+        "active_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+        "active_priority": 10,
+        "active_registered_ms": 54,
+        "active_submitted_ms": 1,
+        "active_worker_pid": 37324,
+        "active_worker_timing": {
+          "cache_ms": 0,
+          "encode_ms": 159,
+          "queue_ms": 0,
+          "render_ms": 2083,
+          "total_ms": 2252,
+          "wait_ms": 0
+        },
+        "background_preemptions": 1,
+        "dpi": 96,
+        "prefetch_finished_ms": 4265,
+        "prefetch_lane": "Interactive",
+        "prefetch_page": 1,
+        "prefetch_parent_wall_ms": 4265,
+        "prefetch_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+        "prefetch_priority": 100,
+        "prefetch_registered_ms": 1,
+        "prefetch_worker_pid": 37324,
+        "prefetch_worker_timing": {
+          "cache_ms": 0,
+          "encode_ms": 160,
+          "queue_ms": 0,
+          "render_ms": 1790,
+          "total_ms": 1960,
+          "wait_ms": 0
+        },
+        "sample": 0
+      }
+    ],
+    "samples_per_priority": 1,
+    "serial_document_affinity": false,
+    "worker_sha256": "17e61d936c8760d8a58df027a9a633765bb420bba7ce9a088448bad5c11faee3"
+  }
+}
