@@ -737,6 +737,68 @@ function reportDom(dom) {
   };
 }
 
+// PERF (audit 2026-09-23 §R23.MEASURE): một frame nét ở trang khác không phải
+// kết quả mở trang 1. Chỉ ghi số lần nhập liệu, không thu phím/text/toạ độ.
+function installScenarioInputProbe(target = window) {
+  const key = '__prynxViewerBaselineInputProbe';
+  if (target[key]) throw new Error('Input probe của lượt trước chưa được dọn.');
+  const counts = { wheel: 0, pointerdown: 0, keydown: 0 };
+  const record = (event) => {
+    if (event.isTrusted && Object.hasOwn(counts, event.type)) counts[event.type] += 1;
+  };
+  for (const type of Object.keys(counts)) target.addEventListener(type, record, { capture: true, passive: true });
+  target[key] = {
+    snapshot: () => ({ ...counts }),
+    stop: () => {
+      for (const type of Object.keys(counts)) target.removeEventListener(type, record, true);
+      delete target[key];
+    },
+  };
+}
+
+function scenarioFrameMatches(label, trigger, dom) {
+  if (!dom?.shell || dom.page !== 1 || dom.viewerPage !== 1 || dom.rotation !== 0
+    || !Number.isFinite(dom.viewerZoom) || dom.viewerZoom <= 0) return false;
+  return label === 'cold-open' || (label === 'warm-zoom'
+    && Number.isFinite(trigger?.targetZoom) && trigger.targetZoom > 0
+    && Math.abs(dom.viewerZoom - trigger.targetZoom) <= 1e-6);
+}
+
+function scenarioEvidence(label, trigger, atFrame, afterDrain, input, violation = null) {
+  const frame = (dom) => ({
+    page: dom?.page ?? null,
+    viewerPage: dom?.viewerPage ?? null,
+    viewerZoom: dom?.viewerZoom ?? null,
+    rotation: dom?.rotation ?? null,
+  });
+  const inputAvailable = input && ['wheel', 'pointerdown', 'keydown']
+    .every((type) => Number.isSafeInteger(input[type]) && input[type] >= 0);
+  const reasons = [];
+  if (violation) reasons.push(violation);
+  if (!scenarioFrameMatches(label, trigger, atFrame)) reasons.push('frame-target-mismatch');
+  if (!scenarioFrameMatches(label, trigger, afterDrain)) reasons.push('after-drain-target-mismatch');
+  if (!inputAvailable) reasons.push('input-probe-missing');
+  else if (input.wheel + input.pointerdown + input.keydown > 0) reasons.push('trusted-input-during-transition');
+  return {
+    valid: reasons.length === 0,
+    reasons,
+    expectedPage: 1,
+    expectedZoom: label === 'warm-zoom' ? trigger?.targetZoom ?? null : 'automatic-fit',
+    atFrame: frame(atFrame),
+    afterDrain: frame(afterDrain),
+    trustedInputCounts: inputAvailable
+      ? { wheel: input.wheel, pointerdown: input.pointerdown, keydown: input.keydown }
+      : null,
+    scope: 'target-window-input; target-state-at-frame-and-after-drain',
+  };
+}
+
+async function collectScenarioEvidence(page, label, trigger, atFrame, violation) {
+  const afterDrain = await domState(page);
+  const input = await page.evaluate(() => window.__prynxViewerBaselineInputProbe?.snapshot() ?? null);
+  return scenarioEvidence(label, trigger, atFrame, afterDrain, input, violation);
+}
+
 async function fileIdentity(path) {
   const value = await stat(path);
   return { sizeBytes: value.size, mtimeMs: value.mtimeMs, ctimeMs: value.ctimeMs };
@@ -1332,7 +1394,7 @@ async function domState(page) {
               ? state.viewerPageRotations
               : [];
             const rotation = Number(pageRotations[activePage - 1]) || 0;
-            matchingStates.push({ tabId, activePage, sourcePage, rotation });
+            matchingStates.push({ tabId, activePage, sourcePage, rotation, viewerZoom: Number(state.viewerZoom) });
           }
         }
         stack.push(node.child, node.sibling);
@@ -1526,6 +1588,8 @@ async function domState(page) {
       sharp: sharpRatio >= viewportCoverageGate,
       devicePixelRatio,
       page: Number(matchingStates[0]?.sourcePage) || 1,
+      viewerPage: activePage,
+      viewerZoom: matchingStates[0]?.viewerZoom ?? null,
       rotation: normalizeRotation(matchingStates[0]?.rotation),
     };
   }, {
@@ -1727,6 +1791,15 @@ async function compositorState(page, state) {
 }
 
 async function measureTransition(page, label, trigger, measureShell, requireConfigInRun) {
+  await page.evaluate(installScenarioInputProbe);
+  try {
+    return await measureTransitionWithInputProbe(page, label, trigger, measureShell, requireConfigInRun);
+  } finally {
+    await page.evaluate(() => window.__prynxViewerBaselineInputProbe?.stop());
+  }
+}
+
+async function measureTransitionWithInputProbe(page, label, trigger, measureShell, requireConfigInRun) {
   await resetIpcTrace(page);
   const ppeRequestIdsBeforeTrigger = latestFulfilledPpeRequestIds(ipcTraceByPage.get(page));
   const preTriggerDom = await domState(page);
@@ -1751,6 +1824,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
   let screenshotCount = 0;
   let screenshotTotalMs = 0;
   let nextScreenshotAt = 0;
+  let scenarioViolation = null;
   const deadline = started + TIMEOUT_MS;
   while (performance.now() < deadline) {
     const identity = await displayedPdfIdentity(page);
@@ -1764,6 +1838,11 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
     const dom = identityMatches
       ? await domState(page)
       : { shell: false, pageRect: null, tiles: [], coverageRatio: 0, sharp: false };
+    if (dom.shell && (dom.page !== 1 || dom.viewerPage !== 1 || dom.rotation !== 0)) {
+      scenarioViolation = 'target-changed-during-frame-poll';
+      last = { dom, compositor: null, frameEvidence: null };
+      break;
+    }
     if (measureShell && dom.shell && shellMs === null) {
       shellMs = Math.round(performance.now() - started);
     }
@@ -1834,7 +1913,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
         Math.abs(dom.pageRect.width - beforeRect.width) >= Math.max(2, beforeRect.width * 0.05)
         || Math.abs(dom.pageRect.height - beforeRect.height) >= Math.max(2, beforeRect.height * 0.05)
       );
-    const hasFrame = visualFrame && geometryReady;
+    const hasFrame = visualFrame && geometryReady && scenarioFrameMatches(label, triggerResult, dom);
     // Blank-gap chỉ đếm lúc compositor thật sự không có frame. Surface cũ còn hiện
     // trong lúc đổi zoom là hành vi tốt, không được ghi oan thành màn trắng.
     if (dom.shell && !visibleSurface && blankStartedAt === null) blankStartedAt = observedAt;
@@ -1874,7 +1953,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
       blankGapMaxMs: Math.round(blankMaxMs),
       blankGapOpen: blankStartedAt !== null,
       blankGapCurrentMs: blankStartedAt === null ? 0 : Math.round(now - blankStartedAt),
-      timeoutStage: fspMs === null ? 'fsp' : 'fcvf',
+      timeoutStage: scenarioViolation ? 'scenario' : fspMs === null ? 'fsp' : 'fcvf',
       stableFrames,
       sourceKeyCaptured: Boolean(expectedSourceKey),
       harnessObservation: {
@@ -1886,6 +1965,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
       pipelineEvidenceAtFrame: pipelineEvidenceFromIpcTrace(ipc.atFrame),
       pipelineEvidence: pipelineEvidenceFromIpcTrace(ipc.afterDrain),
       traceDrain: ipc.drain,
+      scenarioEvidence: await collectScenarioEvidence(page, label, triggerResult, last?.dom, scenarioViolation),
       nativePerfEvidence: nativePerfEvidence(perfLog),
       final: last ? { ...last, dom: reportDom(last.dom) } : null,
     };
@@ -1914,6 +1994,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
     pipelineEvidenceAtFrame: pipelineEvidenceFromIpcTrace(ipc.atFrame),
     pipelineEvidence: pipelineEvidenceFromIpcTrace(ipc.afterDrain),
     traceDrain: ipc.drain,
+    scenarioEvidence: await collectScenarioEvidence(page, label, triggerResult, last?.dom, scenarioViolation),
     nativePerfEvidence: nativePerfEvidence(perfLog),
     final: last ? { ...last, dom: reportDom(last.dom) } : null,
   };
@@ -1937,6 +2018,62 @@ async function measureWarmZoom(page) {
 }
 
 if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
+  const targetFrame = { shell: true, page: 1, viewerPage: 1, rotation: 0, viewerZoom: 2 };
+  const noInput = { wheel: 0, pointerdown: 0, keydown: 0 };
+  const zoomTrigger = { targetZoom: 2 };
+  if (!scenarioEvidence('warm-zoom', zoomTrigger, targetFrame, targetFrame, noInput).valid
+    || !scenarioEvidence('cold-open', {}, { ...targetFrame, viewerZoom: 0.1 },
+      { ...targetFrame, viewerZoom: 0.2 }, noInput).valid) {
+    throw new Error('scenario self-test fail: target hợp lệ hoặc auto-fit bị chặn');
+  }
+  for (const invalidFrame of [
+    { ...targetFrame, page: 2 }, { ...targetFrame, viewerPage: 2 },
+    { ...targetFrame, rotation: 90 }, { ...targetFrame, viewerZoom: 1.9 },
+    { ...targetFrame, viewerZoom: NaN }, { ...targetFrame, shell: false }, null,
+  ]) {
+    if (scenarioEvidence('warm-zoom', zoomTrigger, invalidFrame, targetFrame, noInput).valid
+      || scenarioEvidence('warm-zoom', zoomTrigger, targetFrame, invalidFrame, noInput).valid) {
+      throw new Error('scenario self-test fail: phải chặn drift trước frame và trong drain');
+    }
+  }
+  for (const input of [null, {}, { ...noInput, wheel: 1 }, { ...noInput, pointerdown: 1 },
+    { ...noInput, keydown: 1 }, { ...noInput, wheel: -1 }, { ...noInput, keydown: NaN }]) {
+    if (scenarioEvidence('warm-zoom', zoomTrigger, targetFrame, targetFrame, input).valid) {
+      throw new Error('scenario self-test fail: input hoặc mất probe phải fail-closed');
+    }
+  }
+  if (scenarioEvidence('warm-zoom', {}, targetFrame, targetFrame, noInput).valid
+    || scenarioEvidence('cold-open', {}, targetFrame, targetFrame, noInput,
+      'target-changed-during-frame-poll').valid) {
+    throw new Error('scenario self-test fail: thiếu target hoặc drift rồi quay về vẫn phải chặn');
+  }
+  const eventListeners = new Map();
+  const fakeWindow = {
+    addEventListener: (type, callback) => eventListeners.set(type, callback),
+    removeEventListener: (type, callback) => {
+      if (eventListeners.get(type) === callback) eventListeners.delete(type);
+    },
+  };
+  installScenarioInputProbe(fakeWindow);
+  let duplicateProbeRejected = false;
+  try { installScenarioInputProbe(fakeWindow); } catch { duplicateProbeRejected = true; }
+  if (!duplicateProbeRejected) throw new Error('scenario self-test fail: probe trùng');
+  eventListeners.get('wheel')({ type: 'wheel', isTrusted: true, deltaY: 100 });
+  eventListeners.get('keydown')({ type: 'keydown', isTrusted: true, key: 'private-text' });
+  eventListeners.get('pointerdown')({ type: 'pointerdown', isTrusted: false });
+  const inputSnapshot = fakeWindow.__prynxViewerBaselineInputProbe.snapshot();
+  if (JSON.stringify(inputSnapshot) !== JSON.stringify({ wheel: 1, pointerdown: 0, keydown: 1 })) {
+    throw new Error('scenario self-test fail: đếm input hoặc lọc dữ liệu riêng tư');
+  }
+  fakeWindow.__prynxViewerBaselineInputProbe.stop();
+  if (eventListeners.size || fakeWindow.__prynxViewerBaselineInputProbe) {
+    throw new Error('scenario self-test fail: listener chưa dọn');
+  }
+  installScenarioInputProbe(fakeWindow);
+  if (fakeWindow.__prynxViewerBaselineInputProbe.snapshot().wheel !== 0) {
+    throw new Error('scenario self-test fail: input tràn sang lượt sau');
+  }
+  fakeWindow.__prynxViewerBaselineInputProbe.stop();
   for (const message of ['Render request đã bị hủy.', 'PPE request đã bị hủy trước khi vào worker.',
     'PPE request đã bị hủy trong lúc chờ quota.']) {
     if (classifyIpcRejection(JSON.stringify(message)).kind !== 'cancelled') {
@@ -2592,6 +2729,10 @@ try {
       }
       if (!run.sourceKeyCaptured) {
         throw new Error(`Lượt ${index + 1} không khóa được identity file đang hiển thị.`);
+      }
+      if (!run.scenarioEvidence?.valid) {
+        throw new Error(`Lượt ${index + 1} lệch kịch bản hoặc có thao tác trong lúc đo: `
+          + `${run.scenarioEvidence?.reasons?.join(', ') || 'missing-scenario-evidence'}.`);
       }
       if (!run.traceDrain?.complete) {
         throw new Error(`Lượt ${index + 1} chưa drain IPC trong deadline: ${run.traceDrain?.error}`);
