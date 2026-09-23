@@ -481,3 +481,270 @@ fn unique_temp_path(label: &str) -> PathBuf {
         .as_nanos();
     std::env::temp_dir().join(format!("{label}-{}-{nanos}.pdf", std::process::id()))
 }
+
+#[test]
+fn prepared_pages_render_without_holding_session_lock() {
+    // PERF (audit 2026-09-23 §R23.02): hai job cùng snapshot phải qua barrier
+    // trong lúc owner vẫn bị khóa; serialize bằng Mutex session sẽ deadlock.
+    let bytes = serialize(build_pdf(0, "prepared-parallel"));
+    let shared = RenderSession::open_mem(&bytes, None)
+        .unwrap()
+        .with_resource_cache_budget(1024 * 1024)
+        .into_shared();
+    let mut session = shared.lock().unwrap();
+    let expected = session
+        .render_page(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate())
+        .unwrap();
+    let mut handles = Vec::new();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    for _ in 0..2 {
+        let job = session
+            .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+            .unwrap();
+        let barrier = barrier.clone();
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            job.render_ink().unwrap().0
+        }));
+    }
+    barrier.wait();
+    for handle in handles {
+        assert_same_render(&expected, &handle.join().unwrap());
+    }
+    assert!(session.resource_cache_stats().image_hits >= 2);
+}
+
+#[test]
+fn prepared_page_preserves_clip_and_budget_contracts() {
+    let bytes = serialize(build_pdf(0, "prepared-clip-budget"));
+    let mut session = RenderSession::open_mem(&bytes, None)
+        .unwrap()
+        .with_resource_cache_budget(1);
+    let clip = Some(print_engine::page::RasterClip {
+        x: 5,
+        y: 2,
+        width: 8,
+        height: 11,
+    });
+    let expected = session
+        .render_page_region(1, 144.0, PageBox::Crop, RenderOptions::ink_accurate(), clip)
+        .unwrap();
+    let job = session
+        .prepare_page_render(1, 144.0, PageBox::Crop, RenderOptions::ink_accurate(), clip)
+        .unwrap();
+    assert_same_render(&expected, &job.render_ink().unwrap().0);
+    assert_eq!(
+        session.resource_cache_stats().bytes,
+        0,
+        "cache thiếu RAM không được đổi pixel"
+    );
+    let too_small = session
+        .prepare_page_render(
+            1,
+            144.0,
+            PageBox::Crop,
+            RenderOptions::ink_accurate().with_memory_budget_bytes(1),
+            None,
+        )
+        .unwrap();
+    assert!(matches!(
+        too_small.render_ink(),
+        Err(print_engine::PpeError::MemoryBudgetExceeded { .. })
+    ));
+    assert!(session
+        .prepare_page_render(0, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+        .is_err());
+}
+
+#[test]
+fn prepared_page_rejects_close_drop_and_cancel_without_poisoning_other_jobs() {
+    let bytes = serialize(build_pdf(0, "snapshot-lifecycle"));
+    let mut session = RenderSession::open_mem(&bytes, None).unwrap();
+    let token = print_engine::CancelToken::new();
+    let cancelled = session
+        .prepare_page_render(
+            1,
+            72.0,
+            PageBox::Crop,
+            RenderOptions::ink_accurate().with_cancel_token(token.clone()),
+            None,
+        )
+        .unwrap();
+    let live = session
+        .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+        .unwrap();
+    token.cancel();
+    assert!(matches!(
+        cancelled.render_ink(),
+        Err(print_engine::PpeError::Cancelled)
+    ));
+    assert!(live.render_ink().is_ok());
+    session.close();
+    assert!(live.ensure_current().is_err());
+    assert!(live.render_ink().is_err());
+    assert!(session
+        .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+        .is_err());
+
+    let mut session = RenderSession::open_mem(&bytes, None).unwrap();
+    let job = session
+        .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+        .unwrap();
+    drop(session);
+    assert!(job.render_ink().is_err());
+}
+
+#[test]
+fn prepared_page_save_over_replaces_cache_namespace_and_rejects_old_generation() {
+    let path = unique_temp_path("ppe-prepared-save-over");
+    build_pdf(0, "old-prepared").save(&path).unwrap();
+    let mut session = RenderSession::open(&path)
+        .unwrap()
+        .with_resource_cache_budget(1024 * 1024);
+    let old = session
+        .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+        .unwrap();
+    assert_eq!(old.render_ink().unwrap().0.buffer.max_tac_percent(), 100.0);
+    assert!(session.resource_cache_stats().bytes > 0);
+    build_pdf(255, "new-prepared-longer-marker")
+        .save(&path)
+        .unwrap();
+    assert!(
+        old.ensure_current().is_err(),
+        "từ chối save-over cả trước refresh owner"
+    );
+    let new = session
+        .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+        .unwrap();
+    assert_ne!(old.identity(), new.identity());
+    assert_eq!(session.resource_cache_stats().bytes, 0);
+    assert!(old.render_ink().is_err());
+    assert_eq!(new.render_ink().unwrap().0.buffer.max_tac_percent(), 0.0);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn prepared_srgb_matches_legacy_with_custom_rgb_profile_and_detects_profile_save_over() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let cmyk_source = root.join("backend/app/assets/icc/FOGRA39.icc");
+    let rgb = root.join("backend/app/assets/icc/sRGB.icc");
+    let path = unique_temp_path("ppe-prepared-srgb");
+    let cmyk = unique_temp_path("ppe-prepared-profile");
+    std::fs::copy(&cmyk_source, &cmyk).unwrap();
+    build_pdf(127, "soft-proof-job").save(&path).unwrap();
+    let mut owner = RenderSession::open_with_profile_paths(
+        &path,
+        Some(&cmyk),
+        Some(&rgb),
+        RenderIntent::RelativeColorimetric,
+    )
+    .unwrap();
+    let options = RenderOptions::softproof();
+    let expected = owner
+        .render_page_srgb_region_timed(1, 72.0, PageBox::Crop, options.clone(), None)
+        .unwrap()
+        .0;
+    let job = owner
+        .prepare_page_render(1, 72.0, PageBox::Crop, options, None)
+        .unwrap();
+    let actual = thread::spawn(move || {
+        let result = job.render_srgb().unwrap().0;
+        (job, result)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(actual.1.rgb, expected.rgb);
+    assert_eq!(
+        (actual.1.width, actual.1.height, actual.1.rotate),
+        (expected.width, expected.height, expected.rotate)
+    );
+    std::fs::write(&cmyk, b"profile-dang-ghi-do").unwrap();
+    assert!(actual.0.ensure_current().is_err());
+    assert!(actual.0.render_srgb().is_err());
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(cmyk);
+}
+
+#[test]
+#[ignore = "probe log-only cần PRYNX_PREPARED_SESSION_BENCH_PDF; không chạy cùng benchmark khác"]
+fn prepared_session_customer_concurrent_probe() {
+    use print_engine::oc::OptionalContentUsage;
+    use std::time::Instant;
+    let path = std::env::var("PRYNX_PREPARED_SESSION_BENCH_PDF").expect("thiếu PDF probe");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let profile = root.join("backend/app/assets/icc/FOGRA39.icc");
+    let font =
+        Arc::new(std::fs::read(root.join("backend/app/assets/fonts/DejaVuSans.ttf")).unwrap());
+    let opts = || {
+        RenderOptions::softproof()
+            .with_overprint_simulation(false)
+            .with_optional_content_usage(OptionalContentUsage::View)
+            .with_annotations(true)
+            .with_fallback_font(font.clone())
+            .with_memory_budget_bytes(4096 * 1024 * 1024)
+    };
+    let mut session = RenderSession::open_with_profile_paths(
+        &path,
+        Some(&profile),
+        None,
+        RenderIntent::RelativeColorimetric,
+    )
+    .unwrap()
+    .with_resource_cache_budget(512 * 1024 * 1024);
+    let checksum = |rgb: &[u8]| {
+        rgb.iter().fold(0_u64, |sum, byte| {
+            sum.wrapping_mul(16777619).wrapping_add(u64::from(*byte))
+        })
+    };
+    let specs = [(1, 92.0), (2, 24.0)];
+    let mut reference = Vec::new();
+    for (page, dpi) in specs {
+        let result = session
+            .render_page_srgb_region_timed(page, dpi, PageBox::Crop, opts(), None)
+            .unwrap()
+            .0;
+        reference.push((result.width, result.height, checksum(&result.rgb)));
+    }
+    // ABBA cùng process/session/ICC để phân biệt chi phí snapshot với nhiễu tải máy.
+    for (iteration, parallel) in [false, true, true, false].into_iter().enumerate() {
+        let origin = Instant::now();
+        let jobs = specs.map(|(page, dpi)| {
+            session
+                .prepare_page_render(page, dpi, PageBox::Crop, opts(), None)
+                .unwrap()
+        });
+        let prepare_ms = origin.elapsed().as_secs_f64() * 1000.0;
+        let run = |job: print_engine::session::PreparedPageRender| {
+            let start_ms = origin.elapsed().as_secs_f64() * 1000.0;
+            let (result, timings) = job.render_srgb().unwrap();
+            job.ensure_current().unwrap();
+            let end_ms = origin.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(timings.parse, Duration::ZERO);
+            assert_eq!(timings.open, Duration::ZERO);
+            (start_ms, end_ms, result)
+        };
+        let outputs = if parallel {
+            let [a, b] = jobs;
+            thread::scope(|scope| {
+                let a = scope.spawn(move || run(a));
+                let b = scope.spawn(move || run(b));
+                [a.join().unwrap(), b.join().unwrap()]
+            })
+        } else {
+            jobs.map(run)
+        };
+        let wall_ms = origin.elapsed().as_secs_f64() * 1000.0;
+        if parallel {
+            assert!(
+                outputs[0].0 < outputs[1].1 && outputs[1].0 < outputs[0].1,
+                "hai raster phải có khoảng chạy chồng nhau thật"
+            );
+        }
+        for (index, (start_ms, end_ms, result)) in outputs.iter().enumerate() {
+            let hash = checksum(&result.rgb);
+            assert_eq!((result.width, result.height, hash), reference[index]);
+            eprintln!("PREPARED_SESSION_ROW {{\"iteration\":{iteration},\"parallel\":{parallel},\"page\":{},\"dpi\":{},\"prepare_pair_ms\":{prepare_ms:.3},\"start_ms\":{start_ms:.3},\"end_ms\":{end_ms:.3},\"pair_wall_ms\":{wall_ms:.3},\"checksum_decimal\":\"{hash}\",\"width\":{},\"height\":{}}}",
+                specs[index].0, specs[index].1, result.width, result.height);
+        }
+    }
+}

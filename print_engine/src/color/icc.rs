@@ -24,7 +24,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use lcms2::{Flags, Intent, PixelFormat, Profile, Transform};
 use rayon::prelude::*;
@@ -153,12 +153,23 @@ impl Lut3 {
     }
 }
 
+type SharedLutSlot = Arc<OnceLock<Option<Arc<Lut3>>>>;
+
+/// PERF (audit 2026-09-23 §R23.02): chỉ chia sẻ dữ liệu LUT bất biến. Mỗi job
+/// có Profile/Transform riêng; không chia sẻ handle LCMS bằng unsafe Sync.
+#[derive(Default)]
+struct ColorLutCache {
+    rgb: OnceLock<Option<Arc<Lut3>>>,
+    lab: OnceLock<Option<Arc<Lut3>>>,
+    gray: OnceLock<Option<Arc<[[f32; 4]]>>>,
+    embedded: Mutex<HashMap<u64, SharedLutSlot>>,
+}
+
 /// Bộ quản lý màu cho một lần render.
 ///
-/// **Không** `Sync`: `lcms2::Transform` không an toàn đa luồng ở dạng mặc định, và
-/// một `ColorManager` sống trong đúng một lần render một trang nên không cần
-/// chia sẻ. Trả giá bằng `RefCell` cho cache thay vì `Mutex` — nhẹ hơn và không
-/// có nguy cơ deadlock.
+/// **Không** `Sync`: mỗi job sở hữu handle LCMS riêng và fast-path con trỏ dùng
+/// `RefCell`. Chỉ các bảng LUT bất biến được chia sẻ qua OnceLock/Arc; registry
+/// profile nhúng dùng khóa ngắn, không giữ khóa trong lúc LCMS dựng bảng màu.
 pub struct ColorManager {
     cmyk: Profile,
     /// Byte ICC gốc để mỗi worker dựng profile riêng mà không serialize lại qua
@@ -171,17 +182,11 @@ pub struct ColorManager {
     /// phải sRGB chuẩn, nên nếu hai bên không dùng **cùng** profile nguồn thì
     /// chênh lệch đo được là chênh lệch profile chứ không phải chất lượng engine.
     rgb: Option<Profile>,
+    rgb_bytes: Option<Arc<[u8]>>,
     intent: RenderIntent,
-    /// LUT sRGB → CMYK, dựng khi lần đầu cần.
-    srgb_lut: RefCell<Option<Arc<Lut3>>>,
-    /// LUT Lab → CMYK.
-    lab_lut: RefCell<Option<Lut3>>,
-    /// LUT cho profile nhúng, khoá bằng hash nội dung profile.
-    embedded_luts: RefCell<HashMap<u64, Option<Arc<Lut3>>>>,
+    luts: Arc<ColorLutCache>,
     /// Fast-path cache con trỏ/độ dài profile nhúng vừa dùng gần nhất để tránh băm lại hàng triệu lần.
     last_embedded: RefCell<Option<(usize, usize, Option<Arc<Lut3>>)>>,
-    /// Profile gray → CMYK dạng bảng 256 ô (1 chiều nên không cần LUT 3D).
-    gray_lut: RefCell<Option<Vec<[f32; 4]>>>,
     /// Bù điểm đen (black point compensation).
     ///
     /// Ảnh hưởng trực tiếp tới lượng mực ở vùng tối và tới tỉ lệ K/CMY, nên phải
@@ -221,10 +226,14 @@ impl ColorManager {
     ) -> PpeResult<Self> {
         let mut cm = ColorManager::from_cmyk_profile(cmyk_path, intent)?;
         if let Some(p) = rgb_path {
-            let rgb = Profile::new_file(p).map_err(|e| {
+            let bytes = std::fs::read(p).map_err(|e| {
                 PpeError::Unsupported(format!("không đọc được ICC RGB '{}': {e}", p.display()))
             })?;
+            let rgb = Profile::new_icc(&bytes).map_err(|e| {
+                PpeError::Unsupported(format!("ICC RGB '{}' không hợp lệ: {e}", p.display()))
+            })?;
             cm.rgb = Some(rgb);
+            cm.rgb_bytes = Some(bytes.into());
         }
         Ok(cm)
     }
@@ -234,12 +243,10 @@ impl ColorManager {
             cmyk,
             cmyk_bytes,
             rgb: None,
+            rgb_bytes: None,
             intent,
-            srgb_lut: RefCell::new(None),
-            lab_lut: RefCell::new(None),
-            embedded_luts: RefCell::new(HashMap::new()),
+            luts: Arc::new(ColorLutCache::default()),
             last_embedded: RefCell::new(None),
-            gray_lut: RefCell::new(None),
             black_point_compensation: true,
         }
     }
@@ -248,14 +255,38 @@ impl ColorManager {
         self.intent
     }
 
+    /// Dựng handle LCMS độc lập từ byte ICC gốc, dùng chung LUT của snapshot.
+    /// Không serialize Profile qua LCMS vì việc chuẩn hóa tag có thể đổi RGB.
+    pub(crate) fn fork_for_render(&self) -> PpeResult<Self> {
+        let cmyk = Profile::new_icc(&self.cmyk_bytes)
+            .map_err(|e| PpeError::Unsupported(format!("không dựng được ICC cho tác vụ: {e}")))?;
+        let rgb = self
+            .rgb_bytes
+            .as_ref()
+            .map(|bytes| Profile::new_icc(bytes))
+            .transpose()
+            .map_err(|e| {
+                PpeError::Unsupported(format!("không dựng được ICC RGB cho tác vụ: {e}"))
+            })?;
+        Ok(Self {
+            cmyk,
+            cmyk_bytes: self.cmyk_bytes.clone(),
+            rgb,
+            rgb_bytes: self.rgb_bytes.clone(),
+            intent: self.intent,
+            luts: self.luts.clone(),
+            last_embedded: RefCell::new(None),
+            black_point_compensation: self.black_point_compensation,
+        })
+    }
+
     /// Bật/tắt bù điểm đen. Xoá mọi LUT đã dựng vì chúng phụ thuộc cờ này.
     pub fn set_black_point_compensation(&mut self, on: bool) {
         if self.black_point_compensation != on {
             self.black_point_compensation = on;
-            self.srgb_lut.replace(None);
-            self.lab_lut.replace(None);
-            self.gray_lut.replace(None);
-            self.embedded_luts.borrow_mut().clear();
+            // Đổi cấu hình tạo namespace LUT mới; job cùng snapshot cũ không
+            // được bị xóa/đổi cache giữa lúc raster.
+            self.luts = Arc::new(ColorLutCache::default());
             self.last_embedded.replace(None);
         }
     }
@@ -291,15 +322,15 @@ impl ColorManager {
 
     /// sRGB → CMYK LUT dạng Arc<Lut3>, dựng một lần cho session/page.
     pub(crate) fn rgb_lut(&self) -> Option<Arc<Lut3>> {
-        let mut slot = self.srgb_lut.borrow_mut();
-        if slot.is_none() {
-            let fallback = Profile::new_srgb();
-            let src = self.rgb.as_ref().unwrap_or(&fallback);
-            *slot = self
-                .build_lut(src, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
-                .map(Arc::new);
-        }
-        slot.clone()
+        self.luts
+            .rgb
+            .get_or_init(|| {
+                let fallback = Profile::new_srgb();
+                let src = self.rgb.as_ref().unwrap_or(&fallback);
+                self.build_lut(src, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
+                    .map(Arc::new)
+            })
+            .clone()
     }
 
     /// sRGB → CMYK.
@@ -310,8 +341,7 @@ impl ColorManager {
 
     /// Lab (L 0..100, a/b −128..127) → CMYK.
     pub fn lab_to_cmyk(&self, l: f32, a: f32, b: f32) -> Option<[f32; 4]> {
-        let mut slot = self.lab_lut.borrow_mut();
-        if slot.is_none() {
+        let slot = self.luts.lab.get_or_init(|| {
             // Điểm trắng D50 — PCS của ICC dùng D50, không phải D65.
             let lab = Profile::new_lab4_context(
                 lcms2::GlobalContext::new(),
@@ -323,10 +353,11 @@ impl ColorManager {
             )
             .ok()?;
             // Lưới LUT chạy 0..1, cần trải về khoảng thật của Lab.
-            *slot = self.build_lut(&lab, PixelFormat::Lab_FLT, |i, j, k| {
+            self.build_lut(&lab, PixelFormat::Lab_FLT, |i, j, k| {
                 [i * 100.0, j * 255.0 - 128.0, k * 255.0 - 128.0]
-            });
-        }
+            })
+            .map(Arc::new)
+        });
         let ln = (l / 100.0).clamp(0.0, 1.0);
         let an = ((a + 128.0) / 255.0).clamp(0.0, 1.0);
         let bn = ((b + 128.0) / 255.0).clamp(0.0, 1.0);
@@ -340,8 +371,7 @@ impl ColorManager {
     /// `DeviceGray` của engine vẫn map thẳng về K (xem `convert::gray_to_cmyk`);
     /// hàm này chỉ dùng cho `ICCBased` 1 kênh, nơi file đã khai rõ ý muốn.
     pub fn gray_to_cmyk(&self, gray: f32) -> Option<[f32; 4]> {
-        let mut slot = self.gray_lut.borrow_mut();
-        if slot.is_none() {
+        let slot = self.luts.gray.get_or_init(|| {
             let gray_profile = Profile::new_gray(
                 &lcms2::CIExyY {
                     x: 0.3457,
@@ -363,12 +393,12 @@ impl ColorManager {
             let src: Vec<f32> = (0..256).map(|i| i as f32 / 255.0).collect();
             let mut dst = vec![[0.0f32; 4]; 256];
             t.transform_pixels(&src, &mut dst);
-            *slot = Some(
+            Some(Arc::from(
                 dst.into_iter()
                     .map(|c| [c[0] / 100.0, c[1] / 100.0, c[2] / 100.0, c[3] / 100.0])
-                    .collect(),
-            );
-        }
+                    .collect::<Vec<_>>(),
+            ))
+        });
         let idx = (gray.clamp(0.0, 1.0) * 255.0).round() as usize;
         slot.as_ref().map(|t| t[idx.min(255)])
     }
@@ -383,13 +413,23 @@ impl ColorManager {
             }
         }
         let key = hash_bytes(profile);
-        let mut cache = self.embedded_luts.borrow_mut();
-        let entry = cache.entry(key).or_insert_with(|| {
-            let p = Profile::new_icc(profile).ok()?;
-            self.build_lut(&p, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
-                .map(Arc::new)
-        });
-        let res = entry.clone();
+        // Không giữ khóa registry khi dựng LUT: profile nhúng khác vẫn được
+        // xử lý song song; chỉ lần khởi tạo cùng key mới chờ chung OnceLock.
+        let entry = self
+            .luts
+            .embedded
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(key)
+            .or_default()
+            .clone();
+        let res = entry
+            .get_or_init(|| {
+                let p = Profile::new_icc(profile).ok()?;
+                self.build_lut(&p, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
+                    .map(Arc::new)
+            })
+            .clone();
         *self.last_embedded.borrow_mut() = Some((ptr, len, res.clone()));
         res
     }
@@ -978,7 +1018,7 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.is_some());
         assert_eq!(
-            cm.embedded_luts.borrow().len(),
+            cm.luts.embedded.lock().unwrap().len(),
             1,
             "phải cache, không dựng lại"
         );
@@ -988,5 +1028,57 @@ mod tests {
     fn hash_distinguishes_different_profiles() {
         assert_ne!(hash_bytes(b"aaaa"), hash_bytes(b"aaab"));
         assert_ne!(hash_bytes(b"aa"), hash_bytes(b"aaaa"));
+    }
+
+    #[test]
+    fn fork_color_handles_share_cold_luts_and_keep_configuration_isolated() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let cmyk = root.join("backend/app/assets/icc/FOGRA39.icc");
+        let rgb = root.join("backend/app/assets/icc/sRGB.icc");
+        for intent in [
+            RenderIntent::Perceptual,
+            RenderIntent::RelativeColorimetric,
+            RenderIntent::Saturation,
+            RenderIntent::AbsoluteColorimetric,
+        ] {
+            let mut owner = ColorManager::from_profiles(&cmyk, Some(&rgb), intent).unwrap();
+            let rgb_bytes = std::fs::read(&rgb).unwrap();
+            let first = owner.fork_for_render().unwrap();
+            let second = owner.fork_for_render().unwrap();
+            assert!(Arc::ptr_eq(&owner.luts, &first.luts));
+            assert!(Arc::ptr_eq(&first.luts, &second.luts));
+            assert!(
+                owner.luts.rgb.get().is_none(),
+                "không dựng LUT khi chưa cần màu đó"
+            );
+            let run = |cm: ColorManager| {
+                let rgb_bytes = rgb_bytes.clone();
+                std::thread::spawn(move || {
+                    (
+                        cm.rgb_to_cmyk(0.2, 0.4, 0.6).unwrap(),
+                        cm.lab_to_cmyk(40.0, -20.0, 10.0).unwrap(),
+                        cm.gray_to_cmyk(0.3).unwrap(),
+                        cm.embedded_to_cmyk(&rgb_bytes, 0.2, 0.4, 0.6).unwrap(),
+                        cm.rgb_lut().unwrap(),
+                    )
+                })
+            };
+            let first = run(first);
+            let second = run(second);
+            let a = first.join().unwrap();
+            let b = second.join().unwrap();
+            assert_eq!((&a.0, &a.1, &a.2, &a.3), (&b.0, &b.1, &b.2, &b.3));
+            assert!(
+                Arc::ptr_eq(&a.4, &b.4),
+                "hai job cold phải chỉ dựng một LUT"
+            );
+            assert!(Arc::ptr_eq(&a.4, &owner.rgb_lut().unwrap()));
+            assert_eq!(owner.luts.embedded.lock().unwrap().len(), 1);
+            let old = owner.fork_for_render().unwrap();
+            owner.set_black_point_compensation(false);
+            assert!(!Arc::ptr_eq(&owner.luts, &old.luts));
+            assert_eq!(old.rgb_to_cmyk(0.2, 0.4, 0.6).unwrap(), a.0);
+            assert!(!owner.fork_for_render().unwrap().black_point_compensation);
+        }
     }
 }

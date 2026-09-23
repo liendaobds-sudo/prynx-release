@@ -10,6 +10,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -592,9 +593,10 @@ impl ProfileConfig {
     }
 }
 
-/// Session sở hữu document và cache resource cho nhiều lần render tuần tự.
+/// Session sở hữu snapshot tài liệu; API cũ vẫn tuần tự, job chuẩn bị được phép
+/// raster ngoài khóa owner qua `prepare_page_render`.
 pub struct RenderSession {
-    document: Option<Document>,
+    document: Option<Arc<Document>>,
     source_path: Option<PathBuf>,
     identity: SessionIdentity,
     pages: Vec<Arc<PageDescriptor>>,
@@ -605,6 +607,143 @@ pub struct RenderSession {
     color_manager: Option<ColorManager>,
     generation: u64,
     valid: bool,
+    snapshot_retired: Arc<AtomicBool>,
+}
+
+/// PERF (audit 2026-09-23 §R23.02): tác vụ sở hữu snapshot bất biến, không giữ
+/// Mutex của session. Chỉ raster/ICC handle thuộc riêng job; Document, PageProgram
+/// và cache resource cùng generation được dùng chung, không mở/parse lại PDF.
+pub struct PreparedPageRender {
+    document: Arc<Document>,
+    descriptor: Arc<PageDescriptor>,
+    resource_cache: SharedResourceCache,
+    color_manager: Option<ColorManager>,
+    source_path: Option<PathBuf>,
+    profile_config: Option<ProfileConfig>,
+    identity: SessionIdentity,
+    snapshot_retired: Arc<AtomicBool>,
+    dpi: f32,
+    which_box: PageBox,
+    opts: RenderOptions,
+    clip: Option<RasterClip>,
+    timings: SessionRenderTimings,
+}
+
+impl PreparedPageRender {
+    /// Kiểm lại khi nhận kết quả bất đồng bộ, trước khi publish/cache bitmap.
+    pub fn ensure_current(&self) -> PpeResult<()> {
+        self.opts.check_cancelled()?;
+        if self.snapshot_retired.load(Ordering::Acquire)
+            || snapshot_is_stale(
+                self.source_path.as_deref(),
+                self.profile_config.as_ref(),
+                &self.identity,
+            )
+        {
+            return Err(PpeError::OpenFailed(
+                "snapshot PDF/profile của tác vụ đã hết hiệu lực".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn identity(&self) -> &SessionIdentity {
+        &self.identity
+    }
+
+    fn raster(&self) -> PpeResult<PageRender> {
+        render_page_descriptor(
+            &self.document,
+            &self.descriptor,
+            self.dpi,
+            self.which_box,
+            self.opts.clone(),
+            self.color_manager.as_ref(),
+            self.clip,
+            Some(self.resource_cache.clone()),
+        )
+    }
+
+    pub fn render_ink(&self) -> PpeResult<(PageRender, SessionRenderTimings)> {
+        let mut timings = self.timings;
+        let started = Instant::now();
+        self.ensure_current()?;
+        timings.resource += started.elapsed();
+        let started = Instant::now();
+        let rendered = self.raster()?;
+        timings.raster += started.elapsed();
+        let started = Instant::now();
+        self.ensure_current()?;
+        timings.resource += started.elapsed();
+        Ok((rendered, timings))
+    }
+
+    pub fn render_srgb(&self) -> PpeResult<(SrgbPageRender, SessionRenderTimings)> {
+        let mut timings = self.timings;
+        let started = Instant::now();
+        self.ensure_current()?;
+        let manager = self
+            .color_manager
+            .as_ref()
+            .ok_or_else(|| PpeError::Unsupported("tác vụ soft-proof cần profile CMYK".into()))?;
+        timings.resource += started.elapsed();
+        let started = Instant::now();
+        let rendered = self.raster()?;
+        timings.raster += started.elapsed();
+        self.opts.check_cancelled()?;
+        let started = Instant::now();
+        let rgb = rendered
+            .buffer
+            .to_srgb_with_cancel_and_settings(
+                manager,
+                self.opts.cancellation_token(),
+                self.opts.softproof_settings(),
+            )?
+            .ok_or_else(|| PpeError::Unsupported("không quy được mực sang sRGB".into()))?;
+        timings.color += started.elapsed();
+        let started = Instant::now();
+        self.ensure_current()?;
+        timings.resource += started.elapsed();
+        Ok((
+            SrgbPageRender {
+                width: rendered.buffer.width(),
+                height: rendered.buffer.height(),
+                rgb,
+                rotate: rendered.rotate,
+                warnings: rendered.warnings,
+            },
+            timings,
+        ))
+    }
+}
+
+fn snapshot_is_stale(
+    source_path: Option<&Path>,
+    profile_config: Option<&ProfileConfig>,
+    identity: &SessionIdentity,
+) -> bool {
+    if let Some(path) = source_path {
+        if !FileStamp::read_canonical(path)
+            .is_ok_and(|stamp| DocumentIdentity::from_stamp(&stamp) == identity.document)
+        {
+            return true;
+        }
+    }
+    profile_config.is_some_and(|profile| {
+        identity
+            .profile
+            .as_ref()
+            .map_or(true, |identity| profile.is_stale(identity))
+    })
+}
+
+impl Drop for RenderSession {
+    fn drop(&mut self) {
+        self.snapshot_retired.store(true, Ordering::Release);
+        if let Ok(mut cache) = self.resource_cache.lock() {
+            cache.set_budget_bytes(0);
+        }
+    }
 }
 
 impl RenderSession {
@@ -753,7 +892,7 @@ impl RenderSession {
         pages: Vec<Arc<PageDescriptor>>,
     ) -> Self {
         Self {
-            document: Some(document),
+            document: Some(Arc::new(document)),
             source_path,
             identity: SessionIdentity {
                 document: document_identity,
@@ -768,6 +907,7 @@ impl RenderSession {
             color_manager,
             generation: 1,
             valid: true,
+            snapshot_retired: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -808,22 +948,28 @@ impl RenderSession {
 
     /// Trả `true` nếu file nguồn đã đổi metadata từ lúc mở session.
     pub fn is_stale(&self) -> bool {
-        let Some(path) = &self.source_path else {
-            return false;
+        snapshot_is_stale(
+            self.source_path.as_deref(),
+            self.profile_config.as_ref(),
+            &self.identity,
+        )
+    }
+
+    fn retire_resource_snapshot(&mut self) {
+        self.snapshot_retired.store(true, Ordering::Release);
+        let budget = {
+            let mut cache = self
+                .resource_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let budget = cache.budget_bytes();
+            // Job cũ có thể vừa thoát cache miss. Không cho insert muộn sang
+            // cache mới hoặc giữ cache cũ tăng trở lại sau close/save-over.
+            cache.set_budget_bytes(0);
+            budget
         };
-        let Ok(stamp) = FileStamp::read_canonical(path) else {
-            return true;
-        };
-        if DocumentIdentity::from_stamp(&stamp) != self.identity.document {
-            return true;
-        }
-        let Some(profile) = &self.profile_config else {
-            return false;
-        };
-        self.identity
-            .profile
-            .as_ref()
-            .map_or(true, |identity| profile.is_stale(identity))
+        self.resource_cache = Arc::new(Mutex::new(ResourceCache::new(budget)));
+        self.snapshot_retired = Arc::new(AtomicBool::new(false));
     }
 
     /// Nạp lại file khi save-over. Nếu file mới lỗi, session bị vô hiệu hóa fail-closed.
@@ -894,12 +1040,10 @@ impl RenderSession {
         // Dựng snapshot mới xong hoàn toàn rồi mới thay owner hiện hành. Nếu bắt
         // đúng lúc ứng dụng khác đang ghi dở, request này fail-closed nhưng session
         // cũ vẫn đủ trạng thái để request sau thử refresh lại; không chết vĩnh viễn.
-        if let Ok(mut cache) = self.resource_cache.lock() {
-            cache.clear();
-        }
+        self.retire_resource_snapshot();
         self.page_hits = 0;
         self.page_misses = 0;
-        self.document = Some(document);
+        self.document = Some(Arc::new(document));
         self.pages = pages;
         self.identity.document = DocumentIdentity::from_stamp(&stamp);
         self.identity.profile = profile_identity;
@@ -909,7 +1053,8 @@ impl RenderSession {
         Ok((true, timings))
     }
 
-    /// Đóng session ngay lập tức và thả Document/cache.
+    /// Đóng owner, vô hiệu hóa job cũ và thu cache. Document/resource còn đang
+    /// được job pin chỉ được giải phóng khi job đó kết thúc, tránh use-after-free.
     pub fn close(&mut self) {
         self.invalidate();
     }
@@ -919,18 +1064,70 @@ impl RenderSession {
         self.document.take();
         self.color_manager.take();
         self.pages.clear();
-        if let Ok(mut cache) = self.resource_cache.lock() {
-            cache.clear();
-        }
+        self.retire_resource_snapshot();
         self.page_hits = 0;
         self.page_misses = 0;
         self.valid = false;
         self.generation = self.generation.saturating_add(1);
     }
 
-    /// Chuyển session thành owner dùng chung; Mutex serialize đúng một renderer.
+    /// Chuyển session thành owner dùng chung. API render cũ giữ khóa cả raster;
+    /// API prepare mới chỉ cần khóa khi lấy snapshot.
     pub fn into_shared(self) -> SharedRenderSession {
         Arc::new(Mutex::new(self))
+    }
+
+    /// Chuẩn bị dưới khóa owner, rồi nhả khóa trước raster/encode. Job không tự
+    /// refresh sang revision khác: caller phải bỏ kết quả stale và lấy job mới.
+    pub fn prepare_page_render(
+        &mut self,
+        page_number: usize,
+        dpi: f32,
+        which_box: PageBox,
+        opts: RenderOptions,
+        clip: Option<RasterClip>,
+    ) -> PpeResult<PreparedPageRender> {
+        opts.check_cancelled()?;
+        let (_, mut timings) = self.refresh_if_changed_timed()?;
+        let started = Instant::now();
+        let descriptor = page_number
+            .checked_sub(1)
+            .and_then(|index| self.pages.get(index))
+            .filter(|page| page.number == page_number)
+            .cloned();
+        let Some(descriptor) = descriptor else {
+            self.page_misses = self.page_misses.saturating_add(1);
+            return Err(PpeError::PageOutOfRange {
+                requested: page_number,
+                total: self.pages.len(),
+            });
+        };
+        self.page_hits = self.page_hits.saturating_add(1);
+        timings.resource += started.elapsed();
+        let started = Instant::now();
+        let color_manager = self
+            .color_manager
+            .as_ref()
+            .map(ColorManager::fork_for_render)
+            .transpose()?;
+        timings.color += started.elapsed();
+        let job = PreparedPageRender {
+            document: self.document.as_ref().expect("session hợp lệ").clone(),
+            descriptor,
+            resource_cache: self.resource_cache.clone(),
+            color_manager,
+            source_path: self.source_path.clone(),
+            profile_config: self.profile_config.clone(),
+            identity: self.identity.clone(),
+            snapshot_retired: self.snapshot_retired.clone(),
+            dpi,
+            which_box,
+            opts,
+            clip,
+            timings,
+        };
+        job.ensure_current()?;
+        Ok(job)
     }
 
     pub fn render_page(
@@ -1114,3 +1311,53 @@ impl RenderSession {
 }
 
 pub type SharedRenderSession = Arc<Mutex<RenderSession>>;
+
+#[cfg(test)]
+mod prepared_snapshot_tests {
+    use super::*;
+    use lopdf::{dictionary, Object, Stream};
+
+    #[test]
+    fn jobs_share_document_page_program_and_one_resource_budget() {
+        let mut doc = Document::with_version("1.7");
+        let pages = doc.new_object_id();
+        let stream = doc.add_object(Stream::new(dictionary! {}, b"0 g 0 0 10 10 re f".to_vec()));
+        let page = doc.add_object(dictionary! { "Type" => "Page", "Parent" => pages,
+        "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()], "Contents" => stream });
+        doc.set_object(pages, dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1 });
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        doc.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        let mut owner = RenderSession::open_mem(&bytes, None)
+            .unwrap()
+            .with_resource_cache_budget(1024);
+        let a = owner
+            .prepare_page_render(1, 72.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+            .unwrap();
+        let b = owner
+            .prepare_page_render(1, 144.0, PageBox::Crop, RenderOptions::ink_accurate(), None)
+            .unwrap();
+        assert!(Arc::ptr_eq(owner.document.as_ref().unwrap(), &a.document));
+        assert!(
+            Arc::ptr_eq(&a.document, &b.document),
+            "không clone cây object PDF"
+        );
+        assert!(Arc::ptr_eq(&a.descriptor, &b.descriptor));
+        assert!(Arc::ptr_eq(&a.descriptor.program, &b.descriptor.program));
+        assert!(Arc::ptr_eq(&a.resource_cache, &b.resource_cache));
+        assert!(Arc::ptr_eq(&owner.resource_cache, &a.resource_cache));
+        owner.set_resource_cache_budget(512);
+        assert_eq!(b.resource_cache.lock().unwrap().budget_bytes(), 512);
+        a.render_ink().unwrap();
+        assert!(b.descriptor.program.get().is_some());
+        owner.close();
+        assert_eq!(
+            a.resource_cache.lock().unwrap().budget_bytes(),
+            0,
+            "job cũ không được insert lại resource sau khi thu owner"
+        );
+        assert!(!Arc::ptr_eq(&owner.resource_cache, &a.resource_cache));
+        assert!(a.ensure_current().is_err());
+    }
+}
