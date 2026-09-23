@@ -479,3 +479,9 @@ cargo build --release --offline --example perf_profile --features perf-probe
 - `ThumbnailView` giữ placeholder cho card ngoài viewport bằng `IntersectionObserver` (`rootMargin: 480px`), chỉ sau khi intersect mới probe native và tạo `tile.localhost`. Khi Home inactive, component vẫn tháo nội dung thumbnail; reset trạng thái được defer qua timer để không tạo render dây chuyền trong effect.
 - Fallback môi trường không có `IntersectionObserver` vẫn tải bình thường; file mất/quyền/Office giữ nguyên trạng thái placeholder cũ. Không đổi DPI, URL contract hoặc đường đọc full PDF.
 - Verify: `ThumbnailView.test.tsx` **6/6 pass**, `npm run typecheck` xanh, ESLint hai file xanh. Đây là gate source-level; chưa tuyên bố P95 WebView vì không dùng Performance panel/UI runtime trong lượt này.
+
+## Lô 43 — Hoãn warm-up chunk nặng và giảm paint catalog Home
+
+- `scheduleWarmupPdfjs` giữ nguyên policy RAM (máy mạnh không bị hạ worker/chất lượng), nhưng chuyển preload chunk workspace sang timer **8 giây** và pdf.js sang **10 giây** sau idle. Nếu tab bị hủy trước đó, cả timer đều được dọn; mở file sớm sẽ lazy-load theo nhu cầu thật thay vì tranh main-thread ngay sau splash.
+- Catalog Home đổi `transition-all` thành `transition-colors`; danh sách tool dùng `content-visibility:auto` + intrinsic size để browser bỏ qua layout/paint card ngoài viewport. Không đổi registry, thứ tự tool, thao tác favorite hoặc routing.
+- Verify: Vitest warmup/Home/system integrations **29/29 pass**, ESLint `HomeTab.tsx`/`pdfWarmup.ts` xanh, `npm run typecheck` xanh. Chưa có Performance panel runtime nên chưa gán P95 startup/cuộn menu; đây là giảm fan-out source-level có rollback rõ.
