@@ -358,3 +358,22 @@ cargo build --release --offline --example perf_profile --features perf-probe
 - Giữ nguyên PPE-only/rejection/pending, pixel coverage, stable-frame và deadline. Không đổi dữ liệu báo cáo lô trước. Không quan sát liên tục mọi thay đổi state trong drain; đây không phải bảo đảm phát hiện mọi dạng can thiệp ngoại lai.
 - `node --check` và self-test cả PPE-only/hybrid đạt: ca đúng, sai trang/vị trí/xoay/zoom, drift sau frame, input xen ngang, mất probe, privacy, listener cleanup và không tràn số đếm sang lượt kế. Đây là verify tự động, **chưa chạy lại runtime/P95** sau thay đổi harness.
 - Công cụ Computer Use trả `Computer Use was not approved to use PrynX` khi xin quan sát cửa sổ; không tiếp tục thao tác app qua công cụ khác. Cần được cấp quyền lại trước lượt tự động điều khiển/đo UI kế tiếp. Không kill/restart các process dev ở bước này.
+
+## Lô 32 — Thu gọn chương trình bất biến để giảm eviction Form
+
+- Trong lúc quyền UI còn thiếu, chỉ đo process lõi độc lập và kiểm thử; không điều khiển, kill hay thay binary của app đang chạy. Probe dùng PPE session thật: trang 1 @92 DPI → hai vòng trang 1–5 @24 DPI trên file khách. Đây là bằng chứng cho retained resource, **không phải benchmark sidebar**, vì sidebar vẫn gọi PDFium.
+- Baseline: cache Form trang 1 **179.687 MB**; cuối chuỗi 512 MiB cache có **36 Form misses/19 evictions**, chỉ 6 hits. Trace source tới `lopdf` tokenizer và test đỏ xác nhận lệnh `q` không có operand vẫn giữ capacity **4**; capacity tăng trưởng này tiếp tục nằm trong chương trình bất biến.
+- `PageProgram` giữ mảng operator bằng `Box<[Operation]>`; operand Vec của mỗi lệnh chuyển qua boxed slice rồi về Vec có capacity đúng len. Không đổi tokenizer, thứ tự/giá trị operand, inline image, warning, resource scope, DPI, ngân sách cache hoặc worker. Bộ đếm RAM tiếp tục tính vùng sở hữu thật, không hạ số kế toán để giả vờ tiết kiệm.
+- Sau sửa, cache Form trang 1 **102.169 MB** (giảm **43,1%**). Toàn chuỗi giữ **419.988 MB** trong cùng budget 512 MiB; cuối chuỗi **24 Form hits/18 misses/0 evictions**. Kết quả trước/sau ở 8 chuỗi lõi (**88 render**) khớp dimensions/checksum/cờ soundness; 11 render qua binding mới cũng khớp SHA256 RGB và warning với native trước sửa.
+- Đo process độc lập theo thứ tự **ABBA**, cùng file/options/budget: peak working set quan sát **1056,8–1057,3 → 1009,5–1010,0 MiB**; peak private **1064,0 → 1009,1–1010,8 MiB**. Lấy mẫu danh nghĩa 25ms, không phải peak toàn cây app hoặc đỉnh tuyệt đối giữa các mẫu.
+
+| Chỉ số lõi trong ABBA | Trước | Sau |
+|---|---:|---:|
+| Trang 1 @92 DPI cold | 1501–1530 ms | 1533–1536 ms |
+| Trang 1 @24 DPI quay lại sau 5 trang | 329–334 ms | 194–198 ms |
+| Trang 4 @24 DPI vòng hai | 387–401 ms | 266–275 ms |
+
+- Không giấu trade-off: cold có chi phí thu gọn, khoảng **0,2–2,3%** trong cặp control này; probe đầu riêng tăng khoảng 5,2%. Đây là ít mẫu, chưa phải P95. Thử Rayon=1/render1536/cache64 MiB giữ pixel, peak RAM giảm tương tự; cold **3292,8 → 3296,8 ms**, warm gần như ngang nhau vì cache nhỏ vẫn phải giải mã lại. Không đại diện máy RAM thấp vật lý.
+- Verify: Rust mặc định **741 passed/5 manual benchmarks ignored**, profiler **742/5**; benchmark mới thuộc nhóm ignored nhưng đã chạy tường minh ở trên. Consumer Page/Form/Pattern/Type3/text/inline image và các đường màu/transparency nằm trong toàn bộ suite, không cập nhật snapshot.
+- Wheel native dev được build vào `.tmp` rồi cài **chỉ vào thư mục staging**; pytest assert đúng đường PYD trước khi chạy. Backend/native/facade/session/memory/overprint **118 passed**, một warning Pydantic có sẵn. Hash PYD đang cài và Tauri EXE vẫn giữ nguyên của lô 30; chưa đưa lô 32 vào app đang chạy.
+- Dữ liệu đầy đủ, cả lượt nhiễu và provenance: `docs/audit/ppe_program_compaction_2026-09-23.json`. Còn phải nối thumbnail với đúng session/lane/profile và đo UI/P95 khi có quyền; không đánh dấu shared-thumbnail, toàn kiến trúc hay nghiệm thu bản cài là xong.

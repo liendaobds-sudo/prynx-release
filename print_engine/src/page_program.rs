@@ -29,7 +29,7 @@ impl FormProgram {
 /// Content stream trang sau pha bóc ảnh nội tuyến và tokenize operator.
 #[derive(Debug)]
 pub struct PageProgram {
-    operations: Vec<Operation>,
+    operations: Box<[Operation]>,
     inline_images: Vec<Object>,
     failed_inline_images: u32,
     source_bytes: usize,
@@ -43,8 +43,16 @@ impl PageProgram {
         let extracted = extract_inline_images(data);
         let content = Content::decode(&extracted.data)
             .map_err(|error| PpeError::ContentStream(format!("{error}")))?;
+        // PERF (audit 2026-09-23 §R23.PROGRAM): tokenizer cấp tối thiểu 4 slot
+        // operand kể cả q/Q không có operand. Chương trình đã bất biến nên nhả
+        // capacity tăng trưởng trước khi giữ trong cache; không đổi token/giá trị.
+        let mut operations = content.operations.into_boxed_slice();
+        for operation in &mut operations {
+            operation.operands = std::mem::take(&mut operation.operands)
+                .into_boxed_slice().into_vec();
+        }
         Ok(Self {
-            operations: content.operations,
+            operations,
             inline_images: extracted.images,
             failed_inline_images: extracted.failed,
             source_bytes: data.len(),
@@ -67,7 +75,7 @@ impl PageProgram {
     pub(crate) fn memory_bytes(&self) -> usize {
         let operations = self.operations.iter().fold(
             self.operations
-                .capacity()
+                .len()
                 .saturating_mul(std::mem::size_of::<Operation>()),
             |total, op| {
                 total
@@ -141,6 +149,69 @@ fn object_heap_bytes(object: &Object) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_program_releases_operand_capacity_without_changing_tokens() {
+        let data = b"q 1 2 m 3 4 l 1 2 3 4 5 6 c h f Q /Spot cs [(text) -12.5] TJ\n".repeat(127);
+        let expected = Content::decode(&data).unwrap().encode().unwrap();
+        let program = PageProgram::compile(&data).unwrap();
+        assert_eq!(Content { operations: program.operations() }.encode().unwrap(), expected);
+        for op in program.operations() {
+            assert_eq!(op.operands.capacity(), op.operands.len(),
+                "operator {} còn giữ slot operand chưa dùng", op.operator);
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark thủ công cần PRYNX_THUMB_SESSION_BENCH_PDF"]
+    fn benchmark_session_thumbnail_sequence_real_pdf() {
+        use std::path::Path;
+        use std::sync::Arc;
+        use std::time::Instant;
+        use crate::color::RenderIntent;
+        use crate::content::RenderOptions;
+        use crate::oc::OptionalContentUsage;
+        use crate::page::PageBox;
+        use crate::RenderSession;
+
+        let path = std::env::var("PRYNX_THUMB_SESSION_BENCH_PDF").expect("thiếu PDF probe");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let profile = root.join("backend/app/assets/icc/FOGRA39.icc");
+        let font = Arc::new(std::fs::read(root.join("backend/app/assets/fonts/DejaVuSans.ttf")).unwrap());
+        let cache_mib: usize = std::env::var("PRYNX_THUMB_SESSION_BENCH_CACHE_MIB")
+            .unwrap_or_else(|_| "512".into()).parse().unwrap();
+        let render_mib: usize = std::env::var("PRYNX_THUMB_SESSION_BENCH_RENDER_MIB")
+            .unwrap_or_else(|_| "4096".into()).parse().unwrap();
+        let opened = Instant::now();
+        let mut session = RenderSession::open_with_profile_paths(&path, Some(&profile), None,
+            RenderIntent::RelativeColorimetric).unwrap()
+            .with_resource_cache_budget(cache_mib.checked_mul(1024 * 1024).unwrap());
+        let open_ms = opened.elapsed().as_secs_f64() * 1000.0;
+        let sequence = std::iter::once((1, 92.0))
+            .chain((0..2).flat_map(|_| (1..=session.page_count()).map(|page| (page, 24.0))))
+            .collect::<Vec<_>>();
+        let mut samples = Vec::new();
+        for (page, dpi) in sequence {
+            let started = Instant::now();
+            let (rendered, timing) = session.render_page_srgb_region_timed(page, dpi, PageBox::Crop,
+                RenderOptions::softproof().with_overprint_simulation(false)
+                    .with_optional_content_usage(OptionalContentUsage::View).with_annotations(true)
+                    .with_fallback_font(Arc::clone(&font))
+                    .with_memory_budget_bytes(render_mib.checked_mul(1024 * 1024).unwrap()), None).unwrap();
+            let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let checksum = rendered.rgb.iter().fold(0_u64, |sum, byte|
+                sum.wrapping_mul(16777619).wrapping_add(u64::from(*byte)));
+            let stats = session.resource_cache_stats();
+            samples.push(format!(
+                "{{\"page\":{page},\"dpi\":{dpi},\"width\":{},\"height\":{},\"checksum_decimal\":\"{checksum}\",\"wall_ms\":{wall_ms:.3},\"raster_ms\":{:.3},\"color_ms\":{:.3},\"ink_unsound\":{},\"degraded\":{},\"cache_bytes\":{},\"form_hits\":{},\"form_misses\":{},\"form_evictions\":{},\"image_hits\":{},\"image_misses\":{}}}",
+                rendered.width, rendered.height, timing.raster.as_secs_f64() * 1000.0,
+                timing.color.as_secs_f64() * 1000.0, rendered.warnings.ink_unsound(),
+                rendered.warnings.degrades_accuracy(), stats.bytes, stats.form_hits,
+                stats.form_misses, stats.form_evictions, stats.image_hits, stats.image_misses));
+        }
+        eprintln!("THUMB_SESSION_PROBE {{\"open_ms\":{open_ms:.3},\"cache_mib\":{cache_mib},\"render_mib\":{render_mib},\"samples\":[{}]}}", samples.join(","));
+        session.close();
+    }
 
     #[test]
     fn program_memory_accounts_for_dictionary_slots_and_inline_payloads() {
