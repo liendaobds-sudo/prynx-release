@@ -1728,6 +1728,8 @@ impl<'a> Renderer<'a> {
         stroke: Option<bool>,
         resources: Option<&Dictionary>,
     ) -> PpeResult<()> {
+        #[cfg(feature = "perf-probe")]
+        let _path_span = crate::perf_probe::span(crate::perf_probe::END_PATH);
         let built = std::mem::take(&mut path.builder).finish();
         let pending_clip = path.pending_clip.take();
         let had_segments = path.has_segments;
@@ -1818,6 +1820,8 @@ impl<'a> Renderer<'a> {
                         && (self.opts.device_scale >= CONSERVATIVE_OPAQUE_ONLY_BELOW_SCALE
                             || opaque_paint)
                         && needs_conservative_vector_edge(dev, raster.width(), raster.height());
+                    #[cfg(feature = "perf-probe")]
+                    let coverage_span = crate::perf_probe::span(crate::perf_probe::COVERAGE);
                     let coverage = if conservative {
                         raster.fill_path_conservative(
                             dev,
@@ -1836,8 +1840,12 @@ impl<'a> Renderer<'a> {
                             stack.current().clip_region,
                         )
                     };
+                    #[cfg(feature = "perf-probe")]
+                    drop(coverage_span);
                     if let Some(cov) = coverage {
                         let cov_region = cov.region;
+                        #[cfg(feature = "perf-probe")]
+                        let _composite_span = crate::perf_probe::span(crate::perf_probe::COMPOSITE);
                         buffer.composite_region(cov.data, cov.region, &paint)?;
                         if paint.alpha > 0.0 {
                             *paint_serial = paint_serial.wrapping_add(1);
@@ -1923,6 +1931,8 @@ impl<'a> Renderer<'a> {
                     // và hạ đỉnh (banner: −2.1 → −5.1 điểm khi bật).
                     let conservative = !self.opts.anti_alias
                         && self.opts.device_scale >= CONSERVATIVE_OPAQUE_ONLY_BELOW_SCALE;
+                    #[cfg(feature = "perf-probe")]
+                    let coverage_span = crate::perf_probe::span(crate::perf_probe::COVERAGE);
                     let coverage = if conservative {
                         raster.fill_path_conservative(
                             &outline,
@@ -1941,8 +1951,12 @@ impl<'a> Renderer<'a> {
                             stack.current().clip_region,
                         )
                     };
+                    #[cfg(feature = "perf-probe")]
+                    drop(coverage_span);
                     if let Some(cov) = coverage {
                         let cov_region = cov.region;
+                        #[cfg(feature = "perf-probe")]
+                        let _composite_span = crate::perf_probe::span(crate::perf_probe::COMPOSITE);
                         buffer.composite_region(cov.data, cov.region, &paint)?;
                         if paint.alpha > 0.0 {
                             *paint_serial = paint_serial.wrapping_add(1);
@@ -2025,6 +2039,8 @@ impl<'a> Renderer<'a> {
 
     /// Quy màu hiện hành về mực. `Ok(None)` = không vẽ (colorant `/None`, pattern).
     fn make_paint(&mut self, stack: &mut StateStack, stroke: bool) -> PpeResult<Option<InkPaint>> {
+        #[cfg(feature = "perf-probe")]
+        let _color_span = crate::perf_probe::span(crate::perf_probe::PAINT_COLOR);
         let gs = stack.current();
         let (cs, comps, alpha, overprint) = if stroke {
             (

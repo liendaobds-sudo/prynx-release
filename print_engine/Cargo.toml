@@ -12,6 +12,10 @@ license = "MIT"
 name = "print_engine"
 crate-type = ["rlib"]
 
+[features]
+# PERF: chỉ bật khi build profiler; app không trả chi phí đo từng path.
+perf-probe = []
+
 [dependencies]
 # PDF object model / xref / stream decode / content stream tokenizer.
 lopdf = { version = "0.44", default-features = false }

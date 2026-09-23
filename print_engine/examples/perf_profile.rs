@@ -110,10 +110,13 @@ fn parse_budget_mib(
 
 fn stats_json(stats: ResourceCacheStats) -> String {
     format!(
-        "{{\"image_hits\":{},\"image_misses\":{},\"image_evictions\":{},\"page_hits\":{},\"page_misses\":{},\"bytes\":{},\"budget_bytes\":{}}}",
+        "{{\"image_hits\":{},\"image_misses\":{},\"image_evictions\":{},\"form_hits\":{},\"form_misses\":{},\"form_evictions\":{},\"page_hits\":{},\"page_misses\":{},\"bytes\":{},\"budget_bytes\":{}}}",
         stats.image_hits,
         stats.image_misses,
         stats.image_evictions,
+        stats.form_hits,
+        stats.form_misses,
+        stats.form_evictions,
         stats.page_hits,
         stats.page_misses,
         stats.bytes,
@@ -293,6 +296,8 @@ fn main() {
     let mut last_png_len = 0usize;
     let mut baseline_render_signature: Option<(u32, u32, usize, usize, u64)> = None;
     for iteration in 0..repeats {
+        #[cfg(feature = "perf-probe")]
+        print_engine::perf_probe::reset();
         let current_identity = file_identity(path)
             .unwrap_or_else(|error| panic!("không kiểm tra được revision PDF: {error}"));
         if current_identity != source_identity {
@@ -333,8 +338,14 @@ fn main() {
             _ => {}
         }
         let total_wall_ms = elapsed_ms(total_started);
+        #[cfg(feature = "perf-probe")]
+        let details = format!("{{\"inclusive\":true,\"stages\":[{}]}}", print_engine::perf_probe::snapshot()
+            .into_iter().map(|(stage, calls, ms)| format!("{{\"stage\":\"{stage}\",\"calls\":{calls},\"ms\":{ms:.3}}}"))
+            .collect::<Vec<_>>().join(","));
+        #[cfg(not(feature = "perf-probe"))]
+        let details = "null";
         samples.push(format!(
-            "{{\"iteration\":{},\"render_wall_ms\":{:.3},\"open_ms\":{:.3},\"parse_ms\":{:.3},\"resource_ms\":{:.3},\"raster_ms\":{:.3},\"color_ms\":{:.3},\"checksum_ms\":{:.3},\"encode_ms\":{:.3},\"total_wall_ms\":{:.3},\"width\":{},\"height\":{},\"rgb_bytes\":{},\"png_bytes\":{},\"cache\":{}}}",
+            "{{\"iteration\":{},\"render_wall_ms\":{:.3},\"open_ms\":{:.3},\"parse_ms\":{:.3},\"resource_ms\":{:.3},\"raster_ms\":{:.3},\"color_ms\":{:.3},\"checksum_ms\":{:.3},\"encode_ms\":{:.3},\"total_wall_ms\":{:.3},\"width\":{},\"height\":{},\"rgb_bytes\":{},\"png_bytes\":{},\"cache\":{},\"raster_detail\":{}}}",
             iteration + 1,
             render_wall_ms,
             duration_ms(timings.open),
@@ -350,6 +361,7 @@ fn main() {
             rendered.rgb.len(),
             png.len(),
             stats_json(cache),
+            details,
         ));
     }
 

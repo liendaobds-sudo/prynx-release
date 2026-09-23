@@ -46,6 +46,60 @@ pub mod session;
 pub mod shading;
 pub mod text;
 
+/// PERF (audit 2026-09-23 §R23.VECTOR): bộ đếm chẩn đoán của một process probe.
+/// Timing là inclusive (end_path chứa color/coverage/composite), không cộng các
+/// nhóm để suy tổng. Không compile vào bản mặc định hoặc tự bật trong app.
+#[cfg(feature = "perf-probe")]
+pub mod perf_probe {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    static NANOS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    static CALLS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    pub const END_PATH: usize = 0;
+    pub const PAINT_COLOR: usize = 1;
+    pub const COVERAGE: usize = 2;
+    pub const COMPOSITE: usize = 3;
+
+    pub struct Span(usize, Instant);
+    pub fn span(stage: usize) -> Span {
+        Span(stage, Instant::now())
+    }
+    impl Drop for Span {
+        fn drop(&mut self) {
+            NANOS[self.0].fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            CALLS[self.0].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn reset() {
+        for counter in NANOS.iter().chain(CALLS.iter()) {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+    pub fn snapshot() -> Vec<(&'static str, u64, f64)> {
+        ["end_path", "paint_color", "coverage", "composite"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| (
+                name,
+                CALLS[i].load(Ordering::Relaxed),
+                NANOS[i].load(Ordering::Relaxed) as f64 / 1_000_000.0,
+            ))
+            .collect()
+    }
+
+    #[test]
+    fn span_records_monotonic_counter_without_changing_stage_layout() {
+        reset();
+        { let _span = span(PAINT_COLOR); }
+        let snapshot = snapshot();
+        assert_eq!(snapshot.len(), 4);
+        assert_eq!(snapshot[PAINT_COLOR].0, "paint_color");
+        assert!(snapshot[PAINT_COLOR].1 >= 1);
+        assert!(snapshot[PAINT_COLOR].2.is_finite() && snapshot[PAINT_COLOR].2 >= 0.0);
+    }
+}
+
 pub use blend::BlendMode;
 pub use cancel::CancelToken;
 pub use color::{ColorSpace, PdfFunction};

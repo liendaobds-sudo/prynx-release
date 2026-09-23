@@ -282,3 +282,30 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 
 - Shell P95 giảm khoảng **52%**, nhưng ảnh nét cold P95 gần như không đổi (**+0,5%**). Không gọi đây là tăng tốc raster. Zoom blank-gap vẫn **0**; cold blank-gap P95 **1009 ms** vì shell mở trước ảnh, khác với khoảng trắng sau một frame đã committed. Không dùng thay đổi FSP lớn để khẳng định ảnh đầu nhanh lên tương ứng vì hạn chế tương quan prime/underlay của harness.
 - Giữ bản vá để giao diện phản hồi sớm hơn; tổng kế hoạch chưa đạt. Phần tiếp theo phải đi vào chi phí dựng bitmap lớn/scene-resource và các gate còn thiếu, không tiếp tục giảm DPI hoặc giấu skeleton để làm đẹp số đo.
+
+## Lô 27 — Profiler lõi vector, bác bỏ nhánh cache ảnh cho trang 1
+
+- Binary profiler cũ từ tháng 8 được bỏ khỏi phép đo; build riêng probe source hiện tại, không build/cài app hay installer. Probe 92 DPI, 3 render cùng session, render budget 4096 MiB/resource cache 512 MiB **chỉ dành cho probe**, không đổi policy app.
+- Baseline lõi: mở/parse **45.4 ms**; raster cold **1820 ms**, warm **1651/1591 ms**; chuyển mực→sRGB **269–308 ms**. PNG proxy trong profiler **không tương đương encoder runtime**.
+- **Đính chính giả thuyết trong lượt này:** liệt kê Image XObject toàn file không đủ chứng minh trang 1 dùng chúng. Trace content từng trang bằng pikepdf cho thấy trang 1 **292041 operator, 6 Form, 0 Image XObject**, khoảng **28910 end_path** trong PPE; ảnh Indexed ở trang 2. Thử nghiệm cache Indexed đạt test fixture nhưng **0 hit** trên trang 1 và không cải thiện thời gian; đã hoàn tác hoàn toàn (kể cả test thử), không đưa vào commit.
+- Thêm feature **`perf-probe`**, mặc định tắt, chỉ đếm thời gian trong build probe; không đổi toán học raster. `perf_profile` xuất `raster_detail` và bổ sung hit/miss Form. Timing các span là **inclusive**, không cộng chúng thành tổng.
+
+Lệnh tái lập (từ `print_engine/`):
+
+```powershell
+cargo build --release --offline --example perf_profile --features perf-probe
+.\target\release\examples\perf_profile.exe "D:\pdfcompare\test\poster retro - Khắc Trung - 0854444414.pdf" 92 3 full 4096 512
+```
+
+| Nhóm (lượt warm thứ hai) | Số lần | Thời gian |
+|---|---:|---:|
+| Toàn pha raster | — | 1600 ms |
+| end_path, gồm các mục bên dưới | 28910 | 830 ms |
+| Tạo màu tô | 28983 | 23 ms |
+| Coverage fill/stroke | 28909 | 194 ms |
+| Composite fill/stroke | 28002 | 597 ms |
+
+- Form cache warm đã hoạt động: 6 rồi 12 hit, tổng 6 miss; khoảng 179.7 MB resource được giữ. Vì thế chưa có bằng chứng cần thay parser hoặc giải mã lại Form là nút thắt chính. Phần ngoài end_path của pha raster (~770 ms) vẫn cần profile tiếp.
+- Probe trước và sau instrumentation đều trả **2173×3622**, 23611818 byte RGB, checksum u64 **`13864267892951180143`**. Output raw chẩn đoán nằm tại `.tmp/customer-vector-profile-92.json` (không phải artifact release/P95).
+- Verify: toàn bộ `cargo test --release --offline` mặc định đạt; bật `perf-probe`: **735 passed, 4 ignored**, không lỗi. Bốn ignored là benchmark thủ công, không bị sửa để pass. Chưa rebuild Tauri/maturin vì lô này chỉ thêm công cụ đo opt-in, chưa đổi kernel mặc định.
+- Hướng lô sau: composite/vector và chi phí thực thi state/path, sau đó đo pixel parity trước khi giữ bản tối ưu. Không tuyên bố app nhanh lên từ lô profiler này.
