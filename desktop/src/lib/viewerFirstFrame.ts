@@ -7,7 +7,10 @@ const MIN_VIEWER_DPI = 24;
 const MAX_VIEWER_DPI = 9600;
 const DEFAULT_PROOF_IDENTITY = 'show:all|paper:0|black:0|background:profile';
 const UNUSED_FRAME_TTL_MS = 60_000;
-export const VIEWER_FIRST_FRAME_GRACE_MS = 250;
+// PERF (audit 2026-09-23 §R23.SHELL): Viewer đã subscribe trạng thái prime
+// và chờ đúng document token; không cần giữ shell thêm 250 ms để thử đoán ready.
+// Nhường một lượt event loop, nhưng không hủy prime và không đổi DPI của frame.
+export const VIEWER_FIRST_FRAME_GRACE_MS = 0;
 
 interface ViewerBootstrapPayload {
   numPages?: unknown;
@@ -417,8 +420,8 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
 }
 
 /**
- * PERF (audit 2026-08-26 §FILE.E2): chỉ nhường một khoảng ngắn cho frame đầu.
- * Hết grace thì Viewer mở ngay; không hủy request để kết quả muộn vẫn vào cache.
+ * Chuyển quyền chờ prime sang Viewer. Mặc định không giữ shell; caller đặc biệt
+ * vẫn có thể truyền grace riêng. Hết grace không hủy request đang dựng/cache.
  */
 export async function waitForViewerFirstFrameGrace(
   request: Promise<unknown>,

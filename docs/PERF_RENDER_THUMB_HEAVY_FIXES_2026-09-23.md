@@ -265,3 +265,20 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 
 - Warm blank-gap **0** ở cả 30 lượt; cold blank-gap P95 **0**, max **308 ms** (có thể thuộc chờ pixel đầu; chưa chứng minh invariant gap sau committed riêng). `complete=true` của artifact chỉ là **baseline 60 lượt này đạt validity/pixel gate**, không có nghĩa đạt chỉ tiêu độ trễ toàn kế hoạch.
 - Còn cần tối ưu: shell gần 1s, cold sharp gần 4.8s P95, warm sharp 1.7s P95; chưa đạt chỉ tiêu trải nghiệm. Shared scene/resource/image và việc chuẩn bị file/shell vẫn phải xử lý theo số đo, không tự chuyển sang renderer khác hoặc hạ chất lượng.
+
+## Lô 26 — Chuyển việc chờ prime sang Viewer, bỏ grace giữ shell
+
+- Trace source bác bỏ giả thuyết chờ hai lần: dispatcher chỉ prime nền; mỗi đường mở trong ImpositionTab chờ grace một lần. Tuy nhiên grace 250 ms luôn hết trước prime ~0,7–1s trên file khách, nên chỉ trì hoãn mở Workspace. Sau lô 23 Viewer đã theo dõi pending/ready/error theo document token và không render prime trùng.
+- Sửa mặc định `VIEWER_FIRST_FRAME_GRACE_MS=0`: nhường một lượt event loop, không hủy request prime; tùy chọn grace tường minh vẫn giữ. Không sửa ImpositionTab đang có thay đổi người dùng, không đổi native/DPI/chất lượng.
+- Test đỏ → xanh: shell được nhả ngay ở timer 0 trong khi prime còn chạy; request vẫn hoàn tất sau đó. Typecheck đạt, lint hai file TS đạt; regression mở rộng **175/175 test, 19 file**.
+- Smoke `viewer_customer_shell_handoff_smoke_2026-09-23.json` **2/2 valid**. Không suy tốc độ từ smoke đầu (shell 1073 ms, có chi phí warmup app/module).
+- Sau smoke, baseline cùng cách đo **30 cold + 30 warm**, `viewer_customer_shell_handoff_60_2026-09-23.json`: **60/60 valid, 0 rejection/display fallback/console/HTTP error**, bitmap cuối **2173×3622**. Hash native và harness không đổi so với lô 25.
+
+| Chỉ số | Lô 25 P50/P95 | Lô 26 P50/P95 |
+|---|---:|---:|
+| Shell cold | 984 / 1058 ms | **415 / 504 ms** |
+| FCVF cold | 4570 / 4821 ms | **4632 / 4846 ms** |
+| FCVF warm zoom | 1164 / 1735 ms | **1169 / 1245 ms** |
+
+- Shell P95 giảm khoảng **52%**, nhưng ảnh nét cold P95 gần như không đổi (**+0,5%**). Không gọi đây là tăng tốc raster. Zoom blank-gap vẫn **0**; cold blank-gap P95 **1009 ms** vì shell mở trước ảnh, khác với khoảng trắng sau một frame đã committed. Không dùng thay đổi FSP lớn để khẳng định ảnh đầu nhanh lên tương ứng vì hạn chế tương quan prime/underlay của harness.
+- Giữ bản vá để giao diện phản hồi sớm hơn; tổng kế hoạch chưa đạt. Phần tiếp theo phải đi vào chi phí dựng bitmap lớn/scene-resource và các gate còn thiếu, không tiếp tục giảm DPI hoặc giấu skeleton để làm đẹp số đo.

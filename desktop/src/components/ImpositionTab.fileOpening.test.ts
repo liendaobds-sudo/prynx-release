@@ -54,6 +54,23 @@ describe('grace cho frame đầu Viewer', () => {
         vi.useRealTimers();
     });
 
+    it('mặc định không giữ shell chờ prime; request vẫn chạy nền sau lượt event loop', async () => {
+        vi.useFakeTimers();
+        let completePrime!: () => void;
+        let primeFinished = false;
+        const request = new Promise<void>(resolve => { completePrime = resolve; })
+            .then(() => { primeFinished = true; });
+        let released = false;
+        const waiting = waitForViewerFirstFrameGrace(request).then(value => { released = true; return value; });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(released).toBe(true);
+        expect(primeFinished).toBe(false);
+        completePrime();
+        await request;
+        expect(await waiting).toBe(false);
+        expect(primeFinished).toBe(true);
+    });
+
     it('trả false khi request vẫn pending hết grace', async () => {
         vi.useFakeTimers();
         const result = waitForViewerFirstFrameGrace(new Promise(() => undefined));
