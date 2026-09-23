@@ -121,6 +121,71 @@ function makeProps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('LiveTile — cold-open màu chính xác', () => {
+    it.each([10, 100])('callback metadata đổi không hủy request cùng pixel (priority %s)', async renderPriority => {
+        let resolveRender!: (source: TileUrlSource) => void;
+        const beforeMetadata = vi.fn(() => new Promise<TileUrlSource>(resolve => { resolveRender = resolve; }));
+        const afterMetadata = vi.fn(() => new Promise<never>(() => {}));
+        const cancelAccurateGroup = vi.fn();
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never);
+        const base = makeProps({
+            pageNum: 2, pageInstanceId: 'prefetch-2', accurateOnly: true,
+            renderPriority, renderOwnerId: 'owner-same-document', cancelAccurateGroup,
+        });
+        const view = render(<LiveTile {...base} getTileUrl={beforeMetadata} />);
+        await waitFor(() => expect(beforeMetadata).toHaveBeenCalledTimes(1));
+        view.rerender(<LiveTile {...base} getTileUrl={afterMetadata} />);
+        await act(async () => { await Promise.resolve(); });
+        expect(cancelAccurateGroup).not.toHaveBeenCalled();
+        expect(afterMetadata).not.toHaveBeenCalled();
+        const bitmap = { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap;
+        await act(async () => { resolveRender({ url: 'blob:metadata-stable', byteLength: 64, bitmap }); });
+        await waitFor(() => expect(drawImage).toHaveBeenCalledWith(bitmap, 0, 0));
+        // Zoom mới là thay đổi pixel thật và phải dùng callback mới nhất.
+        view.rerender(<LiveTile {...base} renderPriority={10} zoom={2} getTileUrl={afterMetadata} />);
+        await waitFor(() => expect(afterMetadata).toHaveBeenCalledTimes(1));
+        expect(afterMetadata).toHaveBeenCalledWith(2, 0, 2, 0, 0, 0, 0,
+            expect.objectContaining({ colorStage: 'accurate' }));
+    });
+
+    it.each(['revision:r2|color:accurate', 'revision:r1|color:accurate|profile:swop'])('đổi pixel identity %s vẫn loại response cũ', async nextIdentity => {
+        let resolveOld!: (source: TileUrlSource) => void;
+        let resolveNew!: (source: TileUrlSource) => void;
+        const before = vi.fn(() => new Promise<TileUrlSource>(resolve => { resolveOld = resolve; }));
+        const after = vi.fn(() => new Promise<TileUrlSource>(resolve => { resolveNew = resolve; }));
+        const cancelAccurateGroup = vi.fn();
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never);
+        const base = makeProps({ accurateOnly: true, renderPriority: 10, cancelAccurateGroup });
+        const view = render(<LiveTile {...base} getTileUrl={before} />);
+        await waitFor(() => expect(before).toHaveBeenCalledTimes(1));
+        view.rerender(<LiveTile {...base} fileKey={`D:\\jobs\\gradient.pdf|${nextIdentity}`} getTileUrl={after} />);
+        await waitFor(() => expect(after).toHaveBeenCalledTimes(1));
+        expect(cancelAccurateGroup).toHaveBeenCalled();
+        const oldBitmap = { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap;
+        const newBitmap = { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap;
+        await act(async () => { resolveOld({ url: 'blob:old-identity', byteLength: 64, bitmap: oldBitmap }); });
+        expect(drawImage).not.toHaveBeenCalledWith(oldBitmap, 0, 0);
+        await act(async () => { resolveNew({ url: 'blob:new-identity', byteLength: 64, bitmap: newBitmap }); });
+        expect(drawImage).toHaveBeenCalledWith(newBitmap, 0, 0);
+    });
+
+    it('bỏ callback render phải hủy request đang chạy; gắn lại phải dùng callback mới', async () => {
+        let resolveOld!: (source: TileUrlSource) => void;
+        const before = vi.fn(() => new Promise<TileUrlSource>(resolve => { resolveOld = resolve; }));
+        const after = vi.fn(() => new Promise<never>(() => {}));
+        const cancelAccurateGroup = vi.fn();
+        const base = makeProps({ accurateOnly: true, renderPriority: 10, cancelAccurateGroup });
+        const view = render(<LiveTile {...base} getTileUrl={before} />);
+        await waitFor(() => expect(before).toHaveBeenCalledTimes(1));
+        view.rerender(<LiveTile {...base} getTileUrl={undefined} />);
+        expect(cancelAccurateGroup).toHaveBeenCalled();
+        await act(async () => { resolveOld({ url: 'blob:removed-builder', byteLength: 64 }); });
+        expect(view.container.querySelector('img')?.getAttribute('src')).not.toBe('blob:removed-builder');
+        view.rerender(<LiveTile {...base} getTileUrl={after} />);
+        await waitFor(() => expect(after).toHaveBeenCalledTimes(1));
+    });
+
     it('observer không được vượt cổng settle và phát DPI trung gian khi đã có prime', async () => {
         vi.useFakeTimers();
         const getTileUrl = vi.fn(() => new Promise<never>(() => {}));

@@ -355,6 +355,9 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const tileUrlBuilderRef = useRef(getTileUrl);
+    tileUrlBuilderRef.current = getTileUrl;
+    const hasTileUrlBuilder = typeof getTileUrl === 'function';
     const [isCanvasActive, setIsCanvasActive] = useState(false);
     const loadAttemptRef = useRef(0);
     const mountedRef = useRef(true);
@@ -825,7 +828,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 traceTileEvent('tile-skip-loaded-request');
                 return;
             }
-            if (!getTileUrl) {
+            // PERF (audit 2026-09-23 §R23.METADATA): callback được tạo lại khi
+            // metadata đến không làm đổi pixel. Giữ request đang chạy theo
+            // fileKey/geometry/owner; request KẾ TIẾP dùng builder mới nhất.
+            const buildTileUrl = tileUrlBuilderRef.current;
+            if (!buildTileUrl) {
                 traceTileEvent('tile-skip-no-url-builder');
                 return;
             }
@@ -886,7 +893,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                     cache,
                     priority: renderPriorityRef.current,
                 });
-                const tileRequest = getTileUrl(pageNum, rot, scale, clipX, clipY, clipW, clipH, {
+                const tileRequest = buildTileUrl(pageNum, rot, scale, clipX, clipY, clipW, clipH, {
                     ownerId: renderOwnerId,
                     groupKey: renderGroupKey,
                     priority: renderPriorityRef.current,
@@ -1242,7 +1249,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, getTileUrl, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceTileEvent, zoom]);
+    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, hasTileUrlBuilder, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceTileEvent, zoom]);
     
     // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
     // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
