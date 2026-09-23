@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "scope": "thumbnail-stress-whole-prynx-process-tree",
+  "fixture": {
+    "name": "thumbnail-stress-1000.pdf",
+    "pages": 1000,
+    "sha256": "41323ab10eaf32f5cdf254bb21c3ef63c494473e8e1f62e8102bd1b0498ac7b8"
+  },
+  "webview": {
+    "initialDomItems": 5,
+    "endDomItems": 5,
+    "endMaxIndex": 999,
+    "passed": true,
+    "report": "docs/audit/thumbnail_stress_1000_rss_2026-09-24.json"
+  },
+  "memory": {
+    "measurementReport": "docs/audit/thumbnail_rss_process_tree_2026-09-24.json",
+    "intervalMs": 50,
+    "durationMs": 29783,
+    "sampleCount": 186,
+    "failedProcessReads": 7,
+    "peakWorkingSetBytes": 1126957056,
+    "peakWorkingSetMiB": 1074.75,
+    "peakPrivateBytes": 700440576,
+    "peakPrivateMiB": 667.992,
+    "peakProcessCount": 25,
+    "complete": true
+  },
+  "limitations": [
+    "Đo trên dev Tauri/WebView, không phải installer release.",
+    "Fixture vector nhẹ; chưa đại diện Standee CMYK/spot hoặc file khách nặng."
+  ]
+}

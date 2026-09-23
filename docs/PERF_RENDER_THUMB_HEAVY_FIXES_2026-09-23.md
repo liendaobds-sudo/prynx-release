@@ -179,3 +179,10 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Smoke 1.000 trang sau commit `aaf9266`: initial/end **5 DOM items**, cuối index **999**.
 - Log bounded theo lượt ghi owner đã băm `thumbnail:c662e6ee`, group `thumbnail:<page>`, pipeline `pdfium-display-png-v1`, trạng thái `ready` cho page 1–5 và 997–1000; sample page 1 **123 ms**, page 1000 **42 ms**.
 - Native log đồng thời ghi `RENDER_WORKER_AFFINITY action=hit`, document hash `cf76f3f65634`, lane `background:2`.
+
+## Lô 17 — Peak RSS toàn cây thumbnail
+
+- Report: `docs/audit/thumbnail_rss_runtime_2026-09-24.json` và stress output `docs/audit/thumbnail_stress_1000_rss_2026-09-24.json`.
+- Dùng `scripts/measure_process_tree_memory.ps1`, lấy mẫu đồng thời 50 ms trong toàn cây PrynX: **186 mẫu / 29,783 ms**, peak working set **1.074,75 MiB**, peak private **667,99 MiB**, tối đa **25 process**.
+- Cùng lượt vẫn đạt virtualizer gate: **5 DOM items** đầu/cuối, cuối index **999**.
+- Đây là gate RSS dev WebView đầu tiên; release/installer và corpus PDF nặng vẫn là cổng riêng chưa đóng.

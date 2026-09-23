@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scope": "whole-application-process-tree-same-instant-sampling",
+  "rootProcessId": 21420,
+  "stopWhenProcessIdExits": 21420,
+  "intervalMs": 50,
+  "durationMs": 29783,
+  "sampleCount": 186,
+  "failedProcessReads": 7,
+  "peakWorkingSetBytes": 1126957056,
+  "peakWorkingSetMiB": 1074.75,
+  "peakPrivateBytes": 700440576,
+  "peakPrivateMiB": 667.992,
+  "peakProcessCount": 25,
+  "complete": true
+}
