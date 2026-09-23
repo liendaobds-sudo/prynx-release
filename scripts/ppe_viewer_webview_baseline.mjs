@@ -631,14 +631,36 @@ async function resetIpcTrace(page) {
   if (trace.viewerConfig) trace.viewerConfig.validatedResetSequence = trace.resetSequence;
 }
 
-async function readIpcTrace(page) {
-  const trace = ipcTraceByPage.get(page);
-  if (!trace) throw new Error('IPC trace chưa được cài.');
-  await waitForIpcTraceIdle(trace);
+function snapshotIpcTrace(trace) {
   return {
     resetSequence: trace.resetSequence,
     viewerConfig: trace.viewerConfig ? { ...trace.viewerConfig } : null,
     calls: trace.calls.map((call) => ({ ...call })),
+  };
+}
+
+async function collectTransitionIpcEvidence(trace, deadline) {
+  if (!trace) throw new Error('IPC trace chưa được cài.');
+  // PERF (audit 2026-09-23 §R23.ZOOM-MEASURE): FCVF là mốc viewport đã nét,
+  // không phải mốc mọi prefetch hoàn tất. Chụp trạng thái ở mốc đó rồi drain
+  // bằng PHẦN CÒN LẠI của deadline 60s, không cộng 5s timeout ngoài cửa sổ đo.
+  const atFrame = snapshotIpcTrace(trace);
+  const started = performance.now();
+  const budgetMs = Math.max(0, deadline - started);
+  let error = null;
+  try { await waitForIpcTraceIdle(trace, budgetMs); }
+  catch (cause) { error = sanitizeReportText(cause); }
+  return {
+    atFrame,
+    afterDrain: snapshotIpcTrace(trace),
+    drain: {
+      complete: error === null,
+      elapsedMs: Math.round(performance.now() - started),
+      remainingBudgetMs: Math.round(budgetMs),
+      pendingAtFrame: atFrame.calls.filter(call => call.status === 'pending').length,
+      pendingAfterDrain: trace.calls.filter(call => call.status === 'pending').length,
+      error,
+    },
   };
 }
 
@@ -1590,9 +1612,9 @@ function fulfilledPpeCandidatesForDom(
     if (typeof call.ownerId !== 'string' || !call.ownerId) return [];
     if (typeof call.groupKey !== 'string' || !call.groupKey) return [];
     if (typeof call.generation !== 'number' || !Number.isFinite(call.generation)) return [];
-    if (call.purpose === 'background' || (Number.isFinite(call.priority) && call.priority >= 100)) {
-      return [];
-    }
+    // Tile nền có thể đã đi vào viewport sau layout/pan. Priority mô tả lúc
+    // enqueue, không chứng minh pixel đang nhìn; geometry + source mới bên dưới
+    // vẫn loại tile ngoài vùng, sai trang và surface giữ lại từ trước trigger.
     const geometryEvidence = ppeCandidateGeometryEvidence(call, dom, preTriggerSourceTokens);
     return geometryEvidence.valid ? [{ ...call, geometryEvidence }] : [];
   });
@@ -1729,7 +1751,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
   let screenshotCount = 0;
   let screenshotTotalMs = 0;
   let nextScreenshotAt = 0;
-  const deadline = performance.now() + TIMEOUT_MS;
+  const deadline = started + TIMEOUT_MS;
   while (performance.now() < deadline) {
     const identity = await displayedPdfIdentity(page);
     if (!expectedSourceKey && identity?.sourceKey) {
@@ -1784,7 +1806,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
       0,
     );
     const frameEvidence = {
-      correlation: 'post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id',
+      correlation: 'post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id',
       candidateCount: framePpeCandidates.length,
       candidateRequestIds: framePpeCandidates.map((call) => (
         createHash('sha256').update(call.requestId).digest('hex').slice(0, 16)
@@ -1840,8 +1862,8 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
   }
   if (fcvfMs === null) {
     const now = performance.now();
+    const ipc = await collectTransitionIpcEvidence(ipcTraceByPage.get(page), deadline);
     const perfLog = await readNewPerfLog(logOffset);
-    const ipcCalls = await readIpcTrace(page);
     return {
       label,
       trigger: triggerResult,
@@ -1860,14 +1882,16 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
         screenshotTotalMs: Math.round(screenshotTotalMs),
         triggerOverheadMs: Math.round(triggerOverheadMs),
       },
-      frameRequestCorrelation: 'post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id',
-      pipelineEvidence: pipelineEvidenceFromIpcTrace(ipcCalls),
+      frameRequestCorrelation: 'post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id',
+      pipelineEvidenceAtFrame: pipelineEvidenceFromIpcTrace(ipc.atFrame),
+      pipelineEvidence: pipelineEvidenceFromIpcTrace(ipc.afterDrain),
+      traceDrain: ipc.drain,
       nativePerfEvidence: nativePerfEvidence(perfLog),
-      final: last ? { ...last, frameEvidence: null } : null,
+      final: last ? { ...last, dom: reportDom(last.dom) } : null,
     };
   }
+  const ipc = await collectTransitionIpcEvidence(ipcTraceByPage.get(page), deadline);
   const perfLog = await readNewPerfLog(logOffset);
-  const ipcCalls = await readIpcTrace(page);
   return {
     label,
     trigger: triggerResult,
@@ -1886,8 +1910,10 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
       screenshotTotalMs: Math.round(screenshotTotalMs),
       triggerOverheadMs: Math.round(triggerOverheadMs),
     },
-    frameRequestCorrelation: 'post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id',
-    pipelineEvidence: pipelineEvidenceFromIpcTrace(ipcCalls),
+    frameRequestCorrelation: 'post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id',
+    pipelineEvidenceAtFrame: pipelineEvidenceFromIpcTrace(ipc.atFrame),
+    pipelineEvidence: pipelineEvidenceFromIpcTrace(ipc.afterDrain),
+    traceDrain: ipc.drain,
     nativePerfEvidence: nativePerfEvidence(perfLog),
     final: last ? { ...last, dom: reportDom(last.dom) } : null,
   };
@@ -2055,6 +2081,22 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
     PDF_PATH,
     new Set(['blob:full-old']),
   ).length !== 1) throw new Error('frame PPE candidate self-test fail');
+  const visibleBackground = fulfilledPpeCandidatesForDom(
+    { resetSequence: 7, calls: [{ ...fulfilled, purpose: 'background', priority: 100 }] },
+    fullPageDom, `blob:standee|${PDF_PATH}`, PDF_PATH, new Set(['blob:full-old']),
+  );
+  if (visibleBackground.length !== 1
+    || !aggregatePpeCandidateGeometry(visibleBackground, fullPageDom).valid) {
+    throw new Error('frame PPE visible-background self-test fail');
+  }
+  if (fulfilledPpeCandidatesForDom(
+    { resetSequence: 7, calls: [{ ...fulfilled, page: 2, purpose: 'background', priority: 100 }] },
+    fullPageDom, `blob:standee|${PDF_PATH}`, PDF_PATH, new Set(),
+  ).length !== 0) throw new Error('frame PPE foreign-page background self-test fail');
+  if (aggregatePpeCandidateGeometry(fulfilledPpeCandidatesForDom(
+    { resetSequence: 7, calls: [{ ...fulfilled, purpose: 'background', priority: 100 }] },
+    fullPageDom, `blob:standee|${PDF_PATH}`, PDF_PATH, new Set(['blob:full-new']),
+  ), fullPageDom).valid) throw new Error('frame PPE pre-trigger background self-test fail');
   if (postTriggerPpeCandidates([{ ...fulfilled, startedAt: 99 }], 100).length !== 0
     || postTriggerPpeCandidates([fulfilled], 100).length !== 1
     || postTriggerPpeCandidates([fulfilled], 100, new Set([fulfilled.requestId])).length !== 0) {
@@ -2286,6 +2328,30 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
   if (!lifecycleEvidence.verifiedPpeOnly || lifecycleEvidence.ppeFulfilledCount !== 1) {
     throw new Error('IPC lifecycle self-test fail: fulfilled');
   }
+  const backgroundTrace = createIpcTraceState(5);
+  const backgroundCall = recordIpcTraceCall(backgroundTrace, 'render_ppe_page', {
+    filePath: PDF_PATH, page: 2, dpi: 96,
+    requestContext: { requestId: 'background-drain', pipelineIdentity: PPE_PIPELINE_ID },
+  });
+  queueMicrotask(() => settleIpcTraceCall(backgroundTrace, backgroundCall, 'fulfilled'));
+  const drained = await collectTransitionIpcEvidence(backgroundTrace, performance.now() + 500);
+  if (!drained.drain.complete || drained.drain.pendingAtFrame !== 1
+    || drained.drain.pendingAfterDrain !== 0
+    || drained.atFrame.calls[0].status !== 'pending'
+    || drained.afterDrain.calls[0].status !== 'fulfilled') {
+    throw new Error('IPC drain self-test fail: snapshot frame phải bất biến sau drain');
+  }
+  const stuckCall = recordIpcTraceCall(backgroundTrace, 'render_ppe_page', {
+    filePath: PDF_PATH, page: 3, dpi: 96,
+    requestContext: { requestId: 'stuck-drain', pipelineIdentity: PPE_PIPELINE_ID },
+  });
+  const expired = await collectTransitionIpcEvidence(backgroundTrace, performance.now() - 1);
+  if (expired.drain.complete || expired.drain.remainingBudgetMs !== 0
+    || expired.drain.pendingAfterDrain !== 1 || !expired.drain.error
+    || pipelineEvidenceFromIpcTrace(expired.afterDrain).verifiedPpeOnly) {
+    throw new Error('IPC drain self-test fail: quá deadline phải giữ pending và fail-closed');
+  }
+  settleIpcTraceCall(backgroundTrace, stuckCall, 'rejected', 'Render request đã bị hủy.');
   let disconnected = false;
   await disconnectAttachedBrowser({ _connection: { close: () => { disconnected = true; } } });
   if (!disconnected) throw new Error('CDP disconnect self-test fail');
@@ -2362,6 +2428,7 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
     transitions: ['cold-open', 'warm-zoom'],
     pollMs: POLL_MS,
     timeoutMs: TIMEOUT_MS,
+    traceDrainPolicy: 'remaining-transition-deadline; FSP/FCVF frozen before drain',
     stableFrames: REQUIRED_STABLE_FRAMES,
     stableFrameRule: 'distinct-screenshot-captures',
     screenshotIntervalMs: MAX_SCREENSHOT_INTERVAL_MS,
@@ -2370,6 +2437,7 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
     expectedRuntimeEnv: EXPECTED_RUNTIME_ENV,
     allowCompatibilityFallback: ALLOW_COMPATIBILITY,
     requireStandeeHash: REQUIRE_STANDEE_HASH,
+    corpusKind: REQUIRE_STANDEE_HASH ? 'audited-standee' : 'custom-corpus',
   },
   sessionEvidence: {
     pipelineScope: 'target-webview-cdp-network-ipc-trace',
@@ -2380,7 +2448,7 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
     shadowGate: false,
     nativePerfLogScope: 'global-file-bounded-by-offset-supplemental',
     thumbnailBaselineStatus: 'separate-runtime-gate-required',
-    frameRequestCorrelation: 'post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id',
+    frameRequestCorrelation: 'post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id',
   },
   limitations: [
     'FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.',
@@ -2525,6 +2593,9 @@ try {
       if (!run.sourceKeyCaptured) {
         throw new Error(`Lượt ${index + 1} không khóa được identity file đang hiển thị.`);
       }
+      if (!run.traceDrain?.complete) {
+        throw new Error(`Lượt ${index + 1} chưa drain IPC trong deadline: ${run.traceDrain?.error}`);
+      }
       if (!run.pipelineEvidence?.verifiedRuntimePipeline) {
         throw new Error(
           `Lượt ${index + 1} không có bằng chứng pipeline ${EXPECTED_ENGINE_MODE} sạch: `
@@ -2599,15 +2670,18 @@ try {
       fspMs: metric(cold, 'fspMs'),
       fcvfMs: metric(cold, 'fcvfMs'),
       blankGapMaxMs: metric(cold, 'blankGapMaxMs'),
+      traceDrainMs: summarize(cold.map(run => run.traceDrain?.elapsedMs).filter(Number.isFinite)),
     },
     warmZoom: {
       fspMs: metric(warm, 'fspMs'),
       fcvfMs: metric(warm, 'fcvfMs'),
       blankGapMaxMs: metric(warm, 'blankGapMaxMs'),
+      traceDrainMs: summarize(warm.map(run => run.traceDrain?.elapsedMs).filter(Number.isFinite)),
     },
     passedPixelGate: report.runs.every((run) => (
       run.valid === true
       && run.sourceKeyCaptured === true
+      && run.traceDrain?.complete === true
       && transitionPassesPixelGate(run)
       && run.pipelineEvidence?.verifiedRuntimePipeline
       && (run.label !== 'cold-open' || run.pipelineEvidence?.engineConfigCapturedInRun)

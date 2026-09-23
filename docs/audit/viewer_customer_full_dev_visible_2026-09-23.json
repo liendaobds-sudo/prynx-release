@@ -1,0 +1,918 @@
+{
+  "schemaVersion": 2,
+  "scope": "end-to-end-webview-main-page-thumbnail-closed",
+  "timingUnit": "ms",
+  "artifact": {
+    "name": "poster retro - Khắc Trung - 0854444414.pdf",
+    "sizeBytes": 63995596,
+    "sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+    "pathStored": false,
+    "matchesAuditedStandee": false
+  },
+  "config": {
+    "runs": 2,
+    "pairs": 1,
+    "baselineKind": "cleanup-smoke",
+    "transitions": [
+      "cold-open",
+      "warm-zoom"
+    ],
+    "pollMs": 16,
+    "timeoutMs": 60000,
+    "traceDrainPolicy": "remaining-transition-deadline; FSP/FCVF frozen before drain",
+    "stableFrames": 2,
+    "stableFrameRule": "distinct-screenshot-captures",
+    "screenshotIntervalMs": 60,
+    "measurementScope": "main-page-thumbnail-closed",
+    "thumbnailPolicy": "new-viewer-default-closed-and-verified-per-run",
+    "expectedRuntimeEnv": {
+      "PRYNX_VIEWER_ENGINE_MODE": "ppe-only",
+      "PRYNX_VIEWER_SHADOW_RENDER": "off-or-unset"
+    },
+    "allowCompatibilityFallback": false,
+    "requireStandeeHash": false
+  },
+  "sessionEvidence": {
+    "pipelineScope": "target-webview-cdp-network-ipc-trace",
+    "engineModeGate": "ppe-only",
+    "compatibilityGate": "disabled",
+    "shadowGate": false,
+    "nativePerfLogScope": "global-file-bounded-by-offset-supplemental",
+    "thumbnailBaselineStatus": "separate-runtime-gate-required",
+    "frameRequestCorrelation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+    "initialMeasuredTabCount": 0
+  },
+  "limitations": [
+    "FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.",
+    "FSP chưa tính mọi first-frame-prime/underlay ngoài LiveTile; không coi đây là thời điểm pixel đầu tuyệt đối. Canvas dùng metadata chụp sau drawImage, không lấy target zoom đang chờ.",
+    "Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.",
+    "PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame."
+  ],
+  "runs": [
+    {
+      "index": 1,
+      "cacheIdentityKind": "pdf-url",
+      "coldReset": {
+        "namespaceCleared": true,
+        "namespaceHasCachedTile": false,
+        "documentClosed": false,
+        "error": null,
+        "documentCacheState": "already-empty"
+      },
+      "thumbnailEvidence": {
+        "verified": true,
+        "reason": null,
+        "matchingStoreCount": 1
+      },
+      "label": "cold-open",
+      "trigger": {
+        "accepted": 1,
+        "size": 63995596,
+        "note": "dispatcher schedules a 50ms batch flush before tab creation"
+      },
+      "shellMs": 987,
+      "fspMs": 1307,
+      "fcvfMs": 4529,
+      "blankGapTotalMs": 0,
+      "blankGapMaxMs": 0,
+      "blankGapOpen": false,
+      "blankGapCurrentMs": 0,
+      "timeoutStage": null,
+      "stableFrames": 2,
+      "sourceKeyCaptured": true,
+      "harnessObservation": {
+        "screenshotCount": 11,
+        "screenshotTotalMs": 2804,
+        "triggerOverheadMs": 4
+      },
+      "frameRequestCorrelation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+      "pipelineEvidenceAtFrame": {
+        "ppeCallCount": 3,
+        "ppeFulfilledCount": 3,
+        "ppeRejectedCount": 0,
+        "ppeRejections": [],
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 3,
+        "engineConfigObservedCallCount": 3,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "engineConfigPpeOnlyUnexpectedCount": 0,
+        "requestIds": [
+          "49398d1cc8918d29",
+          "14903ea8376198c3",
+          "cdb14db65019e638"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "allTracedCallsIdentified": true,
+        "allTracedSourcePathsMatched": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": true,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          702,
+          419,
+          2582
+        ],
+        "displayFulfilledCount": 0,
+        "displayRejectedCount": 0,
+        "displayPendingCount": 0,
+        "compatibilityFallbackCount": 0,
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 4315.4742,
+        "verifiedPpeOnly": true,
+        "verifiedCompatibility": false,
+        "verifiedRuntimePipeline": true,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "pipelineEvidence": {
+        "ppeCallCount": 3,
+        "ppeFulfilledCount": 3,
+        "ppeRejectedCount": 0,
+        "ppeRejections": [],
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 3,
+        "engineConfigObservedCallCount": 3,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "engineConfigPpeOnlyUnexpectedCount": 0,
+        "requestIds": [
+          "49398d1cc8918d29",
+          "14903ea8376198c3",
+          "cdb14db65019e638"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "allTracedCallsIdentified": true,
+        "allTracedSourcePathsMatched": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": true,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          702,
+          419,
+          2582
+        ],
+        "displayFulfilledCount": 0,
+        "displayRejectedCount": 0,
+        "displayPendingCount": 0,
+        "compatibilityFallbackCount": 0,
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 4315.4742,
+        "verifiedPpeOnly": true,
+        "verifiedCompatibility": false,
+        "verifiedRuntimePipeline": true,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "traceDrain": {
+        "complete": true,
+        "elapsedMs": 0,
+        "remainingBudgetMs": 55471,
+        "pendingAtFrame": 0,
+        "pendingAfterDrain": 0,
+        "error": null
+      },
+      "nativePerfEvidence": {
+        "available": true,
+        "ppeResultCount": 3,
+        "displayResultCount": 0,
+        "scope": "global-log-supplemental-not-request-correlated"
+      },
+      "final": {
+        "dom": {
+          "shell": true,
+          "pageRect": {
+            "x": 355,
+            "y": 181,
+            "width": 394.1875,
+            "height": 657
+          },
+          "visibleRect": {
+            "x": 355,
+            "y": 181,
+            "width": 394.1875,
+            "height": 657
+          },
+          "tiles": [
+            {
+              "x": 355,
+              "y": 181,
+              "width": 395,
+              "height": 657,
+              "naturalWidth": 2173,
+              "naturalHeight": 3622,
+              "surfaceKind": "canvas",
+              "quality": 5.50126582278481,
+              "requestPage": 1,
+              "requestZoom": 0.9583333333333334,
+              "requestRotation": 0,
+              "requestClip": null,
+              "accurateOnly": true
+            }
+          ],
+          "coverageRatio": 1,
+          "sharpCoverageRatio": 1,
+          "sharp": true,
+          "devicePixelRatio": 1,
+          "page": 1,
+          "rotation": 0
+        },
+        "compositor": {
+          "captured": true,
+          "hasContent": true,
+          "signature": "4d371c5b",
+          "nonWhiteRatio": 0.9962214052287581,
+          "chromaticRatio": 0.9852941176470589,
+          "lumaRange": 226,
+          "contentBounds": {
+            "leftRatio": 0,
+            "topRatio": 0,
+            "rightRatio": 1,
+            "bottomRatio": 1
+          }
+        },
+        "frameEvidence": {
+          "correlation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+          "candidateCount": 1,
+          "candidateRequestIds": [
+            "cdb14db65019e638"
+          ],
+          "candidateGeometry": [
+            {
+              "requestId": "cdb14db65019e638",
+              "valid": true,
+              "viewportCovered": true,
+              "kind": "full-page",
+              "coverageRatio": 1,
+              "matchedTileCount": 1,
+              "requestRotation": 0,
+              "matchedTileRects": [
+                {
+                  "x": 355,
+                  "y": 181,
+                  "width": 395,
+                  "height": 657,
+                  "quality": 5.50126582278481,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 355,
+                "top": 181,
+                "right": 749.1875,
+                "bottom": 838
+              }
+            }
+          ],
+          "postGeometryCandidateCount": 1,
+          "postGeometryCandidateRequestIds": [
+            "cdb14db65019e638"
+          ],
+          "postTriggerGeometry": {
+            "valid": true,
+            "sharpValid": true,
+            "coverageRatio": 1,
+            "sharpCoverageRatio": 1,
+            "requestIds": [
+              "cdb14db65019e638"
+            ],
+            "tileRects": [
+              {
+                "x": 355,
+                "y": 181,
+                "width": 395,
+                "height": 657,
+                "quality": 5.50126582278481,
+                "sourceIsPostTrigger": true
+              }
+            ],
+            "viewportBounds": {
+              "left": 355,
+              "top": 181,
+              "right": 749.1875,
+              "bottom": 838
+            }
+          },
+          "latestCompletedAt": 4315.4742
+        }
+      },
+      "measuredTabId": "imposition-1790127272152-d7o",
+      "valid": true
+    },
+    {
+      "index": 2,
+      "cacheIdentityKind": "pdf-url",
+      "coldReset": null,
+      "thumbnailEvidence": {
+        "verified": true,
+        "reason": null,
+        "matchingStoreCount": 1
+      },
+      "label": "warm-zoom",
+      "trigger": {
+        "accepted": true,
+        "kind": "warm-zoom",
+        "beforeZoom": 0.18138885956193324,
+        "targetZoom": 2,
+        "beforePageRect": {
+          "x": 355,
+          "y": 181,
+          "width": 394.1875,
+          "height": 657
+        },
+        "requireGeometryChange": true,
+        "previousSurfaceRetained": true
+      },
+      "shellMs": null,
+      "fspMs": 908,
+      "fcvfMs": 1186,
+      "blankGapTotalMs": 0,
+      "blankGapMaxMs": 0,
+      "blankGapOpen": false,
+      "blankGapCurrentMs": 0,
+      "timeoutStage": null,
+      "stableFrames": 2,
+      "sourceKeyCaptured": true,
+      "harnessObservation": {
+        "screenshotCount": 4,
+        "screenshotTotalMs": 884,
+        "triggerOverheadMs": 57
+      },
+      "frameRequestCorrelation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+      "pipelineEvidenceAtFrame": {
+        "ppeCallCount": 36,
+        "ppeFulfilledCount": 4,
+        "ppeRejectedCount": 0,
+        "ppeRejections": [],
+        "ppePendingCount": 32,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 0,
+        "engineConfigObservedCallCount": 0,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "engineConfigPpeOnlyUnexpectedCount": 0,
+        "requestIds": [
+          "3111d2691dbaeb99",
+          "7cf52d5f892af96f",
+          "ef8c2e9f8d97b11c",
+          "635291e4b5a58e0c",
+          "77db754af32ecffb",
+          "172c41a647ecc0a4",
+          "fde943549487da8d",
+          "454834e472ca8a54",
+          "21b9999a0491c16d",
+          "23cbfdf647a6dce8",
+          "8013cbafd57eb8b4",
+          "fdc59f334466a0d8",
+          "26b0c18f53634a52",
+          "ef85a4850206fb59",
+          "bb258669ab7ba572",
+          "bf841062d106dacb",
+          "a180cd3930e0ca2c",
+          "74181fcda9e1ee36",
+          "b4fa360a68f9f7b8",
+          "b3535a8d38eb196b",
+          "2df225dc6ba5d786",
+          "7d47e7dedd823982",
+          "ce7a990b00c3d065",
+          "651045118410eea8",
+          "0073308ca23dc5cf",
+          "b3e795a90ed3fcd0",
+          "9ead1d7de89df1c6",
+          "ee587117a409bdf9",
+          "33a00712b0e3e823",
+          "a2499dd875905582",
+          "95a1f76c4e76c9cc",
+          "d809c4d873559c16",
+          "13558c2c0202c665",
+          "a85343e65d03feb8",
+          "0a0e64a1bb2697cf",
+          "d8ff1c5700b1e4e0"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "allTracedCallsIdentified": true,
+        "allTracedSourcePathsMatched": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": false,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          497,
+          517,
+          985,
+          782
+        ],
+        "displayFulfilledCount": 0,
+        "displayRejectedCount": 0,
+        "displayPendingCount": 0,
+        "compatibilityFallbackCount": 0,
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 6102.8996,
+        "verifiedPpeOnly": false,
+        "verifiedCompatibility": false,
+        "verifiedRuntimePipeline": false,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "pipelineEvidence": {
+        "ppeCallCount": 36,
+        "ppeFulfilledCount": 36,
+        "ppeRejectedCount": 0,
+        "ppeRejections": [],
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 0,
+        "engineConfigObservedCallCount": 0,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "engineConfigPpeOnlyUnexpectedCount": 0,
+        "requestIds": [
+          "3111d2691dbaeb99",
+          "7cf52d5f892af96f",
+          "ef8c2e9f8d97b11c",
+          "635291e4b5a58e0c",
+          "77db754af32ecffb",
+          "172c41a647ecc0a4",
+          "fde943549487da8d",
+          "454834e472ca8a54",
+          "21b9999a0491c16d",
+          "23cbfdf647a6dce8",
+          "8013cbafd57eb8b4",
+          "fdc59f334466a0d8",
+          "26b0c18f53634a52",
+          "ef85a4850206fb59",
+          "bb258669ab7ba572",
+          "bf841062d106dacb",
+          "a180cd3930e0ca2c",
+          "74181fcda9e1ee36",
+          "b4fa360a68f9f7b8",
+          "b3535a8d38eb196b",
+          "2df225dc6ba5d786",
+          "7d47e7dedd823982",
+          "ce7a990b00c3d065",
+          "651045118410eea8",
+          "0073308ca23dc5cf",
+          "b3e795a90ed3fcd0",
+          "9ead1d7de89df1c6",
+          "ee587117a409bdf9",
+          "33a00712b0e3e823",
+          "a2499dd875905582",
+          "95a1f76c4e76c9cc",
+          "d809c4d873559c16",
+          "13558c2c0202c665",
+          "a85343e65d03feb8",
+          "0a0e64a1bb2697cf",
+          "d8ff1c5700b1e4e0"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "allTracedCallsIdentified": true,
+        "allTracedSourcePathsMatched": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": false,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          497,
+          517,
+          985,
+          782,
+          1204,
+          1383,
+          1558,
+          1256,
+          1467,
+          1686,
+          1890,
+          2072,
+          2273,
+          2453,
+          2662,
+          2852,
+          3032,
+          3217,
+          3422,
+          3594,
+          3759,
+          3972,
+          4177,
+          4367,
+          4570,
+          4764,
+          4996,
+          5177,
+          5387,
+          5578,
+          5794,
+          5968,
+          6133,
+          6311,
+          6485,
+          6678
+        ],
+        "displayFulfilledCount": 0,
+        "displayRejectedCount": 0,
+        "displayPendingCount": 0,
+        "compatibilityFallbackCount": 0,
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 12311.2437,
+        "verifiedPpeOnly": true,
+        "verifiedCompatibility": false,
+        "verifiedRuntimePipeline": true,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "traceDrain": {
+        "complete": true,
+        "elapsedMs": 6077,
+        "remainingBudgetMs": 58814,
+        "pendingAtFrame": 32,
+        "pendingAfterDrain": 0,
+        "error": null
+      },
+      "nativePerfEvidence": {
+        "available": true,
+        "ppeResultCount": 36,
+        "displayResultCount": 0,
+        "scope": "global-log-supplemental-not-request-correlated"
+      },
+      "final": {
+        "dom": {
+          "shell": true,
+          "pageRect": {
+            "x": -1480,
+            "y": -3120,
+            "width": 4346.453125,
+            "height": 7244.09375
+          },
+          "visibleRect": {
+            "x": 60,
+            "y": 143,
+            "width": 985,
+            "height": 733
+          },
+          "tiles": [
+            {
+              "x": -1480.0078125,
+              "y": -3120,
+              "width": 4347,
+              "height": 7245,
+              "naturalWidth": 2173,
+              "naturalHeight": 3622,
+              "surfaceKind": "canvas",
+              "quality": 0.4998849781458477,
+              "requestPage": 1,
+              "requestZoom": 0.9583333333333334,
+              "requestRotation": 0,
+              "requestClip": null,
+              "accurateOnly": true
+            },
+            {
+              "x": 23.3046875,
+              "y": 137.1875,
+              "width": 1064.84375,
+              "height": 751.65625,
+              "naturalWidth": 1088,
+              "naturalHeight": 768,
+              "surfaceKind": "canvas",
+              "quality": 1.0217436494408183,
+              "requestPage": 1,
+              "requestZoom": 1.9583333333333333,
+              "requestRotation": 0,
+              "requestClip": {
+                "x": 1536,
+                "y": 3328,
+                "width": 1088,
+                "height": 768
+              },
+              "accurateOnly": true
+            },
+            {
+              "x": 524.4140625,
+              "y": 387.734375,
+              "width": 502.09375,
+              "height": 502.09375,
+              "naturalWidth": 512,
+              "naturalHeight": 512,
+              "surfaceKind": "canvas",
+              "quality": 1.0197298811227984,
+              "requestPage": 1,
+              "requestZoom": 1.9583333333333333,
+              "requestRotation": 0,
+              "requestClip": {
+                "x": 2048,
+                "y": 3584,
+                "width": 512,
+                "height": 512
+              },
+              "accurateOnly": true
+            },
+            {
+              "x": 524.4140625,
+              "y": -113.375,
+              "width": 502.09375,
+              "height": 502.09375,
+              "naturalWidth": 512,
+              "naturalHeight": 512,
+              "surfaceKind": "canvas",
+              "quality": 1.0197298811227984,
+              "requestPage": 1,
+              "requestZoom": 1.9583333333333333,
+              "requestRotation": 0,
+              "requestClip": {
+                "x": 2048,
+                "y": 3072,
+                "width": 512,
+                "height": 512
+              },
+              "accurateOnly": true
+            }
+          ],
+          "coverageRatio": 1,
+          "sharpCoverageRatio": 1,
+          "sharp": true,
+          "devicePixelRatio": 1,
+          "page": 1,
+          "rotation": 0
+        },
+        "compositor": {
+          "captured": true,
+          "hasContent": true,
+          "signature": "3385dbb1",
+          "nonWhiteRatio": 1,
+          "chromaticRatio": 0.9788651315789474,
+          "lumaRange": 184,
+          "contentBounds": {
+            "leftRatio": 0,
+            "topRatio": 0,
+            "rightRatio": 1,
+            "bottomRatio": 1
+          }
+        },
+        "frameEvidence": {
+          "correlation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+          "candidateCount": 3,
+          "candidateRequestIds": [
+            "3111d2691dbaeb99",
+            "7cf52d5f892af96f",
+            "635291e4b5a58e0c"
+          ],
+          "candidateGeometry": [
+            {
+              "requestId": "3111d2691dbaeb99",
+              "valid": true,
+              "viewportCovered": true,
+              "kind": "clip",
+              "coverageRatio": 1,
+              "matchedTileCount": 1,
+              "requestRotation": 0,
+              "matchedTileRects": [
+                {
+                  "x": 23.3046875,
+                  "y": 137.1875,
+                  "width": 1064.84375,
+                  "height": 751.65625,
+                  "quality": 1.0217436494408183,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 60,
+                "top": 143,
+                "right": 1045,
+                "bottom": 876
+              }
+            },
+            {
+              "requestId": "7cf52d5f892af96f",
+              "valid": true,
+              "viewportCovered": false,
+              "kind": "clip",
+              "coverageRatio": 0.3395476743960828,
+              "matchedTileCount": 1,
+              "requestRotation": 0,
+              "matchedTileRects": [
+                {
+                  "x": 524.4140625,
+                  "y": 387.734375,
+                  "width": 502.09375,
+                  "height": 502.09375,
+                  "quality": 1.0197298811227984,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 60,
+                "top": 143,
+                "right": 1045,
+                "bottom": 876
+              }
+            },
+            {
+              "requestId": "635291e4b5a58e0c",
+              "valid": true,
+              "viewportCovered": false,
+              "kind": "clip",
+              "coverageRatio": 0.17087672333683632,
+              "matchedTileCount": 1,
+              "requestRotation": 0,
+              "matchedTileRects": [
+                {
+                  "x": 524.4140625,
+                  "y": -113.375,
+                  "width": 502.09375,
+                  "height": 502.09375,
+                  "quality": 1.0197298811227984,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 60,
+                "top": 143,
+                "right": 1045,
+                "bottom": 876
+              }
+            }
+          ],
+          "postGeometryCandidateCount": 3,
+          "postGeometryCandidateRequestIds": [
+            "3111d2691dbaeb99",
+            "7cf52d5f892af96f",
+            "635291e4b5a58e0c"
+          ],
+          "postTriggerGeometry": {
+            "valid": true,
+            "sharpValid": true,
+            "coverageRatio": 1,
+            "sharpCoverageRatio": 1,
+            "requestIds": [
+              "3111d2691dbaeb99",
+              "7cf52d5f892af96f",
+              "635291e4b5a58e0c"
+            ],
+            "tileRects": [
+              {
+                "x": 23.3046875,
+                "y": 137.1875,
+                "width": 1064.84375,
+                "height": 751.65625,
+                "quality": 1.0217436494408183,
+                "sourceIsPostTrigger": true
+              },
+              {
+                "x": 524.4140625,
+                "y": 387.734375,
+                "width": 502.09375,
+                "height": 502.09375,
+                "quality": 1.0197298811227984,
+                "sourceIsPostTrigger": true
+              },
+              {
+                "x": 524.4140625,
+                "y": -113.375,
+                "width": 502.09375,
+                "height": 502.09375,
+                "quality": 1.0197298811227984,
+                "sourceIsPostTrigger": true
+              }
+            ],
+            "viewportBounds": {
+              "left": 60,
+              "top": 143,
+              "right": 1045,
+              "bottom": 876
+            }
+          },
+          "latestCompletedAt": 5900.6113
+        }
+      },
+      "valid": true,
+      "tabClosedAfterPair": true
+    }
+  ],
+  "consoleErrors": [],
+  "badHttp": [],
+  "processMemory": {
+    "status": "not-measured-by-cdp-harness",
+    "scope": "whole-application-tree-required-separately"
+  },
+  "complete": true,
+  "failure": null,
+  "summary": {
+    "cold": {
+      "shellMs": {
+        "count": 1,
+        "min": 987,
+        "p50": 987,
+        "p95": 987,
+        "max": 987
+      },
+      "fspMs": {
+        "count": 1,
+        "min": 1307,
+        "p50": 1307,
+        "p95": 1307,
+        "max": 1307
+      },
+      "fcvfMs": {
+        "count": 1,
+        "min": 4529,
+        "p50": 4529,
+        "p95": 4529,
+        "max": 4529
+      },
+      "blankGapMaxMs": {
+        "count": 1,
+        "min": 0,
+        "p50": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "traceDrainMs": {
+        "count": 1,
+        "min": 0,
+        "p50": 0,
+        "p95": 0,
+        "max": 0
+      }
+    },
+    "warmZoom": {
+      "fspMs": {
+        "count": 1,
+        "min": 908,
+        "p50": 908,
+        "p95": 908,
+        "max": 908
+      },
+      "fcvfMs": {
+        "count": 1,
+        "min": 1186,
+        "p50": 1186,
+        "p95": 1186,
+        "max": 1186
+      },
+      "blankGapMaxMs": {
+        "count": 1,
+        "min": 0,
+        "p50": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "traceDrainMs": {
+        "count": 1,
+        "min": 6077,
+        "p50": 6077,
+        "p95": 6077,
+        "max": 6077
+      }
+    },
+    "passedPixelGate": true
+  }
+}

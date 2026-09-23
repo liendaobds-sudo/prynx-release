@@ -246,3 +246,22 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Runtime `docs/audit/viewer_customer_metadata_stable_2026-09-23.json`: cold-open đầu tiên qua gate **PPE-only + pixel** với **3 fulfilled / 0 rejected / 0 display**, coverage **1**, hai frame ổn định, bitmap **2173×3622**, shell **1066 ms**, FCVF **4601 ms**. Không dùng một sample làm P95.
 - Warm zoom chưa đạt toàn harness: `readIpcTrace` chờ rỗng 5 giây trong khi các tile nền còn chạy; native log sau đó xác nhận chúng hoàn tất (tile 512×512/188 DPI, queue kéo dài khoảng 5 giây). Không tự coi timeout trace là trang trắng, không tăng timeout để lấy pass. Report tổng vẫn `complete=false`, 1/2 run valid; cần tách timing viewport khỏi drain toàn bộ prefetch mà vẫn giữ chứng cứ pending/failure.
 - Phạm vi môi trường: Vite + binary debug có sẵn, tập trung đường render native; sidecar HTTP không được mở trong lượt này nên report có `ERR_CONNECTION_REFUSED`. Không phải full-app/release smoke và không chứng minh hiệu năng dưới tải backend.
+
+## Lô 25 — Đo riêng viewport/drain và baseline 30 cặp với backend
+
+- Harness chốt snapshot ngay sau frame gate, sau đó drain IPC trong **phần còn lại của deadline tổng 60s**. FSP/FCVF không cộng thời gian drain; hết deadline vẫn pending/error thì report thất bại và giữ snapshot. Reset lượt kế tiếp vẫn đòi trace rỗng, không trộn hai transition.
+- Probe `viewer_customer_full_dev_drain_2026-09-23.json` xác nhận thêm false-negative cũ: mọi PPE request hoàn tất, canvas sharp coverage 1, nhưng harness loại tile đang hiện chỉ vì priority nền. Sửa candidate dựa vào path/page/DPI/clip/source mới và hình học viewport; giữ nguyên gate PPE-only, rejection/pending, độ phủ/độ nét và hai screenshot ổn định. Self-test khóa tile nền đúng viewport được nhận; sai trang hoặc surface trước trigger vẫn bị loại. Tên correlation đổi từ `interactive-geometry` sang `visible-geometry` cho đúng phạm vi.
+- Smoke đủ backend (`/health=200`, token dev tạm dùng chung với Tauri), Vite và binary debug: `viewer_customer_full_dev_visible_2026-09-23.json` **2/2 valid**, không console/HTTP error. Không dùng `run_dev.bat` để tránh dừng process không thuộc lượt đo; không build installer.
+- Baseline chính file khách **30 cold + 30 warm**, `viewer_customer_baseline_60_2026-09-23.json`: **60/60 valid, 0 PPE rejected, 0 PDFium display, 0 console/HTTP error**. Máy i5-13400/16 luồng/32 GiB RAM; provenance ghi HEAD và hash binary/frontend/harness. Đây là cache ứng dụng lạnh, **không xóa cache OS**, không phải corpus Standee/release hay checkout sạch.
+
+| Mốc | P50 | P95 |
+|---|---:|---:|
+| Shell cold | 984 ms | 1058 ms |
+| FSP cold (phạm vi LiveTile đã nêu) | 3952 ms | 4297 ms |
+| FCVF cold | 4570 ms | 4821 ms |
+| FSP warm zoom | 905 ms | 1503 ms |
+| FCVF warm zoom | 1164 ms | 1735 ms |
+| Drain IPC sau viewport warm | 6060 ms | 6322 ms |
+
+- Warm blank-gap **0** ở cả 30 lượt; cold blank-gap P95 **0**, max **308 ms** (có thể thuộc chờ pixel đầu; chưa chứng minh invariant gap sau committed riêng). `complete=true` của artifact chỉ là **baseline 60 lượt này đạt validity/pixel gate**, không có nghĩa đạt chỉ tiêu độ trễ toàn kế hoạch.
+- Còn cần tối ưu: shell gần 1s, cold sharp gần 4.8s P95, warm sharp 1.7s P95; chưa đạt chỉ tiêu trải nghiệm. Shared scene/resource/image và việc chuẩn bị file/shell vẫn phải xử lý theo số đo, không tự chuyển sang renderer khác hoặc hạ chất lượng.
