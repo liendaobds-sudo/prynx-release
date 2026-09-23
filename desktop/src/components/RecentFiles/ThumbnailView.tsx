@@ -11,9 +11,10 @@ interface Props {
   path: string;
   name: string;
   active?: boolean;
+  shouldLoad?: boolean;
 }
 
-const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
+const ThumbnailView = React.memo(({ path, name, active = true, shouldLoad = true }: Props) => {
   const [src, setSrc] = useState<string | { data: Uint8Array }>('');
   const [probeState, setProbeState] = useState<'loading' | 'available' | 'missing' | 'unverified'>('loading');
   const [imgError, setImgError] = useState(false);
@@ -29,7 +30,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
     // CHỈ render thumbnail khi tab Home đang HIỆN (active). Khi mở file (Home ẩn),
     // KHÔNG render thumbnail → tránh hàng loạt tile render pdfium serial hoá cạnh
     // tranh với render trang chính → hết "đơ ~5s lúc mở file". Render khi quay lại Home.
-    if (!active) return;
+    if (!active || !shouldLoad) return;
 
     if (isTauri) {
       // ⚠️ KHÔNG readFile cả PDF để vẽ thumbnail nữa: readFile nạp TOÀN BỘ file qua
@@ -70,7 +71,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
     return () => {
       isActive = false;
     };
-  }, [path, isPdf, isOffice, isTauri, active]);
+  }, [path, isPdf, isOffice, isTauri, active, shouldLoad]);
 
   if (probeState === 'missing') {
     return (
@@ -168,12 +169,51 @@ class ThumbnailErrorBoundary extends React.Component<{children: React.ReactNode}
 export default function ThumbnailViewWrapper(props: Props) {
   // PERF/FILEIO (feedback 2026-08-25 §RF.2): unmount state thật khi rời Home.
   // Khi quay lại, không có frame nào remount `src` tile cũ trước probe mới.
+  const hostRef = React.useRef<HTMLDivElement>(null);
+  const [shouldLoad, setShouldLoad] = useState(
+    () => props.active !== false
+      && (typeof window === 'undefined' || !('IntersectionObserver' in window)),
+  );
+
+  useEffect(() => {
+    if (props.active === false) {
+      // Đợi qua commit hiện tại rồi mới reset để tab Home vừa ẩn không giữ
+      // bitmap/URL; không setState đồng bộ trong effect (tránh render dây chuyền).
+      const resetId = window.setTimeout(() => setShouldLoad(false), 0);
+      return () => window.clearTimeout(resetId);
+    }
+    if (shouldLoad) return;
+    const host = hostRef.current;
+    if (!host || typeof IntersectionObserver === 'undefined') {
+      const loadId = window.setTimeout(() => setShouldLoad(true), 0);
+      return () => window.clearTimeout(loadId);
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '480px 0px' },
+    );
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [props.active, shouldLoad]);
+
   if (props.active === false) {
     return <div className="w-full h-full bg-slate-100 dark:bg-zinc-800" />;
   }
+
   return (
-    <ThumbnailErrorBoundary>
-      <ThumbnailView key={`${props.path}:${props.name}`} {...props} />
-    </ThumbnailErrorBoundary>
+    <div ref={hostRef} className="w-full h-full">
+      {shouldLoad ? (
+        <ThumbnailErrorBoundary>
+          <ThumbnailView key={`${props.path}:${props.name}`} {...props} shouldLoad />
+        </ThumbnailErrorBoundary>
+      ) : (
+        <div className="w-full h-full bg-slate-100 dark:bg-zinc-800" />
+      )}
+    </div>
   );
 }

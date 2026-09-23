@@ -97,4 +97,37 @@ describe('ThumbnailView — chỉ request tile cho file đã xác nhận tồn t
     expect(await screen.findByText('Missing')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
   });
+
+  it('trì hoãn probe/tile cho thumbnail ngoài viewport', async () => {
+    let notifyIntersecting: IntersectionObserverCallback | null = null;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class IntersectionObserverMock {
+      constructor(callback: IntersectionObserverCallback) {
+        notifyIntersecting = callback;
+      }
+
+      observe = observe;
+      disconnect = disconnect;
+      unobserve = vi.fn();
+    }
+    Object.defineProperty(window, 'IntersectionObserver', {
+      configurable: true,
+      value: IntersectionObserverMock,
+    });
+    mocks.probeRecentFile.mockResolvedValue({ status: 'available', size: 123 });
+
+    render(<ThumbnailView path="D:\\viec\\ngoai-viewport.pdf" name="ngoai-viewport.pdf" />);
+    await waitFor(() => expect(observe).toHaveBeenCalledTimes(1));
+    expect(mocks.probeRecentFile).not.toHaveBeenCalled();
+
+    act(() => {
+      notifyIntersecting?.(
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver,
+      );
+    });
+    await waitFor(() => expect(mocks.probeRecentFile).toHaveBeenCalledTimes(1));
+    delete (window as Window & { IntersectionObserver?: unknown }).IntersectionObserver;
+  });
 });
