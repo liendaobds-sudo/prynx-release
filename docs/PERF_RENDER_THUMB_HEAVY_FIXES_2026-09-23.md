@@ -473,3 +473,9 @@ cargo build --release --offline --example perf_profile --features perf-probe
 - Unit render-worker sau lô: **62 passed / 9 ignored**. Test mới chứng minh hai PPE lease cùng purpose không chặn nhau nhưng control độc quyền vẫn chờ; toàn bộ router, queue, lifecycle và parity test giữ xanh.
 - Probe parent trên file khách `test/poster retro - Khắc Trung - 0854444414.pdf`, ép 1 background lane để kiểm tra cả hai lane: priority 20 và 100 đều đăng ký foreground trong **48–51 ms**, cùng lane/PID với prefetch, không preempt/kill raster nền. PNG active `8c31282e…`, prefetch `35afa551…` ổn định; worker queue xử lý ưu tiên nhưng không hủy tác vụ đã chạy. Full/tile/thumbnail log-only (2 mẫu) giữ cùng PID: full cold **2.18–2.62 s**, warm **1.87–1.93 s**, tile **0.16–0.17 s**, thumbnail **0.29–0.35 s**.
 - Evidence: `docs/audit/ppe_parent_manager_concurrent_2026-09-23.json`. Đây là benchmark headless parent/worker, không bao gồm WebView decode/compositor/sidebar thật và chưa phải P95 toàn corpus. Bước kế tiếp còn lại là nối/đo consumer thumbnail UI và backend file nặng; không viết lại engine PDFium.
+
+## Lô 42 — Recent thumbnail chỉ probe/tile khi gần viewport
+
+- `ThumbnailView` giữ placeholder cho card ngoài viewport bằng `IntersectionObserver` (`rootMargin: 480px`), chỉ sau khi intersect mới probe native và tạo `tile.localhost`. Khi Home inactive, component vẫn tháo nội dung thumbnail; reset trạng thái được defer qua timer để không tạo render dây chuyền trong effect.
+- Fallback môi trường không có `IntersectionObserver` vẫn tải bình thường; file mất/quyền/Office giữ nguyên trạng thái placeholder cũ. Không đổi DPI, URL contract hoặc đường đọc full PDF.
+- Verify: `ThumbnailView.test.tsx` **6/6 pass**, `npm run typecheck` xanh, ESLint hai file xanh. Đây là gate source-level; chưa tuyên bố P95 WebView vì không dùng Performance panel/UI runtime trong lượt này.
