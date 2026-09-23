@@ -599,6 +599,14 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         const ctx = canvas.getContext('2d');
         if (!ctx) return false;
         ctx.drawImage(bm, 0, 0);
+        // PERF (audit 2026-09-23 §R23.MEASURE): dấu vết của bitmap ĐÃ VẼ,
+        // không phải props target đang chờ. Harness phải thấy canvas như img,
+        // nhưng không được gán zoom mới cho surface cũ đang làm underlay.
+        canvas.dataset.prynxPresentedTile = JSON.stringify({
+            sourceToken: source.url, fileKey, page: pageNum, zoom: scale, rotation: rot,
+            accurateOnly,
+            clip: clipW && clipH ? { x: clipX, y: clipY, width: clipW, height: clipH } : null,
+        });
         applyExactFit(canvas, bm.width, bm.height);
 
         displayedScaleRef.current = scale;
@@ -628,7 +636,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         onTileReadyRef.current?.({ scale });
         onRenderReadyRef.current?.();
         return true;
-    }, [applyExactFit, surfaceParams, traceTileEvent]);
+    }, [applyExactFit, surfaceParams, traceTileEvent, fileKey, pageNum, rot, accurateOnly, clipX, clipY, clipW, clipH]);
 
     // On mount: immediately restore cached image (no white flash!)
     useEffect(() => {

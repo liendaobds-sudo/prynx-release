@@ -311,6 +311,11 @@ function pipelineEvidenceFromIpcTrace(traceSnapshot) {
     ppeCallCount: ppeCalls.length,
     ppeFulfilledCount: ppeFulfilled.length,
     ppeRejectedCount: ppeRejected.length,
+    ppeRejections: ppeRejected.map((call) => ({
+      requestId: sanitizeRequestId(call.requestId), page: call.page, dpi: call.dpi,
+      purpose: call.purpose, priority: call.priority,
+      rejection: call.rejection ?? { kind: 'unknown', code: null },
+    })),
     ppePendingCount: ppePending.length,
     ppeStaleSequenceCount: ppeStaleSequence.length,
     displayCallCount: displayCalls.length,
@@ -467,9 +472,43 @@ function recordIpcTraceCall(trace, command, args = {}) {
   return call;
 }
 
+function classifyIpcRejection(value) {
+  // PERF (audit 2026-09-23 §R23.MEASURE): reject không đồng nghĩa unsupported.
+  // Chỉ giữ loại/mã có allowlist và hash; không lưu body chứa path/nội dung PDF.
+  let message = typeof value === 'string' ? value : '';
+  try {
+    const parsed = JSON.parse(message);
+    if (typeof parsed === 'string') message = parsed;
+  } catch { /* Tauri có thể trả chuỗi thuần, không phải JSON. */ }
+  message = message.trim();
+  const result = {
+    kind: 'unknown', code: null,
+    messageHash: createHash('sha256').update(message).digest('hex').slice(0, 16),
+  };
+  if (/^(?:PPE|Render) request đã bị hủy(?: trước khi vào worker| trong lúc chờ quota)?\.$/.test(message)) {
+    return { ...result, kind: 'cancelled' };
+  }
+  if (message.startsWith('PPE_NATIVE_FALLBACK_BEFORE_START:')) {
+    return { ...result, kind: 'before-start' };
+  }
+  const prefix = 'PPE_NATIVE_UNSUPPORTED:';
+  if (message.startsWith(prefix)) {
+    try {
+      const payload = JSON.parse(message.slice(prefix.length));
+      const reasons = ['image_codec', 'knockout_transparency', 'unsupported_transparency',
+        'color_approximation', 'geometry_approximation', 'hidden_content', 'unsupported_feature'];
+      if (reasons.includes(payload?.reason) && typeof payload.detail === 'string') {
+        return { ...result, kind: 'unsupported', code: payload.reason };
+      }
+    } catch { /* Payload hỏng vẫn là unknown, không cho qua capability gate. */ }
+  }
+  return result;
+}
+
 function settleIpcTraceCall(trace, call, status, value = null) {
   call.completedAt = performance.now();
   call.status = status;
+  if (status === 'rejected' && !call.rejection) call.rejection = classifyIpcRejection(value);
   const isConfig = call.command === 'get_pdf_viewer_bootstrap' || call.command === 'get_pdf_metadata';
   if (isConfig && status === 'fulfilled') {
     call.configSourcePathMatched = (
@@ -536,9 +575,13 @@ async function installIpcTrace(page) {
         if (status === 'fulfilled'
           && (call.command === 'get_pdf_viewer_bootstrap' || call.command === 'get_pdf_metadata')) {
           value = await response.json();
+        } else if (status === 'rejected') {
+          if (transportError) call.rejection = { kind: 'transport', code: null };
+          else value = await response.text();
         }
         settleIpcTraceCall(trace, call, status, value);
       } catch (error) {
+        call.rejection = { kind: 'trace-read-error', code: null };
         settleIpcTraceCall(trace, call, 'rejected');
         call.traceError = String(error);
       }
@@ -549,6 +592,7 @@ async function installIpcTrace(page) {
   trace.onRequestFailed = (request) => {
     const call = trace.requests.get(request);
     if (!call) return;
+    call.rejection = { kind: 'transport', code: null };
     settleIpcTraceCall(trace, call, 'rejected');
     call.traceError = request.failure()?.errorText || 'IPC request failed';
   };
@@ -1281,13 +1325,16 @@ async function domState(page) {
     const surface = container.querySelector('[class*="group/pdf-frame"]') || container;
     const pageRect = surface.getBoundingClientRect();
     const devicePixelRatio = Math.max(1, Number(window.devicePixelRatio) || 1);
-    const tiles = [...container.querySelectorAll('.tile-container img')]
+    const tiles = [...container.querySelectorAll('.tile-container img, .tile-container canvas')]
       .filter((image) => {
         const rect = image.getBoundingClientRect();
         const style = getComputedStyle(image);
         const tile = image.closest('.tile-container');
         const tileStyle = tile ? getComputedStyle(tile) : null;
-        return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0
+        const decoded = image instanceof HTMLCanvasElement
+          ? Boolean(image.dataset.prynxPresentedTile) && image.width > 0 && image.height > 0
+          : image.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+        return decoded
           && rect.width > 0 && rect.height > 0
           && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight
           && style.visibility !== 'hidden' && style.display !== 'none'
@@ -1310,6 +1357,19 @@ async function domState(page) {
           }
           fiber = fiber.return;
         }
+        let presented = null;
+        const isCanvas = image instanceof HTMLCanvasElement;
+        if (isCanvas) {
+          try { presented = JSON.parse(image.dataset.prynxPresentedTile); } catch { return null; }
+          // Canvas giữ nguyên DOM khi đổi zoom. Chỉ dấu vết sau drawImage mới
+          // được dùng làm identity/geometry của pixel; props chỉ xác nhận nguồn.
+          if (presented?.fileKey !== liveTileProps?.fileKey
+            || typeof presented?.sourceToken !== 'string'
+            || !presented.sourceToken
+            || !Number.isFinite(presented.zoom) || presented.zoom <= 0) return null;
+        }
+        const naturalWidth = isCanvas ? image.width : image.naturalWidth;
+        const naturalHeight = isCanvas ? image.height : image.naturalHeight;
         const hasClip = Number.isFinite(liveTileProps?.clipX)
           && Number.isFinite(liveTileProps?.clipY)
           && Number.isFinite(liveTileProps?.clipW) && liveTileProps.clipW > 0
@@ -1319,18 +1379,19 @@ async function domState(page) {
           y: rect.y,
           width: rect.width,
           height: rect.height,
-          naturalWidth: image.naturalWidth,
-          naturalHeight: image.naturalHeight,
+          naturalWidth,
+          naturalHeight,
+          surfaceKind: isCanvas ? 'canvas' : 'img',
           // Mật độ 1 nghĩa là đủ một pixel nguồn cho mỗi device pixel compositor.
           quality: Math.min(
-            image.naturalWidth / (rect.width * devicePixelRatio),
-            image.naturalHeight / (rect.height * devicePixelRatio),
+            naturalWidth / (rect.width * devicePixelRatio),
+            naturalHeight / (rect.height * devicePixelRatio),
           ),
-          sourceToken: image.currentSrc || image.src || null,
-          requestPage: Number.isFinite(liveTileProps?.pageNum) ? Number(liveTileProps.pageNum) : null,
-          requestZoom: Number.isFinite(liveTileProps?.zoom) ? Number(liveTileProps.zoom) : null,
-          requestRotation: normalizeRotation(liveTileProps?.rot),
-          requestClip: hasClip
+          sourceToken: isCanvas ? presented.sourceToken : image.currentSrc || image.src || null,
+          requestPage: isCanvas ? presented.page : Number.isFinite(liveTileProps?.pageNum) ? Number(liveTileProps.pageNum) : null,
+          requestZoom: isCanvas ? presented.zoom : Number.isFinite(liveTileProps?.zoom) ? Number(liveTileProps.zoom) : null,
+          requestRotation: normalizeRotation(isCanvas ? presented.rotation : liveTileProps?.rot),
+          requestClip: isCanvas ? presented.clip : hasClip
             ? {
                 x: Number.isFinite(liveTileProps?.clipX) ? Number(liveTileProps.clipX) : null,
                 y: Number.isFinite(liveTileProps?.clipY) ? Number(liveTileProps.clipY) : null,
@@ -1338,9 +1399,9 @@ async function domState(page) {
                 height: Number.isFinite(liveTileProps?.clipH) ? Number(liveTileProps.clipH) : null,
               }
             : null,
-          accurateOnly: liveTileProps?.accurateOnly === true,
+          accurateOnly: isCanvas ? presented.accurateOnly === true : liveTileProps?.accurateOnly === true,
         };
-      });
+      }).filter(Boolean);
     const visibleLeft = Math.max(0, pageRect.left);
     const visibleTop = Math.max(0, pageRect.top);
     const visibleRight = Math.min(innerWidth, pageRect.right);
@@ -1828,7 +1889,7 @@ async function measureTransition(page, label, trigger, measureShell, requireConf
     frameRequestCorrelation: 'post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id',
     pipelineEvidence: pipelineEvidenceFromIpcTrace(ipcCalls),
     nativePerfEvidence: nativePerfEvidence(perfLog),
-    final: last,
+    final: last ? { ...last, dom: reportDom(last.dom) } : null,
   };
 }
 
@@ -1850,6 +1911,25 @@ async function measureWarmZoom(page) {
 }
 
 if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
+  for (const message of ['Render request đã bị hủy.', 'PPE request đã bị hủy trước khi vào worker.',
+    'PPE request đã bị hủy trong lúc chờ quota.']) {
+    if (classifyIpcRejection(JSON.stringify(message)).kind !== 'cancelled') {
+      throw new Error('IPC rejection self-test fail: cancellation');
+    }
+  }
+  const unsupported = classifyIpcRejection('PPE_NATIVE_UNSUPPORTED:' + JSON.stringify({
+    reason: 'image_codec', detail: 'D:\\customer\\private.pdf',
+  }));
+  if (unsupported.kind !== 'unsupported' || unsupported.code !== 'image_codec'
+    || JSON.stringify(unsupported).includes('private.pdf')) {
+    throw new Error('IPC rejection self-test fail: unsupported/privacy');
+  }
+  for (const message of ['I/O failed D:\\customer\\private.pdf', 'PPE_NATIVE_UNSUPPORTED:{',
+    'PPE_NATIVE_UNSUPPORTED:{"reason":"invented","detail":"test"}']) {
+    if (classifyIpcRejection(message).kind !== 'unknown') {
+      throw new Error('IPC rejection self-test fail: unknown phải fail-closed');
+    }
+  }
   if (!await pathsReferToSameFile(
     resolve('self-test', 'standee.pdf'),
     resolve('self-test', 'standee.pdf'),
@@ -1945,6 +2025,18 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
   };
   if (!pipelineEvidenceFromIpcTrace(trace([fulfilled])).verifiedPpeOnly) {
     throw new Error('pipeline evidence self-test fail: PPE-only');
+  }
+  const cancelledTrace = trace([fulfilled, {
+    ...fulfilled, requestId: 'cancelled-2', status: 'rejected',
+    rejection: classifyIpcRejection('Render request đã bị hủy.'),
+  }]);
+  const cancelledEvidence = pipelineEvidenceFromIpcTrace(cancelledTrace);
+  if (cancelledEvidence.verifiedPpeOnly
+    || cancelledEvidence.ppeRejections[0]?.rejection?.kind !== 'cancelled') {
+    throw new Error('IPC rejection self-test fail: phân loại không được nới gate');
+  }
+  if ('sourceToken' in reportDom({ tiles: [{ sourceToken: 'blob:private', surfaceKind: 'canvas' }] }).tiles[0]) {
+    throw new Error('canvas report redaction self-test fail');
   }
   const fullPageDom = {
     tiles: [{
@@ -2292,6 +2384,7 @@ if (process.env.PRYNX_VIEWER_BASELINE_SELF_TEST === '1') {
   },
   limitations: [
     'FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.',
+    'FSP chưa tính mọi first-frame-prime/underlay ngoài LiveTile; không coi đây là thời điểm pixel đầu tuyệt đối. Canvas dùng metadata chụp sau drawImage, không lấy target zoom đang chờ.',
     'Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.',
     'PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame.',
   ],

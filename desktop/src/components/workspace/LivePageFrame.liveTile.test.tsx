@@ -121,6 +121,28 @@ function makeProps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('LiveTile — cold-open màu chính xác', () => {
+    it('canvas chỉ công bố identity/zoom của bitmap đã vẽ, không lấy target đang chờ', async () => {
+        const bitmap = { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap;
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never);
+        cacheTileUrl(
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_1_0_0_0_0_0',
+            { url: 'blob:presented', byteLength: 100, bitmap },
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate',
+        );
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const view = render(<LiveTile {...makeProps({ accurateOnly: true, getTileUrl })} />);
+        const canvas = view.container.querySelector('canvas')!;
+        await waitFor(() => expect(drawImage).toHaveBeenCalledWith(bitmap, 0, 0));
+        const painted = canvas.dataset.prynxPresentedTile;
+        expect(JSON.parse(painted!)).toMatchObject({
+            sourceToken: 'blob:presented', page: 1, zoom: 1, accurateOnly: true, clip: null,
+        });
+        view.rerender(<LiveTile {...makeProps({ accurateOnly: true, getTileUrl, zoom: 2, cssW: 1280, cssH: 960 })} />);
+        await act(async () => { await Promise.resolve(); });
+        expect(canvas.dataset.prynxPresentedTile).toBe(painted);
+    });
+
     it('Standee có frame tức thì 24 DPI trước khi Viewer dựng tile nét', () => {
         expect(viewerFirstFrameDpi(2267.72, 4960.63, 757, 629, 92)).toBe(24);
     });
