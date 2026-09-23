@@ -83,6 +83,7 @@ struct AccurateSessionEntry {
     session: RenderSession,
     last_used: u64,
     owners: AccurateOwnerLeases,
+    in_flight: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -128,7 +129,8 @@ fn close_ownerless_accurate_sessions(pool: &mut AccurateSessionPool) -> usize {
     let keys = pool
         .entries
         .iter()
-        .filter_map(|(key, entry)| entry.owners.is_empty().then_some(key.clone()))
+        .filter_map(|(key, entry)| (entry.owners.is_empty()
+            && entry.in_flight.load(Ordering::Acquire) == 0).then_some(key.clone()))
         .collect::<Vec<_>>();
     for key in &keys {
         if let Some(mut entry) = pool.entries.remove(key) {
@@ -174,11 +176,20 @@ fn release_accurate_session_owner(owner_id: &str) -> bool {
     let mut pool = accurate_sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    release_accurate_owner_from_pool(&mut pool, owner_id)
+}
+
+fn release_accurate_owner_from_pool(pool: &mut AccurateSessionPool, owner_id: &str) -> bool {
     let mut released = false;
-    for entry in pool.entries.values_mut() {
-        released |= entry.owners.release(owner_id);
-    }
-    close_ownerless_accurate_sessions(&mut pool);
+    // Close do caller yêu cầu khác sweep TTL: last-owner phải vô hiệu hóa cả
+    // snapshot đang raster; job kiểm lại sau encode, không phát bitmap đã đóng.
+    pool.entries.retain(|_, entry| {
+        let removed = entry.owners.release(owner_id);
+        released |= removed;
+        if entry.owners.is_empty() && (removed || entry.in_flight.load(Ordering::Acquire) == 0) {
+            entry.session.close(); false
+        } else { true }
+    });
     released
 }
 
@@ -1515,7 +1526,8 @@ fn render_accurate_png(
                 let Some(oldest) = pool
                     .entries
                     .iter()
-                    .filter(|(_key, entry)| entry.owners.is_empty())
+                    .filter(|(_key, entry)| entry.owners.is_empty()
+                        && entry.in_flight.load(Ordering::Acquire) == 0)
                     .min_by_key(|(_key, entry)| entry.last_used)
                     .map(|(key, _entry)| key.clone())
                 else {
@@ -1550,7 +1562,7 @@ fn render_accurate_png(
             .with_memory_budget_bytes(render_budget)
             .with_cancel_token(cancel_token.clone())
     };
-    let render_result = if transient {
+    let (job, _transient_session, session_flight) = if transient {
         // PERF (audit 2026-08-09 §L3C): máy ít RAM không đóng session của tab còn
         // sống để nhường chỗ. Tài liệu vượt pool chạy transient cache 0; chất lượng/DPI
         // giữ nguyên, chỉ lượt sau phải decode lại.
@@ -1559,15 +1571,16 @@ fn render_accurate_png(
             RenderSession::open_with_profile_paths(path, Some(&profile_path), None, intent)
                 .map_err(|error| format!("Không mở được PPE RenderSession: {error}"))?
                 .with_resource_cache_budget(0);
-        let result = session.render_page_srgb_region_timed(
+        let job = session.prepare_page_render(
             request.page as usize,
             dpi,
             PageBox::Crop,
             options(),
             raster_clip,
-        );
-        session.close();
-        result
+        )?;
+        // Giữ owner transient sống tới sau encode/post-check; drop sớm sẽ retire
+        // snapshot trước khi job bắt đầu raster.
+        (job, Some(session), None)
     } else {
         if !pool.entries.contains_key(&key) {
             let session =
@@ -1580,6 +1593,7 @@ fn render_accurate_png(
                     session,
                     last_used: 0,
                     owners: AccurateOwnerLeases::default(),
+                    in_flight: Arc::new(AtomicUsize::new(0)),
                 },
             );
         }
@@ -1591,35 +1605,36 @@ fn render_accurate_png(
             .expect("PPE session vừa được chèn phải tồn tại");
         entry.last_used = last_used;
         entry.owners.bind(session_owner_id, now);
-        let result = entry.session.render_page_srgb_region_timed(
+        let job = entry.session.prepare_page_render(
             request.page as usize,
             dpi,
             PageBox::Crop,
             options(),
             raster_clip,
-        );
-        let stats = entry.session.resource_cache_stats();
-        cache_stats = (
-            stats.image_hits,
-            stats.image_misses,
-            stats.form_hits,
-            stats.form_misses,
-            stats.page_hits,
-            stats.page_misses,
-        );
-        if result.is_err()
-            && pool
-                .entries
-                .get(&key)
-                .is_some_and(|entry| !entry.session.is_valid())
-        {
-            if let Some(mut invalid) = pool.entries.remove(&key) {
-                invalid.session.close();
-            }
-        }
+        )?;
+        entry.in_flight.fetch_add(1, Ordering::AcqRel);
+        let flight = AccurateRequestLease(Arc::clone(&entry.in_flight));
         drop(pool);
-        result
+        (job, None, Some(flight))
     };
+    // PERF (audit 2026-09-23 §R23.02): registry chỉ giữ trong lúc lấy snapshot.
+    // Raster/quy màu/encode không giữ pool, các tài liệu/owner khác vẫn truy cập
+    // được. Chưa đổi stdio/client sang multiplex hoặc tăng số tác vụ đồng thời.
+    let render_result = job.render_srgb();
+    if let Some(flight) = &session_flight {
+        let pool = accurate_sessions().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = pool.entries.get(&key).filter(|entry| Arc::ptr_eq(&entry.in_flight, &flight.0)) {
+            let stats = entry.session.resource_cache_stats();
+            cache_stats = (
+                stats.image_hits,
+                stats.image_misses,
+                stats.form_hits,
+                stats.form_misses,
+                stats.page_hits,
+                stats.page_misses,
+            );
+        }
+    }
     let (rendered, timings) = match render_result {
         Ok(result) => result,
         Err(PpeError::Cancelled) => return Err(AccurateWorkerFailure::Cancelled),
@@ -1672,6 +1687,13 @@ fn render_accurate_png(
         )
         .map_err(|error| format!("Không encode được PNG PPE: {error}"))?;
     trace_worker_cpu(&request.request_id, "encode-done", render_budget, cache_budget);
+    job.ensure_current()?;
+    // Validate lại đường vào gốc; `path` nội bộ đã canonical hóa có thể mang
+    // tiền tố \\?\ trên Windows, không được đưa trở lại bộ lọc input công khai.
+    let current_path = validate_document_path(&request.document.path, Some(&request.document.token))?;
+    if current_path != path {
+        return Err("Đích PDF đã thay đổi trong lúc raster/encode.".to_string().into());
+    }
     let render_ms =
         (timings.open + timings.parse + timings.raster + timings.color).as_millis() as u64;
     let substituted_fonts = rendered.warnings.substituted_fonts.clone();
@@ -4146,6 +4168,119 @@ pub fn shutdown_render_worker() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accurate_pool_pin_chong_sweep_nhung_last_owner_van_dong_snapshot() {
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"),
+            "/../../backend/tests/preflight_fixtures/pdfs/04_font_not_embedded.pdf"));
+        let mut pool = AccurateSessionPool::default();
+        let key = |name: &str| AccurateSessionKey { document_path: name.into(),
+            document_token: "1".into(), profile_path: PathBuf::new(), intent: "relative".into() };
+        let make_entry = |owner: Option<&str>, active: usize| {
+            let mut session = RenderSession::open_mem(bytes, None).unwrap();
+            let job = session.prepare_page_render(1, 72.0, PageBox::Crop,
+                RenderOptions::ink_accurate(), None).unwrap();
+            let mut owners = AccurateOwnerLeases::default();
+            if let Some(owner) = owner { owners.bind(owner, Instant::now()); }
+            (AccurateSessionEntry { session, owners, last_used: 0,
+                in_flight: Arc::new(AtomicUsize::new(active)) }, job)
+        };
+        let (own, own_job) = make_entry(Some("owner-a"), 1);
+        let (orphan, orphan_job) = make_entry(None, 1);
+        let orphan_flight = AccurateRequestLease(orphan.in_flight.clone());
+        let (idle, idle_job) = make_entry(None, 0);
+        pool.entries.insert(key("own"), own);
+        pool.entries.insert(key("orphan-active"), orphan);
+        pool.entries.insert(key("idle"), idle);
+        assert_eq!(close_ownerless_accurate_sessions(&mut pool), 1);
+        assert!(idle_job.ensure_current().is_err());
+        assert!(orphan_job.ensure_current().is_ok());
+        assert!(!release_accurate_owner_from_pool(&mut pool, "missing"));
+        assert!(orphan_job.ensure_current().is_ok(), "release owner khác không được giết job orphan đang pin");
+        assert!(release_accurate_owner_from_pool(&mut pool, "owner-a"));
+        assert!(own_job.ensure_current().is_err());
+        assert!(orphan_job.ensure_current().is_ok());
+        drop(orphan_flight);
+        assert_eq!(close_ownerless_accurate_sessions(&mut pool), 1);
+        assert!(orphan_job.ensure_current().is_err());
+    }
+
+    #[test]
+    #[ignore = "probe log-only entry PPE native cần PRYNX_RENDER_WORKER_TEST_PDF"]
+    fn native_snapshot_raster_nha_pool_va_chay_hai_page() {
+        crate::pdf_engine::worker_qos::configure();
+        let path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF").unwrap();
+        let token = crate::pdf_file_identity_token(crate::pdf_file_identity(&path).unwrap());
+        let canonical = validate_document_path(&path, Some(&token)).unwrap();
+        struct Cleanup(String);
+        impl Drop for Cleanup { fn drop(&mut self) { close_accurate_sessions_for_path(&self.0); } }
+        let _cleanup = Cleanup(canonical.clone());
+        let request = |page, dpi, owner: &str| {
+            let mut request = validation_request(&path, token.clone());
+            request.request_id = format!("native-snapshot-{page}-{dpi}");
+            request.session_owner_id = Some(owner.into());
+            request.page = page;
+            request.raster = RenderRaster::Dpi { dpi, clip: None };
+            request.color = RenderColor { pipeline: RenderColorPipeline::Accurate,
+                profile_id: Some("fogra39".into()), intent: Some("relative".into()) };
+            request.pipeline_identity = RENDER_WORKER_ACCURATE_PIPELINE_ID.into();
+            request.soundness = RenderSoundness::ColorVerified;
+            request
+        };
+        let key = AccurateSessionKey { document_path: canonical.clone(), document_token: token.clone(),
+            profile_path: accurate_profile_path("fogra39").unwrap(), intent: "relative".into() };
+        let origin = Instant::now();
+        let spawn = |request| std::thread::spawn(move || {
+            let result = super::render_response(request, None);
+            (result, origin.elapsed().as_millis())
+        });
+        let first = spawn(request(1, 92.0, "native-snapshot-main"));
+        let mut pool_unlocked_while_pinned = false;
+        while !first.is_finished() && origin.elapsed() < Duration::from_secs(60) {
+            if let Ok(pool) = accurate_sessions().try_lock() {
+                pool_unlocked_while_pinned = pool.entries.get(&key)
+                    .is_some_and(|entry| entry.in_flight.load(Ordering::Acquire) > 0);
+            }
+            if pool_unlocked_while_pinned { break; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(pool_unlocked_while_pinned, "raster không được giữ pool tới khi trả PNG");
+        let second = spawn(request(2, 24.0, "native-snapshot-thumb"));
+        let mut overlapped = false;
+        while !first.is_finished() && !second.is_finished() && origin.elapsed() < Duration::from_secs(60) {
+            if let Ok(pool) = accurate_sessions().try_lock() {
+                overlapped |= pool.entries.get(&key)
+                    .is_some_and(|entry| entry.in_flight.load(Ordering::Acquire) == 2);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ((first_response, first_png), first_ms) = first.join().unwrap();
+        let ((second_response, second_png), second_ms) = second.join().unwrap();
+        assert!(overlapped, "hai page phải thực sự pin cùng session đồng thời");
+        assert_eq!(first_response.status, RenderResponseStatus::Ready, "{first_response:?}");
+        assert_eq!(second_response.status, RenderResponseStatus::Ready, "{second_response:?}");
+        assert_eq!(hex::encode(sha2::Sha256::digest(&first_png)),
+            "033c1ab2b4c01f9fccd7e2de4d100180de263085071c620104cf1ecbaa7b38f7");
+        let (repeat_response, repeat_png) = super::render_response(request(2, 24.0, "native-snapshot-thumb"), None);
+        assert_eq!(repeat_response.status, RenderResponseStatus::Ready);
+        assert_eq!(second_png, repeat_png);
+        release_accurate_session_owner("native-snapshot-main");
+        assert!(accurate_sessions().lock().unwrap().entries.contains_key(&key));
+        release_accurate_session_owner("native-snapshot-thumb");
+        assert!(!accurate_sessions().lock().unwrap().entries.contains_key(&key));
+        let report = serde_json::json!({"scope":"native PPE render_response + PNG; no stdio/client multiplex",
+            "pool_unlocked_while_pinned":pool_unlocked_while_pinned, "two_jobs_same_session":overlapped,
+            "main_finished_ms":first_ms,"thumbnail_finished_ms":second_ms,
+            "main_png_sha256":hex::encode(sha2::Sha256::digest(&first_png)),
+            "thumbnail_png_sha256":hex::encode(sha2::Sha256::digest(&second_png)),
+            "owner_lifecycle":true,"main_timing":first_response.timing,"thumbnail_timing":second_response.timing,
+            "executable_sha256":sha256_file(&std::env::current_exe().unwrap()).unwrap(),
+            "pdf_sha256":sha256_file(Path::new(&path)).unwrap()});
+        eprintln!("NATIVE_SNAPSHOT_PROBE {report}");
+        if let Ok(path) = std::env::var("PRYNX_NATIVE_SNAPSHOT_REPORT") {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
+            serde_json::to_writer_pretty(&mut file, &report).unwrap();
+        }
+    }
     #[test]
     fn serial_document_affinity_chi_opt_in_dev() {
         assert!(!super::serial_document_affinity_for_build(true, None));
