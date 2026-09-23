@@ -1413,6 +1413,24 @@ impl From<PpeError> for AccurateWorkerFailure {
     }
 }
 
+fn trace_worker_cpu(_request_id: &str, _stage: &str, _render_budget: usize, _cache_budget: usize) {
+    #[cfg(all(windows, debug_assertions))]
+    {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        if !*ENABLED.get_or_init(|| std::env::var("PRYNX_WORKER_CPU_PROBE").as_deref() == Ok("1")) {
+            return;
+        }
+        // Chỉ đọc CPU/thread hiện tại, không đổi affinity hoặc priority của hệ thống.
+        let (cpu, thread) = unsafe {
+            (windows::Win32::System::Threading::GetCurrentProcessorNumber(),
+             windows::Win32::System::Threading::GetCurrentThreadId())
+        };
+        crate::perf_log(&format!(
+            "PPE_CPU_PROBE pid={} thread={thread} cpu={cpu} stage={_stage} request_id={_request_id} render_budget={_render_budget} cache_budget={_cache_budget}",
+            std::process::id()));
+    }
+}
+
 fn render_accurate_png(
     path: &str,
     request: &RenderRequest,
@@ -1453,6 +1471,7 @@ fn render_accurate_png(
         .as_deref()
         .ok_or_else(|| "PPE worker thiếu session_owner_id.".to_string())?;
     let (render_budget, cache_budget) = accurate_worker_budgets();
+    trace_worker_cpu(&request.request_id, "start", render_budget, cache_budget);
     let mut pool = accurate_sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1602,6 +1621,7 @@ fn render_accurate_png(
             )))
         }
     };
+    trace_worker_cpu(&request.request_id, "render-done", render_budget, cache_budget);
     crate::perf_log(&format!(
         "PPE_SESSION_CACHE request_id={} page={} mode={} image_hits={} image_misses={} form_hits={} form_misses={} page_hits={} page_misses={}",
         request.request_id,
@@ -1637,6 +1657,7 @@ fn render_accurate_png(
             ColorType::Rgb8.into(),
         )
         .map_err(|error| format!("Không encode được PNG PPE: {error}"))?;
+    trace_worker_cpu(&request.request_id, "encode-done", render_budget, cache_budget);
     let render_ms =
         (timings.open + timings.parse + timings.raster + timings.color).as_millis() as u64;
     let substituted_fonts = rendered.warnings.substituted_fonts.clone();
@@ -1951,6 +1972,7 @@ fn read_worker_input(
 
 /// Entry dài hạn của worker. stdout chỉ ghi frame; chẩn đoán đi stderr/file log.
 pub fn run_worker_stdio() -> i32 {
+    super::worker_qos::configure();
     start_accurate_session_sweeper();
     let active_tokens = Arc::new(Mutex::new(HashMap::<String, CancelToken>::new()));
     let (input_sender, input_receiver) = mpsc::channel();
@@ -2422,19 +2444,106 @@ impl Drop for PendingWorkerLease {
     }
 }
 
-static PREEMPTED_BACKGROUND_PIDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+// PERF (audit 2026-09-23 §R23.SHARED-SESSION): nhường lane có deadline,
+// không phải giới hạn worker/DPI. Codec không có checkpoint vẫn có kill fallback.
+const PPE_PRIORITY_CANCEL_GRACE: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PriorityPreemptionOutcome { Cooperative, Killed, Failed }
+
+#[derive(Default)]
+struct PriorityPreemptionState {
+    response_received: bool,
+    outcome: Option<PriorityPreemptionOutcome>,
+}
+
+struct PriorityPreemptionNotice {
+    state: Mutex<PriorityPreemptionState>,
+    wake: Condvar,
+}
+
+impl PriorityPreemptionNotice {
+    fn new() -> Self {
+        Self { state: Mutex::new(PriorityPreemptionState::default()), wake: Condvar::new() }
+    }
+
+    fn response_received(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).response_received = true;
+        self.wake.notify_all();
+    }
+
+    fn finish(&self, outcome: PriorityPreemptionOutcome) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.outcome.is_none() { state.outcome = Some(outcome); }
+        self.wake.notify_all();
+    }
+
+    fn wait_for_response(&self, grace: Duration) -> bool {
+        let deadline = Instant::now() + grace;
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        while !state.response_received {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() { return false; }
+            state = self.wake.wait_timeout(state, remaining)
+                .unwrap_or_else(|p| p.into_inner()).0;
+        }
+        true
+    }
+
+    fn wait_outcome(&self) -> PriorityPreemptionOutcome {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        while state.outcome.is_none() {
+            state = self.wake.wait(state).unwrap_or_else(|p| p.into_inner());
+        }
+        state.outcome.unwrap()
+    }
+}
+
+struct PriorityPreemptionCompletion(Arc<PriorityPreemptionNotice>);
+impl Drop for PriorityPreemptionCompletion {
+    fn drop(&mut self) { self.0.finish(PriorityPreemptionOutcome::Failed); }
+}
+
+type PriorityPreemptionKey = (u32, u64);
+static PRIORITY_PREEMPTIONS: OnceLock<Mutex<HashMap<PriorityPreemptionKey, Arc<PriorityPreemptionNotice>>>> = OnceLock::new();
+
+fn priority_preemptions() -> &'static Mutex<HashMap<PriorityPreemptionKey, Arc<PriorityPreemptionNotice>>> {
+    PRIORITY_PREEMPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_priority_preemption(child_pid: u32, wire_request_id: u64) -> PriorityPreemptionCompletion {
+    let notice = Arc::new(PriorityPreemptionNotice::new());
+    if let Some(previous) = priority_preemptions().lock().unwrap_or_else(|p| p.into_inner())
+        .insert((child_pid, wire_request_id), Arc::clone(&notice))
+    {
+        previous.finish(PriorityPreemptionOutcome::Failed);
+    }
+    PriorityPreemptionCompletion(notice)
+}
+
+fn take_priority_preemption(child_pid: u32, wire_request_id: u64) -> Option<PriorityPreemptionOutcome> {
+    let notice = priority_preemptions().lock().unwrap_or_else(|p| p.into_inner())
+        .remove(&(child_pid, wire_request_id));
+    notice.map(|notice| {
+        // Giữ mutex worker/gate tới khi hành động preempt đã xong. Một Ready tới
+        // sát lúc hủy không được nhả lane rồi để kill fallback đánh nhầm request mới.
+        notice.response_received();
+        notice.wait_outcome()
+    })
+}
+
+fn priority_retry_for_response(outcome: Option<PriorityPreemptionOutcome>, status: RenderResponseStatus) -> bool {
+    matches!(outcome, Some(PriorityPreemptionOutcome::Cooperative | PriorityPreemptionOutcome::Killed))
+        && status == RenderResponseStatus::Cancelled
+}
+
+fn send_cooperative_cancel(lease: &ActiveRenderLease, request_id: &str) -> bool {
+    let cancel = RenderWorkerRequest::Cancel(CancelRequest { request_id: request_id.to_string() });
+    let mut stdin = lease.stdin.lock().unwrap_or_else(|p| p.into_inner());
+    write_frame(&mut *stdin, RenderWorkerFrameKind::Request, lease.wire_request_id, &cancel, &[]).is_ok()
+}
+
 static BACKGROUND_PREEMPTION_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-fn preempted_background_pids() -> &'static Mutex<HashSet<u32>> {
-    PREEMPTED_BACKGROUND_PIDS.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-fn take_preempted_background_pid(child_pid: u32) -> bool {
-    preempted_background_pids()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&child_pid)
-}
 
 fn preempt_background_on_interactive_lane() -> bool {
     let leases = {
@@ -2451,36 +2560,38 @@ fn preempt_background_on_interactive_lane() -> bool {
             .collect::<Vec<_>>();
         request_ids
             .into_iter()
-            .filter_map(|request_id| active.remove(&request_id))
+            .filter_map(|request_id| active.remove(&request_id).map(|lease| {
+                // Công bố notice khi còn giữ active registry: unregister của
+                // response phải thấy notice, kể cả khi bitmap vừa dựng xong.
+                let completion = register_priority_preemption(lease.child_pid, lease.wire_request_id);
+                (request_id, lease, completion)
+            }))
             .collect::<Vec<_>>()
     };
 
-    let mut killed_any = false;
-    for lease in leases {
-        // PERF (audit 2026-08-08 §RENDER.2): ghi lý do TRƯỚC kill. Nếu pipe đọc EOF
-        // nhanh hơn thread preempt ghi marker, background sẽ bị hiểu nhầm là crash thường
-        // và không retry. Kill thất bại thì rút marker lại.
-        preempted_background_pids()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(lease.child_pid);
-        let killed = lease
-            .child
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .kill()
-            .is_ok();
-        if killed {
-            killed_any = true;
-            BACKGROUND_PREEMPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+    let mut preempted_any = false;
+    for (request_id, lease, completion) in leases {
+        // PDFium/metadata chưa có checkpoint vẫn kill như trước. Cả hai đường
+        // dùng notice theo wire ID để reply Ready muộn không nhả slot trước kill.
+        let cooperative = lease.cooperative_cancel
+            && send_cooperative_cancel(&lease, &request_id)
+            && completion.0.wait_for_response(PPE_PRIORITY_CANCEL_GRACE);
+        let outcome = if cooperative {
+            PriorityPreemptionOutcome::Cooperative
+        } else if lease.child.lock().unwrap_or_else(|p| p.into_inner()).kill().is_ok() {
+            PriorityPreemptionOutcome::Killed
         } else {
-            preempted_background_pids()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&lease.child_pid);
+            PriorityPreemptionOutcome::Failed
+        };
+        completion.0.finish(outcome);
+        if outcome != PriorityPreemptionOutcome::Failed {
+            preempted_any = true;
+            BACKGROUND_PREEMPTION_COUNT.fetch_add(1, Ordering::Relaxed);
         }
+        crate::perf_log(&format!(
+            "RENDER_WORKER_PREEMPT mode={outcome:?} pid={} request_id={request_id}", lease.child_pid));
     }
-    killed_any
+    preempted_any
 }
 
 #[derive(Default)]
@@ -2531,14 +2642,14 @@ impl SharedLanePriorityGate {
             }
             if interactive && state.active_purpose == Some(RenderPurpose::Background) {
                 drop(state);
-                let killed = preempt_background_on_interactive_lane();
+                let preempted = preempt_background_on_interactive_lane();
                 state = self
                     .state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 // Background đã lấy gate nhưng có thể chưa kịp đăng ký child lease.
                 // Chờ rất ngắn để nó tiến tới điểm đăng ký hoặc tự nhả gate, tránh busy-spin.
-                if !killed && state.active_purpose == Some(RenderPurpose::Background) {
+                if !preempted && state.active_purpose == Some(RenderPurpose::Background) {
                     let (next, _) = self
                         .wake
                         .wait_timeout(state, std::time::Duration::from_millis(1))
@@ -2731,23 +2842,7 @@ fn cancel_active_render_request(request_id: &str) -> bool {
     if lease.cooperative_cancel {
         // PERF (audit 2026-08-09 §L4C): PPE có checkpoint CancelToken nên chỉ gửi control
         // một chiều. Giữ process sống đồng nghĩa giữ RenderSession, image cache và PageProgram.
-        let cancel = RenderWorkerRequest::Cancel(CancelRequest {
-            request_id: request_id.to_string(),
-        });
-        let sent = {
-            let mut stdin = lease
-                .stdin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            write_frame(
-                &mut *stdin,
-                RenderWorkerFrameKind::Request,
-                lease.wire_request_id,
-                &cancel,
-                &[],
-            )
-            .is_ok()
-        };
+        let sent = send_cooperative_cancel(&lease, request_id);
         if sent {
             crate::perf_log(&format!(
                 "RENDER_WORKER_CANCEL mode=cooperative pid={} request_id={}",
@@ -2966,18 +3061,33 @@ fn dispatch_locked_worker(
             );
     }
     let child_pid = slot.as_ref().expect("worker vừa được khởi tạo").child_pid;
+    let wire_request_id = slot.as_ref().expect("worker vừa được khởi tạo").next_request_id;
     let result = slot
         .as_mut()
         .expect("worker vừa được khởi tạo")
         .request(request, cancellation);
+    let priority_preemption = take_priority_preemption(child_pid, wire_request_id);
+    if priority_preemption == Some(PriorityPreemptionOutcome::Killed) {
+        // Reply Ready có thể tới sát deadline; PID đã bị kill thì vẫn phải nhả
+        // slot trước request kế tiếp, nhưng bitmap Ready hợp lệ không cần render lại.
+        if let Some(mut client) = slot.take() { client.terminate(); }
+    }
     match result {
         Ok(response) => {
-            let _ = take_preempted_background_pid(child_pid);
+            if matches!(&response.header, RenderWorkerResponse::Render(render)
+                if priority_retry_for_response(priority_preemption, render.status))
+            {
+                return Err(WorkerTransportFailure {
+                    request_started: true, cancelled: false, preempted_background: true,
+                    message: "PPE nền nhường lane; chờ interactive rồi thử lại cùng session.".into(),
+                });
+            }
             Ok(response)
         }
         Err(ClientRequestError::Cancelled) => Err(cancelled_transport_failure()),
         Err(ClientRequestError::Transport(message)) => {
-            let preempted_background = take_preempted_background_pid(child_pid);
+            let preempted_background = matches!(priority_preemption,
+                    Some(PriorityPreemptionOutcome::Cooperative | PriorityPreemptionOutcome::Killed));
             if let Some(mut client) = slot.take() {
                 client.terminate();
             }
@@ -3011,7 +3121,7 @@ fn dispatch_worker_request(
             ));
         }
         let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
-        if result.is_err() {
+        if guard.is_none() {
             if let Some(key) = affinity_key.as_deref() {
                 forget_document_affinity(manager, key, lane);
             }
@@ -3215,10 +3325,8 @@ pub fn close_document_with_policy(file_path: &str) -> Result<WorkerAttempt<bool>
         let Some(client) = guard.as_mut() else {
             return;
         };
-        let child_pid = client.child_pid;
         match client.request(&request, None) {
             Ok(frame) => {
-                let _ = take_preempted_background_pid(child_pid);
                 let result = match frame.header {
                     RenderWorkerResponse::CloseDocument(response)
                         if response.request_id == request_id && response.owner_id == owner_id =>
@@ -3892,10 +4000,9 @@ pub fn shutdown_render_worker() {
             kill_render_worker_pid(pid);
         }
     }
-    preempted_background_pids()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+    let notices = priority_preemptions().lock().unwrap_or_else(|p| p.into_inner())
+        .drain().map(|(_, notice)| notice).collect::<Vec<_>>();
+    for notice in notices { notice.finish(PriorityPreemptionOutcome::Failed); }
 }
 
 #[cfg(test)]
@@ -4347,6 +4454,59 @@ mod tests {
     }
 
     #[test]
+    fn priority_preemption_chi_retry_cancel_noi_bo_khong_nuot_cancel_user() {
+        for outcome in [None, Some(PriorityPreemptionOutcome::Failed)] {
+            assert!(!priority_retry_for_response(outcome, RenderResponseStatus::Cancelled));
+        }
+        for outcome in [PriorityPreemptionOutcome::Cooperative, PriorityPreemptionOutcome::Killed] {
+            assert!(priority_retry_for_response(Some(outcome), RenderResponseStatus::Cancelled));
+            for status in [RenderResponseStatus::Ready, RenderResponseStatus::Error, RenderResponseStatus::Unsupported] {
+                assert!(!priority_retry_for_response(Some(outcome), status));
+            }
+        }
+    }
+
+    #[test]
+    fn priority_preemption_reply_phai_cho_hanh_dong_preempt_ket_thuc() {
+        let notice = Arc::new(PriorityPreemptionNotice::new());
+        let completion = PriorityPreemptionCompletion(Arc::clone(&notice));
+        let reader_notice = Arc::clone(&notice);
+        let (arrived_tx, arrived_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            reader_notice.response_received();
+            arrived_tx.send(()).unwrap();
+            done_tx.send(reader_notice.wait_outcome()).unwrap();
+        });
+        arrived_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(notice.wait_for_response(Duration::ZERO));
+        assert!(done_rx.try_recv().is_err(), "không nhả slot trước khi preempt xong");
+        completion.0.finish(PriorityPreemptionOutcome::Cooperative);
+        drop(completion);
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap(), PriorityPreemptionOutcome::Cooperative);
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn priority_preemption_deadline_va_cleanup_khong_de_waiter_treo() {
+        let notice = Arc::new(PriorityPreemptionNotice::new());
+        assert!(!notice.wait_for_response(Duration::ZERO));
+        drop(PriorityPreemptionCompletion(Arc::clone(&notice)));
+        assert_eq!(notice.wait_outcome(), PriorityPreemptionOutcome::Failed);
+    }
+
+    #[test]
+    fn priority_preemption_marker_tach_dung_wire_request_trong_cung_pid() {
+        let first = register_priority_preemption(u32::MAX, 7);
+        let second = register_priority_preemption(u32::MAX, 8);
+        first.0.finish(PriorityPreemptionOutcome::Cooperative);
+        second.0.finish(PriorityPreemptionOutcome::Killed);
+        assert_eq!(take_priority_preemption(u32::MAX, 7), Some(PriorityPreemptionOutcome::Cooperative));
+        assert_eq!(take_priority_preemption(u32::MAX, 7), None);
+        assert_eq!(take_priority_preemption(u32::MAX, 8), Some(PriorityPreemptionOutcome::Killed));
+    }
+
+    #[test]
     fn native_request_id_khong_trung_khi_goi_lien_tiep() {
         let first = native_request_id("metadata");
         let second = native_request_id("metadata");
@@ -4375,6 +4535,35 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("background phải được đánh thức");
         waiter.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "probe riêng cần PRYNX_RENDER_WORKER_TEST_EXE; chỉ dừng worker do test tạo"]
+    fn priority_preemption_timeout_chi_dung_worker_rieng() {
+        struct Cleanup(RenderWorkerClient);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.terminate(); }
+        }
+        // Worker đã handshake nhưng không có Render: Cancel không tạo reply.
+        // Dùng trạng thái idle này để giả lập codec không trả checkpoint.
+        let client = Cleanup(spawn_render_worker_client(WorkerLane::Interactive).unwrap());
+        let pid = client.0.child_pid;
+        let wire_id = client.0.next_request_id;
+        register_active_render_request("priority-timeout-probe", ActiveRenderLease {
+            child: Arc::clone(&client.0.child), child_pid: pid,
+            stdin: Arc::clone(&client.0.stdin), wire_request_id: wire_id,
+            lane: WorkerLane::Interactive, purpose: RenderPurpose::Background,
+            cooperative_cancel: true,
+        });
+        let started = Instant::now();
+        assert!(preempt_background_on_interactive_lane());
+        let elapsed = started.elapsed();
+        assert!(elapsed >= PPE_PRIORITY_CANCEL_GRACE);
+        assert!(elapsed < Duration::from_secs(2), "kill fallback phải có giới hạn");
+        assert_eq!(take_priority_preemption(pid, wire_id), Some(PriorityPreemptionOutcome::Killed));
+        assert!(client.0.child.lock().unwrap().wait().is_ok());
+        assert!(!active_render_requests().lock().unwrap().contains_key("priority-timeout-probe"));
+        eprintln!("PPE_PRIORITY_FALLBACK pid={pid} elapsed_ms={} outcome=Killed", elapsed.as_millis());
     }
 
     #[test]
@@ -4566,6 +4755,10 @@ mod tests {
                     assert_eq!(lane, WorkerLane::Interactive);
                     if lanes > 0 && prefetch_priority >= 100 {
                         assert_ne!(pid, prefetch_lease.0, "active không dùng process prefetch");
+                    }
+                    if lanes == 0 && prefetch_priority >= 100 {
+                        assert_eq!(pid, prefetch_lease.0,
+                            "PPE nhường lane bằng CancelToken phải giữ process/session sống");
                     }
                 }
                 let (active, active_wall_ms, active_finished_ms) = active_result;
