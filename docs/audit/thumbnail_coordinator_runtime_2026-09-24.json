@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "scope": "thumbnail-render-coordinator-runtime-smoke",
+  "fixture": {
+    "name": "thumbnail-stress-1000.pdf",
+    "pages": 1000,
+    "sha256": "41323ab10eaf32f5cdf254bb21c3ef63c494473e8e1f62e8102bd1b0498ac7b8"
+  },
+  "webviewGate": {
+    "initialDomItems": 5,
+    "endDomItems": 5,
+    "endMaxIndex": 999,
+    "passed": true,
+    "report": "docs/audit/thumbnail_stress_1000_coordinator_2026-09-24.json"
+  },
+  "coordinatorEvidence": {
+    "ownerIdPattern": "thumbnail:<hash>",
+    "groupPattern": "thumbnail:<page>",
+    "pipelineIdentity": "pdfium-display-png-v1",
+    "sourceOnlyStatus": "ready",
+    "observedPages": [1, 2, 3, 4, 5, 997, 998, 999, 1000],
+    "sampleTotalMs": {
+      "page1": 123,
+      "page1000": 42
+    },
+    "markEncodedObserved": true
+  },
+  "nativeEvidence": {
+    "affinityHitObserved": true,
+    "documentHash": "cf76f3f65634",
+    "lanesObserved": ["background:2"]
+  },
+  "limitations": [
+    "Runtime log is global; examples are bounded by the smoke run timestamp but not a separate log file.",
+    "This proves coordinator/session routing and lifecycle, not release P95/RSS or shared RGBA transport."
+  ]
+}

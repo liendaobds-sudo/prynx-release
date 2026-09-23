@@ -172,3 +172,10 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Fixture 1.000 trang vẫn đạt virtualizer gate: 5 item DOM đầu/cuối, cuối index 999.
 - Log native ghi `RENDER_WORKER_AFFINITY action=hit lane=background:1` và thumbnail page 997–1000 `CACHE_HIT tier=disk`; document-affinity đang được dùng thật.
 - Bổ sung `markEncoded` cho thumbnail để chốt trace source-only, tránh giữ coordinator group sau khi Blob URL đã sẵn sàng.
+
+## Lô 16 — Runtime verify coordinator/session thumbnail
+
+- Report: `docs/audit/thumbnail_coordinator_runtime_2026-09-24.json` và `docs/audit/thumbnail_stress_1000_coordinator_2026-09-24.json`.
+- Smoke 1.000 trang sau commit `aaf9266`: initial/end **5 DOM items**, cuối index **999**.
+- Log bounded theo lượt ghi owner đã băm `thumbnail:c662e6ee`, group `thumbnail:<page>`, pipeline `pdfium-display-png-v1`, trạng thái `ready` cho page 1–5 và 997–1000; sample page 1 **123 ms**, page 1000 **42 ms**.
+- Native log đồng thời ghi `RENDER_WORKER_AFFINITY action=hit`, document hash `cf76f3f65634`, lane `background:2`.

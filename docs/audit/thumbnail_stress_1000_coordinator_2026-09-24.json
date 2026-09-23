@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "scope": "installed-webview-thumbnail-virtualizer-stress",
+  "artifact": {
+    "name": "thumbnail-stress-1000.pdf",
+    "sizeBytes": 496905,
+    "sha256": "41323ab10eaf32f5cdf254bb21c3ef63c494473e8e1f62e8102bd1b0498ac7b8",
+    "pathStored": false
+  },
+  "expectedPages": 1000,
+  "maxMountedItems": 200,
+  "initial": {
+    "itemCount": 5,
+    "minIndex": 0,
+    "maxIndex": 4,
+    "imageCount": 5,
+    "loadedImageCount": 5,
+    "scrollTop": 0,
+    "scrollHeight": 202484,
+    "clientHeight": 689,
+    "memory": {
+      "usedJSHeapSize": 76725899,
+      "totalJSHeapSize": 115262503,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "afterScrollEnd": {
+    "itemCount": 5,
+    "minIndex": 995,
+    "maxIndex": 999,
+    "imageCount": 4,
+    "loadedImageCount": 4,
+    "scrollTop": 201795,
+    "scrollHeight": 202484,
+    "clientHeight": 689,
+    "memory": {
+      "usedJSHeapSize": 80037002,
+      "totalJSHeapSize": 116264914,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "workspace": {
+    "numPages": 1000,
+    "thumbnailOpen": false,
+    "hasThumbSetter": true
+  },
+  "thumbnailPanel": {
+    "opened": true,
+    "previous": false
+  },
+  "virtualized": true,
+  "complete": true,
+  "failure": null,
+  "workspaceAfterOpen": {
+    "numPages": 1000,
+    "thumbnailOpen": true,
+    "hasThumbSetter": true
+  }
+}
