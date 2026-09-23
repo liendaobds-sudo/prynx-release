@@ -4633,6 +4633,121 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark log-only cần PRYNX_RENDER_WORKER_TEST_EXE/PDF"]
+    fn parent_manager_log_only_baseline() {
+        // PERF (audit 2026-09-23 §R23.LOG-ONLY): chỉ manager/worker riêng của test.
+        // Không gọi Tauri UI, không xóa cache của process PrynX đang mở.
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) { shutdown_render_worker(); }
+        }
+        let _cleanup = Cleanup;
+        let path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF").expect("thiếu PDF benchmark");
+        let executable = PathBuf::from(std::env::var_os("PRYNX_RENDER_WORKER_TEST_EXE")
+            .expect("thiếu worker benchmark"));
+        let samples: usize = std::env::var("PRYNX_RENDER_WORKER_LOG_SAMPLES")
+            .unwrap_or_else(|_| "30".into()).parse().expect("samples phải là số nguyên");
+        assert!(samples > 0);
+        assert_eq!(render_worker_mode(), RenderWorkerMode::Required,
+            "benchmark phải fail-closed, không tự lùi engine");
+        let pdf_hash = sha256_file(Path::new(&path)).unwrap();
+        let worker_hash = sha256_file(&executable).unwrap();
+        let identity = crate::pdf_file_identity_token(crate::pdf_file_identity(&path).unwrap());
+        let affinity_key = format!("{path}\u{0}{identity}");
+        let mut rows = Vec::new();
+        let mut reference = HashMap::new();
+        let phases = [
+            ("cold_full", 92.0, 10, None),
+            ("warm_full", 92.0, 10, None),
+            ("warm_tile", 188.0, 10, Some((1024, 512, 512, 512))),
+            ("background_thumbnail_cold", 24.0, 500, None),
+            ("background_thumbnail_warm", 24.0, 500, None),
+        ];
+        for sample in 0..samples {
+            let reset = close_document_with_policy(&path).expect("không đóng được cache của probe");
+            assert!(matches!(reset, WorkerAttempt::Completed(_)));
+            for (phase, dpi, priority, clip) in phases {
+                let request_id = format!("log-probe-{}-{sample}-{phase}", std::process::id());
+                let context = ViewerRenderContext {
+                    request_id: request_id.clone(),
+                    owner_id: "viewer:log-probe".into(),
+                    group_key: format!("page:1:{phase}"),
+                    generation: sample as u64 + 1,
+                    purpose: RenderPurpose::Accurate,
+                    priority,
+                    pipeline_identity: RENDER_WORKER_ACCURATE_PIPELINE_ID.into(),
+                };
+                let started = Instant::now();
+                let attempt = render_accurate_with_policy(
+                    &path, 1, dpi, 0, clip.map(|c| c.0), clip.map(|c| c.1),
+                    clip.map(|c| c.2), clip.map(|c| c.3), "viewer:log-probe:session",
+                    Some(&context),
+                );
+                let parent_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let output = match attempt {
+                    Ok(AccurateWorkerAttempt::Completed(output)) => output,
+                    other => {
+                        eprintln!("PPE_LOG_BASELINE_FAILURE sample={sample} phase={phase}");
+                        match other {
+                            Err(error) => panic!("render thất bại: {error}"),
+                            Ok(AccurateWorkerAttempt::Unsupported(error)) => panic!("unsupported: {error:?}"),
+                            _ => panic!("benchmark không được fallback/disabled"),
+                        }
+                    }
+                };
+                assert_eq!(output.response.status, RenderResponseStatus::Ready);
+                assert_eq!(output.response.soundness, RenderSoundness::ColorVerified);
+                assert_eq!(output.response.pipeline_identity, RENDER_WORKER_ACCURATE_PIPELINE_ID);
+                let png_hash = hex::encode(sha2::Sha256::digest(&output.bytes));
+                let pixel_key = format!("{dpi}:{clip:?}");
+                assert_eq!(reference.entry(pixel_key).or_insert_with(|| png_hash.clone()), &png_hash,
+                    "PNG phải khớp giữa cold/warm, lane và các lượt");
+                let manager = render_worker_manager();
+                let lane = if priority < 100 || manager.backgrounds.is_empty() {
+                    WorkerLane::Interactive
+                } else {
+                    *manager.document_affinity.lock().unwrap().get(&affinity_key)
+                        .expect("render nền phải có affinity")
+                };
+                let slot = match lane {
+                    WorkerLane::Interactive => &manager.interactive,
+                    WorkerLane::Background(index) => &manager.backgrounds[index],
+                };
+                let worker_pid = slot.lock().unwrap().as_ref().expect("worker còn sống").child_pid;
+                let row = serde_json::json!({
+                    "sample": sample + 1, "phase": phase, "page": 1, "dpi": dpi,
+                    "clip": clip, "priority": priority, "request_id": request_id,
+                    "parent_wall_ms": parent_wall_ms, "worker_timing": output.response.timing,
+                    "worker_pid": worker_pid, "lane": format!("{lane:?}"),
+                    "bitmap_width": output.response.bitmap_width,
+                    "bitmap_height": output.response.bitmap_height,
+                    "png_bytes": output.bytes.len(), "png_sha256": png_hash,
+                    "geometry_approximated": output.response.geometry_approximated,
+                });
+                eprintln!("PPE_LOG_BASELINE_ROW {row}");
+                rows.push(row);
+            }
+        }
+        assert_eq!(sha256_file(Path::new(&path)).unwrap(), pdf_hash);
+        assert_eq!(sha256_file(&executable).unwrap(), worker_hash);
+        let report = serde_json::json!({
+            "schema_version": 1, "scope": "headless-native-manager-worker-png",
+            "samples_per_phase": samples, "complete": true,
+            "cold_kind": "document-session-cleared; worker-process-and-OS-cache-retained",
+            "excludes": ["Tauri IPC entry", "WebView", "DOM", "decode", "compositor", "actual sidebar"],
+            "pdf_sha256": pdf_hash, "worker_sha256": worker_hash,
+            "parent_sha256": sha256_file(&std::env::current_exe().unwrap()).unwrap(),
+            "background_lanes": configured_background_lane_count(), "rows": rows,
+        });
+        if let Ok(path) = std::env::var("PRYNX_RENDER_WORKER_LOG_REPORT") {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+                .expect("report phải là file mới, không ghi đè lượt trước");
+            serde_json::to_writer_pretty(&mut file, &report).unwrap();
+        }
+        eprintln!("PPE_LOG_BASELINE_COMPLETE samples={samples}");
+    }
+
+    #[test]
     #[ignore = "runtime thủ công cần PRYNX_RENDER_WORKER_TEST_EXE/PDF và FOGRA39"]
     fn parent_manager_render_ppe_accurate_pdf_that() {
         let file_path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF")

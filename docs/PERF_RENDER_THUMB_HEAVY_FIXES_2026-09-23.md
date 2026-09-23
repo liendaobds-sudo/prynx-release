@@ -387,3 +387,22 @@ cargo build --release --offline --example perf_profile --features perf-probe
 - Verify: `cargo test --offline --lib pdf_engine::render_worker::tests` **38 passed/3 manual runtime probes ignored**; `cargo check --offline` đạt. Test build có 2 warning, check có 17 warning ở các hàm có sẵn ngoài lô. `git diff --check` đạt.
 - Chưa rebuild/thay EXE đang chạy: hash vẫn `33c461f39ffaca6739b5f7e13fd15175a678ebc63774f7aa2672846e90ac8764`. Chưa đo UI/open-count/P95 cho thay đổi này, không tuyên bố app nhanh hơn từ unit test.
 - Phạm vi còn mở rõ ràng: affinity này vẫn chỉ dành cho lane nền; shared session giữa interactive và thumbnail còn cần giải quyết routing, preemption và profile/owner lifecycle. Các file parent Viewer/hook hiện có thay đổi khác chưa được đưa vào lô. Quyền điều khiển UI vẫn thiếu, không dùng tool khác để vượt giới hạn.
+
+## Lô 34 — Benchmark log-only qua manager/worker thật, không mở UI
+
+- **Chốt phương pháp mới của user:** benchmark bằng log/script, không điều khiển cửa sổ PrynX. Quyền UI đã được xin lại thành công nhưng user chọn không dùng; không được tiếp tục coi quyền UI là blocker cho benchmark. Các giới hạn đo phải ghi đúng, không thay số đo pipeline bằng tuyên bố ảnh đã xuất hiện trên màn hình.
+- Thêm `examples/render_worker_bench.rs`: chỉ nhận `--prynx-render-worker`, gọi đúng `run_render_worker_stdio`, không có nhánh gọi `app_lib::run`/WebView. Build example riêng không ghi đè EXE app. Test tham số **1/1**, smoke worker thật trên file khách đạt: cold/warm PNG, cooperative cancel **2 ms**, PID worker giữ nguyên sau cancel và render tiếp thành công.
+- Probe `parent_manager_log_only_baseline` gọi manager/worker production qua protocol hiện có, bắt buộc mode `required` và PPE accurate; lỗi/unsupported/fallback làm fail. Mỗi vòng xóa session tài liệu **trong worker của probe**, giữ process/OS cache; chạy full92 cold/warm, tile188 `(1024,512,512,512)`, rồi thumbnail PPE24 nền cold/warm. Đây không phải sidebar PDFium hiện tại.
+- Smoke 2 vòng đạt; baseline **30 vòng × 5 pha = 150 request** đạt, request ID duy nhất, PNG khớp theo DPI/clip qua cold/warm và các lượt, không geometry approximation. Report `docs/audit/ppe_headless_log_baseline_2026-09-23.json`; log thô `.tmp/ppe_log_baseline_2026-09-23.log` giữ toàn bộ dòng, không chỉ sample đẹp. Worker hash `57dfc24f…47cec4`, parent test hash `27ac291e…296f47`, build dev (không release).
+
+| Pha — thời gian parent gọi manager đến khi nhận PNG | P50 | P95 |
+|---|---:|---:|
+| Full-page 92 DPI, session cold | 2071 ms | 2218 ms |
+| Full-page 92 DPI, session warm | 1788 ms | 1902 ms |
+| Tile 188 DPI, session warm | 155 ms | 166 ms |
+| Thumbnail PPE 24 DPI, session nền cold | 591 ms | 668 ms |
+| Thumbnail PPE 24 DPI, session nền warm | 281 ms | 292 ms |
+
+- Cùng một file nhưng main ở PID/lane Interactive, thumbnail PPE ở PID/lane Background khác: bằng chứng runtime rằng gọi cùng PPE **chưa** chia sẻ session xuyên lane. Affinity nền hoạt động đúng, cold reset cố ý cho vòng sau có thể đổi lane. Đây là mốc trước bước hợp nhất session, không coi lô 33 đã hoàn thành document-affinity toàn kiến trúc.
+- Queue trong probe tuần tự này bằng 0; không suy ra queue trong app/tải đồng thời không còn là nút thắt. Không bao gồm Tauri IPC entry, WebView decode, DOM/compositor, sidebar thật hoặc cả cây RAM. P95 này không thay P95 UI lịch sử, không chứng minh tất cả chỉ tiêu trải nghiệm đã đạt.
+- Regression module worker **38 passed/4 manual probes ignored**; probe log mới đã chạy tường minh ở trên. EXE app đang mở vẫn hash `33c461f3…ac8764`; không kill/restart app, backend hoặc Vite trong lô. Còn phải triển khai chia sẻ session/lane, fast path còn thiếu và các phần kiến trúc đã liệt kê — không phải chỉ còn test.
