@@ -54,12 +54,13 @@ pub mod perf_probe {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
-    static NANOS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-    static CALLS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    static NANOS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+    static CALLS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
     pub const END_PATH: usize = 0;
     pub const PAINT_COLOR: usize = 1;
     pub const COVERAGE: usize = 2;
     pub const COMPOSITE: usize = 3;
+    pub const COMPOSITE_RGB: usize = 4;
 
     pub struct Span(usize, Instant);
     pub fn span(stage: usize) -> Span {
@@ -77,7 +78,7 @@ pub mod perf_probe {
         }
     }
     pub fn snapshot() -> Vec<(&'static str, u64, f64)> {
-        ["end_path", "paint_color", "coverage", "composite"]
+        ["end_path", "paint_color", "coverage", "composite", "composite_rgb"]
             .into_iter()
             .enumerate()
             .map(|(i, name)| (
@@ -93,7 +94,7 @@ pub mod perf_probe {
         reset();
         { let _span = span(PAINT_COLOR); }
         let snapshot = snapshot();
-        assert_eq!(snapshot.len(), 4);
+        assert_eq!(snapshot.len(), 5);
         assert_eq!(snapshot[PAINT_COLOR].0, "paint_color");
         assert!(snapshot[PAINT_COLOR].1 >= 1);
         assert!(snapshot[PAINT_COLOR].2.is_finite() && snapshot[PAINT_COLOR].2 >= 0.0);

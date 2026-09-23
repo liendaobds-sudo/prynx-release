@@ -309,3 +309,22 @@ cargo build --release --offline --example perf_profile --features perf-probe
 - Probe trước và sau instrumentation đều trả **2173×3622**, 23611818 byte RGB, checksum u64 **`13864267892951180143`**. Output raw chẩn đoán nằm tại `.tmp/customer-vector-profile-92.json` (không phải artifact release/P95).
 - Verify: toàn bộ `cargo test --release --offline` mặc định đạt; bật `perf-probe`: **735 passed, 4 ignored**, không lỗi. Bốn ignored là benchmark thủ công, không bị sửa để pass. Chưa rebuild Tauri/maturin vì lô này chỉ thêm công cụ đo opt-in, chưa đổi kernel mặc định.
 - Hướng lô sau: composite/vector và chi phí thực thi state/path, sau đó đo pixel parity trước khi giữ bản tối ưu. Không tuyên bố app nhanh lên từ lô profiler này.
+
+## Lô 28 — Composite Normal: hoist điều kiện theo paint, giữ công thức pixel
+
+- Sửa `ink.rs`: nhánh mực Normal được chọn một lần mỗi kênh; dùng slice theo hàng cho mực/alpha để tránh dispatch/kiểm biên lặp. Thử riêng chỉ cải thiện nhỏ. Profiler tách thêm RGB sidecar xác nhận ~350 ms nằm ở đó.
+- Nhánh RGB Normal trên `OpaqueBackdrop` chuẩn bị màu nguồn/declared/overprint một lần mỗi path, không lặp kiểm mode và clamp nguồn ở mỗi pixel. Nhánh group premultiplied và blend khác vẫn dùng đường tổng quát; công thức float, thứ tự nhân/cộng, trạng thái CLEAN/DIRTY/INVALID/LOSSY, spot và alpha giữ nguyên. Không thêm cap/worker/buffer hoặc đổi DPI.
+- Test đối chiếu với `composite_at` cũ trên toàn bộ planes/alpha (bit-level), RGB/state và ngoài ROI: 360 tổ hợp loại sidecar/nguồn RGB, overprint, declared mask, alpha, Normal/SoftLight/Hue. Test xanh cả trước và sau bản vá.
+- A/B lõi có binary baseline giữ riêng; dữ liệu `docs/audit/ppe_composite_ab_2026-09-23.json` gồm bản cũ, nhánh Normal-only trung gian, bản cuối và thử ít tài nguyên. Cùng file khách/92 DPI/FOGRA39/options, tất cả trả **2173×3622**, checksum u64 **`13864267892951180143`**.
+
+| Phép đo lõi (lượt warm) | Trước | Sau |
+|---|---:|---:|
+| Composite | 594–621 ms | **310–319 ms** |
+| Toàn raster | 1593–1643 ms | **1298–1317 ms** |
+| Render gồm chuyển màu | 1874–1920 ms | **1577–1596 ms** |
+| Raster khi Rayon=1, render budget 1536/cache 64 MiB | 1738–1750 ms | **1450–1456 ms** |
+
+- Đây là probe ít mẫu, không phải P95 app; chế độ Rayon=1/cache nhỏ là mô phỏng, chưa thay máy RAM thấp vật lý. Không tăng concurrency để lấy tốc độ. Thời gian composite giảm khoảng 47%, raster khoảng 19% trong probe cùng máy.
+- Verify: PPE mặc định **735 passed/4 manual benchmarks ignored**; bật profiler **736 passed/4 ignored**. Maturin dev release và Tauri debug (overlay dev, không installer) rebuild đạt. Backend PPE/native/facade/session/memory/overprint **118 passed**; một warning Pydantic có sẵn. Tauri có warning dead-code ở phần ngoài lô; không nới gate.
+- Runtime `docs/audit/viewer_customer_composite_smoke_2026-09-23.json` bằng hai binary mới: **2/2 valid, 0 rejection/fallback/console/HTTP error**, cold FCVF **4422 ms**, warm zoom **1124 ms**, blank-gap quan sát được **0**. Không gọi một cặp này là P95 mới. Report ghi hash EXE/PYD; source unrelated vẫn giữ nguyên.
+- Phần chưa đóng: state/path ngoài end_path và raster còn ~1,3s ở lõi; end-to-end cold vẫn nhiều giây, cần tối ưu tiếp và đo lại P95 cuối chiến dịch. Không đánh dấu cả kế hoạch hoàn tất.

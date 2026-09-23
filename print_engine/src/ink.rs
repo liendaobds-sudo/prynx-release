@@ -1088,6 +1088,23 @@ impl InkBuffer {
                 paint.blend
             };
             let plane = &mut self.planes[ch];
+            if mode.is_normal() {
+                // PERF (audit 2026-09-23 §R23.COMPOSITE): blend Normal không
+                // phụ thuộc backdrop. Chọn nhánh một lần mỗi kênh và dùng
+                // slice theo hàng để LLVM bỏ kiểm biên/dispatch ở từng pixel.
+                // Giữ đúng thứ tự phép float; không thay alpha=1 bằng gán tắt.
+                for y in region.y0..region.y1 {
+                    let row = y as usize * w;
+                    let start = row + region.x0 as usize;
+                    let end = row + region.x1 as usize;
+                    for (dst, cov) in plane[start..end].iter_mut().zip(&coverage[start..end]) {
+                        if *cov <= 0.0 { continue; }
+                        let a = (*cov * paint.alpha).clamp(0.0, 1.0);
+                        *dst = *dst * (1.0 - a) + src * a;
+                    }
+                }
+                continue;
+            }
             for y in region.y0..region.y1 {
                 let row = y as usize * w;
                 for x in region.x0..region.x1 {
@@ -1105,14 +1122,14 @@ impl InkBuffer {
 
         for y in region.y0..region.y1 {
             let row = y as usize * w;
-            for x in region.x0..region.x1 {
-                let i = row + x as usize;
-                let cov = coverage[i];
-                if cov <= 0.0 {
+            let start = row + region.x0 as usize;
+            let end = row + region.x1 as usize;
+            for (dst, cov) in self.alpha[start..end].iter_mut().zip(&coverage[start..end]) {
+                if *cov <= 0.0 {
                     continue;
                 }
-                let a = (cov * paint.alpha).clamp(0.0, 1.0);
-                self.alpha[i] = self.alpha[i] * (1.0 - a) + a;
+                let a = (*cov * paint.alpha).clamp(0.0, 1.0);
+                *dst = *dst * (1.0 - a) + a;
             }
         }
         Ok(())
@@ -1120,6 +1137,11 @@ impl InkBuffer {
 
     fn composite_rgb_region(&mut self, coverage: &[f32], region: Region, paint: &InkPaint) {
         if self.rgb_sidecar.is_none() {
+            return;
+        }
+        #[cfg(feature = "perf-probe")]
+        let _rgb_span = crate::perf_probe::span(crate::perf_probe::COMPOSITE_RGB);
+        if paint.blend.is_normal() && self.composite_normal_rgb_region(coverage, region, paint) {
             return;
         }
         let w = self.width as usize;
@@ -1130,6 +1152,53 @@ impl InkBuffer {
                 self.composite_rgb_at(i, coverage[i], paint);
             }
         }
+    }
+
+    fn composite_normal_rgb_region(&mut self, coverage: &[f32], region: Region, paint: &InkPaint) -> bool {
+        let Some(sidecar) = self.rgb_sidecar.as_mut() else { return false; };
+        if !matches!(sidecar.mode, RgbSurfaceMode::OpaqueBackdrop) { return false; }
+        // PERF (audit 2026-09-23 §R23.COMPOSITE): màu nguồn, blend và declared
+        // không đổi trong một path. Giữ công thức cũ nhưng chuẩn bị một lần,
+        // không gọi dispatch Normal/kiểm mode/đọc alpha backdrop cho từng pixel.
+        let source = paint.blend_rgb.map(|rgb| rgb.map(|v| v.clamp(0.0, 1.0)));
+        let affects_process = !paint.overprint || (0..4).any(|ch| paint.declared.contains(ch));
+        if source.is_none() && !affects_process { return true; }
+        let replaces_process = !paint.overprint || (0..4).all(|ch| paint.declared.contains(ch));
+        let width = self.width as usize;
+        for y in region.y0..region.y1 {
+            let row = y as usize * width;
+            let start = row + region.x0 as usize;
+            let end = row + region.x1 as usize;
+            for ((pixel, state), cov) in sidecar.pixels[start..end].iter_mut()
+                .zip(&mut sidecar.state[start..end]).zip(&coverage[start..end])
+            {
+                if *cov <= 0.0 { continue; }
+                let a = (*cov * paint.alpha).clamp(0.0, 1.0);
+                if a <= 0.0 { continue; }
+                if let Some(source) = source {
+                    match *state {
+                        RGB_VALID_CLEAN | RGB_VALID_DIRTY => {
+                            for ch in 0..3 { pixel[ch] = pixel[ch] * (1.0 - a) + source[ch] * a; }
+                            *state = RGB_VALID_DIRTY;
+                        }
+                        RGB_INVALID | RGB_LOSSY => {
+                            if a >= 1.0 - 1e-6 {
+                                *pixel = source;
+                                *state = RGB_VALID_DIRTY;
+                            } else { *state = RGB_LOSSY; }
+                        }
+                        _ => *state = RGB_LOSSY,
+                    }
+                } else {
+                    *state = match *state {
+                        RGB_VALID_CLEAN | RGB_INVALID => RGB_INVALID,
+                        RGB_VALID_DIRTY | RGB_LOSSY if replaces_process && a >= 1.0 - 1e-6 => RGB_INVALID,
+                        _ => RGB_LOSSY,
+                    };
+                }
+            }
+        }
+        true
     }
 
     fn composite_rgb_at(&mut self, index: usize, coverage: f32, paint: &InkPaint) {
@@ -2749,6 +2818,69 @@ mod tests {
             &before[..],
             "coverage 0 không được đổi buffer"
         );
+    }
+
+    #[test]
+    fn region_composite_matches_scalar_bits_for_normal_blend_and_spots() {
+        // PERF (audit 2026-09-23 §R23.COMPOSITE): khóa công thức mực/alpha,
+        // overprint, RGB sidecar và phần ngoài ROI trước khi chuyên biệt vòng lặp.
+        const W: u32 = 9;
+        const H: u32 = 5;
+        let region = Region { x0: 1, y0: 1, x1: 8, y1: 4 };
+        let coverage: Vec<f32> = (0..W * H)
+            .map(|i| [0.0, 0.125, 1.0, 0.51, 1.4, -0.1][i as usize % 6])
+            .collect();
+        for rgb_case in 0..5 {
+            for overprint in [false, true] {
+                for declared in [ChannelMask::PROCESS, ChannelMask::single(3), ChannelMask::single(4), ChannelMask::EMPTY] {
+                    for blend in [BlendMode::Normal, BlendMode::SoftLight, BlendMode::Hue] {
+                        for alpha in [0.0, 0.3, 1.0] {
+                            let mut space = InkSpace::new();
+                            space.register(Colorant::Spot("ProbeSpot".to_string())).unwrap();
+                            let mut batch = InkBuffer::new(W, H, space.clone()).unwrap();
+                            let mut scalar = InkBuffer::new(W, H, space).unwrap();
+                            for buffer in [&mut batch, &mut scalar] {
+                                for (ch, plane) in buffer.planes.iter_mut().enumerate() {
+                                    for (i, value) in plane.iter_mut().enumerate() {
+                                        *value = ((i * 13 + ch * 17) % 97) as f32 / 96.0;
+                                    }
+                                }
+                                buffer.alpha.fill(0.37);
+                                if rgb_case > 0 {
+                                    assert!(buffer.ensure_rgb_sidecar().unwrap());
+                                    let rgb = buffer.rgb_sidecar.as_mut().unwrap();
+                                    if rgb_case >= 3 { rgb.mode = RgbSurfaceMode::PremultipliedAlpha; }
+                                    for (i, state) in rgb.state.iter_mut().enumerate() {
+                                        *state = [RGB_VALID_CLEAN, RGB_VALID_DIRTY, RGB_INVALID, RGB_LOSSY, 255][i % 5];
+                                        rgb.pixels[i] = [0.17, (i % 5) as f32 / 16.0, 0.23];
+                                    }
+                                }
+                            }
+                            let paint = InkPaint {
+                                ink: vec![0.12, 0.3, 0.9, 0.45, 0.25], declared,
+                                overprint, alpha, blend, blend_rgb: matches!(rgb_case, 1 | 3).then_some([0.2, 0.8, 0.1]),
+                            };
+                            for y in region.y0..region.y1 {
+                                for x in region.x0..region.x1 {
+                                    let i = (y * W + x) as usize;
+                                    scalar.composite_at(i, coverage[i], &paint);
+                                }
+                            }
+                            batch.composite_region(&coverage, region, &paint).unwrap();
+                            let bits = |v: &[f32]| v.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
+                            for (actual, expected) in batch.planes.iter().zip(&scalar.planes) {
+                                assert_eq!(bits(actual), bits(expected), "blend={blend:?}, OP={overprint}, alpha={alpha}");
+                            }
+                            assert_eq!(bits(&batch.alpha), bits(&scalar.alpha));
+                            if let (Some(a), Some(b)) = (&batch.rgb_sidecar, &scalar.rgb_sidecar) {
+                                assert_eq!(a.pixels, b.pixels);
+                                assert_eq!(a.state, b.state);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

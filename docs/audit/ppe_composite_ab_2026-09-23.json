@@ -1,0 +1,1593 @@
+{
+  "schemaVersion": 1,
+  "scope": "PPE core composite A/B, page 1 at 92 DPI",
+  "sourceSha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+  "notes": [
+    "Chỉ profiler release, chưa phải end-to-end app.",
+    "Trước/sau cùng checksum u64, kích thước và options; checksum lưu chuỗi để tránh mất precision.",
+    "Low probe: RAYON_NUM_THREADS=1, render 1536 MiB/cache 64 MiB; không phải máy RAM thấp vật lý.",
+    "Normal-only là thử nghiệm trung gian; final thêm nhánh RGB Normal cho OpaqueBackdrop.",
+    "Timing span inclusive, không cộng thành tổng."
+  ],
+  "runs": {
+    "composite_before_raw": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 5,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 49.005,
+      "open": {
+        "total_ms": 48.995,
+        "file_ms": 0.144,
+        "parse_ms": 47.453,
+        "resource_ms": 0.089,
+        "color_ms": 1.307
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 2159.981,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.199,
+          "raster_ms": 1852.412,
+          "color_ms": 298.323,
+          "checksum_ms": 21.659,
+          "encode_ms": 167.465,
+          "total_wall_ms": 2349.108,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 884.755
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 33.97
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 208.858
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 625.483
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1919.764,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.18,
+          "raster_ms": 1642.615,
+          "color_ms": 268.934,
+          "checksum_ms": 21.382,
+          "encode_ms": 161.689,
+          "total_wall_ms": 2102.836,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 865.74
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 24.742
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 203.272
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 621.281
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1884.426,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.228,
+          "raster_ms": 1603.036,
+          "color_ms": 273.66,
+          "checksum_ms": 22.183,
+          "encode_ms": 157.9,
+          "total_wall_ms": 2064.511,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 833.861
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 24.396
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 196.53
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 597.728
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 4,
+          "render_wall_ms": 1873.836,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.204,
+          "raster_ms": 1593.105,
+          "color_ms": 272.375,
+          "checksum_ms": 21.481,
+          "encode_ms": 159.873,
+          "total_wall_ms": 2055.192,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 18,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 4,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 826.909
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.24
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 194.251
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 594.279
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 5,
+          "render_wall_ms": 1898.36,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.16,
+          "raster_ms": 1615.698,
+          "color_ms": 275.072,
+          "checksum_ms": 21.365,
+          "encode_ms": 161.468,
+          "total_wall_ms": 2081.194,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 24,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 5,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 833.874
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 24.14
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 195.881
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 598.027
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "composite_after_raw": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 5,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 47.261,
+      "open": {
+        "total_ms": 47.251,
+        "file_ms": 0.169,
+        "parse_ms": 45.629,
+        "resource_ms": 0.091,
+        "color_ms": 1.361
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 2025.419,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.22,
+          "raster_ms": 1737.995,
+          "color_ms": 278.599,
+          "checksum_ms": 21.39,
+          "encode_ms": 157.061,
+          "total_wall_ms": 2203.872,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 815.926
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 34.097
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 195.14
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 571.487
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1840.782,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.129,
+          "raster_ms": 1562.378,
+          "color_ms": 270.706,
+          "checksum_ms": 21.338,
+          "encode_ms": 163.751,
+          "total_wall_ms": 2025.873,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 802.152
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 22.985
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 193.343
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 570.312
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1860.737,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.144,
+          "raster_ms": 1584.062,
+          "color_ms": 269.363,
+          "checksum_ms": 21.534,
+          "encode_ms": 160.94,
+          "total_wall_ms": 2043.213,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 812.519
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.298
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 198.234
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 575.775
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 4,
+          "render_wall_ms": 1848.716,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.206,
+          "raster_ms": 1569.524,
+          "color_ms": 270.396,
+          "checksum_ms": 21.858,
+          "encode_ms": 159.522,
+          "total_wall_ms": 2030.097,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 18,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 4,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 814.421
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.53
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 192.234
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 583.572
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 5,
+          "render_wall_ms": 1847.535,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.166,
+          "raster_ms": 1560.579,
+          "color_ms": 278.207,
+          "checksum_ms": 21.173,
+          "encode_ms": 158.808,
+          "total_wall_ms": 2027.519,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 24,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 5,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 801.845
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.137
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 190.314
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 573.422
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "rgb_profile_diagnostic_raw": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 46.264,
+      "open": {
+        "total_ms": 46.253,
+        "file_ms": 0.154,
+        "parse_ms": 44.597,
+        "resource_ms": 0.089,
+        "color_ms": 1.411
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 2031.698,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.103,
+          "raster_ms": 1753.455,
+          "color_ms": 270.895,
+          "checksum_ms": 21.518,
+          "encode_ms": 159.56,
+          "total_wall_ms": 2212.777,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 827.452
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 33.224
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 197.914
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 580.468
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 352.049
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1859.079,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.128,
+          "raster_ms": 1582.3,
+          "color_ms": 269.392,
+          "checksum_ms": 21.279,
+          "encode_ms": 161.1,
+          "total_wall_ms": 2041.46,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 807.656
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.723
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 194.437
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 574.178
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 350.171
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1869.844,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.142,
+          "raster_ms": 1586.513,
+          "color_ms": 276.035,
+          "checksum_ms": 21.53,
+          "encode_ms": 157.085,
+          "total_wall_ms": 2048.46,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 809.3
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 22.793
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 193.86
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 576.913
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 352.259
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "composite_final_raw": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 5,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 47.683,
+      "open": {
+        "total_ms": 47.673,
+        "file_ms": 0.154,
+        "parse_ms": 46.016,
+        "resource_ms": 0.087,
+        "color_ms": 1.414
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 1772.693,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.189,
+          "raster_ms": 1496.05,
+          "color_ms": 267.981,
+          "checksum_ms": 21.572,
+          "encode_ms": 157.631,
+          "total_wall_ms": 1951.898,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 556.694
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 32.421
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 196.517
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 312.372
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 83.228
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1585.434,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.192,
+          "raster_ms": 1306.329,
+          "color_ms": 270.837,
+          "checksum_ms": 21.324,
+          "encode_ms": 157.511,
+          "total_wall_ms": 1764.27,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 543.036
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 22.747
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 192.208
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 312.973
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 83.457
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1577.279,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.193,
+          "raster_ms": 1297.786,
+          "color_ms": 271.733,
+          "checksum_ms": 21.846,
+          "encode_ms": 168.927,
+          "total_wall_ms": 1768.053,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 538.454
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.075
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 190.427
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 309.877
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 82.665
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 4,
+          "render_wall_ms": 1588.486,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.135,
+          "raster_ms": 1309.942,
+          "color_ms": 271.327,
+          "checksum_ms": 21.367,
+          "encode_ms": 157.749,
+          "total_wall_ms": 1767.603,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 18,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 4,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 545.066
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 22.931
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 192.249
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 314.801
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 82.913
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 5,
+          "render_wall_ms": 1596.037,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.201,
+          "raster_ms": 1316.598,
+          "color_ms": 270.662,
+          "checksum_ms": 22.661,
+          "encode_ms": 160.301,
+          "total_wall_ms": 1779.001,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 24,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 5,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 551.693
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.143
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 194.177
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 319.415
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 88.962
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "composite_before_low_raw": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 1610612736,
+        "resource_cache_bytes": 67108864
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 47.503,
+      "open": {
+        "total_ms": 47.497,
+        "file_ms": 0.162,
+        "parse_ms": 45.863,
+        "resource_ms": 0.072,
+        "color_ms": 1.398
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 3612.109,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.139,
+          "raster_ms": 1793.219,
+          "color_ms": 1811.463,
+          "checksum_ms": 21.547,
+          "encode_ms": 159.745,
+          "total_wall_ms": 3793.403,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 1,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 841.516
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 34.059
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 194.498
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 597.415
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 3576.973,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.129,
+          "raster_ms": 1750.101,
+          "color_ms": 1819.404,
+          "checksum_ms": 21.438,
+          "encode_ms": 158.081,
+          "total_wall_ms": 3756.493,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 12,
+            "form_evictions": 6,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 845.868
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.081
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 197.742
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 609.403
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 3694.601,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.117,
+          "raster_ms": 1738.486,
+          "color_ms": 1948.732,
+          "checksum_ms": 21.368,
+          "encode_ms": 162.111,
+          "total_wall_ms": 3878.081,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 18,
+            "form_evictions": 11,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 835.237
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.168
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 194.717
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 601.522
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "composite_after_low_raw": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 1610612736,
+        "resource_cache_bytes": 67108864
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 46.615,
+      "open": {
+        "total_ms": 46.608,
+        "file_ms": 0.164,
+        "parse_ms": 45.045,
+        "resource_ms": 0.082,
+        "color_ms": 1.316
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 3337.726,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.137,
+          "raster_ms": 1517.335,
+          "color_ms": 1812.756,
+          "checksum_ms": 21.426,
+          "encode_ms": 160.466,
+          "total_wall_ms": 3519.62,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 1,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 566.402
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 35.001
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 195.518
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 320.683
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 86.216
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 3318.089,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.134,
+          "raster_ms": 1456.33,
+          "color_ms": 1854.066,
+          "checksum_ms": 23.162,
+          "encode_ms": 162.128,
+          "total_wall_ms": 3503.393,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 12,
+            "form_evictions": 6,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 547.345
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.62
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 193.143
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 315.223
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 82.762
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 3280.18,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.171,
+          "raster_ms": 1449.505,
+          "color_ms": 1822.921,
+          "checksum_ms": 21.283,
+          "encode_ms": 170.13,
+          "total_wall_ms": 3471.596,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 18,
+            "form_evictions": 11,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 540.114
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 25.337
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 191.194
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 308.276
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 82.172
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
