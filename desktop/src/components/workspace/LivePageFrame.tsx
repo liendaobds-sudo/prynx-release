@@ -335,9 +335,11 @@ interface EditPreviewLayer {
 }
 
 const EMPTY_TILE_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
-// Đồng bộ với debounce zoom 250 ms của Viewer để gom trọn một đợt fit/resize,
-// không phát target DPI trung gian sau khi first-frame đã phủ khung.
-const ACCURATE_TARGET_SETTLE_MS = 250;
+// PERF (audit 2026-09-23 §ZOOMSHARP): first-frame đã phủ khung nên không cần
+// chờ hết debounce renderZoom 250 ms mới xin pixel nét. Giữ hai nhịp viewport
+// (48 ms) để gom fit/resize rồi thêm một nhịp ngắn, giảm thời gian mờ đầu tiên
+// mà không đổi mật độ raster hay bỏ underlay đang hiển thị.
+const ACCURATE_TARGET_SETTLE_MS = 96;
 
 export function shouldSettleAccurateTarget(input: {
     accurateOnly: boolean;

@@ -209,17 +209,51 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(getTileUrl).not.toHaveBeenCalled();
         view.rerender(<LiveTile {...base} zoom={0.75} />);
         expect(getTileUrl).not.toHaveBeenCalled();
-        await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+        // Một nhịp settle viewport chưa đủ để phát target trung gian; target cuối
+        // mới được phép đi qua sau cổng accurate 96 ms.
+        await act(async () => { await vi.advanceTimersByTimeAsync(48); });
         view.rerender(<LiveTile {...base} zoom={1} />);
         act(() => { observed?._loadTile?.(); });
         expect(getTileUrl).not.toHaveBeenCalled();
-        await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(95); });
         expect(getTileUrl).not.toHaveBeenCalled();
         expect(view.container.querySelector('img')?.getAttribute('src')).toBe('blob:prime-settle');
         await act(async () => { await vi.advanceTimersByTimeAsync(1); });
         expect(getTileUrl).toHaveBeenCalledTimes(1);
         expect(getTileUrl).toHaveBeenCalledWith(1, 0, 1, 0, 0, 0, 0,
             expect.objectContaining({ colorStage: 'accurate' }));
+    });
+
+    it('ZOOMSHARP.BUDGET: phát request accurate đầu tiên trong 120 ms sau khi zoom ổn định', async () => {
+        vi.useFakeTimers();
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const firstFrame: ViewerFirstFrame = {
+            nativePath: 'D:\\jobs\\gradient.pdf', documentToken: 'revision-1',
+            page: 1, dpi: 24, renderScale: 0.25, width: 640, height: 480,
+            profileId: 'fogra39', intent: 'relative',
+            proofIdentity: 'show:all|paper:0|black:0|background:profile',
+            url: 'blob:zoom-sharp-budget', byteLength: 64,
+        };
+        const base = makeProps({
+            accurateOnly: true,
+            getTileUrl,
+            renderPriority: 10,
+            zoom: 0.25,
+            initialSource: firstFrame,
+        });
+        const view = render(<LiveTile {...base} />);
+        expect(getTileUrl).not.toHaveBeenCalled();
+
+        // Mô phỏng một lần wheel đã settle: frame prime vẫn hiện làm underlay,
+        // nhưng target pixel mới phải được xếp hàng trong ngân sách phản hồi.
+        view.rerender(<LiveTile {...base} zoom={1} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(95); });
+        expect(getTileUrl).not.toHaveBeenCalled();
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+        expect(getTileUrl).toHaveBeenCalledWith(1, 0, 1, 0, 0, 0, 0,
+            expect.objectContaining({ colorStage: 'accurate' }));
+        view.unmount();
     });
 
     it('canvas chỉ công bố identity/zoom của bitmap đã vẽ, không lấy target đang chờ', async () => {
