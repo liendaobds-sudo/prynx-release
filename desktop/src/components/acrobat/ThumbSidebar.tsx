@@ -38,6 +38,10 @@ import { stickerSheetWorkflowStatusAtViewerPosition } from '../stickerSheetTabSe
 
 export type ThumbPageWorkflowStatus = 'pending' | 'processing' | 'review' | 'ready' | 'error';
 
+export function thumbnailRenderGroupKey(index: number, originalPageNum: number): string {
+    return `thumbnail:${index}:${originalPageNum}`;
+}
+
 const WORKFLOW_BADGE: Record<ThumbPageWorkflowStatus, {
     label: string;
     className: string;
@@ -276,7 +280,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         // Mỗi vị trí thumbnail có lifecycle riêng; cùng originalPageNum có thể
         // xuất hiện nhiều lần sau thao tác nhân bản. Owner vẫn dùng chung session,
         // nhưng cleanup một bản sao không được hủy bitmap của bản sao khác.
-        const groupKey = `thumbnail:${index}:${originalPageNum}`;
+        const groupKey = thumbnailRenderGroupKey(index, originalPageNum);
         (async () => {
             let src: string | null = null;
             try {

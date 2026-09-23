@@ -200,4 +200,4 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Finding: cùng một `originalPageNum` có thể xuất hiện nhiều vị trí sau thao tác nhân bản; group chỉ theo page khiến cleanup một item hủy nhầm item còn lại.
 - File: `desktop/src/components/acrobat/ThumbSidebar.tsx`.
 - Thay đổi: group coordinator dùng `thumbnail:<index>:<originalPageNum>`; owner/document session vẫn dùng chung để giữ affinity, nhưng lifecycle/cancel tách theo vị trí.
-- Verify: `npm run typecheck` đạt; Vitest thumbnail/coordinator/AI badge **20/20 pass**.
+- Verify: `npm run typecheck` đạt; Vitest thumbnail/coordinator/AI badge **21/21 pass** (có test group duplicate).
