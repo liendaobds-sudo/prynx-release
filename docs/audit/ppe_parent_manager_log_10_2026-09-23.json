@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scope": "headless-native-manager-worker-png",
+  "pdf": "test/poster retro - Khắc Trung - 0854444414.pdf",
+  "pdf_sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+  "parent_sha256": "1cd46091a35399452f968b09151903fdc4dbfbf0c87e3f1170718490623b46ff",
+  "worker_sha256": "998cd16aaa075505cd0a36f3850f1f9caaf942970778e9494e0ba01dda037e6d",
+  "background_lanes": 1,
+  "samples_per_phase": 10,
+  "worker_pid_count": 1,
+  "parent_wall_ms_quantiles": {
+    "cold_full": {"min": 1999.1, "p50": 2027.9, "p95": 2049.8, "max": 2049.8},
+    "warm_full": {"min": 1714.3, "p50": 1731.2, "p95": 1762.4, "max": 1762.4},
+    "warm_tile": {"min": 149.7, "p50": 151.0, "p95": 171.1, "max": 171.1},
+    "thumbnail_first": {"min": 266.9, "p50": 271.8, "p95": 295.3, "max": 295.3},
+    "thumbnail_repeat": {"min": 267.2, "p50": 270.8, "p95": 274.9, "max": 274.9}
+  },
+  "png_sha256": {
+    "full_page_92dpi": "033c1ab2b4c01f9fccd7e2de4d100180de263085071c620104cf1ecbaa7b38f7",
+    "tile_188dpi_512px": "4e4fb3909bfd47f7bbbb46f04b5d722e6e523d6f37efbcbabde3cfd4d1cb382c",
+    "thumbnail_24dpi": "e37a6b1f41ab1362e82c7c16d9d3232a5227b0a73db2e91a5867174fed93ad9d"
+  },
+  "excludes": ["Tauri IPC entry", "WebView", "DOM", "decode", "compositor", "actual sidebar"]
+}

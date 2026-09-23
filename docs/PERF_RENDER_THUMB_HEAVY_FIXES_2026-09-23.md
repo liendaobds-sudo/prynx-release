@@ -485,3 +485,9 @@ cargo build --release --offline --example perf_profile --features perf-probe
 - `scheduleWarmupPdfjs` giữ nguyên policy RAM (máy mạnh không bị hạ worker/chất lượng), nhưng chuyển preload chunk workspace sang timer **8 giây** và pdf.js sang **10 giây** sau idle. Nếu tab bị hủy trước đó, cả timer đều được dọn; mở file sớm sẽ lazy-load theo nhu cầu thật thay vì tranh main-thread ngay sau splash.
 - Catalog Home đổi `transition-all` thành `transition-colors`; danh sách tool dùng `content-visibility:auto` + intrinsic size để browser bỏ qua layout/paint card ngoài viewport. Không đổi registry, thứ tự tool, thao tác favorite hoặc routing.
 - Verify: Vitest warmup/Home/system integrations **29/29 pass**, ESLint `HomeTab.tsx`/`pdfWarmup.ts` xanh, `npm run typecheck` xanh. Chưa có Performance panel runtime nên chưa gán P95 startup/cuộn menu; đây là giảm fan-out source-level có rollback rõ.
+
+## Lô 44 — Baseline parent/worker 10 mẫu trên PDF khách
+
+- Chạy headless `parent_manager_log_only_baseline` với `PRYNX_RENDER_WORKER_MODE=required`, một background lane, worker binary và parent build hiện tại; không mở UI, không dừng app người dùng. **50/50 phase request** trả Ready, PNG SHA ổn định, một worker PID dùng xuyên full/tile/thumbnail.
+- P50/P95 parent wall: full cold **2.028/2.050 s**, full warm **1.731/1.762 s**, tile 188 DPI **151/171 ms**, thumbnail 24 DPI lần đầu **272/295 ms**, lặp **271/275 ms**. Đây là mốc định lượng để so các lô sau, không phải cam kết mọi PDF/corpus.
+- Backend scheduler/memory gate targeted bằng `backend/venv`: **37/37 pass**. Evidence mới `docs/audit/ppe_parent_manager_log_10_2026-09-23.json`; scope vẫn loại trừ WebView decode/compositor/sidebar thật.
