@@ -1119,6 +1119,12 @@ impl<'a> Renderer<'a> {
         let mut marked_content: Vec<bool> = Vec::new();
 
         for op in program.operations() {
+            #[cfg(feature = "perf-probe")]
+            let _op_span = match op.operator.as_str() {
+                "q" | "Q" | "cm" => Some(crate::perf_probe::span(crate::perf_probe::STATE)),
+                "m" | "l" | "c" | "v" | "y" | "h" | "re" => Some(crate::perf_probe::span(crate::perf_probe::PATH_BUILD)),
+                _ => None,
+            };
             self.opts.check_cancelled()?;
             let operands = &op.operands;
             // Đặt lại ở mỗi operator: một lời gọi lồng (form, pattern, soft mask) đã
@@ -2337,6 +2343,17 @@ impl<'a> Renderer<'a> {
         let Some(dev) = p.transform(to_ts(ctm)) else {
             return clip;
         };
+        // PERF (audit 2026-09-23 §R23.GROUP): BBox chữ nhật thẳng trục phủ
+        // trọn raster tương đương mask toàn 255; giữ Arc clip thay vì clone và
+        // intersect hàng triệu pixel. AABB của hình xiên KHÔNG đủ làm bằng chứng.
+        let axis_aligned = (ctm.b == 0.0 && ctm.c == 0.0) || (ctm.a == 0.0 && ctm.d == 0.0);
+        let bounds = dev.bounds();
+        if axis_aligned && bounds.left() <= 0.0 && bounds.top() <= 0.0
+            && f64::from(bounds.right()) >= f64::from(width)
+            && f64::from(bounds.bottom()) >= f64::from(height)
+        {
+            return clip;
+        }
         let mut mask = match &clip {
             Some(existing) => (**existing).clone(),
             None => {
@@ -3033,6 +3050,8 @@ impl<'a> Renderer<'a> {
         // alpha, blend và soft mask (§11.6.6). Ba thứ đó áp cho *cả group* ở bước
         // composite; để chúng lọt vào trong sẽ nhân hai lần tại mọi vùng các phần
         // tử chồng nhau — đúng kiểu lỗi làm bóng mờ đậm gấp đôi.
+        #[cfg(feature = "perf-probe")]
+        let setup_span = crate::perf_probe::span(crate::perf_probe::GROUP_SETUP);
         let mut initial = stack.current().clone();
         initial.ctm = ctm;
         initial.fill_alpha = 1.0;
@@ -3061,6 +3080,8 @@ impl<'a> Renderer<'a> {
             self.exact_paint_region || !self.paint_region_trackers.is_empty();
         let saved_blend_space = self.blend_space;
         self.blend_space = group_blend_space;
+        #[cfg(feature = "perf-probe")]
+        drop(setup_span);
         let rendered = self.render_form_into(
             child,
             source,
@@ -3071,6 +3092,8 @@ impl<'a> Renderer<'a> {
         );
         self.blend_space = saved_blend_space;
         let (mut child, child_painted_region, child_explicit_mask_events) = rendered?;
+        #[cfg(feature = "perf-probe")]
+        let _finish_span = crate::perf_probe::span(crate::perf_probe::GROUP_FINISH);
 
         if rgb_group {
             let has_group_content = child.alpha_plane().iter().any(|alpha| *alpha > 1e-6);
@@ -6216,6 +6239,33 @@ mod conservative_sampling_tests {
             )
             .unwrap();
         assert_eq!(fast.data(), exact.data());
+    }
+
+    #[test]
+    fn full_bbox_reuses_clip_but_partial_or_skewed_bbox_keeps_exact_mask() {
+        let doc = Document::new();
+        for aa in [false, true] {
+            let mut opts = RenderOptions::softproof();
+            opts.anti_alias = aa;
+            let renderer = Renderer::new(&doc, InkBuffer::new(64, 64, crate::ink::InkSpace::new()).unwrap(), opts, None, BlendSpace::DeviceCmyk).unwrap();
+            let mut mask = Mask::new(64, 64).unwrap();
+            for (i, value) in mask.data_mut().iter_mut().enumerate() { *value = (i % 255 + 1) as u8; }
+            let clip = Arc::new(mask);
+            for (bbox, ctm, reuse) in [
+                (Rect::new(-1.0, -1.0, 65.0, 65.0), Matrix::IDENTITY, true),
+                (Rect::new(0.0, 0.0, 64.0, 64.0), Matrix::new(0.0, 1.0, -1.0, 0.0, 64.0, 0.0), true),
+                (Rect::new(0.0, 0.0, 63.75, 64.0), Matrix::IDENTITY, false),
+                (Rect::new(0.0, 0.0, 64.0, 64.0), Matrix::new(1.0, 0.0, 1.0, 1.0, -32.0, 0.0), false),
+            ] {
+                let path = rect_path(bbox.x0, bbox.y0, bbox.width(), bbox.height()).unwrap().transform(to_ts(&ctm)).unwrap();
+                let mut expected = (*clip).clone();
+                expected.intersect_path(&path, FillRule::NonZero.into(), aa, Transform::identity());
+                let actual = renderer.intersect_bbox_for_extent(Some(Arc::clone(&clip)), Some(bbox), &ctm, 64, 64).unwrap();
+                assert_eq!(actual.data(), expected.data());
+                assert_eq!(Arc::ptr_eq(&actual, &clip), reuse);
+            }
+            assert!(renderer.intersect_bbox_for_extent(None, Some(Rect::new(-1.0, -1.0, 65.0, 65.0)), &Matrix::IDENTITY, 64, 64).is_none());
+        }
     }
 
     #[test]

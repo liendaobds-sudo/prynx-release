@@ -148,6 +148,18 @@ fn zeroed_plane(pixel_count: usize, limit: usize) -> PpeResult<Vec<f32>> {
     Ok(plane)
 }
 
+fn copy_samples<T: Copy>(source: &[T], limit: usize) -> PpeResult<Vec<T>> {
+    // PERF (audit 2026-09-23 §R23.GROUP): buffer backdrop sẽ được ghi kín
+    // bằng dữ liệu cha, nên không zero rồi ghi lại lần hai. Vẫn dùng allocation
+    // fallible; chỉ extend sau reserve, không dùng vùng nhớ chưa khởi tạo/unsafe.
+    let bytes = source.len().checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| memory_budget_error(usize::MAX, limit))?;
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(source.len()).map_err(|_| memory_budget_error(bytes, limit))?;
+    copy.extend_from_slice(source);
+    Ok(copy)
+}
+
 fn rgb_sidecar_bytes(pixel_count: usize) -> PpeResult<usize> {
     pixel_count
         .checked_mul(std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<u8>())
@@ -1557,10 +1569,8 @@ impl InkBuffer {
         let bytes = rgb_sidecar_bytes(px)?;
         self.budget.reserve(bytes)?;
         let allocation = (|| -> PpeResult<RgbSidecar> {
-            let mut pixels = zeroed_rgb_pixels(px, self.budget.limit)?;
-            pixels.copy_from_slice(&parent.pixels);
-            let mut state = zeroed_rgb_state(px, self.budget.limit)?;
-            state.copy_from_slice(&parent.state);
+            let pixels = copy_samples(&parent.pixels, self.budget.limit)?;
+            let state = copy_samples(&parent.state, self.budget.limit)?;
             Ok(RgbSidecar {
                 pixels,
                 state,
@@ -1648,10 +1658,11 @@ impl InkBuffer {
         let allocation = (|| -> PpeResult<(Vec<Vec<f32>>, Vec<f32>)> {
             let mut planes = Vec::with_capacity(self.space.len());
             for source in &self.planes {
-                let mut plane = zeroed_plane(px, self.budget.limit)?;
-                if copy_planes {
-                    plane.copy_from_slice(source);
-                }
+                let plane = if copy_planes {
+                    copy_samples(source, self.budget.limit)?
+                } else {
+                    zeroed_plane(px, self.budget.limit)?
+                };
                 planes.push(plane);
             }
             Ok((planes, zeroed_plane(px, self.budget.limit)?))
@@ -3274,6 +3285,46 @@ mod tests {
             Err(PpeError::MemoryBudgetExceeded { .. })
         ));
         assert_eq!(buf.memory_used_bytes(), 2_000);
+    }
+
+    #[test]
+    fn group_backdrop_copy_preserves_bits_and_releases_shared_reservation() {
+        let mut parent = InkBuffer::new(8, 3, InkSpace::new()).unwrap();
+        for (ch, plane) in parent.planes.iter_mut().enumerate() {
+            for (i, value) in plane.iter_mut().enumerate() {
+                *value = if i == 0 { -0.0 } else { (i + ch) as f32 / 30.0 };
+            }
+        }
+        parent.alpha.fill(0.75);
+        assert!(parent.ensure_rgb_sidecar().unwrap());
+        let sidecar = parent.rgb_sidecar.as_mut().unwrap();
+        sidecar.pixels.fill([0.17, -0.0, 0.41]);
+        for (i, state) in sidecar.state.iter_mut().enumerate() { *state = (i % 4) as u8; }
+        let used = parent.memory_used_bytes();
+        let mut child = parent.child_non_isolated_rgb().unwrap();
+        for (a, b) in child.planes.iter().zip(&parent.planes) {
+            assert_eq!(a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), b.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        }
+        assert!(child.alpha.iter().all(|v| v.to_bits() == 0));
+        assert_eq!(child.rgb_sidecar.as_ref().unwrap().pixels, parent.rgb_sidecar.as_ref().unwrap().pixels);
+        assert_eq!(child.rgb_sidecar.as_ref().unwrap().state, parent.rgb_sidecar.as_ref().unwrap().state);
+        child.planes[0][0] = 0.9;
+        assert_eq!(parent.planes[0][0].to_bits(), (-0.0_f32).to_bits());
+        drop(child);
+        assert_eq!(parent.memory_used_bytes(), used);
+        let isolated = parent.child_isolated().unwrap();
+        assert!(isolated.planes.iter().flatten().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn failed_rgb_group_reservation_does_not_leak_base_group_bytes() {
+        // Root = (CMYK+alpha)*4*6 + RGB/state*6 = 198 byte.
+        // Budget chỉ đủ thêm base child 120 byte, không đủ RGB child 78 byte.
+        let mut parent = InkBuffer::new_with_memory_budget(3, 2, InkSpace::new(), 318).unwrap();
+        assert!(parent.ensure_rgb_sidecar().unwrap());
+        assert_eq!(parent.memory_used_bytes(), 198);
+        assert!(matches!(parent.child_non_isolated_rgb(), Err(PpeError::MemoryBudgetExceeded { .. })));
+        assert_eq!(parent.memory_used_bytes(), 198);
     }
 
     #[test]
