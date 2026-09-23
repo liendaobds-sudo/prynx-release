@@ -807,6 +807,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         
         let effectRequestAttempt: number | null = null;
         el._loadTile = () => {
+            // PERF (audit 2026-09-23 §R23.SETTLE): observer cũng có thể gọi
+            // _loadTile khi timer đang gom layout; mọi entrypoint phải cùng chờ.
+            // Frame prime đã hiện, chỉ chặn target trung gian chứ không chặn pixel đầu.
+            if (accurateTargetSettleRef.current !== null) return;
             // PERF (audit 2026-08-14 §VIEW.LARGE.3): effect gọi ngay để không phụ thuộc paint,
             // rồi IntersectionObserver có thể gọi lại trước khi request đầu hoàn tất. Cùng params
             // đang bay phải dùng chính request đó; gọi lại sẽ tự hủy PPE generation 1 và dựng lại
@@ -1170,7 +1174,6 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 loadAt(zoom, true);
             }
         };
-        onVisible(el, false, eager);
         // FIX màn-trắng-khi-occluded: IntersectionObserver CHỈ bắn khi trang được
         // paint; cửa sổ WebView2 bị coi là occluded thì không paint → observer không
         // bắn → tile không được xin → trắng tới ~7s tới khi bị ép paint (mở DevTools).
@@ -1196,9 +1199,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 accurateTargetSettleRef.current = null;
                 if (mountedRef.current) el._loadTile?.();
             }, ACCURATE_TARGET_SETTLE_MS);
-        } else {
-            el._loadTile?.();
         }
+        // Cài timer TRƯỚC khi observe: callback có thể gọi _loadTile đồng bộ
+        // hoặc ở nhịp IntersectionObserver kế tiếp, đều không được vượt cổng.
+        onVisible(el, false, eager);
+        if (!settleAccurateTarget) el._loadTile?.();
         return () => {
             if (accurateTargetSettleRef.current !== null) {
                 clearTimeout(accurateTargetSettleRef.current);

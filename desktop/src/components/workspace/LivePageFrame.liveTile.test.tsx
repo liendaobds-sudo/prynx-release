@@ -121,6 +121,42 @@ function makeProps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('LiveTile — cold-open màu chính xác', () => {
+    it('observer không được vượt cổng settle và phát DPI trung gian khi đã có prime', async () => {
+        vi.useFakeTimers();
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        let observed: (HTMLElement & { _loadTile?: () => void }) | null = null;
+        const onVisible = vi.fn((element: HTMLElement, cleanup?: boolean) => {
+            if (cleanup) return;
+            observed = element;
+            observed._loadTile?.();
+        });
+        const base = makeProps({
+            accurateOnly: true, getTileUrl, onVisible, zoom: 0.25, renderPriority: 10,
+            initialSource: {
+                nativePath: 'D:\\jobs\\gradient.pdf', documentToken: 'revision-1',
+                page: 1, dpi: 24, renderScale: 0.25, width: 640, height: 480,
+                profileId: 'fogra39', intent: 'relative',
+                proofIdentity: 'show:all|paper:0|black:0|background:profile',
+                url: 'blob:prime-settle', byteLength: 64,
+            } satisfies ViewerFirstFrame,
+        });
+        const view = render(<LiveTile {...base} />);
+        expect(getTileUrl).not.toHaveBeenCalled();
+        view.rerender(<LiveTile {...base} zoom={0.75} />);
+        expect(getTileUrl).not.toHaveBeenCalled();
+        await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+        view.rerender(<LiveTile {...base} zoom={1} />);
+        act(() => { observed?._loadTile?.(); });
+        expect(getTileUrl).not.toHaveBeenCalled();
+        await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+        expect(getTileUrl).not.toHaveBeenCalled();
+        expect(view.container.querySelector('img')?.getAttribute('src')).toBe('blob:prime-settle');
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+        expect(getTileUrl).toHaveBeenCalledWith(1, 0, 1, 0, 0, 0, 0,
+            expect.objectContaining({ colorStage: 'accurate' }));
+    });
+
     it('canvas chỉ công bố identity/zoom của bitmap đã vẽ, không lấy target đang chờ', async () => {
         const bitmap = { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap;
         const drawImage = vi.fn();
