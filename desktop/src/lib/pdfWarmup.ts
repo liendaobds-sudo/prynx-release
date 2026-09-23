@@ -13,6 +13,12 @@ let warmed = false;
 let pdfiumWarmed = false;
 let workspaceWarmLevel = 0;
 
+// PERF (audit 2026-09-23 §HOME23.01): không tranh main-thread với Home vừa hiện.
+// Chunk workspace chỉ được preload sau khi người dùng đã có một khoảng tương tác;
+// mở file trước mốc này vẫn lazy-load theo nhu cầu thật.
+export const WORKSPACE_WARMUP_DELAY_MS = 8_000;
+export const PDFJS_WARMUP_DELAY_MS = 10_000;
+
 const GIB = 1024 ** 3;
 
 export type WorkspaceWarmupMode = 'none' | 'primary' | 'full';
@@ -161,6 +167,7 @@ export async function warmupPdfjs(): Promise<void> {
 /** Lên lịch warm-up vào thời điểm app rảnh (sau first paint). */
 export function scheduleWarmupPdfjs(): () => void {
     let cancelled = false;
+    let workspaceTimer: number | null = null;
     let pdfjsTimer: ReturnType<typeof setTimeout> | null = null;
 
     const run = () => {
@@ -171,8 +178,11 @@ export function scheduleWarmupPdfjs(): () => void {
 
             // PERF (audit 2026-08-06 §PERF.5): chỉ máy yếu mới giảm preload.
             // Máy >=16 GB và máy không đọc được RAM giữ nguyên toàn bộ đường warm cũ.
-            if (plan.workspace !== 'none') {
-                void warmupWorkspaceChunks(plan.workspace);
+            const workspaceMode = plan.workspace;
+            if (workspaceMode !== 'none') {
+                workspaceTimer = window.setTimeout(() => {
+                    if (!cancelled) void warmupWorkspaceChunks(workspaceMode);
+                }, WORKSPACE_WARMUP_DELAY_MS);
             }
             if (plan.pdfium) {
                 // pdfium chạy ở luồng Rust nên không chặn main thread.
@@ -182,7 +192,7 @@ export function scheduleWarmupPdfjs(): () => void {
                 // pdfjs chỉ dùng cho browser-mode/thumbnail → warm sau cùng.
                 pdfjsTimer = setTimeout(() => {
                     if (!cancelled) void warmupPdfjs();
-                }, 3000);
+                }, PDFJS_WARMUP_DELAY_MS);
             }
         })();
     };
@@ -193,6 +203,7 @@ export function scheduleWarmupPdfjs(): () => void {
         return () => {
             cancelled = true;
             window.cancelIdleCallback?.(id);
+            if (workspaceTimer !== null) clearTimeout(workspaceTimer);
             if (pdfjsTimer !== null) clearTimeout(pdfjsTimer);
         };
     }
@@ -200,6 +211,7 @@ export function scheduleWarmupPdfjs(): () => void {
     return () => {
         cancelled = true;
         clearTimeout(t);
+        if (workspaceTimer !== null) clearTimeout(workspaceTimer);
         if (pdfjsTimer !== null) clearTimeout(pdfjsTimer);
     };
 }

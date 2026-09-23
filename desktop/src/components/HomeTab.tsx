@@ -81,7 +81,9 @@ function ToolItem({ tool, isFavorite, isMiniMode, onOpenApp, onToggleFavorite }:
     <div className="relative">
       <div
         style={{ padding: '4px 6px' }}
-        className={`flex items-center text-left w-full ${isFavorite ? 'bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border border-amber-200 dark:border-amber-800/50 shadow-sm' : 'bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10'} ${tool.hoverColor} hover:shadow-sm rounded-lg transition-all group`}
+        // PERF (audit 2026-09-23 §HOME23.03): chỉ animate màu; transition-all
+        // khiến shadow/transform của nhiều card cùng tham gia khi rê/cuộn menu.
+        className={`flex items-center text-left w-full ${isFavorite ? 'bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border border-amber-200 dark:border-amber-800/50 shadow-sm' : 'bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10'} ${tool.hoverColor} hover:shadow-sm rounded-lg transition-colors group`}
       >
         {/* UIUX (audit 2026-08-21 §RM.6): hành động mở tool là nút riêng,
             không bọc các nút Yêu thích/Trợ giúp trong một role=button giả. */}
@@ -364,7 +366,12 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
         const enabledTools = tools.filter(t => t.isEnabled);
         const disabledTools = tools.filter(t => !t.isEnabled);
         return (
-            <div style={listWrapStyle(tight)} className="transition-opacity duration-300">
+            <div
+                style={listWrapStyle(tight)}
+                // PERF (audit 2026-09-23 §HOME23.03): catalog dài không cần layout/paint
+                // toàn bộ card ngoài viewport khi người dùng cuộn menu.
+                className="transition-opacity duration-300 [content-visibility:auto] [contain-intrinsic-size:0_360px]"
+            >
                 {enabledTools.map((tool, i) => (
                     <ToolItem key={`${toolKey(tool)}-${i}`} tool={tool} isFavorite={favoriteTools.includes(toolKey(tool))} isMiniMode={isMiniMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
                 ))}
@@ -541,7 +548,10 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                                     onToggle={toggleSection}
                                 />
                                 {!isCollapsed && (
-                                    <div style={listWrapStyle(tight)} className="transition-opacity duration-300">
+                                    <div
+                                        style={listWrapStyle(tight)}
+                                        className="transition-opacity duration-300 [content-visibility:auto] [contain-intrinsic-size:0_360px]"
+                                    >
                                         {enabledTools.map((tool, i) => (
                                             <ToolItem key={`fav-${toolKey(tool)}-${i}`} tool={tool} isFavorite isMiniMode={isMiniMode} onOpenApp={onOpenApp} onToggleFavorite={toggleFavoriteTool} />
                                         ))}
