@@ -186,3 +186,11 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - Dùng `scripts/measure_process_tree_memory.ps1`, lấy mẫu đồng thời 50 ms trong toàn cây PrynX: **186 mẫu / 29,783 ms**, peak working set **1.074,75 MiB**, peak private **667,99 MiB**, tối đa **25 process**.
 - Cùng lượt vẫn đạt virtualizer gate: **5 DOM items** đầu/cuối, cuối index **999**.
 - Đây là gate RSS dev WebView đầu tiên; release/installer và corpus PDF nặng vẫn là cổng riêng chưa đóng.
+
+## Lô 18 — Peak memory Export file khách
+
+- Script `benchmark_export_images.py` nay lấy mẫu Windows working set/private mỗi 25 ms trong process benchmark; output UTF-8 qua `PYTHONUTF8=1` khi tên file có dấu.
+- File khách 5 trang: RGB 150 DPI **6.8505 s**, peak working set **812.547 MiB**, private **808.078 MiB** (219 mẫu).
+- RGB 300 DPI **22.7286 s**, peak working set **2985.164 MiB**, private **3009.695 MiB** (718 mẫu).
+- Artifact bytes khớp baseline trước (27,099,864 / 61,076,919); benchmark compile đạt. Report `docs/audit/export_customer_memory_2026-09-24.json`.
+- Kết luận: 300 DPI có peak xấp xỉ 3 GiB cho 5 trang file này; không đủ cơ sở mở song song Export vô điều kiện. Cần tile/stripe hoặc giảm peak copy trước khi tăng concurrency.

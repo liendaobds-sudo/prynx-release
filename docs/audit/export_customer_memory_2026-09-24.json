@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "scope": "backend-export-customer-file-process-memory",
+  "artifact": {
+    "name": "poster retro - Khắc Trung - 0854444414.pdf",
+    "sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+    "pages": 5
+  },
+  "runs": [
+    {
+      "dpi": 150,
+      "colorMode": "rgb",
+      "elapsedSeconds": 6.8505,
+      "artifactBytes": 27099864,
+      "perPageMs": 1370.1,
+      "memoryMeasurement": "windows-process-working-set-private",
+      "memorySampleCount": 219,
+      "peakWorkingSetMiB": 812.547,
+      "peakPrivateMiB": 808.078
+    },
+    {
+      "dpi": 300,
+      "colorMode": "rgb",
+      "elapsedSeconds": 22.7286,
+      "artifactBytes": 61076919,
+      "perPageMs": 4545.71,
+      "memoryMeasurement": "windows-process-working-set-private",
+      "memorySampleCount": 718,
+      "peakWorkingSetMiB": 2985.164,
+      "peakPrivateMiB": 3009.695
+    }
+  ],
+  "limitations": [
+    "Working set/private chỉ đo process benchmark export độc lập, không phải cây Tauri.",
+    "Một lượt cho mỗi DPI, chưa phải P95 corpus."
+  ]
+}
