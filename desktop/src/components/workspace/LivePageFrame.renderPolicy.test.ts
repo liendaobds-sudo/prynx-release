@@ -181,6 +181,9 @@ describe('Viewer — policy ghép tile progressive', () => {
     it('dựng underlay PPE cứu hộ 24 DPI cho trang vượt ngân sách surface', () => {
         expect(VIEWER_ACCURATE_UNDERLAY_SCALE).toBe(0.25);
         expect(shouldRenderViewerAccurateUnderlay(true, true, true, true)).toBe(true);
+        // Khi frame PPE mồi còn hiện và active đã chuyển sang viewport, không
+        // dựng thêm lớp PPE trung gian làm lộ pha mờ thứ hai.
+        expect(shouldRenderViewerAccurateUnderlay(true, true, true, true, true, true, true)).toBe(false);
         expect(shouldRenderViewerAccurateUnderlay(true, true, false, true)).toBe(false);
         expect(shouldRenderViewerAccurateUnderlay(true, false, true, true)).toBe(false);
         expect(shouldRenderViewerAccurateUnderlay(false, true, true, true)).toBe(false);

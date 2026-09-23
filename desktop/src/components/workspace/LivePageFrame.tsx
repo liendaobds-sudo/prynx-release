@@ -2599,6 +2599,20 @@ export const LivePageFrame = (props: any) => {
     const readPrimePending = useCallback(() => isViewerFirstFramePending(primePath, renderDocumentToken), [primePath, renderDocumentToken]);
     const initialPpeFrame = useSyncExternalStore(subscribePrime, readPrime, () => null);
     const initialPpeFramePending = useSyncExternalStore(subscribePrime, readPrimePending, () => false);
+    // `adoptViewerFirstFrame()` chuyển quyền sở hữu Blob và xóa frame khỏi store
+    // ngay khi LiveTile nhận nó. Giữ lại identity trong ref để không đổi sang
+    // underlay PPE trung gian trong đúng khoảng prime đang còn hiện trên canvas.
+    const primeFrameIdentity = `${primePath || ''}|${renderDocumentToken || ''}|${previewRevision || ''}|${originalPageNum}`;
+    const primeFrameRef = useRef<{ identity: string; frame: ViewerFirstFrame | null }>({
+        identity: primeFrameIdentity,
+        frame: initialPpeFrame,
+    });
+    if (primeFrameRef.current.identity !== primeFrameIdentity) {
+        primeFrameRef.current = { identity: primeFrameIdentity, frame: initialPpeFrame };
+    } else if (initialPpeFrame) {
+        primeFrameRef.current.frame = initialPpeFrame;
+    }
+    const effectivePpeFrame = initialPpeFrame ?? primeFrameRef.current.frame;
 
     const previewFramePage = typeof viewerPageNum === 'number' ? viewerPageNum : originalPageNum;
     const viewerIsActive = isViewerActive !== false;
@@ -2613,7 +2627,7 @@ export const LivePageFrame = (props: any) => {
         || baseDisplayReadyKey
         || accurateBaseReadyKey
         || accurateCommittedKey
-        || initialPpeFrame
+        || effectivePpeFrame
     );
 
     // UIUX (feedback 2026-08-14 §VIEW.PAGE): target active vẫn thắng ở mức 10;
@@ -3984,7 +3998,7 @@ export const LivePageFrame = (props: any) => {
             zoom * dpr,
             accurateDpiAnchor,
         );
-        const roleAccurateBaseZoom = initialPpeFrame?.renderScale
+        const roleAccurateBaseZoom = effectivePpeFrame?.renderScale
             ?? viewerAccurateBaseScaleForRole(
                 preferredAccurateBaseZoom,
                 screenAccurateBaseZoom,
@@ -4006,6 +4020,8 @@ export const LivePageFrame = (props: any) => {
             needsTiling,
             accurateBaseWithinSurfaceBudget,
             accurateLayoutSettled,
+            Boolean(effectivePpeFrame),
+            isActiveFrame,
         );
         const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
             shouldRenderBasePage,
@@ -4114,7 +4130,7 @@ export const LivePageFrame = (props: any) => {
         displayHeight,
         displayWidth,
         getTileUrl,
-        initialPpeFrame,
+        effectivePpeFrame,
         isActiveFrame,
         isImage,
         isViewerActive,
@@ -5608,7 +5624,7 @@ export const LivePageFrame = (props: any) => {
                     accurateColorProofIdentity,
                 );
                 const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
-                const hasReadyUnderlayForPage = Boolean(initialPpeFrame)
+                const hasReadyUnderlayForPage = Boolean(effectivePpeFrame)
                     || Boolean(accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`))
                     || hasRenderedBase;
                 const preferredAccurateBaseZoom = accurateViewerRequestScale(
@@ -5626,7 +5642,7 @@ export const LivePageFrame = (props: any) => {
                     zoom * dpr,
                     accurateDpiAnchor,
                 );
-                const roleAccurateBaseZoom = initialPpeFrame?.renderScale
+                const roleAccurateBaseZoom = effectivePpeFrame?.renderScale
                     ?? viewerAccurateBaseScaleForRole(
                         preferredAccurateBaseZoom,
                         screenAccurateBaseZoom,
@@ -5648,6 +5664,8 @@ export const LivePageFrame = (props: any) => {
                     needsTiling,
                     accurateBaseWithinSurfaceBudget,
                     accurateLayoutSettled,
+                    Boolean(effectivePpeFrame),
+                    isActiveFrame,
                 );
                 const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
                     shouldRenderBasePage,
@@ -5678,7 +5696,7 @@ export const LivePageFrame = (props: any) => {
                 const hasStableAccurateUnderlay = isViewerUnderlayStable(
                     hasAccurateBaseSurface,
                     keepAccurateBaseMounted,
-                    Boolean(initialPpeFrame && !accurateCommitted),
+                    Boolean(effectivePpeFrame && !accurateCommitted),
                 );
                 const requestAccurateBase = shouldRequestViewerAccurateBase(
                     renderAccurateBaseTile,
@@ -5704,7 +5722,7 @@ export const LivePageFrame = (props: any) => {
                     isActiveFrame,
                 );
                 const matchingFullPageFirstFrame = viewerFirstFrameMatchesTile(
-                    initialPpeFrame,
+                    effectivePpeFrame,
                     originalPageNum,
                     accurateBaseZoom,
                     0,
@@ -5712,7 +5730,7 @@ export const LivePageFrame = (props: any) => {
                     0,
                     0,
                     0,
-                ) ? initialPpeFrame : undefined;
+                ) ? effectivePpeFrame : undefined;
                 return (
                     <div style={{ width: displayWidth, height: displayHeight, position: 'relative' }}>
                         {/* Loading Skeleton */}
@@ -5723,9 +5741,9 @@ export const LivePageFrame = (props: any) => {
                                 <span className="text-xs font-semibold text-slate-500 tracking-wider">{t('misc.livePageFrame:dang_dung_hinh', 'Loading...')}</span>
                             </div>
                         </div>
-                        {initialPpeFrame && !accurateCommitted && (
+                        {effectivePpeFrame && !accurateCommitted && (
                             <img
-                                src={initialPpeFrame.url}
+                                src={effectivePpeFrame.url}
                                 alt=""
                                 aria-hidden="true"
                                 data-prynx-initial-ppe-frame="true"
@@ -5792,10 +5810,16 @@ export const LivePageFrame = (props: any) => {
                                     onVisible={handleTileVisibility}
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
                                     onTileReady={({ scale }: { scale: number }) => {
-                                        setAccurateCommittedKey(accuratePageCommitKey);
-                                        if (initialPpeFrame) releaseViewerFirstFrame(initialPpeFrame);
+                                        const primeIsViewportUnderlay = Boolean(
+                                            effectivePpeFrame && needsTiling && isActiveFrame && !accurateCommitted,
+                                        );
+                                        if (!primeIsViewportUnderlay) {
+                                            setAccurateCommittedKey(accuratePageCommitKey);
+                                            if (effectivePpeFrame) releaseViewerFirstFrame(effectivePpeFrame);
+                                            primeFrameRef.current.frame = null;
+                                        }
                                         setHasRenderedBaseState(true);
-                                        if (isViewerTargetScaleReady(scale, accurateBaseZoom)) {
+                                        if (!primeIsViewportUnderlay && isViewerTargetScaleReady(scale, accurateBaseZoom)) {
                                             setAccurateBaseReadyKey(accurateBaseIdentity);
                                         }
                                     }}
@@ -5812,7 +5836,7 @@ export const LivePageFrame = (props: any) => {
                                         accurateCommitted,
                                     ) && !initialPpeFramePending}
                                     initialSource={matchingFullPageFirstFrame}
-                                    preserveUnderlay={Boolean(initialPpeFrame)}
+                                    preserveUnderlay={Boolean(effectivePpeFrame)}
                                     showLoadStatus={isActiveFrame
                                         && requestAccurateBase
                                         && !needsTiling
@@ -5848,7 +5872,8 @@ export const LivePageFrame = (props: any) => {
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
                                     onAccurateCommitted={() => {
                                         setAccurateCommittedKey(accuratePageCommitKey);
-                                        if (initialPpeFrame) releaseViewerFirstFrame(initialPpeFrame);
+                                        if (effectivePpeFrame) releaseViewerFirstFrame(effectivePpeFrame);
+                                        primeFrameRef.current.frame = null;
                                     }}
                                     renderOwnerId={effectiveRenderOwnerId}
                                     accurateColor={accurateColorPage}
@@ -5859,7 +5884,7 @@ export const LivePageFrame = (props: any) => {
                                     keepDisplayUntilAccurate={keepDisplayUntilAccurate}
                                     renderEnabled={needsTiling}
                                     cancelAccurateGroup={cancelAccurateGroup}
-                                    initialPpeFrame={initialPpeFrame}
+                                    initialPpeFrame={effectivePpeFrame}
                                     stableUnderlayReady={accurateColorPage
                                         ? hasStableAccurateUnderlay
                                         : isViewerUnderlayStable(

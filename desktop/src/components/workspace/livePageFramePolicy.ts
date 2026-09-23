@@ -94,7 +94,14 @@ export function shouldRenderViewerAccurateUnderlay(
     needsTiling: boolean,
     underlayWithinSurfaceBudget: boolean,
     layoutSettled = true,
+    initialFrameVisible = false,
+    isActiveFrame = false,
 ): boolean {
+    // UIUX (audit 2026-09-23 §ZOOM.BLUR.1): frame PPE mồi 24 DPI đã phủ toàn
+    // trang. Khi active đang chuyển sang viewport, dựng thêm underlay PPE trung
+    // gian (96–144 DPI) chỉ tạo một nấc mờ thứ hai trước tile nét; giữ frame mồi
+    // tới khi viewport commit để swap một lần.
+    if (initialFrameVisible && needsTiling && isActiveFrame) return false;
     return shouldRenderBasePage
         && accurateColorPage
         && needsTiling
