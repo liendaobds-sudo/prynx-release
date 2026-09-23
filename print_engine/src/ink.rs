@@ -900,30 +900,58 @@ impl InkBuffer {
     ///
     /// Trả `false` nếu có pixel từng phải trộn RGB lên một backdrop chỉ còn CMYK.
     pub(crate) fn finalize_rgb(&mut self, cm: &ColorManager) -> bool {
+        #[cfg(feature = "perf-probe")]
+        let _finalize_span = crate::perf_probe::span(crate::perf_probe::FINALIZE_RGB);
         let Some(sidecar) = self.rgb_sidecar.as_mut() else {
             return true;
         };
         if self.planes.len() < 4 {
             return false;
         }
-        for i in 0..sidecar.state.len() {
-            if sidecar.state[i] != RGB_VALID_DIRTY {
-                continue;
+        if !sidecar.state.contains(&RGB_VALID_DIRTY) {
+            return !sidecar.state.contains(&RGB_LOSSY);
+        }
+        // PERF (audit 2026-09-23 §R23.FINALIZE): cùng LUT cho toàn buffer.
+        // Không mượn RefCell/tăng giảm Arc cho từng pixel; chỉ dữ liệu LUT bất
+        // biến đi qua Rayon, tuyệt đối không chia sẻ ColorManager/LCMS qua thread.
+        let Some(lut) = cm.rgb_lut() else {
+            for state in &mut sidecar.state {
+                if *state == RGB_VALID_DIRTY { *state = RGB_LOSSY; }
             }
-            let rgb = sidecar.pixels[i];
-            let Some(cmyk) = cm.rgb_to_cmyk(rgb[0], rgb[1], rgb[2]) else {
-                sidecar.state[i] = RGB_LOSSY;
-                continue;
-            };
-            let alpha = if sidecar.mode == RgbSurfaceMode::PremultipliedAlpha {
-                self.alpha[i].clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            for ch in 0..4 {
-                self.planes[ch][i] = cmyk[ch] * alpha;
+            return false;
+        };
+        let premultiplied = sidecar.mode == RgbSurfaceMode::PremultipliedAlpha;
+        if should_parallelize_frame(sidecar.state.len()) {
+            let (process, _spots) = self.planes.split_at_mut(4);
+            let [cyan, magenta, yellow, black] = process else { return false; };
+            let rgb_pixels = &sidecar.pixels;
+            let alpha = &self.alpha;
+            cyan.par_iter_mut()
+                .zip(magenta.par_iter_mut())
+                .zip(yellow.par_iter_mut())
+                .zip(black.par_iter_mut())
+                .zip(sidecar.state.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, ((((c, m), y), k), state))| {
+                    if *state != RGB_VALID_DIRTY { return; }
+                    let rgb = rgb_pixels[i];
+                    let cmyk = lut.sample(rgb[0], rgb[1], rgb[2]);
+                    let a = if premultiplied { alpha[i].clamp(0.0, 1.0) } else { 1.0 };
+                    *c = cmyk[0] * a;
+                    *m = cmyk[1] * a;
+                    *y = cmyk[2] * a;
+                    *k = cmyk[3] * a;
+                    *state = RGB_VALID_CLEAN;
+                });
+        } else {
+            for i in 0..sidecar.state.len() {
+                if sidecar.state[i] != RGB_VALID_DIRTY { continue; }
+                let rgb = sidecar.pixels[i];
+                let cmyk = lut.sample(rgb[0], rgb[1], rgb[2]);
+                let a = if premultiplied { self.alpha[i].clamp(0.0, 1.0) } else { 1.0 };
+                for ch in 0..4 { self.planes[ch][i] = cmyk[ch] * a; }
+                sidecar.state[i] = RGB_VALID_CLEAN;
             }
-            sidecar.state[i] = RGB_VALID_CLEAN;
         }
         !sidecar.state.iter().any(|s| *s == RGB_LOSSY)
     }
@@ -3273,6 +3301,78 @@ mod tests {
             InkBuffer::new_with_memory_budget(100, 100, InkSpace::new(), 1024),
             Err(PpeError::MemoryBudgetExceeded { .. })
         ));
+    }
+
+    #[test]
+    fn finalize_rgb_matches_scalar_bits_across_pool_sizes_and_alpha_modes() {
+        use crate::color::RenderIntent;
+        let profile = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../backend/app/assets/icc/FOGRA39.icc");
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            for (w, h) in [(7, 5), (1024, 513)] {
+                for mode in [RgbSurfaceMode::OpaqueBackdrop, RgbSurfaceMode::PremultipliedAlpha] {
+                    let make = || {
+                        let mut space = InkSpace::new();
+                        space.register(Colorant::Spot("FinalizeSpot".into())).unwrap();
+                        let mut buffer = InkBuffer::new(w, h, space).unwrap();
+                        buffer.rgb_surface_mode = mode;
+                        for (ch, plane) in buffer.planes.iter_mut().enumerate() { plane.fill((ch + 1) as f32 / 8.0); }
+                        for (i, a) in buffer.alpha.iter_mut().enumerate() { *a = (i % 17) as f32 / 16.0; }
+                        assert!(buffer.ensure_rgb_sidecar().unwrap());
+                        let sidecar = buffer.rgb_sidecar.as_mut().unwrap();
+                        for (i, (state, rgb)) in sidecar.state.iter_mut().zip(&mut sidecar.pixels).enumerate() {
+                            *state = [RGB_VALID_DIRTY, RGB_VALID_CLEAN, RGB_INVALID, RGB_LOSSY, 255][i % 5];
+                            *rgb = [(i % 31) as f32 / 30.0, (i % 19) as f32 / 18.0, (i % 13) as f32 / 12.0];
+                        }
+                        buffer
+                    };
+                    let mut expected = make();
+                    let mut actual = make();
+                    let cm = ColorManager::from_cmyk_profile(&profile, RenderIntent::RelativeColorimetric).unwrap();
+                    let sidecar = expected.rgb_sidecar.as_mut().unwrap();
+                    // Công thức scalar trước tối ưu, không gọi lại finalize_rgb.
+                    for i in 0..sidecar.state.len() {
+                        if sidecar.state[i] != RGB_VALID_DIRTY { continue; }
+                        let rgb = sidecar.pixels[i];
+                        let cmyk = cm.rgb_to_cmyk(rgb[0], rgb[1], rgb[2]).unwrap();
+                        let a = if mode == RgbSurfaceMode::PremultipliedAlpha { expected.alpha[i].clamp(0.0, 1.0) } else { 1.0 };
+                        for ch in 0..4 { expected.planes[ch][i] = cmyk[ch] * a; }
+                        sidecar.state[i] = RGB_VALID_CLEAN;
+                    }
+                    let ok = pool.install(|| {
+                        // ColorManager không Sync: tạo ngoài các task parallel bên trong finalize.
+                        let cm = ColorManager::from_cmyk_profile(&profile, RenderIntent::RelativeColorimetric).unwrap();
+                        actual.finalize_rgb(&cm)
+                    });
+                    assert!(!ok, "pixel LOSSY ban đầu vẫn phải được báo");
+                    for (a, b) in actual.planes.iter().zip(&expected.planes) {
+                        assert_eq!(a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), b.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+                    }
+                    assert_eq!(actual.alpha, expected.alpha);
+                    assert_eq!(actual.rgb_sidecar.as_ref().unwrap().state, expected.rgb_sidecar.as_ref().unwrap().state);
+                    assert_eq!(actual.rgb_sidecar.as_ref().unwrap().pixels, expected.rgb_sidecar.as_ref().unwrap().pixels);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finalize_rgb_missing_lut_marks_only_dirty_pixels_lossy() {
+        use crate::color::RenderIntent;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../backend/app/assets/icc/FOGRA39.icc");
+        // Profile CMYK không dùng được làm nguồn RGB của transform RGB_FLT.
+        let cm = ColorManager::from_profiles(&path, Some(&path), RenderIntent::RelativeColorimetric).unwrap();
+        assert!(cm.rgb_lut().is_none());
+        let mut buf = InkBuffer::new(4, 1, InkSpace::new()).unwrap();
+        assert!(buf.ensure_rgb_sidecar().unwrap());
+        assert!(buf.finalize_rgb(&cm), "không có DIRTY thì không cần LUT");
+        buf.rgb_sidecar.as_mut().unwrap().state = vec![RGB_VALID_DIRTY, RGB_VALID_CLEAN, RGB_INVALID, RGB_LOSSY];
+        let before = buf.planes.clone();
+        assert!(!buf.finalize_rgb(&cm));
+        assert_eq!(buf.planes, before);
+        assert_eq!(buf.rgb_sidecar.as_ref().unwrap().state, vec![RGB_LOSSY, RGB_VALID_CLEAN, RGB_INVALID, RGB_LOSSY]);
     }
 
     #[test]

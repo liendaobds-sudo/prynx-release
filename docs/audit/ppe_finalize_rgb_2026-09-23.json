@@ -1,0 +1,2917 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-23",
+  "scope": "PPE finalize_rgb A/B; dev app smoke; interrupted 60-run baseline retained separately",
+  "source_base_commit": "6d667452e5636f62966d4a2f9b84877d0dd0edb7",
+  "patch_files": [
+    "print_engine/src/ink.rs",
+    "print_engine/src/lib.rs"
+  ],
+  "source_dirty_unrelated": true,
+  "pdf_sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+  "binary_sha256": {
+    "before_profiler": "748ce8fc17f5ca7d9e36ec7f6a1d809829b87edb26c54267f1ceb27fb6f007b5",
+    "after_profiler": "8cffb8b8b385ffdb765f67c770d92df178a01571f6db21346e3739feca8f3f8a",
+    "tauri_debug": "33c461f39ffaca6739b5f7e13fd15175a678ebc63774f7aa2672846e90ac8764",
+    "native_pyd": "5f594c072a9e7f3d5d924aab893e8f7683560167c5c1907d400121c1ea1b2c19"
+  },
+  "limitations": [
+    "Probe stages are inclusive; do not sum them. PNG proxy is not the runtime encoder.",
+    "All noisy samples are retained. Unrelated phase variance is observed; its cause was not established.",
+    "One-thread 1536/64 MiB is a constrained simulation, not a physical low-RAM machine.",
+    "User confirmed mouse scrolling during the interrupted app benchmark. It changed the measured page and cancelled in-flight renders. This is not evidence of an engine unsupported error.",
+    "App smoke passed 2/2 validity/pixel gates, but one pair is not a latency distribution.",
+    "The interrupted 60-run report is incomplete (10 valid of 11 observed). No P95 or whole-app speedup is claimed.",
+    "Corpus coverage, architecture milestones and release/installed smoke remain open. No installer was built."
+  ],
+  "validation": {
+    "rust_default_passed": 740,
+    "rust_default_ignored_manual_benchmarks": 4,
+    "rust_perf_probe_passed": 741,
+    "rust_perf_probe_ignored_manual_benchmarks": 4,
+    "backend_ppe_passed": 118,
+    "targeted_finalize_rerun_passed": 2,
+    "default_app_perf_probe_enabled": false
+  },
+  "probes": {
+    "baseline": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 45.743,
+      "open": {
+        "total_ms": 45.73,
+        "file_ms": 0.195,
+        "parse_ms": 44.093,
+        "resource_ms": 0.09,
+        "color_ms": 1.349
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 1681.512,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.152,
+          "raster_ms": 1400.563,
+          "color_ms": 272.602,
+          "checksum_ms": 22.838,
+          "encode_ms": 157.813,
+          "total_wall_ms": 1862.165,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 576.67
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 32.98
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 202.589
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 325.309
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 85.381
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.197
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 35.941
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 269.751
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 59.669
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 195.206
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1484.193,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.147,
+          "raster_ms": 1205.592,
+          "color_ms": 270.746,
+          "checksum_ms": 21.845,
+          "encode_ms": 158.18,
+          "total_wall_ms": 1664.219,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 544.464
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.479
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 193.703
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 311.854
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 81.972
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.204
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 35.191
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 270.672
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 56.797
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 192.362
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1482.933,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.164,
+          "raster_ms": 1204.996,
+          "color_ms": 269.309,
+          "checksum_ms": 22.58,
+          "encode_ms": 158.063,
+          "total_wall_ms": 1663.577,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 545.181
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.453
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 193.382
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 313.077
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 80.886
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.116
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 35.524
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 270.154
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 57.34
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 191.018
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "optimized_noisy": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 47.082,
+      "open": {
+        "total_ms": 47.074,
+        "file_ms": 0.203,
+        "parse_ms": 45.443,
+        "resource_ms": 0.071,
+        "color_ms": 1.352
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 1650.908,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.171,
+          "raster_ms": 1329.422,
+          "color_ms": 312.937,
+          "checksum_ms": 23.897,
+          "encode_ms": 164.569,
+          "total_wall_ms": 1839.377,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 618.182
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 34.532
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 214.097
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 352.384
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 90.685
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 13.515
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 37.799
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 301.806
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 64.215
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 26.112
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 2306.779,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.196,
+          "raster_ms": 1319.632,
+          "color_ms": 977.372,
+          "checksum_ms": 44.7,
+          "encode_ms": 269.508,
+          "total_wall_ms": 2620.989,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 698.685
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 26.621
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 261.054
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 392.305
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 103.296
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 15.241
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 42.42
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 295.631
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 72.85
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 91.656
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 2824.491,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.214,
+          "raster_ms": 1813.167,
+          "color_ms": 999.562,
+          "checksum_ms": 44.113,
+          "encode_ms": 258.419,
+          "total_wall_ms": 3127.025,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 1011.905
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 44.626
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 360.267
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 578.934
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 147.209
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 27.781
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 65.772
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 344.449
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 122.429
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 97.446
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "control_baseline": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 48.131,
+      "open": {
+        "total_ms": 48.126,
+        "file_ms": 0.161,
+        "parse_ms": 46.372,
+        "resource_ms": 0.069,
+        "color_ms": 1.522
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 1729.1,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.252,
+          "raster_ms": 1446.702,
+          "color_ms": 273.581,
+          "checksum_ms": 21.558,
+          "encode_ms": 162.336,
+          "total_wall_ms": 1912.996,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 588.746
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 33.872
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 206.383
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 332.025
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 85.325
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.568
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 37.161
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 276.125
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 59.937
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 204.242
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1558.62,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.205,
+          "raster_ms": 1272.677,
+          "color_ms": 277.432,
+          "checksum_ms": 21.9,
+          "encode_ms": 163.531,
+          "total_wall_ms": 1744.053,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 580.496
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 24.149
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 202.516
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 337.07
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 87.945
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 13.422
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 37.434
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 278.304
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 60.166
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 204.317
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1552.364,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.163,
+          "raster_ms": 1266.421,
+          "color_ms": 278.649,
+          "checksum_ms": 22.348,
+          "encode_ms": 166.535,
+          "total_wall_ms": 1741.248,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 579.709
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 25.507
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 201.847
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 336.428
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 90.311
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.392
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 36.171
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 275.813
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 60.82
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 204.309
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "control_optimized": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 3,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 47.523,
+      "open": {
+        "total_ms": 47.515,
+        "file_ms": 0.152,
+        "parse_ms": 45.799,
+        "resource_ms": 0.067,
+        "color_ms": 1.494
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 1521.896,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.187,
+          "raster_ms": 1237.977,
+          "color_ms": 275.453,
+          "checksum_ms": 21.416,
+          "encode_ms": 163.85,
+          "total_wall_ms": 1707.163,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 582.251
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 32.654
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 200.696
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 333.243
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 88.791
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.358
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 35.733
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 270.688
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 59.339
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 24.49
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 1350.543,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.202,
+          "raster_ms": 1052.271,
+          "color_ms": 289.332,
+          "checksum_ms": 21.54,
+          "encode_ms": 161.476,
+          "total_wall_ms": 1533.56,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 551.813
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.858
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 196.388
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 316.199
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 82.988
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.49
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 35.747
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 269.668
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 59.306
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 23.593
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 3,
+          "render_wall_ms": 1385.945,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.126,
+          "raster_ms": 1087.63,
+          "color_ms": 290.481,
+          "checksum_ms": 22.159,
+          "encode_ms": 170.54,
+          "total_wall_ms": 1578.645,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 12,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 3,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 575.45
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 23.234
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 206.916
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 329.407
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 84.813
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.913
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 36.998
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 281.132
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 60.974
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 24.917
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "one_thread_baseline": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 2,
+      "budgets": {
+        "render_bytes": 1610612736,
+        "resource_cache_bytes": 67108864
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 50.283,
+      "open": {
+        "total_ms": 50.278,
+        "file_ms": 0.185,
+        "parse_ms": 48.448,
+        "resource_ms": 0.072,
+        "color_ms": 1.571
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 4071.722,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.204,
+          "raster_ms": 1534.895,
+          "color_ms": 2524.533,
+          "checksum_ms": 41.084,
+          "encode_ms": 284.152,
+          "total_wall_ms": 4396.96,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 1,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 624.379
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 37.242
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 215.265
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 354.922
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 94.733
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.699
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 37.339
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 285.362
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 61.796
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 206.93
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 6350.018,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.232,
+          "raster_ms": 2557.747,
+          "color_ms": 3779.502,
+          "checksum_ms": 44.894,
+          "encode_ms": 265.599,
+          "total_wall_ms": 6660.514,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 12,
+            "form_evictions": 6,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 1064.705
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 46.147
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 364.115
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 626.98
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 155.029
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 25.405
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 64.217
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 377.194
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 117.213
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 414.978
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "one_thread_optimized": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 92,
+      "page": 1,
+      "clip": null,
+      "repeats": 2,
+      "budgets": {
+        "render_bytes": 1610612736,
+        "resource_cache_bytes": 67108864
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 46.849,
+      "open": {
+        "total_ms": 46.842,
+        "file_ms": 0.161,
+        "parse_ms": 45.118,
+        "resource_ms": 0.066,
+        "color_ms": 1.492
+      },
+      "width": 2173,
+      "height": 3622,
+      "rgb_bytes": 23611818,
+      "png_bytes": 1613661,
+      "checksum_decimal": "13864267892951180143",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 3701.59,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.198,
+          "raster_ms": 1470.261,
+          "color_ms": 2219.091,
+          "checksum_ms": 44.576,
+          "encode_ms": 285.364,
+          "total_wall_ms": 4031.531,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 1,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 605.35
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 32.685
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 204.743
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 351.54
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 93.899
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 12.361
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 35.243
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 278.034
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 65.356
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 193.961
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 5748.677,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.266,
+          "raster_ms": 2184.259,
+          "color_ms": 3552.41,
+          "checksum_ms": 43.822,
+          "encode_ms": 267.949,
+          "total_wall_ms": 6060.45,
+          "width": 2173,
+          "height": 3622,
+          "rgb_bytes": 23611818,
+          "png_bytes": 1613661,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 12,
+            "form_evictions": 6,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 43622995,
+            "budget_bytes": 67108864
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 972.693
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 36.064
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 347.804
+              },
+              {
+                "stage": "composite",
+                "calls": 28002,
+                "ms": 562.303
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 28076,
+                "ms": 144.219
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 23.37
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 60.556
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 344.745
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 112.586
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 285.703
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "tile_baseline": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 188,
+      "page": 1,
+      "clip": {
+        "x": 1024,
+        "y": 512,
+        "width": 512,
+        "height": 512
+      },
+      "repeats": 2,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 58.788,
+      "open": {
+        "total_ms": 58.78,
+        "file_ms": 0.26,
+        "parse_ms": 57.057,
+        "resource_ms": 0.066,
+        "color_ms": 1.395
+      },
+      "width": 512,
+      "height": 512,
+      "rgb_bytes": 786432,
+      "png_bytes": 19947,
+      "checksum_decimal": "9995153439471946921",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 330.162,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.143,
+          "raster_ms": 267.658,
+          "color_ms": 61.979,
+          "checksum_ms": 0.724,
+          "encode_ms": 2.314,
+          "total_wall_ms": 333.201,
+          "width": 512,
+          "height": 512,
+          "rgb_bytes": 786432,
+          "png_bytes": 19947,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 33.847
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 15.493
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 3.581
+              },
+              {
+                "stage": "composite",
+                "calls": 104,
+                "ms": 6.44
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 104,
+                "ms": 1.641
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 9.559
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 28.242
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 10.87
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 2.505
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 7.178
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 161.827,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.131,
+          "raster_ms": 98.43,
+          "color_ms": 62.904,
+          "checksum_ms": 0.769,
+          "encode_ms": 2.396,
+          "total_wall_ms": 164.992,
+          "width": 512,
+          "height": 512,
+          "rgb_bytes": 786432,
+          "png_bytes": 19947,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 22.646
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 4.862
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 3.4
+              },
+              {
+                "stage": "composite",
+                "calls": 104,
+                "ms": 6.305
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 104,
+                "ms": 1.547
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 9.675
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 28.69
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 11.621
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 2.42
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 8.029
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "tile_optimized": {
+      "schema_version": 2,
+      "source_name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "dpi": 188,
+      "page": 1,
+      "clip": {
+        "x": 1024,
+        "y": 512,
+        "width": 512,
+        "height": 512
+      },
+      "repeats": 2,
+      "budgets": {
+        "render_bytes": 4294967296,
+        "resource_cache_bytes": 536870912
+      },
+      "viewer_options": {
+        "profile": "FOGRA39",
+        "profile_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+        "intent": "relative",
+        "optional_content": "view",
+        "annotations": true,
+        "overprint_simulation": false,
+        "fallback_font": "DejaVuSans.ttf",
+        "fallback_font_bytes": 757076,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+      },
+      "open_wall_ms": 48.756,
+      "open": {
+        "total_ms": 48.744,
+        "file_ms": 0.243,
+        "parse_ms": 47.12,
+        "resource_ms": 0.057,
+        "color_ms": 1.321
+      },
+      "width": 512,
+      "height": 512,
+      "rgb_bytes": 786432,
+      "png_bytes": 19947,
+      "checksum_decimal": "9995153439471946921",
+      "encode": {
+        "kind": "flate2-rgb-png-proxy",
+        "runtime_equivalent": false
+      },
+      "samples": [
+        {
+          "iteration": 1,
+          "render_wall_ms": 334.972,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.133,
+          "raster_ms": 272.459,
+          "color_ms": 62.04,
+          "checksum_ms": 0.705,
+          "encode_ms": 2.387,
+          "total_wall_ms": 338.065,
+          "width": 512,
+          "height": 512,
+          "rgb_bytes": 786432,
+          "png_bytes": 19947,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 0,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 1,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 34.288
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 15.262
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 3.917
+              },
+              {
+                "stage": "composite",
+                "calls": 104,
+                "ms": 6.738
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 104,
+                "ms": 1.698
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 9.546
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 28.38
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 11.777
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 2.446
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 6.699
+              }
+            ]
+          }
+        },
+        {
+          "iteration": 2,
+          "render_wall_ms": 164.733,
+          "open_ms": 0,
+          "parse_ms": 0,
+          "resource_ms": 0.205,
+          "raster_ms": 101.362,
+          "color_ms": 62.826,
+          "checksum_ms": 0.705,
+          "encode_ms": 2.781,
+          "total_wall_ms": 168.22,
+          "width": 512,
+          "height": 512,
+          "rgb_bytes": 786432,
+          "png_bytes": 19947,
+          "cache": {
+            "image_hits": 0,
+            "image_misses": 0,
+            "image_evictions": 0,
+            "form_hits": 6,
+            "form_misses": 6,
+            "form_evictions": 0,
+            "page_hits": 2,
+            "page_misses": 0,
+            "bytes": 179686796,
+            "budget_bytes": 536870912
+          },
+          "raster_detail": {
+            "inclusive": true,
+            "stages": [
+              {
+                "stage": "end_path",
+                "calls": 28910,
+                "ms": 24.466
+              },
+              {
+                "stage": "paint_color",
+                "calls": 28983,
+                "ms": 5.256
+              },
+              {
+                "stage": "coverage",
+                "calls": 28909,
+                "ms": 3.747
+              },
+              {
+                "stage": "composite",
+                "calls": 104,
+                "ms": 6.918
+              },
+              {
+                "stage": "composite_rgb",
+                "calls": 104,
+                "ms": 1.837
+              },
+              {
+                "stage": "state",
+                "calls": 86732,
+                "ms": 9.791
+              },
+              {
+                "stage": "path_build",
+                "calls": 173518,
+                "ms": 29.832
+              },
+              {
+                "stage": "group_setup",
+                "calls": 6,
+                "ms": 11.155
+              },
+              {
+                "stage": "group_finish",
+                "calls": 6,
+                "ms": 2.594
+              },
+              {
+                "stage": "finalize_rgb",
+                "calls": 1,
+                "ms": 7.215
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "app_smoke": {
+    "schemaVersion": 2,
+    "scope": "end-to-end-webview-main-page-thumbnail-closed",
+    "timingUnit": "ms",
+    "artifact": {
+      "name": "poster retro - Khắc Trung - 0854444414.pdf",
+      "sizeBytes": 63995596,
+      "sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+      "pathStored": false,
+      "matchesAuditedStandee": false
+    },
+    "config": {
+      "runs": 2,
+      "pairs": 1,
+      "baselineKind": "cleanup-smoke",
+      "transitions": [
+        "cold-open",
+        "warm-zoom"
+      ],
+      "pollMs": 16,
+      "timeoutMs": 60000,
+      "traceDrainPolicy": "remaining-transition-deadline; FSP/FCVF frozen before drain",
+      "stableFrames": 2,
+      "stableFrameRule": "distinct-screenshot-captures",
+      "screenshotIntervalMs": 60,
+      "measurementScope": "main-page-thumbnail-closed",
+      "thumbnailPolicy": "new-viewer-default-closed-and-verified-per-run",
+      "expectedRuntimeEnv": {
+        "PRYNX_VIEWER_ENGINE_MODE": "ppe-only",
+        "PRYNX_VIEWER_SHADOW_RENDER": "off-or-unset"
+      },
+      "allowCompatibilityFallback": false,
+      "requireStandeeHash": false,
+      "corpusKind": "custom-corpus"
+    },
+    "sessionEvidence": {
+      "pipelineScope": "target-webview-cdp-network-ipc-trace",
+      "engineModeGate": "ppe-only",
+      "compatibilityGate": "disabled",
+      "shadowGate": false,
+      "nativePerfLogScope": "global-file-bounded-by-offset-supplemental",
+      "thumbnailBaselineStatus": "separate-runtime-gate-required",
+      "frameRequestCorrelation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+      "initialMeasuredTabCount": 0
+    },
+    "limitations": [
+      "FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.",
+      "FSP chưa tính mọi first-frame-prime/underlay ngoài LiveTile; không coi đây là thời điểm pixel đầu tuyệt đối. Canvas dùng metadata chụp sau drawImage, không lấy target zoom đang chờ.",
+      "Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.",
+      "PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame."
+    ],
+    "runs": [
+      {
+        "index": 1,
+        "cacheIdentityKind": "pdf-url",
+        "coldReset": {
+          "namespaceCleared": true,
+          "namespaceHasCachedTile": false,
+          "documentClosed": false,
+          "error": null,
+          "documentCacheState": "already-empty"
+        },
+        "thumbnailEvidence": {
+          "verified": true,
+          "reason": null,
+          "matchingStoreCount": 1
+        },
+        "label": "cold-open",
+        "trigger": {
+          "accepted": 1,
+          "size": 63995596,
+          "note": "dispatcher schedules a 50ms batch flush before tab creation"
+        },
+        "shellMs": 1399,
+        "fspMs": 3917,
+        "fcvfMs": 4573,
+        "blankGapTotalMs": 0,
+        "blankGapMaxMs": 0,
+        "blankGapOpen": false,
+        "blankGapCurrentMs": 0,
+        "timeoutStage": null,
+        "stableFrames": 2,
+        "sourceKeyCaptured": true,
+        "harnessObservation": {
+          "screenshotCount": 9,
+          "screenshotTotalMs": 2540,
+          "triggerOverheadMs": 223
+        },
+        "frameRequestCorrelation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+        "pipelineEvidenceAtFrame": {
+          "ppeCallCount": 3,
+          "ppeFulfilledCount": 3,
+          "ppeRejectedCount": 0,
+          "ppeRejections": [],
+          "ppePendingCount": 0,
+          "ppeStaleSequenceCount": 0,
+          "displayCallCount": 0,
+          "shadowCallCount": 0,
+          "engineConfigCallCount": 3,
+          "engineConfigObservedCallCount": 3,
+          "engineConfigForeignCallCount": 0,
+          "engineConfigRejectedCount": 0,
+          "engineConfigPendingCount": 0,
+          "engineConfigInvalidCount": 0,
+          "engineConfigUnexpectedCount": 0,
+          "engineConfigPpeOnlyUnexpectedCount": 0,
+          "requestIds": [
+            "8c6cd77f032fcf91",
+            "8f69575eaa358244",
+            "8134a86f7e0b15ba"
+          ],
+          "pipelineIdentities": [
+            "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+          ],
+          "allPpeCallsIdentified": true,
+          "allTracedCallsIdentified": true,
+          "allTracedSourcePathsMatched": true,
+          "requestIdsUnique": true,
+          "viewerEngineMode": "ppe-only",
+          "viewerShadowEnabled": false,
+          "engineConfigSource": "get_pdf_metadata",
+          "engineConfigSourcePathMatched": true,
+          "engineConfigCapturedInRun": true,
+          "engineConfigValidatedForRun": true,
+          "fulfilledDurationsMs": [
+            760,
+            367,
+            2048
+          ],
+          "displayFulfilledCount": 0,
+          "displayRejectedCount": 0,
+          "displayPendingCount": 0,
+          "compatibilityFallbackCount": 0,
+          "sourcePathsMatched": true,
+          "payloadsParsed": true,
+          "latestPpeCompletedAt": 4442.3781,
+          "verifiedPpeOnly": true,
+          "verifiedCompatibility": false,
+          "verifiedRuntimePipeline": true,
+          "scope": "target-webview-cdp-network-ipc-trace"
+        },
+        "pipelineEvidence": {
+          "ppeCallCount": 3,
+          "ppeFulfilledCount": 3,
+          "ppeRejectedCount": 0,
+          "ppeRejections": [],
+          "ppePendingCount": 0,
+          "ppeStaleSequenceCount": 0,
+          "displayCallCount": 0,
+          "shadowCallCount": 0,
+          "engineConfigCallCount": 3,
+          "engineConfigObservedCallCount": 3,
+          "engineConfigForeignCallCount": 0,
+          "engineConfigRejectedCount": 0,
+          "engineConfigPendingCount": 0,
+          "engineConfigInvalidCount": 0,
+          "engineConfigUnexpectedCount": 0,
+          "engineConfigPpeOnlyUnexpectedCount": 0,
+          "requestIds": [
+            "8c6cd77f032fcf91",
+            "8f69575eaa358244",
+            "8134a86f7e0b15ba"
+          ],
+          "pipelineIdentities": [
+            "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+          ],
+          "allPpeCallsIdentified": true,
+          "allTracedCallsIdentified": true,
+          "allTracedSourcePathsMatched": true,
+          "requestIdsUnique": true,
+          "viewerEngineMode": "ppe-only",
+          "viewerShadowEnabled": false,
+          "engineConfigSource": "get_pdf_metadata",
+          "engineConfigSourcePathMatched": true,
+          "engineConfigCapturedInRun": true,
+          "engineConfigValidatedForRun": true,
+          "fulfilledDurationsMs": [
+            760,
+            367,
+            2048
+          ],
+          "displayFulfilledCount": 0,
+          "displayRejectedCount": 0,
+          "displayPendingCount": 0,
+          "compatibilityFallbackCount": 0,
+          "sourcePathsMatched": true,
+          "payloadsParsed": true,
+          "latestPpeCompletedAt": 4442.3781,
+          "verifiedPpeOnly": true,
+          "verifiedCompatibility": false,
+          "verifiedRuntimePipeline": true,
+          "scope": "target-webview-cdp-network-ipc-trace"
+        },
+        "traceDrain": {
+          "complete": true,
+          "elapsedMs": 0,
+          "remainingBudgetMs": 55427,
+          "pendingAtFrame": 0,
+          "pendingAfterDrain": 0,
+          "error": null
+        },
+        "nativePerfEvidence": {
+          "available": true,
+          "ppeResultCount": 3,
+          "displayResultCount": 0,
+          "scope": "global-log-supplemental-not-request-correlated"
+        },
+        "final": {
+          "dom": {
+            "shell": true,
+            "pageRect": {
+              "x": 355,
+              "y": 181,
+              "width": 394.1875,
+              "height": 657
+            },
+            "visibleRect": {
+              "x": 355,
+              "y": 181,
+              "width": 394.1875,
+              "height": 657
+            },
+            "tiles": [
+              {
+                "x": 355,
+                "y": 181,
+                "width": 395,
+                "height": 657,
+                "naturalWidth": 2173,
+                "naturalHeight": 3622,
+                "surfaceKind": "canvas",
+                "quality": 5.50126582278481,
+                "requestPage": 1,
+                "requestZoom": 0.9583333333333334,
+                "requestRotation": 0,
+                "requestClip": null,
+                "accurateOnly": true
+              }
+            ],
+            "coverageRatio": 1,
+            "sharpCoverageRatio": 1,
+            "sharp": true,
+            "devicePixelRatio": 1,
+            "page": 1,
+            "rotation": 0
+          },
+          "compositor": {
+            "captured": true,
+            "hasContent": true,
+            "signature": "4d371c5b",
+            "nonWhiteRatio": 0.9962214052287581,
+            "chromaticRatio": 0.9852941176470589,
+            "lumaRange": 226,
+            "contentBounds": {
+              "leftRatio": 0,
+              "topRatio": 0,
+              "rightRatio": 1,
+              "bottomRatio": 1
+            }
+          },
+          "frameEvidence": {
+            "correlation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+            "candidateCount": 1,
+            "candidateRequestIds": [
+              "8134a86f7e0b15ba"
+            ],
+            "candidateGeometry": [
+              {
+                "requestId": "8134a86f7e0b15ba",
+                "valid": true,
+                "viewportCovered": true,
+                "kind": "full-page",
+                "coverageRatio": 1,
+                "matchedTileCount": 1,
+                "requestRotation": 0,
+                "matchedTileRects": [
+                  {
+                    "x": 355,
+                    "y": 181,
+                    "width": 395,
+                    "height": 657,
+                    "quality": 5.50126582278481,
+                    "sourceIsPostTrigger": true
+                  }
+                ],
+                "viewportBounds": {
+                  "left": 355,
+                  "top": 181,
+                  "right": 749.1875,
+                  "bottom": 838
+                }
+              }
+            ],
+            "postGeometryCandidateCount": 1,
+            "postGeometryCandidateRequestIds": [
+              "8134a86f7e0b15ba"
+            ],
+            "postTriggerGeometry": {
+              "valid": true,
+              "sharpValid": true,
+              "coverageRatio": 1,
+              "sharpCoverageRatio": 1,
+              "requestIds": [
+                "8134a86f7e0b15ba"
+              ],
+              "tileRects": [
+                {
+                  "x": 355,
+                  "y": 181,
+                  "width": 395,
+                  "height": 657,
+                  "quality": 5.50126582278481,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 355,
+                "top": 181,
+                "right": 749.1875,
+                "bottom": 838
+              }
+            },
+            "latestCompletedAt": 4442.3781
+          }
+        },
+        "measuredTabId": "imposition-1790135786886-0eo",
+        "valid": true
+      },
+      {
+        "index": 2,
+        "cacheIdentityKind": "pdf-url",
+        "coldReset": null,
+        "thumbnailEvidence": {
+          "verified": true,
+          "reason": null,
+          "matchingStoreCount": 1
+        },
+        "label": "warm-zoom",
+        "trigger": {
+          "accepted": true,
+          "kind": "warm-zoom",
+          "beforeZoom": 0.18138885956193324,
+          "targetZoom": 2,
+          "beforePageRect": {
+            "x": 355,
+            "y": 181,
+            "width": 394.1875,
+            "height": 657
+          },
+          "requireGeometryChange": true,
+          "previousSurfaceRetained": true
+        },
+        "shellMs": null,
+        "fspMs": 694,
+        "fcvfMs": 990,
+        "blankGapTotalMs": 0,
+        "blankGapMaxMs": 0,
+        "blankGapOpen": false,
+        "blankGapCurrentMs": 0,
+        "timeoutStage": null,
+        "stableFrames": 2,
+        "sourceKeyCaptured": true,
+        "harnessObservation": {
+          "screenshotCount": 3,
+          "screenshotTotalMs": 738,
+          "triggerOverheadMs": 65
+        },
+        "frameRequestCorrelation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+        "pipelineEvidenceAtFrame": {
+          "ppeCallCount": 36,
+          "ppeFulfilledCount": 3,
+          "ppeRejectedCount": 0,
+          "ppeRejections": [],
+          "ppePendingCount": 33,
+          "ppeStaleSequenceCount": 0,
+          "displayCallCount": 0,
+          "shadowCallCount": 0,
+          "engineConfigCallCount": 0,
+          "engineConfigObservedCallCount": 0,
+          "engineConfigForeignCallCount": 0,
+          "engineConfigRejectedCount": 0,
+          "engineConfigPendingCount": 0,
+          "engineConfigInvalidCount": 0,
+          "engineConfigUnexpectedCount": 0,
+          "engineConfigPpeOnlyUnexpectedCount": 0,
+          "requestIds": [
+            "de385e8af4873ff6",
+            "caf45d3822b1dc47",
+            "28243d053f0754a5",
+            "1457ac43d55e3269",
+            "799437d123995c8d",
+            "8a775a15a34df8a8",
+            "b099933d90d0305f",
+            "79e89a40b3337f96",
+            "044ca7b5688cb490",
+            "1861b616d028593f",
+            "89df993149c5fa39",
+            "0163b791a80acda7",
+            "8f60f2e093e346c1",
+            "46361fa2d1db6f99",
+            "63f5b5ac65391938",
+            "b0f38cf01c365073",
+            "3f3d1825d89dc5ba",
+            "f8599c92f34cde92",
+            "13336a68d6a90e05",
+            "f36e02b77ec2b8ea",
+            "428bbc9db2c7da76",
+            "07e6b2d74518f0a1",
+            "c68c7614e8c44a65",
+            "562bc03c7ee2bb7c",
+            "2bb44d46978a865c",
+            "9c4948ee08c55763",
+            "f54bd3f52684e824",
+            "3e98679b41216e37",
+            "d114827811b2f2b3",
+            "591c0566386e31d0",
+            "0908813260bfab9b",
+            "f2ef0a576cf40c16",
+            "5486a8115a31bf79",
+            "c2d428a6f4785afd",
+            "ddbfe8a78a8e10bc",
+            "47096b7dc0758d89"
+          ],
+          "pipelineIdentities": [
+            "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+          ],
+          "allPpeCallsIdentified": true,
+          "allTracedCallsIdentified": true,
+          "allTracedSourcePathsMatched": true,
+          "requestIdsUnique": true,
+          "viewerEngineMode": "ppe-only",
+          "viewerShadowEnabled": false,
+          "engineConfigSource": "get_pdf_metadata",
+          "engineConfigSourcePathMatched": true,
+          "engineConfigCapturedInRun": false,
+          "engineConfigValidatedForRun": true,
+          "fulfilledDurationsMs": [
+            332,
+            530,
+            763
+          ],
+          "displayFulfilledCount": 0,
+          "displayRejectedCount": 0,
+          "displayPendingCount": 0,
+          "compatibilityFallbackCount": 0,
+          "sourcePathsMatched": true,
+          "payloadsParsed": true,
+          "latestPpeCompletedAt": 6252.8886,
+          "verifiedPpeOnly": false,
+          "verifiedCompatibility": false,
+          "verifiedRuntimePipeline": false,
+          "scope": "target-webview-cdp-network-ipc-trace"
+        },
+        "pipelineEvidence": {
+          "ppeCallCount": 36,
+          "ppeFulfilledCount": 36,
+          "ppeRejectedCount": 0,
+          "ppeRejections": [],
+          "ppePendingCount": 0,
+          "ppeStaleSequenceCount": 0,
+          "displayCallCount": 0,
+          "shadowCallCount": 0,
+          "engineConfigCallCount": 0,
+          "engineConfigObservedCallCount": 0,
+          "engineConfigForeignCallCount": 0,
+          "engineConfigRejectedCount": 0,
+          "engineConfigPendingCount": 0,
+          "engineConfigInvalidCount": 0,
+          "engineConfigUnexpectedCount": 0,
+          "engineConfigPpeOnlyUnexpectedCount": 0,
+          "requestIds": [
+            "de385e8af4873ff6",
+            "caf45d3822b1dc47",
+            "28243d053f0754a5",
+            "1457ac43d55e3269",
+            "799437d123995c8d",
+            "8a775a15a34df8a8",
+            "b099933d90d0305f",
+            "79e89a40b3337f96",
+            "044ca7b5688cb490",
+            "1861b616d028593f",
+            "89df993149c5fa39",
+            "0163b791a80acda7",
+            "8f60f2e093e346c1",
+            "46361fa2d1db6f99",
+            "63f5b5ac65391938",
+            "b0f38cf01c365073",
+            "3f3d1825d89dc5ba",
+            "f8599c92f34cde92",
+            "13336a68d6a90e05",
+            "f36e02b77ec2b8ea",
+            "428bbc9db2c7da76",
+            "07e6b2d74518f0a1",
+            "c68c7614e8c44a65",
+            "562bc03c7ee2bb7c",
+            "2bb44d46978a865c",
+            "9c4948ee08c55763",
+            "f54bd3f52684e824",
+            "3e98679b41216e37",
+            "d114827811b2f2b3",
+            "591c0566386e31d0",
+            "0908813260bfab9b",
+            "f2ef0a576cf40c16",
+            "5486a8115a31bf79",
+            "c2d428a6f4785afd",
+            "ddbfe8a78a8e10bc",
+            "47096b7dc0758d89"
+          ],
+          "pipelineIdentities": [
+            "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+          ],
+          "allPpeCallsIdentified": true,
+          "allTracedCallsIdentified": true,
+          "allTracedSourcePathsMatched": true,
+          "requestIdsUnique": true,
+          "viewerEngineMode": "ppe-only",
+          "viewerShadowEnabled": false,
+          "engineConfigSource": "get_pdf_metadata",
+          "engineConfigSourcePathMatched": true,
+          "engineConfigCapturedInRun": false,
+          "engineConfigValidatedForRun": true,
+          "fulfilledDurationsMs": [
+            332,
+            530,
+            763,
+            974,
+            1169,
+            1340,
+            1609,
+            1607,
+            2000,
+            2402,
+            2767,
+            3111,
+            3491,
+            3830,
+            4219,
+            4547,
+            4882,
+            5226,
+            5606,
+            5910,
+            6241,
+            6626,
+            6995,
+            7339,
+            7693,
+            8022,
+            8420,
+            8740,
+            9118,
+            9459,
+            9869,
+            10181,
+            10501,
+            10831,
+            11161,
+            11498
+          ],
+          "displayFulfilledCount": 0,
+          "displayRejectedCount": 0,
+          "displayPendingCount": 0,
+          "compatibilityFallbackCount": 0,
+          "sourcePathsMatched": true,
+          "payloadsParsed": true,
+          "latestPpeCompletedAt": 17352.2805,
+          "verifiedPpeOnly": true,
+          "verifiedCompatibility": false,
+          "verifiedRuntimePipeline": true,
+          "scope": "target-webview-cdp-network-ipc-trace"
+        },
+        "traceDrain": {
+          "complete": true,
+          "elapsedMs": 10961,
+          "remainingBudgetMs": 59010,
+          "pendingAtFrame": 33,
+          "pendingAfterDrain": 0,
+          "error": null
+        },
+        "nativePerfEvidence": {
+          "available": true,
+          "ppeResultCount": 36,
+          "displayResultCount": 0,
+          "scope": "global-log-supplemental-not-request-correlated"
+        },
+        "final": {
+          "dom": {
+            "shell": true,
+            "pageRect": {
+              "x": -1480,
+              "y": -3120,
+              "width": 4346.453125,
+              "height": 7244.09375
+            },
+            "visibleRect": {
+              "x": 60,
+              "y": 143,
+              "width": 985,
+              "height": 733
+            },
+            "tiles": [
+              {
+                "x": -1480.0078125,
+                "y": -3120,
+                "width": 4347,
+                "height": 7245,
+                "naturalWidth": 2173,
+                "naturalHeight": 3622,
+                "surfaceKind": "canvas",
+                "quality": 0.4998849781458477,
+                "requestPage": 1,
+                "requestZoom": 0.9583333333333334,
+                "requestRotation": 0,
+                "requestClip": null,
+                "accurateOnly": true
+              },
+              {
+                "x": 23.3046875,
+                "y": 137.1875,
+                "width": 1064.84375,
+                "height": 751.65625,
+                "naturalWidth": 1088,
+                "naturalHeight": 768,
+                "surfaceKind": "canvas",
+                "quality": 1.0217436494408183,
+                "requestPage": 1,
+                "requestZoom": 1.9583333333333333,
+                "requestRotation": 0,
+                "requestClip": {
+                  "x": 1536,
+                  "y": 3328,
+                  "width": 1088,
+                  "height": 768
+                },
+                "accurateOnly": true
+              },
+              {
+                "x": 524.4140625,
+                "y": 387.734375,
+                "width": 502.09375,
+                "height": 502.09375,
+                "naturalWidth": 512,
+                "naturalHeight": 512,
+                "surfaceKind": "canvas",
+                "quality": 1.0197298811227984,
+                "requestPage": 1,
+                "requestZoom": 1.9583333333333333,
+                "requestRotation": 0,
+                "requestClip": {
+                  "x": 2048,
+                  "y": 3584,
+                  "width": 512,
+                  "height": 512
+                },
+                "accurateOnly": true
+              }
+            ],
+            "coverageRatio": 1,
+            "sharpCoverageRatio": 1,
+            "sharp": true,
+            "devicePixelRatio": 1,
+            "page": 1,
+            "rotation": 0
+          },
+          "compositor": {
+            "captured": true,
+            "hasContent": true,
+            "signature": "3385dbb1",
+            "nonWhiteRatio": 1,
+            "chromaticRatio": 0.9788651315789474,
+            "lumaRange": 184,
+            "contentBounds": {
+              "leftRatio": 0,
+              "topRatio": 0,
+              "rightRatio": 1,
+              "bottomRatio": 1
+            }
+          },
+          "frameEvidence": {
+            "correlation": "post-trigger-path-page-visible-geometry-candidate-no-compositor-request-id",
+            "candidateCount": 2,
+            "candidateRequestIds": [
+              "de385e8af4873ff6",
+              "caf45d3822b1dc47"
+            ],
+            "candidateGeometry": [
+              {
+                "requestId": "de385e8af4873ff6",
+                "valid": true,
+                "viewportCovered": true,
+                "kind": "clip",
+                "coverageRatio": 1,
+                "matchedTileCount": 1,
+                "requestRotation": 0,
+                "matchedTileRects": [
+                  {
+                    "x": 23.3046875,
+                    "y": 137.1875,
+                    "width": 1064.84375,
+                    "height": 751.65625,
+                    "quality": 1.0217436494408183,
+                    "sourceIsPostTrigger": true
+                  }
+                ],
+                "viewportBounds": {
+                  "left": 60,
+                  "top": 143,
+                  "right": 1045,
+                  "bottom": 876
+                }
+              },
+              {
+                "requestId": "caf45d3822b1dc47",
+                "valid": true,
+                "viewportCovered": false,
+                "kind": "clip",
+                "coverageRatio": 0.3395476743960828,
+                "matchedTileCount": 1,
+                "requestRotation": 0,
+                "matchedTileRects": [
+                  {
+                    "x": 524.4140625,
+                    "y": 387.734375,
+                    "width": 502.09375,
+                    "height": 502.09375,
+                    "quality": 1.0197298811227984,
+                    "sourceIsPostTrigger": true
+                  }
+                ],
+                "viewportBounds": {
+                  "left": 60,
+                  "top": 143,
+                  "right": 1045,
+                  "bottom": 876
+                }
+              }
+            ],
+            "postGeometryCandidateCount": 2,
+            "postGeometryCandidateRequestIds": [
+              "de385e8af4873ff6",
+              "caf45d3822b1dc47"
+            ],
+            "postTriggerGeometry": {
+              "valid": true,
+              "sharpValid": true,
+              "coverageRatio": 1,
+              "sharpCoverageRatio": 1,
+              "requestIds": [
+                "de385e8af4873ff6",
+                "caf45d3822b1dc47"
+              ],
+              "tileRects": [
+                {
+                  "x": 23.3046875,
+                  "y": 137.1875,
+                  "width": 1064.84375,
+                  "height": 751.65625,
+                  "quality": 1.0217436494408183,
+                  "sourceIsPostTrigger": true
+                },
+                {
+                  "x": 524.4140625,
+                  "y": 387.734375,
+                  "width": 502.09375,
+                  "height": 502.09375,
+                  "quality": 1.0197298811227984,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 60,
+                "top": 143,
+                "right": 1045,
+                "bottom": 876
+              }
+            },
+            "latestCompletedAt": 6018.9419
+          }
+        },
+        "valid": true,
+        "tabClosedAfterPair": true
+      }
+    ],
+    "consoleErrors": [],
+    "badHttp": [],
+    "processMemory": {
+      "status": "not-measured-by-cdp-harness",
+      "scope": "whole-application-tree-required-separately"
+    },
+    "complete": true,
+    "failure": null,
+    "summary": {
+      "cold": {
+        "shellMs": {
+          "count": 1,
+          "min": 1399,
+          "p50": 1399,
+          "p95": 1399,
+          "max": 1399
+        },
+        "fspMs": {
+          "count": 1,
+          "min": 3917,
+          "p50": 3917,
+          "p95": 3917,
+          "max": 3917
+        },
+        "fcvfMs": {
+          "count": 1,
+          "min": 4573,
+          "p50": 4573,
+          "p95": 4573,
+          "max": 4573
+        },
+        "blankGapMaxMs": {
+          "count": 1,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "traceDrainMs": {
+          "count": 1,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        }
+      },
+      "warmZoom": {
+        "fspMs": {
+          "count": 1,
+          "min": 694,
+          "p50": 694,
+          "p95": 694,
+          "max": 694
+        },
+        "fcvfMs": {
+          "count": 1,
+          "min": 990,
+          "p50": 990,
+          "p95": 990,
+          "max": 990
+        },
+        "blankGapMaxMs": {
+          "count": 1,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "traceDrainMs": {
+          "count": 1,
+          "min": 10961,
+          "p50": 10961,
+          "p95": 10961,
+          "max": 10961
+        }
+      },
+      "passedPixelGate": true
+    }
+  },
+  "interrupted_app_baseline": {
+    "path": "docs/audit/viewer_customer_kernel_60_2026-09-23.json",
+    "runs": 11,
+    "valid": 10,
+    "complete": false,
+    "failure_run": 11,
+    "rejected": 11,
+    "rejection_kind": "cancelled",
+    "final_page": 2,
+    "user_confirmed_interference": "mouse scrolling"
+  }
+}
