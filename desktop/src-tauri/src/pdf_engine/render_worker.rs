@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use image::{ColorType, ImageEncoder};
@@ -2666,19 +2666,58 @@ fn forget_document_affinity(
     }
 }
 
-fn remember_document_affinity(
-    manager: &RenderWorkerManager,
+fn reserve_background_affinity<T>(
+    affinities: &Mutex<HashMap<String, WorkerLane>>,
     affinity_key: Option<&str>,
-    lane: WorkerLane,
-) {
-    let Some(affinity_key) = affinity_key else {
-        return;
-    };
-    manager
-        .document_affinity
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(affinity_key.to_string(), lane);
+    select: impl FnOnce() -> (WorkerLane, Option<T>),
+) -> (WorkerLane, bool, Option<T>) {
+    // PERF (audit 2026-09-23 §R23.AFFINITY-ATOMIC): giữ lookup → chọn → publish
+    // trong một vùng khóa ngắn. select chỉ được try_lock, không spawn/render/chờ
+    // worker; nếu không, hai request cold có thể mở cùng PDF ở hai process.
+    let mut reserved = affinity_key.map(|_| affinities.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()));
+    if let (Some(key), Some(entries)) = (affinity_key, reserved.as_ref()) {
+        let existing = entries.get(key).copied();
+        if let Some(lane @ WorkerLane::Background(_)) = existing {
+            return (lane, true, None);
+        }
+    }
+    let (lane, selected) = select();
+    if let (Some(key), Some(entries)) = (affinity_key, reserved.as_mut()) {
+        entries.insert(key.to_string(), lane);
+    }
+    (lane, false, selected)
+}
+
+fn reserve_background_worker<'a>(
+    manager: &'a RenderWorkerManager,
+    affinity_key: Option<&str>,
+) -> (usize, bool, MutexGuard<'a, Option<RenderWorkerClient>>) {
+    let lane_count = manager.backgrounds.len();
+    let (lane, hit, selected_guard) = reserve_background_affinity(
+        &manager.document_affinity,
+        affinity_key,
+        || {
+            let start = manager.next_background.fetch_add(1, Ordering::Relaxed) % lane_count;
+            for offset in 0..lane_count {
+                let index = (start + offset) % lane_count;
+                match manager.backgrounds[index].try_lock() {
+                    Ok(guard) => return (WorkerLane::Background(index), Some(guard)),
+                    Err(TryLockError::Poisoned(poisoned)) => {
+                        return (WorkerLane::Background(index), Some(poisoned.into_inner()));
+                    }
+                    Err(TryLockError::WouldBlock) => {}
+                }
+            }
+            (WorkerLane::Background(start), None)
+        },
+    );
+    let WorkerLane::Background(index) = lane else { unreachable!("affinity nền"); };
+    // Giữ guard vừa chọn nếu lane rảnh. Nếu phải chờ, không còn giữ khóa
+    // affinity: worker đang chạy có thể cần khóa đó để dọn transport lỗi.
+    let guard = selected_guard.unwrap_or_else(|| manager.backgrounds[index]
+        .lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    (index, hit, guard)
 }
 
 fn cancel_active_render_request(request_id: &str) -> bool {
@@ -2963,94 +3002,12 @@ fn dispatch_worker_request(
     let affinity_key = render_request_document_affinity(request);
 
     if use_background_lane {
-        let lane_count = manager.backgrounds.len();
-        if let Some(WorkerLane::Background(index)) = affinity_key.as_ref().and_then(|key| {
-            manager
-                .document_affinity
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(key)
-                .copied()
-        }) {
-            if let Some(key) = affinity_key.as_deref() {
-                crate::perf_log(&format!(
-                    "RENDER_WORKER_AFFINITY action=hit lane=background:{} document={}",
-                    index,
-                    document_affinity_tag(key)
-                ));
-            }
-            // Cùng PDF đã có worker sở hữu cache: chờ đúng worker đó thay vì
-            // chuyển sang lane khác rồi trả giá cold-open lần nữa.
-            let mut guard = manager.backgrounds[index]
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let result = dispatch_locked_worker(
-                &mut guard,
-                WorkerLane::Background(index),
-                request,
-                cancellation,
-            );
-            if result.is_err() {
-                if let Some(key) = affinity_key.as_deref() {
-                    forget_document_affinity(manager, key, WorkerLane::Background(index));
-                }
-            }
-            return result;
-        }
-        let start = manager.next_background.fetch_add(1, Ordering::Relaxed) % lane_count;
-        for offset in 0..lane_count {
-            let index = (start + offset) % lane_count;
-            match manager.backgrounds[index].try_lock() {
-                Ok(mut guard) => {
-                    let lane = WorkerLane::Background(index);
-                    remember_document_affinity(manager, affinity_key.as_deref(), lane);
-                    if let Some(key) = affinity_key.as_deref() {
-                        crate::perf_log(&format!(
-                            "RENDER_WORKER_AFFINITY action=assign lane=background:{} document={}",
-                            index,
-                            document_affinity_tag(key)
-                        ));
-                    }
-                    let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
-                    if result.is_err() {
-                        if let Some(key) = affinity_key.as_deref() {
-                            forget_document_affinity(manager, key, lane);
-                        }
-                    }
-                    return result;
-                }
-                Err(TryLockError::Poisoned(poisoned)) => {
-                    let mut guard = poisoned.into_inner();
-                    let lane = WorkerLane::Background(index);
-                    remember_document_affinity(manager, affinity_key.as_deref(), lane);
-                    if let Some(key) = affinity_key.as_deref() {
-                        crate::perf_log(&format!(
-                            "RENDER_WORKER_AFFINITY action=assign lane=background:{} document={}",
-                            index,
-                            document_affinity_tag(key)
-                        ));
-                    }
-                    let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
-                    if result.is_err() {
-                        if let Some(key) = affinity_key.as_deref() {
-                            forget_document_affinity(manager, key, lane);
-                        }
-                    }
-                    return result;
-                }
-                Err(TryLockError::WouldBlock) => {}
-            }
-        }
-        let mut guard = manager.backgrounds[start]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let lane = WorkerLane::Background(start);
-        remember_document_affinity(manager, affinity_key.as_deref(), lane);
+        let (index, hit, mut guard) = reserve_background_worker(manager, affinity_key.as_deref());
+        let lane = WorkerLane::Background(index);
         if let Some(key) = affinity_key.as_deref() {
             crate::perf_log(&format!(
-                "RENDER_WORKER_AFFINITY action=assign lane=background:{} document={}",
-                start,
-                document_affinity_tag(key)
+                "RENDER_WORKER_AFFINITY action={} lane=background:{} document={}",
+                if hit { "hit" } else { "assign" }, index, document_affinity_tag(key)
             ));
         }
         let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
@@ -4064,6 +4021,111 @@ mod tests {
         let tag = document_affinity_tag("C:\\jobs\\sample.pdf\u{0}100:200:300");
         assert_eq!(tag.len(), 12);
         assert!(!tag.contains("sample"));
+    }
+
+    #[test]
+    fn document_affinity_lookup_va_publish_phai_chung_khoa() {
+        let affinities = Mutex::new(HashMap::new());
+        let (lane, hit, payload) = reserve_background_affinity(&affinities, Some("doc:1"), || {
+            assert!(matches!(affinities.try_lock(), Err(TryLockError::WouldBlock)),
+                "request thứ hai có thể lọt vào khoảng lookup → publish");
+            (WorkerLane::Background(1), Some("guard đã chọn"))
+        });
+        assert_eq!(lane, WorkerLane::Background(1));
+        assert!(!hit);
+        assert_eq!(payload, Some("guard đã chọn"));
+        assert!(affinities.try_lock().is_ok(), "không giữ khóa affinity lúc render/chờ lane");
+        let (_, hit, payload) = reserve_background_affinity::<()>(&affinities, Some("doc:1"), || {
+            panic!("snapshot đã gán không được chọn worker lần nữa")
+        });
+        assert!(hit);
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn document_affinity_request_dong_thoi_chi_chon_mot_worker() {
+        let manager = Arc::new(RenderWorkerManager::new(3));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let tasks = (0..8).map(|_| {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let (index, hit, _guard) = reserve_background_worker(&manager, Some("same:snapshot"));
+                (index, hit)
+            })
+        }).collect::<Vec<_>>();
+        let mut assignments = 0;
+        for task in tasks {
+            let (index, hit) = task.join().unwrap();
+            assert_eq!(index, 0);
+            assignments += usize::from(!hit);
+        }
+        assert_eq!(assignments, 1);
+        assert_eq!(manager.next_background.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn document_affinity_file_khac_van_lay_lane_ranh_va_don_dung_lane() {
+        let manager = RenderWorkerManager::new(3);
+        let (first, _, first_guard) = reserve_background_worker(&manager, Some("doc:a"));
+        let (second, _, second_guard) = reserve_background_worker(&manager, Some("doc:b"));
+        assert_ne!(first, second, "không gom mọi tài liệu vào một lane");
+        forget_document_affinity(&manager, "doc:a", WorkerLane::Background(second));
+        assert!(manager.document_affinity.lock().unwrap().contains_key("doc:a"));
+        forget_document_affinity(&manager, "doc:a", WorkerLane::Background(first));
+        assert!(!manager.document_affinity.lock().unwrap().contains_key("doc:a"));
+        assert!(manager.document_affinity.lock().unwrap().contains_key("doc:b"));
+        drop(first_guard);
+        drop(second_guard);
+    }
+
+    #[test]
+    fn document_affinity_cho_worker_ban_khong_khoa_registry() {
+        let manager = Arc::new(RenderWorkerManager::new(1));
+        let busy = manager.backgrounds[0].lock().unwrap();
+        let waiter_manager = Arc::clone(&manager);
+        let waiter = std::thread::spawn(move || {
+            let (index, hit, _guard) = reserve_background_worker(&waiter_manager, Some("doc:waiting"));
+            assert!(!hit);
+            index
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut visible_while_busy = false;
+        while Instant::now() < deadline {
+            if let Ok(affinities) = manager.document_affinity.try_lock() {
+                if affinities.contains_key("doc:waiting") {
+                    visible_while_busy = true;
+                    break;
+                }
+            }
+            std::thread::yield_now();
+        }
+        drop(busy);
+        assert_eq!(waiter.join().unwrap(), 0);
+        assert!(visible_while_busy, "registry phải rảnh cho cancel/close khi worker còn bận");
+    }
+
+    #[test]
+    fn document_affinity_khong_identity_va_snapshot_moi_khong_bi_gop() {
+        let affinities = Mutex::new(HashMap::new());
+        for index in 0..2 {
+            let (lane, hit, _) = reserve_background_affinity::<()>(&affinities, None, || {
+                assert!(affinities.try_lock().is_ok(), "metadata không cần khóa affinity");
+                (WorkerLane::Background(index), None)
+            });
+            assert_eq!(lane, WorkerLane::Background(index));
+            assert!(!hit);
+        }
+        assert!(affinities.lock().unwrap().is_empty());
+        for (index, key) in ["same-path\u{0}1:2:3", "same-path\u{0}4:5:6"].into_iter().enumerate() {
+            let (lane, hit, _) = reserve_background_affinity::<()>(&affinities, Some(key), || {
+                (WorkerLane::Background(index), None)
+            });
+            assert_eq!(lane, WorkerLane::Background(index));
+            assert!(!hit);
+        }
+        assert_eq!(affinities.lock().unwrap().len(), 2);
     }
 
     #[test]
