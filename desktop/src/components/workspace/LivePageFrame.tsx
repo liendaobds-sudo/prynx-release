@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useReducer } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
 import { localFileUrl } from '../../lib/localFileTransport';
@@ -70,6 +70,8 @@ import { previewPerfLog, viewerTraceHash, viewerTraceLog } from '../../lib/previ
 import {
     adoptViewerFirstFrame,
     peekViewerFirstFrame,
+    isViewerFirstFramePending,
+    subscribeViewerFirstFrame,
     releaseViewerFirstFrame,
     viewerFirstFrameMatchesTile,
     type ViewerFirstFrame,
@@ -2571,15 +2573,21 @@ export const LivePageFrame = (props: any) => {
     );
     const keepDisplayUntilAccurate = showOutputPreview === true
         && detectorRequiresAccurate !== true;
-    const primedFirstFrame = peekViewerFirstFrame(nativeFilePath, renderDocumentToken);
-    const initialPpeFrame = accurateColorPage
+    const primePath = accurateColorPage
         && originalPageNum === 1
         && (rotation || 0) % 360 === 0
         && (accurateColorProfileId || 'fogra39').trim().toLocaleLowerCase() === 'fogra39'
         && (accurateColorIntent || 'relative').trim().toLocaleLowerCase() === 'relative'
-        && accurateColorProofIdentity === primedFirstFrame?.proofIdentity
-        ? primedFirstFrame
+        && accurateColorProofIdentity === 'show:all|paper:0|black:0|background:profile'
+        ? nativeFilePath
         : null;
+    const subscribePrime = useCallback((listener: () => void) => (
+        subscribeViewerFirstFrame(primePath, listener)
+    ), [primePath]);
+    const readPrime = useCallback(() => peekViewerFirstFrame(primePath, renderDocumentToken), [primePath, renderDocumentToken]);
+    const readPrimePending = useCallback(() => isViewerFirstFramePending(primePath, renderDocumentToken), [primePath, renderDocumentToken]);
+    const initialPpeFrame = useSyncExternalStore(subscribePrime, readPrime, () => null);
+    const initialPpeFramePending = useSyncExternalStore(subscribePrime, readPrimePending, () => false);
 
     const previewFramePage = typeof viewerPageNum === 'number' ? viewerPageNum : originalPageNum;
     const viewerIsActive = isViewerActive !== false;
@@ -5771,7 +5779,7 @@ export const LivePageFrame = (props: any) => {
                                         requestAccurateBase,
                                         displayBaseReady,
                                         accurateCommitted,
-                                    )}
+                                    ) && !initialPpeFramePending}
                                     initialSource={matchingFullPageFirstFrame}
                                     preserveUnderlay={Boolean(initialPpeFrame)}
                                     showLoadStatus={isActiveFrame

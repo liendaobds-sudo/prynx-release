@@ -40,6 +40,7 @@ export interface ViewerFirstFrame extends TileUrlSource {
 type StoredViewerFirstFrame = ViewerFirstFrame & {
   adopted: boolean;
   expiryTimer: ReturnType<typeof setTimeout> | null;
+  requestIdentity: string;
 };
 
 // Dedupe theo identity vật lý thay vì object File. Cùng một PDF thường đi qua
@@ -47,6 +48,34 @@ type StoredViewerFirstFrame = ViewerFirstFrame & {
 // lượt mở; WeakMap cũ không nhận ra nên prime/bootstrap lặp nhiều lần.
 const requestsByIdentity = new Map<string, Promise<ViewerFirstFrame | null>>();
 const framesByPath = new Map<string, StoredViewerFirstFrame>();
+// PERF (audit 2026-09-23 §R23.PRIME): shell được mở trước khi prime xong,
+// nhưng chỉ consumer cùng token được chờ request đã có; revision khác không bị chặn.
+const pendingByPath = new Map<string, { documentToken: string; job: symbol }>();
+const latestJobByPath = new Map<string, symbol>();
+const listenersByPath = new Map<string, Set<() => void>>();
+
+function notifyFrameChanged(path: string): void {
+  listenersByPath.get(path)?.forEach(listener => listener());
+}
+
+export function subscribeViewerFirstFrame(path: string | null | undefined, listener: () => void): () => void {
+  if (!path) return () => undefined;
+  const key = normalizedPath(path);
+  let listeners = listenersByPath.get(key);
+  if (!listeners) {
+    listeners = new Set();
+    listenersByPath.set(key, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) listenersByPath.delete(key);
+  };
+}
+
+export function isViewerFirstFramePending(path: string | null | undefined, token: string | null | undefined): boolean {
+  return Boolean(path && token && pendingByPath.get(normalizedPath(path))?.documentToken === token);
+}
 
 function normalizedPath(path: string): string {
   return path.replaceAll('/', '\\').toLocaleLowerCase();
@@ -178,7 +207,9 @@ function retireUnusedFrame(frame: StoredViewerFirstFrame): void {
     const key = normalizedPath(frame.nativePath);
     if (framesByPath.get(key) !== frame || frame.adopted) return;
     framesByPath.delete(key);
+    requestsByIdentity.delete(frame.requestIdentity);
     URL.revokeObjectURL(frame.url);
+    notifyFrameChanged(key);
   }, UNUSED_FRAME_TTL_MS);
 }
 
@@ -202,6 +233,10 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
   const requestIdentity = `${normalizedPath(nativePath)}:${file.size}:${file.lastModified}`;
   const existingRequest = requestsByIdentity.get(requestIdentity);
   if (existingRequest) return existingRequest;
+  const pathKey = normalizedPath(nativePath);
+  const job = Symbol('viewer-prime');
+  latestJobByPath.set(pathKey, job);
+  const isCurrentJob = () => latestJobByPath.get(pathKey) === job;
 
   const request = (async (): Promise<ViewerFirstFrame | null> => {
     const tracePath = viewerTraceHash(nativePath);
@@ -260,6 +295,9 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
         ? crypto.randomUUID()
         : `first-frame-${Date.now().toString(36)}`;
       const ownerHash = viewerTraceHash(`${nativePath}:${documentToken}`);
+      if (!isCurrentJob()) return null;
+      pendingByPath.set(pathKey, { documentToken, job });
+      notifyFrameChanged(pathKey);
       const bytes = await invoke<ArrayBuffer>('render_ppe_page', {
         filePath: nativePath,
         page: 1,
@@ -280,6 +318,7 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
           pipelineIdentity: renderPipelineIdentity('accurate'),
         },
       });
+      if (!isCurrentJob()) return null;
       void viewerTraceLog('first-frame-prime-render-ready', {
         path: tracePath,
         dpi,
@@ -293,6 +332,10 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
       } catch (error) {
         URL.revokeObjectURL(url);
         throw error;
+      }
+      if (!isCurrentJob()) {
+        URL.revokeObjectURL(url);
+        return null;
       }
       if (decoded.width <= 0 || decoded.height <= 0) {
         URL.revokeObjectURL(url);
@@ -326,15 +369,19 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
         cacheable: true,
         adopted: false,
         expiryTimer: null,
+        requestIdentity,
       };
       const key = normalizedPath(nativePath);
       const previous = framesByPath.get(key);
       framesByPath.set(key, stored);
+      pendingByPath.delete(key);
       retireUnusedFrame(stored);
       if (previous && previous !== stored && !previous.adopted) {
         if (previous.expiryTimer !== null) clearTimeout(previous.expiryTimer);
         URL.revokeObjectURL(previous.url);
+        requestsByIdentity.delete(previous.requestIdentity);
       }
+      notifyFrameChanged(key);
       void viewerTraceLog('first-frame-prime-ready', {
         path: tracePath,
         dpi,
@@ -351,9 +398,21 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
         total_ms: Math.round(performance.now() - startedAt),
       });
       return null;
+    } finally {
+      if (pendingByPath.get(pathKey)?.job === job) {
+        pendingByPath.delete(pathKey);
+        notifyFrameChanged(pathKey);
+      }
+      if (isCurrentJob()) latestJobByPath.delete(pathKey);
     }
   })();
   requestsByIdentity.set(requestIdentity, request);
+  // Chỉ giữ promise thành công khi frame chưa được nhận/retire. Thất bại phải
+  // cho lần mở sau thử lại, không cache null hoặc một Blob đã bị thu hồi mãi mãi.
+  void request.then(frame => {
+    if ((!frame || framesByPath.get(pathKey) !== frame)
+      && requestsByIdentity.get(requestIdentity) === request) requestsByIdentity.delete(requestIdentity);
+  });
   return request;
 }
 
@@ -394,6 +453,8 @@ export function adoptViewerFirstFrame(frame: ViewerFirstFrame): void {
   if (stored.expiryTimer !== null) clearTimeout(stored.expiryTimer);
   stored.expiryTimer = null;
   framesByPath.delete(normalizedPath(frame.nativePath));
+  requestsByIdentity.delete(stored.requestIdentity);
+  notifyFrameChanged(normalizedPath(frame.nativePath));
 }
 
 /** Bỏ underlay tạm sau khi frame chính xác khác đã phủ viewport. */
@@ -403,7 +464,9 @@ export function releaseViewerFirstFrame(frame: ViewerFirstFrame): void {
   if (!stored || stored.url !== frame.url) return;
   if (stored.expiryTimer !== null) clearTimeout(stored.expiryTimer);
   framesByPath.delete(key);
+  requestsByIdentity.delete(stored.requestIdentity);
   if (!stored.adopted) URL.revokeObjectURL(stored.url);
+  notifyFrameChanged(key);
 }
 
 export function viewerFirstFrameMatchesTile(

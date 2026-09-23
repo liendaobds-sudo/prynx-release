@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 2,
+  "scope": "end-to-end-webview-main-page-thumbnail-closed",
+  "timingUnit": "ms",
+  "artifact": {
+    "name": "poster retro - Khắc Trung - 0854444414.pdf",
+    "sizeBytes": 63995596,
+    "sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+    "pathStored": false,
+    "matchesAuditedStandee": false
+  },
+  "config": {
+    "runs": 2,
+    "pairs": 1,
+    "baselineKind": "cleanup-smoke",
+    "transitions": [
+      "cold-open",
+      "warm-zoom"
+    ],
+    "pollMs": 16,
+    "timeoutMs": 60000,
+    "stableFrames": 2,
+    "stableFrameRule": "distinct-screenshot-captures",
+    "screenshotIntervalMs": 60,
+    "measurementScope": "main-page-thumbnail-closed",
+    "thumbnailPolicy": "new-viewer-default-closed-and-verified-per-run",
+    "expectedRuntimeEnv": {
+      "PRYNX_VIEWER_ENGINE_MODE": "ppe-only",
+      "PRYNX_VIEWER_SHADOW_RENDER": "off-or-unset"
+    },
+    "allowCompatibilityFallback": false,
+    "requireStandeeHash": false
+  },
+  "sessionEvidence": {
+    "pipelineScope": "target-webview-cdp-network-ipc-trace",
+    "engineModeGate": "ppe-only",
+    "compatibilityGate": "disabled",
+    "shadowGate": false,
+    "nativePerfLogScope": "global-file-bounded-by-offset-supplemental",
+    "thumbnailBaselineStatus": "separate-runtime-gate-required",
+    "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+    "initialMeasuredTabCount": 0
+  },
+  "limitations": [
+    "FSP/FCVF chỉ tương quan PPE fulfilled phát sinh sau trigger với LiveTile theo path/trang/DPI/xoay/clip và độ phủ viewport; compositor chưa phát request ID của surface.",
+    "FSP chưa tính mọi first-frame-prime/underlay ngoài LiveTile; không coi đây là thời điểm pixel đầu tuyệt đối. Canvas dùng metadata chụp sau drawImage, không lấy target zoom đang chờ.",
+    "Report này chỉ đo trang chính khi thumbnail đóng; không phải baseline thumbnail.",
+    "PrynX_RenderPerf.log là log toàn cục và chỉ dùng bổ sung, không chứng minh pipeline của frame."
+  ],
+  "runs": [
+    {
+      "index": 1,
+      "cacheIdentityKind": "pdf-url",
+      "coldReset": {
+        "namespaceCleared": true,
+        "namespaceHasCachedTile": false,
+        "documentClosed": false,
+        "error": null,
+        "documentCacheState": "already-empty"
+      },
+      "thumbnailEvidence": {
+        "verified": true,
+        "reason": null,
+        "matchingStoreCount": 1
+      },
+      "label": "cold-open",
+      "trigger": {
+        "accepted": 1,
+        "size": 63995596,
+        "note": "dispatcher schedules a 50ms batch flush before tab creation"
+      },
+      "shellMs": 1058,
+      "fspMs": 4333,
+      "fcvfMs": 4637,
+      "blankGapTotalMs": 0,
+      "blankGapMaxMs": 0,
+      "blankGapOpen": false,
+      "blankGapCurrentMs": 0,
+      "timeoutStage": null,
+      "stableFrames": 2,
+      "sourceKeyCaptured": true,
+      "harnessObservation": {
+        "screenshotCount": 11,
+        "screenshotTotalMs": 2850,
+        "triggerOverheadMs": 4
+      },
+      "frameRequestCorrelation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+      "pipelineEvidence": {
+        "ppeCallCount": 4,
+        "ppeFulfilledCount": 3,
+        "ppeRejectedCount": 1,
+        "ppeRejections": [
+          {
+            "requestId": "5e1e56edd326fc1f",
+            "page": 2,
+            "dpi": 24,
+            "purpose": "accurate",
+            "priority": 100,
+            "rejection": {
+              "kind": "cancelled",
+              "code": null,
+              "messageHash": "275bdeaa809d94bd"
+            }
+          }
+        ],
+        "ppePendingCount": 0,
+        "ppeStaleSequenceCount": 0,
+        "displayCallCount": 0,
+        "shadowCallCount": 0,
+        "engineConfigCallCount": 3,
+        "engineConfigObservedCallCount": 3,
+        "engineConfigForeignCallCount": 0,
+        "engineConfigRejectedCount": 0,
+        "engineConfigPendingCount": 0,
+        "engineConfigInvalidCount": 0,
+        "engineConfigUnexpectedCount": 0,
+        "engineConfigPpeOnlyUnexpectedCount": 0,
+        "requestIds": [
+          "5ef485ce3d70ae08",
+          "5e1e56edd326fc1f",
+          "3ca01bb608a9a0db",
+          "146f6ff50355630e"
+        ],
+        "pipelineIdentities": [
+          "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+        ],
+        "allPpeCallsIdentified": true,
+        "allTracedCallsIdentified": true,
+        "allTracedSourcePathsMatched": true,
+        "requestIdsUnique": true,
+        "viewerEngineMode": "ppe-only",
+        "viewerShadowEnabled": false,
+        "engineConfigSource": "get_pdf_metadata",
+        "engineConfigSourcePathMatched": true,
+        "engineConfigCapturedInRun": true,
+        "engineConfigValidatedForRun": true,
+        "fulfilledDurationsMs": [
+          755,
+          349,
+          2605
+        ],
+        "displayFulfilledCount": 0,
+        "displayRejectedCount": 0,
+        "displayPendingCount": 0,
+        "compatibilityFallbackCount": 0,
+        "sourcePathsMatched": true,
+        "payloadsParsed": true,
+        "latestPpeCompletedAt": 4481.4361,
+        "verifiedPpeOnly": false,
+        "verifiedCompatibility": false,
+        "verifiedRuntimePipeline": false,
+        "scope": "target-webview-cdp-network-ipc-trace"
+      },
+      "nativePerfEvidence": {
+        "available": true,
+        "ppeResultCount": 3,
+        "displayResultCount": 0,
+        "scope": "global-log-supplemental-not-request-correlated"
+      },
+      "final": {
+        "dom": {
+          "shell": true,
+          "pageRect": {
+            "x": 355,
+            "y": 180.859375,
+            "width": 394.1875,
+            "height": 657
+          },
+          "visibleRect": {
+            "x": 355,
+            "y": 180.859375,
+            "width": 394.1875,
+            "height": 657
+          },
+          "tiles": [
+            {
+              "x": 355,
+              "y": 180.859375,
+              "width": 395,
+              "height": 657,
+              "naturalWidth": 2173,
+              "naturalHeight": 3622,
+              "surfaceKind": "canvas",
+              "quality": 5.50126582278481,
+              "requestPage": 1,
+              "requestZoom": 0.9583333333333334,
+              "requestRotation": 0,
+              "requestClip": null,
+              "accurateOnly": true
+            }
+          ],
+          "coverageRatio": 1,
+          "sharpCoverageRatio": 1,
+          "sharp": true,
+          "devicePixelRatio": 1,
+          "page": 1,
+          "rotation": 0
+        },
+        "compositor": {
+          "captured": true,
+          "hasContent": true,
+          "signature": "4329a752",
+          "nonWhiteRatio": 0.9962979983660131,
+          "chromaticRatio": 0.9853707107843137,
+          "lumaRange": 226,
+          "contentBounds": {
+            "leftRatio": 0,
+            "topRatio": 0,
+            "rightRatio": 1,
+            "bottomRatio": 1
+          }
+        },
+        "frameEvidence": {
+          "correlation": "post-trigger-path-page-interactive-geometry-candidate-no-compositor-request-id",
+          "candidateCount": 1,
+          "candidateRequestIds": [
+            "146f6ff50355630e"
+          ],
+          "candidateGeometry": [
+            {
+              "requestId": "146f6ff50355630e",
+              "valid": true,
+              "viewportCovered": true,
+              "kind": "full-page",
+              "coverageRatio": 1,
+              "matchedTileCount": 1,
+              "requestRotation": 0,
+              "matchedTileRects": [
+                {
+                  "x": 355,
+                  "y": 180.859375,
+                  "width": 395,
+                  "height": 657,
+                  "quality": 5.50126582278481,
+                  "sourceIsPostTrigger": true
+                }
+              ],
+              "viewportBounds": {
+                "left": 355,
+                "top": 180.859375,
+                "right": 749.1875,
+                "bottom": 837.859375
+              }
+            }
+          ],
+          "postGeometryCandidateCount": 1,
+          "postGeometryCandidateRequestIds": [
+            "146f6ff50355630e"
+          ],
+          "postTriggerGeometry": {
+            "valid": true,
+            "sharpValid": true,
+            "coverageRatio": 1,
+            "sharpCoverageRatio": 1,
+            "requestIds": [
+              "146f6ff50355630e"
+            ],
+            "tileRects": [
+              {
+                "x": 355,
+                "y": 180.859375,
+                "width": 395,
+                "height": 657,
+                "quality": 5.50126582278481,
+                "sourceIsPostTrigger": true
+              }
+            ],
+            "viewportBounds": {
+              "left": 355,
+              "top": 180.859375,
+              "right": 749.1875,
+              "bottom": 837.859375
+            }
+          },
+          "latestCompletedAt": 4481.4361
+        }
+      },
+      "measuredTabId": "imposition-1790126019202-f31",
+      "valid": false,
+      "validationError": "Error: Lượt 1 không có bằng chứng pipeline ppe-only sạch: mode=ppe-only, ppe_ok=3, ppe_rejected=1, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, display_fulfilled=0, display_rejected=0, shadow=0."
+    }
+  ],
+  "consoleErrors": [
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "Failed to load resource: net::ERR_CONNECTION_REFUSED"
+  ],
+  "badHttp": [],
+  "processMemory": {
+    "status": "not-measured-by-cdp-harness",
+    "scope": "whole-application-tree-required-separately"
+  },
+  "complete": false,
+  "failure": {
+    "message": "Error: Lượt 1 không có bằng chứng pipeline ppe-only sạch: mode=ppe-only, ppe_ok=3, ppe_rejected=1, ppe_pending=0, config_rejected=0, config_pending=0, config_invalid=0, config_unexpected=0, display=0, display_fulfilled=0, display_rejected=0, shadow=0.",
+    "completedRuns": 1,
+    "validRuns": 0
+  }
+}
