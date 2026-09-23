@@ -201,3 +201,12 @@ Khoảng trống còn lại: cold-open PDF 44 trang vẫn phát chuỗi request 
 - File: `desktop/src/components/acrobat/ThumbSidebar.tsx`.
 - Thay đổi: group coordinator dùng `thumbnail:<index>:<originalPageNum>`; owner/document session vẫn dùng chung để giữ affinity, nhưng lifecycle/cancel tách theo vị trí.
 - Verify: `npm run typecheck` đạt; Vitest thumbnail/coordinator/AI badge **21/21 pass** (có test group duplicate).
+
+## Lô 20 — Kiểm lifecycle thật: reorder, remount, đổi revision và observer
+
+- Ngày chạy thật: **2026-09-23**. Một số tên artifact lô trước mang ngày 2026-09-24; không dùng tên đó làm bằng chứng thời gian.
+- Baseline đỏ bằng `ThumbSidebar.nativeLifecycle.test.tsx`: sau khi đổi chỗ hai bản sao cùng trang rồi cuộn một bản ra/vào hai lần, cleanup hủy request bản còn mounted. Khóa index của Lô 19 không đủ vì React giữ component khi reorder. Test khác xác nhận thiếu `cancelOwner` khi đóng sidebar và observer còn giữ node đã rời DOM.
+- Sửa: group theo ID lần mount, không theo index; dọn owner khi đóng panel/tab hoặc đổi revision; kiểm source còn current trước khi dùng Blob; bỏ observe node khi ref detach. Không thay DPI, số worker, màu hay native engine.
+- Sáu test tích hợp chạy component/coordinator/scheduler thật (giả lập viewport mount và IPC): reorder+remount, unmount+response muộn, đóng/mở panel, đổi revision, hai tab cùng file, observer detached-node. Test string-key cũ được thay bằng test hành vi; helper không export từ component để Fast Refresh/lint hợp lệ.
+- Typecheck đạt; lint ba file TS liên quan đạt; Vitest toàn thư mục `acrobat` + coordinator/scheduler/LiveTile: **123/123 test, 15 file**. Runtime dev smoke `docs/audit/thumbnail_lifecycle_smoke_2026-09-23.json`: 1.000 trang, 5 DOM item ở đầu/cuối, index cuối 999. Gate này **chỉ là DOM**, không chứng minh mọi ảnh overscan hoặc parity pixel đã đạt.
+- Đính chính phạm vi: dùng chung coordinator/worker-affinity **không đồng nghĩa** thumbnail đã dùng chung Blob/scene PPE với trang chính. Thumbnail hiện vẫn là PDFium display; shared scene/cache xuyên consumer còn trong kế hoạch, chưa đánh dấu hoàn tất.

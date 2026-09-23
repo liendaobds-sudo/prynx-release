@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "scope": "dev-webview-thumbnail-virtualizer-stress",
+  "limitations": [
+    "Binary debug sẵn có + frontend Vite đang sửa; không phải installer release.",
+    "Gate chỉ chứng minh DOM virtualization; cuối lượt 4/5 item có ảnh, không kiểm pixel của toàn bộ overscan.",
+    "Reorder/duplicate/cancel và observer cleanup có test tích hợp riêng; smoke này không mô phỏng các thao tác đó."
+  ],
+  "artifact": {
+    "name": "thumbnail-stress-1000.pdf",
+    "sizeBytes": 496905,
+    "sha256": "41323ab10eaf32f5cdf254bb21c3ef63c494473e8e1f62e8102bd1b0498ac7b8",
+    "pathStored": false
+  },
+  "expectedPages": 1000,
+  "maxMountedItems": 200,
+  "initial": {
+    "itemCount": 5,
+    "minIndex": 0,
+    "maxIndex": 4,
+    "imageCount": 5,
+    "loadedImageCount": 5,
+    "scrollTop": 0,
+    "scrollHeight": 202484,
+    "clientHeight": 689,
+    "memory": {
+      "usedJSHeapSize": 78177376,
+      "totalJSHeapSize": 109766628,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "afterScrollEnd": {
+    "itemCount": 5,
+    "minIndex": 995,
+    "maxIndex": 999,
+    "imageCount": 4,
+    "loadedImageCount": 4,
+    "scrollTop": 201795,
+    "scrollHeight": 202484,
+    "clientHeight": 689,
+    "memory": {
+      "usedJSHeapSize": 90919342,
+      "totalJSHeapSize": 111030254,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "workspace": {
+    "numPages": 1000,
+    "thumbnailOpen": false,
+    "hasThumbSetter": true
+  },
+  "thumbnailPanel": {
+    "opened": true,
+    "previous": false
+  },
+  "virtualized": true,
+  "complete": true,
+  "failure": null,
+  "workspaceAfterOpen": {
+    "numPages": 1000,
+    "thumbnailOpen": true,
+    "hasThumbSetter": true
+  }
+}

@@ -13,7 +13,6 @@ import {
     registerPdfJsThumbnailDocument,
 } from '../../hooks/viewer/usePdfLoader';
 import { isCrossFileThumbDrop } from './useThumbSidebar';
-import { thumbnailRenderGroupKey } from './ThumbSidebar';
 
 function makePdfPage() {
     const render = vi.fn(() => ({ promise: Promise.resolve() }));
@@ -100,8 +99,4 @@ describe('pipeline thumbnail PDF.js', () => {
         expect(isCrossFileThumbDrop(source, null)).toBe(false);
     });
 
-    it('tách lifecycle cancel của hai bản sao cùng originalPageNum', () => {
-        expect(thumbnailRenderGroupKey(2, 7)).toBe('thumbnail:2:7');
-        expect(thumbnailRenderGroupKey(3, 7)).not.toBe(thumbnailRenderGroupKey(2, 7));
-    });
 });

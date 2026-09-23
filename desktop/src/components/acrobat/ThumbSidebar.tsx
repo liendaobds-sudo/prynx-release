@@ -38,8 +38,8 @@ import { stickerSheetWorkflowStatusAtViewerPosition } from '../stickerSheetTabSe
 
 export type ThumbPageWorkflowStatus = 'pending' | 'processing' | 'review' | 'ready' | 'error';
 
-export function thumbnailRenderGroupKey(index: number, originalPageNum: number): string {
-    return `thumbnail:${index}:${originalPageNum}`;
+function thumbnailRenderGroupKey(instanceId: string, originalPageNum: number): string {
+    return `thumbnail:${instanceId}:${originalPageNum}`;
 }
 
 const WORKFLOW_BADGE: Record<ThumbPageWorkflowStatus, {
@@ -191,6 +191,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         viewerDarkBackground,
     } = props;
     const { t } = useTranslation();
+    const renderInstanceId = useId();
     const isBlankDoc = file?.isBlank === true;
 
     const normRot = (((rot || 0) % 360) + 360) % 360;
@@ -277,10 +278,10 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         let cancelled = false;
         let ownBlobUrl: string | null = null;
         let activeRequestId: string | null = null;
-        // Mỗi vị trí thumbnail có lifecycle riêng; cùng originalPageNum có thể
-        // xuất hiện nhiều lần sau thao tác nhân bản. Owner vẫn dùng chung session,
-        // nhưng cleanup một bản sao không được hủy bitmap của bản sao khác.
-        const groupKey = thumbnailRenderGroupKey(index, originalPageNum);
+        // PERF (audit 2026-09-23 §R23.04-LIFECYCLE): React giữ item khi đổi
+        // thứ tự. Index có thể đã thuộc bản sao khác khi cleanup chạy; dùng ID
+        // của lần mount để cuộn/remount không hủy nhầm request còn hiển thị.
+        const groupKey = thumbnailRenderGroupKey(renderInstanceId, originalPageNum);
         (async () => {
             let src: string | null = null;
             try {
@@ -323,8 +324,8 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                             },
                         });
                     },
-                    // Thumbnail dùng chung đường encode/coalesce với page display;
-                    // Blob URL chỉ sống theo component hiện tại và được revoke bên dưới.
+                    // Dùng coordinator chung, nhưng Blob vẫn thuộc item này;
+                    // không tuyên bố chia sẻ bitmap giữa các owner khác nhau.
                     encode: bytes => {
                         const blob = new Blob([bytes], { type: 'image/png' });
                         return {
@@ -333,8 +334,14 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                         };
                     },
                 });
-                nativeRenderCoordinator.markEncoded(source);
                 ownBlobUrl = source.url;
+                if (cancelled || !nativeRenderCoordinator.isSourceCurrent(source)) {
+                    nativeRenderCoordinator.markDiscarded(source);
+                    URL.revokeObjectURL(ownBlobUrl);
+                    ownBlobUrl = null;
+                    return;
+                }
+                nativeRenderCoordinator.markEncoded(source);
                 src = source.url;
             } catch {
                 // UIUX (audit 2026-08-22 §UX.S.01): báo lỗi có thể thử lại thay vì
@@ -358,7 +365,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
             }
             if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
         };
-    }, [needsNativeRender, nativeRequestKey, nativeRetryNonce, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbnailOwnerId, renderDocumentToken]);
+    }, [needsNativeRender, nativeRequestKey, nativeRetryNonce, file, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbnailOwnerId, renderDocumentToken, renderInstanceId]);
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -602,11 +609,17 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     // thumbRev: pdfUrl đổi sau mỗi edit-commit hoặc renderDocumentToken đổi sau khi LiveLink tải lại → force re-render IPC + revoke blob cũ.
     const thumbRev = `${pdfUrl || ''}|${props.renderDocumentToken || ''}`;
     // PERF (audit 2026-09-24 §R23.04): mọi thumbnail trong cùng tab chia sẻ
-    // một owner coordinator đã băm; group vẫn tách theo trang để hủy đúng item.
+    // một owner coordinator đã băm; group tách theo lần mount để hủy đúng item.
     const thumbnailOwnerId = React.useMemo(
         () => `thumbnail:${viewerTraceHash(`${file?.path || pdfUrl || 'memory'}:${thumbRev}:${thumbSidebarInstanceId}`)}`,
         [file?.path, pdfUrl, thumbRev, thumbSidebarInstanceId],
     );
+    useEffect(() => {
+        if (!isThumbMenuOpen) return;
+        // cancelGroup giữ tombstone cho retry; đóng panel/tab hoặc đổi revision
+        // phải nhả cả owner để số group không tăng qua những tài liệu đã đóng.
+        return () => nativeRenderCoordinator.cancelOwner(thumbnailOwnerId);
+    }, [isThumbMenuOpen, thumbnailOwnerId]);
     // PERF (feedback 2026-08-21 §EDIT.THUMB1): nhóm một lần theo trang nguồn.
     // MemoThumbItem chỉ so slice của chính trang đó nên edit trang 2 không làm hàng
     // trăm thumbnail khác render lại; đồng thời không phát thêm request PDFium.
@@ -636,6 +649,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     const thumbsGateOpen = useThumbLoadGate(pdfUrl, file?.__editCommit === true);
     const [visibleThumbs, setVisibleThumbs] = useState<Set<number>>(new Set());
     const thumbObserverRef = useRef<IntersectionObserver | null>(null);
+    const observedThumbElementsRef = useRef(new Map<number, HTMLElement>());
 
     useEffect(() => {
         if (file?.__editCommit) return;
@@ -646,12 +660,21 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
             thumbObserverRef.current.disconnect();
             thumbObserverRef.current = null;
         }
+        observedThumbElementsRef.current.clear();
     }, [file, pdfUrl]);
 
     useEffect(() => () => thumbObserverRef.current?.disconnect(), []);
 
     const registerThumbRef = useCallback((el: HTMLElement | null, index: number) => {
+        // PERF (audit 2026-09-23 §R23.05-LIFECYCLE): item overscan có thể
+        // unmount trước lần intersect đầu tiên; observer không được giữ node rời DOM.
+        const previous = observedThumbElementsRef.current.get(index);
+        if (previous && previous !== el) {
+            thumbObserverRef.current?.unobserve(previous);
+            observedThumbElementsRef.current.delete(index);
+        }
         if (!el) return;
+        observedThumbElementsRef.current.set(index, el);
         el.dataset.thumbIndex = String(index);
         if (!thumbObserverRef.current) {
             thumbObserverRef.current = new IntersectionObserver((entries) => {
