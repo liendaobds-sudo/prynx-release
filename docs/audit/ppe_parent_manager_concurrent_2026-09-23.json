@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "probe": "PPEBX.C-parent-manager-priority",
+  "pdf": "test/poster retro - Khắc Trung - 0854444414.pdf",
+  "pdf_sha256": "574af320396c766eb975b6b3d062aa99c0724f241ff4c107401426b2eddff9a1",
+  "background_lanes": 1,
+  "concurrent_document_affinity": true,
+  "worker_sha256": "998cd16aaa075505cd0a36f3850f1f9caaf942970778e9494e0ba01dda037e6d",
+  "samples_per_priority": 1,
+  "rows": [
+    {
+      "prefetch_priority": 20,
+      "prefetch_lane": "Interactive",
+      "prefetch_worker_pid": 11388,
+      "active_lane": "Interactive",
+      "active_worker_pid": 11388,
+      "active_registered_ms": 51,
+      "active_finished_ms": 2906,
+      "prefetch_finished_ms": 3127,
+      "background_preemptions": 0,
+      "active_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+      "prefetch_png_sha256": "35afa5514df4b8fae08ef9823f742460de5fb7ee2b39c916620f7e1ded02c56b"
+    },
+    {
+      "prefetch_priority": 100,
+      "prefetch_lane": "Background(0)",
+      "prefetch_worker_pid": 5768,
+      "active_lane": "Background(0)",
+      "active_worker_pid": 5768,
+      "active_registered_ms": 48,
+      "active_finished_ms": 3142,
+      "prefetch_finished_ms": 3295,
+      "background_preemptions": 0,
+      "active_png_sha256": "8c31282ee9acf41636ab59dc1a531104741524bc7ae6add0243b5483372296e6",
+      "prefetch_png_sha256": "35afa5514df4b8fae08ef9823f742460de5fb7ee2b39c916620f7e1ded02c56b"
+    }
+  ],
+  "interpretation": "Parent nhả lane sau begin_request; worker queue ưu tiên frame interactive nhưng không kill raster nền đang chạy. Hai request cùng snapshot dùng cùng PID/lane, không có preemption; PNG ổn định."
+}

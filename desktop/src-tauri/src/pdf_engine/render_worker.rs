@@ -1447,18 +1447,6 @@ fn trace_worker_cpu(_request_id: &str, _stage: &str, _render_budget: usize, _cac
     }
 }
 
-fn serial_document_affinity_for_build(debug_build: bool, raw: Option<&str>) -> bool {
-    // PERF (audit 2026-09-23 §R23.02): thử nghiệm chỉ trong dev. Benchmark cho
-    // thấy cùng session mutable giảm cold thumbnail nhưng tuần tự hóa raster,
-    // làm prefetch chậm hơn. Chưa được promote trước khi có snapshot song song.
-    debug_build && raw.is_some_and(|value| value.trim() == "1")
-}
-
-fn serial_document_affinity_enabled() -> bool {
-    serial_document_affinity_for_build(cfg!(debug_assertions),
-        std::env::var("PRYNX_PPE_SERIAL_DOCUMENT_AFFINITY").ok().as_deref())
-}
-
 fn render_accurate_png(
     path: &str,
     request: &RenderRequest,
@@ -2722,6 +2710,8 @@ fn preempt_background_on_lane(target_lane: WorkerLane) -> bool {
 #[derive(Default)]
 struct SharedLaneState {
     active_purpose: Option<RenderPurpose>,
+    active_count: usize,
+    exclusive_active: bool,
     interactive_waiters: usize,
 }
 
@@ -2743,6 +2733,7 @@ impl SharedLanePriorityGate {
     fn acquire<'a>(
         &'a self,
         purpose: RenderPurpose,
+        concurrent: bool,
         cancellation: Option<&AtomicBool>,
     ) -> Result<SharedLanePriorityLease<'a>, String> {
         let normalized = if purpose == RenderPurpose::Interactive {
@@ -2786,13 +2777,23 @@ impl SharedLanePriorityGate {
                 continue;
             }
 
-            let can_start =
-                state.active_purpose.is_none() && (interactive || state.interactive_waiters == 0);
+            let can_start = if state.active_count == 0 {
+                interactive || state.interactive_waiters == 0
+            } else {
+                concurrent
+                    && !state.exclusive_active
+                    && state.active_purpose == Some(normalized)
+                    && (interactive || state.interactive_waiters == 0)
+            };
             if can_start {
                 if interactive {
                     state.interactive_waiters = state.interactive_waiters.saturating_sub(1);
                 }
-                state.active_purpose = Some(normalized);
+                if state.active_count == 0 {
+                    state.active_purpose = Some(normalized);
+                    state.exclusive_active = !concurrent;
+                }
+                state.active_count += 1;
                 return Ok(SharedLanePriorityLease { gate: self });
             }
 
@@ -2810,7 +2811,7 @@ impl SharedLanePriorityGate {
 
     fn is_idle(&self) -> bool {
         self.state.try_lock().is_ok_and(|state|
-            state.active_purpose.is_none() && state.interactive_waiters == 0)
+            state.active_count == 0 && state.interactive_waiters == 0)
     }
 }
 
@@ -2825,7 +2826,11 @@ impl Drop for SharedLanePriorityLease<'_> {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.active_purpose = None;
+        state.active_count = state.active_count.saturating_sub(1);
+        if state.active_count == 0 {
+            state.active_purpose = None;
+            state.exclusive_active = false;
+        }
         self.gate.wake.notify_all();
     }
 }
@@ -2976,7 +2981,7 @@ fn reserve_background_worker<'a>(manager: &'a RenderWorkerManager, key: Option<&
     -> (usize, bool, WorkerLaneLease<'a>)
 {
     let (index, hit) = reserve_background_lane(manager, key);
-    let lease = acquire_worker_lane(manager, WorkerLane::Background(index), RenderPurpose::Background, None)
+    let lease = acquire_worker_lane(manager, WorkerLane::Background(index), RenderPurpose::Background, false, None)
         .expect("test lấy được lane");
     (index, hit, lease)
 }
@@ -3069,9 +3074,10 @@ struct WorkerLaneLease<'a> {
 
 fn acquire_worker_lane<'a>(
     manager: &'a RenderWorkerManager, lane: WorkerLane, purpose: RenderPurpose,
+    concurrent: bool,
     cancellation: Option<&AtomicBool>,
 ) -> Result<WorkerLaneLease<'a>, WorkerTransportFailure> {
-    let priority = manager.gate(lane).acquire(purpose, cancellation)
+    let priority = manager.gate(lane).acquire(purpose, concurrent, cancellation)
         .map_err(|message| WorkerTransportFailure {
             request_started: false, cancelled: true, preempted_background: false, message,
         })?;
@@ -3362,8 +3368,7 @@ fn dispatch_worker_request(
     let purpose = request_purpose(request);
     let affinity_key = render_request_document_affinity(request);
     let accurate_owner = match request {
-        RenderWorkerRequest::Render(render) if render.color.pipeline == RenderColorPipeline::Accurate
-            && serial_document_affinity_enabled() =>
+        RenderWorkerRequest::Render(render) if render.color.pipeline == RenderColorPipeline::Accurate =>
             Some(render.session_owner_id.as_deref().unwrap_or(&render.owner_id)),
         _ => None,
     };
@@ -3391,7 +3396,10 @@ fn dispatch_worker_request(
         };
         // Mọi consumer của lane đi qua cùng gate: PPE foreground có thể nhường
         // đúng job nền trên lane affined, không phải chỉ worker Interactive cố định.
-        let mut lease = acquire_worker_lane(manager, lane, purpose, cancellation)?;
+        let accurate_request = matches!(request,
+            RenderWorkerRequest::Render(render)
+                if render.color.pipeline == RenderColorPipeline::Accurate);
+        let mut lease = acquire_worker_lane(manager, lane, purpose, accurate_request, cancellation)?;
         let _flight = if let Some(owner) = accurate_owner {
             let Some(flight) = pin_accurate_request(
                 manager, affinity_key.as_deref().unwrap(), owner, lane,
@@ -3400,9 +3408,81 @@ fn dispatch_worker_request(
             };
             Some(flight)
         } else { None };
+        if accurate_request {
+            let (ticket, child_pid, wire_request_id) = begin_locked_worker(
+                &mut lease.slot, lane, request, cancellation)?;
+            // PPE đã nhận frame; nhả slot/lane trước khi chờ PNG để request PPE
+            // kế tiếp của cùng document dùng snapshot đồng thời.
+            drop(lease);
+            let priority_preemption = take_priority_preemption(child_pid, wire_request_id);
+            let result = ticket.wait();
+            if priority_preemption == Some(PriorityPreemptionOutcome::Killed) {
+                retire_worker_if_same_pid(manager, lane, child_pid);
+            }
+            return match result {
+                Ok(response) => {
+                    if matches!(&response.header, RenderWorkerResponse::Render(render)
+                        if priority_retry_for_response(priority_preemption, render.status)) {
+                        Err(WorkerTransportFailure { request_started: true, cancelled: false,
+                            preempted_background: true,
+                            message: "PPE nền nhường lane; chờ interactive rồi thử lại cùng session.".into() })
+                    } else { Ok(response) }
+                }
+                Err(ClientRequestError::Cancelled) => Err(cancelled_transport_failure()),
+                Err(ClientRequestError::Transport(message)) => {
+                    let preempted_background = matches!(priority_preemption,
+                        Some(PriorityPreemptionOutcome::Cooperative | PriorityPreemptionOutcome::Killed));
+                    retire_worker_if_same_pid(manager, lane, child_pid);
+                    Err(WorkerTransportFailure { request_started: true, cancelled: false,
+                        preempted_background, message })
+                }
+            };
+        }
         let result = dispatch_locked_worker(&mut lease.slot, lane, request, cancellation);
         if lease.slot.is_none() { retire_worker_affinities(manager, lane); }
         return result;
+    }
+}
+
+fn begin_locked_worker(
+    slot: &mut Option<RenderWorkerClient>,
+    lane: WorkerLane,
+    request: &RenderWorkerRequest,
+    cancellation: Option<&AtomicBool>,
+) -> Result<(PendingClientResponse, u32, u64), WorkerTransportFailure> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(cancelled_transport_failure());
+    }
+    if slot.is_none() {
+        *slot = Some(spawn_render_worker_client(lane).map_err(|message| WorkerTransportFailure {
+            request_started: false, cancelled: false, preempted_background: false, message,
+        })?);
+    }
+    let child_pid = slot.as_ref().expect("worker vừa được khởi tạo").child_pid;
+    let wire_request_id = slot.as_ref().expect("worker vừa được khởi tạo").next_request_id;
+    let ticket = match slot.as_mut().expect("worker vừa được khởi tạo")
+        .begin_request(request, cancellation)
+    {
+        Ok(ticket) => ticket,
+        Err(ClientRequestError::Cancelled) => return Err(cancelled_transport_failure()),
+        Err(ClientRequestError::Transport(message)) => {
+            // begin_request đã có thể đăng ký mailbox trước khi pipe lỗi. Bỏ
+            // worker hỏng ngay tại đây để request kế tiếp không tái dùng slot
+            // đã ở trạng thái terminal.
+            if let Some(mut client) = slot.take() { client.terminate(); }
+            return Err(WorkerTransportFailure {
+                request_started: false, cancelled: false, preempted_background: false, message,
+            });
+        }
+    };
+    Ok((ticket, child_pid, wire_request_id))
+}
+
+fn retire_worker_if_same_pid(manager: &RenderWorkerManager, lane: WorkerLane, child_pid: u32) {
+    let mut slot = manager.slot(lane).lock().unwrap_or_else(|p| p.into_inner());
+    if slot.as_ref().is_some_and(|client| client.child_pid == child_pid) {
+        if let Some(mut client) = slot.take() { client.terminate(); }
+        retire_worker_affinities(manager, lane);
     }
 }
 
@@ -4496,15 +4576,6 @@ mod tests {
             serde_json::to_writer_pretty(&mut file, &report).unwrap();
         }
     }
-    #[test]
-    fn serial_document_affinity_chi_opt_in_dev() {
-        assert!(!super::serial_document_affinity_for_build(true, None));
-        for value in ["", "0", "true", "auto", "invalid"] {
-            assert!(!super::serial_document_affinity_for_build(true, Some(value)));
-        }
-        assert!(super::serial_document_affinity_for_build(true, Some(" 1 ")));
-        assert!(!super::serial_document_affinity_for_build(false, Some("1")));
-    }
     use super::*;
     use std::io::Cursor;
 
@@ -4849,11 +4920,11 @@ mod tests {
         let (display_index, _) = reserve_background_lane(&manager, Some("same-path-token"));
         assert_eq!(manager.accurate_document_affinity.lock().unwrap()["same-path-token"].lane, ppe);
         assert_eq!(manager.document_affinity.lock().unwrap()["same-path-token"], WorkerLane::Background(display_index));
-        let _busy = acquire_worker_lane(&manager, WorkerLane::Background(0), RenderPurpose::Background, None).unwrap();
-        let _other = acquire_worker_lane(&manager, WorkerLane::Background(1), RenderPurpose::Interactive, None).unwrap();
+        let _busy = acquire_worker_lane(&manager, WorkerLane::Background(0), RenderPurpose::Background, false, None).unwrap();
+        let _other = acquire_worker_lane(&manager, WorkerLane::Background(1), RenderPurpose::Interactive, false, None).unwrap();
         assert_eq!(manager.gate(WorkerLane::Background(0)).state.lock().unwrap().active_purpose, Some(RenderPurpose::Background));
         let cancelled = AtomicBool::new(true);
-        assert!(manager.gate(WorkerLane::Interactive).acquire(RenderPurpose::Interactive, Some(&cancelled)).is_err());
+        assert!(manager.gate(WorkerLane::Interactive).acquire(RenderPurpose::Interactive, false, Some(&cancelled)).is_err());
     }
 
     #[test]
@@ -5138,13 +5209,13 @@ mod tests {
     fn shared_lane_chi_cho_background_sau_khi_interactive_nha() {
         let gate = Arc::new(SharedLanePriorityGate::new(WorkerLane::Interactive));
         let interactive = gate
-            .acquire(RenderPurpose::Interactive, None)
+            .acquire(RenderPurpose::Interactive, false, None)
             .expect("interactive lấy lane");
         let (sender, receiver) = std::sync::mpsc::channel();
         let background_gate = Arc::clone(&gate);
         let waiter = std::thread::spawn(move || {
             let _background = background_gate
-                .acquire(RenderPurpose::Background, None)
+                .acquire(RenderPurpose::Background, false, None)
                 .expect("background lấy lane sau");
             sender.send(()).unwrap();
         });
@@ -5155,6 +5226,31 @@ mod tests {
         receiver
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("background phải được đánh thức");
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn shared_lane_cho_ppe_cung_snapshot_chay_dong_thoi_nhung_van_khoa_tac_vu_doc_quyen() {
+        let gate = Arc::new(SharedLanePriorityGate::new(WorkerLane::Interactive));
+        let first = gate
+            .acquire(RenderPurpose::Background, true, None)
+            .expect("PPE nền đầu tiên lấy lane");
+        let second = gate
+            .acquire(RenderPurpose::Background, true, None)
+            .expect("PPE nền thứ hai được chạy đồng thời");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let exclusive_gate = Arc::clone(&gate);
+        let waiter = std::thread::spawn(move || {
+            let _exclusive = exclusive_gate
+                .acquire(RenderPurpose::Background, false, None)
+                .expect("tác vụ độc quyền lấy lane sau PPE");
+            sender.send(()).unwrap();
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(second);
+        assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(first);
+        receiver.recv_timeout(Duration::from_secs(1)).expect("tác vụ độc quyền phải được đánh thức");
         waiter.join().unwrap();
     }
 
@@ -5373,21 +5469,17 @@ mod tests {
                     .expect("prefetch phải dựng thành công");
                 background.join().expect("thread prefetch không panic");
                 if let Some((pid, lane, _)) = active_registered {
-                    assert_eq!(lane, if serial_document_affinity_enabled() { prefetch_lease.1 }
-                        else { WorkerLane::Interactive }, "foreground phải theo chính sách lane đã chọn");
-                    if prefetch_priority >= 100 && serial_document_affinity_enabled() {
-                        assert_eq!(pid, prefetch_lease.0,
-                            "PPE nhường lane bằng CancelToken phải giữ process/session sống");
-                    }
+                    assert_eq!(lane, prefetch_lease.1,
+                        "foreground phải tái dùng lane PPE của cùng snapshot");
+                    assert_eq!(pid, prefetch_lease.0,
+                        "PPE cùng snapshot phải giữ process/session sống qua hai request");
                 }
                 let (active, active_wall_ms, active_finished_ms) = active_result;
                 let (prefetch, prefetch_wall_ms, prefetch_finished_ms) = background_result;
-                if prefetch_priority >= 100 && (serial_document_affinity_enabled() || lanes == 0) {
-                    assert!(BACKGROUND_PREEMPTION_COUNT.load(Ordering::Relaxed) > preemptions_before,
-                        "foreground phải thực sự preempt background trên lane affined");
-                    assert!(active_finished_ms <= prefetch_finished_ms,
-                        "background phải nhường cho foreground hoàn tất trước");
-                }
+                // PPE cùng snapshot đã nhả gate ngay sau khi gửi frame; worker
+                // queue tự ưu tiên frame interactive nhưng không kill raster nền
+                // đang chạy. Vì vậy không còn yêu cầu preempt/đảo thứ tự hoàn
+                // tất ở parent, chỉ cần giữ cùng lane/PID và bảo toàn PNG.
                 assert_eq!(active.response.soundness, RenderSoundness::ColorVerified);
                 assert_eq!(prefetch.response.soundness, RenderSoundness::ColorVerified);
                 let active_hash = hex::encode(sha2::Sha256::digest(&active.bytes));
@@ -5440,7 +5532,7 @@ mod tests {
             "pdf_sha256": pdf_sha256,
             "worker_sha256": worker_sha256,
             "background_lanes": lanes,
-            "serial_document_affinity": serial_document_affinity_enabled(),
+            "concurrent_document_affinity": true,
             "samples_per_priority": samples,
             "rows": rows,
         });
@@ -5523,22 +5615,15 @@ mod tests {
                 assert_eq!(reference.entry(pixel_key).or_insert_with(|| png_hash.clone()), &png_hash,
                     "PNG phải khớp giữa cold/warm, lane và các lượt");
                 let manager = render_worker_manager();
-                let lane = if serial_document_affinity_enabled() {
-                    manager.accurate_document_affinity.lock().unwrap()
-                        .get(&affinity_key).expect("PPE phải có lease tài liệu").lane
-                } else if priority >= 100 && !manager.backgrounds.is_empty() {
-                    *manager.document_affinity.lock().unwrap().get(&affinity_key)
-                        .expect("PPE nền phải có affinity khi dùng pool nền")
-                } else { WorkerLane::Interactive };
+                let lane = manager.accurate_document_affinity.lock().unwrap()
+                    .get(&affinity_key).expect("PPE phải có lease tài liệu").lane;
                 let slot = match lane {
                     WorkerLane::Interactive => &manager.interactive,
                     WorkerLane::Background(index) => &manager.backgrounds[index],
                 };
                 let worker_pid = slot.lock().unwrap().as_ref().expect("worker còn sống").child_pid;
-                if serial_document_affinity_enabled() {
-                    assert_eq!(*document_worker_pid.get_or_insert(worker_pid), worker_pid,
-                        "PPE foreground/background cùng snapshot phải dùng chung worker/session");
-                }
+                assert_eq!(*document_worker_pid.get_or_insert(worker_pid), worker_pid,
+                    "PPE foreground/background cùng snapshot phải dùng chung worker/session");
                 let row = serde_json::json!({
                     "sample": sample + 1, "phase": phase, "page": 1, "dpi": dpi,
                     "clip": clip, "priority": priority, "request_id": request_id,
@@ -5559,10 +5644,8 @@ mod tests {
             "schema_version": 1, "scope": "headless-native-manager-worker-png",
             "samples_per_phase": samples, "complete": true,
             "cold_kind": "document-session-cleared; worker-process-and-OS-cache-retained",
-            "serial_document_affinity": serial_document_affinity_enabled(),
-            "background_session": if serial_document_affinity_enabled() {
-                "same PPE document lease as foreground; first background request already reuses the session"
-            } else { "legacy separate interactive/background lanes; first background session is cold when background lanes exist" },
+            "concurrent_document_affinity": true,
+            "background_session": "same PPE document lease as foreground; prepared jobs may overlap on one worker",
             "excludes": ["Tauri IPC entry", "WebView", "DOM", "decode", "compositor", "actual sidebar"],
             "pdf_sha256": pdf_hash, "worker_sha256": worker_hash,
             "parent_sha256": sha256_file(&std::env::current_exe().unwrap()).unwrap(),
@@ -5579,7 +5662,6 @@ mod tests {
     #[test]
     #[ignore = "runtime log-only cần PRYNX_RENDER_WORKER_TEST_EXE/PDF; worker riêng"]
     fn parent_manager_shared_documents_owners_and_restart() {
-        assert!(serial_document_affinity_enabled(), "probe yêu cầu PRYNX_PPE_SERIAL_DOCUMENT_AFFINITY=1 trong dev");
         struct Cleanup;
         impl Drop for Cleanup { fn drop(&mut self) { shutdown_render_worker(); } }
         let _cleanup = Cleanup;
