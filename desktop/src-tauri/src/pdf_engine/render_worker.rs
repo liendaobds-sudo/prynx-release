@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+#[cfg(test)]
+use std::sync::TryLockError;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use image::{ColorType, ImageEncoder};
@@ -1431,6 +1433,18 @@ fn trace_worker_cpu(_request_id: &str, _stage: &str, _render_budget: usize, _cac
     }
 }
 
+fn serial_document_affinity_for_build(debug_build: bool, raw: Option<&str>) -> bool {
+    // PERF (audit 2026-09-23 §R23.02): thử nghiệm chỉ trong dev. Benchmark cho
+    // thấy cùng session mutable giảm cold thumbnail nhưng tuần tự hóa raster,
+    // làm prefetch chậm hơn. Chưa được promote trước khi có snapshot song song.
+    debug_build && raw.is_some_and(|value| value.trim() == "1")
+}
+
+fn serial_document_affinity_enabled() -> bool {
+    serial_document_affinity_for_build(cfg!(debug_assertions),
+        std::env::var("PRYNX_PPE_SERIAL_DOCUMENT_AFFINITY").ok().as_deref())
+}
+
 fn render_accurate_png(
     path: &str,
     request: &RenderRequest,
@@ -2545,7 +2559,7 @@ fn send_cooperative_cancel(lease: &ActiveRenderLease, request_id: &str) -> bool 
 
 static BACKGROUND_PREEMPTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-fn preempt_background_on_interactive_lane() -> bool {
+fn preempt_background_on_lane(target_lane: WorkerLane) -> bool {
     let leases = {
         let mut active = active_render_requests()
             .lock()
@@ -2553,7 +2567,7 @@ fn preempt_background_on_interactive_lane() -> bool {
         let request_ids = active
             .iter()
             .filter_map(|(request_id, lease)| {
-                (lease.lane == WorkerLane::Interactive
+                (lease.lane == target_lane
                     && lease.purpose != RenderPurpose::Interactive)
                     .then_some(request_id.clone())
             })
@@ -2601,13 +2615,15 @@ struct SharedLaneState {
 }
 
 struct SharedLanePriorityGate {
+    lane: WorkerLane,
     state: Mutex<SharedLaneState>,
     wake: Condvar,
 }
 
 impl SharedLanePriorityGate {
-    fn new() -> Self {
+    fn new(lane: WorkerLane) -> Self {
         Self {
+            lane,
             state: Mutex::new(SharedLaneState::default()),
             wake: Condvar::new(),
         }
@@ -2642,7 +2658,7 @@ impl SharedLanePriorityGate {
             }
             if interactive && state.active_purpose == Some(RenderPurpose::Background) {
                 drop(state);
-                let preempted = preempt_background_on_interactive_lane();
+                let preempted = preempt_background_on_lane(self.lane);
                 state = self
                     .state
                     .lock()
@@ -2680,6 +2696,11 @@ impl SharedLanePriorityGate {
     fn notify_cancelled(&self) {
         self.wake.notify_all();
     }
+
+    fn is_idle(&self) -> bool {
+        self.state.try_lock().is_ok_and(|state|
+            state.active_purpose.is_none() && state.interactive_waiters == 0)
+    }
 }
 
 struct SharedLanePriorityLease<'a> {
@@ -2698,6 +2719,17 @@ impl Drop for SharedLanePriorityLease<'_> {
     }
 }
 
+struct AccurateDocumentAffinity {
+    lane: WorkerLane,
+    owners: AccurateOwnerLeases,
+    in_flight: Arc<AtomicUsize>,
+}
+
+struct AccurateRequestLease(Arc<AtomicUsize>);
+impl Drop for AccurateRequestLease {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+}
+
 struct RenderWorkerManager {
     interactive: Mutex<Option<RenderWorkerClient>>,
     backgrounds: Vec<Mutex<Option<RenderWorkerClient>>>,
@@ -2706,7 +2738,9 @@ struct RenderWorkerManager {
     /// snapshot PDF trên cùng worker để tái dùng DOC_CACHE/page LRU thay vì
     /// round-robin rồi mở/parse lại tài liệu ở process khác.
     document_affinity: Mutex<HashMap<String, WorkerLane>>,
+    accurate_document_affinity: Mutex<HashMap<String, AccurateDocumentAffinity>>,
     shared_lane_gate: SharedLanePriorityGate,
+    background_lane_gates: Vec<SharedLanePriorityGate>,
 }
 
 impl RenderWorkerManager {
@@ -2718,8 +2752,28 @@ impl RenderWorkerManager {
                 .collect(),
             next_background: AtomicUsize::new(0),
             document_affinity: Mutex::new(HashMap::new()),
-            shared_lane_gate: SharedLanePriorityGate::new(),
+            accurate_document_affinity: Mutex::new(HashMap::new()),
+            shared_lane_gate: SharedLanePriorityGate::new(WorkerLane::Interactive),
+            background_lane_gates: (0..background_lane_count)
+                .map(|index| SharedLanePriorityGate::new(WorkerLane::Background(index))).collect(),
         }
+    }
+
+    fn slot(&self, lane: WorkerLane) -> &Mutex<Option<RenderWorkerClient>> {
+        match lane { WorkerLane::Interactive => &self.interactive, WorkerLane::Background(i) => &self.backgrounds[i] }
+    }
+
+    fn gate(&self, lane: WorkerLane) -> &SharedLanePriorityGate {
+        match lane { WorkerLane::Interactive => &self.shared_lane_gate, WorkerLane::Background(i) => &self.background_lane_gates[i] }
+    }
+
+    fn lane_is_idle(&self, lane: WorkerLane) -> bool {
+        self.gate(lane).is_idle() && self.slot(lane).try_lock().is_ok()
+    }
+
+    fn notify_cancelled(&self) {
+        self.shared_lane_gate.notify_cancelled();
+        for gate in &self.background_lane_gates { gate.notify_cancelled(); }
     }
 }
 
@@ -2747,33 +2801,16 @@ fn document_affinity_tag(affinity_key: &str) -> String {
 fn clear_document_affinity_for_path(
     affinities: &mut HashMap<String, WorkerLane>,
     file_path: &str,
+    lane: WorkerLane,
 ) {
     let prefix = format!("{}\u{0}", file_path);
-    affinities.retain(|key, _| !key.starts_with(&prefix));
+    affinities.retain(|key, existing| *existing != lane || !key.starts_with(&prefix));
 }
 
 fn render_request_document_affinity(request: &RenderWorkerRequest) -> Option<String> {
     match request {
         RenderWorkerRequest::Render(render) => Some(document_affinity_key(&render.document)),
         _ => None,
-    }
-}
-
-fn forget_document_affinity(
-    manager: &RenderWorkerManager,
-    affinity_key: &str,
-    lane: WorkerLane,
-) {
-    let mut affinities = manager
-        .document_affinity
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if affinities.get(affinity_key).copied() == Some(lane) {
-        affinities.remove(affinity_key);
-        crate::perf_log(&format!(
-            "RENDER_WORKER_AFFINITY action=drop lane={lane:?} document={}",
-            document_affinity_tag(affinity_key)
-        ));
     }
 }
 
@@ -2800,35 +2837,135 @@ fn reserve_background_affinity<T>(
     (lane, false, selected)
 }
 
-fn reserve_background_worker<'a>(
-    manager: &'a RenderWorkerManager,
+fn reserve_background_lane(
+    manager: &RenderWorkerManager,
     affinity_key: Option<&str>,
-) -> (usize, bool, MutexGuard<'a, Option<RenderWorkerClient>>) {
+) -> (usize, bool) {
     let lane_count = manager.backgrounds.len();
-    let (lane, hit, selected_guard) = reserve_background_affinity(
+    let (lane, hit, _) = reserve_background_affinity::<()>(
         &manager.document_affinity,
         affinity_key,
         || {
             let start = manager.next_background.fetch_add(1, Ordering::Relaxed) % lane_count;
             for offset in 0..lane_count {
                 let index = (start + offset) % lane_count;
-                match manager.backgrounds[index].try_lock() {
-                    Ok(guard) => return (WorkerLane::Background(index), Some(guard)),
-                    Err(TryLockError::Poisoned(poisoned)) => {
-                        return (WorkerLane::Background(index), Some(poisoned.into_inner()));
-                    }
-                    Err(TryLockError::WouldBlock) => {}
+                if manager.lane_is_idle(WorkerLane::Background(index)) {
+                    return (WorkerLane::Background(index), None);
                 }
             }
             (WorkerLane::Background(start), None)
         },
     );
     let WorkerLane::Background(index) = lane else { unreachable!("affinity nền"); };
-    // Giữ guard vừa chọn nếu lane rảnh. Nếu phải chờ, không còn giữ khóa
-    // affinity: worker đang chạy có thể cần khóa đó để dọn transport lỗi.
-    let guard = selected_guard.unwrap_or_else(|| manager.backgrounds[index]
-        .lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
-    (index, hit, guard)
+    (index, hit)
+}
+
+#[cfg(test)]
+fn reserve_background_worker<'a>(manager: &'a RenderWorkerManager, key: Option<&str>)
+    -> (usize, bool, WorkerLaneLease<'a>)
+{
+    let (index, hit) = reserve_background_lane(manager, key);
+    let lease = acquire_worker_lane(manager, WorkerLane::Background(index), RenderPurpose::Background, None)
+        .expect("test lấy được lane");
+    (index, hit, lease)
+}
+
+fn reserve_accurate_lane(
+    manager: &RenderWorkerManager, key: &str, owner: &str,
+    purpose: RenderPurpose, now: Instant,
+) -> (WorkerLane, bool) {
+    // PERF (audit 2026-09-23 §R23.SHARED-DOC): pipeline PPE dùng một lease theo
+    // snapshot, không theo priority. Chỉ chọn lane khi chưa có lease; không chờ
+    // mutex worker hoặc I/O trong khóa registry.
+    let mut entries = manager.accurate_document_affinity.lock().unwrap_or_else(|p| p.into_inner());
+    entries.retain(|_, entry| {
+        entry.owners.prune_stale(now, ACCURATE_SESSION_OWNER_TTL);
+        !entry.owners.is_empty() || entry.in_flight.load(Ordering::Acquire) > 0
+    });
+    if let Some(entry) = entries.get_mut(key) {
+        entry.owners.bind(owner, now);
+        return (entry.lane, true);
+    }
+    let mut candidates = Vec::with_capacity(manager.backgrounds.len() + 1);
+    if purpose == RenderPurpose::Interactive { candidates.push(WorkerLane::Interactive); }
+    if !manager.backgrounds.is_empty() {
+        let start = manager.next_background.fetch_add(1, Ordering::Relaxed) % manager.backgrounds.len();
+        for offset in 0..manager.backgrounds.len() {
+            candidates.push(WorkerLane::Background((start + offset) % manager.backgrounds.len()));
+        }
+    }
+    if purpose != RenderPurpose::Interactive { candidates.push(WorkerLane::Interactive); }
+    let lane = candidates.into_iter().enumerate().min_by_key(|(rank, lane)| (
+        !manager.lane_is_idle(*lane),
+        entries.values().filter(|entry| entry.lane == *lane).count(),
+        *rank,
+    )).expect("manager luôn có lane tương tác").1;
+    let mut owners = AccurateOwnerLeases::default();
+    owners.bind(owner, now);
+    entries.insert(key.to_string(), AccurateDocumentAffinity {
+        lane, owners, in_flight: Arc::new(AtomicUsize::new(0)),
+    });
+    (lane, false)
+}
+
+fn pin_accurate_request(
+    manager: &RenderWorkerManager, key: &str, owner: &str, lane: WorkerLane,
+) -> Option<AccurateRequestLease> {
+    let mut entries = manager.accurate_document_affinity.lock().unwrap_or_else(|p| p.into_inner());
+    let entry = entries.entry(key.to_string()).or_insert_with(|| AccurateDocumentAffinity {
+        lane, owners: AccurateOwnerLeases::default(), in_flight: Arc::new(AtomicUsize::new(0)),
+    });
+    // Worker có thể đã chết/được close trong lúc chờ gate. Nếu request khác đã
+    // chọn lane mới, chọn lại theo registry trước khi gửi bytes, không mở bản thứ hai.
+    if entry.lane != lane { return None; }
+    entry.owners.bind(owner, Instant::now());
+    entry.in_flight.fetch_add(1, Ordering::AcqRel);
+    Some(AccurateRequestLease(Arc::clone(&entry.in_flight)))
+}
+
+fn retire_worker_affinities(manager: &RenderWorkerManager, lane: WorkerLane) {
+    manager.document_affinity.lock().unwrap_or_else(|p| p.into_inner())
+        .retain(|_, existing| *existing != lane);
+    manager.accurate_document_affinity.lock().unwrap_or_else(|p| p.into_inner())
+        .retain(|_, entry| entry.lane != lane);
+    crate::perf_log(&format!("RENDER_WORKER_AFFINITY action=retire-worker lane={lane:?}"));
+}
+
+fn close_lane_document_affinities(manager: &RenderWorkerManager, lane: WorkerLane, path: &str) {
+    // Caller giữ mutex slot sau CloseDocument: không xóa lease của một render
+    // đang chạy rồi để request mới mở cùng snapshot ở worker khác.
+    let prefix = format!("{path}\u{0}");
+    clear_document_affinity_for_path(
+        &mut manager.document_affinity.lock().unwrap_or_else(|p| p.into_inner()), path, lane);
+    manager.accurate_document_affinity.lock().unwrap_or_else(|p| p.into_inner())
+        .retain(|key, entry| entry.lane != lane || !key.starts_with(&prefix));
+}
+
+fn release_lane_accurate_owner(manager: &RenderWorkerManager, lane: WorkerLane, owner: &str) {
+    manager.accurate_document_affinity.lock().unwrap_or_else(|p| p.into_inner())
+        .retain(|_, entry| {
+            if entry.lane != lane { return true; }
+            entry.owners.release(owner);
+            !entry.owners.is_empty() || entry.in_flight.load(Ordering::Acquire) > 0
+        });
+}
+
+// Thứ tự drop quan trọng: nhả mutex slot trước, rồi mới cho request kế lấy gate.
+struct WorkerLaneLease<'a> {
+    slot: MutexGuard<'a, Option<RenderWorkerClient>>,
+    _priority: SharedLanePriorityLease<'a>,
+}
+
+fn acquire_worker_lane<'a>(
+    manager: &'a RenderWorkerManager, lane: WorkerLane, purpose: RenderPurpose,
+    cancellation: Option<&AtomicBool>,
+) -> Result<WorkerLaneLease<'a>, WorkerTransportFailure> {
+    let priority = manager.gate(lane).acquire(purpose, cancellation)
+        .map_err(|message| WorkerTransportFailure {
+            request_started: false, cancelled: true, preempted_background: false, message,
+        })?;
+    let slot = manager.slot(lane).lock().unwrap_or_else(|p| p.into_inner());
+    Ok(WorkerLaneLease { slot, _priority: priority })
 }
 
 fn cancel_active_render_request(request_id: &str) -> bool {
@@ -2875,7 +3012,7 @@ pub fn cancel_render_request(request_id: &str) -> bool {
     }
     let had_active = cancel_active_render_request(request_id);
     if let Some(manager) = RENDER_WORKER_MANAGER.get() {
-        manager.shared_lane_gate.notify_cancelled();
+        manager.notify_cancelled();
     }
     pending.is_some() || had_active
 }
@@ -3001,6 +3138,7 @@ fn spawn_render_worker_client(lane: WorkerLane) -> Result<RenderWorkerClient, St
     Ok(client)
 }
 
+#[derive(Debug)]
 struct WorkerTransportFailure {
     request_started: bool,
     cancelled: bool,
@@ -3107,47 +3245,50 @@ fn dispatch_worker_request(
 ) -> Result<RenderWorkerFrame<RenderWorkerResponse>, WorkerTransportFailure> {
     let manager = render_worker_manager();
     let purpose = request_purpose(request);
-    let use_background_lane =
-        purpose != RenderPurpose::Interactive && !manager.backgrounds.is_empty();
     let affinity_key = render_request_document_affinity(request);
-
-    if use_background_lane {
-        let (index, hit, mut guard) = reserve_background_worker(manager, affinity_key.as_deref());
-        let lane = WorkerLane::Background(index);
-        if let Some(key) = affinity_key.as_deref() {
+    let accurate_owner = match request {
+        RenderWorkerRequest::Render(render) if render.color.pipeline == RenderColorPipeline::Accurate
+            && serial_document_affinity_enabled() =>
+            Some(render.session_owner_id.as_deref().unwrap_or(&render.owner_id)),
+        _ => None,
+    };
+    loop {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(cancelled_transport_failure());
+        }
+        let lane = if let Some(owner) = accurate_owner {
+            let key = affinity_key.as_deref().expect("Render có document identity");
+            let (lane, hit) = reserve_accurate_lane(manager, key, owner, purpose, Instant::now());
             crate::perf_log(&format!(
-                "RENDER_WORKER_AFFINITY action={} lane=background:{} document={}",
-                if hit { "hit" } else { "assign" }, index, document_affinity_tag(key)
-            ));
-        }
-        let result = dispatch_locked_worker(&mut guard, lane, request, cancellation);
-        if guard.is_none() {
+                "PPE_DOCUMENT_AFFINITY action={} lane={lane:?} document={}",
+                if hit { "hit" } else { "assign" }, document_affinity_tag(key)));
+            lane
+        } else if purpose != RenderPurpose::Interactive && !manager.backgrounds.is_empty() {
+            let (index, hit) = reserve_background_lane(manager, affinity_key.as_deref());
             if let Some(key) = affinity_key.as_deref() {
-                forget_document_affinity(manager, key, lane);
+                crate::perf_log(&format!(
+                    "RENDER_WORKER_AFFINITY action={} lane=background:{} document={}",
+                    if hit { "hit" } else { "assign" }, index, document_affinity_tag(key)));
             }
-        }
+            WorkerLane::Background(index)
+        } else {
+            WorkerLane::Interactive
+        };
+        // Mọi consumer của lane đi qua cùng gate: PPE foreground có thể nhường
+        // đúng job nền trên lane affined, không phải chỉ worker Interactive cố định.
+        let mut lease = acquire_worker_lane(manager, lane, purpose, cancellation)?;
+        let _flight = if let Some(owner) = accurate_owner {
+            let Some(flight) = pin_accurate_request(
+                manager, affinity_key.as_deref().unwrap(), owner, lane,
+            ) else {
+                continue;
+            };
+            Some(flight)
+        } else { None };
+        let result = dispatch_locked_worker(&mut lease.slot, lane, request, cancellation);
+        if lease.slot.is_none() { retire_worker_affinities(manager, lane); }
         return result;
     }
-
-    // PERF (audit 2026-08-08 §RENDER.2): tier <8 GiB không spawn process nền riêng.
-    // Gate này cho background mượn worker tương tác khi idle; interactive mới sẽ kill
-    // đúng lease background, chiếm lane trước, rồi background retry sau khi lane rảnh.
-    let _shared_lane = manager
-        .backgrounds
-        .is_empty()
-        .then(|| manager.shared_lane_gate.acquire(purpose, cancellation))
-        .transpose()
-        .map_err(|message| WorkerTransportFailure {
-            request_started: false,
-            cancelled: true,
-            preempted_background: false,
-            message,
-        })?;
-    let mut guard = manager
-        .interactive
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    dispatch_locked_worker(&mut guard, WorkerLane::Interactive, request, cancellation)
 }
 
 pub enum WorkerAttempt<T> {
@@ -3311,18 +3452,11 @@ pub fn close_document_with_policy(file_path: &str) -> Result<WorkerAttempt<bool>
     let Some(manager) = RENDER_WORKER_MANAGER.get() else {
         return Ok(WorkerAttempt::Completed(closed));
     };
-    // Snapshot đã đóng thì lease affinity cũng phải biến mất; lần mở sau có
-    // thể dùng worker khác và token mới, không được trỏ vào lane cũ.
-    let mut affinities = manager
-        .document_affinity
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_document_affinity_for_path(&mut affinities, file_path);
-    drop(affinities);
     let mut first_error: Option<String> = None;
-    let mut close_slot = |slot: &Mutex<Option<RenderWorkerClient>>| {
-        let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut close_slot = |lane: WorkerLane| {
+        let mut guard = manager.slot(lane).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(client) = guard.as_mut() else {
+            close_lane_document_affinities(manager, lane, file_path);
             return;
         };
         match client.request(&request, None) {
@@ -3358,15 +3492,17 @@ pub fn close_document_with_policy(file_path: &str) -> Result<WorkerAttempt<bool>
                 if let Some(mut failed) = guard.take() {
                     failed.terminate();
                 }
+                retire_worker_affinities(manager, lane);
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
             }
         }
+        close_lane_document_affinities(manager, lane, file_path);
     };
-    close_slot(&manager.interactive);
-    for slot in &manager.backgrounds {
-        close_slot(slot);
+    close_slot(WorkerLane::Interactive);
+    for index in 0..manager.backgrounds.len() {
+        close_slot(WorkerLane::Background(index));
     }
     if let Some(error) = first_error {
         return Err(error);
@@ -3391,9 +3527,10 @@ pub fn release_accurate_session_owner_with_policy(
     });
     let mut released = false;
     let mut first_error: Option<String> = None;
-    let mut release_slot = |slot: &Mutex<Option<RenderWorkerClient>>| {
-        let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut release_slot = |lane: WorkerLane| {
+        let mut guard = manager.slot(lane).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(client) = guard.as_mut() else {
+            release_lane_accurate_owner(manager, lane, session_owner_id);
             return;
         };
         match client.request(&request, None) {
@@ -3427,13 +3564,15 @@ pub fn release_accurate_session_owner_with_policy(
                 if let Some(mut failed) = guard.take() {
                     failed.terminate();
                 }
+                retire_worker_affinities(manager, lane);
                 released = true;
             }
         }
+        release_lane_accurate_owner(manager, lane, session_owner_id);
     };
-    release_slot(&manager.interactive);
-    for slot in &manager.backgrounds {
-        release_slot(slot);
+    release_slot(WorkerLane::Interactive);
+    for index in 0..manager.backgrounds.len() {
+        release_slot(WorkerLane::Background(index));
     }
     if let Some(error) = first_error {
         return Err(error);
@@ -3934,7 +4073,7 @@ pub fn shutdown_render_worker() {
     let Some(manager) = RENDER_WORKER_MANAGER.get() else {
         return;
     };
-    manager.shared_lane_gate.notify_cancelled();
+    manager.notify_cancelled();
 
     // [PROC-LIFECYCLE FIX 2026-08-28 §UP.4] Trước đây mỗi slot được dọn tuần tự bằng
     // `request(Shutdown)` rồi `child.wait()`, cả hai KHÔNG có trần: `request` chặn ở
@@ -4007,6 +4146,15 @@ pub fn shutdown_render_worker() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn serial_document_affinity_chi_opt_in_dev() {
+        assert!(!super::serial_document_affinity_for_build(true, None));
+        for value in ["", "0", "true", "auto", "invalid"] {
+            assert!(!super::serial_document_affinity_for_build(true, Some(value)));
+        }
+        assert!(super::serial_document_affinity_for_build(true, Some(" 1 ")));
+        assert!(!super::serial_document_affinity_for_build(false, Some("1")));
+    }
     use super::*;
     use std::io::Cursor;
 
@@ -4120,7 +4268,8 @@ mod tests {
                 WorkerLane::Background(0),
             ),
         ]);
-        clear_document_affinity_for_path(&mut affinities, &first.path);
+        clear_document_affinity_for_path(&mut affinities, &first.path, WorkerLane::Background(0));
+        clear_document_affinity_for_path(&mut affinities, &first.path, WorkerLane::Background(1));
         assert_eq!(affinities.len(), 1);
         assert!(affinities
             .keys()
@@ -4178,11 +4327,11 @@ mod tests {
         let (first, _, first_guard) = reserve_background_worker(&manager, Some("doc:a"));
         let (second, _, second_guard) = reserve_background_worker(&manager, Some("doc:b"));
         assert_ne!(first, second, "không gom mọi tài liệu vào một lane");
-        forget_document_affinity(&manager, "doc:a", WorkerLane::Background(second));
+        retire_worker_affinities(&manager, WorkerLane::Background(second));
         assert!(manager.document_affinity.lock().unwrap().contains_key("doc:a"));
-        forget_document_affinity(&manager, "doc:a", WorkerLane::Background(first));
+        assert!(!manager.document_affinity.lock().unwrap().contains_key("doc:b"));
+        retire_worker_affinities(&manager, WorkerLane::Background(first));
         assert!(!manager.document_affinity.lock().unwrap().contains_key("doc:a"));
-        assert!(manager.document_affinity.lock().unwrap().contains_key("doc:b"));
         drop(first_guard);
         drop(second_guard);
     }
@@ -4233,6 +4382,128 @@ mod tests {
             assert!(!hit);
         }
         assert_eq!(affinities.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn accurate_document_lease_giu_lane_qua_foreground_background_va_owner() {
+        let manager = RenderWorkerManager::new(3);
+        let now = Instant::now();
+        let (lane, hit) = reserve_accurate_lane(&manager, "doc:one", "viewer", RenderPurpose::Interactive, now);
+        assert!(!hit);
+        assert_eq!(lane, WorkerLane::Interactive);
+        let (background, hit) = reserve_accurate_lane(&manager, "doc:one", "thumbnail", RenderPurpose::Background, now);
+        assert!(hit);
+        assert_eq!(background, lane);
+        release_lane_accurate_owner(&manager, lane, "viewer");
+        assert!(manager.accurate_document_affinity.lock().unwrap().contains_key("doc:one"));
+        release_lane_accurate_owner(&manager, lane, "thumbnail");
+        assert!(!manager.accurate_document_affinity.lock().unwrap().contains_key("doc:one"));
+    }
+
+    #[test]
+    fn accurate_document_lease_background_truoc_foreground_theo_dung_lane() {
+        let manager = RenderWorkerManager::new(3);
+        let now = Instant::now();
+        let (background, _) = reserve_accurate_lane(&manager, "doc:bg-first", "prefetch", RenderPurpose::Background, now);
+        assert!(matches!(background, WorkerLane::Background(_)));
+        let (foreground, hit) = reserve_accurate_lane(&manager, "doc:bg-first", "viewer", RenderPurpose::Interactive, now);
+        assert!(hit);
+        assert_eq!(foreground, background);
+        assert_eq!(manager.gate(foreground).lane, foreground);
+    }
+
+    #[test]
+    fn accurate_document_lease_nhieu_file_dung_du_pool_khong_gom_mot_lane() {
+        let manager = RenderWorkerManager::new(3);
+        let mut counts = HashMap::<String, usize>::new();
+        for index in 0..8 {
+            let (lane, _) = reserve_accurate_lane(&manager, &format!("doc:{index}"),
+                "viewer", RenderPurpose::Interactive, Instant::now());
+            *counts.entry(format!("{lane:?}")).or_default() += 1;
+        }
+        assert_eq!(counts.len(), 4);
+        assert!(counts.values().all(|count| *count == 2));
+    }
+
+    #[test]
+    fn accurate_document_lease_dong_thoi_chi_co_mot_binding() {
+        let manager = Arc::new(RenderWorkerManager::new(3));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let tasks = (0..8).map(|index| {
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                reserve_accurate_lane(&manager, "same-doc", &format!("owner-{index}"),
+                    if index % 2 == 0 { RenderPurpose::Interactive } else { RenderPurpose::Background },
+                    Instant::now()).0
+            })
+        }).collect::<Vec<_>>();
+        let lanes = tasks.into_iter().map(|task| task.join().unwrap()).collect::<Vec<_>>();
+        assert!(lanes.iter().all(|lane| *lane == lanes[0]));
+        let entries = manager.accurate_document_affinity.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries["same-doc"].owners.last_seen.len(), 8);
+    }
+
+    #[test]
+    fn accurate_document_lease_ttl_khong_xoa_render_dang_chay() {
+        let manager = RenderWorkerManager::new(2);
+        let now = Instant::now();
+        let (lane, _) = reserve_accurate_lane(&manager, "active-doc", "owner", RenderPurpose::Interactive, now);
+        let flight = pin_accurate_request(&manager, "active-doc", "owner", lane).unwrap();
+        let later = Instant::now() + ACCURATE_SESSION_OWNER_TTL + Duration::from_secs(1);
+        reserve_accurate_lane(&manager, "other-doc", "other", RenderPurpose::Interactive, later);
+        assert!(manager.accurate_document_affinity.lock().unwrap().contains_key("active-doc"));
+        drop(flight);
+        reserve_accurate_lane(&manager, "other-doc", "other", RenderPurpose::Interactive, later);
+        assert!(!manager.accurate_document_affinity.lock().unwrap().contains_key("active-doc"));
+    }
+
+    #[test]
+    fn accurate_document_lease_revalidate_sau_khi_worker_cu_mat() {
+        let manager = RenderWorkerManager::new(2);
+        let now = Instant::now();
+        let (old, _) = reserve_accurate_lane(&manager, "doc", "owner-a", RenderPurpose::Interactive, now);
+        let old_flight = pin_accurate_request(&manager, "doc", "owner-a", old).unwrap();
+        retire_worker_affinities(&manager, old);
+        let (new, _) = reserve_accurate_lane(&manager, "doc", "owner-b", RenderPurpose::Background, now);
+        assert_ne!(new, old);
+        assert!(pin_accurate_request(&manager, "doc", "owner-a", old).is_none());
+        let new_flight = pin_accurate_request(&manager, "doc", "owner-b", new).unwrap();
+        drop(old_flight);
+        retire_worker_affinities(&manager, old);
+        assert_eq!(manager.accurate_document_affinity.lock().unwrap()["doc"].in_flight.load(Ordering::Acquire), 1);
+        drop(new_flight);
+    }
+
+    #[test]
+    fn accurate_document_lease_close_chi_xoa_path_va_lane_tuong_ung() {
+        let manager = RenderWorkerManager::new(2);
+        let now = Instant::now();
+        let (first, _) = reserve_accurate_lane(&manager, "file-a\u{0}1:2:3", "a", RenderPurpose::Interactive, now);
+        let (second, _) = reserve_accurate_lane(&manager, "file-a\u{0}4:5:6", "b", RenderPurpose::Interactive, now);
+        reserve_accurate_lane(&manager, "file-b\u{0}1:2:3", "c", RenderPurpose::Interactive, now);
+        close_lane_document_affinities(&manager, first, "file-a");
+        let entries = manager.accurate_document_affinity.lock().unwrap();
+        assert!(!entries.contains_key("file-a\u{0}1:2:3"));
+        assert_eq!(entries["file-a\u{0}4:5:6"].lane, second);
+        assert!(entries.contains_key("file-b\u{0}1:2:3"));
+    }
+
+    #[test]
+    fn accurate_document_lease_tach_pipeline_display_va_gate_cua_lane_khac() {
+        let manager = RenderWorkerManager::new(2);
+        let (ppe, _) = reserve_accurate_lane(&manager, "same-path-token", "ppe-owner",
+            RenderPurpose::Interactive, Instant::now());
+        let (display_index, _) = reserve_background_lane(&manager, Some("same-path-token"));
+        assert_eq!(manager.accurate_document_affinity.lock().unwrap()["same-path-token"].lane, ppe);
+        assert_eq!(manager.document_affinity.lock().unwrap()["same-path-token"], WorkerLane::Background(display_index));
+        let _busy = acquire_worker_lane(&manager, WorkerLane::Background(0), RenderPurpose::Background, None).unwrap();
+        let _other = acquire_worker_lane(&manager, WorkerLane::Background(1), RenderPurpose::Interactive, None).unwrap();
+        assert_eq!(manager.gate(WorkerLane::Background(0)).state.lock().unwrap().active_purpose, Some(RenderPurpose::Background));
+        let cancelled = AtomicBool::new(true);
+        assert!(manager.gate(WorkerLane::Interactive).acquire(RenderPurpose::Interactive, Some(&cancelled)).is_err());
     }
 
     #[test]
@@ -4515,7 +4786,7 @@ mod tests {
 
     #[test]
     fn shared_lane_chi_cho_background_sau_khi_interactive_nha() {
-        let gate = Arc::new(SharedLanePriorityGate::new());
+        let gate = Arc::new(SharedLanePriorityGate::new(WorkerLane::Interactive));
         let interactive = gate
             .acquire(RenderPurpose::Interactive, None)
             .expect("interactive lấy lane");
@@ -4556,7 +4827,7 @@ mod tests {
             cooperative_cancel: true,
         });
         let started = Instant::now();
-        assert!(preempt_background_on_interactive_lane());
+        assert!(preempt_background_on_lane(WorkerLane::Interactive));
         let elapsed = started.elapsed();
         assert!(elapsed >= PPE_PRIORITY_CANCEL_GRACE);
         assert!(elapsed < Duration::from_secs(2), "kill fallback phải có giới hạn");
@@ -4752,17 +5023,21 @@ mod tests {
                     .expect("prefetch phải dựng thành công");
                 background.join().expect("thread prefetch không panic");
                 if let Some((pid, lane, _)) = active_registered {
-                    assert_eq!(lane, WorkerLane::Interactive);
-                    if lanes > 0 && prefetch_priority >= 100 {
-                        assert_ne!(pid, prefetch_lease.0, "active không dùng process prefetch");
-                    }
-                    if lanes == 0 && prefetch_priority >= 100 {
+                    assert_eq!(lane, if serial_document_affinity_enabled() { prefetch_lease.1 }
+                        else { WorkerLane::Interactive }, "foreground phải theo chính sách lane đã chọn");
+                    if prefetch_priority >= 100 && serial_document_affinity_enabled() {
                         assert_eq!(pid, prefetch_lease.0,
                             "PPE nhường lane bằng CancelToken phải giữ process/session sống");
                     }
                 }
                 let (active, active_wall_ms, active_finished_ms) = active_result;
                 let (prefetch, prefetch_wall_ms, prefetch_finished_ms) = background_result;
+                if prefetch_priority >= 100 && (serial_document_affinity_enabled() || lanes == 0) {
+                    assert!(BACKGROUND_PREEMPTION_COUNT.load(Ordering::Relaxed) > preemptions_before,
+                        "foreground phải thực sự preempt background trên lane affined");
+                    assert!(active_finished_ms <= prefetch_finished_ms,
+                        "background phải nhường cho foreground hoàn tất trước");
+                }
                 assert_eq!(active.response.soundness, RenderSoundness::ColorVerified);
                 assert_eq!(prefetch.response.soundness, RenderSoundness::ColorVerified);
                 let active_hash = hex::encode(sha2::Sha256::digest(&active.bytes));
@@ -4815,6 +5090,7 @@ mod tests {
             "pdf_sha256": pdf_sha256,
             "worker_sha256": worker_sha256,
             "background_lanes": lanes,
+            "serial_document_affinity": serial_document_affinity_enabled(),
             "samples_per_priority": samples,
             "rows": rows,
         });
@@ -4853,12 +5129,13 @@ mod tests {
             ("cold_full", 92.0, 10, None),
             ("warm_full", 92.0, 10, None),
             ("warm_tile", 188.0, 10, Some((1024, 512, 512, 512))),
-            ("background_thumbnail_cold", 24.0, 500, None),
-            ("background_thumbnail_warm", 24.0, 500, None),
+            ("background_thumbnail_first", 24.0, 500, None),
+            ("background_thumbnail_repeat", 24.0, 500, None),
         ];
         for sample in 0..samples {
             let reset = close_document_with_policy(&path).expect("không đóng được cache của probe");
             assert!(matches!(reset, WorkerAttempt::Completed(_)));
+            let mut document_worker_pid = None;
             for (phase, dpi, priority, clip) in phases {
                 let request_id = format!("log-probe-{}-{sample}-{phase}", std::process::id());
                 let context = ViewerRenderContext {
@@ -4896,17 +5173,22 @@ mod tests {
                 assert_eq!(reference.entry(pixel_key).or_insert_with(|| png_hash.clone()), &png_hash,
                     "PNG phải khớp giữa cold/warm, lane và các lượt");
                 let manager = render_worker_manager();
-                let lane = if priority < 100 || manager.backgrounds.is_empty() {
-                    WorkerLane::Interactive
-                } else {
+                let lane = if serial_document_affinity_enabled() {
+                    manager.accurate_document_affinity.lock().unwrap()
+                        .get(&affinity_key).expect("PPE phải có lease tài liệu").lane
+                } else if priority >= 100 && !manager.backgrounds.is_empty() {
                     *manager.document_affinity.lock().unwrap().get(&affinity_key)
-                        .expect("render nền phải có affinity")
-                };
+                        .expect("PPE nền phải có affinity khi dùng pool nền")
+                } else { WorkerLane::Interactive };
                 let slot = match lane {
                     WorkerLane::Interactive => &manager.interactive,
                     WorkerLane::Background(index) => &manager.backgrounds[index],
                 };
                 let worker_pid = slot.lock().unwrap().as_ref().expect("worker còn sống").child_pid;
+                if serial_document_affinity_enabled() {
+                    assert_eq!(*document_worker_pid.get_or_insert(worker_pid), worker_pid,
+                        "PPE foreground/background cùng snapshot phải dùng chung worker/session");
+                }
                 let row = serde_json::json!({
                     "sample": sample + 1, "phase": phase, "page": 1, "dpi": dpi,
                     "clip": clip, "priority": priority, "request_id": request_id,
@@ -4927,6 +5209,10 @@ mod tests {
             "schema_version": 1, "scope": "headless-native-manager-worker-png",
             "samples_per_phase": samples, "complete": true,
             "cold_kind": "document-session-cleared; worker-process-and-OS-cache-retained",
+            "serial_document_affinity": serial_document_affinity_enabled(),
+            "background_session": if serial_document_affinity_enabled() {
+                "same PPE document lease as foreground; first background request already reuses the session"
+            } else { "legacy separate interactive/background lanes; first background session is cold when background lanes exist" },
             "excludes": ["Tauri IPC entry", "WebView", "DOM", "decode", "compositor", "actual sidebar"],
             "pdf_sha256": pdf_hash, "worker_sha256": worker_hash,
             "parent_sha256": sha256_file(&std::env::current_exe().unwrap()).unwrap(),
@@ -4938,6 +5224,105 @@ mod tests {
             serde_json::to_writer_pretty(&mut file, &report).unwrap();
         }
         eprintln!("PPE_LOG_BASELINE_COMPLETE samples={samples}");
+    }
+
+    #[test]
+    #[ignore = "runtime log-only cần PRYNX_RENDER_WORKER_TEST_EXE/PDF; worker riêng"]
+    fn parent_manager_shared_documents_owners_and_restart() {
+        assert!(serial_document_affinity_enabled(), "probe yêu cầu PRYNX_PPE_SERIAL_DOCUMENT_AFFINITY=1 trong dev");
+        struct Cleanup;
+        impl Drop for Cleanup { fn drop(&mut self) { shutdown_render_worker(); } }
+        let _cleanup = Cleanup;
+        assert!(configured_background_lane_count() > 0, "probe hai tài liệu cần pool nhiều lane");
+        let first_path = std::env::var("PRYNX_RENDER_WORKER_TEST_PDF").unwrap();
+        let second_path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap()
+            .join("backend/tests/preflight_fixtures/pdfs/13_multipage_15.pdf")
+            .to_string_lossy().into_owned();
+        fn key(path: &str) -> String {
+            format!("{path}\u{0}{}", crate::pdf_file_identity_token(crate::pdf_file_identity(path).unwrap()))
+        }
+        fn render(path: &str, owner: &str, suffix: &str, priority: i32) -> Result<(String, u32, WorkerLane), String> {
+            let context = ViewerRenderContext {
+                request_id: format!("shared-doc-{}-{suffix}", std::process::id()),
+                owner_id: owner.to_string(), group_key: "page:1:shared-doc-probe".into(),
+                generation: 1, purpose: RenderPurpose::Accurate, priority,
+                pipeline_identity: RENDER_WORKER_ACCURATE_PIPELINE_ID.into(),
+            };
+            let result = render_accurate_with_policy(path, 1, 24.0, 0,
+                None, None, None, None, owner, Some(&context))?;
+            let AccurateWorkerAttempt::Completed(output) = result else { return Err("PPE không được fallback".into()); };
+            assert_eq!(output.response.status, RenderResponseStatus::Ready);
+            assert_eq!(output.response.soundness, RenderSoundness::ColorVerified);
+            let manager = render_worker_manager();
+            let lane = manager.accurate_document_affinity.lock().unwrap()[&key(path)].lane;
+            let pid = manager.slot(lane).lock().unwrap().as_ref().unwrap().child_pid;
+            Ok((hex::encode(sha2::Sha256::digest(&output.bytes)), pid, lane))
+        }
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first_barrier = Arc::clone(&barrier);
+        let first_thread_path = first_path.clone();
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            render(&first_thread_path, "shared-doc-owner-a", "first-a", 10)
+        });
+        let second_barrier = Arc::clone(&barrier);
+        let second_thread_path = second_path.clone();
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            render(&second_thread_path, "shared-doc-owner-b", "first-b", 10)
+        });
+        let first_id = format!("shared-doc-{}-first-a", std::process::id());
+        let second_id = format!("shared-doc-{}-first-b", std::process::id());
+        barrier.wait();
+        let started = Instant::now();
+        let mut overlapped = false;
+        while !first.is_finished() || !second.is_finished() {
+            {
+                let active = active_render_requests().lock().unwrap();
+                overlapped |= active.contains_key(&first_id) && active.contains_key(&second_id);
+            }
+            assert!(started.elapsed() < Duration::from_secs(30), "hai render phải kết thúc");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (first_hash, first_pid, first_lane) = first.join().unwrap().unwrap();
+        let (second_hash, second_pid, second_lane) = second.join().unwrap().unwrap();
+        assert_ne!(first_pid, second_pid, "hai tài liệu phải dùng được hai worker");
+        assert!(overlapped, "lease render phải thực sự chồng thời gian");
+        let (thumb_hash, thumb_pid, _) = render(&first_path, "shared-doc-thumb-a", "thumb-a", 500).unwrap();
+        assert_eq!(thumb_hash, first_hash);
+        assert_eq!(thumb_pid, first_pid);
+        release_accurate_session_owner_with_policy("shared-doc-owner-a").unwrap();
+        assert!(render_worker_manager().accurate_document_affinity.lock().unwrap().contains_key(&key(&first_path)));
+        let (after_release_hash, after_release_pid, _) = render(&first_path, "shared-doc-thumb-a", "thumb-after-release", 500).unwrap();
+        assert_eq!(after_release_hash, first_hash);
+        assert_eq!(after_release_pid, first_pid);
+        release_accurate_session_owner_with_policy("shared-doc-thumb-a").unwrap();
+        assert!(!render_worker_manager().accurate_document_affinity.lock().unwrap().contains_key(&key(&first_path)));
+        assert!(render_worker_manager().accurate_document_affinity.lock().unwrap().contains_key(&key(&second_path)));
+        {
+            // Chỉ kill worker do probe sở hữu để kiểm đường crash/restart.
+            let slot = render_worker_manager().slot(second_lane).lock().unwrap();
+            slot.as_ref().unwrap().child.lock().unwrap().kill().unwrap();
+        }
+        assert!(render(&second_path, "shared-doc-owner-b", "detect-crash", 10).is_err());
+        let (restarted_hash, restarted_pid, _) = render(&second_path, "shared-doc-owner-b", "after-restart", 10).unwrap();
+        assert_eq!(restarted_hash, second_hash);
+        assert_ne!(restarted_pid, second_pid);
+        release_accurate_session_owner_with_policy("shared-doc-owner-b").unwrap();
+        let report = serde_json::json!({
+            "scope": "headless-shared-document-owner-lifecycle",
+            "documents_overlapped": overlapped, "first_worker_pid": first_pid,
+            "second_worker_pid": second_pid, "first_lane": format!("{first_lane:?}"),
+            "second_lane": format!("{second_lane:?}"), "thumbnail_worker_pid": thumb_pid,
+            "other_owner_release_keeps_worker": after_release_pid == first_pid,
+            "last_owner_releases_binding": true, "restart_worker_pid": restarted_pid,
+            "png_parity": true,
+        });
+        eprintln!("PPE_SHARED_DOCUMENTS {report}");
+        if let Ok(path) = std::env::var("PRYNX_RENDER_WORKER_SHARED_REPORT") {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
+            serde_json::to_writer_pretty(&mut file, &report).unwrap();
+        }
     }
 
     #[test]
