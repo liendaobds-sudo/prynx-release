@@ -891,4 +891,112 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(image.style.width).toBe('100%');
         expect(image.style.height).toBe('100%');
     });
+
+    it('zoom-in giữ bitmap đang hiện khi target mới còn chờ, không phủ spinner lên surface cũ', async () => {
+        const oldUrl = 'blob:http://localhost/zoom-underlay';
+        cacheTileUrl(
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate_1_1_0_0_0_0_0',
+            { url: oldUrl, byteLength: 64, cacheable: true },
+            'D:\\jobs\\gradient.pdf|revision:r1|color:accurate',
+        );
+        const getTileUrl = vi.fn(() => new Promise<never>(() => {}));
+        const view = render(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                renderPriority: 10,
+                showLoadStatus: true,
+                loadLabels: {
+                    loading: 'Đang dựng hình…',
+                    slow: 'Đang dựng trang lâu hơn bình thường…',
+                    error: 'Không dựng được trang này.',
+                    cancelled: 'Đã hủy dựng trang.',
+                    retry: 'Thử lại',
+                    cancel: 'Hủy',
+                },
+            })} />,
+        );
+
+        await act(async () => { await Promise.resolve(); });
+        const image = view.container.querySelector('img')!;
+        fireEvent.load(image);
+        expect(image.src).toBe(oldUrl);
+
+        view.rerender(
+            <LiveTile {...makeProps({
+                getTileUrl,
+                accurateOnly: true,
+                renderPriority: 10,
+                showLoadStatus: true,
+                zoom: 2,
+                cssW: 1280,
+                cssH: 960,
+                loadLabels: {
+                    loading: 'Đang dựng hình…',
+                    slow: 'Đang dựng trang lâu hơn bình thường…',
+                    error: 'Không dựng được trang này.',
+                    cancelled: 'Đã hủy dựng trang.',
+                    retry: 'Thử lại',
+                    cancel: 'Hủy',
+                },
+            })} />,
+        );
+
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+        expect(image.src).toBe(oldUrl);
+        expect(view.queryByText('Đang dựng hình…')).toBeNull();
+    });
+
+    it('giữ canvas đã decode khi ngừng dựng base sau khi zoom vượt ngân sách surface', async () => {
+        let resolveRender!: (source: TileUrlSource) => void;
+        const getTileUrl = vi.fn(() => new Promise<TileUrlSource>(resolve => {
+            resolveRender = resolve;
+        }));
+        const bitmap = { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap;
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never);
+        const base = makeProps({
+            getTileUrl,
+            accurateOnly: true,
+            renderPriority: 10,
+            showLoadStatus: true,
+            loadLabels: {
+                loading: 'Đang dựng hình…',
+                slow: 'Đang dựng trang lâu hơn bình thường…',
+                error: 'Không dựng được trang này.',
+                cancelled: 'Đã hủy dựng trang.',
+                retry: 'Thử lại',
+                cancel: 'Hủy',
+            },
+        });
+        const view = render(<LiveTile {...base} />);
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            resolveRender({ url: 'blob:http://localhost/disabled-base-underlay', byteLength: 64, bitmap });
+        });
+        await waitFor(() => expect(drawImage).toHaveBeenCalledWith(bitmap, 0, 0));
+        const canvas = view.container.querySelector('canvas')!;
+        const tile = view.container.querySelector('.tile-container') as HTMLElement;
+        const presentedTile = canvas.dataset.prynxPresentedTile;
+
+        // UIUX (audit 2026-09-23 §ZOOM.FLASH.1): ngừng xin base lớn không đồng
+        // nghĩa rút bitmap đã decode; viewport mới vẫn cần underlay này để chống trắng.
+        view.rerender(
+            <LiveTile {...base} renderEnabled={false} zoom={2} cssW={1280} cssH={960} />,
+        );
+        await act(async () => { await Promise.resolve(); });
+
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+        expect(view.container.querySelector('canvas')).toBe(canvas);
+        expect(canvas.dataset.prynxPresentedTile).toBe(presentedTile);
+        expect(canvas.width).toBe(640);
+        expect(canvas.height).toBe(480);
+        expect(canvas.style.width).toBe('100%');
+        expect(canvas.style.height).toBe('100%');
+        expect(canvas.style.display).toBe('block');
+        expect(canvas.style.opacity).toBe('1');
+        expect(tile.style.opacity).toBe('1');
+        expect(view.queryByText('Đang dựng hình…')).toBeNull();
+        expect(view.queryByRole('status')).toBeNull();
+    });
 });

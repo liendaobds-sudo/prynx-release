@@ -14,6 +14,8 @@ import {
     shouldRenderViewerBaseTile,
     shouldShowOutputPreviewBitmap,
     shouldKeepViewerAccurateBaseMounted,
+    isViewerUnderlayStable,
+    shouldKeepViewerDisplayBaseMounted,
     shouldRequestViewerAccurateBase,
     shouldUseViewerDisplayLayer,
     shouldUseViewerAccurateSimulation,
@@ -159,6 +161,23 @@ describe('Viewer — policy ghép tile progressive', () => {
         expect(shouldRequestViewerAccurateBase(true, false, false)).toBe(true);
     });
 
+    it('không coi underlay lịch sử là ổn định khi base đã bị tháo ở zoom cao', () => {
+        // hasReadyUnderlay=true chỉ nói rằng từng có bitmap; khi surface vượt
+        // ngân sách, base không còn mounted nên tile viewport cũ phải tiếp tục phủ.
+        expect(isViewerUnderlayStable(true, false)).toBe(false);
+        expect(isViewerUnderlayStable(true, true)).toBe(true);
+        expect(isViewerUnderlayStable(false, true)).toBe(false);
+        expect(isViewerUnderlayStable(false, false, true)).toBe(true);
+    });
+
+    it('giữ display base đang mounted làm fallback khi active vượt ngân sách surface', () => {
+        expect(shouldKeepViewerDisplayBaseMounted(true, true, true, true)).toBe(true);
+        expect(shouldKeepViewerDisplayBaseMounted(true, false, true, true)).toBe(true);
+        expect(shouldKeepViewerDisplayBaseMounted(true, false, false, true)).toBe(false);
+        expect(shouldKeepViewerDisplayBaseMounted(false, false, true, true)).toBe(false);
+        expect(shouldKeepViewerDisplayBaseMounted(true, false, true, false)).toBe(false);
+    });
+
     it('dựng underlay PPE cứu hộ 24 DPI cho trang vượt ngân sách surface', () => {
         expect(VIEWER_ACCURATE_UNDERLAY_SCALE).toBe(0.25);
         expect(shouldRenderViewerAccurateUnderlay(true, true, true, true)).toBe(true);
@@ -249,4 +268,3 @@ describe('Viewer — policy ghép tile progressive', () => {
         expect(Math.abs(bitmapH - wantH)).toBeLessThanOrEqual(2);
     });
 });
-

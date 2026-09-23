@@ -269,6 +269,37 @@ export function shouldKeepViewerAccurateBaseMounted(
         && (renderAccurateBaseTile || accurateCommitted);
 }
 
+/**
+ * UIUX (audit 2026-09-23 §ZOOM.FLASH.1): chỉ được rút tile viewport cũ khi
+ * compositor thật sự còn một surface underlay đang mounted. `hasReadyUnderlay`
+ * có thể là dấu vết của một lần render trước, nhưng base đã bị tháo khi trang
+ * vượt ngân sách surface; dùng nó một mình sẽ để lộ skeleton trắng trong lúc
+ * target zoom mới còn đang dựng.
+ */
+export function isViewerUnderlayStable(
+    hasReadyUnderlay: boolean,
+    underlayMounted: boolean,
+    initialFrameVisible = false,
+): boolean {
+    return initialFrameVisible || (underlayMounted && hasReadyUnderlay);
+}
+
+/**
+ * UIUX (audit 2026-09-23 §ZOOM.FLASH.2): giữ bitmap display cũ làm underlay trong
+ * lúc chuyển sang viewport ở zoom cao. `renderBaseTile` có thể tắt vì budget, nhưng
+ * component đang mounted vẫn giữ canvas đã decode; chỉ giữ fallback cho frame active
+ * để không kéo theo surface lớn của các trang nền.
+ */
+export function shouldKeepViewerDisplayBaseMounted(
+    useDisplayBase: boolean,
+    renderBaseTile: boolean,
+    isActiveFrame: boolean,
+    hasDecodedBaseSurface: boolean,
+): boolean {
+    return useDisplayBase
+        && (renderBaseTile || (isActiveFrame && hasDecodedBaseSurface));
+}
+
 export function shouldRequestViewerAccurateBase(
     renderAccurateBaseTile: boolean,
     accurateCommitted: boolean,

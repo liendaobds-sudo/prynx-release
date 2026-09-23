@@ -131,6 +131,8 @@ import {
     shouldShowOutputPreviewBitmap,
     isViewerTargetScaleReady,
     shouldKeepViewerAccurateBaseMounted,
+    isViewerUnderlayStable,
+    shouldKeepViewerDisplayBaseMounted,
     shouldRequestViewerAccurateBase,
     shouldRenderViewerBasePage,
     viewerBackgroundRenderOwnerId,
@@ -5654,15 +5656,27 @@ export const LivePageFrame = (props: any) => {
                 ) || renderAccurateUnderlay;
                 const displayBaseReadyKey = `${displayFileKey}:${originalPageNum}:${bgZoom}`;
                 const displayBaseReady = baseDisplayReadyKey === displayBaseReadyKey;
+                // UIUX (audit 2026-09-23 §ZOOM.FLASH.1): readiness thuộc surface
+                // còn sống của đúng tài liệu/trang, không phải lịch sử viewport đã render.
+                const hasDisplayBaseSurface = Boolean(
+                    baseDisplayReadyKey?.startsWith(`${displayFileKey}:${originalPageNum}:`),
+                );
+                const hasAccurateBaseSurface = Boolean(
+                    accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`),
+                );
                 const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
                 const accurateBaseIdentity = `${accuratePageCommitKey}:${accurateBaseZoom}`;
                 const accurateBaseReady = accurateBaseReadyKey === accurateBaseIdentity;
-                const hasStableAccurateUnderlay = hasReadyUnderlayForPage;
                 const keepAccurateBaseMounted = shouldKeepViewerAccurateBaseMounted(
                     accurateColorPage,
                     renderAccurateBaseTile,
                     accurateCommitted,
                     accurateBaseWithinSurfaceBudget,
+                );
+                const hasStableAccurateUnderlay = isViewerUnderlayStable(
+                    hasAccurateBaseSurface,
+                    keepAccurateBaseMounted,
+                    Boolean(initialPpeFrame && !accurateCommitted),
                 );
                 const requestAccurateBase = shouldRequestViewerAccurateBase(
                     renderAccurateBaseTile,
@@ -5674,6 +5688,12 @@ export const LivePageFrame = (props: any) => {
                     accurateColorPage,
                     accurateCommitted,
                     keepDisplayUntilAccurate,
+                );
+                const keepDisplayBaseMounted = shouldKeepViewerDisplayBaseMounted(
+                    useDisplayBase,
+                    renderBaseTile,
+                    isActiveFrame,
+                    hasDisplayBaseSurface,
                 );
                 const baseRenderOwnerId = viewerBackgroundRenderOwnerId(
                     effectiveRenderOwnerId,
@@ -5716,7 +5736,7 @@ export const LivePageFrame = (props: any) => {
                                 }}
                             />
                         )}
-                        {useDisplayBase && renderBaseTile && (
+                        {keepDisplayBaseMounted && (
                             <div className="absolute inset-0 z-10">
                                 <LiveTile
                                     // COLOR (feedback 2026-08-09 §RENDER.F8): compatibility lane
@@ -5740,6 +5760,7 @@ export const LivePageFrame = (props: any) => {
                                         setBaseDisplayReadyKey(displayBaseReadyKey);
                                         setHasRenderedBaseState(true);
                                     }}
+                                    onTileUnmount={() => setBaseDisplayReadyKey(null)}
                                     renderOwnerId={effectiveRenderOwnerId}
                                     renderPriority={pageRenderPriority}
                                     renderEnabled={renderBaseTile}
@@ -5776,6 +5797,7 @@ export const LivePageFrame = (props: any) => {
                                             setAccurateBaseReadyKey(accurateBaseIdentity);
                                         }
                                     }}
+                                    onTileUnmount={() => setAccurateBaseReadyKey(null)}
                                     presentationFadeMs={viewerSurfaceSwapMs(
                                         accurateColorPage,
                                         accurateCommitted ? VIEWPORT_TILE_CROSSFADE_MAX_MS : 0,
@@ -5838,7 +5860,10 @@ export const LivePageFrame = (props: any) => {
                                     initialPpeFrame={initialPpeFrame}
                                     stableUnderlayReady={accurateColorPage
                                         ? hasStableAccurateUnderlay
-                                        : (displayBaseReady || hasRenderedBase)}
+                                        : isViewerUnderlayStable(
+                                            hasDisplayBaseSurface,
+                                            keepDisplayBaseMounted,
+                                        )}
                                 />
                             </div>
                         )}
