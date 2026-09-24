@@ -360,6 +360,10 @@ class SeparationsPathRequest(BaseModel):
     intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative"
     output_preview_filter: OutputPreviewFilter = "all"
 
+class PageBoxesPathRequest(BaseModel):
+    file_path: str
+    page: int = 1
+
 class SetPageBoxesRequest(BaseModel):
     file_id: str
     box_type: str  # mediabox|cropbox|trimbox|bleedbox|artbox

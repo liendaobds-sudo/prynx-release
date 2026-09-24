@@ -6288,6 +6288,27 @@
     "title": "Separate stickers from AI image",
     "undo": "Undo"
   },
+  "misc.vdpPicker": {
+    "title": "Select code field",
+    "kind_label": "Code type",
+    "symbology_label": "Barcode symbology",
+    "name_label": "Field name",
+    "name_placeholder": "Field name (optional)",
+    "qr": "QR code",
+    "barcode": "Barcode",
+    "datamatrix": "Data Matrix",
+    "detect": "Detect code",
+    "detecting": "Detecting…",
+    "apply": "Create field",
+    "close": "Close",
+    "instruction": "Click an object to select · Shift-click for multiple · Drag to select a code group",
+    "selected": "{{count}} objects selected",
+    "background_image_hint": "A full-page image cannot be split into an individual code. Select a separate image placeholder or use a PDF with independent code objects.",
+    "partial_image_hint": "The selection must contain the whole code image; partial image selections are blocked.",
+    "detected_hint": "Code type detected.",
+    "detect_failed_hint": "Could not detect the code; choose its type manually.",
+    "click_to_pick": "Click or marquee-select to pick as code field"
+  },
   "preprocess.documentCleanup": {
     "title": "Straighten Cards – Clean Scans",
     "description": "Correct photographed documents and clean gray scan backgrounds",
@@ -6323,5 +6344,28 @@
     "batch_not_ready": "Not every document has finished processing yet.",
     "batch_result_unsupported": "A result format cannot be added to the working PDF.",
     "batch_result_empty": "There are no result pages for the working PDF."
+  },
+  "image_gate": {
+    "phat_hien_anh_sieu_lon": "Oversized image detected (Very high DPI)",
+    "canh_bao_dung_luong_ram": "Image has extremely high pixel count, which may freeze memory.",
+    "kich_thuoc_pixel": "Dimensions",
+    "tong_diem_anh": "Total pixels",
+    "do_phan_giai_goc": "Resolution",
+    "kho_in_thuc_te": "Physical print size",
+    "bo_nho_giai_nen_du_tinh": "Estimated uncompressed RAM",
+    "chuan_nganh_in": "Printing standard",
+    "loi_khuyen_poster": "For large posters, billboards, or standees ≥ 1m, 150 – 200 DPI provides maximum visual sharpness. Excessive resolution (600 DPI) consumes 16x memory without adding visible print detail.",
+    "chon_do_phan_giai": "Select Target Resolution:",
+    "toi_uu_150_dpi": "Auto optimize to 150 DPI (Recommended for printing)",
+    "giam_dung_luong_mo_ngay": "Reduces to ~{{mp}} MP, opens in 2-3s, preserves 100% print sharpness.",
+    "toi_uu_200_dpi": "Optimize to 200 DPI (High Quality)",
+    "chat_luong_cao_mo_ta": "Finer detail, suitable for close viewing distance < 0.8m.",
+    "toi_uu_300_dpi": "Optimize to 300 DPI (Maximum Sharpness)",
+    "sac_net_toi_da_mo_ta": "Offset print standard, ultra-close viewing < 0.4m, high detail.",
+    "toi_uu_100_dpi": "Optimize to 100 DPI (Pano / Billboard)",
+    "pano_billboard_mo_ta": "Very lightweight, ideal for large outdoor banners viewed > 2m.",
+    "tuy_chinh_dpi": "Custom DPI",
+    "ap_dung_tuy_chinh": "Optimize to {{dpi}} DPI",
+    "tiep_tuc_mo_anh_goc": "Open uncompressed original (Risk of freezing)"
   }
 }

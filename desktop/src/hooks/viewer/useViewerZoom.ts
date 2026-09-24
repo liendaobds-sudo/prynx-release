@@ -1,7 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
-import { toast } from '../../components/ui/Toast';
-import i18n from '../../i18n';
 import {
     capturePageViewportAnchor,
     capturePagePointViewportAnchor,
@@ -51,6 +49,7 @@ interface UseViewerZoomProps {
     actualWidth100: number;
     navigatePage: (p: number) => void;
     toolMode: 'pointer' | 'hand' | 'dimension';
+    hasRightPanelTool?: boolean;
 }
 
 export function useViewerZoom(props: UseViewerZoomProps) {
@@ -58,7 +57,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode,
         fitPageSizes, pageDisplayMode, activePage, actualWidth100,
-        navigatePage, toolMode,
+        navigatePage, toolMode, hasRightPanelTool,
     } = props;
 
     const [mainWidth, setMainWidth] = useState(0);
@@ -150,37 +149,17 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         return Math.min(availW / geometry.totalWidth, availH / geometry.maxHeight);
     }, [getFitGeometry, getScrollViewport]);
 
-    // UIUX (audit 2026-07-27 §C-02) fix-verify: với trang KHỔ NGANG (tờ bình), zoom
-    // vừa-ngang == vừa-trọn-trang (chiều ngang chạm giới hạn trước), và khi mở file app
-    // đã fit sẵn — bấm nút là "đúng nhưng vô hình", user tưởng nút chết. Khi zoom đích
-    // trùng zoom hiện tại (chênh <0.5%) → toast nhẹ xác nhận thay vì im lặng.
-    const fitNoopToastAtRef = useRef(0);
-    const notifyFitNoop = useCallback((msgKey: string, msgDefault: string) => {
-        const now = Date.now();
-        if (now - fitNoopToastAtRef.current < 1500) return;
-        fitNoopToastAtRef.current = now;
-        toast.info(i18n.t(msgKey, { defaultValue: msgDefault }));
-    }, []);
-
     const applyFitWidth = useCallback(() => {
         const target = calcFitWidthZoom();
-        const prev = currentZoomRef.current;
         setZoom(target);
         setFitMode('width');
-        if (Math.abs(target - prev) / Math.max(prev, 0.0001) < 0.005) {
-            notifyFitNoop('misc.acrobatViewer:da_vua_chieu_ngang', 'Trang đã vừa khít chiều ngang ở mức thu phóng hiện tại');
-        }
-    }, [calcFitWidthZoom, setZoom, setFitMode, notifyFitNoop]);
+    }, [calcFitWidthZoom, setZoom, setFitMode]);
 
     const applyFitPage = useCallback(() => {
         const target = calcFitPageZoom();
-        const prev = currentZoomRef.current;
         setZoom(target);
         setFitMode('page');
-        if (Math.abs(target - prev) / Math.max(prev, 0.0001) < 0.005) {
-            notifyFitNoop('misc.acrobatViewer:da_vua_tron_trang', 'Trang đã vừa trọn màn hình ở mức thu phóng hiện tại');
-        }
-    }, [calcFitPageZoom, setZoom, setFitMode, notifyFitNoop]);
+    }, [calcFitPageZoom, setZoom, setFitMode]);
 
     // ═══ Auto-zoom on fitMode / container resize ═══
     /* eslint-disable react-hooks/set-state-in-effect -- state zoom/isReady đồng bộ layout viewport chủ đích. */
@@ -197,8 +176,17 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             setIsZoomReady(true);
         } else if (hasFitGeometry && fitMode === 'custom') {
             setIsZoomReady(true);
+            // UIUX: Đảm bảo khi đang mở bảng thiết lập công cụ bên phải, các bảng thiết lập
+            // TUYỆT ĐỐI KHÔNG ĐƯỢC ĐÈ LÊN TRANG VIEW. Nếu zoom hiện tại khiến trang tràn/bị bảng che khuất:
+            // Tự động thu nhỏ lại để vừa trọn khung nhìn (như mẫu).
+            if (hasRightPanelTool) {
+                const maxFit = calcFitPageZoom();
+                if (currentZoomRef.current > maxFit + 0.005) {
+                    setZoom(Math.min(1.0, maxFit));
+                }
+            }
         }
-    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom, internalScrollRef]);
+    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom, internalScrollRef, hasRightPanelTool]);
     /* eslint-enable react-hooks/set-state-in-effect */
 
     // Sau fit: căn giữa THEO TRANG ĐANG XEM (anchor #pdf-page-container-N), không theo
@@ -281,7 +269,8 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 clearTimeout(timeoutId);
                 const w = entries[0].contentRect.width - 2;
                 const h = entries[0].contentRect.height;
-                const delay = mainWidthRef.current === 0 ? 100 : 150;
+                const isSignificant = Math.abs(w - (mainWidthRef.current || 0)) > 20;
+                const delay = mainWidthRef.current === 0 ? 50 : isSignificant ? 30 : 80;
                 timeoutId = setTimeout(() => {
                     cancelAnimationFrame(frame);
                     frame = requestAnimationFrame(() => {

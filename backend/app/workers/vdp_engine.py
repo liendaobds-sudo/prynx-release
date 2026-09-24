@@ -266,6 +266,14 @@ class PdfiumVdpTextRenderer:
         angle_deg=0.0,
         need_faux_bold=False,
         need_faux_italic=False,
+        stroke_color=None,
+        stroke_width=None,
+        stroke_line_join=None,
+        stroke_line_cap=None,
+        shadow_color=None,
+        shadow_offset_x=None,
+        shadow_offset_y=None,
+        shadow_blur=None,
     ) -> bool:
         if not text or not str(text).strip():
             return True
@@ -335,20 +343,72 @@ class PdfiumVdpTextRenderer:
                 e_mat = cx + lx_local * cos_a - base_y_local * sin_a
                 f_mat = cy + lx_local * sin_a + base_y_local * cos_a
 
+                # Lớp bóng đổ (Drop Shadow / 3D Shadow) bên dưới text chính
+                if shadow_color:
+                    sr, sg, sb, sa = self._hex_or_cmyk_to_rgba(shadow_color)
+                    t_shadow = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
+                    u16_sh = (line + '\0').encode('utf-16-le')
+                    u16_sh_buf = ctypes.cast(ctypes.create_string_buffer(u16_sh), ctypes.POINTER(ctypes.c_ushort))
+                    c_pdfium.FPDFText_SetText(t_shadow, u16_sh_buf)
+                    c_pdfium.FPDFPageObj_SetFillColor(t_shadow, sr, sg, sb, sa)
+                    so_x = float(shadow_offset_x if shadow_offset_x is not None else 1.0) * CSS_TO_PT_FACTOR
+                    so_y = float(shadow_offset_y if shadow_offset_y is not None else 1.0) * CSS_TO_PT_FACTOR
+                    e_sh = e_mat + so_x * cos_a - so_y * sin_a
+                    f_sh = f_mat + so_x * sin_a + so_y * cos_a
+                    c_pdfium.FPDFPageObj_Transform(t_shadow, a_mat, b_mat, c_mat, d_mat, e_sh, f_sh)
+                    c_pdfium.FPDFPage_InsertObject(self.page, t_shadow)
+
+                # Lớp viền (Stroke layer) bên dưới text chính để viền không ăn lẹm vào ruột chữ,
+                # bảo toàn 100% độ sắc nét và độ đậm của chữ theo đúng chuẩn Illustrator/Corel.
+                if stroke_color and stroke_width and float(stroke_width) > 0.05:
+                    strk_r, strk_g, strk_b, strk_a = self._hex_or_cmyk_to_rgba(stroke_color)
+                    t_stroke = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
+                    u16_st = (line + '\0').encode('utf-16-le')
+                    u16_st_buf = ctypes.cast(ctypes.create_string_buffer(u16_st), ctypes.POINTER(ctypes.c_ushort))
+                    c_pdfium.FPDFText_SetText(t_stroke, u16_st_buf)
+                    c_pdfium.FPDFPageObj_SetStrokeColor(t_stroke, strk_r, strk_g, strk_b, strk_a)
+                    c_pdfium.FPDFPageObj_SetStrokeWidth(t_stroke, float(stroke_width) * 2.0)
+                    join_code = 1 if (stroke_line_join or 'round').lower() == 'round' else (2 if stroke_line_join == 'bevel' else 0)
+                    cap_code = 1 if (stroke_line_cap or 'round').lower() == 'round' else (2 if stroke_line_cap == 'square' else 0)
+                    c_pdfium.FPDFPageObj_SetLineJoin(t_stroke, join_code)
+                    c_pdfium.FPDFPageObj_SetLineCap(t_stroke, cap_code)
+                    c_pdfium.FPDFTextObj_SetTextRenderMode(t_stroke, 1)  # FPDF_TEXTRENDERMODE_STROKE
+                    c_pdfium.FPDFPageObj_Transform(t_stroke, a_mat, b_mat, c_mat, d_mat, e_mat, f_mat)
+                    c_pdfium.FPDFPage_InsertObject(self.page, t_stroke)
+
                 c_pdfium.FPDFPageObj_SetFillColor(tobj, r, g, b, a)
+                c_pdfium.FPDFTextObj_SetTextRenderMode(tobj, 0)  # FPDF_TEXTRENDERMODE_FILL
                 c_pdfium.FPDFPageObj_Transform(tobj, a_mat, b_mat, c_mat, d_mat, e_mat, f_mat)
                 c_pdfium.FPDFPage_InsertObject(self.page, tobj)
                 self.has_text = True
 
                 if need_faux_bold:
+                    dx = max(0.3, float(fontsize) * 0.03)
+                    e_bold = e_mat + dx * cos_a
+                    f_bold = f_mat + dx * sin_a
+
+                    if stroke_color and stroke_width and float(stroke_width) > 0.05:
+                        strk_r, strk_g, strk_b, strk_a = self._hex_or_cmyk_to_rgba(stroke_color)
+                        t_bold_st = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
+                        u16_st = (line + '\0').encode('utf-16-le')
+                        u16_st_buf = ctypes.cast(ctypes.create_string_buffer(u16_st), ctypes.POINTER(ctypes.c_ushort))
+                        c_pdfium.FPDFText_SetText(t_bold_st, u16_st_buf)
+                        c_pdfium.FPDFPageObj_SetStrokeColor(t_bold_st, strk_r, strk_g, strk_b, strk_a)
+                        c_pdfium.FPDFPageObj_SetStrokeWidth(t_bold_st, float(stroke_width) * 2.0)
+                        join_code = 1 if (stroke_line_join or 'round').lower() == 'round' else (2 if stroke_line_join == 'bevel' else 0)
+                        cap_code = 1 if (stroke_line_cap or 'round').lower() == 'round' else (2 if stroke_line_cap == 'square' else 0)
+                        c_pdfium.FPDFPageObj_SetLineJoin(t_bold_st, join_code)
+                        c_pdfium.FPDFPageObj_SetLineCap(t_bold_st, cap_code)
+                        c_pdfium.FPDFTextObj_SetTextRenderMode(t_bold_st, 1)
+                        c_pdfium.FPDFPageObj_Transform(t_bold_st, a_mat, b_mat, c_mat, d_mat, e_bold, f_bold)
+                        c_pdfium.FPDFPage_InsertObject(self.page, t_bold_st)
+
                     t_bold = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
                     u16 = (line + '\0').encode('utf-16-le')
                     u16_buf = ctypes.cast(ctypes.create_string_buffer(u16), ctypes.POINTER(ctypes.c_ushort))
                     c_pdfium.FPDFText_SetText(t_bold, u16_buf)
                     c_pdfium.FPDFPageObj_SetFillColor(t_bold, r, g, b, a)
-                    dx = max(0.3, float(fontsize) * 0.03)
-                    e_bold = e_mat + dx * cos_a
-                    f_bold = f_mat + dx * sin_a
+                    c_pdfium.FPDFTextObj_SetTextRenderMode(t_bold, 0)
                     c_pdfium.FPDFPageObj_Transform(t_bold, a_mat, b_mat, c_mat, d_mat, e_bold, f_bold)
                     c_pdfium.FPDFPage_InsertObject(self.page, t_bold)
 
@@ -789,6 +849,12 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
     c.saveState()
     c.setFillColor(text_color)
     c.setFont(font_name, fontsize)
+    crv_stroke_color = field.get('strokeColor')
+    crv_stroke_width = field.get('strokeWidth')
+    if crv_stroke_color and crv_stroke_width and float(crv_stroke_width) > 0.05:
+        c.setStrokeColor(hex_to_rgb(crv_stroke_color) if isinstance(crv_stroke_color, str) else crv_stroke_color)
+        c.setLineWidth(float(crv_stroke_width))
+        c.setTextRenderMode(2)
 
     if curve_mode == 'wave':
         raw_amp_mm = field.get('curveRadius')
@@ -1065,9 +1131,11 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 ew, eh = (f_rect['h'], f_rect['w']) if rot in (90, 270) else (f_rect['w'], f_rect['h'])
                 c.saveState()
                 c.translate(cx, cy)
-                c.rotate(rot)
+                # ReportLab rotate() xoay ngược chiều kim đồng hồ (counter-clockwise);
+                # trong khi quy ước của PrynX / CSS / barcode là theo chiều kim đồng hồ (clockwise).
+                c.rotate((360 - rot) % 360)
                 rotated = True
-                f_rect = {'x': -ew / 2.0, 'y': f_rect['y'], 'w': ew, 'h': eh}
+                f_rect = {'x': -ew / 2.0, 'y': -eh / 2.0, 'w': ew, 'h': eh}
                 rl_x = -ew / 2.0
                 rl_y = -eh / 2.0
 
@@ -1270,7 +1338,8 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 # #7 Chọn font THẬT theo fontStyle nếu có biến thể Bold/Italic;
                 # chỉ dùng faux cho phần KHÔNG có file font tương ứng.
                 fs_style = str(field.get('fontStyle') or 'regular').lower()
-                want_bold = 'bold' in fs_style
+                f_weight = field.get('fontWeight')
+                want_bold = 'bold' in fs_style or (isinstance(f_weight, (int, float)) and f_weight >= 600)
                 want_italic = 'italic' in fs_style
                 variants = field_font_variants.get(field.get('id'), {}) if font_file else {}
                 font_name = variants.get('regular') or "Helvetica"
@@ -1520,7 +1589,8 @@ def process_chunk(args) -> str:
                         )
 
                     fs_style = str(field.get('fontStyle') or 'regular').lower()
-                    want_bold = 'bold' in fs_style
+                    f_weight = field.get('fontWeight')
+                    want_bold = 'bold' in fs_style or (isinstance(f_weight, (int, float)) and f_weight >= 600)
                     want_italic = 'italic' in fs_style
                     need_faux_bold = want_bold
                     need_faux_italic = want_italic
@@ -1562,6 +1632,14 @@ def process_chunk(args) -> str:
                             angle_deg=float(field.get('rotation') or field.get('angle', 0) or 0),
                             need_faux_bold=need_faux_bold,
                             need_faux_italic=need_faux_italic,
+                            stroke_color=field.get('strokeColor'),
+                            stroke_width=field.get('strokeWidth'),
+                            stroke_line_join=field.get('strokeLineJoin'),
+                            stroke_line_cap=field.get('strokeLineCap'),
+                            shadow_color=field.get('shadowColor'),
+                            shadow_offset_x=field.get('shadowOffsetX'),
+                            shadow_offset_y=field.get('shadowOffsetY'),
+                            shadow_blur=field.get('shadowBlur'),
                         )
                         if success:
                             handled_by_pdfium.add(f_id)

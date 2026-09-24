@@ -35,3 +35,21 @@ export async function fetchLocalFileBuffer(
   return await response.arrayBuffer();
 }
 
+/**
+ * Phân giải URL nạp font cho @font-face:
+ * - Ưu tiên fontDataUrl (base64 data URL): hoạt động 100% không phụ thuộc mạng/giao thức.
+ * - Trong Tauri: qua localFileUrl (custom URI scheme).
+ * - Trong môi trường web dev: qua FastAPI sidecar http://127.0.0.1:8321/api/vdp/font-file.
+ */
+export function resolveFontUrl(fontFile?: string, fontDataUrl?: string): string | null {
+  if (fontDataUrl) return fontDataUrl;
+  if (!fontFile) return null;
+  const isTauri = typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+  if (isTauri) {
+    return localFileUrl(fontFile);
+  }
+  const apiBase = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || 'http://localhost:8321';
+  return `${apiBase}/api/vdp/font-file?path=${encodeURIComponent(fontFile)}`;
+}
+
+

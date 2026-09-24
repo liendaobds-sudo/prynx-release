@@ -89,6 +89,7 @@ from app.schemas.preflight import (  # noqa: F401
     ReorderLayersRequest,
     SeparationCompositeRequest,
     SeparationsPathRequest,
+    PageBoxesPathRequest,
     SetPageBoxesRequest,
     SetVisibilityRequest,
     SoftProofRequest,
@@ -106,6 +107,8 @@ _PREFLIGHT_ROUTE_FEATURES: dict[str, str | None] = {
     "/preflight/pipeline": None,
     "/preflight/download/{filename}": None,
     "/preflight/page-boxes/{file_id}/{page}": "pdf.crop",
+    "/preflight/page-boxes": "pdf.crop",
+    "/preflight/page-boxes-by-path": "pdf.crop",
     "/preflight/set-page-boxes": "pdf.crop",
     "/preflight/detect-crop-regions": "pdf.crop",
     "/preflight/crop-regions": "pdf.crop",
@@ -113,6 +116,10 @@ _PREFLIGHT_ROUTE_FEATURES: dict[str, str | None] = {
     "/preflight/add-bleed": "prepress.cutline",
     "/preflight/fix-hairlines": "prepress.hairlines",
     "/preflight/inks/{file_id}": "prepress.convert_colors",
+    "/preflight/inks/{file_id:path}": "prepress.convert_colors",
+    "/preflight/separations/{file_id}/{page}": "prepress.preflight",
+    "/preflight/separations": "prepress.preflight",
+    "/preflight/separations-by-path": "prepress.preflight",
     "/preflight/convert-spot": "prepress.convert_colors",
     "/preflight/convert-colors": "prepress.convert_colors",
     "/preflight/convert-colors/preview": "prepress.convert_colors",
@@ -993,6 +1000,42 @@ async def get_separations(
         raise_http(e, "Lỗi khi tạo Separations")
 
 
+@router.get("/preflight/separations")
+async def get_separations_by_query(
+    file_id: Optional[str] = Query(None),
+    file_path: Optional[str] = Query(None),
+    page: int = Query(1),
+    dpi: int = Query(150),
+    render_mode: Literal["accurate", "approximate"] = "accurate",
+    profile_id: str = "fogra39",
+    intent: Literal["perceptual", "relative", "saturation", "absolute"] = "relative",
+    output_preview_filter: OutputPreviewFilter = "all",
+):
+    """
+    Trích xuất bản kẽm (Separations) qua query parameters — an toàn với đường dẫn file cục bộ.
+    """
+    target = file_path or file_id
+    if not target:
+        raise HTTPException(status_code=400, detail="Thiếu file_id hoặc file_path")
+    pdf_path = _get_file_path(target)
+
+    try:
+        engine = SeparationEngine()
+        result = await engine.extract_separations(
+            pdf_path, page, dpi,
+            cmyk_profile_id=profile_id or "fogra39",
+            rendering_intent=intent,
+            render_mode=render_mode,
+            output_preview_filter=output_preview_filter,
+        )
+        result["output_preview_filter"] = output_preview_filter
+        return result
+    except PpeUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:
+        raise_http(e, "Lỗi khi tạo Separations")
+
+
 
 @router.post("/preflight/separation-composite")
 async def compose_separation_preview(req: SeparationCompositeRequest):
@@ -1093,6 +1136,39 @@ async def get_page_boxes(file_id: str, page: int):
     engine = PageBoxesEngine()
     try:
         return engine.get_boxes(file_path, page)
+    except Exception as e:
+        raise_http(e, "Không lấy được thông tin page boxes")
+
+
+@router.post("/preflight/page-boxes-by-path", response_model=PageBoxesResponse)
+async def get_page_boxes_by_path(req: PageBoxesPathRequest):
+    """
+    Desktop-only: Lấy thông tin 5 box của 1 trang trực tiếp từ đường dẫn file trên ổ đĩa.
+    """
+    safe_path = _validate_local_pdf_path(req.file_path)
+    from app.core.page_boxes import PageBoxesEngine
+    engine = PageBoxesEngine()
+    try:
+        return engine.get_boxes(safe_path, req.page)
+    except Exception as e:
+        raise_http(e, "Không lấy được thông tin page boxes (by path)")
+
+
+@router.get("/preflight/page-boxes", response_model=PageBoxesResponse)
+async def get_page_boxes_query(
+    file_id: Optional[str] = Query(None),
+    file_path: Optional[str] = Query(None),
+    page: int = Query(1),
+):
+    """Lấy thông tin 5 box của 1 trang qua query parameters."""
+    target = file_path or file_id
+    if not target:
+        raise HTTPException(status_code=400, detail="Thiếu file_id hoặc file_path")
+    actual_path = _get_file_path(target)
+    from app.core.page_boxes import PageBoxesEngine
+    engine = PageBoxesEngine()
+    try:
+        return engine.get_boxes(actual_path, page)
     except Exception as e:
         raise_http(e, "Không lấy được thông tin page boxes")
 
@@ -1285,7 +1361,7 @@ async def fix_hairlines(req: FixHairlinesRequest):
 #  INK MANAGER
 # ══════════════════════════════════════════════════════════════
 
-@router.get("/preflight/inks/{file_id}", response_model=InksResponse)
+@router.get("/preflight/inks/{file_id:path}", response_model=InksResponse)
 async def list_inks(file_id: str):
     """Liệt kê toàn bộ kênh mực trong PDF."""
     file_path = _get_file_path(file_id)

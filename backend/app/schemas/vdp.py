@@ -37,10 +37,20 @@ class VdpField(BaseModel):
     fontSize: Optional[float] = 10
     fontColor: Optional[str] = '#000000'
     fontStyle: Optional[str] = 'regular'  # regular | bold | italic | bolditalic
+    fontWeight: Optional[int] = None  # 100..900 (700 = bold, 400 = regular)
     lineHeight: Optional[float] = 1.0
     textAlign: Optional[str] = 'center'
     alignment: Optional[str] = 'center'
     autoFit: Optional[bool] = True  # tự bóp cỡ chữ để vừa khung (không tràn)
+    # Text effects (Stroke & Shadow)
+    strokeColor: Optional[str] = None
+    strokeWidth: Optional[float] = None
+    strokeLineJoin: Optional[Literal['miter', 'round', 'bevel']] = 'round'
+    strokeLineCap: Optional[Literal['butt', 'round', 'square']] = 'round'
+    shadowColor: Optional[str] = None
+    shadowOffsetX: Optional[float] = None
+    shadowOffsetY: Optional[float] = None
+    shadowBlur: Optional[float] = None
     # Barcode/QR specific
     barType: Optional[str] = 'code128'
     # tên frontend gửi (ưu tiên hơn barType); ngoài các loại 1D/qr hiện có,

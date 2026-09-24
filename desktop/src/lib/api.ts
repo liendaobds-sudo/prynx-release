@@ -1813,16 +1813,69 @@ export async function pickVdpTextField(
   fid: string,
   page: number,
   drawIndex: number,
-  removeOriginal = true
+  removeOriginal = true,
+  memberDrawIndices?: number[]
 ): Promise<VdpPickFieldResult> {
   const res = await authenticatedFetch(API_BASE + '/api/vdp/pick-text-field', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fid, page, drawIndex, removeOriginal }),
+    body: JSON.stringify({ fid, page, drawIndex, removeOriginal, memberDrawIndices }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi trích xuất chữ' }));
     throw new Error(err.detail || 'Lỗi trích xuất chữ');
+  }
+  return res.json();
+}
+
+export interface VdpPickObjectRequest {
+  fid: string;
+  page: number;
+  drawIndices: number[];
+  fieldType: 'qrcode' | 'barcode';
+  barcodeType?: string;
+  removeOriginal?: boolean;
+  selectionBbox?: [number, number, number, number];
+}
+
+/** Chuyển một hoặc nhiều object ảnh/vector của bản thiết kế thành field QR/barcode. */
+export async function pickVdpObjectField(
+  request: VdpPickObjectRequest,
+): Promise<VdpPickFieldResult> {
+  const res = await authenticatedFetch(API_BASE + '/api/vdp/pick-object-field', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi trích xuất đối tượng mã' }));
+    throw new Error(err.detail || 'Lỗi trích xuất đối tượng mã');
+  }
+  return res.json();
+}
+
+export interface VdpDetectObjectResult {
+  decoded: boolean;
+  fieldType: 'qrcode' | 'barcode' | null;
+  barcodeType: string | null;
+  payload?: string | null;
+  drawIndices?: number[];
+}
+
+/** Gợi ý loại QR/barcode của object đã chọn; không sửa PDF mẫu. */
+export async function detectVdpObjectType(
+  fid: string,
+  page: number,
+  drawIndices: number[],
+): Promise<VdpDetectObjectResult> {
+  const res = await authenticatedFetch(API_BASE + '/api/vdp/detect-object', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fid, page, drawIndices }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Không thể nhận diện đối tượng mã' }));
+    throw new Error(err.detail || 'Không thể nhận diện đối tượng mã');
   }
   return res.json();
 }
@@ -1852,3 +1905,112 @@ export async function autoDetectVdpTags(
   }
   return res.json();
 }
+
+export interface DownsampleImageResponse {
+  success: boolean;
+  output_path: string;
+  filename?: string;
+  pdf_path?: string | null;
+  pdf_filename?: string | null;
+  original_size: [number, number];
+  resampled_size: [number, number];
+  original_dpi?: number | null;
+  resampled_dpi: number;
+  file_size_mb: number;
+  format: string;
+  has_icc: boolean;
+  message?: string;
+}
+
+export async function requestDownsampleImage(
+  file: File,
+  targetDpi: number = 150,
+  maxDimension: number = 8000,
+): Promise<{ result: DownsampleImageResponse; optimizedFile: File; optimizedPdfFile?: File }> {
+  const formData = new FormData();
+  const nativePath = (file as File & { path?: string }).path;
+  if (nativePath) {
+    formData.append('source_path', nativePath);
+  } else {
+    formData.append('file', file, file.name);
+  }
+  formData.append('target_dpi', String(targetDpi));
+  formData.append('max_dimension', String(maxDimension));
+
+  const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/downsample-image`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => '');
+    throw new Error(`Hạ mẫu ảnh thất bại: ${errorText || res.statusText}`);
+  }
+
+  const result: DownsampleImageResponse = await res.json();
+  const outName = result.filename || `optimized_${file.name.replace(/\.[^.]+$/, '')}_${targetDpi}dpi.png`;
+  const isTauri = typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+
+  let optimizedPdfFile: File | undefined;
+  if (result.pdf_path) {
+    const pdfName = result.pdf_filename || `optimized_${file.name.replace(/\.[^.]+$/, '')}_${targetDpi}dpi.pdf`;
+    if (isTauri) {
+      // PDF siêu nhẹ (~1.6MB), đọc nhanh qua Tauri custom protocol trong vài mili-giây
+      try {
+        const pdfBuffer = await fetchLocalFileBuffer(result.pdf_path);
+        optimizedPdfFile = new File([pdfBuffer], pdfName, { type: 'application/pdf' });
+      } catch (pdfReadErr) {
+        console.warn('[requestDownsampleImage] fetchLocalFileBuffer PDF lỗi, tạo path stub:', pdfReadErr);
+        optimizedPdfFile = new File([], pdfName, { type: 'application/pdf' });
+      }
+    } else {
+      const pdfRes = await authenticatedFetch(`${API_BASE}/api/results/${encodeURIComponent(pdfName)}`);
+      if (pdfRes.ok) {
+        const blob = await pdfRes.blob();
+        optimizedPdfFile = new File([blob], pdfName, { type: 'application/pdf' });
+      }
+    }
+    if (optimizedPdfFile) {
+      Object.defineProperty(optimizedPdfFile, 'path', {
+        value: result.pdf_path,
+        configurable: true,
+      });
+    }
+  }
+
+  let optimizedFile: File;
+  if (isTauri && result.output_path) {
+    // Nếu đã có optimizedPdfFile sẵn sàng cho viewer, optimizedFile chỉ cần tạo stub nhẹ
+    // kèm path để tránh đọc 15-20MB buffer qua IPC vô ích
+    if (optimizedPdfFile) {
+      optimizedFile = new File([], outName, { type: 'image/png' });
+    } else {
+      const buffer = await fetchLocalFileBuffer(result.output_path);
+      optimizedFile = new File([buffer], outName, { type: 'image/png' });
+    }
+    Object.defineProperty(optimizedFile, 'path', {
+      value: result.output_path,
+      configurable: true,
+    });
+  } else {
+    if (optimizedPdfFile) {
+      optimizedFile = new File([], outName, { type: 'image/png' });
+    } else {
+      const fileRes = await authenticatedFetch(`${API_BASE}/api/results/${encodeURIComponent(outName)}`);
+      if (!fileRes.ok) {
+        throw new Error(`Không thể tải ảnh đã tối ưu từ backend (HTTP ${fileRes.status})`);
+      }
+      const blob = await fileRes.blob();
+      optimizedFile = new File([blob], outName, { type: 'image/png' });
+    }
+    if (result.output_path) {
+      Object.defineProperty(optimizedFile, 'path', {
+        value: result.output_path,
+        configurable: true,
+      });
+    }
+  }
+
+  return { result, optimizedFile, optimizedPdfFile };
+}
+

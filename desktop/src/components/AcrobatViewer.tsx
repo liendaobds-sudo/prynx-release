@@ -1154,7 +1154,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         },
     });
 
-    // ═══ Hook: Zoom & Gestures ═══
+    const hasRightPanelTool = (activeDashboardTool !== 'none' && activeDashboardTool !== 'logo_rebuild') || isObjectEditMode;
     const {
         isZoomReady,
         thumbBaseWidth,
@@ -1169,7 +1169,31 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         pageDisplayMode, setPageDisplayMode: setPageDisplayMode as (m: string) => void,
         activePage, actualWidth100: fitPageSizes[0]?.width || calibratedActualWidth100,
         navigatePage, toolMode,
+        hasRightPanelTool,
     });
+
+    // UIUX: Đảm bảo khi mở bất kỳ công cụ nào ở menu phải, trang view tự động thu lại
+    // để vừa trọn vùng nhìn còn lại (không bị bảng thiết lập đè lên trang view).
+    const prevHasRightPanelToolRef = useRef(hasRightPanelTool);
+    const prevActiveDashboardToolRef = useRef(activeDashboardTool);
+    useEffect(() => {
+        const toolChanged = prevActiveDashboardToolRef.current !== activeDashboardTool;
+        const panelOpened = !prevHasRightPanelToolRef.current && hasRightPanelTool;
+        prevActiveDashboardToolRef.current = activeDashboardTool;
+        prevHasRightPanelToolRef.current = hasRightPanelTool;
+
+        if (hasRightPanelTool && (toolChanged || panelOpened)) {
+            setFitMode('smart');
+            const id1 = requestAnimationFrame(() => {
+                applyFitPage();
+                const id2 = requestAnimationFrame(() => {
+                    applyFitPage();
+                });
+                return () => cancelAnimationFrame(id2);
+            });
+            return () => cancelAnimationFrame(id1);
+        }
+    }, [activeDashboardTool, hasRightPanelTool, setFitMode, applyFitPage]);
 
     // UIUX (audit 2026-08-25 §NW.4): usePdfLoader reset page/zoom khi đổi file,
     // nên seed cửa sổ con chỉ được áp sau trạng thái `ready` + pageOrder thật.

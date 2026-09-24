@@ -82,6 +82,30 @@ class ObjMeta(BaseModel):
         default=None,
         description="Tên font gốc (BaseFont, bỏ tiền tố subset) — gợi ý/khớp font hệ thống",
     )
+    fontStyle: str | None = Field(
+        default=None,
+        description="Kiểu font: 'normal' | 'bold' | 'italic' | 'bolditalic'",
+    )
+    fontWeight: int | None = Field(
+        default=None,
+        description="Độ đậm font 100..900 (vd: 700 = Bold, 900 = Black)",
+    )
+    strokeColor: list[int] | None = Field(
+        default=None,
+        description="Màu viền RGB 0..255 của text nếu có",
+    )
+    strokeWidth: float | None = Field(
+        default=None,
+        description="Độ dày viền (point) của text nếu có",
+    )
+    strokeLineJoin: str | None = Field(
+        default=None,
+        description="Kiểu nối góc viền: 'miter' | 'round' | 'bevel'",
+    )
+    strokeLineCap: str | None = Field(
+        default=None,
+        description="Kiểu đầu nét viền: 'butt' | 'round' | 'square'",
+    )
 
     @field_validator("bbox")
     @classmethod
@@ -379,6 +403,8 @@ class TextObjectPropsResponse(BaseModel):
     color: Optional[list[int]] = Field(default=None, description="RGB 0..255")
     fontName: Optional[str] = Field(default=None, description="BaseFont, đã bỏ tiền tố subset")
     fontSize: Optional[float] = Field(default=None, description="Cỡ chữ gốc (pt)")
+    strokeColor: Optional[list[int]] = Field(default=None, description="Màu viền RGB 0..255")
+    strokeWidth: Optional[float] = Field(default=None, description="Độ dày viền (pt)")
 
 
 class OcgVisibilityResponse(BaseModel):

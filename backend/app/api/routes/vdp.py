@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import os
 import uuid
 import json
@@ -11,7 +11,7 @@ import csv
 import io
 import tempfile
 import threading
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Literal
 from concurrent.futures import ThreadPoolExecutor
 from app.schemas.vdp import (
     VdpField,
@@ -1251,6 +1251,7 @@ async def error_report_vdp(
 
 # ─── VDP Text Picker & Auto-Detect (Click-to-Convert) ─────────────────────────
 from app.workers.vdp_text_picker import pick_text_to_vdp_field, auto_detect_vdp_tags
+from app.workers.vdp_object_picker import detect_vdp_object_type, pick_objects_to_vdp_field
 from app.database import SessionLocal
 from app.models.job import UploadedFile
 from app.core.license_guard import result_access_url
@@ -1262,6 +1263,28 @@ class VdpPickTextFieldRequest(BaseModel):
     page: int
     drawIndex: int
     removeOriginal: bool = True
+    memberDrawIndices: Optional[List[int]] = None
+
+
+class VdpPickObjectFieldRequest(BaseModel):
+    """Chọn ảnh/vector placeholder thành field QR hoặc mã vạch."""
+
+    fid: str
+    page: int
+    drawIndices: List[int] = Field(default_factory=list)
+    fieldType: Literal["qrcode", "barcode"]
+    barcodeType: Optional[str] = None
+    removeOriginal: bool = True
+    # BBox theo hệ PDF point [x0, y0, x1, y1], gốc bottom-left.
+    selectionBbox: Optional[List[float]] = None
+
+
+class VdpDetectObjectRequest(BaseModel):
+    """Yêu cầu gợi ý loại mã từ nhóm object đã chọn."""
+
+    fid: str
+    page: int
+    drawIndices: List[int] = Field(default_factory=list)
 
 
 class VdpAutoDetectTagsRequest(BaseModel):
@@ -1378,6 +1401,7 @@ async def vdp_pick_text_field(
             draw_index=req.drawIndex,
             remove_original=req.removeOriginal,
             output_path=cleaned_path,
+            member_draw_indices=req.memberDrawIndices,
         )
     except Exception as exc:
         logger.exception("pick_text_to_vdp_field thất bại")
@@ -1395,6 +1419,93 @@ async def vdp_pick_text_field(
         "working_pdf_path": cleaned_path if req.removeOriginal else None,
         "artifact_lease": artifact_lease,
     }
+
+
+@router.post("/pick-object-field")
+async def vdp_pick_object_field(
+    req: VdpPickObjectFieldRequest,
+    _license_info: dict = Depends(require_license),
+):
+    """Chuyển object ảnh/vector đã chọn thành trường QR hoặc barcode.
+
+    ``drawIndices`` là đường chính xác cho object picker; ``selectionBbox`` là
+    fallback khi UI chọn vùng. Worker chỉ ghi working PDF sau khi mọi target map
+    được duy nhất, nên lỗi mapping không làm mất file nguồn hay tạo PDF dở dang.
+    """
+    if req.page < 0:
+        raise HTTPException(status_code=400, detail="Trang PDF không hợp lệ.")
+    if not req.drawIndices and req.selectionBbox is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cần chọn ít nhất một object hoặc một vùng QR/mã vạch.",
+        )
+    pdf_path, original_name = _resolve_vdp_template_file(req.fid)
+    cleaned_path = None
+    if req.removeOriginal:
+        templates_dir = os.path.join(RESULTS_DIR, "vdp_templates")
+        os.makedirs(templates_dir, exist_ok=True)
+        cleaned_filename = f"vdp_code_{uuid.uuid4().hex[:10]}.pdf"
+        cleaned_path = os.path.abspath(os.path.join(templates_dir, cleaned_filename))
+
+    try:
+        result = await run_in_threadpool(
+            pick_objects_to_vdp_field,
+            pdf_path=pdf_path,
+            page_index=req.page,
+            draw_indices=req.drawIndices,
+            field_type=req.fieldType,
+            barcode_type=req.barcodeType,
+            selection_bbox=req.selectionBbox,
+            remove_original=req.removeOriginal,
+            output_path=cleaned_path,
+        )
+    except (FileNotFoundError, IndexError, ValueError) as exc:
+        logger.info("pick_objects_to_vdp_field bị từ chối: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Không thể chọn đối tượng mã: {exc}")
+    except Exception as exc:
+        # Không để lộ đường dẫn/stacktrace PDF; giữ fail-closed ở API.
+        logger.exception("pick_objects_to_vdp_field thất bại")
+        raise HTTPException(status_code=400, detail="Không thể ánh xạ đối tượng mã trong PDF.")
+
+    working_fid, working_url, artifact_lease = None, None, None
+    if req.removeOriginal and cleaned_path and os.path.isfile(cleaned_path):
+        working_fid, working_url, artifact_lease = _register_cleaned_template(
+            cleaned_path, original_name
+        )
+
+    return {
+        "success": True,
+        "field": result["field"],
+        "removedDrawIndices": result.get("removedDrawIndices", []),
+        "working_fid": working_fid,
+        "working_pdf_url": working_url,
+        "working_pdf_path": cleaned_path if req.removeOriginal else None,
+        "artifact_lease": artifact_lease,
+    }
+
+
+@router.post("/detect-object")
+async def vdp_detect_object(
+    req: VdpDetectObjectRequest,
+    _license_info: dict = Depends(require_license),
+):
+    """Gợi ý QR/barcode từ ảnh hoặc nhóm vector, không thay đổi file mẫu."""
+    if req.page < 0 or not req.drawIndices:
+        raise HTTPException(status_code=400, detail="Cần chọn object mã hợp lệ.")
+    pdf_path, _original_name = _resolve_vdp_template_file(req.fid)
+    try:
+        return await run_in_threadpool(
+            detect_vdp_object_type,
+            pdf_path=pdf_path,
+            page_index=req.page,
+            draw_indices=req.drawIndices,
+        )
+    except (FileNotFoundError, IndexError, ValueError) as exc:
+        logger.info("detect_vdp_object bị từ chối: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Không thể nhận diện đối tượng mã: {exc}")
+    except Exception:
+        logger.exception("detect_vdp_object thất bại")
+        raise HTTPException(status_code=400, detail="Không thể nhận diện đối tượng mã.")
 
 
 @router.post("/auto-detect-tags")
@@ -1434,3 +1545,41 @@ async def vdp_auto_detect_tags(
         "working_pdf_path": cleaned_path if req.removeOriginal else None,
         "artifact_lease": artifact_lease,
     }
+
+
+@router.get("/font-file")
+async def get_vdp_font_file(path: str):
+    """Phục vụ file font cục bộ (.ttf, .otf, .ttc) cho frontend với CORS header đầy đủ.
+    Được bảo vệ chống path traversal và chỉ cho phép đọc file font hợp lệ."""
+    if not path:
+        raise HTTPException(status_code=400, detail="Thiếu đường dẫn font")
+    norm_path = os.path.normpath(path)
+    if not os.path.isfile(norm_path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy file font")
+
+    ext = os.path.splitext(norm_path)[1].lower()
+    if ext not in (".ttf", ".otf", ".ttc"):
+        raise HTTPException(status_code=400, detail="Định dạng font không được phép")
+
+    safe_prefixes = [
+        os.path.normpath(os.path.join(tempfile.gettempdir(), "PrynX-dev", "vdp_fonts")),
+        os.path.normpath(os.path.expanduser("~/.prynx/fonts")),
+        os.path.normpath(os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")),
+        os.path.normpath(os.path.expanduser("~/AppData/Local/Microsoft/Windows/Fonts")),
+        os.path.normpath(r"C:\Program Files\Common Files\Adobe\Fonts"),
+        os.path.normpath(r"C:\Program Files (x86)\Common Files\Adobe\Fonts"),
+    ]
+    is_safe = any(norm_path.lower().startswith(p.lower()) for p in safe_prefixes)
+    if not is_safe:
+        raise HTTPException(status_code=403, detail="Đường dẫn font ngoài phạm vi cho phép")
+
+    media_type = "font/otf" if ext == ".otf" else "font/ttf"
+    return FileResponse(
+        norm_path,
+        media_type=media_type,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+

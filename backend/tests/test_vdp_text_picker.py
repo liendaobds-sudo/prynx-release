@@ -47,6 +47,8 @@ def test_pick_text_to_vdp_field(sample_vdp_pdf, tmp_path):
     assert "Giam_doc" in field["name"] or "Chuc_vu" in field["name"]
     assert field["fontSize"] == 11.0 or field["fontSize"] == 11
     assert field["fontColor"].upper() == "#008800"
+    assert field.get("fontStyle") == "bold"
+    assert field.get("fontWeight") == 700
     assert field["x"] > 0
     assert field["y"] > 0
     assert field["width"] > 0
@@ -249,3 +251,231 @@ def test_vdp_engine_font_resolver_and_registration():
     assert any("Arial" in bf for bf in base_fonts)
 
 
+def test_pick_text_with_stroke_and_shadow(tmp_path):
+    out_pdf = str(tmp_path / "cleaned_effect.pdf")
+    pdf_path = str(tmp_path / "card_with_effects.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(300, 200))
+    # Layer 1: Shadow text bên dưới (x=41, y=99, màu xám)
+    c.setFont("Helvetica-Bold", 16)
+    c.setFillColor(HexColor("#333333"))
+    c.drawString(41, 99, "GIAM DOC")
+    # Layer 2: Main text viền nét (x=40, y=100, màu đỏ, viền xanh)
+    c.setFillColor(HexColor("#FF0000"))
+    c.setStrokeColor(HexColor("#0000FF"))
+    c.setLineWidth(1.5)
+    t = c.beginText(40, 100)
+    t.setFont("Helvetica-Bold", 16)
+    t.setTextRenderMode(2)  # fill and stroke
+    t.textOut("GIAM DOC")
+    c.drawText(t)
+    c.save()
+
+    metas = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    assert len(metas) >= 2
+    # Chọn text object chính
+    main_obj = metas[-1]
+    res = pick_text_to_vdp_field(
+        pdf_path=pdf_path,
+        page_index=0,
+        draw_index=main_obj.drawIndex,
+        remove_original=True,
+        output_path=out_pdf,
+    )
+
+    assert res["success"] is True
+    f = res["field"]
+    assert "GIAM_DOC" in f["name"] or "GIAM" in f["name"]
+    # Kiểm tra stroke properties được trích xuất
+    if f.get("strokeColor"):
+        assert f["strokeColor"].upper() == "#0000FF"
+        assert f.get("strokeWidth") is not None and f["strokeWidth"] > 0
+    # Kiểm tra shadow text được dọn dẹp khỏi file mẫu sạch (không để hiệu ứng nằm lại)
+    assert os.path.isfile(out_pdf)
+    cleaned_metas = geometry_reader.list_objects(out_pdf, 0, include_text_props=True)
+    cleaned_contents = [m.content for m in cleaned_metas if m.content]
+    assert not any("GIAM DOC" in text for text in cleaned_contents)
+
+
+def test_pick_text_with_vector_outline_paths(tmp_path):
+    out_pdf = str(tmp_path / "cleaned_vector_outline.pdf")
+    pdf_path = str(tmp_path / "card_with_vector_outlines.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(300, 200))
+    # Layer 1: Vector outline paths bên dưới (mô phỏng Illustrator xuất vector paths)
+    c.setStrokeColor(HexColor("#CFEDFB"))
+    c.setLineWidth(1.0)
+    c.setLineJoin(1)  # Round join
+    c.setLineCap(1)   # Round cap
+    # Vẽ vài vector paths quanh text
+    p = c.beginPath()
+    p.moveTo(50, 100)
+    p.lineTo(60, 115)
+    p.lineTo(70, 100)
+    c.drawPath(p, stroke=1, fill=0)
+
+    # Layer 2: Main text
+    c.setFillColor(HexColor("#005992"))
+    t = c.beginText(50, 100)
+    t.setFont("Helvetica-Bold", 14)
+    t.textOut("Nguyen Le Tuyet Mai")
+    c.drawText(t)
+    c.save()
+
+    metas = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    text_objs = [m for m in metas if m.type == "text"]
+    assert len(text_objs) >= 1
+    target = text_objs[0]
+
+    res = pick_text_to_vdp_field(
+        pdf_path=pdf_path,
+        page_index=0,
+        draw_index=target.drawIndex,
+        remove_original=True,
+        output_path=out_pdf,
+    )
+
+    assert res["success"] is True
+    f = res["field"]
+    assert f.get("strokeColor") is not None
+    assert f.get("strokeLineJoin") == "round"
+    assert f.get("strokeLineCap") == "round"
+    # Cả vector path và text đều được dọn sạch khỏi file phôi
+    assert os.path.isfile(out_pdf)
+    cleaned_metas = geometry_reader.list_objects(out_pdf, 0, include_text_props=True)
+    assert not any(m.type == "text" for m in cleaned_metas)
+    assert not any(m.type == "vector" for m in cleaned_metas)
+
+
+def test_pick_fill_only_text_no_stroke(tmp_path):
+    """Kiểm tra chữ fill-only (renderMode=0) tuyệt đối không bị gán stroke viền đen mặc định của graphics state."""
+    pdf_path = str(tmp_path / "fill_only_text.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(300, 200))
+    c.setFillColor(HexColor("#005992"))
+    t = c.beginText(50, 100)
+    t.setFont("Helvetica", 12)
+    t.textOut("Tran trong!")
+    c.drawText(t)
+    c.save()
+
+    metas = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    target = [m for m in metas if m.type == "text"][0]
+
+    # Kiểm tra geometry_reader không gán stroke
+    assert target.strokeColor is None
+    assert target.strokeWidth is None
+
+    # Kiểm tra pick_text_to_vdp_field không tạo stroke
+    res = pick_text_to_vdp_field(pdf_path, 0, target.drawIndex, remove_original=False)
+    f = res["field"]
+    assert f.get("strokeColor") is None
+    assert f.get("strokeWidth") is None
+
+
+def test_pick_multiline_cluster_with_newlines_and_spaces(tmp_path):
+    """Kiểm tra cụm text gồm nhiều đối tượng trên các dòng khác nhau được nối bằng newline và khoảng trắng, không dính chuỗi."""
+    pdf_path = str(tmp_path / "multiline_cluster.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(300, 300))
+    c.setFillColor(HexColor("#005992"))
+
+    # Line 1: Word 1 and Word 2
+    t1 = c.beginText(50, 150)
+    t1.setFont("Helvetica", 12)
+    t1.textOut("Tran")
+    c.drawText(t1)
+
+    t2 = c.beginText(90, 150)
+    t2.setFont("Helvetica", 12)
+    t2.textOut("trong!")
+    c.drawText(t2)
+
+    # Line 2: Giam doc
+    t3 = c.beginText(50, 100)
+    t3.setFont("Helvetica", 12)
+    t3.textOut("Giam doc")
+    c.drawText(t3)
+    c.save()
+
+    metas = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    text_objs = [m for m in metas if m.type == "text"]
+    assert len(text_objs) == 3
+
+    member_indices = [m.drawIndex for m in text_objs]
+    res = pick_text_to_vdp_field(
+        pdf_path, 0, text_objs[0].drawIndex, remove_original=False, member_draw_indices=member_indices
+    )
+    f = res["field"]
+    # Kiểm tra line 1 có khoảng trắng giữa 'Tran' và 'trong!'
+    # và line 2 được ngăn cách bằng '\n', KHÔNG bị nối dính thành 'Trantrong!Giam doc'
+    lines = f["textContent"].split("\n")
+    assert len(lines) == 2
+    assert lines[0] == "Tran trong!"
+    assert lines[1] == "Giam doc"
+
+
+def test_wrap_cff_to_otf_ots_compliance():
+    """Kiểm tra font OTF sinh ra từ CFF stream tuân thủ 100% chuẩn OpenType Sanitizer (OTS) của Chromium."""
+    import glob
+    from fontTools.ttLib import TTFont
+    from app.workers.vdp_text_picker import wrap_cff_to_otf, _extract_embedded_font_from_pdf
+    
+    # Tìm file PDF mẫu nếu có trong Temp
+    pdfs = glob.glob(os.path.expanduser(r"~\AppData\Local\Temp\*CMNM*.pdf"))
+    if not pdfs:
+        pytest.skip("Không có file CMNM PDF mẫu trong Temp")
+    
+    pdf_path = pdfs[0]
+    extracted_font = _extract_embedded_font_from_pdf(pdf_path, 0, "SVN-Gilroy", content="tầng 2,")
+    assert extracted_font is not None
+    assert os.path.isfile(extracted_font)
+    assert extracted_font.endswith(".otf")
+    
+    tt = TTFont(extracted_font)
+    os2 = tt["OS/2"]
+    # OTS yêu cầu: usWinAscent và usWinDescent KHÔNG được đồng thời bằng 0
+    assert os2.usWinAscent > 0
+    assert os2.usWinDescent > 0
+    # OTS yêu cầu: fsType == 0 (Installable) để không bị trình duyệt chặn webfont
+    assert os2.fsType == 0
+    assert os2.achVendID in ("PRYN", b"PRYN")
+    
+    # Bảng name phải có fullName (nameID 4) và uniqueFontIdentifier (nameID 3)
+    name_dict = {rec.nameID: rec.toUnicode() for rec in tt["name"].names if rec.platformID == 3}
+    assert 4 in name_dict
+    assert "SVN-Gilroy" in name_dict[4]
+    assert 3 in name_dict
+    
+    # Cmap phải nhận diện uni1EA7 (ầ), a, 2, g
+    cmap = tt.getBestCmap()
+    assert ord("a") in cmap
+    assert ord("2") in cmap
+    assert ord("g") in cmap
+    assert 0x1EA7 in cmap  # ầ
+
+
+def test_pick_rotated_vertical_text(tmp_path):
+    """Kiểm tra chọn text xoay dọc (90 độ theo chiều kim đồng hồ) trích xuất đúng rotation=90, layout dọc."""
+    pdf_path = str(tmp_path / "rotated_sample.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(200, 200))
+    # ReportLab rotate(-90) hoặc rotate(270) tương đương 90° clockwise trong PDF:
+    c.saveState()
+    c.translate(50, 150)
+    c.rotate(-90)
+    c.setFont("Helvetica", 10)
+    c.setFillColor(HexColor("#112233"))
+    c.drawString(0, 0, "R.2512HX-SP.1000.10-402.1")
+    c.restoreState()
+    c.save()
+
+    objs = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    text_objs = [o for o in objs if o.type == "text"]
+    assert len(text_objs) >= 1
+
+    target = text_objs[0]
+    res = pick_text_to_vdp_field(pdf_path, 0, target.drawIndex, remove_original=False)
+    assert res["success"] is True
+    f = res["field"]
+    assert f["rotation"] == 90
+    assert f["alignment"] == "left"
+    # Khung dọc: chiều cao (height) dọc theo dòng chữ phải dài hơn bề ngang (width) của con chữ
+    assert f["height"] > f["width"]
+    assert "2512HX" in f["textContent"]
+    assert f["fontColor"].upper() == "#112233"

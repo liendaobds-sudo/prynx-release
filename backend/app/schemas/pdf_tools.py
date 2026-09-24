@@ -89,3 +89,22 @@ class WarmupResponse(BaseModel):
     """
 
     ok: bool
+
+
+class DownsampleImageResponse(BaseModel):
+    """Kết quả `POST /api/pdf-tools/downsample-image`."""
+
+    success: bool
+    output_path: str
+    filename: Optional[str] = None
+    pdf_path: Optional[str] = None
+    pdf_filename: Optional[str] = None
+    original_size: list[int]
+    resampled_size: list[int]
+    original_dpi: Optional[float] = None
+    resampled_dpi: float
+    file_size_mb: float
+    format: str
+    has_icc: bool = False
+    message: Optional[str] = None
+

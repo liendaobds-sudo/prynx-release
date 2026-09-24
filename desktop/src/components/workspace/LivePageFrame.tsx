@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
-import { localFileUrl } from '../../lib/localFileTransport';
-import { authenticatedFetch, getApiUrl, getSystemFonts, pickVdpTextField } from '../../lib/api';
+import { localFileUrl, resolveFontUrl } from '../../lib/localFileTransport';
+import { authenticatedFetch, getApiUrl, getSystemFonts, pickVdpTextField, pickVdpObjectField, detectVdpObjectType } from '../../lib/api';
+import { clusterBarcodeBars, type VdpPickerObject, type VdpPickerObjectType } from './VdpCodePicker.geometry';
 import { toast } from '../ui/Toast';
 import { adjustCropRegion, cropDragToFrac, cropFracToPixels, type CropAdjustMode, type CropRegionFrac } from '../../lib/cropGeometry';
 import {
@@ -162,6 +163,10 @@ interface EditCanvasObj {
     content?: string; // nội dung text gốc (type='text') để điền sẵn editor
     color?: number[]; // màu tô RGB 0..255 (type='text') để editor khớp màu gốc
     fontName?: string; // tên font gốc (BaseFont) để gợi ý/khớp font hệ thống
+    strokeColor?: number[];
+    strokeWidth?: number;
+    strokeLineJoin?: string;
+    strokeLineCap?: string;
 }
 
 function isNonPaintingPointTextObject(obj: { type?: unknown; bbox?: unknown } | null | undefined): boolean {
@@ -1492,7 +1497,7 @@ type BufferedViewportPanGridPlan = {
     outer: BufferedViewportTileSpec[];
 };
 
-const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false }: TileLayerProps) => {
+export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false }: TileLayerProps) => {
     const traceLayerIdRef = useRef(
         viewerTraceHash(`layer:${pageInstanceId || 'page'}:${pageNum}`),
     );
@@ -2061,10 +2066,24 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
     // Backend render fontSize ở pt THẬT, nhưng khung dùng đơn vị CSS (×96/72). Để preview
     // khớp output, cỡ chữ trên màn = fontSize(pt) × scale × (96/72). scale = displayWidth/pageDim.w.
     const fontPx = (field.fontSize || 10) * scale * (96 / 72);
+    // Khi field xoay dọc (90° hoặc 270°), container bên trong (rotStyle) có kích thước
+    // hoán đổi width ↔ height. Cần dùng effBoxW = field.height để đo bề rộng khả dụng
+    // dọc theo baseline của dòng chữ, tránh autoFit bóp dẹt chữ theo bề ngang khung dọc.
+    const rot = ((Number(field.rotation) || 0) % 360 + 360) % 360;
+    const isVert = rot === 90 || rot === 270;
+    const effBoxW = isVert ? (field.height ?? 0) : (field.width ?? 0);
+    const effBoxH = isVert ? (field.width ?? 0) : (field.height ?? 0);
+    const boxWPx = Math.max(1, (effBoxW / 25.4 * 72) * scale);
+    const boxHPx = Math.max(1, (effBoxH / 25.4 * 72) * scale);
+    // [VDP BASELINE PARITY] Khoảng cách từ đỉnh khung tới baseline: (boxH + fontPx) / 2.
+    // SVG text với dominantBaseline="alphabetic" neo đường chân chữ (baseline) chính xác 100%
+    // tại toạ độ y này, khớp tuyệt đối 1:1 với dòng kẻ và chữ gốc trên phôi in PDF.
+    const baselineY = (boxHPx + fontPx) / 2;
+
     const [scaleX, setScaleX] = useState<number>(1);
     const [naturalWidth, setNaturalWidth] = useState<number>(0);
     const [availWidth, setAvailWidth] = useState<number>(0);
-    const align = (field.alignment || 'center') as 'left' | 'center' | 'right';
+    const align = (field.alignment || (isVert ? 'left' : 'center')) as 'left' | 'center' | 'right';
 
     useLayoutEffect(() => {
         // Cần đồng bộ ngay sau layout để preview chữ không lóe sai tỷ lệ.
@@ -2079,26 +2098,45 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
         const measureEl = measureRef.current;
         // Đo bề rộng tự nhiên qua measureEl (inline-block với white-space: pre)
         const natural = measureEl ? measureEl.offsetWidth : el.scrollWidth;
-        const avail = el.clientWidth;
+        const avail = boxWPx || el.clientWidth;
         setNaturalWidth(natural);
         setAvailWidth(avail);
-        const sx = natural > avail && natural > 0 ? Math.max(0.05, avail / natural) : 1;
+        const sx = natural > (avail + 1.0) && natural > 0 ? Math.max(0.05, avail / natural) : 1;
         setScaleX(sx);
 
-        if (typeof document !== 'undefined' && document.fonts && field.fontFile) {
+        if (typeof document !== 'undefined' && document.fonts && (field.fontFile || field.fontDataUrl)) {
+            const fontUrl = resolveFontUrl(field.fontFile, field.fontDataUrl);
+            if (fontUrl && field.fontName) {
+                try {
+                    const clean = field.fontName.replace(/^[A-Z]{6}\+/, '');
+                    const ff = new FontFace(`${field.fontName}_local`, `url("${fontUrl}")`);
+                    ff.load().then((loaded) => {
+                        document.fonts.add(loaded);
+                        if (clean && clean !== field.fontName) {
+                            try {
+                                document.fonts.add(new FontFace(`${clean}_local`, `url("${fontUrl}")`));
+                            } catch {
+                                // Ignore duplicate
+                            }
+                        }
+                    }).catch(() => {});
+                } catch {
+                    // FontFace constructor fallback
+                }
+            }
             document.fonts.ready.then(() => {
                 const el2 = containerRef.current;
                 if (!el2) return;
                 const measureEl2 = measureRef.current;
                 const nat = measureEl2 ? measureEl2.offsetWidth : el2.scrollWidth;
-                const av = el2.clientWidth;
+                const av = boxWPx || el2.clientWidth;
                 setNaturalWidth(nat);
                 setAvailWidth(av);
-                const sx2 = nat > av && nat > 0 ? Math.max(0.05, av / nat) : 1;
+                const sx2 = nat > (av + 1.0) && nat > 0 ? Math.max(0.05, av / nat) : 1;
                 setScaleX(sx2);
             });
         }
-    }, [text, fontPx, field.width, field.height, field.autoFit, field.fontName, field.fontFile, field.fontStyle, field.lineHeight, align]);
+    }, [text, fontPx, boxWPx, field.width, field.height, field.rotation, field.autoFit, field.fontName, field.fontFile, field.fontDataUrl, field.fontStyle, field.lineHeight, align]);
 
     // UIUX (audit 2026-09-21 §VDPALIGN21.01):
     // Khi autoFit co ngang (scaleX < 1), cần neo vị trí khối chữ theo đúng bề rộng tự nhiên:
@@ -2107,64 +2145,101 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
     // - align='right': căn phải bằng marginLeft = avail - natural, sau đó co quanh mép phải
     //   -> mép phải chạm chính xác mép phải khung.
     // - align='left': marginLeft = 0, co quanh mép trái.
-    const isScaled = field.autoFit !== false && scaleX < 1 && naturalWidth > 0 && availWidth > 0;
+    const isScaled = field.autoFit !== false && scaleX < 1 && naturalWidth > (availWidth + 1.0) && availWidth > 0;
     const origin = align === 'center' ? 'center center' : align === 'right' ? 'right center' : 'left center';
     const computedMarginLeft = isScaled
         ? (align === 'center' ? `${(availWidth - naturalWidth) / 2}px` : align === 'right' ? `${availWidth - naturalWidth}px` : '0px')
         : '0px';
 
-    // Bù baseline ReportLab vs CSS em-box (khoảng 0.22 fontPx) để chân chữ khớp chính xác vị trí dòng kẻ phôi in
-    const baselineShift = fontPx * 0.22;
-    const transformStyle = isScaled
-        ? `translateY(${baselineShift}px) scaleX(${scaleX})`
-        : `translateY(${baselineShift}px)`;
+    const transformStyle = isScaled ? `scaleX(${scaleX})` : undefined;
+
+    const cleanFontName = field.fontName?.replace(/^[A-Z]{6}\+/, '') || '';
+    const cleanFontFamily = cleanFontName.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '');
+    const hasCustomFont = Boolean(field.fontFile || field.fontDataUrl);
+    const fontFamily = hasCustomFont
+        ? `"${field.fontName}_local", "${cleanFontName}_local", "${cleanFontFamily}", "${cleanFontName}", "${field.fontName}", sans-serif`
+        : (field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${cleanFontFamily}", "${cleanFontName}", "${field.fontName}", sans-serif` : 'inherit'));
+
+    const hasStroke = Boolean(field.strokeColor && field.strokeWidth && field.strokeWidth > 0);
 
     return (
         <span
             ref={containerRef}
-            className="w-full h-full overflow-visible select-none"
+            className="w-full h-full overflow-visible select-none relative"
             style={{
-                display: 'flex',
-                alignItems: 'center',
+                display: 'block',
                 userSelect: 'none',
                 WebkitUserSelect: 'none',
             }}
         >
+            {/* Luôn đo bề rộng tự nhiên của text qua measureRef */}
             <span
-                className="whitespace-pre select-none"
+                ref={measureRef}
+                className="select-none"
+                style={{
+                    position: 'absolute',
+                    visibility: 'hidden',
+                    whiteSpace: 'pre',
+                    fontSize: `${fontPx}px`,
+                    fontFamily,
+                    fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
+                    fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
+                    pointerEvents: 'none',
+                }}
+            >
+                {text}
+            </span>
+
+            <svg
+                className="select-none overflow-visible"
                 style={{
                     display: 'block',
                     width: isScaled ? `${naturalWidth}px` : '100%',
+                    height: '100%',
                     marginLeft: computedMarginLeft,
                     flexShrink: 0,
-                    color: field.fontColor || '#1e293b',
-                    fontSize: `${fontPx}px`,
-                    fontFamily: field.fontFile
-                        ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
-                        : (field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit')),
-                    fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
-                    fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
-                    lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
-                    letterSpacing: 0,
-                    textAlign: align,
                     transform: transformStyle,
                     transformOrigin: origin,
                     userSelect: 'none',
                     WebkitUserSelect: 'none',
+                    pointerEvents: 'none',
+                    overflow: 'visible',
+                    filter: field.shadowColor
+                        ? `drop-shadow(${(field.shadowOffsetX ?? 1) * scale * (96 / 72)}px ${(field.shadowOffsetY ?? 1) * scale * (96 / 72)}px ${(field.shadowBlur ?? 0) * scale * (96 / 72)}px ${field.shadowColor})`
+                        : undefined,
                 }}
             >
-                <span ref={measureRef} style={{ display: 'inline-block', userSelect: 'none', WebkitUserSelect: 'none' }} className="select-none">
+                <text
+                    x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
+                    y={baselineY}
+                    dominantBaseline="alphabetic"
+                    textAnchor={align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start'}
+                    fill={field.fontColor || '#1e293b'}
+                    stroke={hasStroke ? field.strokeColor : undefined}
+                    strokeWidth={hasStroke ? Math.max(0.5, (field.strokeWidth || 0.75) * scale * (96 / 72) * 2) : undefined}
+                    strokeLinejoin={(field.strokeLineJoin as any) || 'round'}
+                    strokeLinecap={(field.strokeLineCap as any) || 'round'}
+                    paintOrder="stroke fill"
+                    fontSize={`${fontPx}px`}
+                    fontFamily={fontFamily}
+                    fontWeight={field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal'}
+                    fontStyle={field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal'}
+                >
                     {text}
-                </span>
-            </span>
+                </text>
+            </svg>
         </span>
     );
 };
 
 const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: number; text: string }) => {
     const rawFontPx = (field.fontSize || 10) * scale * (96 / 72);
-    const boxW = Math.max(1, ((field.width ?? 0) / 25.4 * 72) * scale);
-    const boxH = Math.max(1, ((field.height ?? 0) / 25.4 * 72) * scale);
+    const rot = ((Number(field.rotation) || 0) % 360 + 360) % 360;
+    const isVert = rot === 90 || rot === 270;
+    const effBoxW = isVert ? (field.height ?? 0) : (field.width ?? 0);
+    const effBoxH = isVert ? (field.width ?? 0) : (field.height ?? 0);
+    const boxW = Math.max(1, (effBoxW / 25.4 * 72) * scale);
+    const boxH = Math.max(1, (effBoxH / 25.4 * 72) * scale);
 
     const mode = field.curveMode || 'arc_bottom';
     const isWave = mode === 'wave';
@@ -2276,15 +2351,18 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     const pathId = `curved-path-${field.id}-${curveKey}`;
 
     const tracking = field.curveTracking ? `${field.curveTracking * scale * (96 / 72)}px` : 'normal';
-    const fontFamily = field.fontFile
-        ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
+    const cleanFontNameCurved = field.fontName?.replace(/^[A-Z]{6}\+/, '') || '';
+    const cleanFontFamilyCurved = cleanFontNameCurved.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '');
+    const hasCustomFontCurved = Boolean(field.fontFile || field.fontDataUrl);
+    const fontFamily = hasCustomFontCurved
+        ? `"${field.fontName}_local", "${cleanFontNameCurved}_local", "${cleanFontFamilyCurved}", "${cleanFontNameCurved}", "${field.fontName}", sans-serif`
         : (field.fontName === 'Helvetica'
         ? 'Arial, sans-serif'
         : field.fontName === 'Times-Roman'
         ? '"Times New Roman", serif'
         : field.fontName === 'Courier'
         ? 'Courier, monospace'
-        : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit'));
+        : (field.fontName ? `"${cleanFontFamilyCurved}", "${cleanFontNameCurved}", "${field.fontName}", sans-serif` : 'inherit'));
     const fontWeight = field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal';
     const fontStyle = field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal';
 
@@ -2307,6 +2385,11 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
             <text
                 key={pathId}
                 fill={field.fontColor || '#1e293b'}
+                stroke={field.strokeColor}
+                strokeWidth={field.strokeColor && field.strokeWidth ? Math.max(0.5, field.strokeWidth * scale * (96 / 72) * 2) : undefined}
+                strokeLinejoin={(field.strokeLineJoin as any) || 'round'}
+                strokeLinecap={(field.strokeLineCap as any) || 'round'}
+                paintOrder="stroke fill"
                 fontSize={`${effectiveFontPx}px`}
                 fontFamily={fontFamily}
                 fontWeight={fontWeight}
@@ -3070,14 +3153,21 @@ export const LivePageFrame = (props: any) => {
         setIsVdpPickBusy(true);
         try {
             const pageIdx = originalPageNum - 1;
-            const res = await pickVdpTextField(fidToUse, pageIdx, obj.drawIndex, true);
+            const memberDrawIndices = clusterMemberIds && clusterMemberIds.length > 0
+                ? clusterMemberIds
+                    .map(id => editObjects.find(o => o.id === id)?.drawIndex)
+                    .filter((idx): idx is number => typeof idx === 'number')
+                : [obj.drawIndex];
+
+            const res = await pickVdpTextField(fidToUse, pageIdx, obj.drawIndex, true, memberDrawIndices);
             if (res.success && res.field) {
-                // 1. Đánh dấu đã bóc tách toàn bộ các ký tự thuộc cụm chữ này
-                const idsToRemove = clusterMemberIds && clusterMemberIds.length > 0
-                    ? clusterMemberIds
-                    : (res.removedDrawIndices && Array.isArray(res.removedDrawIndices)
-                        ? res.removedDrawIndices.map((idx: number) => `text-${idx}`)
-                        : [obj.id]);
+                // 1. Đánh dấu đã bóc tách toàn bộ các ký tự và object hiệu ứng thuộc cụm này
+                const idsToRemove = res.removedDrawIndices && Array.isArray(res.removedDrawIndices)
+                    ? res.removedDrawIndices.map((idx: number) => {
+                        const found = editObjects.find(o => o.drawIndex === idx);
+                        return found ? found.id : `text-${idx}`;
+                    })
+                    : (clusterMemberIds || [obj.id]);
                 setPickedTextIds(prev => [...new Set([...prev, ...idsToRemove, obj.id])]);
 
                 // 2. Thêm vào vdpFields của workspace store (tránh trùng lặp)
@@ -3109,6 +3199,8 @@ export const LivePageFrame = (props: any) => {
                 if (res.working_fid && res.working_pdf_url) {
                     window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
                         detail: {
+                            tabId,
+                            sourceFid: fidToUse,
                             workingFid: res.working_fid,
                             workingPdfUrl: res.working_pdf_url,
                             workingPdfPath: res.working_pdf_path,
@@ -3119,6 +3211,112 @@ export const LivePageFrame = (props: any) => {
         } catch (err: any) {
             console.error('Lỗi khi chọn trường VDP:', err);
             toast.error(err.message || 'Lỗi khi trích xuất chữ');
+        } finally {
+            isVdpPickBusyRef.current = false;
+            setIsVdpPickBusy(false);
+        }
+    };
+
+    const handlePickCodeObject = async (
+        obj: { id: string; drawIndex: number; memberDrawIndices?: readonly number[] },
+        memberDrawIndices?: readonly number[],
+        hintType?: 'qrcode' | 'barcode',
+        hintBarcodeType?: string,
+    ) => {
+        if (isVdpPickBusyRef.current) return;
+        const fidToUse = effectiveFid;
+        if (!fidToUse) {
+            toast.error(t('Chưa xác định được file mẫu'));
+            return;
+        }
+        isVdpPickBusyRef.current = true;
+        setIsVdpPickBusy(true);
+        try {
+            const pageIdx = originalPageNum - 1;
+            const drawIndices: number[] = memberDrawIndices && memberDrawIndices.length > 0
+                ? [...memberDrawIndices]
+                : (obj.memberDrawIndices && obj.memberDrawIndices.length > 0
+                    ? [...obj.memberDrawIndices]
+                    : [obj.drawIndex]);
+
+            // 1. Thử nhận diện loại mã chính xác qua backend OpenCV (QR code hoặc Barcode)
+            let fieldType: 'qrcode' | 'barcode' = hintType || 'qrcode';
+            let barcodeType: string | undefined = hintBarcodeType;
+
+            try {
+                const detectRes = await detectVdpObjectType(fidToUse, pageIdx, drawIndices);
+                if (detectRes && detectRes.fieldType) {
+                    fieldType = detectRes.fieldType;
+                    if (detectRes.barcodeType) {
+                        barcodeType = detectRes.barcodeType;
+                    }
+                }
+            } catch (detectErr) {
+                console.warn('Không thể tự động nhận diện loại mã, dùng ước lượng hình học:', detectErr);
+            }
+
+            // 2. Gọi API bóc tách đối tượng mã thành trường VDP
+            const res = await pickVdpObjectField({
+                fid: fidToUse,
+                page: pageIdx,
+                drawIndices,
+                fieldType,
+                barcodeType: fieldType === 'barcode' ? (barcodeType || 'code128') : undefined,
+                removeOriginal: true,
+            });
+
+            if (res.success && res.field) {
+                // 3. Đánh dấu đã bóc tách toàn bộ các object thành viên
+                const idsToRemove = res.removedDrawIndices && Array.isArray(res.removedDrawIndices)
+                    ? res.removedDrawIndices.map((idx: number) => {
+                        const found = editObjects.find(o => o.drawIndex === idx);
+                        return found ? found.id : `code-${idx}`;
+                    })
+                    : (memberDrawIndices ? memberDrawIndices.map(idx => `code-${idx}`) : [obj.id]);
+                setPickedTextIds(prev => [...new Set([...prev, ...idsToRemove, obj.id])]);
+
+                // 4. Thêm vào vdpFields của workspace store
+                const newField = res.field;
+                const addFieldSafely = (prevList: any[]) => {
+                    const arr = Array.isArray(prevList) ? prevList : [];
+                    if (arr.some((f: any) => f.id === newField.id || (f.name === newField.name && f.x === newField.x && f.y === newField.y))) {
+                        return arr;
+                    }
+                    return [...arr, newField];
+                };
+
+                if (typeof setVdpFields === 'function') {
+                    setVdpFields(addFieldSafely as any);
+                } else if (onVdpFieldsChange) {
+                    onVdpFieldsChange(addFieldSafely as any);
+                }
+
+                // 5. Chọn trường VDP mới
+                if (typeof setSelectedVdpFieldIds === 'function') {
+                    setSelectedVdpFieldIds([newField.id]);
+                }
+
+                const kindName = newField.type === 'qrcode' ? 'mã QR' : 'mã vạch';
+                toast.success(t('Đã thêm trường {{kind}} "{{name}}". Tiếp tục chọn hoặc bấm Xong.', {
+                    kind: kindName,
+                    name: newField.name,
+                }));
+
+                if (res.working_fid && res.working_pdf_url) {
+                    window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
+                        detail: {
+                            tabId,
+                            sourceFid: fidToUse,
+                            workingFid: res.working_fid,
+                            workingPdfUrl: res.working_pdf_url,
+                            workingPdfPath: res.working_pdf_path,
+                        }
+                    }));
+                }
+            }
+        } catch (err: any) {
+            console.error('Lỗi khi chọn trường mã VDP:', err);
+            toast.error(err.message || 'Lỗi khi trích xuất mã');
         } finally {
             isVdpPickBusyRef.current = false;
             setIsVdpPickBusy(false);
@@ -3203,14 +3401,17 @@ export const LivePageFrame = (props: any) => {
     // Khi file mẫu được làm sạch sau khi bóc trường VDP (vdp-template-cleaned),
     // xoá cache editObjects cũ, dọn pickedTextIds và tăng editObjectsVersion để nạp lại đối tượng của file mới.
     useEffect(() => {
-        const handleTemplateCleaned = () => {
+        const handleTemplateCleaned = (event: Event) => {
+            const detail = (event as CustomEvent)?.detail;
+            if (detail?.tabId && tabId && detail.tabId !== tabId) return;
+            if (detail?.sourceFid && effectiveFid && detail.sourceFid !== effectiveFid) return;
             clearEditObjectsCache();
             setPickedTextIds([]);
             setEditObjectsVersion(v => v + 1);
         };
         window.addEventListener('vdp-template-cleaned', handleTemplateCleaned);
         return () => window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
-    }, []);
+    }, [tabId, effectiveFid]);
 
     // apply/undo/redo sống ở hook cấp Viewer, nên frame cần một tín hiệu chung để
     // bỏ cache và nạp lại danh sách Thành phần từ đúng Live_Document hiện tại.
@@ -3397,7 +3598,7 @@ export const LivePageFrame = (props: any) => {
             return;
         }
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
-        const cacheKey = `${effectiveFid}:${pageIndex}`;
+        const cacheKey = `${tabId || 'default'}:${effectiveFid}:${pageIndex}`;
 
         // Cache-hit → dùng ngay, KHÔNG fetch lại (bật/tắt chế độ không tải lại).
         // Sau transform, cache bị clear (pdfUrl/fid đổi) nên thường miss; nếu hit
@@ -3454,6 +3655,10 @@ export const LivePageFrame = (props: any) => {
                         content: o.content ?? undefined,
                         color: Array.isArray(o.color) ? o.color : undefined,
                         fontName: o.fontName ?? undefined,
+                        strokeColor: Array.isArray(o.strokeColor) ? o.strokeColor : undefined,
+                        strokeWidth: typeof o.strokeWidth === 'number' ? o.strokeWidth : undefined,
+                        strokeLineJoin: typeof o.strokeLineJoin === 'string' ? o.strokeLineJoin : undefined,
+                        strokeLineCap: typeof o.strokeLineCap === 'string' ? o.strokeLineCap : undefined,
                     };
                 });
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
@@ -5061,7 +5266,7 @@ export const LivePageFrame = (props: any) => {
         }));
 
         // Đồng bộ cache _editObjectsCache
-        const cacheKey = `${effectiveFid}:${pageIndex}`;
+        const cacheKey = `${tabId || 'default'}:${effectiveFid}:${pageIndex}`;
         const cachedObjs = _editObjectsCache.get(cacheKey);
         if (cachedObjs) {
             const updated = cachedObjs.map((item) => {
@@ -5481,18 +5686,21 @@ export const LivePageFrame = (props: any) => {
         <>
         {/* Inject dynamic fonts for VDP */}
         {vdpFields?.map((field: VdpToolField, idx: number) => {
-            if (!field.fontFile || !field.fontName) return null;
+            const fontUrl = resolveFontUrl(field.fontFile, field.fontDataUrl);
+            if (!fontUrl || !field.fontName) return null;
             const cleanName = field.fontName.replace(/^[A-Z]{6}\+/, '');
+            const isOtf = field.fontFile?.toLowerCase().endsWith('.otf') || fontUrl.startsWith('data:font/otf');
+            const formatStr = isOtf ? 'format("opentype")' : 'format("truetype")';
             return (
                 <style key={`vdp-font-${field.id || idx}`}>{`
                     @font-face {
                         font-family: "${field.fontName}_local";
-                        src: url("${localFileUrl(field.fontFile)}");
+                        src: url("${fontUrl}") ${formatStr};
                     }
                     ${cleanName !== field.fontName ? `
                     @font-face {
                         font-family: "${cleanName}_local";
-                        src: url("${localFileUrl(field.fontFile)}");
+                        src: url("${fontUrl}") ${formatStr};
                     }
                     ` : ''}
                 `}</style>
@@ -6834,38 +7042,102 @@ export const LivePageFrame = (props: any) => {
              })()}
 
 
-             {/* VDP Text Picker Overlay (Click-to-Convert Text from Design) */}
+             {/* VDP Text & Code Picker Overlay (Click-to-Convert Text / QR / Barcode from Design) */}
              {isPickingVdpText && pageDim && (() => {
                  const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
-                 const textObjs = editObjects.filter((o) => o.type === 'text' && !hiddenObjectIds.includes(o.id) && !pickedTextIds.includes(o.id));
+                 const pageWidthPt = (pageDim.w || 595) * 72 / 96;
+                 const pageHeightPt = (pageDim.h || 842) * 72 / 96;
+
+                 const isItemPicked = (id: string, drawIndex: number) =>
+                     pickedTextIds.includes(id) ||
+                     pickedTextIds.includes(`code-${drawIndex}`) ||
+                     pickedTextIds.includes(`text-${drawIndex}`);
+
+                 const textObjs = editObjects.filter((o) =>
+                     o.type === 'text' && !hiddenObjectIds.includes(o.id) && !isItemPicked(o.id, o.drawIndex)
+                 );
+
+                 // Lọc các đối tượng ảnh hoặc vector để phát hiện mã QR và mã vạch
+                 const rawCodeCandidates = editObjects.filter((o) =>
+                     (o.type === 'image' || o.type === 'vector') &&
+                     !hiddenObjectIds.includes(o.id) &&
+                     !isItemPicked(o.id, o.drawIndex)
+                 );
+
+                 const candidatePickerObjs: VdpPickerObject[] = rawCodeCandidates.map((o) => {
+                     const x0 = Math.min(o.bbox[0], o.bbox[2]);
+                     const y0 = Math.min(o.bbox[1], o.bbox[3]);
+                     const w = Math.abs(o.bbox[2] - o.bbox[0]);
+                     const h = Math.abs(o.bbox[3] - o.bbox[1]);
+                     return {
+                         id: o.id,
+                         drawIndex: o.drawIndex,
+                         type: o.type as VdpPickerObjectType,
+                         bbox: [x0, y0, w, h],
+                         matrix: o.matrix,
+                         ocgIds: o.ocgIds,
+                         label: o.type === 'image' ? 'Mã QR / Ảnh' : undefined,
+                     };
+                 });
+
+                 const codeClusters = clusterBarcodeBars(candidatePickerObjs, {
+                     width: pageWidthPt,
+                     height: pageHeightPt,
+                 }).filter((o) => {
+                     if (isItemPicked(o.id, o.drawIndex)) return false;
+                     if (o.memberDrawIndices && o.memberDrawIndices.some((idx) => isItemPicked(`code-${idx}`, idx))) return false;
+                     return true;
+                 });
+
                  return (
                      <div className="absolute inset-0 pointer-events-none z-[65]">
-                         {/* Floating Guide Badge at Top Center of Page (Băng dài chữ nhật bo góc nhẹ) */}
-                         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[70] pointer-events-auto bg-teal-700/95 text-white text-xs font-medium px-4 py-2 rounded-md shadow-2xl border border-teal-400/40 flex items-center gap-3 backdrop-blur-md whitespace-nowrap transition-all select-none">
-                             <span className="relative flex h-2 w-2 shrink-0">
-                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-                                 <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
-                             </span>
-                             <span className="font-semibold tracking-wide">
-                                 {isVdpPickBusy
-                                     ? '⏳ Đang trích xuất trường...'
-                                     : (vdpFields && vdpFields.length > 0
-                                         ? `🎯 Đã chọn ${vdpFields.length} trường • Nhấp tiếp hoặc bấm "Xong"`
-                                         : '🎯 Nhấp vào chữ trên trang để chọn trường VDP')}
-                             </span>
-                             <button
-                                 type="button"
-                                 onClick={(e) => {
-                                     e.stopPropagation();
-                                     setIsPickingVdpText(false);
-                                 }}
-                                 className="ml-2 hover:bg-teal-900 rounded-md px-3 py-1 text-xs bg-teal-800/90 text-teal-100 font-semibold border border-teal-400/30 cursor-pointer transition-colors flex items-center gap-1.5 active:scale-95 shadow-sm"
-                                 title={t('Hoàn tất chọn trường (phím Esc)')}
-                             >
-                                 <span>✓</span>
-                                 <span>{t('Xong')}</span>
-                             </button>
-                         </div>
+                         {/* 1. Render các đối tượng mã QR và mã vạch phát hiện được (lớp dưới z-[10]) */}
+                         {codeClusters.map((codeObj) => {
+                             const [cx, cy, cw, ch] = codeObj.bbox;
+                             const left = cx * scale;
+                             const top = cy * scale;
+                             const width = Math.max(12, cw * scale);
+                             const height = Math.max(12, ch * scale);
+
+                             const ratio = ch > 0 ? cw / ch : 1;
+                             const isBarcode = codeObj.label
+                                 ? codeObj.label.includes('Mã vạch')
+                                 : (codeObj.memberDrawIndices && codeObj.memberDrawIndices.length >= 3) || ratio > 1.35 || ratio < 0.75;
+                             const label = codeObj.label || (isBarcode ? 'Mã vạch (Barcode)' : 'Mã QR (QR Code)');
+
+                             return (
+                                 <div
+                                     key={codeObj.id}
+                                     data-testid={`vdp-code-candidate-${codeObj.drawIndex}`}
+                                     className={`absolute z-[10] ${isVdpPickBusy ? 'pointer-events-none opacity-40 cursor-wait' : 'pointer-events-auto cursor-pointer'} group transition-all duration-150 rounded border-2 border-dashed ${
+                                         isBarcode
+                                             ? 'border-blue-500 bg-blue-500/20 hover:border-blue-400 hover:bg-blue-500/35 ring-2 ring-blue-400/50'
+                                             : 'border-indigo-500 bg-indigo-500/20 hover:border-indigo-400 hover:bg-indigo-500/35 ring-2 ring-indigo-400/50'
+                                     } hover:shadow-lg animate-pulse`}
+                                     style={{ left, top, width, height }}
+                                     title={isVdpPickBusy ? t('Đang trích xuất...') : `Nhấp chuột để chọn ${label} làm trường VDP`}
+                                     onPointerDown={(e) => e.stopPropagation()}
+                                     onMouseDown={(e) => e.stopPropagation()}
+                                     onClick={async (e) => {
+                                         e.stopPropagation();
+                                         if (isVdpPickBusy) return;
+                                         await handlePickCodeObject(
+                                             codeObj,
+                                             codeObj.memberDrawIndices,
+                                             isBarcode ? 'barcode' : 'qrcode',
+                                             isBarcode ? 'code128' : undefined
+                                         );
+                                     }}
+                                 >
+                                     <div className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none absolute bottom-full left-0 mb-1 z-[70] whitespace-nowrap px-2 py-1 bg-zinc-900/95 text-white text-[11px] rounded shadow-md border border-indigo-500/40 flex items-center gap-1.5 font-sans">
+                                         <span className={`w-2 h-2 rounded-full ${isBarcode ? 'bg-blue-400' : 'bg-indigo-400'} animate-pulse`} />
+                                         <span>Chọn trường: <b>{label}</b></span>
+                                     </div>
+                                 </div>
+                             );
+                         })}
+
+                         {/* 2. Render các chuỗi chữ (lớp trên z-[20], ưu tiên tuyệt đối không bị che khuất) */}
                           {(() => {
                               // Nhóm các ký tự thuộc chuỗi chữ cong (curved text) từ Illustrator/Corel
                               const clusters: Array<{
@@ -6878,92 +7150,164 @@ export const LivePageFrame = (props: any) => {
                               }> = [];
                               const visited = new Set<string>();
 
-                              for (let i = 0; i < textObjs.length; i++) {
-                                  const obj = textObjs[i];
-                                  if (visited.has(obj.id)) continue;
+                               for (let i = 0; i < textObjs.length; i++) {
+            const obj = textObjs[i];
+            if (visited.has(obj.id)) continue;
 
-                                  const cluster = [obj];
-                                  visited.add(obj.id);
+            const cluster = [obj];
+            visited.add(obj.id);
 
-                                  const m = obj.matrix;
-                                  const s0 = m ? Math.hypot(m[0], m[1]) : 12;
+            const m = obj.matrix;
+            const s0 = m ? Math.hypot(m[0], m[1]) : 12;
 
-                                  let curr = obj;
-                                  let currIdx = i;
+            let curr = obj;
+            let currIdx = i;
 
-                                  for (let j = currIdx + 1; j < textObjs.length; j++) {
-                                      const nxt = textObjs[j];
-                                      if (visited.has(nxt.id)) continue;
+            for (let j = currIdx + 1; j < textObjs.length; j++) {
+                const nxt = textObjs[j];
+                if (visited.has(nxt.id)) continue;
 
-                                      const nxtM = nxt.matrix;
-                                      const sNxt = nxtM ? Math.hypot(nxtM[0], nxtM[1]) : 12;
-                                      if (Math.abs(sNxt - s0) > s0 * 0.18) break;
-                                      if (nxt.drawIndex - curr.drawIndex > 2) break;
+                const nxtM = nxt.matrix;
+                const sNxt = nxtM ? Math.hypot(nxtM[0], nxtM[1]) : 12;
+                // Cùng cỡ chữ tương đồng (trong khoảng ~20%)
+                if (Math.abs(sNxt - s0) > s0 * 0.20) continue;
+                // Không cách biệt quá xa về thứ tự vẽ
+                if (nxt.drawIndex - curr.drawIndex > 25) break;
 
-                                      const currE = curr.matrix ? curr.matrix[4] : curr.bbox[0];
-                                      const currF = curr.matrix ? curr.matrix[5] : curr.bbox[1];
-                                      const nxtE = nxtM ? nxtM[4] : nxt.bbox[0];
-                                      const nxtF = nxtM ? nxtM[5] : nxt.bbox[1];
-                                      const dist = Math.hypot(nxtE - currE, nxtF - currF);
+                const currE = curr.matrix ? curr.matrix[4] : curr.bbox[0];
+                const currF = curr.matrix ? curr.matrix[5] : curr.bbox[1];
+                const nxtE = nxtM ? nxtM[4] : nxt.bbox[0];
+                const nxtF = nxtM ? nxtM[5] : nxt.bbox[1];
 
-                                      if (dist > s0 * 2.5) break;
+                const dx = nxtE - currE;
+                const dy = nxtF - currF;
+                const dist = Math.hypot(dx, dy);
 
-                                      cluster.push(nxt);
-                                      visited.add(nxt.id);
-                                      curr = nxt;
-                                      currIdx = j;
-                                  }
+                // Góc xoay của curr và nxt (rad)
+                const currTheta = curr.matrix ? Math.atan2(curr.matrix[1], curr.matrix[0]) : 0;
+                const nxtTheta = nxtM ? Math.atan2(nxtM[1], nxtM[0]) : 0;
+                let dTheta = Math.abs(nxtTheta - currTheta);
+                while (dTheta > Math.PI) dTheta -= Math.PI;
 
-                                  const minX = Math.min(...cluster.map(o => o.bbox[0]));
-                                  const minY = Math.min(...cluster.map(o => o.bbox[1]));
-                                  const maxX = Math.max(...cluster.map(o => o.bbox[2]));
-                                  const maxY = Math.max(...cluster.map(o => o.bbox[3]));
+                // Chiếu dx, dy lên hệ trục toạ độ của curr:
+                // dParallel: khoảng cách tịnh tiến dọc theo dòng chữ (baseline)
+                // dPerp: độ lệch vuông góc với dòng chữ (khoảng cách dòng / line height)
+                const cosT = Math.cos(currTheta);
+                const sinT = Math.sin(currTheta);
+                const dParallel = dx * cosT + dy * sinT;
+                const dPerp = Math.abs(-dx * sinT + dy * cosT);
 
-                                  const isCurved = cluster.length >= 2;
-                                  const combinedContent = cluster.map(o => o.content || '').join('').trim();
-                                  const label = combinedContent || (isCurved ? 'Chữ uốn cong' : (obj.content || 'Văn bản'));
+                // Điều kiện 1: Chữ uốn cong (Curved Text): các ký tự xoay dần theo cung tròn
+                const isCurvedCandidate = (dTheta >= 0.04 && dTheta <= 0.65) && (dist <= s0 * 2.2);
 
-                                  clusters.push({
-                                      id: cluster.length > 1 ? `cluster-${obj.id}` : obj.id,
-                                      primaryObj: obj,
-                                      memberIds: cluster.map(o => o.id),
-                                      bbox: [minX, minY, maxX, maxY],
-                                      isCurved,
-                                      label,
-                                  });
-                              }
+                // Điều kiện 2: Chữ cùng một dòng (Same Baseline):
+                // Phải cùng baseline (dPerp cực nhỏ, <= 2.5pt hoặc 25% cỡ chữ)
+                // và tiến về phía trước theo hướng đọc (dParallel trong khoảng cho phép)
+                const isSameLine = (dTheta < 0.06) && (dPerp <= Math.max(2.5, s0 * 0.25)) && (dParallel >= -0.5 * s0 && dParallel <= s0 * 2.5);
 
-                              return clusters.map((cluster) => {
-                                  const [x0, y0, x1, y1] = cluster.bbox;
-                                  const left = x0 * scale;
-                                  const top = y0 * scale;
-                                  const width = Math.max(10, (x1 - x0) * scale);
-                                  const height = Math.max(10, (y1 - y0) * scale);
-                                  return (
-                                      <div
-                                          key={cluster.id}
-                                          className={`absolute ${isVdpPickBusy ? 'pointer-events-none opacity-40 cursor-wait' : 'pointer-events-auto cursor-pointer'} group transition-all duration-150 rounded border-2 border-dashed ${cluster.isCurved ? 'border-amber-500 bg-amber-500/20 hover:border-amber-400 hover:bg-amber-500/35 ring-2 ring-amber-400/50' : 'border-teal-500 bg-teal-500/25 hover:border-teal-400 hover:bg-teal-500/40 ring-2 ring-teal-400/60'} hover:shadow-lg animate-pulse`}
-                                          style={{ left, top, width, height }}
-                                          title={isVdpPickBusy ? t('Đang trích xuất...') : `Nhấp chuột để chọn chuỗi chữ "${cluster.label}" làm trường VDP`}
-                                          onPointerDown={(e) => e.stopPropagation()}
-                                          onMouseDown={(e) => e.stopPropagation()}
-                                          onClick={async (e) => {
-                                              e.stopPropagation();
-                                              if (isVdpPickBusy) return;
-                                              await handlePickTextObject(cluster.primaryObj, cluster.memberIds);
-                                          }}
-                                      >
-                                          <div className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none absolute bottom-full left-0 mb-1 z-[70] whitespace-nowrap px-2 py-1 bg-zinc-900/95 text-white text-[11px] rounded shadow-md border border-teal-500/40 flex items-center gap-1.5 font-sans">
-                                              <span className={`w-2 h-2 rounded-full ${cluster.isCurved ? 'bg-amber-400' : 'bg-teal-400'} animate-pulse`} />
-                                              <span>{cluster.isCurved ? 'Chọn trường cong: ' : 'Chọn trường: '}<b>"{cluster.label.slice(0, 30)}{cluster.label.length > 30 ? '...' : ''}"</b></span>
-                                          </div>
-                                      </div>
-                                  );
-                              });
-                          })()}
-                     </div>
-                 );
-             })()}
+                if (!isCurvedCandidate && !isSameLine) {
+                    continue;
+                }
+
+                cluster.push(nxt);
+                visited.add(nxt.id);
+                curr = nxt;
+                currIdx = j;
+            }
+
+            const minX = Math.min(...cluster.map(o => o.bbox[0]));
+            const minY = Math.min(...cluster.map(o => o.bbox[1]));
+            const maxX = Math.max(...cluster.map(o => o.bbox[2]));
+            const maxY = Math.max(...cluster.map(o => o.bbox[3]));
+
+            // Quét tìm các object chữ bóng đổ (shadow text) nằm đè trực tiếp lên bounding box của chữ
+            const minDI = Math.min(...cluster.map(o => o.drawIndex));
+            const maxDI = Math.max(...cluster.map(o => o.drawIndex));
+            const pad = Math.max(4, s0 * 0.3);
+            const effectIds: string[] = [];
+
+            for (const other of textObjs) {
+                if (visited.has(other.id) || cluster.some(o => o.id === other.id)) continue;
+                if (other.drawIndex >= minDI - 25 && other.drawIndex <= maxDI + 25) {
+                    const ob = other.bbox;
+                    const overlapY = Math.min(maxY, ob[3]) - Math.max(minY, ob[1]);
+                    // Bắt buộc phải có độ chồng lấp dọc (overlap) ít nhất 40% để tránh bắt nhầm chữ dòng trên/dưới
+                    if (overlapY > 0.4 * (maxY - minY) && ob[0] >= minX - pad && ob[2] <= maxX + pad) {
+                        effectIds.push(other.id);
+                        visited.add(other.id);
+                    }
+                }
+            }
+
+            const isCurved = cluster.length >= 2 && (() => {
+                const angles = cluster.map(o => o.matrix ? Math.atan2(o.matrix[1], o.matrix[0]) : 0);
+                return Math.max(...angles) - Math.min(...angles) > 0.15;
+            })();
+
+            const combinedContent = (() => {
+                if (cluster.length <= 1) return cluster[0]?.content || '';
+                if (isCurved) {
+                    return cluster.map(o => o.content || '').join('').trim();
+                }
+                let text = '';
+                for (let k = 0; k < cluster.length; k++) {
+                    const c = cluster[k].content || '';
+                    if (!c) continue;
+                    if (k > 0) {
+                        const prevObj = cluster[k - 1];
+                        const gap = cluster[k].bbox[0] - prevObj.bbox[2];
+                        if (gap > s0 * 0.15 && !text.endsWith(' ') && !c.startsWith(' ')) {
+                            text += ' ';
+                        }
+                    }
+                    text += c;
+                }
+                return text.trim();
+            })();
+
+            const label = combinedContent || (isCurved ? 'Chữ uốn cong' : (obj.content || 'Văn bản'));
+
+            clusters.push({
+                id: cluster.length > 1 ? `cluster-${obj.id}` : obj.id,
+                primaryObj: obj,
+                memberIds: [...cluster.map(o => o.id), ...effectIds],
+                bbox: [minX, minY, maxX, maxY],
+                isCurved,
+                label,
+            });
+        }
+
+        return clusters.map((cluster) => {
+            const [x0, y0, x1, y1] = cluster.bbox;
+            const left = x0 * scale;
+            const top = y0 * scale;
+            const width = Math.max(10, (x1 - x0) * scale);
+            const height = Math.max(10, (y1 - y0) * scale);
+            return (
+                <div
+                    key={cluster.id}
+                    className={`absolute z-[20] ${isVdpPickBusy ? 'pointer-events-none opacity-40 cursor-wait' : 'pointer-events-auto cursor-pointer'} group transition-all duration-150 rounded border-2 border-dashed ${cluster.isCurved ? 'border-amber-500 bg-amber-500/20 hover:border-amber-400 hover:bg-amber-500/35 ring-2 ring-amber-400/50' : 'border-teal-500 bg-teal-500/25 hover:border-teal-400 hover:bg-teal-500/40 ring-2 ring-teal-400/60'} hover:shadow-lg animate-pulse`}
+                    style={{ left, top, width, height }}
+                    title={isVdpPickBusy ? t('Đang trích xuất...') : `Nhấp chuột để chọn chuỗi chữ "${cluster.label}" làm trường VDP`}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={async (e) => {
+                        e.stopPropagation();
+                        if (isVdpPickBusy) return;
+                        await handlePickTextObject(cluster.primaryObj, cluster.memberIds);
+                    }}
+                >
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none absolute bottom-full left-0 mb-1 z-[70] whitespace-nowrap px-2 py-1 bg-zinc-900/95 text-white text-[11px] rounded shadow-md border border-teal-500/40 flex items-center gap-1.5 font-sans">
+                        <span className={`w-2 h-2 rounded-full ${cluster.isCurved ? 'bg-amber-400' : 'bg-teal-400'} animate-pulse`} />
+                        <span>{cluster.isCurved ? 'Chọn trường cong: ' : 'Chọn trường: '}<b>"{cluster.label.slice(0, 30)}{cluster.label.length > 30 ? '...' : ''}"</b></span>
+                    </div>
+                </div>
+            );
+        });
+    })()}
+</div>
+);
+})()}
 
 
              {/* VDP Tool Overlay */}
@@ -7238,14 +7582,14 @@ export const LivePageFrame = (props: any) => {
                                                  margin: 0,
                                                  color: field.fontColor || '#1e293b', 
                                                  fontSize: `${(field.fontSize || 10) * scale * (96 / 72)}px`,
-                                                 fontFamily: field.fontFile
-                                                  ? `"${field.fontName}_local", "${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif`
+                                                 fontFamily: (field.fontFile || field.fontDataUrl)
+                                                  ? `"${field.fontName}_local", "${(field.fontName || '').replace(/^[A-Z]{6}\+/, '')}_local", "${(field.fontName || '').replace(/^[A-Z]{6}\+/, '').replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${(field.fontName || '').replace(/^[A-Z]{6}\+/, '')}", "${field.fontName}", sans-serif`
                                                   : (field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName?.replace(/-(Regular|Bold|Italic|Light|Medium|Semibold|Black)$/i, '')}", "${field.fontName}", sans-serif` : 'inherit')),
                                                  fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
                                                  fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
                                                  lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
                                                  letterSpacing: 0,
-                                                 textAlign: (field.alignment || 'center') as 'left' | 'center' | 'right',
+                                                 textAlign: (field.alignment || (isVert ? 'left' : 'center')) as 'left' | 'center' | 'right',
                                                  pointerEvents: 'auto' 
                                              }}
                                              onPointerDown={(e) => e.stopPropagation()}

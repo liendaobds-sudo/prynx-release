@@ -1053,6 +1053,9 @@ def map_object(
     #   - image/vector: bbox PDFium CHÍNH XÁC ⇒ khớp cạnh-theo-cạnh ≤ 1.0pt.
     #   - text       : bbox OpSpan là ƯỚC LƯỢNG ⇒ khớp theo độ chồng lấp / tâm
     #                  (xem `_text_bbox_overlaps`). Tránh trả 409 oan cho text.
+    sw = _meta_field(obj_meta, "strokeWidth")
+    effective_tol = max(BBOX_TOLERANCE_PT, float(sw) + 0.5) if sw is not None and float(sw) > 0.05 else BBOX_TOLERANCE_PT
+
     candidates: list[tuple[int, OpSpan]] = []
     for idx, span in enumerate(spans):
         if span.kind != obj_type:
@@ -1060,7 +1063,7 @@ def map_object(
         if obj_type == "text":
             matched = _text_bbox_overlaps(span.bbox, list(obj_bbox))
         else:
-            matched = bbox_within_tolerance(span.bbox, list(obj_bbox), BBOX_TOLERANCE_PT)
+            matched = bbox_within_tolerance(span.bbox, list(obj_bbox), effective_tol)
         if matched:
             candidates.append((idx, span))
 
@@ -1148,11 +1151,14 @@ def map_object_spans(
         span = map_object(page, obj_meta, pdf=pdf, prebuilt_spans=spans)
         return [span] if span is not None else []
 
+    sw = _meta_field(obj_meta, "strokeWidth")
+    effective_tol = max(BBOX_TOLERANCE_PT, float(sw) + 0.5) if sw is not None and float(sw) > 0.05 else BBOX_TOLERANCE_PT
+
     candidates: list[OpSpan] = []
     for span in spans:
         if span.kind != obj_type:
             continue
-        if bbox_within_tolerance(span.bbox, list(obj_bbox), BBOX_TOLERANCE_PT):
+        if bbox_within_tolerance(span.bbox, list(obj_bbox), effective_tol):
             candidates.append(span)
 
     # 0 ứng viên tolerance: lớp B điển hình — stroke-object box NỞ theo nửa nét vẽ
@@ -1405,9 +1411,10 @@ def _iou(a: list[float], b: list[float]) -> float:
 _IOU_SAME_SHAPE: float = 0.5
 
 # Diện tích object tối thiểu (pt²) để CHO PHÉP IoU-fallback. Dưới ngưỡng này (mark
-# li ti box ~0pt²) IoU nhiễu ở mức pixel → gom nhầm span mark kề bên. Đặt giữa mark
-# (~0pt²) và hình thật nhỏ nhất đo được (~16000pt²) — 100pt² rất an toàn cho cả hai.
-_IOU_MIN_OBJ_AREA_PT2: float = 100.0
+# li ti box ~0pt²) IoU nhiễu ở mức pixel → gom nhầm span mark kề bên. Đặt 16.0 pt²
+# (tương đương hình ~4pt × 4pt) đủ bảo vệ các mark suy biến nhưng cho phép các nét
+# vector ký tự đơn lẻ (glyph outline paths ~25..80 pt²) được khớp an toàn.
+_IOU_MIN_OBJ_AREA_PT2: float = 16.0
 
 
 def _map_spans_by_iou(

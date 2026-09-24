@@ -517,12 +517,32 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
         const controller = new AbortController();
         setPageBoxesLoading(true);
         setPageBoxesError('');
-        setOutputPreviewPageBoxes(null);
+        const isPath = fileId.includes('/') || fileId.includes('\\') || /^[a-zA-Z]:/.test(fileId);
+        const fetchPageBoxes = async () => {
+            if (isPath) {
+                try {
+                    const res = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes-by-path`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_path: fileId, page: sourcePageNum }),
+                        signal: controller.signal,
+                    });
+                    if (res.ok) return res;
+                } catch (e) {
+                    if (controller.signal.aborted) throw e;
+                }
+                return authenticatedFetch(
+                    `${getApiUrl()}/preflight/page-boxes?file_path=${encodeURIComponent(fileId)}&page=${sourcePageNum}`,
+                    { signal: controller.signal },
+                );
+            }
+            return authenticatedFetch(
+                `${getApiUrl()}/preflight/page-boxes/${encodeURIComponent(fileId)}/${sourcePageNum}`,
+                { signal: controller.signal },
+            );
+        };
 
-        void authenticatedFetch(
-            `${getApiUrl()}/preflight/page-boxes/${fileId}/${sourcePageNum}`,
-            { signal: controller.signal },
-        ).then(async (response) => {
+        void fetchPageBoxes().then(async (response) => {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const parsed = parseOutputPreviewPageBoxes(
                 await response.json(),
@@ -676,16 +696,45 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             setSoloPlate(null);
             try {
                 const renderMode = effectiveAccuratePreview ? 'accurate' : 'approximate';
-                const query = new URLSearchParams({
-                    dpi: '150',
-                    render_mode: renderMode,
-                    profile_id: simulationProfileId,
-                    intent: simulationIntent,
-                    output_preview_filter: showFilter,
-                });
-                const res = await authenticatedFetch(
-                    `${getApiUrl()}/preflight/separations/${fileId}/${sourcePageNum}?${query.toString()}`
-                );
+                const isPath = fileId.includes('/') || fileId.includes('\\') || /^[a-zA-Z]:/.test(fileId);
+                let res: Response;
+                if (isPath) {
+                    try {
+                        res = await authenticatedFetch(`${getApiUrl()}/preflight/separations-by-path`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                file_path: fileId,
+                                page: sourcePageNum,
+                                dpi: 150,
+                                render_mode: renderMode,
+                                profile_id: simulationProfileId,
+                                intent: simulationIntent,
+                                output_preview_filter: showFilter,
+                            }),
+                        });
+                    } catch {
+                        res = await authenticatedFetch(
+                            `${getApiUrl()}/preflight/separations?file_path=${encodeURIComponent(fileId)}&page=${sourcePageNum}&dpi=150&render_mode=${renderMode}&profile_id=${encodeURIComponent(simulationProfileId)}&intent=${simulationIntent}&output_preview_filter=${showFilter}`
+                        );
+                    }
+                    if (!res.ok) {
+                        res = await authenticatedFetch(
+                            `${getApiUrl()}/preflight/separations?file_path=${encodeURIComponent(fileId)}&page=${sourcePageNum}&dpi=150&render_mode=${renderMode}&profile_id=${encodeURIComponent(simulationProfileId)}&intent=${simulationIntent}&output_preview_filter=${showFilter}`
+                        );
+                    }
+                } else {
+                    const query = new URLSearchParams({
+                        dpi: '150',
+                        render_mode: renderMode,
+                        profile_id: simulationProfileId,
+                        intent: simulationIntent,
+                        output_preview_filter: showFilter,
+                    });
+                    res = await authenticatedFetch(
+                        `${getApiUrl()}/preflight/separations/${encodeURIComponent(fileId)}/${sourcePageNum}?${query.toString()}`
+                    );
+                }
                 if (!res.ok) throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
                 const result: SeparationsData = await res.json();
                 if (!isMounted) return;

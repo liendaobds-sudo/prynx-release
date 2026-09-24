@@ -145,6 +145,72 @@ def _extract_font_name(obj) -> str | None:
         return None
 
 
+def _extract_font_style_and_weight(obj, font_name: str | None) -> tuple[str, int]:
+    """
+    Xác định fontStyle ('normal' | 'bold' | 'italic' | 'bolditalic') và fontWeight (400..900)
+    kết hợp giữa:
+    1. FPDFFont_GetWeight (PDFium C API trả về integer weight hoặc -1)
+    2. FPDFFont_GetFlags (cờ PDF FontDescriptor: bit 7 Italic, bit 19 ForceBold)
+    3. Phân tích từ khóa trong tên font gốc (BaseFont)
+    """
+    is_bold = False
+    is_italic = False
+    weight = 400
+
+    # 1. Phân tích tên font (chuẩn xác nhất cho PostScript font names từ Illustrator/Corel)
+    if font_name:
+        fn_lower = font_name.lower().replace("-", " ").replace("_", " ")
+        if any(k in fn_lower for k in ("black", "heavy", "extrabold", "ultra bold", "ultrabold", "900", "800")):
+            is_bold = True
+            weight = 900 if ("black" in fn_lower or "heavy" in fn_lower) else 800
+        elif any(k in fn_lower for k in ("bold", "semibold", "semi bold", "demibold", "demi bold", "700", "600")):
+            is_bold = True
+            weight = 600 if ("semi" in fn_lower or "demi" in fn_lower) else 700
+        elif any(k in fn_lower for k in ("medium", "500")):
+            weight = 500
+        elif any(k in fn_lower for k in ("light", "thin", "300", "200", "100")):
+            weight = 300
+
+        if any(k in fn_lower for k in ("italic", "oblique", "ital")):
+            is_italic = True
+
+    # 2. Truy vấn PDFium API trực tiếp từ đối tượng font
+    try:
+        get_font = getattr(pdfium_c, "FPDFTextObj_GetFont", None)
+        if get_font:
+            font = get_font(obj)
+            if font:
+                get_weight = getattr(pdfium_c, "FPDFFont_GetWeight", None)
+                if get_weight:
+                    w = int(get_weight(font))
+                    if w > 0:
+                        weight = max(weight, w)
+                        if w >= 600:
+                            is_bold = True
+
+                get_flags = getattr(pdfium_c, "FPDFFont_GetFlags", None)
+                if get_flags:
+                    flags = int(get_flags(font))
+                    if flags & (1 << 6):  # bit 7: Italic
+                        is_italic = True
+                    if flags & (1 << 18):  # bit 19: ForceBold
+                        is_bold = True
+                        weight = max(weight, 700)
+    except Exception:
+        pass
+
+    if is_bold and is_italic:
+        style = "bolditalic"
+    elif is_bold:
+        style = "bold"
+    elif is_italic:
+        style = "italic"
+    else:
+        style = "normal"
+
+    return style, weight
+
+
 def _extract_fill_color(obj) -> list[int] | None:
     """
     Lấy MÀU TÔ (fill) RGB của object qua `FPDFPageObj_GetFillColor` (0..255).
@@ -163,6 +229,75 @@ def _extract_fill_color(obj) -> list[int] | None:
         return [int(r.value), int(g.value), int(b.value)]
     except Exception:  # noqa: BLE001
         return None
+
+
+def _extract_stroke_props(obj) -> tuple[list[int] | None, float | None, int, str | None, str | None]:
+    """Trích xuất màu viền RGB, độ dày viền (point), TextRenderMode, line join và line cap của object.
+    QUY TẮC BẤT BIẾN:
+    1. Text object (type=1): CHỈ có viền khi TextRenderMode in (1, 2, 5, 6).
+       Nếu render_mode == 0 (Fill only / Tr 0), text KHÔNG có viền -> trả None để không gán viền đen mặc định của graphics state.
+    2. Path/Vector object (type=2): CHỈ có viền khi FPDFPath_GetDrawMode trả stroke != 0.
+       Nếu stroke == 0 (Fill only hoặc clip), path KHÔNG có viền -> trả None.
+    """
+    render_mode = 0
+    stroke_color = None
+    stroke_width = None
+    stroke_join = None
+    stroke_cap = None
+
+    try:
+        obj_type = int(pdfium_c.FPDFPageObj_GetType(obj))
+    except Exception:
+        obj_type = 0
+
+    if obj_type == pdfium_c.FPDF_PAGEOBJ_TEXT:
+        try:
+            get_rm = getattr(pdfium_c, "FPDFTextObj_GetTextRenderMode", None)
+            if get_rm:
+                render_mode = int(get_rm(obj))
+        except Exception:
+            render_mode = 0
+        if render_mode not in (1, 2, 5, 6):
+            return None, None, render_mode, None, None
+
+    elif obj_type == pdfium_c.FPDF_PAGEOBJ_PATH:
+        try:
+            fill_mode = ctypes.c_int(0)
+            stroke_mode = ctypes.c_int(0)
+            ok_draw = pdfium_c.FPDFPath_GetDrawMode(obj, ctypes.byref(fill_mode), ctypes.byref(stroke_mode))
+            if not (ok_draw and stroke_mode.value != 0):
+                return None, None, 0, None, None
+        except Exception:
+            pass
+
+    try:
+        sr = ctypes.c_uint(0)
+        sg = ctypes.c_uint(0)
+        sb = ctypes.c_uint(0)
+        sa = ctypes.c_uint(0)
+        ok_col = pdfium_c.FPDFPageObj_GetStrokeColor(
+            obj, ctypes.byref(sr), ctypes.byref(sg), ctypes.byref(sb), ctypes.byref(sa)
+        )
+        w = ctypes.c_float(0.0)
+        ok_w = pdfium_c.FPDFPageObj_GetStrokeWidth(obj, ctypes.byref(w))
+
+        if ok_w and w.value > 0.05 and ok_col and sa.value > 0:
+            stroke_width = round(float(w.value), 2)
+            stroke_color = [int(sr.value), int(sg.value), int(sb.value)]
+
+        # Đọc Line Join (0=miter, 1=round, 2=bevel) và Line Cap (0=butt, 1=round, 2=square)
+        get_lj = getattr(pdfium_c, "FPDFPageObj_GetLineJoin", None)
+        if get_lj:
+            lj = int(get_lj(obj))
+            stroke_join = {0: "miter", 1: "round", 2: "bevel"}.get(lj, "round")
+        get_lc = getattr(pdfium_c, "FPDFPageObj_GetLineCap", None)
+        if get_lc:
+            lc = int(get_lc(obj))
+            stroke_cap = {0: "butt", 1: "round", 2: "square"}.get(lc, "round")
+    except Exception:
+        pass
+
+    return stroke_color, stroke_width, render_mode, stroke_join, stroke_cap
 
 
 def _pdfium_wide_string(call, *args) -> str | None:
@@ -336,8 +471,13 @@ def _list_objects_locked(pdf_path: str, page_index: int, include_text_props: boo
                 content = _extract_text(obj, text_page_raw)
                 color = _extract_fill_color(obj)
                 font_name = _extract_font_name(obj)
+                font_style, font_weight = _extract_font_style_and_weight(obj, font_name)
+                stroke_color, stroke_width, _, stroke_join, stroke_cap = _extract_stroke_props(obj)
+            elif obj_type == "vector":
+                content = color = font_name = font_style = font_weight = None
+                stroke_color, stroke_width, _, stroke_join, stroke_cap = _extract_stroke_props(obj)
             else:
-                content = color = font_name = None
+                content = color = font_name = font_style = font_weight = stroke_color = stroke_width = stroke_join = stroke_cap = None
             out.append(
                 ObjMeta(
                     id=f"{obj_type}-{i}",
@@ -349,6 +489,12 @@ def _list_objects_locked(pdf_path: str, page_index: int, include_text_props: boo
                     content=content,
                     color=color,
                     fontName=font_name,
+                    fontStyle=font_style,
+                    fontWeight=font_weight,
+                    strokeColor=stroke_color,
+                    strokeWidth=stroke_width,
+                    strokeLineJoin=stroke_join,
+                    strokeLineCap=stroke_cap,
                 )
             )
 
@@ -401,7 +547,17 @@ def _get_text_object_props_locked(pdf_path: str, page_index: int, draw_index: in
     """
     pdf = None
     text_page_raw = None
-    out = {"content": None, "color": None, "fontName": None, "fontSize": None}
+    out = {
+        "content": None,
+        "color": None,
+        "fontName": None,
+        "fontSize": None,
+        "fontStyle": "normal",
+        "fontWeight": 400,
+        "strokeColor": None,
+        "strokeWidth": None,
+        "textRenderMode": 0,
+    }
     try:
         pdf = pdfium.PdfDocument(pdf_path)
         if page_index < 0 or page_index >= len(pdf):
@@ -424,6 +580,15 @@ def _get_text_object_props_locked(pdf_path: str, page_index: int, draw_index: in
         out["color"] = _extract_fill_color(obj)
         out["fontName"] = _extract_font_name(obj)
         out["fontSize"] = _extract_font_size(obj)
+        f_style, f_weight = _extract_font_style_and_weight(obj, out["fontName"])
+        out["fontStyle"] = f_style
+        out["fontWeight"] = f_weight
+        stroke_color, stroke_width, render_mode, stroke_join, stroke_cap = _extract_stroke_props(obj)
+        out["strokeColor"] = stroke_color
+        out["strokeWidth"] = stroke_width
+        out["strokeLineJoin"] = stroke_join
+        out["strokeLineCap"] = stroke_cap
+        out["textRenderMode"] = render_mode
         return out
     except Exception:  # noqa: BLE001 - best-effort
         return out

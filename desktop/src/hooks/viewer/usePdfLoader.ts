@@ -531,8 +531,16 @@ export function usePdfLoader({
                 setActivePage(1);
                 setPlateLabels({});
                 if (containerRef.current) {
-                    const safeContainerWidth = Math.max(100, containerRef.current.clientWidth - 16);
-                    setZoom(safeContainerWidth / w);
+                    const containerEl = containerRef.current;
+                    const clientW = containerEl.clientWidth || 800;
+                    const clientH = containerEl.clientHeight && containerEl.clientHeight > 50
+                        ? containerEl.clientHeight
+                        : clientW * 1.25;
+                    const safeContainerWidth = Math.max(100, clientW - 48);
+                    const safeContainerHeight = Math.max(100, clientH - 64);
+                    const fitW = safeContainerWidth / w;
+                    const fitH = safeContainerHeight / Math.max(1, h);
+                    setZoom(Math.min(1.0, Math.min(fitW, fitH)));
                 }
             }
             setLoadStatus('ready');
@@ -946,8 +954,16 @@ export function usePdfLoader({
                         setPageDim({ w: dims[1].w, h: dims[1].h });
                         const actual100 = dims[1].w;
                         if (containerRef.current) {
-                            const safeContainerWidth = Math.max(100, containerRef.current.clientWidth - 16);
-                            setZoom(safeContainerWidth / actual100);
+                            const containerEl = containerRef.current;
+                            const clientW = containerEl.clientWidth || 800;
+                            const clientH = containerEl.clientHeight && containerEl.clientHeight > 50
+                                ? containerEl.clientHeight
+                                : clientW * 1.25;
+                            const safeContainerWidth = Math.max(100, clientW - 48);
+                            const safeContainerHeight = Math.max(100, clientH - 64);
+                            const fitW = safeContainerWidth / actual100;
+                            const fitH = safeContainerHeight / Math.max(1, dims[1].h);
+                            setZoom(Math.min(1.0, Math.min(fitW, fitH)));
                         }
                     }
                     markReady();

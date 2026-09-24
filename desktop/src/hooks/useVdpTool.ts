@@ -15,7 +15,9 @@ export interface VdpToolField {
     textContent?: string | null;
     fontName?: string;
     fontFile?: string;
+    fontDataUrl?: string;
     fontStyle?: string;
+    fontWeight?: number | string;
     fontSize?: number;
     lineHeight?: number;
     characterSpacing?: number;
@@ -26,6 +28,14 @@ export interface VdpToolField {
     curveRadius?: number;
     curveOrientation?: 'outward' | 'inward';
     curveTracking?: number;
+    strokeColor?: string;
+    strokeWidth?: number;
+    strokeLineJoin?: 'miter' | 'round' | 'bevel';
+    strokeLineCap?: 'butt' | 'round' | 'square';
+    shadowColor?: string;
+    shadowOffsetX?: number;
+    shadowOffsetY?: number;
+    shadowBlur?: number;
     [property: string]: unknown;
 }
 

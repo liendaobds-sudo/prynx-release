@@ -530,6 +530,7 @@ interface Props {
   onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
   onApplyResult?: (blob: Blob, name: string, path?: string) => void | Promise<void>;
   isActive?: boolean;
+  tabId?: string;
 }
 export default function DataMergeTool({
     pdfFile,
@@ -540,7 +541,8 @@ export default function DataMergeTool({
     onSelectField,
     onSpawnTab,
     onApplyResult,
-    isActive = true
+    isActive = true,
+    tabId,
 }: Props) {
   const { t } = useTranslation();
     const setDataMergeFields: SetVdpFields | undefined = setVdpFields
@@ -580,6 +582,8 @@ export default function DataMergeTool({
             if (res.working_fid && res.working_pdf_url) {
                 window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
                     detail: {
+                        tabId,
+                        sourceFid: fid,
                         workingFid: res.working_fid,
                         workingPdfUrl: res.working_pdf_url,
                         workingPdfPath: res.working_pdf_path
@@ -592,6 +596,26 @@ export default function DataMergeTool({
             setIsScanningTags(false);
         }
     };
+
+    // Reset live preview khi đổi file thiết kế (bỏ qua commit bóc trường __editCommit)
+    const lastPdfFileRef = useRef<File | null>(null);
+    useEffect(() => {
+        if (pdfFile && pdfFile !== lastPdfFileRef.current) {
+            const isEditCommit = Boolean((pdfFile as any)?.__editCommit);
+            lastPdfFileRef.current = pdfFile;
+            if (!isEditCommit) {
+                setPreviewIndex(1);
+                setVdpLivePreview({
+                    enabled: false,
+                    recordIndex: 1,
+                    totalRecords: 0,
+                    currentRecord: null,
+                    toolbarOffset: { x: 0, y: 0 },
+                });
+            }
+        }
+    }, [pdfFile, setVdpLivePreview]);
+
     // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
     const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
 
@@ -1606,11 +1630,7 @@ export default function DataMergeTool({
             <button
                 type="button"
                 onClick={() => {
-                    const next = !isPickingVdpText;
-                    setIsPickingVdpText(next);
-                    if (next) {
-                        toast.info(t('Chế độ chọn liên tục đã bật: Nhấp vào các dòng chữ trên bản thiết kế để bóc tách thành trường VDP, bấm "Xong" hoặc phím Esc khi hoàn tất.'));
-                    }
+                    setIsPickingVdpText(!isPickingVdpText);
                 }}
                 className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
                     isPickingVdpText

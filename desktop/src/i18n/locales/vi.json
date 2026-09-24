@@ -6288,6 +6288,27 @@
     "title": "Tách tem từ ảnh AI",
     "undo": "Hoàn tác"
   },
+  "misc.vdpPicker": {
+    "title": "Chọn trường mã",
+    "kind_label": "Loại mã",
+    "symbology_label": "Chuẩn mã vạch",
+    "name_label": "Tên trường",
+    "name_placeholder": "Tên trường (tùy chọn)",
+    "qr": "QR code",
+    "barcode": "Mã vạch",
+    "datamatrix": "Data Matrix",
+    "detect": "Nhận diện mã",
+    "detecting": "Đang nhận diện…",
+    "apply": "Tạo trường",
+    "close": "Đóng",
+    "instruction": "Bấm một đối tượng để chọn · Shift + bấm để chọn nhiều · Kéo vùng để chọn cụm mã",
+    "selected": "Đã chọn {{count}} đối tượng",
+    "background_image_hint": "Ảnh phủ toàn trang không thể tách mã riêng. Hãy chọn placeholder ảnh riêng hoặc dùng PDF có đối tượng mã độc lập.",
+    "partial_image_hint": "Vùng chọn phải bao trọn ảnh mã; không chọn một phần ảnh.",
+    "detected_hint": "Đã nhận diện loại mã.",
+    "detect_failed_hint": "Chưa nhận diện được mã; hãy chọn loại mã thủ công.",
+    "click_to_pick": "Nhấp hoặc quét khung để chọn làm trường mã"
+  },
   "preprocess.documentCleanup": {
     "title": "Nắn thẻ – Làm trắng scan",
     "description": "Nắn ảnh giấy tờ chụp xiên, làm sạch nền xám của bản scan",
@@ -6323,5 +6344,28 @@
     "batch_not_ready": "Chưa xử lý xong toàn bộ tài liệu.",
     "batch_result_unsupported": "Kết quả có định dạng không thể đưa vào PDF làm việc.",
     "batch_result_empty": "Không có trang kết quả để tạo PDF làm việc."
+  },
+  "image_gate": {
+    "phat_hien_anh_sieu_lon": "Phát hiện ảnh siêu lớn (DPI rất cao)",
+    "canh_bao_dung_luong_ram": "Ảnh có số lượng điểm ảnh vượt chuẩn thường, dễ làm nghẽn bộ nhớ.",
+    "kich_thuoc_pixel": "Kích thước",
+    "tong_diem_anh": "Tổng điểm ảnh",
+    "do_phan_giai_goc": "Độ phân giải",
+    "kho_in_thuc_te": "Khổ in thực tế",
+    "bo_nho_giai_nen_du_tinh": "Bộ nhớ RAM giải nén dự tính",
+    "chuan_nganh_in": "Quy chuẩn in ấn",
+    "loi_khuyen_poster": "Với poster/pano/standee khổ lớn từ 1 mét, độ phân giải 150 – 200 DPI đã đạt độ nét tối đa cho mắt nhìn. Độ phân giải quá cao (600 DPI) chỉ làm nặng máy gấp 16 lần mà không tăng thêm chất lượng in.",
+    "chon_do_phan_giai": "Chọn độ phân giải mong muốn:",
+    "toi_uu_150_dpi": "Tự động tối ưu về 150 DPI (Khuyến nghị in ấn)",
+    "giam_dung_luong_mo_ngay": "Giảm xuống ~{{mp}} MP, mở ngay trong 2-3s, giữ 100% độ nét khi in.",
+    "toi_uu_200_dpi": "Tối ưu về 200 DPI (Chất lượng cao)",
+    "chat_luong_cao_mo_ta": "Độ mịn cao hơn, phù hợp cự ly nhìn gần < 0.8m.",
+    "toi_uu_300_dpi": "Tối ưu về 300 DPI (Sắc nét tối đa)",
+    "sac_net_toi_da_mo_ta": "Chuẩn in offset cự ly cực gần < 0.4m, chi tiết cao.",
+    "toi_uu_100_dpi": "Tối ưu về 100 DPI (Pano / Billboard)",
+    "pano_billboard_mo_ta": "Siêu nhẹ, phù hợp bảng hiệu, backdrop khổ lớn nhìn xa > 2m.",
+    "tuy_chinh_dpi": "Tùy chỉnh DPI",
+    "ap_dung_tuy_chinh": "Tối ưu theo {{dpi}} DPI",
+    "tiep_tuc_mo_anh_goc": "Mở ảnh gốc không nén (Nguy cơ đơ máy)"
   }
 }

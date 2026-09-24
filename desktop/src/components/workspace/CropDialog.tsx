@@ -78,6 +78,21 @@ function errorMessage(error: unknown, fallback: string): string {
     return fallback;
 }
 
+function fetchPageBoxesApi(fid: string, pageNum: number, signal?: AbortSignal) {
+    const isPath = fid.includes('/') || fid.includes('\\') || /^[a-zA-Z]:/.test(fid);
+    if (isPath) {
+        return authenticatedFetch(`${getApiUrl()}/preflight/page-boxes-by-path`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: fid, page: pageNum }),
+            signal,
+        });
+    }
+    return authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${encodeURIComponent(fid)}/${pageNum}`, {
+        signal,
+    });
+}
+
 const DEFAULT_MAX_TRIM_MM = 10;
 
 export const CROP_PREFERENCES_STORAGE_KEY = 'prynx_crop_preferences_v1';
@@ -334,9 +349,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
                 if (requestId !== openRequestIdRef.current) return;
                 setFileId(fid);
 
-                const boxRes = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${fid}/${detail.pageNum}`, {
-                    signal: controller.signal,
-                });
+                const boxRes = await fetchPageBoxesApi(fid, detail.pageNum, controller.signal);
                 const data = await boxRes.json() as PageBoxesResponse & ApiResult;
                 if (!boxRes.ok || !data?.cropbox) {
                     throw new Error(data.detail || t('misc.cropDialog:khong_doc_duoc_kho_trang_http', { status: boxRes.status }));
@@ -532,9 +545,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             try {
                 const fid = await ensureFileId(controller.signal);
                 assertRequestCurrent();
-                const boxRes = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${fid}/${pageNum}`, {
-                    signal: controller.signal,
-                });
+                const boxRes = await fetchPageBoxesApi(fid, pageNum, controller.signal);
                 assertRequestCurrent();
                 const data = await boxRes.json() as PageBoxesResponse & ApiResult;
                 if (!boxRes.ok || !data?.cropbox) {
@@ -748,9 +759,7 @@ export default function CropDialog({ tabId = 'legacy', ensureFileId, onApplied, 
             assertRequestCurrent();
             setFileId(currentFileId);
 
-            const boxRes = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${currentFileId}/${pageNum}`, {
-                signal: controller.signal,
-            });
+            const boxRes = await fetchPageBoxesApi(currentFileId, pageNum, controller.signal);
             assertRequestCurrent();
             const boxData = await boxRes.json() as PageBoxesResponse & ApiResult;
             assertRequestCurrent();

@@ -14,6 +14,8 @@ import { Button } from './Button';
 import { Printer, Scissors } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { imageFileToPdfIfNeeded, isSupportedImageFileName } from '../lib/imageNormalizer';
+import { inspectImageHeader, type ImageHeaderInfo } from '../lib/imageHeaderInspector';
+import GiantImageOptimizationModal from './workspace/GiantImageOptimizationModal';
 import {
     formatFileOpeningError,
     initialFileOpeningPhase,
@@ -29,7 +31,7 @@ import { resolveEffectiveSeparateCut } from './imposition-tools/pageSheetPolicy'
 import { canUseRectangleStickerInking } from './imposition-tools/shapeDetectionPolicy';
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
-import { getApiUrl, uploadPDF, authenticatedFetch } from '../lib/api';
+import { getApiUrl, uploadPDF, authenticatedFetch, requestDownsampleImage } from '../lib/api';
 import { createRevisionScopedPdfUploadCache } from '../lib/revisionScopedPdfUpload';
 import { recipeRecorder, type RecipeOperationTicket } from '../lib/recipe/RecipeRecorder';
 import { shouldBlockUnrecordedCommit } from '../lib/recipe/unrecordedCommit';
@@ -93,6 +95,7 @@ import SaveModal from './workspace/SaveModal';
 import SavePrintFilesModal from './workspace/SavePrintFilesModal';
 import { usePrintDialog } from './shared/usePrintDialog';
 import EditLayersPanel from './workspace/SelectionLayersPanel';
+import { clearEditObjectsCache } from './workspace/LivePageFrame';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import {
     TOOL_MENU_ICON_WIDTH,
@@ -718,6 +721,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return;
         }
         if (prevTool !== activeDashboardTool) {
+            if (activeDashboardTool !== 'none' && activeDashboardTool !== 'logo_rebuild') {
+                setViewerFitMode('smart');
+            }
             if (activeDashboardTool === 'crop') {
                 if (!isCropMode) setIsCropMode(true);
                 setIsObjectEditMode(false);
@@ -736,7 +742,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
         }
     }, [activeDashboardTool, isCropMode, isObjectEditMode, runEditTransitionBarrier,
-        setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode]);
+        setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode, setViewerFitMode]);
     // Lựa chọn vị trí trang trắng — chỉ hỏi trong dialog Xác nhận khi số trang lẻ tay.
     const [confirmBlankPlacement, setConfirmBlankPlacement] = useState<'end' | 'center'>('end');
 
@@ -1010,6 +1016,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setFileOpeningPhase('idle');
     }, [clearFileOpeningTimer, setError]);
 
+    // Gatekeeper cho ảnh siêu lớn (tránh nghẽn bộ nhớ/tràn RAM khi mở poster > 80 MP)
+    const [giantImageModalOpen, setGiantImageModalOpen] = useState(false);
+    const [giantImageCandidate, setGiantImageCandidate] = useState<File | null>(null);
+    const [giantImageHeader, setGiantImageHeader] = useState<ImageHeaderInfo | null>(null);
+    const [giantImageOptimizing, setGiantImageOptimizing] = useState(false);
+    const [giantImageOptimizingDpi, setGiantImageOptimizingDpi] = useState(150);
+    const pendingGiantImageAllFilesRef = useRef<File[] | undefined>(undefined);
+    const pendingGiantImageIsInitialRef = useRef<boolean>(false);
+    const bypassedInitialImageRef = useRef<boolean>(false);
+
     useEffect(() => () => {
         fileOpeningAttemptRef.current += 1;
         clearFileOpeningTimer();
@@ -1024,6 +1040,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const attempt = beginFileOpeningAttempt(true);
             (async () => {
                 let openedFile = initialFile;
+                if (isSupportedImageFileName(initialFile.name) && !bypassedInitialImageRef.current) {
+                    try {
+                        const headerInfo = await inspectImageHeader(initialFile);
+                        if (headerInfo?.isOversized) {
+                            settleFileOpeningAttempt(attempt, 'idle');
+                            setGiantImageCandidate(initialFile);
+                            setGiantImageHeader(headerInfo);
+                            pendingGiantImageAllFilesRef.current = undefined;
+                            pendingGiantImageIsInitialRef.current = true;
+                            setGiantImageModalOpen(true);
+                            return;
+                        }
+                    } catch (inspectErr) {
+                        console.warn('[initialFile] inspectImageHeader error:', inspectErr);
+                    }
+                }
                 setSourceImageFile(isSupportedImageFileName(initialFile.name) ? initialFile : null);
                 syncedStickerSourceRef.current = initialFile;
                 try {
@@ -1960,6 +1992,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const handleTemplateCleaned = async (event: Event) => {
             const detail = (event as CustomEvent)?.detail;
             if (!detail?.workingPdfUrl) return;
+
+            // [VDP ISOLATION]: Bỏ qua sự kiện nếu không khớp với tab hiện tại hoặc file hiện tại
+            if (detail.tabId && tabId && detail.tabId !== tabId) return;
+            if (detail.sourceFid && selectionFileId && detail.sourceFid !== selectionFileId) return;
+
             try {
                 const isTauri = Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
                 const originalName = file?.name || 'template.pdf';
@@ -2027,7 +2064,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return () => {
             window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
         };
-    }, [file, pdfUrl, setFile, setPdfUrl, setOriginalFileName, setFileSizeStr, setIsSaved, setSelectionFileId, selectionFileId, editHistory]);
+    }, [file, pdfUrl, setFile, setPdfUrl, setOriginalFileName, setFileSizeStr, setIsSaved, setSelectionFileId, selectionFileId, editHistory, tabId, store]);
+
+    // Khi tab bị inactive (chuyển sang tab khác), tự động tắt chế độ chọn trường VDP
+    // để tránh click nhầm hoặc rò rỉ trạng thái picking giữa các tab
+    useEffect(() => {
+        if (!isActive) {
+            store.getState().setIsPickingVdpText(false);
+        }
+    }, [isActive, store]);
 
 
     const handleDeleteObjects = useCallback(async (objs: PdfObject[], pageNum: number) => {
@@ -2563,7 +2608,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const formatSize = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 
-    const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
+    const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[], bypassOversizedCheck = false) => {
+        if (!bypassOversizedCheck && isSupportedImageFileName(selectedFile.name)) {
+            try {
+                const headerInfo = await inspectImageHeader(selectedFile);
+                if (headerInfo?.isOversized) {
+                    setGiantImageCandidate(selectedFile);
+                    setGiantImageHeader(headerInfo);
+                    pendingGiantImageAllFilesRef.current = allFiles;
+                    pendingGiantImageIsInitialRef.current = false;
+                    setGiantImageModalOpen(true);
+                    return;
+                }
+            } catch (inspectErr) {
+                console.warn('[handleFileSelected] inspectImageHeader error:', inspectErr);
+            }
+        }
         // Ảnh → PDF ngay khi mở để mọi công cụ sau chỉ nhận hợp đồng PDF.
         pendingSelectedOpenRef.current = { file: selectedFile, allFiles };
         syncedStickerSourceRef.current = selectedFile;
@@ -2620,6 +2680,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         store?.getState().setObjectEditPast([]);
         store?.getState().setObjectEditFuture([]);
         
+        // Reset VDP & Object Edit state khi đổi file (tránh rò rỉ trường từ file cũ sang file mới)
+        setVdpFields([]);
+        setSelectedVdpFieldIds([]);
+        store?.getState().setIsPickingVdpText(false);
+        store?.getState().setVdpLivePreview({
+            enabled: false,
+            recordIndex: 1,
+            totalRecords: 0,
+            currentRecord: null,
+            toolbarOffset: { x: 0, y: 0 },
+        });
+        setHiddenObjectIds([]);
+        setLockedObjectIds([]);
+        clearEditObjectsCache();
+
         // Reset detected shapes so it forces a re-detection for the new file
         setDetectedShapeType(null);
         setDetectedShapeParams(null);
@@ -2647,7 +2722,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         beginFileOpeningAttempt, onSpawnTab, onTitleChange, pdfUrl,
         setDetectedDimensionsByPage, setDetectedShapeParams, setDetectedShapeParamsByPage,
         setDetectedShapeType, setDetectedShapesByPage, setError, setFile, setFileSizeStr,
-        setHistory, setOriginalFileName, setPdfUrl, setPhase, setSelectionFileId,
+        setHiddenObjectIds, setHistory, setLockedObjectIds, setOriginalFileName, setPdfUrl,
+        setPhase, setSelectedVdpFieldIds, setSelectionFileId, setVdpFields,
         setViewerFitMode, setViewerPageDisplayMode, settleFileOpeningAttempt, store, t,
     ]);
     const retryFileOpening = useCallback(() => {
@@ -2658,6 +2734,54 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         initialOpenRetryRef.current?.();
     }, [handleFileSelected]);
+
+    const handleGiantImageOptimize = useCallback(async (targetDpi: number) => {
+        if (!giantImageCandidate) return;
+        setGiantImageOptimizing(true);
+        setGiantImageOptimizingDpi(targetDpi);
+        try {
+            const { optimizedFile, optimizedPdfFile } = await requestDownsampleImage(giantImageCandidate, targetDpi);
+            const allFiles = pendingGiantImageAllFilesRef.current;
+            const wasInitial = pendingGiantImageIsInitialRef.current;
+            if (wasInitial) {
+                bypassedInitialImageRef.current = true;
+            }
+            setGiantImageModalOpen(false);
+            setGiantImageCandidate(null);
+            setGiantImageHeader(null);
+            // Ưu tiên nạp thẳng PDF đã tối ưu vào workspace để AcrobatViewer mở tức thì trong 2-3s (bỏ qua bước convert ảnh chậm trong JS)
+            const fileToOpen = optimizedPdfFile || optimizedFile;
+            await handleFileSelected(fileToOpen, allFiles, true);
+        } catch (err: unknown) {
+            console.error('Hạ mẫu ảnh lỗi:', err);
+            const msg = err instanceof Error ? err.message : String(err);
+            setError(`Không thể tối ưu ảnh: ${msg}`);
+            setGiantImageModalOpen(false);
+        } finally {
+            setGiantImageOptimizing(false);
+        }
+    }, [giantImageCandidate, handleFileSelected, setError]);
+
+    const handleGiantImageProceedOriginal = useCallback(async () => {
+        if (!giantImageCandidate) return;
+        const candidate = giantImageCandidate;
+        const allFiles = pendingGiantImageAllFilesRef.current;
+        const wasInitial = pendingGiantImageIsInitialRef.current;
+        if (wasInitial) {
+            bypassedInitialImageRef.current = true;
+        }
+        setGiantImageModalOpen(false);
+        setGiantImageCandidate(null);
+        setGiantImageHeader(null);
+        await handleFileSelected(candidate, allFiles, true);
+    }, [giantImageCandidate, handleFileSelected]);
+
+    const handleGiantImageCancel = useCallback(() => {
+        setGiantImageModalOpen(false);
+        setGiantImageCandidate(null);
+        setGiantImageHeader(null);
+        setFileOpeningPhase('idle');
+    }, [setFileOpeningPhase]);
 
     useEffect(() => {
         if (
@@ -3416,6 +3540,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setShowCloseConfirm(false);
         setVdpFields([]); // Clear barcode/VDP fields
         setSelectedVdpFieldIds([]);
+        store?.getState().setIsPickingVdpText(false);
+        store?.getState().setVdpLivePreview({
+            enabled: false,
+            recordIndex: 1,
+            totalRecords: 0,
+            currentRecord: null,
+            toolbarOffset: { x: 0, y: 0 },
+        });
+        clearEditObjectsCache();
         
         // Clear shape detection cache
         setDetectedShapeType(null);
@@ -4564,6 +4697,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         />
                                                     ) : rightPanelKind === 'datamerge' ? (
                                                         <DataMergeTool
+                                                            tabId={tabId}
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
                                                             vdpFields={vdpFields}
@@ -4985,6 +5119,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         </div>
                     </div>
                 </div>,
+                document.body
+            )}
+            {giantImageModalOpen && giantImageCandidate && giantImageHeader && createPortal(
+                <GiantImageOptimizationModal
+                    open={giantImageModalOpen}
+                    fileName={giantImageCandidate.name}
+                    headerInfo={giantImageHeader}
+                    isOptimizing={giantImageOptimizing}
+                    optimizingDpi={giantImageOptimizingDpi}
+                    onOptimize={handleGiantImageOptimize}
+                    onProceedOriginal={handleGiantImageProceedOriginal}
+                    onCancel={handleGiantImageCancel}
+                />,
                 document.body
             )}
             {isActive !== false && activeToolLocked && activeToolDefinition && (
