@@ -1823,7 +1823,9 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     tile_cache_dir().join(format!("{:016x}.png", h.finish()))
 }
 
-const TILE_RENDER_CACHE_VERSION: &str = "v8_transparent_bg_lossless_png";
+// [ACROBAT-SHARP-FIX 2026-09-24]: Đổi sang v9 nền trắng đục để FreeType kích hoạt 100%
+// Subpixel LCD Anti-Aliasing (ClearType/CoolType), loại bỏ quầng xám mờ của v8 transparent.
+const TILE_RENDER_CACHE_VERSION: &str = "v9_opaque_white_lcd_sharp_png";
 
 #[allow(clippy::too_many_arguments)]
 fn tile_render_cache_key(
@@ -4117,7 +4119,10 @@ pub fn render_tile_png_with_options(
                 let safe_w = w.clamp(1, 4000) as i32;
                 let safe_h = h.clamp(1, 4000) as i32;
                 PdfRenderConfig::new()
-                    .set_clear_color(PdfColor::new(0, 0, 0, 0))
+                    // [ACROBAT-SHARP-FIX 2026-09-24]: BẮT BUỘC nền Opaque White (255,255,255,255).
+                    // PDFium/FreeType tự động vô hiệu hóa Sub-pixel LCD Anti-Aliasing (ClearType)
+                    // và rơi về Grayscale nếu nền có alpha=0. Nền trắng đục kích hoạt nét đanh thép như Adobe CoolType.
+                    .set_clear_color(PdfColor::new(255, 255, 255, 255))
                     .set_fixed_size(safe_w, safe_h)
                     .translate(
                         PdfPoints::new(-(x as f32) / render_scale),
@@ -4125,7 +4130,7 @@ pub fn render_tile_png_with_options(
                     )
                     .unwrap_or_default()
                     .scale_page_by_factor(render_scale)
-                    // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
+                    // LCD subpixel text → chữ sắc nét kiểu Acrobat.
                     .use_lcd_text_rendering(true)
             } else {
                 // VECTOR #6 FIX: Prevent PDFium OOM on extremely tall/wide documents.
@@ -4151,9 +4156,12 @@ pub fn render_tile_png_with_options(
                 let safe_w = (width_pt * effective_scale).max(1.0) as i32;
 
                 PdfRenderConfig::new()
-                    .set_clear_color(PdfColor::new(0, 0, 0, 0))
+                    // [ACROBAT-SHARP-FIX 2026-09-24]: BẮT BUỘC nền Opaque White (255,255,255,255).
+                    // PDFium/FreeType tự động vô hiệu hóa Sub-pixel LCD Anti-Aliasing (ClearType)
+                    // và rơi về Grayscale nếu nền có alpha=0. Nền trắng đục kích hoạt nét đanh thép như Adobe CoolType.
+                    .set_clear_color(PdfColor::new(255, 255, 255, 255))
                     .set_target_width(safe_w)
-                    // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
+                    // LCD subpixel text → chữ sắc nét kiểu Acrobat.
                     .use_lcd_text_rendering(true)
             };
         // RENDER_LOCK: serialize với đường in (print.rs mở doc riêng ngoài DOC_CACHE).

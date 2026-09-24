@@ -3561,11 +3561,22 @@ export const LivePageFrame = (props: any) => {
         setRenderZoom(computeRenderZoom(zoom));
     }, [physicalDisplayScale, displayDevicePixelRatio, computeRenderZoom, zoom]);
 
-    // Đổi cài đặt chất lượng phải áp NGAY (không chờ zoom kế tiếp) → renderBudgetPx trong deps.
+    // PERF (audit độ nét 2026-09-24 §ACROBAT-PERF): Adaptive zoom debounce.
+    // Trước đây hardcode 250ms khiến người dùng dừng lăn chuột vẫn phải chờ thêm 1/4 giây
+    // mới bắt đầu xin ảnh nét, gây cảm giác "chờ mãi mới lên".
+    // Khi người dùng bấm nút zoom rời rạc hoặc dừng lăn chuột: delay 64ms (≈ 4 frame 60Hz)
+    // vừa đủ gom chuỗi cuộn mà phản hồi gần như tức thì, tiệm cận độ nhạy của Adobe Acrobat.
+    const lastZoomTimeRef = useRef(0);
     useEffect(() => {
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const interval = now - lastZoomTimeRef.current;
+        lastZoomTimeRef.current = now;
+        // Nếu khoảng cách giữa 2 lần zoom > 300ms (thao tác click nút, phím tắt, hoặc bắt đầu lăn):
+        // áp dụng nhanh trong 32ms. Nếu đang lăn liên tục (<300ms/nấc): gom bằng 64ms.
+        const delayMs = interval > 300 ? 32 : 64;
         const timeoutId = setTimeout(() => {
             setRenderZoom(computeRenderZoom(zoom));
-        }, 250);
+        }, delayMs);
         return () => clearTimeout(timeoutId);
     }, [zoom, renderBudgetPx, physicalDisplayScale, displayDevicePixelRatio, computeRenderZoom]);
 
