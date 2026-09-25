@@ -54,7 +54,7 @@ class SvgEmitter:
             out.append(f'<g id={safe_id} fill="none" '
                        f'stroke={safe_stroke} stroke-width="{self.stroke_width_mm:.4f}">')
             for p in paths:
-                out.append(f'<path d="{self._path_d(p.points, p.closed, h)}"/>')
+                out.append(f'<path d="{self._path_d(p.points, p.closed, h, p.vector_segments())}"/>')
             out.append("</g>")
 
         if self.draw_marks and model.marks:
@@ -70,12 +70,22 @@ class SvgEmitter:
         out.append("</svg>")
         return ("\n".join(out) + "\n").encode("utf-8")
 
-    def _path_d(self, points, closed: bool, sheet_h: float) -> str:
+    def _path_d(self, points, closed: bool, sheet_h: float, segments=()) -> str:
         # Lật Y: svg_y = sheet_h - y.
         d = []
-        for i, (x, y) in enumerate(points):
-            cmd = "M" if i == 0 else "L"
-            d.append(f"{cmd} {x:.4f} {sheet_h - y:.4f}")
+        # QUALITY (audit 2026-09-24 §CUT24.D01): lật Y cả tay nắm cubic,
+        # không thay bằng polyline đã tạo cho máy chỉ có lệnh line.
+        if segments:
+            x,y = segments[0][0]
+            d.append(f"M {x:.8f} {sheet_h-y:.8f}")
+            for segment in segments:
+                cmd = "C" if len(segment) == 4 else "L"
+                coordinates = " ".join(f"{x:.8f} {sheet_h-y:.8f}" for x,y in segment[1:])
+                d.append(f"{cmd} {coordinates}")
+        else:
+            for i, (x, y) in enumerate(points):
+                cmd = "M" if i == 0 else "L"
+                d.append(f"{cmd} {x:.4f} {sheet_h - y:.4f}")
         if closed:
             d.append("Z")
         return " ".join(d)

@@ -1,0 +1,175 @@
+{
+  "executable_sha256": "de04cafeb8c2bb66c5ce52a1b58619a78f336c379b402224ba61852ca8e7679c",
+  "executable_size": 29157888,
+  "fixture_sha256": "0cc8d2b1e8675ba4c675b65cd02f1000a205571a9d932ad7c65e906e08af7f2d",
+  "renders": [
+    {
+      "kind": "page",
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-2",
+        "owner_id": "audit:native-render-v10",
+        "generation": 1,
+        "status": "ready",
+        "bitmap_width": 400,
+        "bitmap_height": 200,
+        "pipeline_identity": "pdfium-display-png-v1",
+        "cache_tier": "none",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 0,
+          "encode_ms": 0,
+          "cache_ms": 0,
+          "total_ms": 85
+        },
+        "soundness": "display-preview",
+        "unsupported_reason": null,
+        "fallback_font_sha256": null,
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "magic": "PXRG",
+      "bytes": 320016,
+      "shape": [
+        200,
+        400,
+        4
+      ],
+      "view_only_red_scaled": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "print_only_green_scaled": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "screen_annotation_blue_scaled": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "raw_at_70_60": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "raw_at_70_190": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "raw_at_70_320": [
+        0,
+        0,
+        255,
+        255
+      ]
+    },
+    {
+      "kind": "clip",
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-3",
+        "owner_id": "audit:native-render-v10",
+        "generation": 1,
+        "status": "ready",
+        "bitmap_width": 400,
+        "bitmap_height": 200,
+        "pipeline_identity": "pdfium-display-png-v1",
+        "cache_tier": "none",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 0,
+          "encode_ms": 0,
+          "cache_ms": 0,
+          "total_ms": 0
+        },
+        "soundness": "display-preview",
+        "unsupported_reason": null,
+        "fallback_font_sha256": null,
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "magic": "PXRG",
+      "bytes": 320016,
+      "shape": [
+        200,
+        400,
+        4
+      ],
+      "view_only_red_scaled": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "print_only_green_scaled": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "screen_annotation_blue_scaled": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "raw_at_70_60": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "raw_at_70_190": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "raw_at_70_320": [
+        0,
+        0,
+        255,
+        255
+      ]
+    }
+  ],
+  "hello_v9_result": {
+    "message": "hello",
+    "ok": false,
+    "request_id": "zoom-runway-1",
+    "nonce": "render-audit-v9",
+    "worker_pid": 4872,
+    "protocol_version": 4,
+    "app_version": "2.0.4",
+    "tile_cache_version": "v10_view_semantics_opaque_white_png",
+    "pipeline_identity": "pdfium-display-png-v1",
+    "pdfium_sha256": null,
+    "error": "Phi\u00ean b\u1ea3n tile cache c\u1ee7a render worker kh\u00f4ng kh\u1edbp."
+  },
+  "hello_v10_result": {
+    "message": "hello",
+    "ok": true,
+    "request_id": "zoom-runway-1",
+    "nonce": "render-audit-v10",
+    "worker_pid": 13008,
+    "protocol_version": 4,
+    "app_version": "2.0.4",
+    "tile_cache_version": "v10_view_semantics_opaque_white_png",
+    "pipeline_identity": "pdfium-display-png-v1",
+    "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+    "error": null
+  }
+}

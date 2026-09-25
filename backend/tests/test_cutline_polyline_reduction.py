@@ -52,6 +52,58 @@ def _line_ring(points):
     return [MachinePathSegment.line(a, b) for a, b in zip(points, points[1:] + points[:1])]
 
 
+def test_cancel_during_recursive_hull_check_stops_next_subdivision(monkeypatch):
+    from app.workers import cutline_polyline_reduction as reducer
+    from app.workers.cutline_preview_cancel import (
+        PreviewCancellation, PreviewCancelled, cancellation_scope,
+    )
+
+    token = PreviewCancellation()
+    original = reducer.split_cubic
+    splits = []
+
+    def split(*args, **kwargs):
+        splits.append(True)
+        token.cancel()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reducer, "split_cubic", split)
+    first = _linear_cubic_segment((-1., 0.), (1., 0.))
+    second = _linear_cubic_segment((0., -1.), (0., 1.))
+    try:
+        with cancellation_scope(token), pytest.raises(PreviewCancelled):
+            reducer._curves_disjoint(first, second, False)
+    finally:
+        token.close()
+    assert len(splits) == 1
+
+
+def test_cancel_during_pair_check_stops_topology_before_return(monkeypatch):
+    from app.workers import cutline_polyline_reduction as reducer
+    from app.workers.cutline_preview_cancel import (
+        PreviewCancellation, PreviewCancelled, cancellation_scope,
+    )
+
+    token = PreviewCancellation()
+    original = reducer._curves_disjoint
+    pairs = []
+
+    def disjoint(*args, **kwargs):
+        result = original(*args, **kwargs)
+        pairs.append(True)
+        token.cancel()
+        return result
+
+    monkeypatch.setattr(reducer, "_curves_disjoint", disjoint)
+    ring = _line_ring([(0., 0.), (1., 0.), (1., 1.), (0., 1.)])
+    try:
+        with cancellation_scope(token), pytest.raises(PreviewCancelled):
+            reducer._continuous_paths_simple([ring])
+    finally:
+        token.close()
+    assert len(pairs) == 1
+
+
 def test_certificate_exact_line_and_split():
     curve = _linear_cubic_segment((0.0, 0.0), (1.0, 0.0))
     source = [(0.0, 0.0), (0.2, 0.0), (1.0, 0.0)]

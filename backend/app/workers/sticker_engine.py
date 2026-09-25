@@ -12,6 +12,7 @@ import math
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from app.workers.cutline_simplify_memo import with_simplify_memo, current_simplify_memo
+from app.workers.numerical_worker_threads import with_worker_thread_budget
 from concurrent.futures.process import BrokenProcessPool
 from typing import Optional, Tuple
 from shapely.geometry import Polygon, MultiPolygon
@@ -5350,7 +5351,15 @@ def _fit_alpha_live_tuned_paths(
         )
         return geometry, fitted_paths
 
+    # QUALITY (audit 2026-09-24 CUT24.04): Một G1 đạt guard sớm vẫn có thể
+    # nhảy độ cong ở từng khớp. So sánh các candidate hợp lệ trước khi chọn;
+    # ưu tiên envelope chính xác rồi độ liên tục và số lệnh dao thực tế.
+    best_exact = None
+    best_exact_rank = None
     safe_fallback = None
+    safe_fallback_rank = None
+    min_x, min_y, max_x, max_y = ideal_cut_geometry.bounds
+    diagonal_mm = math.hypot(max_x - min_x, max_y - min_y) / mm_to_pts
     for strength in (1.0, 0.70, 0.42, 0.18):
         for builder in ("c2", "g1"):
             candidate = build_candidate(strength, builder)
@@ -5376,35 +5385,41 @@ def _fit_alpha_live_tuned_paths(
                 )
             ):
                 continue
-            if (
-                safe_fallback is None
-                and _geometry_within_hausdorff_budget(
-                    ideal_cut_geometry,
-                    sampled_geometry,
-                    absolute_budget_pts,
-                    first_envelope=absolute_envelope,
-                )
-            ):
-                safe_fallback = (
-                    sampled_geometry,
-                    fitted_paths,
-                    absolute_budget_mm,
-                )
-            if not _geometry_within_hausdorff_budget(
+            within_exact = _geometry_within_hausdorff_budget(
                 ideal_cut_geometry,
                 sampled_geometry,
                 exact_budget_pts,
                 first_envelope=ideal_envelope,
+            )
+            if not within_exact and not _geometry_within_hausdorff_budget(
+                ideal_cut_geometry,
+                sampled_geometry,
+                absolute_budget_pts,
+                first_envelope=absolute_envelope,
             ):
                 continue
-            return _retension_alpha_fit_result(
-                (sampled_geometry, fitted_paths, max_deviation_mm),
-                ideal_cut_geometry=ideal_cut_geometry,
-                alpha_geometry=alpha_geometry,
-                total_offset_pts=total_offset_pts,
+            rank = _alpha_candidate_motion_rank(
+                fitted_paths,
                 mm_to_pts=mm_to_pts,
-                curve_tension=_CUTLINE_TUNING_DEFAULT,
+                diagonal_mm=diagonal_mm,
+                can_protect_sparse_cusps=False,
             )
+            if within_exact:
+                if best_exact_rank is None or rank < best_exact_rank:
+                    best_exact_rank = rank
+                    best_exact = (sampled_geometry, fitted_paths, max_deviation_mm)
+            elif safe_fallback_rank is None or rank < safe_fallback_rank:
+                safe_fallback_rank = rank
+                safe_fallback = (sampled_geometry, fitted_paths, absolute_budget_mm)
+    if best_exact is not None:
+        return _retension_alpha_fit_result(
+            best_exact,
+            ideal_cut_geometry=ideal_cut_geometry,
+            alpha_geometry=alpha_geometry,
+            total_offset_pts=total_offset_pts,
+            mm_to_pts=mm_to_pts,
+            curve_tension=_CUTLINE_TUNING_DEFAULT,
+        )
     if safe_fallback is not None:
         # Độ bám sát cực cao không được phép ép engine quay về polyline dày node.
         # Dùng candidate máy-safe gần nhất trong envelope tuyệt đối; vùng xem cho
@@ -8642,6 +8657,7 @@ def _automatic_simplify_mm(page, document, page_number, *, alpha_source=False, a
     return 0.1 if inspection.has_raster and not inspection.has_vector else 0.0
 
 
+@with_worker_thread_budget
 def _process_sticker_chunk(args: dict):
     """Worker top-level (BẮT BUỘC picklable + importable cho Windows spawn).
 
@@ -8667,18 +8683,6 @@ def _process_sticker_chunk(args: dict):
             "CHUNK_START",
             f"chunk={chunk_idx} pages={pages} count={len(pages)} pid={pid}",
         )
-    except Exception:
-        pass
-    # OVERSUBSCRIPTION FIX: OpenCV/BLAS tự đa luồng (cv2.getNumThreads=số nhân). Chạy
-    # W worker mà mỗi worker vẫn dùng full nhân → W×nhân luồng chen nhau trên số nhân
-    # có hạn → thrashing (đo thực: 6 worker chỉ nhanh 2x thay vì ~6x). Ghim mỗi worker
-    # về ÍT luồng (orchestrator tính threads_per_worker ≈ nhân/W) để tổng luồng ≈ nhân.
-    _tpw = str(args.get("threads_per_worker", 1))
-    for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                 "NUMEXPR_NUM_THREADS", "OPENCV_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
-        os.environ[_var] = _tpw
-    try:
-        cv2.setNumThreads(int(_tpw))
     except Exception:
         pass
     try:
@@ -11381,31 +11385,21 @@ class StickerEngine:
                         if polyline_reduction is not None:
                             baseline_paths = [[(s.p0, s.p1, s.p2, s.p3) for s in path]
                                               for path in polyline_reduction.paths]
-                        if cutline_simplify_auto and (
-                            cut_fitted_paths is not None
-                            or corner_style in {"round", "alpha_smooth"}
-                            or cut_draw_style in {"round", "alpha_smooth"}
-                        ):
-                            # PERF (audit 2026-09-19 §SIMPLIFY.AUTO-SKIP-FITTED):
-                            # Khi chạy AUTO (cutline_simplify_auto=True), các đường đã được
-                            # bộ fitter (_fit_alpha_bezier_paths, _fit_round_contour_paths,
-                            # hoặc direct_analytic_fillet) fit thành cubic Bézier hoàn chỉnh
-                            # không đưa qua bộ solver phi tuyến SciPy (tránh nghẽn 8-25s/trang
-                            # trên file nhiều tem như 72 tem).
-                            # Auto-simplify chỉ dành cho polyline thô từ raster chưa được fit.
-                            baseline_paths = None
-                        elif baseline_paths is None and cut_draw_style in {"preserve", "miter"}:
+                        # QUALITY (audit 2026-09-24 CUT24.01): AUTO chỉ chọn
+                        # trang/dung sai; cùng một đường phải đi cùng reducer với
+                        # preview. Bỏ cubic đã fit ở đây làm memo không được đọc
+                        # và PDF khác đường vừa duyệt (56 -> 73 neo ở Binder2).
+                        if baseline_paths is None and cut_draw_style in {"preserve", "miter"}:
                             baseline_paths = _paths_for_alpha_geometry(cut_poly)
                         elif baseline_paths is None and cut_draw_style in {"round", "alpha_smooth"}:
-                            if not cutline_simplify_auto:
-                                writer_round_baseline = True
-                                from app.workers.cutline_geometry import _catmull_rom_bezier_segments
-                                baseline_paths = [
-                                    _catmull_rom_bezier_segments(
-                                        [segment[0] for segment in path] + [path[-1][3]],
-                                        tension=cut_draw_tension,
-                                    ) for path in _paths_for_alpha_geometry(cut_poly) if path
-                                ]
+                            writer_round_baseline = True
+                            from app.workers.cutline_geometry import _catmull_rom_bezier_segments
+                            baseline_paths = [
+                                _catmull_rom_bezier_segments(
+                                    [segment[0] for segment in path] + [path[-1][3]],
+                                    tension=cut_draw_tension,
+                                ) for path in _paths_for_alpha_geometry(cut_poly) if path
+                            ]
                         if baseline_paths:
                             groups = _group_alpha_paths_like(cut_poly, baseline_paths)
                             if groups:

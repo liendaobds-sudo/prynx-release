@@ -40,13 +40,16 @@ import { globalPdfObjectCache, type CachedPdfObject } from '../../stores/pdfObje
 import { useWorkspaceStore, type WorkspacePreflightIssue, type VdpLivePreviewState } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore'; // §R.9 (audit độ nét 2026-07-28)
+import { useTextMarkupStore } from '../../stores/useTextMarkupStore';
 import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp, ImageClipShape } from './editTypes';
 import type { SessionOpOutcome } from '../../hooks/useEditSession';
 import { FontSelector } from '../preprocess-tools/FontSelector';
 import { FloatingTextToolbar } from './FloatingTextToolbar';
+import { TextSelectionToolbar } from './TextSelectionToolbar';
+import { AcrobatCommentCard } from './AcrobatCommentCard';
 import { VdpRecordNavigatorBar } from './VdpRecordNavigatorBar';
-import { Lock, Check, X, RotateCcw, RotateCw, AlertTriangle, ImageUp, Trash2, Type, Shapes, Square, Circle, Triangle, Diamond, Pentagon, Hexagon, Octagon, Star, Heart, Plus } from 'lucide-react';
+import { Lock, Check, X, RotateCcw, RotateCw, AlertTriangle, ImageUp, Trash2, Type, Shapes, Square, Circle, Triangle, Diamond, Pentagon, Hexagon, Octagon, Star, Heart, Plus, MessageSquare } from 'lucide-react';
 import {
     pageWidthPtFromDim,
     pageHeightPtFromDim,
@@ -67,7 +70,7 @@ import {
     scrollElementVerticallyIntoView,
 } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
-import { previewPerfLog, viewerTraceHash, viewerTraceLog } from '../../lib/previewPerfLog';
+import { previewPerfLog, viewerTraceEnabled, viewerTraceHash, viewerTraceLog } from '../../lib/previewPerfLog';
 import {
     adoptViewerFirstFrame,
     peekViewerFirstFrame,
@@ -89,7 +92,6 @@ import {
 import {
     computeDevicePixelSnapOffset,
     computeViewportTilePanGridSpecs,
-    computeViewportTileCrossfadeMs,
     computeViewportTileSeamSafePresentationRect,
     computeViewportTileSpec,
     createRafCoalescer,
@@ -103,8 +105,10 @@ import {
     type ViewportRect,
     type ViewportTileSpec,
     VIEWPORT_TILE_CROSSFADE_MAX_MS,
+    VIEWPORT_TILE_QUEUED_IDLE_MS,
     VIEWPORT_TILE_RUNWAY_PAD,
     viewportTileBufferGroup,
+    viewportTileBufferItems,
     viewportTileCoversViewport,
     viewportTileGridCoversViewport,
     viewportTilePanCellSize,
@@ -275,6 +279,7 @@ interface LiveTileProps {
     onVisible: (element: HTMLElement, visible: boolean, eager?: boolean) => void;
     onRenderReady?: () => void;
     onTileReady?: (info: { scale: number }) => void;
+    onTileFailed?: () => void;
     onTileUnmount?: () => void;
     renderOwnerId?: string;
     renderPriority?: number;
@@ -359,7 +364,7 @@ export function shouldSettleAccurateTarget(input: {
         && input.loadedParams !== input.currentParams;
 }
 // Export ở mức component để regression test không cho hiện PDFium trong cold-open PPE.
-export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 50, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
+export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileFailed, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 0, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
     const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
@@ -374,6 +379,8 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     const [hasVisibleTile, setHasVisibleTile] = useState(false);
     const onTileReadyRef = useRef(onTileReady);
     onTileReadyRef.current = onTileReady;
+    const onTileFailedRef = useRef(onTileFailed);
+    onTileFailedRef.current = onTileFailed;
     const onTileUnmountRef = useRef(onTileUnmount);
     onTileUnmountRef.current = onTileUnmount;
     const onRenderReadyRef = useRef(onRenderReady);
@@ -533,7 +540,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         if (cv) {
             applyExactFit(cv);
         }
-    }, [cssW, cssH, clipW, clipH, seamlessGridPresentation, applyExactFit]);
+    }, [cssW, cssH, clipW, clipH, seamlessGridPresentation, applyExactFit, isCanvasActive, hasVisibleTile]);
     const loadedParamsRef = useRef('');
     const inFlightRequestRef = useRef<{ params: string; attempt: number } | null>(null);
     const preloadRef = useRef<HTMLImageElement|null>(null);
@@ -551,6 +558,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     
     const currentParams = `${fileKey}_${pageNum}_${zoom}_${rot}_${clipX}_${clipY}_${clipW}_${clipH}`;
     const surfaceParams = `${fileKey}_${pageNum}_${rot}_${clipX}_${clipY}_${clipW}_${clipH}`;
+    // [ACROBAT-STREAM-ZOOM 2026-09-24]: Bộ điều phối stream zoom mượt Acrobat:
+    // Lưu trữ mục tiêu zoom kế tiếp khi đang có 1 request in-flight và lưu surfaceParams để phân biệt zoom vs đổi trang.
+    const pendingNextTargetRef = useRef<{ zoom: number; currentParams: string; coarseZoom?: number } | null>(null);
+    const lastSurfaceParamsRef = useRef(surfaceParams);
+    lastSurfaceParamsRef.current = surfaceParams;
     const requestedColorRank = accurateOnly || progressiveAccurate ? 2 : 1;
     const initialCacheParamsRef = useRef({
         currentParams,
@@ -599,6 +611,69 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     
+    // PERF (audit 2026-09-25 §R25.03): cơ hội vẽ sau commit, không gọi đây là
+    // bằng chứng pixel đã scan-out. Chỉ đo DOM khi chẩn đoán được bật.
+    const presentationProbeFramesRef = useRef(new Set<number>());
+    const presentationProbeSerialRef = useRef(0);
+    useEffect(() => () => {
+        presentationProbeFramesRef.current.forEach(handle => cancelAnimationFrame(handle));
+        presentationProbeFramesRef.current.clear();
+    }, []);
+    const traceSurfacePresentation = useCallback((
+        element: HTMLCanvasElement | HTMLImageElement, source: TileUrlSource,
+        width: number, height: number, scale: number,
+    ) => {
+        if (!viewerTraceEnabled()) return;
+        const serial = ++presentationProbeSerialRef.current;
+        const committedAt = performance.now();
+        const sourceId = viewerTraceHash(source.url);
+        const first = requestAnimationFrame(() => {
+            presentationProbeFramesRef.current.delete(first);
+            const second = requestAnimationFrame(frameTime => {
+                presentationProbeFramesRef.current.delete(second);
+                const identity = nativeRenderCoordinator.sourceTraceIdentity(source);
+                if (serial !== presentationProbeSerialRef.current || !element.isConnected) {
+                    traceTileEvent('tile-frame-superseded', { ...identity, source_id: sourceId });
+                    return;
+                }
+                const startedAt = performance.now();
+                const rect = element.getBoundingClientRect();
+                let left = Math.max(rect.left, 0), top = Math.max(rect.top, 0);
+                let right = Math.min(rect.right, window.innerWidth), bottom = Math.min(rect.bottom, window.innerHeight);
+                let opacity = 1;
+                let visible = document.visibilityState !== 'hidden';
+                for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+                    const style = getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden') visible = false;
+                    const alpha = Number.parseFloat(style.opacity);
+                    if (Number.isFinite(alpha)) opacity *= alpha;
+                    if (node !== element && (style.overflowX !== 'visible' || style.overflowY !== 'visible')) {
+                        const clip = node.getBoundingClientRect();
+                        if (style.overflowX !== 'visible') { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+                        if (style.overflowY !== 'visible') { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+                    }
+                }
+                const dpr = window.devicePixelRatio || 1;
+                traceTileEvent('tile-frame-opportunity', {
+                    ...identity, source_id: sourceId, scale,
+                    frame_epoch_ms: performance.timeOrigin + frameTime,
+                    commit_to_frame_ms: performance.now() - committedAt,
+                    bitmap_w: width, bitmap_h: height, css_w: rect.width, css_h: rect.height,
+                    dpr, rotation: rot,
+                    pixel_ratio_x: rect.width > 0 ? width / (rect.width * dpr) : undefined,
+                    pixel_ratio_y: rect.height > 0 ? height / (rect.height * dpr) : undefined,
+                    css_visible: visible && opacity > 0 && right > left && bottom > top,
+                    effective_opacity: opacity,
+                    visible_w: Math.max(0, right - left), visible_h: Math.max(0, bottom - top),
+                    probe_ms: performance.now() - startedAt,
+                    measurement: 'DOM/rAF; khong bao gom occlusion va scan-out',
+                });
+            });
+            presentationProbeFramesRef.current.add(second);
+        });
+        presentationProbeFramesRef.current.add(first);
+    }, [rot, traceTileEvent]);
+
     const renderBitmapToCanvas = useCallback((
         source: TileUrlSource,
         scale: number,
@@ -612,6 +687,9 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         canvas.height = bm.height;
         const ctx = canvas.getContext('2d');
         if (!ctx) return false;
+        // [ACROBAT-VECTOR-SHARP 2026-09-24]: Tắt hoàn toàn bộ lọc làm mờ nội suy trên 2D canvas context,
+        // đảm bảo Skia sao chép pixel vector nguyên bản 1:1, không gây blur nhẹ ở mép đường vector và nét chữ.
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(bm, 0, 0);
         // PERF (audit 2026-09-23 §R23.MEASURE): dấu vết của bitmap ĐÃ VẼ,
         // không phải props target đang chờ. Harness phải thấy canvas như img,
@@ -639,6 +717,8 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         });
 
         traceTileEvent('tile-dom-canvas-ready', {
+            ...nativeRenderCoordinator.sourceTraceIdentity(source),
+            source_id: viewerTraceHash(source.url),
             attempt: loadAttemptRef.current,
             display_decode_ms: tileTimingRef.current?.params === paramsAtRequest
                 ? Math.round(performance.now() - tileTimingRef.current.startedAt)
@@ -647,10 +727,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             natural_h: bm.height,
         });
 
+        traceSurfacePresentation(canvas, source, bm.width, bm.height, scale);
         onTileReadyRef.current?.({ scale });
         onRenderReadyRef.current?.();
         return true;
-    }, [applyExactFit, surfaceParams, traceTileEvent, fileKey, pageNum, rot, accurateOnly, clipX, clipY, clipW, clipH]);
+    }, [applyExactFit, surfaceParams, traceTileEvent, traceSurfacePresentation, fileKey, pageNum, rot, accurateOnly, clipX, clipY, clipW, clipH]);
 
     // On mount: immediately restore cached image (no white flash!)
     useEffect(() => {
@@ -732,7 +813,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             clip_w: clipW,
             clip_h: clipH,
         });
-        if (!renderEnabled) {
+        if (!renderEnabled || !hasTileUrlBuilder) {
             if (accurateDelayRef.current !== null) {
                 clearTimeout(accurateDelayRef.current);
                 accurateDelayRef.current = null;
@@ -797,6 +878,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         // Check cache before scheduling network load
         const cachedSource = getCachedTileSource(currentParams);
         if (cachedSource?.bitmap && canvasRef.current) {
+            adoptedInitialFrameRef.current = false;
             loadedParamsRef.current = currentParams;
             cachedRenderReadyParamsRef.current = currentParams;
             renderBitmapToCanvas(cachedSource, zoom, currentParams);
@@ -805,6 +887,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         }
         const cachedUrl = cachedSource?.url ?? getCachedTileUrl(currentParams);
         if (cachedUrl && imgRef.current) {
+            adoptedInitialFrameRef.current = false;
             loadedParamsRef.current = currentParams;
             cachedRenderReadyParamsRef.current = currentParams;
             imgRef.current.src = cachedUrl;
@@ -825,12 +908,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             // _loadTile khi timer đang gom layout; mọi entrypoint phải cùng chờ.
             // Frame prime đã hiện, chỉ chặn target trung gian chứ không chặn pixel đầu.
             if (accurateTargetSettleRef.current !== null) return;
-            // PERF (audit 2026-08-14 §VIEW.LARGE.3): effect gọi ngay để không phụ thuộc paint,
-            // rồi IntersectionObserver có thể gọi lại trước khi request đầu hoàn tất. Cùng params
-            // đang bay phải dùng chính request đó; gọi lại sẽ tự hủy PPE generation 1 và dựng lại
-            // toàn bộ atlas dù DPI/clip không đổi.
-            if (inFlightRequestRef.current?.params === currentParams) {
-                traceTileEvent('tile-skip-inflight', { attempt: inFlightRequestRef.current.attempt });
+            // Giữ request trong cùng surface và gom target mới nhất tới khi nó kết thúc.
+            if (inFlightRequestRef.current) {
+                if (inFlightRequestRef.current.params !== currentParams) {
+                    pendingNextTargetRef.current = { zoom, currentParams, coarseZoom };
+                }
                 return;
             }
             if (loadedParamsRef.current === currentParams && hasLoadedOnce.current) {
@@ -846,6 +928,9 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 return;
             }
             const paramsAtRequest = currentParams;
+            // PERF (audit 2026-09-24 §R24.09): settle chỉ gom layout sau prime.
+            // Đã bắt đầu sharpen thì zoom tiếp dùng in-flight/coalesce, không chờ lại.
+            adoptedInitialFrameRef.current = false;
             if (cancelledRetryRef.current.params !== paramsAtRequest) {
                 cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
             }
@@ -856,6 +941,24 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             const clearInFlightRequest = () => {
                 if (inFlightRequestRef.current?.attempt === attempt) {
                     inFlightRequestRef.current = null;
+                }
+            };
+            // [AUDIT 2026-09-24 §R24.01]: Đường kết thúc request thống nhất cho cả thành công,
+            // discard chất lượng, discard stale và lỗi; tự động trigger pendingNextTarget tiếp theo.
+            const finishInFlightAndAdvance = (presentable = false) => {
+                const ownsAttempt = inFlightRequestRef.current?.attempt === attempt;
+                clearInFlightRequest();
+                if (ownsAttempt && !presentable && mountedRef.current) {
+                    onTileFailedRef.current?.();
+                }
+                const pending = pendingNextTargetRef.current;
+                if (pending && pending.currentParams !== paramsAtRequest && mountedRef.current) {
+                    pendingNextTargetRef.current = null;
+                    queueMicrotask(() => {
+                        if (mountedRef.current) {
+                            tileRef.current?._loadTile?.();
+                        }
+                    });
                 }
             };
             const requestIsCurrent = () => mountedRef.current
@@ -914,6 +1017,8 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                     .then((source: TileUrlSource) => {
                         const { url } = source;
                         traceTileEvent('tile-url-resolved', {
+                            ...nativeRenderCoordinator.sourceTraceIdentity(source),
+                            source_id: viewerTraceHash(source.url),
                             attempt,
                             scale,
                             color_stage: colorStage || 'display',
@@ -932,6 +1037,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             });
                             nativeRenderCoordinator.markDiscarded(source);
                             if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
+                            finishInFlightAndAdvance();
                             return;
                         }
                         if (source.bitmap && canvasRef.current) {
@@ -958,21 +1064,27 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                     source_current: nativeRenderCoordinator.isSourceCurrent(source),
                                 });
                                 if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
+                                finishInFlightAndAdvance();
                                 return;
                             }
                             const keptInCache = cache && source.cacheable !== false
                                 && cacheTileUrl(paramsAtRequest, source, fileKey);
                             if (keptInCache) ownedBlobUrlsRef.current.delete(url);
 
-                            renderBitmapToCanvas(source, scale, paramsAtRequest, colorStage);
+                            if (!renderBitmapToCanvas(source, scale, paramsAtRequest, colorStage)) {
+                                nativeRenderCoordinator.markDecodeFailed(source);
+                                throw new Error('Không vẽ được bitmap của trang PDF.');
+                            }
 
                             if (!onReady) {
                                 loadedParamsRef.current = paramsAtRequest;
-                                clearInFlightRequest();
+                                finishInFlightAndAdvance(true);
                             }
                             cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
                             dispatchLoadState({ type: 'ready', attempt });
                             traceTileEvent('tile-commit', {
+                                ...nativeRenderCoordinator.sourceTraceIdentity(source),
+                                source_id: viewerTraceHash(source.url),
                                 attempt,
                                 scale,
                                 color_stage: colorStage || 'display',
@@ -1025,6 +1137,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                 });
                                 if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                                 if (preloadRef.current === preImg) preloadRef.current = null;
+                                finishInFlightAndAdvance();
                                 return;
                             }
                             // Sharp có thể decode trước coarse vì được enqueue ngay khi coarse có URL.
@@ -1052,7 +1165,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                 // nhầm bitmap tạm là kết quả cuối. Giữ cờ tới sau decode để
                                 // preImg.onload của stage cuối không bị đánh dấu stale sớm.
                                 loadedParamsRef.current = paramsAtRequest;
-                                clearInFlightRequest();
+                                finishInFlightAndAdvance(true);
                             }
                             if (!hasLoadedOnce.current) {
                                 hasLoadedOnce.current = true;
@@ -1063,9 +1176,12 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             }
                             setHasVisibleTile(true);
                             setIsCanvasActive(false);
+                            if (imgEl) traceSurfacePresentation(imgEl, source, preImg.naturalWidth, preImg.naturalHeight, scale);
                             cancelledRetryRef.current = { params: paramsAtRequest, count: 0 };
                             dispatchLoadState({ type: 'ready', attempt });
                             traceTileEvent('tile-commit', {
+                                ...nativeRenderCoordinator.sourceTraceIdentity(source),
+                                source_id: viewerTraceHash(source.url),
                                 attempt,
                                 scale,
                                 color_stage: colorStage || 'display',
@@ -1097,10 +1213,13 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             if (preloadRef.current === preImg) preloadRef.current = null;
                             if (ownedBlobUrlsRef.current.delete(url)) URL.revokeObjectURL(url);
                             if (onReady) return; // sharp đã được nối ngay sau khi gán src
-                            if (!current) return;
+                            if (!current) {
+                                finishInFlightAndAdvance();
+                                return;
+                            }
                             onRenderReadyRef.current?.();
                             loadedParamsRef.current = '';
-                            clearInFlightRequest();
+                            finishInFlightAndAdvance();
                             dispatchLoadState({ type: 'error', attempt });
                             traceTileEvent('tile-decode-error', { attempt, scale, color_stage: colorStage || 'display' });
                             if (showLoadStatusRef.current) void previewPerfLog('live-tile-load-error', { page: pageNum, stage: 'decode' });
@@ -1114,7 +1233,10 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             if (requestIsCurrent()) onReady();
                             return;
                         }
-                        if (!requestIsCurrent()) return;
+                        if (!requestIsCurrent()) {
+                            finishInFlightAndAdvance();
+                            return;
+                        }
                         const cancelled = isTileLoadCancellation(error);
                         traceTileEvent('tile-url-error', {
                             attempt,
@@ -1140,7 +1262,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                             return;
                         }
                         loadedParamsRef.current = '';
-                        clearInFlightRequest();
+                        finishInFlightAndAdvance();
                         if (!cancelled) onRenderReadyRef.current?.();
                         dispatchLoadState({ type: cancelled ? 'cancelled' : 'error', attempt });
                         traceTileEvent(cancelled ? 'tile-cancelled' : 'tile-error', { attempt });
@@ -1231,19 +1353,21 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 clearTimeout(accurateDelayRef.current);
                 accurateDelayRef.current = null;
             }
-            cancelAccurateGroup?.(renderGroupKey);
-            if (effectRequestAttempt !== null
-                && inFlightRequestRef.current?.attempt === effectRequestAttempt) {
-                // UIUX (feedback 2026-08-14 §VIEW.LARGE.4): cleanup effect/StrictMode đã
-                // hủy request thì phải nhả dấu in-flight. Effect kế tiếp có thể mang cùng params;
-                // giữ dấu cũ sẽ chặn lần xin mới và để trang quay "Đang dựng hình…" vĩnh viễn.
-                inFlightRequestRef.current = null;
-                loadedParamsRef.current = '';
-                loadAttemptRef.current += 1;
-                traceTileEvent('tile-effect-cleanup-cancel', {
-                    attempt: effectRequestAttempt,
-                    next_attempt: loadAttemptRef.current,
-                });
+            // Chỉ đổi zoom thì giữ request cùng surface; đổi nội dung/hình học clip
+            // phải loại response cũ. Viewport giữ instance theo target đã nhận.
+            const surfaceChanged = lastSurfaceParamsRef.current !== surfaceParams || !hasTileUrlBuilder;
+            if (surfaceChanged) {
+                cancelAccurateGroup?.(renderGroupKey);
+                if (effectRequestAttempt !== null
+                    && inFlightRequestRef.current?.attempt === effectRequestAttempt) {
+                    inFlightRequestRef.current = null;
+                    loadedParamsRef.current = '';
+                    loadAttemptRef.current += 1;
+                    traceTileEvent('tile-effect-cleanup-cancel', {
+                        attempt: effectRequestAttempt,
+                        next_attempt: loadAttemptRef.current,
+                    });
+                }
             } else {
                 traceTileEvent('tile-effect-cleanup', {
                     request_attempt: effectRequestAttempt,
@@ -1254,11 +1378,25 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 preloadRef.current.onload = null;
                 preloadRef.current.onerror = null;
                 preloadRef.current = null;
+                // [AUDIT 2026-09-24 §R24.01]: Nếu preload bị dọn dẹp khi cleanup thì giải phóng in-flight
+                // và kích hoạt target kế tiếp nếu có, tránh kẹt request in-flight vĩnh viễn
+                if (effectRequestAttempt !== null && inFlightRequestRef.current?.attempt === effectRequestAttempt) {
+                    inFlightRequestRef.current = null;
+                    const pending = pendingNextTargetRef.current;
+                    if (pending && mountedRef.current) {
+                        pendingNextTargetRef.current = null;
+                        queueMicrotask(() => {
+                            if (mountedRef.current) {
+                                tileRef.current?._loadTile?.();
+                            }
+                        });
+                    }
+                }
             }
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, hasTileUrlBuilder, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceTileEvent, zoom]);
+    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, hasTileUrlBuilder, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceSurfacePresentation, traceTileEvent, zoom]);
     
     // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
     // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
@@ -1377,12 +1515,12 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 ? labels?.cancelled
                 : labels?.loading;
     const showRetry = loadState.phase === 'slow' || loadState.phase === 'error' || loadState.phase === 'cancelled';
+    // UIUX (audit 2026-09-25 §R25.01): ảnh cắt nằm trên ảnh trang đã có.
+    // Giữ bitmap 1:1 để nét chữ; phần dư do làm tròn phải lộ ảnh dưới, không tô trắng.
+    const transparentTileBackdrop = seamlessGridPresentation || Boolean(clipW && clipH);
     
     return (
-        // background:'white' cho khung: khi snap 1:1 (§R.4) bitmap có thể hụt ≤2px so với
-        // khung do làm tròn → chừa sợi mảnh ở mép phải/dưới. Nền trắng làm nó vô hình trên
-        // trang PDF (PDFium render với clear_color=WHITE), thay vì hở ra nền skeleton xám.
-        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', overflow: 'hidden', opacity: showLoadStatus || hasVisibleTile || preserveUnderlay ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: seamlessGridPresentation || (preserveUnderlay && !hasVisibleTile) ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white') }} className="tile-container">
+        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', overflow: 'hidden', opacity: showLoadStatus || hasVisibleTile || preserveUnderlay ? 1 : 0, transition: presentationFadeMs > 0 ? `opacity ${presentationFadeMs}ms cubic-bezier(0.16, 1, 0.3, 1)` : 'none', background: transparentTileBackdrop || (preserveUnderlay && !hasVisibleTile) ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white') }} className="tile-container">
             <canvas
                 ref={canvasRef}
                 style={{
@@ -1395,7 +1533,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                     pointerEvents: 'none',
                     userSelect: 'none',
                     display: isCanvasActive ? 'block' : 'none',
-                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white'),
+                    background: transparentTileBackdrop || preserveUnderlay ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white'),
                     opacity: hasVisibleTile && isCanvasActive ? 1 : 0,
                 }}
             />
@@ -1416,7 +1554,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                     pointerEvents: 'none',
                     userSelect: 'none',
                     display: isCanvasActive ? 'none' : 'block',
-                    background: seamlessGridPresentation || preserveUnderlay ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white'),
+                    background: transparentTileBackdrop || preserveUnderlay ? 'transparent' : (viewerDarkBackground ? '#000000' : 'white'),
                     opacity: hasVisibleTile && !isCanvasActive ? 1 : 0,
                 }}
             />
@@ -1537,17 +1675,29 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
         retirementScheduler.cancelExcept(tileBuffer.target?.key ?? null);
     }, [retirementScheduler, tileBuffer.target?.key]);
 
-    // DEBOUNCE zoom (audit tốc độ 2026-07-06): zoom liên tục từng sinh 278 render trung
-    // gian. Core PPE đã hủy thật theo scanline, nên trailing 48ms đủ gom wheel mà không
-    // để raster lỗi thời giữ lane native lâu.
-    // displayWidth/Height cũng phải "đóng băng" theo settledZoom để clip/CSS khớp.
+    // Target mong muốn theo nhịp 16 ms; tốc độ có bitmap mới phụ thuộc render/decode.
+    // Reducer giữ công việc đã nhận và gom target tiếp theo trong lúc wheel chạy.
+    const lastDispatchedTileZoomTimeRef = useRef(0);
+    const trailingTileZoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     const [settled, setSettled] = useState({ zoom, displayWidth, displayHeight });
     useEffect(() => {
-        const id = setTimeout(
-            () => setSettled({ zoom, displayWidth, displayHeight }),
-            VIEWPORT_TILE_SETTLE_MS,
-        );
-        return () => clearTimeout(id);
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const elapsed = now - lastDispatchedTileZoomTimeRef.current;
+        if (elapsed >= 16) {
+            lastDispatchedTileZoomTimeRef.current = now;
+            setSettled({ zoom, displayWidth, displayHeight });
+        } else {
+            if (trailingTileZoomTimerRef.current) clearTimeout(trailingTileZoomTimerRef.current);
+            const remaining = Math.max(8, 16 - elapsed);
+            trailingTileZoomTimerRef.current = setTimeout(() => {
+                lastDispatchedTileZoomTimeRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                setSettled({ zoom, displayWidth, displayHeight });
+            }, remaining);
+        }
+        return () => {
+            if (trailingTileZoomTimerRef.current) clearTimeout(trailingTileZoomTimerRef.current);
+        };
     }, [zoom, displayWidth, displayHeight]);
     const sZoom = settled.zoom;
     const sDisplayW = settled.displayWidth;
@@ -1575,7 +1725,6 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
         readyPanGridBufferGroupRef.current = bufferGroup;
         readyPanGridKeysRef.current.clear();
     }
-
     useEffect(() => {
         if (!renderEnabled) return;
         const pageEl = containerRef?.current as HTMLElement | null;
@@ -1733,6 +1882,7 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
             dispatchTileBuffer({
                 type: 'target',
                 item: atlasCoversViewport ? null : next,
+                coalesce: accurateColor,
             });
         };
         // PERF (audit 2026-08-08 §RENDER.7): scroll/resize chỉ đo layout tối đa một lần
@@ -1774,6 +1924,18 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
     }, []);
 
     const zoomSettling = zoom !== sZoom || displayWidth !== sDisplayW || displayHeight !== sDisplayH;
+    const queuedTileKey = tileBuffer.queued?.key;
+    useEffect(() => {
+        if (!accurateColor || !renderEnabled || zoomSettling || !queuedTileKey || tileBuffer.finishBeforeIdle) return;
+        // PERF (audit 2026-09-25 §R25.04.2): B tiếp tục trong lúc wheel/pan chạy,
+        // nhưng khi C đã ổn định không để C chờ B vốn có thể mất hơn một giây.
+        // Giữ nguyên bitmap visible; tháo B dùng đường hủy theo group hiện có.
+        const timer = window.setTimeout(() => {
+            traceLayerEvent('viewport-queued-promote', { queued_key: viewerTraceHash(queuedTileKey) });
+            dispatchTileBuffer({ type: 'idle', key: queuedTileKey });
+        }, VIEWPORT_TILE_QUEUED_IDLE_MS);
+        return () => window.clearTimeout(timer);
+    }, [accurateColor, displayHeight, displayWidth, queuedTileKey, renderEnabled, tileBuffer.finishBeforeIdle, traceLayerEvent, zoom, zoomSettling]);
     const panGridPlanIsCurrent = Boolean(
         panGridPlan?.phaseKey.startsWith(`${bufferGroup}:target:`),
     );
@@ -1783,10 +1945,17 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
     const panGridViewportCovered = Boolean(
         panGridPlan && presentedPanGridPhaseKey === panGridPlan.phaseKey,
     );
+    // PERF (audit 2026-09-25 §R25.04.1): settled có thể đã đổi bucket trước
+    // effect compute cập nhật plan/target. Khi ấy target cũ vẫn bằng visible cũ,
+    // nhưng không được mở lại atlas cũ rồi phát/hủy cả loạt IPC ở render kế tiếp.
+    const currentViewportReady = tileBuffer.visible?.bufferGroup === bufferGroup
+        || (panGridPlanIsCurrent && panGridViewportCovered);
     const panGridPolicy = viewerPanGridRenderPolicy(
         accurateCommitted,
         Boolean(tileBuffer.visible),
         panGridPhaseReady,
+        zoomSettling || !panGridPlanIsCurrent || !currentViewportReady || Boolean(tileBuffer.queued)
+            || Boolean(tileBuffer.target && tileBuffer.target.key !== tileBuffer.visible?.key),
     );
     const activePanGridTiles = renderEnabled && panGridPlan && panGridPolicy.near
         ? [
@@ -1805,9 +1974,12 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
         traceLayerEvent('viewport-layer-state', {
             visible_key: tileBuffer.visible?.key ? viewerTraceHash(tileBuffer.visible.key) : null,
             target_key: tileBuffer.target?.key ? viewerTraceHash(tileBuffer.target.key) : null,
+            queued_key: tileBuffer.queued?.key ? viewerTraceHash(tileBuffer.queued.key) : null,
             buffered_tiles: tileBuffer.visible || tileBuffer.target ? 1 : 0,
             pan_grid_tiles: panGridPlan?.all.length ?? 0,
             active_pan_grid_tiles: activePanGridTiles.length,
+            plan_current: panGridPlanIsCurrent,
+            viewport_current: currentViewportReady,
             cold_open_grid_blocked: Boolean(panGridPlan) && !panGridPolicy.near,
             near_tiles: panGridPlan?.near.length ?? 0,
             outer_tiles: panGridPlan?.outer.length ?? 0,
@@ -1816,23 +1988,24 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
             presented: presentPanGrid,
             stable_underlay: Boolean(stableUnderlayReady),
         });
-    }, [activePanGridTiles.length, panGridPlan, panGridPolicy.near, panGridPolicy.outer, panGridViewportCovered, presentPanGrid, stableUnderlayReady, tileBuffer.target, tileBuffer.visible, traceLayerEvent]);
+    }, [activePanGridTiles.length, currentViewportReady, panGridPlan, panGridPlanIsCurrent, panGridPolicy.near, panGridPolicy.outer, panGridViewportCovered, presentPanGrid, stableUnderlayReady, tileBuffer.queued, tileBuffer.target, tileBuffer.visible, traceLayerEvent]);
 
     // Trong lúc zoom chuyển, tile giữ clip/render scale cũ nhưng rect được scale theo
     // khổ trang sống. Nhờ đó không có generation mới theo từng wheel/rAF và zoom-out
     // tiếp tục dùng bitmap mật độ cao đã decode thay vì rơi về nền mờ.
+    const desiredTile = tileBuffer.queued ?? tileBuffer.target;
     const visibleCoversCurrentViewport = !tileBuffer.visible
-        || !tileBuffer.target
-        || tileBuffer.visible.key === tileBuffer.target.key
+        || !desiredTile
+        || tileBuffer.visible.key === desiredTile.key
         || viewportTileCoversViewport(
             tileBuffer.visible,
-            tileBuffer.target.requiredViewport,
-            tileBuffer.target.sourceDisplayWidth,
-            tileBuffer.target.sourceDisplayHeight,
+            desiredTile.requiredViewport,
+            desiredTile.sourceDisplayWidth,
+            desiredTile.sourceDisplayHeight,
             displayWidth,
             displayHeight,
         );
-    const bufferedTiles = viewportTilePresentationItems(
+    const presentedTiles = viewportTilePresentationItems(
         tileBuffer,
         bufferGroup,
         reuseGroup,
@@ -1840,12 +2013,19 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
         visibleCoversCurrentViewport,
         Boolean(stableUnderlayReady),
     );
+    // PERF (audit 2026-09-24 §R24.08): ẩn ảnh thiếu coverage không được tháo
+    // instance đang raster. Bitmap và clip của B sống tới terminal dù C đã được gom.
+    const bufferedTiles = viewportTileBufferItems(tileBuffer);
+    const presentedKeys = new Set(presentedTiles.map(tile => tile.key));
     useEffect(() => {
         if (bufferedTiles.length === 0 && activePanGridTiles.length === 0) {
             traceLayerEvent('viewport-layer-empty', { render_enabled: renderEnabled });
         }
     }, [activePanGridTiles.length, bufferedTiles.length, renderEnabled, traceLayerEvent]);
     if (bufferedTiles.length === 0 && activePanGridTiles.length === 0) return null;
+    // UIUX (audit 2026-09-24 §R24.07): target mới không được bật lại PDFium phủ PPE
+    // đang hiện. Giữ surface PPE cũ/underlay đến khi PPE mới decode; dùng cùng policy
+    // với base để bảo toàn trang compatibility và chuyển sang Output Preview.
     const useDisplayLayer = shouldUseViewerDisplayLayer(
         accurateColor,
         accurateCommitted,
@@ -1864,17 +2044,8 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                 const scaleY = displayHeight / tileSpec.sourceDisplayHeight;
                 const isIncomingTarget = tileBuffer.target?.key === tileSpec.key
                     && tileBuffer.visible?.key !== tileSpec.key;
-                const requestedCrossfadeMs = isIncomingTarget
-                    ? computeViewportTileCrossfadeMs(
-                        tileBuffer.visible?.renderScale,
-                        tileSpec.renderScale,
-                        prefersReducedMotion,
-                    )
-                    : 0;
-                const crossfadeMs = viewerSurfaceSwapMs(
-                    accurateColor,
-                    requestedCrossfadeMs,
-                );
+                // Thay bitmap sau decode, không hòa trộn hai độ phân giải.
+                const crossfadeMs = 0;
                 const hasPreviousTile = Boolean(
                     tileBuffer.visible && tileBuffer.visible.key !== tileSpec.key,
                 );
@@ -1889,7 +2060,8 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                 } : undefined;
                 const handleAccurateTileReady = () => {
                     onAccurateCommitted?.();
-                    if (tileBuffer.target?.key === tileSpec.key && panGridPlan?.phaseKey) {
+                    if (tileBuffer.target?.key === tileSpec.key && panGridPlan?.phaseKey
+                        && !tileBuffer.queued && tileSpec.bufferGroup === bufferGroup && !zoomSettling) {
                         // PERF (audit 2026-08-11 §PAN.TURBO-A): chỉ khi frame
                         // viewport đã decode mới mở runway atlas của đúng pha hiện tại.
                         setOuterEnabledPhaseKey(panGridPlan.phaseKey);
@@ -1910,7 +2082,7 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                     tileSpec.clipH,
                 ) ? initialPpeFrame : undefined;
                 return (
-                    <React.Fragment key={`vp_${tileSpec.key}`}>
+                    <div key={`vp_${tileSpec.key}`} style={{ opacity: presentedKeys.has(tileSpec.key) ? 1 : 0 }}>
                         {useDisplayLayer && (
                             <LiveTile
                                 key="display"
@@ -1927,12 +2099,17 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                                 getTileUrl={getTileUrl}
                                 onVisible={onVisible}
                                 onRenderReady={accurateColor ? undefined : onRenderReady}
-                                onTileReady={retirePreviousTile
+                                // [AUDIT 2026-09-24 §R24.04]: Khi accurateColor=true, chỉ lớp accurate
+                                // mới được phép retire previous tile và chốt target visible (handleAccurateTileReady).
+                                // Display layer chỉ là cầu nối tức thì, không được retire sớm làm unmount chính nó
+                                // và làm biến mất bitmap trước khi PPE sẵn sàng.
+                                onTileReady={!accurateColor && retirePreviousTile
                                     ? () => retirePreviousTile()
                                     : undefined}
                                 presentationFadeMs={crossfadeMs}
                                 renderOwnerId={renderOwnerId}
                                 renderPriority={0}
+                                renderEnabled={renderEnabled}
                             />
                         )}
                         {accurateColor && (
@@ -1952,10 +2129,11 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                                 onVisible={onVisible}
                                 onRenderReady={onRenderReady}
                                 onTileReady={handleAccurateTileReady}
+                                onTileFailed={() => dispatchTileBuffer({ type: 'failed', key: tileSpec.key })}
                                 presentationFadeMs={crossfadeMs}
                                 renderOwnerId={renderOwnerId}
                                 renderPriority={0}
-                                renderEnabled={shouldEnableViewerViewportAccurateTile(
+                                renderEnabled={renderEnabled && shouldEnableViewerViewportAccurateTile(
                                     accurateCommitted,
                                     waitForAccurateBase,
                                     tileBuffer.visible?.key === tileSpec.key,
@@ -1966,7 +2144,7 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                                 cancelAccurateGroup={cancelAccurateGroup}
                             />
                         )}
-                    </React.Fragment>
+                    </div>
                 );
             })}
             {activePanGridTiles.length > 0 && (
@@ -2412,12 +2590,35 @@ const VdpCurvedText = ({ field, scale, text }: { field: VdpPreviewField; scale: 
     );
 };
 
+// Mở liên kết ngoài an toàn bằng Tauri plugin-shell hoặc window.open
+async function openExternalLink(url: string) {
+    try {
+        if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+            const { open } = await import('@tauri-apps/plugin-shell');
+            await open(url);
+        } else {
+            window.open(url, '_blank', 'noopener');
+        }
+    } catch (err) {
+        console.error('Không thể mở liên kết:', err);
+    }
+}
+
+const EMAIL_RE = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
+const URL_RE = /((?:https?:\/\/|www\.)[^\s]+)/i;
+
 // Một DÒNG text vô hình để QUÉT + COPY (như Acrobat). Đặt span đúng vị trí bbox
 // (point → px qua scale), fontSize theo CHIỀU CAO dòng, rồi NÉN NGANG (scaleX) cho
-// bề rộng render KHỚP bề rộng thật của dòng trên trang. KHÔNG overflow:hidden/width
-// cứng (bản cũ cắt mất chữ tràn + lệch). scaleX đo 1 lần qua offsetWidth (bỏ qua
-// transform nên không lặp vô hạn). transformOrigin top-left để neo đúng mép trái-trên.
-const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale }: { line: TextLine; scale: number }) {
+// bề rộng render KHỚP bề rộng thật của dòng trên trang.
+const SelectableTextLine = React.memo(function SelectableTextLine({
+    line,
+    scale,
+    enableInteractiveLinks,
+}: {
+    line: TextLine;
+    scale: number;
+    enableInteractiveLinks: boolean;
+}) {
     const ref = useRef<HTMLSpanElement>(null);
     const [scaleX, setScaleX] = useState(1);
     const text = line.chars?.map((c: TextChar) => c.c).join('') || '';
@@ -2431,9 +2632,27 @@ const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale 
         setScaleX(natural > 0 ? targetW / natural : 1);
     }, [text, h, targetW]);
 
+    const emailMatch = enableInteractiveLinks ? text.match(EMAIL_RE) : null;
+    const urlMatch = enableInteractiveLinks && !emailMatch ? text.match(URL_RE) : null;
+    const linkTarget = emailMatch ? emailMatch[1] : (urlMatch ? urlMatch[1] : null);
+    const isEmail = Boolean(emailMatch);
+
+    const handleClick = (e: React.MouseEvent) => {
+        if (!linkTarget) return;
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+        e.stopPropagation();
+        const fullUrl = isEmail
+            ? `mailto:${linkTarget}`
+            : (linkTarget.startsWith('http') ? linkTarget : `https://${linkTarget}`);
+        void openExternalLink(fullUrl);
+    };
+
     return (
         <span
             ref={ref}
+            onClick={linkTarget ? handleClick : undefined}
+            title={linkTarget ? (isEmail ? `Email: ${linkTarget}` : `Liên kết: ${linkTarget}`) : undefined}
             style={{
                 position: 'absolute',
                 left: `${line.bbox.x * scale}px`,
@@ -2448,7 +2667,7 @@ const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale 
                 pointerEvents: 'auto',
                 userSelect: 'text',
                 WebkitUserSelect: 'text',
-                cursor: 'text',
+                cursor: linkTarget ? 'pointer' : 'text',
             }}
         >
             {text}
@@ -2456,15 +2675,51 @@ const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale 
     );
 });
 
+interface PageTextMarkup {
+    id: string;
+    type: 'highlight' | 'underline' | 'strikethrough' | 'comment';
+    rect: { x: number; y: number; width: number; height: number };
+    text: string;
+    comment?: string;
+}
+
 const SelectableTextLayer = React.memo(function SelectableTextLayer({
     textBlocks,
     pageWidthPx,
     displayWidth,
+    pageNum = 1,
 }: {
     textBlocks: TextBlocksInput;
     pageWidthPx?: number;
     displayWidth: number;
+    pageNum?: number;
 }) {
+    const { t } = useTranslation();
+    const enableInteractiveLinks = useAppSettingsStore((s) => s.enableInteractiveLinks);
+    const enableTextSelectionToolbar = useAppSettingsStore((s) => s.enableTextSelectionToolbar);
+    const allMarkups = useTextMarkupStore((s) => s.markups);
+    const selectedMarkupId = useTextMarkupStore((s) => s.selectedMarkupId);
+    const setSelectedMarkupId = useTextMarkupStore((s) => s.setSelectedMarkupId);
+    const activeCommentId = useTextMarkupStore((s) => s.activeCommentId);
+    const setActiveCommentId = useTextMarkupStore((s) => s.setActiveCommentId);
+    const updateCommentText = useTextMarkupStore((s) => s.updateCommentText);
+    const addReply = useTextMarkupStore((s) => s.addReply);
+    const addMarkup = useTextMarkupStore((s) => s.addMarkup);
+    const deleteMarkup = useTextMarkupStore((s) => s.deleteMarkup);
+
+    const markups = React.useMemo(
+        () => allMarkups.filter((m) => m.pageNum === pageNum),
+        [allMarkups, pageNum],
+    );
+
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [selectionState, setSelectionState] = useState<{
+        text: string;
+        x: number;
+        y: number;
+        rect: { x: number; y: number; width: number; height: number };
+    } | null>(null);
+
     const allLines = React.useMemo(
         () => (Array.isArray(textBlocks) ? textBlocks : (textBlocks?.blocks || []))
             .flatMap((block: TextBlock) => block.lines || [])
@@ -2479,8 +2734,133 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
     const pageWidthPt = pageWidthPx ? pageWidthPx * 72 / 96 : 595;
     const scale = displayWidth / pageWidthPt;
 
+    const handleMouseUp = (e: React.MouseEvent) => {
+        if (!enableTextSelectionToolbar) return;
+        if ((e.target as HTMLElement)?.closest('.text-selection-toolbar')) return;
+        if ((e.target as HTMLElement)?.closest('.acrobat-comment-card')) return;
+        setTimeout(() => {
+            const sel = window.getSelection();
+            if (!sel || sel.isCollapsed) {
+                setSelectionState(null);
+                return;
+            }
+            const text = sel.toString().trim();
+            if (!text) {
+                setSelectionState(null);
+                return;
+            }
+            try {
+                const range = sel.getRangeAt(0);
+                const container = containerRef.current;
+                if (!container || !container.contains(range.commonAncestorContainer)) return;
+                const rect = range.getBoundingClientRect();
+                const cRect = container.getBoundingClientRect();
+                setSelectionState({
+                    text,
+                    x: rect.left - cRect.left + rect.width / 2,
+                    y: Math.max(10, rect.top - cRect.top),
+                    rect: {
+                        x: rect.left - cRect.left,
+                        y: rect.top - cRect.top,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                });
+            } catch {
+                setSelectionState(null);
+            }
+        }, 30);
+    };
+
+    const handleCopy = () => {
+        if (!selectionState) return;
+        navigator.clipboard.writeText(selectionState.text).catch(() => {});
+        setSelectionState(null);
+    };
+
+    const handleHighlight = () => {
+        if (!selectionState) return;
+        const rectPt = {
+            x: selectionState.rect.x / scale,
+            y: selectionState.rect.y / scale,
+            width: selectionState.rect.width / scale,
+            height: selectionState.rect.height / scale,
+        };
+        addMarkup({
+            pageNum,
+            type: 'highlight',
+            rectPt,
+            text: selectionState.text,
+        });
+        setSelectionState(null);
+        window.getSelection()?.removeAllRanges();
+    };
+
+    const handleUnderline = () => {
+        if (!selectionState) return;
+        const rectPt = {
+            x: selectionState.rect.x / scale,
+            y: selectionState.rect.y / scale,
+            width: selectionState.rect.width / scale,
+            height: selectionState.rect.height / scale,
+        };
+        addMarkup({
+            pageNum,
+            type: 'underline',
+            rectPt,
+            text: selectionState.text,
+        });
+        setSelectionState(null);
+        window.getSelection()?.removeAllRanges();
+    };
+
+    const handleStrikethrough = () => {
+        if (!selectionState) return;
+        const rectPt = {
+            x: selectionState.rect.x / scale,
+            y: selectionState.rect.y / scale,
+            width: selectionState.rect.width / scale,
+            height: selectionState.rect.height / scale,
+        };
+        addMarkup({
+            pageNum,
+            type: 'strikethrough',
+            rectPt,
+            text: selectionState.text,
+        });
+        setSelectionState(null);
+        window.getSelection()?.removeAllRanges();
+    };
+
+    const handleComment = (comment: string) => {
+        if (!selectionState) return;
+        const rectPt = {
+            x: selectionState.rect.x / scale,
+            y: selectionState.rect.y / scale,
+            width: selectionState.rect.width / scale,
+            height: selectionState.rect.height / scale,
+        };
+        addMarkup({
+            pageNum,
+            type: 'comment',
+            rectPt,
+            text: selectionState.text,
+            comment,
+        });
+        setSelectionState(null);
+        window.getSelection()?.removeAllRanges();
+    };
+
     return (
         <div
+            ref={containerRef}
+            onMouseUp={handleMouseUp}
+            onClick={(e) => {
+                if ((e.target as HTMLElement)?.closest('.text-selection-toolbar')) return;
+                if ((e.target as HTMLElement)?.closest('.acrobat-comment-card')) return;
+                if (selectedMarkupId) setSelectedMarkupId(null);
+                if (activeCommentId) setActiveCommentId(null);
+            }}
             className="selectable-text-layer absolute inset-0 z-[30] select-text cursor-text"
             style={{
                 pointerEvents: 'auto',
@@ -2489,9 +2869,206 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
                 lineHeight: 1,
             }}
         >
+            {/* Lớp hiển thị các markup/ghi chú đã tạo */}
+            {markups.map((m) => {
+                const isSelected = selectedMarkupId === m.id;
+                const left = m.rectPt.x * scale;
+                const top = m.rectPt.y * scale;
+                const width = m.rectPt.width * scale;
+                const height = m.rectPt.height * scale;
+
+                if (m.type === 'highlight') {
+                    return (
+                        <div
+                            key={m.id}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedMarkupId(isSelected ? null : m.id);
+                            }}
+                            className={`absolute rounded-[2px] cursor-pointer transition-all ${
+                                isSelected ? 'ring-2 ring-amber-500 ring-offset-1 z-[35]' : 'hover:opacity-80 z-[34]'
+                            }`}
+                            style={{
+                                left: `${left}px`,
+                                top: `${top}px`,
+                                width: `${width}px`,
+                                height: `${height}px`,
+                                backgroundColor: 'rgba(250, 204, 21, 0.42)',
+                                mixBlendMode: 'multiply',
+                            }}
+                            title={t('settings:bam_de_chon_hoac_xoa', 'Nhấp để chọn (phím Delete để xóa, Ctrl+Z để hoàn tác)')}
+                        />
+                    );
+                }
+                if (m.type === 'underline') {
+                    return (
+                        <div
+                            key={m.id}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedMarkupId(isSelected ? null : m.id);
+                            }}
+                            className={`absolute cursor-pointer transition-all ${
+                                isSelected ? 'ring-2 ring-blue-500 ring-offset-1 z-[35]' : 'hover:opacity-80 z-[34]'
+                            }`}
+                            style={{
+                                left: `${left}px`,
+                                top: `${top + height - 2}px`,
+                                width: `${width}px`,
+                                height: isSelected ? '3px' : '2px',
+                                backgroundColor: '#2563eb',
+                            }}
+                            title={t('settings:bam_de_chon_hoac_xoa', 'Nhấp để chọn (phím Delete để xóa, Ctrl+Z để hoàn tác)')}
+                        />
+                    );
+                }
+                if (m.type === 'strikethrough') {
+                    return (
+                        <div
+                            key={m.id}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedMarkupId(isSelected ? null : m.id);
+                            }}
+                            className={`absolute cursor-pointer transition-all ${
+                                isSelected ? 'ring-2 ring-rose-500 ring-offset-1 z-[35]' : 'hover:opacity-80 z-[34]'
+                            }`}
+                            style={{
+                                left: `${left}px`,
+                                top: `${top + height * 0.55}px`,
+                                width: `${width}px`,
+                                height: isSelected ? '3px' : '2px',
+                                backgroundColor: '#dc2626',
+                            }}
+                            title={t('settings:bam_de_chon_hoac_xoa', 'Nhấp để chọn (phím Delete để xóa, Ctrl+Z để hoàn tác)')}
+                        />
+                    );
+                }
+                if (m.type === 'comment') {
+                    const isActive = activeCommentId === m.id;
+                    return (
+                        <React.Fragment key={m.id}>
+                            {/* 1. Vùng text được highlight vàng nhạt với viền xanh khi active giống Adobe Acrobat */}
+                            <div
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedMarkupId(m.id);
+                                    setActiveCommentId(isActive ? null : m.id);
+                                }}
+                                className={`absolute rounded-[2px] cursor-pointer transition-all ${
+                                    isActive
+                                        ? 'ring-2 ring-blue-600 ring-offset-0 z-[36]'
+                                        : isSelected
+                                        ? 'ring-2 ring-amber-500 ring-offset-1 z-[35]'
+                                        : 'hover:opacity-90 z-[34]'
+                                }`}
+                                style={{
+                                    left: `${left}px`,
+                                    top: `${top}px`,
+                                    width: `${width}px`,
+                                    height: `${height}px`,
+                                    backgroundColor: 'rgba(250, 204, 21, 0.38)',
+                                    mixBlendMode: 'multiply',
+                                }}
+                                title={m.comment || t('settings:nhap_de_xem_ghi_chu', 'Nhấp để xem/sửa ghi chú')}
+                            />
+
+                            {/* 2. Biểu tượng Sticky Note ghim ở đầu text kiểu Adobe Acrobat */}
+                            <div
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedMarkupId(m.id);
+                                    setActiveCommentId(isActive ? null : m.id);
+                                }}
+                                className="absolute z-[40] cursor-pointer hover:scale-110 active:scale-95 transition-transform"
+                                style={{
+                                    left: `${Math.max(0, left - 4)}px`,
+                                    top: `${top - 16}px`,
+                                }}
+                                title={m.comment || t('settings:ghi_chu_acrobat', 'Ghi chú Acrobat')}
+                            >
+                                <svg
+                                    width="18"
+                                    height="18"
+                                    viewBox="0 0 20 20"
+                                    fill="none"
+                                    className="drop-shadow-md"
+                                >
+                                    {/* Thân note vàng có góc gấp */}
+                                    <path
+                                        d="M3 2h10l4 4v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"
+                                        fill="#f5c518"
+                                        stroke="#d97706"
+                                        strokeWidth="1.2"
+                                    />
+                                    {/* Nếp gấp góc phải trên */}
+                                    <path
+                                        d="M13 2v4h4"
+                                        fill="#fbbf24"
+                                        stroke="#d97706"
+                                        strokeWidth="1.2"
+                                    />
+                                    {/* 3 dòng ghi chú text */}
+                                    <line x1="5.5" y1="8" x2="14.5" y2="8" stroke="#78350f" strokeWidth="1.2" strokeLinecap="round" />
+                                    <line x1="5.5" y1="11" x2="14.5" y2="11" stroke="#78350f" strokeWidth="1.2" strokeLinecap="round" />
+                                    <line x1="5.5" y1="14" x2="11.5" y2="14" stroke="#78350f" strokeWidth="1.2" strokeLinecap="round" />
+                                </svg>
+                            </div>
+
+                            {/* 3. Card bình luận Acrobat hiển thị cạnh text khi đang active */}
+                            {isActive && (
+                                <AcrobatCommentCard
+                                    markup={m}
+                                    x={left + width}
+                                    y={top}
+                                    containerWidth={displayWidth}
+                                    onSaveComment={(id, text) => {
+                                        updateCommentText(id, text);
+                                    }}
+                                    onAddReply={(id, text) => {
+                                        addReply(id, text);
+                                    }}
+                                    onDeleteComment={(id) => {
+                                        deleteMarkup(id);
+                                        setActiveCommentId(null);
+                                    }}
+                                    onClose={() => {
+                                        setActiveCommentId(null);
+                                    }}
+                                />
+                            )}
+                        </React.Fragment>
+                    );
+                }
+                return null;
+            })}
+
+            {/* Các dòng text có thể bôi đen và click link */}
             {allLines.map((line: TextLine, index: number) => (
-                <SelectableTextLine key={index} line={line} scale={scale} />
+                <SelectableTextLine
+                    key={index}
+                    line={line}
+                    scale={scale}
+                    enableInteractiveLinks={enableInteractiveLinks}
+                />
             ))}
+
+            {/* Thanh công cụ nổi kiểu Adobe Acrobat khi bôi đen chữ */}
+            {enableTextSelectionToolbar && selectionState && (
+                <TextSelectionToolbar
+                    key={`${selectionState.x}-${selectionState.y}`}
+                    visible={Boolean(selectionState)}
+                    x={selectionState.x}
+                    y={selectionState.y}
+                    selectedText={selectionState.text}
+                    onCopy={handleCopy}
+                    onHighlight={handleHighlight}
+                    onUnderline={handleUnderline}
+                    onStrikethrough={handleStrikethrough}
+                    onComment={handleComment}
+                    onClose={() => setSelectionState(null)}
+                />
+            )}
         </div>
     );
 });
@@ -2665,6 +3242,26 @@ export const LivePageFrame = (props: any) => {
         detectorRequiresAccurate === true,
         showOutputPreview === true,
     );
+    const displayFileKey = viewerTileFileKey(
+        pdfUrl || nativeFilePath || 'unknown',
+        false,
+        renderDocumentToken,
+        previewRevision,
+    );
+    const accurateFileKey = viewerTileFileKey(
+        pdfUrl || nativeFilePath || 'unknown',
+        true,
+        renderDocumentToken,
+        previewRevision,
+        accurateColorProfileId,
+        accurateColorIntent,
+        accurateColorProofIdentity,
+    );
+    const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
+    const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
+    // UIUX (audit 2026-09-24 §R24.07): chỉ giữ display khi trang thông thường vừa bật
+    // Output Preview. Trang đã chọn PPE không chèn PDFium lên khung PPE mồi trong
+    // lúc target đầu còn tải, kể cả khi người dùng zoom trước accurate commit.
     const keepDisplayUntilAccurate = showOutputPreview === true
         && detectorRequiresAccurate !== true;
     const primePath = accurateColorPage
@@ -3561,23 +4158,39 @@ export const LivePageFrame = (props: any) => {
         setRenderZoom(computeRenderZoom(zoom));
     }, [physicalDisplayScale, displayDevicePixelRatio, computeRenderZoom, zoom]);
 
-    // PERF (audit độ nét 2026-09-24 §ACROBAT-PERF): Adaptive zoom debounce.
-    // Trước đây hardcode 250ms khiến người dùng dừng lăn chuột vẫn phải chờ thêm 1/4 giây
-    // mới bắt đầu xin ảnh nét, gây cảm giác "chờ mãi mới lên".
-    // Khi người dùng bấm nút zoom rời rạc hoặc dừng lăn chuột: delay 64ms (≈ 4 frame 60Hz)
-    // vừa đủ gom chuỗi cuộn mà phản hồi gần như tức thì, tiệm cận độ nhạy của Adobe Acrobat.
-    const lastZoomTimeRef = useRef(0);
+    // [ACROBAT-REALTIME-ZOOM 2026-09-24]: Adobe Acrobat Real-time Continuous Vector Zoom.
+    // Trong Acrobat khi lăn chuột zoom: engine liên tục vẽ lại vector theo thời gian thực.
+    // Không dùng trailing debounce 64ms/250ms (làm đóng băng render khiến ảnh bị kéo dãn mờ căm rồi mới giật nảy lên nét).
+    // Thay vào đó: Throttled update với chu kỳ 32ms kèm leading-edge execution:
+    // - Ngay nhịp lăn đầu tiên: phát lệnh render ngay lập tức (độ trễ 0ms).
+    // - Khi đang lăn liên tục: cứ mỗi 32ms cập nhật renderZoom một lần để Rust vẽ vector mới ngay trên đà zoom.
+    // - Khi dừng lăn: timeout trailing 32ms chốt chính xác độ phân giải cuối cùng.
+    // Nhờ đó vector luôn duy trì độ nét liên tục trong suốt quá trình zoom, không có hiện tượng mờ rồi mới nét.
+    const lastDispatchedZoomTimeRef = useRef(0);
+    const trailingZoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     useEffect(() => {
         const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        const interval = now - lastZoomTimeRef.current;
-        lastZoomTimeRef.current = now;
-        // Nếu khoảng cách giữa 2 lần zoom > 300ms (thao tác click nút, phím tắt, hoặc bắt đầu lăn):
-        // áp dụng nhanh trong 32ms. Nếu đang lăn liên tục (<300ms/nấc): gom bằng 64ms.
-        const delayMs = interval > 300 ? 32 : 64;
-        const timeoutId = setTimeout(() => {
-            setRenderZoom(computeRenderZoom(zoom));
-        }, delayMs);
-        return () => clearTimeout(timeoutId);
+        const elapsedSinceLastDispatch = now - lastDispatchedZoomTimeRef.current;
+        const targetZoom = computeRenderZoom(zoom);
+
+        // Leading-edge: nếu đã qua hơn 16ms từ lần gửi trước (chu kỳ 60 FPS), cập nhật ngay lập tức!
+        if (elapsedSinceLastDispatch >= 16) {
+            lastDispatchedZoomTimeRef.current = now;
+            setRenderZoom(targetZoom);
+        } else {
+            // Nếu chưa đủ 16ms, đặt lịch cập nhật sau khoảng thời gian còn lại (tối đa 16ms)
+            if (trailingZoomTimerRef.current) clearTimeout(trailingZoomTimerRef.current);
+            const remaining = Math.max(8, 16 - elapsedSinceLastDispatch);
+            trailingZoomTimerRef.current = setTimeout(() => {
+                lastDispatchedZoomTimeRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                setRenderZoom(computeRenderZoom(zoom));
+            }, remaining);
+        }
+
+        return () => {
+            if (trailingZoomTimerRef.current) clearTimeout(trailingZoomTimerRef.current);
+        };
     }, [zoom, renderBudgetPx, physicalDisplayScale, displayDevicePixelRatio, computeRenderZoom]);
 
     // ─── Edit PDF Object: nạp danh sách object từ /edit/objects (task 10.1) ───
@@ -5825,24 +6438,6 @@ export const LivePageFrame = (props: any) => {
                 const bgZoom = hasRenderedBase
                     ? S
                     : computeViewerBackgroundZoom(S, dpr, isActiveFrame, needsTiling);
-                // COLOR (audit 2026-08-07 §GV.3): cache display/accurate và từng
-                // Simulation phải có identity riêng trước khi quyết định stage underlay.
-                const displayFileKey = viewerTileFileKey(
-                    pdfUrl || nativeFilePath || 'unknown',
-                    false,
-                    renderDocumentToken,
-                    previewRevision,
-                );
-                const accurateFileKey = viewerTileFileKey(
-                    pdfUrl || nativeFilePath || 'unknown',
-                    true,
-                    renderDocumentToken,
-                    previewRevision,
-                    accurateColorProfileId,
-                    accurateColorIntent,
-                    accurateColorProofIdentity,
-                );
-                const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
                 const hasReadyUnderlayForPage = Boolean(effectivePpeFrame)
                     || Boolean(accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`))
                     || hasRenderedBase;
@@ -5903,7 +6498,6 @@ export const LivePageFrame = (props: any) => {
                 const hasAccurateBaseSurface = Boolean(
                     accurateBaseReadyKey?.startsWith(`${accuratePageCommitKey}:`),
                 );
-                const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
                 const accurateBaseIdentity = `${accuratePageCommitKey}:${accurateBaseZoom}`;
                 const accurateBaseReady = accurateBaseReadyKey === accurateBaseIdentity;
                 const keepAccurateBaseMounted = shouldKeepViewerAccurateBaseMounted(
@@ -5990,8 +6584,8 @@ export const LivePageFrame = (props: any) => {
                                     clipY={0}
                                     clipW={0}
                                     clipH={0}
-                                    cssW={Math.ceil(displayWidth)}
-                                    cssH={Math.ceil(displayHeight)}
+                                    cssW={displayWidth}
+                                    cssH={displayHeight}
                                     getTileUrl={getTileUrl}
                                     onVisible={handleTileVisibility}
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
@@ -6023,8 +6617,8 @@ export const LivePageFrame = (props: any) => {
                                     clipY={0}
                                     clipW={0}
                                     clipH={0}
-                                    cssW={Math.ceil(displayWidth)}
-                                    cssH={Math.ceil(displayHeight)}
+                                    cssW={displayWidth}
+                                    cssH={displayHeight}
                                     getTileUrl={getTileUrl}
                                     onVisible={handleTileVisibility}
                                     onRenderReady={isActiveFrame ? onFirstPageRenderReady : undefined}
@@ -6043,10 +6637,7 @@ export const LivePageFrame = (props: any) => {
                                         }
                                     }}
                                     onTileUnmount={() => setAccurateBaseReadyKey(null)}
-                                    presentationFadeMs={viewerSurfaceSwapMs(
-                                        accurateColorPage,
-                                        accurateCommitted ? VIEWPORT_TILE_CROSSFADE_MAX_MS : 0,
-                                    )}
+                                    presentationFadeMs={0}
                                     renderOwnerId={baseRenderOwnerId}
                                     renderPriority={pageRenderPriority}
                                     renderEnabled={shouldEnableViewerAccurateLayer(
@@ -6133,6 +6724,7 @@ export const LivePageFrame = (props: any) => {
                     textBlocks={textBlocks || pageTextBlocks}
                     pageWidthPx={pageDim?.w}
                     displayWidth={displayWidth}
+                    pageNum={originalPageNum}
                 />
             )}
 

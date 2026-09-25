@@ -16,6 +16,7 @@ from shapely.errors import GEOSException
 from shapely.strtree import STRtree
 
 from app.workers.cutline_machine_path import MachinePathSegment
+from app.workers.cutline_preview_cancel import check_preview_cancelled
 from app.workers.cutline_polyline_reduction import (
     _continuous_paths_simple,
     chord_monotone,
@@ -79,6 +80,7 @@ def fair_paths_are_simple(paths_mm) -> bool:
     hai ring rời nhau vẫn có thể đổi quan hệ chứa; caller phải giữ cây lỗ/nhóm.
     """
     def pieces(curve, depth=0):
+        check_preview_cancelled()
         if chord_monotone(curve):
             return [curve]
         if depth >= _SUBDIVISION_DEPTH or len(set(curve)) == 1:
@@ -103,7 +105,10 @@ def fair_paths_are_simple(paths_mm) -> bool:
                     return False
                 segments.extend(MachinePathSegment.cubic(*part) for part in parts)
             checked.append(segments)
-        return _continuous_paths_simple(checked)
+        check_preview_cancelled()
+        simple = _continuous_paths_simple(checked)
+        check_preview_cancelled()
+        return simple
     except (ArithmeticError, TypeError, ValueError, GEOSException):
         return False
 
@@ -124,6 +129,7 @@ def _flatten_ring(ring, flatness: float, maximum_chord: float):
     for curve in ring:
         stack = [(curve, 0)]
         while stack:
+            check_preview_cancelled()
             part, depth = stack.pop()
             # Khoảng cách tới ĐOẠN chord, không chỉ tới đường thẳng vô hạn:
             # hull nằm trong capsule này => Hausdorff cubic/chord <= flatness.
@@ -142,6 +148,7 @@ def _flatten_ring(ring, flatness: float, maximum_chord: float):
 
 
 def _distance_bound(source, candidate, tolerance_mm: float):
+    check_preview_cancelled()
     # Mỗi cubic nằm trong dải ``flatness`` quanh polyline do convex-hull.
     # Vì vậy chỉ cần chứng nhận hai polyline phủ lẫn nhau; không cần ép chord
     # nhỏ 0,01 mm rồi chạy STRtree trên hàng chục nghìn đỉnh.
@@ -161,8 +168,14 @@ def _distance_bound(source, candidate, tolerance_mm: float):
         # giữa hai đỉnh. Nếu bán kính ban đầu chưa đủ, mở rộng để có một cận
         # hữu hạn ngay cả trường hợp candidate bị từ chối vì vượt dung sai.
         def covered(radius):
-            return (candidate_line.buffer(radius, quad_segs=8).covers(source_line)
-                    and source_line.buffer(radius, quad_segs=8).covers(candidate_line))
+            check_preview_cancelled()
+            forward = candidate_line.buffer(radius, quad_segs=8).covers(source_line)
+            check_preview_cancelled()
+            if not forward:
+                return False
+            reverse = source_line.buffer(radius, quad_segs=8).covers(candidate_line)
+            check_preview_cancelled()
+            return reverse
 
         lower, upper_radius = 0.0, max(float(tolerance_mm), 2.0 * flatness)
         while not covered(upper_radius):
@@ -184,9 +197,11 @@ def _distance_bound(source, candidate, tolerance_mm: float):
         # Chỉ dùng STRtree trên polyline đã thưa để ghi lại số đo tham khảo;
         # acceptance vẫn dựa trên cận buffer ở trên.
         def sampled_distance(first, second):
+            check_preview_cancelled()
             tree = STRtree(linestrings(np.stack((second[:-1], second[1:]), axis=1)))
             distances = tree.query_nearest(points(first), return_distance=True,
                                             all_matches=False)[1]
+            check_preview_cancelled()
             return float(np.max(distances))
 
         sampled = max(sampled_distance(source_points, candidate_points),
@@ -212,6 +227,7 @@ def _signed_area(ring) -> float:
     origin = np.asarray(ring[0][0])
     integrals = []
     for curve in ring:
+        check_preview_cancelled()
         c = np.asarray(curve) - origin
         power = np.asarray([c[0], 3 * (c[1] - c[0]),
                             3 * (c[2] - 2 * c[1] + c[0]),
@@ -236,6 +252,7 @@ def _unit_roots(coefficients):
 
 def _curve_curvature(curve):
     """Tìm cực trị κ bằng nghiệm đa thức κ', không bỏ sót spike giữa mẫu."""
+    check_preview_cancelled()
     c = np.asarray(curve)
     a = 3 * (c[1] - c[0])
     b = 6 * (c[2] - 2 * c[1] + c[0])
@@ -347,6 +364,9 @@ def verify_fair_ring(
     mỗi điểm do writer, chỉ dùng dự trữ góc tay nắm. accepted chỉ chứng nhận
     ring này; cận khoảng cách vẫn đo hai ring thực sự đã truyền vào.
     """
+    # PERF (audit 2026-09-24 §CUT24.08): dừng việc kiểm của frame đã bỏ,
+    # không hạ mẫu/dung sai. BaseException đi xuyên các fallback hình học.
+    check_preview_cancelled()
     try:
         tolerance_mm = float(tolerance_mm)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -382,12 +402,16 @@ def verify_fair_ring(
                 or source_area == 0 or candidate_area == 0
                 or (source_area > 0) != (candidate_area > 0)):
             return FairRingVerification(False, "winding_changed")
-        before, after = _curve_metrics(source, protected), _curve_metrics(candidate, protected)
+        before = _curve_metrics(source, protected)
+        check_preview_cancelled()
+        after = _curve_metrics(candidate, protected)
+        check_preview_cancelled()
         if before is None or after is None:
             return FairRingVerification(False, "curvature_uncertified")
         if require_motion_improvement and not _motion_improves(before, after):
             return FairRingVerification(False, "motion_not_improved", source_metrics=before, candidate_metrics=after)
         measured = _distance_bound(source, candidate, tolerance_mm)
+        check_preview_cancelled()
         if measured is None:
             return FairRingVerification(False, "distance_unresolved", source_metrics=before, candidate_metrics=after)
         sampled, upper = measured

@@ -1,0 +1,22 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "B2AA3B6E3D732A102ABD638CE516165D20B45A67FCC6523F50ED2A17B619BC1D",
+    "Path": "D:\\pdfcompare\\backend\\app\\workers\\cutline_fair_simplify.py"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "1744906258FA2789921B139B10320D34AD630F33C5B520DF05AD04FB3EFA0A46",
+    "Path": "D:\\pdfcompare\\backend\\app\\workers\\cutline_cubic_simplify.py"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "1A3D7B18297A86DFF2A543FC2F35C8D81993F6D74B8D5C55156E3D3D15F4B795",
+    "Path": "D:\\pdfcompare\\backend\\app\\workers\\cutline_global_simplify.py"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "3E2E393FB51149471461959CA97CC1E2901CE04731D61AD87A8B5AA4C8F59780",
+    "Path": "D:\\pdfcompare\\backend\\app\\workers\\sticker_engine.py"
+  }
+]

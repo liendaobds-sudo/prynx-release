@@ -1,0 +1,1298 @@
+{
+  "scope": "existing-debug-worker-original-user-pdf-page-1-not-webview",
+  "pdf_name": "CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+  "pdf_size": 18059736,
+  "pdf_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+  "worker_sha256": "85b3526d9263c188b931aac130dcc4a158bfa2ca49567475ba3f658761d72f1b",
+  "hello": {
+    "message": "hello",
+    "ok": true,
+    "request_id": "zoom-runway-1",
+    "nonce": "r24-10-exact-page",
+    "worker_pid": 18600,
+    "protocol_version": 4,
+    "app_version": "2.0.4",
+    "tile_cache_version": "v10_view_semantics_opaque_white_png",
+    "pipeline_identity": "pdfium-display-png-v1",
+    "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+    "error": null
+  },
+  "rows": [
+    {
+      "iteration": 0,
+      "case": 0,
+      "dpi": 104,
+      "clip": {
+        "x": 0,
+        "y": 0,
+        "width": 1081,
+        "height": 811
+      },
+      "wall_ms": 712.914,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-2",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 2,
+        "status": "ready",
+        "bitmap_width": 1081,
+        "bitmap_height": 811,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 643,
+          "encode_ms": 20,
+          "cache_ms": 0,
+          "total_ms": 711
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 538351,
+      "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+    },
+    {
+      "iteration": 0,
+      "case": 1,
+      "dpi": 692,
+      "clip": {
+        "x": 3904,
+        "y": 2752,
+        "width": 1408,
+        "height": 768
+      },
+      "wall_ms": 383.395,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-3",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 3,
+        "status": "ready",
+        "bitmap_width": 1408,
+        "bitmap_height": 768,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 360,
+          "encode_ms": 20,
+          "cache_ms": 0,
+          "total_ms": 382
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 146779,
+      "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+    },
+    {
+      "iteration": 0,
+      "case": 2,
+      "dpi": 632,
+      "clip": {
+        "x": 3520,
+        "y": 2432,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 512.668,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-4",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 4,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 489,
+          "encode_ms": 20,
+          "cache_ms": 0,
+          "total_ms": 512
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 160410,
+      "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+    },
+    {
+      "iteration": 0,
+      "case": 3,
+      "dpi": 2072,
+      "clip": {
+        "x": 13120,
+        "y": 8768,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 422.249,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-5",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 5,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 400,
+          "encode_ms": 19,
+          "cache_ms": 0,
+          "total_ms": 421
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 90260,
+      "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+    },
+    {
+      "iteration": 1,
+      "case": 3,
+      "dpi": 2072,
+      "clip": {
+        "x": 13120,
+        "y": 8768,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 436.983,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-6",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 6,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 414,
+          "encode_ms": 19,
+          "cache_ms": 0,
+          "total_ms": 436
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 90260,
+      "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+    },
+    {
+      "iteration": 1,
+      "case": 2,
+      "dpi": 632,
+      "clip": {
+        "x": 3520,
+        "y": 2432,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 429.595,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-7",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 7,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 406,
+          "encode_ms": 20,
+          "cache_ms": 0,
+          "total_ms": 428
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 160410,
+      "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+    },
+    {
+      "iteration": 1,
+      "case": 1,
+      "dpi": 692,
+      "clip": {
+        "x": 3904,
+        "y": 2752,
+        "width": 1408,
+        "height": 768
+      },
+      "wall_ms": 455.541,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-8",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 8,
+        "status": "ready",
+        "bitmap_width": 1408,
+        "bitmap_height": 768,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 433,
+          "encode_ms": 18,
+          "cache_ms": 0,
+          "total_ms": 454
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 146779,
+      "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+    },
+    {
+      "iteration": 1,
+      "case": 0,
+      "dpi": 104,
+      "clip": {
+        "x": 0,
+        "y": 0,
+        "width": 1081,
+        "height": 811
+      },
+      "wall_ms": 459.354,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-9",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 9,
+        "status": "ready",
+        "bitmap_width": 1081,
+        "bitmap_height": 811,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 434,
+          "encode_ms": 21,
+          "cache_ms": 0,
+          "total_ms": 458
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 538351,
+      "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+    },
+    {
+      "iteration": 2,
+      "case": 0,
+      "dpi": 104,
+      "clip": {
+        "x": 0,
+        "y": 0,
+        "width": 1081,
+        "height": 811
+      },
+      "wall_ms": 409.474,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-10",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 10,
+        "status": "ready",
+        "bitmap_width": 1081,
+        "bitmap_height": 811,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 383,
+          "encode_ms": 22,
+          "cache_ms": 0,
+          "total_ms": 408
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 538351,
+      "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+    },
+    {
+      "iteration": 2,
+      "case": 1,
+      "dpi": 692,
+      "clip": {
+        "x": 3904,
+        "y": 2752,
+        "width": 1408,
+        "height": 768
+      },
+      "wall_ms": 401.106,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-11",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 11,
+        "status": "ready",
+        "bitmap_width": 1408,
+        "bitmap_height": 768,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 380,
+          "encode_ms": 18,
+          "cache_ms": 0,
+          "total_ms": 400
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 146779,
+      "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+    },
+    {
+      "iteration": 2,
+      "case": 2,
+      "dpi": 632,
+      "clip": {
+        "x": 3520,
+        "y": 2432,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 411.261,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-12",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 12,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 389,
+          "encode_ms": 18,
+          "cache_ms": 0,
+          "total_ms": 410
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 160410,
+      "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+    },
+    {
+      "iteration": 2,
+      "case": 3,
+      "dpi": 2072,
+      "clip": {
+        "x": 13120,
+        "y": 8768,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 453.395,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-13",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 13,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 432,
+          "encode_ms": 18,
+          "cache_ms": 0,
+          "total_ms": 452
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 90260,
+      "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+    },
+    {
+      "iteration": 3,
+      "case": 3,
+      "dpi": 2072,
+      "clip": {
+        "x": 13120,
+        "y": 8768,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 463.719,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-14",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 14,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 442,
+          "encode_ms": 18,
+          "cache_ms": 0,
+          "total_ms": 463
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 90260,
+      "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+    },
+    {
+      "iteration": 3,
+      "case": 2,
+      "dpi": 632,
+      "clip": {
+        "x": 3520,
+        "y": 2432,
+        "width": 1344,
+        "height": 832
+      },
+      "wall_ms": 469.216,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-15",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 15,
+        "status": "ready",
+        "bitmap_width": 1344,
+        "bitmap_height": 832,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 446,
+          "encode_ms": 20,
+          "cache_ms": 0,
+          "total_ms": 468
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 160410,
+      "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+    },
+    {
+      "iteration": 3,
+      "case": 1,
+      "dpi": 692,
+      "clip": {
+        "x": 3904,
+        "y": 2752,
+        "width": 1408,
+        "height": 768
+      },
+      "wall_ms": 415.71,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-16",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 16,
+        "status": "ready",
+        "bitmap_width": 1408,
+        "bitmap_height": 768,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 394,
+          "encode_ms": 17,
+          "cache_ms": 0,
+          "total_ms": 414
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 146779,
+      "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+    },
+    {
+      "iteration": 3,
+      "case": 0,
+      "dpi": 104,
+      "clip": {
+        "x": 0,
+        "y": 0,
+        "width": 1081,
+        "height": 811
+      },
+      "wall_ms": 402.697,
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-17",
+        "owner_id": "viewer:r24-10-benchmark",
+        "generation": 17,
+        "status": "ready",
+        "bitmap_width": 1081,
+        "bitmap_height": 811,
+        "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+        "cache_tier": "rendered",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 379,
+          "encode_ms": 20,
+          "cache_ms": 0,
+          "total_ms": 401
+        },
+        "soundness": "color-verified",
+        "unsupported_reason": null,
+        "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "bytes": 538351,
+      "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+    }
+  ],
+  "after": {
+    "scope": "rebuilt-dev-worker-not-webview",
+    "worker_sha256": "bce5bbcd5cd634ec8d03ed595e9da996990f0c9f1f47af5656678abab696a693",
+    "hello": {
+      "message": "hello",
+      "ok": true,
+      "request_id": "zoom-runway-1",
+      "nonce": "r24-10-after",
+      "worker_pid": 31508,
+      "protocol_version": 4,
+      "app_version": "2.0.4",
+      "tile_cache_version": "v10_view_semantics_opaque_white_png",
+      "pipeline_identity": "pdfium-display-png-v1",
+      "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+      "error": null
+    },
+    "rows": [
+      {
+        "iteration": 0,
+        "case": 0,
+        "dpi": 104,
+        "clip": {
+          "x": 0,
+          "y": 0,
+          "width": 1081,
+          "height": 811
+        },
+        "wall_ms": 755.196,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-2",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 2,
+          "status": "ready",
+          "bitmap_width": 1081,
+          "bitmap_height": 811,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 681,
+            "encode_ms": 20,
+            "cache_ms": 0,
+            "total_ms": 754
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 538351,
+        "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+      },
+      {
+        "iteration": 0,
+        "case": 1,
+        "dpi": 692,
+        "clip": {
+          "x": 3904,
+          "y": 2752,
+          "width": 1408,
+          "height": 768
+        },
+        "wall_ms": 410.414,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-3",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 3,
+          "status": "ready",
+          "bitmap_width": 1408,
+          "bitmap_height": 768,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 389,
+            "encode_ms": 18,
+            "cache_ms": 0,
+            "total_ms": 409
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 146779,
+        "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+      },
+      {
+        "iteration": 0,
+        "case": 2,
+        "dpi": 632,
+        "clip": {
+          "x": 3520,
+          "y": 2432,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 407.276,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-4",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 4,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 385,
+            "encode_ms": 19,
+            "cache_ms": 0,
+            "total_ms": 406
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 160410,
+        "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+      },
+      {
+        "iteration": 0,
+        "case": 3,
+        "dpi": 2072,
+        "clip": {
+          "x": 13120,
+          "y": 8768,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 372.885,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-5",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 5,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 353,
+            "encode_ms": 16,
+            "cache_ms": 0,
+            "total_ms": 372
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 90260,
+        "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+      },
+      {
+        "iteration": 1,
+        "case": 3,
+        "dpi": 2072,
+        "clip": {
+          "x": 13120,
+          "y": 8768,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 398.074,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-6",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 6,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 378,
+            "encode_ms": 16,
+            "cache_ms": 0,
+            "total_ms": 397
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 90260,
+        "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+      },
+      {
+        "iteration": 1,
+        "case": 2,
+        "dpi": 632,
+        "clip": {
+          "x": 3520,
+          "y": 2432,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 403.361,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-7",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 7,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 381,
+            "encode_ms": 18,
+            "cache_ms": 0,
+            "total_ms": 402
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 160410,
+        "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+      },
+      {
+        "iteration": 1,
+        "case": 1,
+        "dpi": 692,
+        "clip": {
+          "x": 3904,
+          "y": 2752,
+          "width": 1408,
+          "height": 768
+        },
+        "wall_ms": 374.768,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-8",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 8,
+          "status": "ready",
+          "bitmap_width": 1408,
+          "bitmap_height": 768,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 353,
+            "encode_ms": 18,
+            "cache_ms": 0,
+            "total_ms": 373
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 146779,
+        "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+      },
+      {
+        "iteration": 1,
+        "case": 0,
+        "dpi": 104,
+        "clip": {
+          "x": 0,
+          "y": 0,
+          "width": 1081,
+          "height": 811
+        },
+        "wall_ms": 402.408,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-9",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 9,
+          "status": "ready",
+          "bitmap_width": 1081,
+          "bitmap_height": 811,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 378,
+            "encode_ms": 20,
+            "cache_ms": 0,
+            "total_ms": 401
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 538351,
+        "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+      },
+      {
+        "iteration": 2,
+        "case": 0,
+        "dpi": 104,
+        "clip": {
+          "x": 0,
+          "y": 0,
+          "width": 1081,
+          "height": 811
+        },
+        "wall_ms": 408.699,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-10",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 10,
+          "status": "ready",
+          "bitmap_width": 1081,
+          "bitmap_height": 811,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 384,
+            "encode_ms": 20,
+            "cache_ms": 0,
+            "total_ms": 407
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 538351,
+        "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+      },
+      {
+        "iteration": 2,
+        "case": 1,
+        "dpi": 692,
+        "clip": {
+          "x": 3904,
+          "y": 2752,
+          "width": 1408,
+          "height": 768
+        },
+        "wall_ms": 399.072,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-11",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 11,
+          "status": "ready",
+          "bitmap_width": 1408,
+          "bitmap_height": 768,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 378,
+            "encode_ms": 17,
+            "cache_ms": 0,
+            "total_ms": 398
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 146779,
+        "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+      },
+      {
+        "iteration": 2,
+        "case": 2,
+        "dpi": 632,
+        "clip": {
+          "x": 3520,
+          "y": 2432,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 416.826,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-12",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 12,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 394,
+            "encode_ms": 19,
+            "cache_ms": 0,
+            "total_ms": 416
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 160410,
+        "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+      },
+      {
+        "iteration": 2,
+        "case": 3,
+        "dpi": 2072,
+        "clip": {
+          "x": 13120,
+          "y": 8768,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 398.147,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-13",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 13,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 379,
+            "encode_ms": 16,
+            "cache_ms": 0,
+            "total_ms": 397
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 90260,
+        "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+      },
+      {
+        "iteration": 3,
+        "case": 3,
+        "dpi": 2072,
+        "clip": {
+          "x": 13120,
+          "y": 8768,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 399.087,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-14",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 14,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 378,
+            "encode_ms": 17,
+            "cache_ms": 0,
+            "total_ms": 398
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 90260,
+        "png_sha256": "8287800ed4215ce675a68159cb6a87cce81a4cd195875fc74d1ce27954a0918a"
+      },
+      {
+        "iteration": 3,
+        "case": 2,
+        "dpi": 632,
+        "clip": {
+          "x": 3520,
+          "y": 2432,
+          "width": 1344,
+          "height": 832
+        },
+        "wall_ms": 416.399,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-15",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 15,
+          "status": "ready",
+          "bitmap_width": 1344,
+          "bitmap_height": 832,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 394,
+            "encode_ms": 18,
+            "cache_ms": 0,
+            "total_ms": 415
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 160410,
+        "png_sha256": "509c8d4008e82f5ba16927ebd398c246abed749ab43912dda017c64b57a59a11"
+      },
+      {
+        "iteration": 3,
+        "case": 1,
+        "dpi": 692,
+        "clip": {
+          "x": 3904,
+          "y": 2752,
+          "width": 1408,
+          "height": 768
+        },
+        "wall_ms": 406.966,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-16",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 16,
+          "status": "ready",
+          "bitmap_width": 1408,
+          "bitmap_height": 768,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 386,
+            "encode_ms": 18,
+            "cache_ms": 0,
+            "total_ms": 406
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 146779,
+        "png_sha256": "6a76404f00a6d5bc2d13f766b978f2ee2d61e72040c64fd2b81d45d66ae3ca98"
+      },
+      {
+        "iteration": 3,
+        "case": 0,
+        "dpi": 104,
+        "clip": {
+          "x": 0,
+          "y": 0,
+          "width": 1081,
+          "height": 811
+        },
+        "wall_ms": 405.352,
+        "header": {
+          "message": "render",
+          "request_id": "zoom-runway-17",
+          "owner_id": "viewer:r24-10-benchmark",
+          "generation": 17,
+          "status": "ready",
+          "bitmap_width": 1081,
+          "bitmap_height": 811,
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "cache_tier": "rendered",
+          "timing": {
+            "queue_ms": 0,
+            "wait_ms": 0,
+            "render_ms": 381,
+            "encode_ms": 20,
+            "cache_ms": 0,
+            "total_ms": 404
+          },
+          "soundness": "color-verified",
+          "unsupported_reason": null,
+          "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+          "substituted_fonts": [],
+          "geometry_approximated": false,
+          "error": null
+        },
+        "bytes": 538351,
+        "png_sha256": "ad8ff82eed4db9279b1b98c47cc84c20f381d38979dd78235aa1576909a793f8"
+      }
+    ],
+    "all_png_sha256_match_baseline": true,
+    "app_restart": {
+      "pid": 15948,
+      "startup_utc": "2026-09-24T16:28:26Z",
+      "frontend_home_interactive_utc": "2026-09-24T16:28:30Z",
+      "backend_health_http_status": 200,
+      "vite_http_status": 200,
+      "zoom_runtime_user_verification": "pending"
+    }
+  }
+}

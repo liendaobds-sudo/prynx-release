@@ -4,6 +4,7 @@ import { fireEvent, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
+import { useTextMarkupStore } from '../../stores/useTextMarkupStore';
 import { useViewerHotkeys } from './useViewerHotkeys';
 
 const makeProps = (overrides: Record<string, unknown> = {}) => ({
@@ -368,5 +369,40 @@ describe('useViewerHotkeys document undo fallback', () => {
         fireEvent.keyDown(document, { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true });
         expect(Array.from(setSelectedIndices.mock.calls[1][0])).toEqual([]);
         expect(setLastSelectedIndex).toHaveBeenNthCalledWith(2, null);
+    });
+
+    it('ưu tiên undo/redo text markup khi có thay đổi đánh dấu văn bản', () => {
+        useTextMarkupStore.getState().clear();
+        const onDocumentUndo = vi.fn();
+        renderHook(() => useViewerHotkeys(makeProps({ onDocumentUndo })), { wrapper: makeWrapper() });
+
+        useTextMarkupStore.getState().addMarkup({
+            pageNum: 1,
+            type: 'highlight',
+            rectPt: { x: 10, y: 10, width: 50, height: 12 },
+            text: 'Text Highlight',
+        });
+
+        expect(useTextMarkupStore.getState().markups.length).toBe(1);
+
+        // Bấm Ctrl+Z -> Hoàn tác markup trước, không gọi onDocumentUndo
+        fireEvent.keyDown(document, { key: 'z', code: 'KeyZ', ctrlKey: true });
+        expect(useTextMarkupStore.getState().markups.length).toBe(0);
+        expect(onDocumentUndo).not.toHaveBeenCalled();
+
+        // Bấm Ctrl+Y -> Làm lại (redo) markup
+        fireEvent.keyDown(document, { key: 'y', code: 'KeyY', ctrlKey: true });
+        expect(useTextMarkupStore.getState().markups.length).toBe(1);
+
+        // Bấm Delete khi markup được chọn -> Xóa markup
+        const markupId = useTextMarkupStore.getState().markups[0].id;
+        useTextMarkupStore.getState().setSelectedMarkupId(markupId);
+        fireEvent.keyDown(document, { key: 'Delete', code: 'Delete' });
+        expect(useTextMarkupStore.getState().markups.length).toBe(0);
+        expect(useTextMarkupStore.getState().selectedMarkupId).toBeNull();
+
+        // Bấm Ctrl+Z -> Phục hồi lại markup vừa bị xóa
+        fireEvent.keyDown(document, { key: 'z', code: 'KeyZ', ctrlKey: true });
+        expect(useTextMarkupStore.getState().markups.length).toBe(1);
     });
 });

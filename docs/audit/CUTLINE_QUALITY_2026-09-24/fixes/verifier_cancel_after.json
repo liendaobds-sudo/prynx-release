@@ -1,0 +1,7 @@
+{
+  "outcome": "cancelled",
+  "metrics": 1,
+  "distance": 0,
+  "elapsed_ms_instrumented": 1.6519000055268407,
+  "scope": "Same circle probe; not HTTP/Tauri; counts are primary evidence"
+}

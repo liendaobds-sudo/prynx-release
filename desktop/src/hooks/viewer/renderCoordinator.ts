@@ -1,4 +1,5 @@
-import { previewPerfLog } from '../../lib/previewPerfLog';
+import { invoke } from '@tauri-apps/api/core';
+import { previewPerfLog, viewerTraceEnabled } from '../../lib/previewPerfLog';
 import type { TileUrlSource } from '../../lib/tileUrlCache';
 import {
     nativeTileRenderScheduler,
@@ -184,13 +185,23 @@ async function defaultPhysicalCanceller(request: RenderCoordinatorRequest): Prom
         || !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     ) return;
     try {
-        const { invoke } = await import('@tauri-apps/api/core');
+        // PERF (audit 2026-09-25 §R25.04.3): hủy phải được gửi ngay như render.
+        // Nhường lượt ở dynamic import để job atlas cũ chạy thêm khi UI bận zoom.
+        const traceCancel = viewerTraceEnabled();
         for (const delayMs of [0, 16, 50]) {
             if (delayMs > 0) {
                 await new Promise(resolve => window.setTimeout(resolve, delayMs));
             }
+            const startedAt = traceCancel ? performance.now() : 0;
+            if (traceCancel) void previewPerfLog('render-cancel-submit', {
+                request_id: request.requestId, priority: request.priority, retry_delay_ms: delayMs,
+            });
             const cancelled = await invoke<boolean>('cancel_pdf_render', {
                 requestId: request.requestId,
+            });
+            if (traceCancel) void previewPerfLog('render-cancel-ack', {
+                request_id: request.requestId, cancelled,
+                round_trip_ms: performance.now() - startedAt,
             });
             if (cancelled) return;
         }
@@ -392,6 +403,19 @@ export class RenderCoordinator {
         trace.bitmapHeight = Number.isFinite(result.height) && result.height >= 0 ? result.height : null;
         const current = result.current && this.isLatest(trace);
         this.reportFinal(trace, current ? 'ready' : 'stale');
+    }
+
+    /** R25.03: nối ảnh đã vẽ với đúng request, kể cả trace đã chốt decode. */
+    sourceTraceIdentity(source: TileUrlSource): Record<string, unknown> {
+        const trace = this.sourceTraces.get(source);
+        if (!trace) return {};
+        const request = trace.request;
+        return {
+            request_id: request.requestId,
+            generation: request.generation,
+            requested_dpi: request.raster.kind === 'dpi' ? request.raster.dpi : undefined,
+            request_age_ms: Math.max(0, this.now() - trace.createdAt),
+        };
     }
 
     /**

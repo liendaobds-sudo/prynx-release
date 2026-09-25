@@ -1542,6 +1542,8 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     cutlineSmoothness: item.state.cutlineSmoothness,
                     cutlineFidelity: item.state.cutlineFidelity,
                     curveTension: item.state.curveTension,
+                    // QUALITY (audit 2026-09-24 NODE.1): xuất đúng denoise đã preview.
+                    cutlineDenoise: item.state.cutlineDenoise,
                     minDetailAreaMm2: item.state.minDetailAreaMm2,
                 })),
                 pageOrder,
@@ -1562,6 +1564,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 cutlineSmoothness: exportPages[0].state.cutlineSmoothness,
                 cutlineFidelity: exportPages[0].state.cutlineFidelity,
                 curveTension: exportPages[0].state.curveTension,
+                cutlineDenoise: exportPages[0].state.cutlineDenoise,
                 minDetailAreaMm2: exportPages[0].state.minDetailAreaMm2,
                 signal: controller.signal,
             });

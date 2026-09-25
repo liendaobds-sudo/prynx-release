@@ -72,7 +72,46 @@ def test_real_binder_later_pages_whole_path_matches_actual_pdf(page_number):
     assert (svg, count) == expected
     assert count > 0 and quality["fit_mode"] == "classic-whole-page"
     if page_number == 12:
-        assert count == 122
+        # CUT24: chặn phình node, nhưng không khóa biểu diễn cubic cũ 122 đoạn.
+        assert count <= 122
+
+
+@pytest.mark.parametrize("mode,corner,offset,bleed", [
+    ("original", "preserve", 2, 0), ("bleed", "round", 0, 2),
+])
+def test_auto_execute_keeps_whole_page_preview_cut_and_uses_memo(
+    monkeypatch, mode, corner, offset, bleed,
+):
+    """CUT24.01: AUTO thật phải xuất đường đã duyệt, kể cả đường đã là cubic."""
+    from app.workers import sticker_classic_page_preview as worker
+    from app.workers import cutline_cubic_simplify as simplifier
+    from app.workers.sticker_engine import StickerEngine
+
+    source = Path(__file__).resolve().parents[2] / "test/Binder2.pdf"
+    if not source.is_file():
+        pytest.skip("Corpus Binder2 riêng")
+    monkeypatch.setattr(worker, "_classic_baseline_cache", {})
+    geometry = dict(cut_mode=mode, corner_style=corner, offset_mm=offset, bleed_mm=bleed,
+                    curve_tension=100 if corner == "round" else 50, cutline_denoise=30,
+                    fill_holes=True, cutline_smoothness=50, cutline_fidelity=50,
+                    min_detail_area_mm2=1, cutline_simplify_mm=.1, shape_mode="auto_safe")
+    preview = worker._render_classic_page(str(source), 12, (600, 600), geometry, True)
+    assert preview[3], "Preview phải thu được memo đã kiểm hình học"
+    monkeypatch.setattr(simplifier, "_simplify_cubic_path_groups_impl",
+                        lambda *_args, **_kwargs: pytest.fail("Execute giải lại đường đã duyệt"))
+    result = StickerEngine(dpi=300).process_pdf(
+        str(source), "", _page_subset=[11], remove_white_bg=True,
+        draw_cut_contour=True, alpha_corner_policy="adaptive",
+        cutline_simplify_auto=True, _simplify_memo=preview[3], **geometry,
+    )
+    with pikepdf.Pdf.open(source) as pdf:
+        box = pdf.pages[11].cropbox
+        width, height = float(box[2]-box[0]), float(box[3]-box[1])
+    with pikepdf.Pdf.open(BytesIO(result[0])) as pdf:
+        assert worker._pdf_cut_svg(pdf.pages[0], width, height, 600, 600) == preview[:2]
+    stats = preview[2]["simplification"]
+    assert stats["changed"] and stats["after_segments"] < stats["before_segments"]
+    assert stats["maximum_error_bound_mm"] <= .1
 
 
 def test_round_bleed_writer_runs_simplify_on_its_actual_cubics():
@@ -95,8 +134,9 @@ def test_round_bleed_writer_runs_simplify_on_its_actual_cubics():
             paths = _parse_cut_machine_paths(pdf.pages[0])
             assert len(paths) == 1
             rings.append(np.array([[s.p0,s.p1,s.p2,s.p3] for s in paths[0]]) * 25.4/72)
-    assert len(rings[0]) == 364
-    assert len(rings[1]) < len(rings[0]) / 2
+    # CUT24: baseline đã được fit gọn trước Simplify; kiểm giảm lệnh thực và
+    # cận sai lệch bên dưới, không buộc còn nửa số node lịch sử 364.
+    assert 0 < len(rings[1]) < len(rings[0]) <= 364
     stats = result[1][0]["cutline_simplification"]
     assert stats["changed"] and stats["before_segments"] == len(rings[0])
     assert stats["after_segments"] == len(rings[1])
@@ -127,6 +167,13 @@ def test_whole_page_worker_process_handles_later_page_without_single_instance_li
         cutline_smoothness=50, cutline_fidelity=50, curve_tension=50,
         min_detail_area_mm2=1, cutline_denoise=30, cutline_simplify_mm=0)
     assert result["page_number"] == 12 and result["mask_revision"] == 7
-    assert result["segment_count"] == 122
-    assert result["paths"][0]["d"].count("C ") == 122
+    assert 0 < result["segment_count"] <= 122
+    assert result["paths"][0]["d"].count("C ") == result["segment_count"]
     assert result["paths"][0]["d"].count("M ") == 1
+    geometry = dict(cut_mode="original", offset_mm=2, bleed_mm=0,
+                    corner_style="preserve", fill_holes=True, cutline_smoothness=50,
+                    cutline_fidelity=50, curve_tension=50, cutline_denoise=30,
+                    min_detail_area_mm2=1, cutline_simplify_mm=0, shape_mode="auto_safe")
+    inline = _render_classic_page(str(source), 12, (600, 600), geometry)
+    assert result["paths"][0]["d"] == inline[0]
+    assert result["segment_count"] == inline[1]

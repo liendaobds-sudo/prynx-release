@@ -1,0 +1,808 @@
+{
+  "schema_version": 1,
+  "captured_utc": "2026-09-24T15:33:36.140297+00:00",
+  "scope": "read-only-user-runtime-post-R24.07",
+  "provenance": {
+    "source_relative_path": "desktop/src/components/workspace/LivePageFrame.tsx",
+    "source_sha256": "30bcd2bdc9ff79e1f40bf9ced0fc99b24bb1eb53c5ee16c6e09e4bceb0d602d4",
+    "served_source_map_matches_disk": true,
+    "served_source_url": "http://localhost:5173/src/components/workspace/LivePageFrame.tsx",
+    "log": {
+      "relative_source": "Desktop/PrynX_RenderPerf.log",
+      "size_bytes_at_capture": 200794631,
+      "suffix_start_byte": 190657194,
+      "suffix_sha256": "c55957b8447546fb10c765c248bdaf2bfbd3f1ed5df4a96fa58c17fd3f76283d",
+      "trace_id": "Vmufom5lz-p8s66f",
+      "fe_seq_min": 1,
+      "fe_seq_max": 19876,
+      "fe_records_parsed": 19876,
+      "json_decode_errors": 0,
+      "native_log_window_utc": [
+        "2026-09-24T15:23:44.664000+00:00",
+        "2026-09-24T15:27:40.964000+00:00"
+      ],
+      "log_line_numbers_are_one_based": true
+    }
+  },
+  "filters": [
+    "FE: exact trace_id Vmufom5lz-p8s66f and seq 1..19876 inclusive.",
+    "Coordinator: render-coordinator-result with valid native log timestamp inside first/last FE log timestamps of this trace; document_identity hashed with SHA-256.",
+    "PPE main viewport: document SHA-256 prefix 6b7a9ffaa811 and group contains :viewport-accurate:viewport; pages 1 and 2.",
+    "Native completion: exact request_id join to those coordinator rows; event PPE_NATIVE_RESULT proves actual PPE, independent of requested pipeline/group name.",
+    "FE commits: exact FNV-1a hash of selected instance-specific group keys; tile-first-pixel matched same tile_id/instance/group and immediately following seq."
+  ],
+  "ppe_document": {
+    "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+    "all_coordinator_status_counts": {
+      "ready": 161,
+      "cancelled": 945,
+      "stale": 67
+    },
+    "main_viewport_coordinator": {
+      "count": 97,
+      "status_counts": {
+        "cancelled": 88,
+        "ready": 8,
+        "stale": 1
+      },
+      "cancelled_ratio": 0.9072164948453608,
+      "ready_ratio": 0.08247422680412371
+    },
+    "native_main_completions": {
+      "count": 9,
+      "coordinator_status_counts": {
+        "ready": 8,
+        "stale": 1
+      },
+      "ready_only_total_ms": {
+        "n": 8,
+        "min": 537.0,
+        "median": 689.5,
+        "observed_p95_nearest_rank": 1551.0,
+        "max": 1551.0
+      },
+      "all_completion_total_ms": {
+        "n": 9,
+        "min": 471.0,
+        "median": 679.0,
+        "observed_p95_nearest_rank": 1551.0,
+        "max": 1551.0
+      },
+      "available_timing_fields": [
+        "total_ms",
+        "sem_wait_ms",
+        "worker_queue_ms"
+      ],
+      "unavailable_timing_fields": [
+        "prepare_ms",
+        "raster_ms",
+        "convert_ms",
+        "encode_ms"
+      ],
+      "all_sem_wait_ms_zero": true,
+      "all_worker_queue_ms_zero": true,
+      "requests": [
+        {
+          "request_id": "72058724-2117-49d4-9f78-b8adce02539d",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 545088,
+            "log_timestamp_unix_ms": 1790263428375,
+            "page": 1,
+            "dpi": 128.0,
+            "bytes": 631294,
+            "timing_ms": {
+              "total_ms": 906,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 545091,
+            "generation": 4,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 933,
+              "source_ms": 10,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 943
+            }
+          }
+        },
+        {
+          "request_id": "ef59b079-8b97-4820-a737-acdbd011024c",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 545694,
+            "log_timestamp_unix_ms": 1790263429729,
+            "page": 1,
+            "dpi": 344.0,
+            "bytes": 269345,
+            "timing_ms": {
+              "total_ms": 679,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 545700,
+            "generation": 13,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 732,
+              "source_ms": 8,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 740
+            }
+          }
+        },
+        {
+          "request_id": "99aac2ce-465e-4587-ad69-e33c4cb493cb",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 546424,
+            "log_timestamp_unix_ms": 1790263431580,
+            "page": 1,
+            "dpi": 1700.0,
+            "bytes": 95370,
+            "timing_ms": {
+              "total_ms": 700,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 546431,
+            "generation": 21,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 798,
+              "source_ms": 6,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 804
+            }
+          }
+        },
+        {
+          "request_id": "4a762862-721e-4478-a1a2-c592138e8a89",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 547201,
+            "log_timestamp_unix_ms": 1790263433194,
+            "page": 1,
+            "dpi": 4604.0,
+            "bytes": 40560,
+            "timing_ms": {
+              "total_ms": 572,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 547207,
+            "generation": 29,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 617,
+              "source_ms": 5,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 622
+            }
+          }
+        },
+        {
+          "request_id": "6382d191-fcf4-458c-a273-ddd6ffd6b40b",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 547994,
+            "log_timestamp_unix_ms": 1790263434750,
+            "page": 1,
+            "dpi": 2792.0,
+            "bytes": 55742,
+            "timing_ms": {
+              "total_ms": 543,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 548001,
+            "generation": 33,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 613,
+              "source_ms": 4,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 617
+            }
+          }
+        },
+        {
+          "request_id": "0e196892-7e3c-402e-9dff-5c074420b15c",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 548558,
+            "log_timestamp_unix_ms": 1790263435623,
+            "page": 1,
+            "dpi": 1700.0,
+            "bytes": 93303,
+            "timing_ms": {
+              "total_ms": 471,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 548589,
+            "generation": 36,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "stale",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 680,
+              "source_ms": 0,
+              "stale_ms": 112,
+              "total_ms": 680
+            }
+          }
+        },
+        {
+          "request_id": "efe70648-6c02-41b3-89d8-a93af0e496cb",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 549172,
+            "log_timestamp_unix_ms": 1790263436986,
+            "page": 1,
+            "dpi": 572.0,
+            "bytes": 182033,
+            "timing_ms": {
+              "total_ms": 537,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 549180,
+            "generation": 42,
+            "page": 1,
+            "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+            "group_hash": "ac83131c",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 575,
+              "source_ms": 7,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 582
+            }
+          }
+        },
+        {
+          "request_id": "06a4151c-cf17-4f00-8c0f-693abc90cb1e",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 552930,
+            "log_timestamp_unix_ms": 1790263445522,
+            "page": 2,
+            "dpi": 692.0,
+            "bytes": 91190,
+            "timing_ms": {
+              "total_ms": 1196,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 552939,
+            "generation": 14,
+            "page": 2,
+            "group_key": "page:2:instance:p2:viewport-accurate:viewport",
+            "group_hash": "bb7e4e38",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 1280,
+              "source_ms": 9,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 1289
+            }
+          }
+        },
+        {
+          "request_id": "f7cbbfb8-0760-4058-8484-44770cb4c4f4",
+          "actual_engine": "PPE",
+          "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+          "native": {
+            "event": "PPE_NATIVE_RESULT",
+            "log_line": 557690,
+            "log_timestamp_unix_ms": 1790263455897,
+            "page": 2,
+            "dpi": 236.0,
+            "bytes": 307479,
+            "timing_ms": {
+              "total_ms": 1551,
+              "sem_wait_ms": 0,
+              "worker_queue_ms": 0
+            }
+          },
+          "coordinator": {
+            "log_line": 557697,
+            "generation": 37,
+            "page": 2,
+            "group_key": "page:2:instance:p2:viewport-accurate:viewport",
+            "group_hash": "bb7e4e38",
+            "status": "ready",
+            "color_pipeline_requested": "accurate",
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "priority": 0,
+            "timing_ms": {
+              "queue_ms": 0,
+              "wait_ms": 1591,
+              "source_ms": 7,
+              "decode_ms": 0,
+              "stale_ms": 0,
+              "total_ms": 1598
+            }
+          }
+        }
+      ]
+    },
+    "fe_main_viewport": {
+      "request_count": 97,
+      "commit_count": 8,
+      "first_pixel_metric_name": "native_to_decode_ms",
+      "request_to_decode_ms": {
+        "n": 8,
+        "min": 582.0,
+        "median": 773.0,
+        "observed_p95_nearest_rank": 1598.0,
+        "max": 1598.0
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "request_count": 53,
+          "commit_count": 6
+        },
+        {
+          "page": 2,
+          "request_count": 44,
+          "commit_count": 2
+        }
+      ],
+      "commits": [
+        {
+          "seq": 238,
+          "page": 1,
+          "group": "ac83131c",
+          "tile_id": "f94ffad3",
+          "instance": "3193b387",
+          "attempt": 1,
+          "scale": 1.333,
+          "natural_w": 1330,
+          "natural_h": 832,
+          "bytes": 631294,
+          "color_stage": "accurate",
+          "commit_log_line": 545094,
+          "first_pixel_seq": 239,
+          "first_pixel_log_line": 545095,
+          "reported_native_to_decode_ms": 944
+        },
+        {
+          "seq": 942,
+          "page": 1,
+          "group": "ac83131c",
+          "tile_id": "b94ae6cd",
+          "instance": "3193b387",
+          "attempt": 1,
+          "scale": 3.583,
+          "natural_w": 1344,
+          "natural_h": 768,
+          "bytes": 269345,
+          "color_stage": "accurate",
+          "commit_log_line": 547030,
+          "first_pixel_seq": 943,
+          "first_pixel_log_line": 547031,
+          "reported_native_to_decode_ms": 741
+        },
+        {
+          "seq": 1857,
+          "page": 1,
+          "group": "ac83131c",
+          "tile_id": "1cdc67ec",
+          "instance": "3193b387",
+          "attempt": 1,
+          "scale": 17.708,
+          "natural_w": 1408,
+          "natural_h": 832,
+          "bytes": 95370,
+          "color_stage": "accurate",
+          "commit_log_line": 548954,
+          "first_pixel_seq": 1858,
+          "first_pixel_log_line": 548955,
+          "reported_native_to_decode_ms": 805
+        },
+        {
+          "seq": 2768,
+          "page": 1,
+          "group": "ac83131c",
+          "tile_id": "7518bc6c",
+          "instance": "3193b387",
+          "attempt": 1,
+          "scale": 47.958,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 40560,
+          "color_stage": "accurate",
+          "commit_log_line": 550654,
+          "first_pixel_seq": 2769,
+          "first_pixel_log_line": 550655,
+          "reported_native_to_decode_ms": 623
+        },
+        {
+          "seq": 3525,
+          "page": 1,
+          "group": "ac83131c",
+          "tile_id": "2507bd6f",
+          "instance": "3193b387",
+          "attempt": 1,
+          "scale": 29.083,
+          "natural_w": 1344,
+          "natural_h": 768,
+          "bytes": 55742,
+          "color_stage": "accurate",
+          "commit_log_line": 551412,
+          "first_pixel_seq": 3526,
+          "first_pixel_log_line": 551413,
+          "reported_native_to_decode_ms": 618
+        },
+        {
+          "seq": 4641,
+          "page": 1,
+          "group": "ac83131c",
+          "tile_id": "27462992",
+          "instance": "3193b387",
+          "attempt": 1,
+          "scale": 5.958,
+          "natural_w": 1408,
+          "natural_h": 832,
+          "bytes": 182033,
+          "color_stage": "accurate",
+          "commit_log_line": 553315,
+          "first_pixel_seq": 4642,
+          "first_pixel_log_line": 553316,
+          "reported_native_to_decode_ms": 582
+        },
+        {
+          "seq": 7277,
+          "page": 2,
+          "group": "bb7e4e38",
+          "tile_id": "8aa03741",
+          "instance": "df3ff226",
+          "attempt": 1,
+          "scale": 7.208,
+          "natural_w": 1408,
+          "natural_h": 768,
+          "bytes": 91190,
+          "color_stage": "accurate",
+          "commit_log_line": 556507,
+          "first_pixel_seq": 7278,
+          "first_pixel_log_line": 556508,
+          "reported_native_to_decode_ms": 1289
+        },
+        {
+          "seq": 9448,
+          "page": 2,
+          "group": "bb7e4e38",
+          "tile_id": "649a0b87",
+          "instance": "df3ff226",
+          "attempt": 1,
+          "scale": 2.458,
+          "natural_w": 1408,
+          "natural_h": 832,
+          "bytes": 307479,
+          "color_stage": "accurate",
+          "commit_log_line": 559136,
+          "first_pixel_seq": 9449,
+          "first_pixel_log_line": 559137,
+          "reported_native_to_decode_ms": 1598
+        }
+      ]
+    },
+    "continuous_zoom_cancel_chains": [
+      {
+        "page": 1,
+        "group_key": "page:1:instance:p1:viewport-accurate:viewport",
+        "group_hash": "ac83131c",
+        "entries": [
+          {
+            "fe_request": {
+              "seq": 270,
+              "log_line": 545446,
+              "scale": 1.458,
+              "tile_id": "2546e83b",
+              "instance": "3193b387",
+              "group": "ac83131c",
+              "attempt": 1
+            },
+            "fe_unmount": {
+              "seq": 297,
+              "log_line": 545473
+            },
+            "commit_between_request_and_unmount": false,
+            "coordinator_correlated_by_group_and_generation_scale": {
+              "request_id": "5d7fe86f-b66b-4001-857e-0c0303c461e7",
+              "log_line": 545185,
+              "generation": 5,
+              "dpi": 140,
+              "status": "cancelled",
+              "timing_ms": {
+                "queue_ms": 0,
+                "wait_ms": 238,
+                "source_ms": 0,
+                "stale_ms": 212,
+                "total_ms": 238
+              }
+            }
+          },
+          {
+            "fe_request": {
+              "seq": 328,
+              "log_line": 545504,
+              "scale": 1.708,
+              "tile_id": "43f94ebe",
+              "instance": "3193b387",
+              "group": "ac83131c",
+              "attempt": 1
+            },
+            "fe_unmount": {
+              "seq": 379,
+              "log_line": 545567
+            },
+            "commit_between_request_and_unmount": false,
+            "coordinator_correlated_by_group_and_generation_scale": {
+              "request_id": "2813928a-5f26-49b9-a236-71dc68217026",
+              "log_line": 545199,
+              "generation": 6,
+              "dpi": 164,
+              "status": "cancelled",
+              "timing_ms": {
+                "queue_ms": 0,
+                "wait_ms": 210,
+                "source_ms": 0,
+                "stale_ms": 181,
+                "total_ms": 210
+              }
+            }
+          },
+          {
+            "fe_request": {
+              "seq": 425,
+              "log_line": 545631,
+              "scale": 1.833,
+              "tile_id": "5253e140",
+              "instance": "3193b387",
+              "group": "ac83131c",
+              "attempt": 1
+            },
+            "fe_unmount": {
+              "seq": 476,
+              "log_line": 545682
+            },
+            "commit_between_request_and_unmount": false,
+            "coordinator_correlated_by_group_and_generation_scale": {
+              "request_id": "33a7c601-9efb-436e-84f8-5f7b87976c7e",
+              "log_line": 545251,
+              "generation": 7,
+              "dpi": 176,
+              "status": "cancelled",
+              "timing_ms": {
+                "queue_ms": 0,
+                "wait_ms": 444,
+                "source_ms": 0,
+                "stale_ms": 416,
+                "total_ms": 444
+              }
+            }
+          }
+        ],
+        "correlation_limit": "Request/unmount join uses same FE tile_id and instance. Coordinator match is same group/generation and DPI/scale sequence, not a FE request_id field."
+      },
+      {
+        "page": 2,
+        "group_key": "page:2:instance:p2:viewport-accurate:viewport",
+        "group_hash": "bb7e4e38",
+        "entries": [
+          {
+            "fe_request": {
+              "seq": 6169,
+              "log_line": 555268,
+              "scale": 1.083,
+              "tile_id": "a4fa7102",
+              "instance": "df3ff226",
+              "group": "bb7e4e38",
+              "attempt": 1
+            },
+            "fe_unmount": {
+              "seq": 6199,
+              "log_line": 555298
+            },
+            "commit_between_request_and_unmount": false,
+            "coordinator_correlated_by_group_and_generation_scale": {
+              "request_id": "4cbb786a-43e9-4c5a-abac-1c1b42bc61b8",
+              "log_line": 551892,
+              "generation": 1,
+              "dpi": 104,
+              "status": "cancelled",
+              "timing_ms": {
+                "queue_ms": 0,
+                "wait_ms": 117,
+                "source_ms": 0,
+                "stale_ms": 101,
+                "total_ms": 117
+              }
+            }
+          },
+          {
+            "fe_request": {
+              "seq": 6231,
+              "log_line": 555330,
+              "scale": 1.208,
+              "tile_id": "622eadc0",
+              "instance": "df3ff226",
+              "group": "bb7e4e38",
+              "attempt": 1
+            },
+            "fe_unmount": {
+              "seq": 6258,
+              "log_line": 555357
+            },
+            "commit_between_request_and_unmount": false,
+            "coordinator_correlated_by_group_and_generation_scale": {
+              "request_id": "8e37ca49-4c5d-4a4e-9a13-11012161c5de",
+              "log_line": 551912,
+              "generation": 2,
+              "dpi": 116,
+              "status": "cancelled",
+              "timing_ms": {
+                "queue_ms": 0,
+                "wait_ms": 101,
+                "source_ms": 0,
+                "stale_ms": 73,
+                "total_ms": 101
+              }
+            }
+          },
+          {
+            "fe_request": {
+              "seq": 6290,
+              "log_line": 555389,
+              "scale": 1.333,
+              "tile_id": "b39b747d",
+              "instance": "df3ff226",
+              "group": "bb7e4e38",
+              "attempt": 1
+            },
+            "fe_unmount": {
+              "seq": 6317,
+              "log_line": 555416
+            },
+            "commit_between_request_and_unmount": false,
+            "coordinator_correlated_by_group_and_generation_scale": {
+              "request_id": "6750bd02-44cb-4120-93fa-b67f1a6ad722",
+              "log_line": 551935,
+              "generation": 3,
+              "dpi": 128,
+              "status": "cancelled",
+              "timing_ms": {
+                "queue_ms": 0,
+                "wait_ms": 91,
+                "source_ms": 0,
+                "stale_ms": 65,
+                "total_ms": 91
+              }
+            }
+          }
+        ],
+        "correlation_limit": "Request/unmount join uses same FE tile_id and instance. Coordinator match is same group/generation and DPI/scale sequence, not a FE request_id field."
+      }
+    ]
+  },
+  "compatibility_document": {
+    "document_identity_sha256": "4789d3ca1ee3752289a346f6a2125f3c56c1fc21c4cdc151896b06e0498096d9",
+    "coordinator_count": 893,
+    "coordinator_status_counts": {
+      "ready": 323,
+      "cancelled": 570
+    },
+    "main_viewport_group_status_counts": {
+      "ready": 26,
+      "cancelled": 62
+    },
+    "actual_native_completion_events": {
+      "RENDER_WORKER_RESULT": 358
+    },
+    "interpretation": "This document uses actual PDFium even for a group named viewport-accurate. Group/color-stage labels alone do not prove PPE. This is not classified as a regression solely from the label."
+  },
+  "viewport_display_group_result_count": 0,
+  "caveats": [
+    "The nine native completions are eight ready plus one stale. Do not equate nine native results with nine successful frames.",
+    "Only eight ready native main completions are available. Quantiles describe this sample, not an acceptance P95 or corpus result.",
+    "Native total_ms includes work not split by available logs; zero semaphore/worker-queue does not prove every millisecond was raster CPU.",
+    "FE native_to_decode_ms is request-to-decode/commit instrumentation, not input-to-sharp or compositor present.",
+    "FE trace writes are queued; do not compute input cadence or frame dwell from differences between logged elapsed_ms or cross-process wall timestamps.",
+    "Coordinator native linkage is exact request_id. FE commits lack request_id, so they are reported separately with their group/scale/dimensions rather than claimed as an exact native-to-present join.",
+    "Cancellations can correctly protect against stale targets. Their frequency plus unmount-before-commit sequences supports the observed inability to refine many intermediate zoom targets, but does not prove all cancelled requests consumed full raster work.",
+    "Served source-map equality proves current Vite output, not that every WebView resident module or compositor has applied HMR. No screen capture, UI automation, restart or build was performed.",
+    "Document paths/content and raw command lines are omitted; document identities are SHA-256 only."
+  ]
+}

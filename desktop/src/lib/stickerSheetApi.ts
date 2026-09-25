@@ -146,6 +146,8 @@ export interface StickerSheetPageExport {
     cutlineSmoothness?: number;
     cutlineFidelity?: number;
     curveTension?: number;
+    cutlineDenoise?: number;
+    cutlineSimplifyMm?: number;
     minDetailAreaMm2?: number;
 }
 
@@ -570,6 +572,8 @@ export async function exportStickerSheet(
         cutlineSmoothness?: number;
         cutlineFidelity?: number;
         curveTension?: number;
+        cutlineDenoise?: number;
+        cutlineSimplifyMm?: number;
         minDetailAreaMm2?: number;
         signal?: AbortSignal;
     },
@@ -584,6 +588,9 @@ export async function exportStickerSheet(
         cutline_smoothness: page.cutlineSmoothness ?? options.cutlineSmoothness ?? 50,
         cutline_fidelity: page.cutlineFidelity ?? options.cutlineFidelity ?? 50,
         curve_tension: page.curveTension ?? options.curveTension ?? 50,
+        // QUALITY (audit 2026-09-24 NODE.1): giữ cả số 0 tường minh từng trang.
+        cutline_denoise: page.cutlineDenoise ?? options.cutlineDenoise,
+        cutline_simplify_mm: page.cutlineSimplifyMm ?? options.cutlineSimplifyMm,
         min_detail_area_mm2: page.minDetailAreaMm2 ?? options.minDetailAreaMm2 ?? 1,
     }));
     const response = await authenticatedFetch(
@@ -600,6 +607,8 @@ export async function exportStickerSheet(
                 cutline_smoothness: options.cutlineSmoothness ?? 50,
                 cutline_fidelity: options.cutlineFidelity ?? 50,
                 curve_tension: options.curveTension ?? 50,
+                cutline_denoise: options.cutlineDenoise,
+                cutline_simplify_mm: options.cutlineSimplifyMm,
                 min_detail_area_mm2: options.minDetailAreaMm2 ?? 1,
                 offset_mm: options.offsetMm,
                 bleed_mm: options.bleedMm,

@@ -54,12 +54,19 @@ def _uniform_points(curves, step):
     return np.column_stack([np.interp(at, lengths, dense[:, axis]) for axis in (0, 1)])
 
 
-def _closest(curves, points, step):
+def _prepare_closest(curves, step):
+    """Dữ liệu bất biến cho nhiều lần chiếu vào cùng một nguồn."""
     check_preview_cancelled()
     from scipy.spatial import cKDTree
 
     indices, parameters = _parameters(curves, step)
     tree = cKDTree(_evaluate(curves, indices, parameters))
+    return indices, parameters, tree
+
+
+def _closest(curves, points, step, *, prepared=None):
+    check_preview_cancelled()
+    indices, parameters, tree = _prepare_closest(curves, step) if prepared is None else prepared
     _, nearest = tree.query(points)
     indices, parameters = indices[nearest], parameters[nearest]
     for _ in range(5):
@@ -162,13 +169,16 @@ def _optimize_seed(
     except (TypeError, ValueError):
         solver_max_nfev = 35
     previous_solution = None
+    # PERF (audit 2026-09-24 §CUT24.05): nguồn không đổi giữa các vòng IRLS.
+    # Chỉ cây của candidate cần dựng lại; giữ nguyên mẫu và phép chiếu Newton.
+    source_projection = _prepare_closest(source, step*4/3)
     for exponent in (0, 1, 2, 3, 4)[:irls_rounds]:
         check_preview_cancelled()
         current = _decode(values, angle_delta)
         source_indices, source_t, projected = _closest(current, source_points, step*4/3)
         reverse_indices, reverse_t = _parameters(current, step*10/3)
         reverse = _evaluate(current, reverse_indices, reverse_t)
-        _, _, reverse_projected = _closest(source, reverse, step*4/3)
+        _, _, reverse_projected = _closest(source, reverse, step*4/3, prepared=source_projection)
         indices, parameters = np.r_[source_indices, reverse_indices], np.r_[source_t, reverse_t]
         target = np.vstack([source_points, reverse_projected])
         error = np.linalg.norm(np.vstack([projected, reverse])-target, axis=1)
@@ -232,19 +242,18 @@ def _fair_refit_ring_impl(
     max_nfev: int = 35,
 ):
     """Trả ring và cận mm; không có nghiệm an toàn thì giữ đúng object nguồn."""
-    from app.workers.cutline_fair_seed import build_fair_seeds
+    from app.workers.cutline_fair_seed import iter_fair_seeds
     from app.workers.cutline_fair_verify import verify_fair_ring
 
     tolerance = float(tolerance_mm)
     check_preview_cancelled()
     values = np.asarray(source, dtype=np.float64)
     if (values.ndim != 3 or values.shape[1:] != (4, 2) or len(values) < 4
-            or len(values) > 100
             or not np.isfinite(values).all() or not math.isfinite(tolerance)
             or tolerance < .005):
-        # Dưới bước điều khiển Simplify (0,005 mm) hoặc ring quá dày (>100 cubic
-        # khiến solver ma trận phi tuyến giải tích O(N^3) làm tê liệt CPU hàng chục giây),
-        # giữ nhánh gộp bảo toàn của caller.
+        # QUALITY (audit 2026-09-24 §CUT24.02): số cubic nguồn không phải độ
+        # phức tạp solver (biến thuộc seed). Chia dư một cubic không được tắt
+        # fairing. Dưới bước UI vẫn đi nhánh bảo toàn như trước.
         return source, 0.0
     origin = values[0, 0].copy()
     local = values-origin
@@ -252,9 +261,14 @@ def _fair_refit_ring_impl(
     points = _uniform_points(local, min(.03, tolerance*.3))
     if points is None:
         return source, 0.0
-    seeds = build_fair_seeds(local, tolerance, protected_indices=protected)
+    seeds = []
+    def new_seeds():
+        for seed in iter_fair_seeds(local, tolerance, protected_indices=protected):
+            seeds.append(seed)
+            yield seed
+    available = new_seeds()
     while True:
-        for seed in seeds:
+        for seed in available:
             check_preview_cancelled()
             if len(seed) >= len(values):
                 continue
@@ -288,6 +302,7 @@ def _fair_refit_ring_impl(
         # Giữ nguyên số vòng/thứ tự nghiệm và bộ kiểm độc lập của nhánh cũ.
         check_preview_cancelled()
         max_irls_rounds, max_nfev = 5, 35
+        available = iter(seeds)
 
 
 def fair_refit_ring(

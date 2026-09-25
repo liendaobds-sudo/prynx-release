@@ -1,0 +1,36 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_whole_page_worker_process_handles_later_page_without_single_instance_limit _
+
+    def test_whole_page_worker_process_handles_later_page_without_single_instance_limit():
+        from types import SimpleNamespace
+        from threading import RLock
+        from app.workers.sticker_classic_page_preview import build_classic_page_preview
+    
+        source = Path(__file__).resolve().parents[2] / "test/Binder2.pdf"
+        if not source.exists():
+            pytest.skip("Corpus Binder2 ri�ng")
+        page = SimpleNamespace(stage="mask-review", boundary_source="alpha", operation_lock=RLock(),
+                               manifest={"mask_revision": 7, "instances": [{"id": x} for x in range(1,7)]},
+                               preview_width_px=600, preview_height_px=600)
+        session = SimpleNamespace(source_kind="pdf", source_path=source, pages={12: page})
+        result = build_classic_page_preview(session, page_number=12, base_revision=7, edits=[],
+            offset_mm=2, bleed_mm=0, cut_mode="original", corner_style="preserve", fill_holes=True,
+            cutline_smoothness=50, cutline_fidelity=50, curve_tension=50,
+            min_detail_area_mm2=1, cutline_denoise=30, cutline_simplify_mm=0)
+        assert result["page_number"] == 12 and result["mask_revision"] == 7
+>       assert result["segment_count"] == 122
+E       assert 73 == 122
+
+backend\tests\test_sticker_classic_page_preview.py:130: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[CUTLINE-DEBUG] [2026-09-24 21:55:51.633] [PIPELINE] [RENDER_PDF_PAGE] HO\ufffdN TH\ufffdNH file=Binder2.pdf page=12 | elapsed_ms=15.10\r\n[CUTLINE-DEBUG] [2026-09-24 21:55:51.985] [ENGINE] [PAGE_TIMING] page=12 w=822 h=844 dpi=300.0 pid=17300 | total_s=0.38 raster_s=0.01 contour_s=0.01 open_pike_s=0.00 open_pdfium_s=0.00 mask_prep_s=0.00 geom_recon_s=0.05 buffer_fit_s=0.25 xobj_s=0.00 simplify_s=0.00 shape_s=0.00 content_s=0.00 other_s=0.05\r\n[CUTLINE-DEBUG] [2026-09-24 21:55:51.987] [ENGINE] [CHUNK_BUFFER_SAVED] chunk_pages=[11] size_mb=0.05 pid=17300 | save_s=0.00\r\n[CUTLINE-DEBUG] [2026-09-24 21:55:51.988] [CLASSIC_PREVIEW] [STICKER_ENGINE_PROCESS_PDF] HO\ufffdN TH\ufffdNH page=12 | elapsed_ms=390.99 simplify=0.00\r
+============================== warnings summary ===============================
+backend\app\config.py:16
+  D:\pdfcompare\backend\app\config.py:16: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED backend\tests\test_sticker_classic_page_preview.py::test_whole_page_worker_process_handles_later_page_without_single_instance_limit
+1 failed, 1 warning in 2.72s

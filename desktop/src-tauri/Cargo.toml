@@ -91,3 +91,7 @@ opt-level = 1
 opt-level = 3
 [profile.dev.package.pdfium-render]
 opt-level = 3
+# PERF (audit 2026-09-25 §R25.02): PPE chạy kernel raster trong worker Viewer;
+# tối ưu lõi như PDFium/image, giữ shell dev và không bật LTO cho vòng sửa-thử.
+[profile.dev.package.print_engine]
+opt-level = 3

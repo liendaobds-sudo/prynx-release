@@ -497,6 +497,73 @@ describe('viewport tile — double buffer khi pan', () => {
         reuseGroup,
     });
 
+    it('R24.08: giữ request B, gom C/D rồi trình bày B trước khi chạy D', () => {
+        const tile = (key: string) => item(key, `zoom:${key}`, 'doc:page:profile:rotation');
+        let state: ViewportTileBufferState<ReturnType<typeof item>> = { visible: tile('A'), target: tile('B') };
+        state = reduceViewportTileBuffer(state, { type: 'target', item: tile('C'), coalesce: true });
+        state = reduceViewportTileBuffer(state, { type: 'target', item: tile('D'), coalesce: true });
+        expect(viewportTileBufferItems(state).map(value => value.key)).toEqual(['A', 'B']);
+        expect(state.queued?.key).toBe('D');
+        state = reduceViewportTileBuffer(state, { type: 'ready', key: 'B' });
+        expect(viewportTileBufferItems(state).map(value => value.key)).toEqual(['B', 'D']);
+        const runningD = state;
+        expect(reduceViewportTileBuffer(state, { type: 'ready', key: 'B' })).toBe(runningD);
+        expect(reduceViewportTileBuffer(state, { type: 'failed', key: 'B' })).toBe(runningD);
+        state = reduceViewportTileBuffer(state, { type: 'ready', key: 'D' });
+        expect(viewportTileBufferItems(state).map(value => value.key)).toEqual(['D']);
+    });
+
+    it.each(['doc2:page:profile:rotation', 'doc:page2:profile:rotation', 'doc:page:profile2:rotation', 'doc:page:profile:rotation90'])(
+        'R24.08: đổi identity %s phải hủy target và queued cũ', identity => {
+            const state = { visible: item('A', 'a', 'old'), target: item('B', 'b', 'old'), queued: item('C', 'c', 'old') };
+            const next = reduceViewportTileBuffer(state, { type: 'target', item: item('D', 'd', identity), coalesce: true });
+            expect(next.visible).toBeNull();
+            expect(next.target?.key).toBe('D');
+            expect(next.queued).toBeUndefined();
+            expect(reduceViewportTileBuffer(next, { type: 'ready', key: 'B' })).toBe(next);
+        },
+    );
+
+    it('R25.04.2: idle chuyển đúng queued, giữ visible và bỏ mọi callback cũ', () => {
+        const a = item('A'); const b = item('B'); const c = item('C'); const d = item('D');
+        const initial = { visible: a, target: b, queued: c };
+        const promoted = reduceViewportTileBuffer(initial, { type: 'idle', key: 'C' });
+        expect(promoted).toEqual({ visible: a, target: c, finishBeforeIdle: true });
+        expect(reduceViewportTileBuffer(promoted, { type: 'ready', key: 'B' })).toBe(promoted);
+        expect(reduceViewportTileBuffer(promoted, { type: 'failed', key: 'B' })).toBe(promoted);
+        const newer = { ...initial, queued: d };
+        expect(reduceViewportTileBuffer(newer, { type: 'idle', key: 'C' })).toBe(newer);
+        const switched = reduceViewportTileBuffer(initial, { type: 'target', item: item('E', 'other', 'other-document') });
+        expect(reduceViewportTileBuffer(switched, { type: 'idle', key: 'C' })).toBe(switched);
+        expect(reduceViewportTileBuffer(promoted, { type: 'idle', key: 'C' })).toBe(promoted);
+        const afterMoreInput = reduceViewportTileBuffer(promoted, { type: 'target', item: d, coalesce: true });
+        expect(reduceViewportTileBuffer(afterMoreInput, { type: 'idle', key: 'D' })).toBe(afterMoreInput);
+        expect(reduceViewportTileBuffer(afterMoreInput, { type: 'ready', key: 'C' }))
+            .toEqual({ visible: c, target: d });
+    });
+
+    it('R24.08: lỗi trước hoặc sau khi có queued đều không làm nghẽn target tiếp theo', () => {
+        const a = item('A'); const b = item('B'); const c = item('C');
+        const failed = reduceViewportTileBuffer({ visible: a, target: b }, { type: 'failed', key: 'B' });
+        expect(reduceViewportTileBuffer(failed, { type: 'target', item: c, coalesce: true }))
+            .toMatchObject({ visible: a, target: c });
+        expect(reduceViewportTileBuffer({ visible: a, target: b, queued: c }, { type: 'failed', key: 'B' }))
+            .toEqual({ visible: a, target: c });
+    });
+
+    it('R24.08: đảo chiều về ảnh đang hiện hoặc request đang chạy xóa queued lỗi thời', () => {
+        const a = item('A'); const b = item('B'); const c = item('C');
+        const state = { visible: a, target: b, queued: c };
+        expect(reduceViewportTileBuffer(state, { type: 'target', item: a, coalesce: true }))
+            .toEqual({ visible: a, target: a });
+        const returnedToB = reduceViewportTileBuffer(state, { type: 'target', item: b, coalesce: true });
+        expect(returnedToB.queued).toBeUndefined();
+        expect(reduceViewportTileBuffer(returnedToB, { type: 'ready', key: 'B' }))
+            .toEqual({ visible: b, target: b });
+        expect(reduceViewportTileBuffer(state, { type: 'target', item: null, coalesce: true }))
+            .toEqual({ visible: a, target: null });
+    });
+
     it('giữ A khi B/C đang tải và bỏ callback B đã lỗi thời', () => {
         let state = { visible: null, target: null } as {
             visible: ReturnType<typeof item> | null;
@@ -622,7 +689,21 @@ describe('viewport tile — double buffer khi pan', () => {
         )).toEqual([target]);
     });
 
-    it('đã có underlay toàn trang thì ẩn tile viewport cũ trong lúc zoom settle', () => {
+    it('đã có underlay toàn trang thì ẩn tile viewport cũ nếu không phủ kín trong lúc zoom settle', () => {
+        const reuseGroup = 'file:page:accurate:rot0';
+        const visible = item('A', 'zoom:4', reuseGroup);
+
+        expect(viewportTilePresentationItems(
+            { visible, target: visible },
+            'zoom:3.5',
+            reuseGroup,
+            true,
+            false,
+            true,
+        )).toEqual([]);
+    });
+
+    it('giữ tile viewport cũ nếu phủ kín viewport trong lúc zoom settle để duy trì độ nét như Acrobat', () => {
         const reuseGroup = 'file:page:accurate:rot0';
         const visible = item('A', 'zoom:4', reuseGroup);
 
@@ -633,7 +714,7 @@ describe('viewport tile — double buffer khi pan', () => {
             true,
             true,
             true,
-        )).toEqual([]);
+        )).toEqual([visible]);
     });
 
     it('zoom-out nhỏ còn nằm trong runway thì tiếp tục giữ tile cũ', () => {

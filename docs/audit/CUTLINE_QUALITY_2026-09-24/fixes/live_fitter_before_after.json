@@ -1,0 +1,209 @@
+{
+  "scope": "N=1/lượt, HEAD function namespace riêng và dependency hiện tại chung; import scipy ngoài timer; không HTTP/Tauri/PDF",
+  "head_commit": "2dfa2f9cb3779379597bfc348cab9c145af3c5e9",
+  "current_engine_sha256": "a22323759503f76ede40b576e1d069c6aadbea75321bf36bc386ffeda862a3c7",
+  "records": [
+    {
+      "fixture": "flower12",
+      "points": 400,
+      "radius_mm": 20.0,
+      "amplitude_mm": 5.0,
+      "options": {
+        "total_offset_pts": 0.0,
+        "mm_to_pts": 2.834645669291339,
+        "source_pixel_mm": 0.08466666666666667,
+        "cutline_smoothness": 50,
+        "cutline_fidelity": 50,
+        "curve_tension": 0
+      },
+      "before": {
+        "seconds": 0.019381400081329048,
+        "segments": 104,
+        "maximum_curvature_jump_per_mm": 6.150379177776442,
+        "maximum_join_angle_degrees": 1.4787793334710982e-06,
+        "measured_sampled_hausdorff_mm": 0.15242285619118484,
+        "budget_mm": 0.29718000000000006,
+        "metrics": [
+          {
+            "segment_count": 104,
+            "line_segment_count": 0,
+            "cubic_segment_count": 104,
+            "degenerate_segment_count": 0,
+            "total_length_mm": 277.8069218193156,
+            "minimum_segment_length_mm": 0.9248322100076618,
+            "p10_segment_length_mm": 1.0150305680861635,
+            "median_segment_length_mm": 1.6718566340568883,
+            "short_segment_count": 0,
+            "short_segment_ratio": 0.0,
+            "join_count": 104,
+            "disconnected_join_count": 0,
+            "maximum_endpoint_gap_mm": 0.0,
+            "maximum_join_angle_degrees": 1.4787793334710982e-06,
+            "p95_join_angle_degrees": 1.2074182697257333e-06,
+            "discontinuous_join_count": 0,
+            "maximum_curvature_jump_per_mm": 6.150379177776442,
+            "p95_curvature_jump_per_mm": 3.5811950238991965,
+            "curvature_sign_flip_count": 24,
+            "curvature_sign_flips_per_100mm": 8.639093598830302
+          }
+        ],
+        "control_points_sha256": "04405614b55084b7e83026cbe3ee04a74fdf57690971d9f82a292e9cb30d0281"
+      },
+      "after": {
+        "seconds": 0.1239759000018239,
+        "segments": 101,
+        "maximum_curvature_jump_per_mm": 6.794564910705958e-14,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "measured_sampled_hausdorff_mm": 0.24531609732067006,
+        "budget_mm": 0.29718000000000006,
+        "metrics": [
+          {
+            "segment_count": 101,
+            "line_segment_count": 0,
+            "cubic_segment_count": 101,
+            "degenerate_segment_count": 0,
+            "total_length_mm": 279.00410869846564,
+            "minimum_segment_length_mm": 0.7003632565030862,
+            "p10_segment_length_mm": 0.9130593691709625,
+            "median_segment_length_mm": 1.6855865764548084,
+            "short_segment_count": 0,
+            "short_segment_ratio": 0.0,
+            "join_count": 101,
+            "disconnected_join_count": 0,
+            "maximum_endpoint_gap_mm": 1.2781390330834964e-14,
+            "maximum_join_angle_degrees": 1.2074182697257333e-06,
+            "p95_join_angle_degrees": 8.537736462515939e-07,
+            "discontinuous_join_count": 0,
+            "maximum_curvature_jump_per_mm": 6.794564910705958e-14,
+            "p95_curvature_jump_per_mm": 4.285460875053104e-14,
+            "curvature_sign_flip_count": 24,
+            "curvature_sign_flips_per_100mm": 8.602023859776939
+          }
+        ],
+        "control_points_sha256": "af629ed24dfd842527244b762d278277fc189e880f2593a917ff9ee7c43f3ef2"
+      },
+      "separate_instrumented_pass": {
+        "calls": {
+          "_smooth_closed_ring_source_scale": 8,
+          "_remove_short_alpha_anchor_edges": 8,
+          "_periodic_smoothing_spline_segments": 4,
+          "_alpha_live_machine_path_is_safe": 8,
+          "_geometry_within_hausdorff_budget": 9,
+          "_alpha_candidate_motion_rank": 8,
+          "_catmull_rom_bezier_segments": 4
+        },
+        "inclusive_seconds_do_not_sum": {
+          "_smooth_closed_ring_source_scale": 0.004367099958471954,
+          "_remove_short_alpha_anchor_edges": 0.004078600089997053,
+          "_periodic_smoothing_spline_segments": 0.011642199824564159,
+          "_alpha_live_machine_path_is_safe": 0.008423199877142906,
+          "_geometry_within_hausdorff_budget": 0.0106272998964414,
+          "_alpha_candidate_motion_rank": 0.040361200110055506,
+          "_catmull_rom_bezier_segments": 0.0012518001021817327
+        },
+        "same_controls_as_after": true
+      }
+    },
+    {
+      "fixture": "flower3",
+      "points": 400,
+      "radius_mm": 8.0,
+      "amplitude_mm": 1.0,
+      "options": {
+        "total_offset_pts": 0.0,
+        "mm_to_pts": 2.834645669291339,
+        "source_pixel_mm": 0.08466666666666667,
+        "cutline_smoothness": 50,
+        "cutline_fidelity": 50,
+        "curve_tension": 0
+      },
+      "before": {
+        "seconds": 0.004269100027158856,
+        "segments": 16,
+        "maximum_curvature_jump_per_mm": 2.051768844946767,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "measured_sampled_hausdorff_mm": 0.11660267480208245,
+        "budget_mm": 0.29718000000000006,
+        "metrics": [
+          {
+            "segment_count": 16,
+            "line_segment_count": 0,
+            "cubic_segment_count": 16,
+            "degenerate_segment_count": 0,
+            "total_length_mm": 51.82036292739468,
+            "minimum_segment_length_mm": 1.7556675280730065,
+            "p10_segment_length_mm": 1.8740363376713243,
+            "median_segment_length_mm": 2.353923900006844,
+            "short_segment_count": 0,
+            "short_segment_ratio": 0.0,
+            "join_count": 16,
+            "disconnected_join_count": 0,
+            "maximum_endpoint_gap_mm": 0.0,
+            "maximum_join_angle_degrees": 8.537736462515939e-07,
+            "p95_join_angle_degrees": 8.537736462515939e-07,
+            "discontinuous_join_count": 0,
+            "maximum_curvature_jump_per_mm": 2.051768844946767,
+            "p95_curvature_jump_per_mm": 1.8145636921231096,
+            "curvature_sign_flip_count": 0,
+            "curvature_sign_flips_per_100mm": 0.0
+          }
+        ],
+        "control_points_sha256": "bedd4317ba411bb508d1d8f8ff2aebbfe5035b79b2e717dc5abda453a760cd64"
+      },
+      "after": {
+        "seconds": 0.022211899980902672,
+        "segments": 15,
+        "maximum_curvature_jump_per_mm": 1.7208456881689926e-15,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "measured_sampled_hausdorff_mm": 0.18631435830261206,
+        "budget_mm": 0.29718000000000006,
+        "metrics": [
+          {
+            "segment_count": 15,
+            "line_segment_count": 0,
+            "cubic_segment_count": 15,
+            "degenerate_segment_count": 0,
+            "total_length_mm": 51.98348225082206,
+            "minimum_segment_length_mm": 1.4466539081625096,
+            "p10_segment_length_mm": 1.5835488327471627,
+            "median_segment_length_mm": 3.040663981109523,
+            "short_segment_count": 0,
+            "short_segment_ratio": 0.0,
+            "join_count": 15,
+            "disconnected_join_count": 0,
+            "maximum_endpoint_gap_mm": 5.0132737467518175e-15,
+            "maximum_join_angle_degrees": 8.537736462515939e-07,
+            "p95_join_angle_degrees": 8.537736462515939e-07,
+            "discontinuous_join_count": 0,
+            "maximum_curvature_jump_per_mm": 1.7208456881689926e-15,
+            "p95_curvature_jump_per_mm": 1.5654144647214705e-15,
+            "curvature_sign_flip_count": 0,
+            "curvature_sign_flips_per_100mm": 0.0
+          }
+        ],
+        "control_points_sha256": "a66406015dfbe797e8743dfa671927159ec69f102c8c02959802d3c2befb122b"
+      },
+      "separate_instrumented_pass": {
+        "calls": {
+          "_smooth_closed_ring_source_scale": 8,
+          "_remove_short_alpha_anchor_edges": 8,
+          "_periodic_smoothing_spline_segments": 4,
+          "_alpha_live_machine_path_is_safe": 8,
+          "_geometry_within_hausdorff_budget": 10,
+          "_catmull_rom_bezier_segments": 4,
+          "_alpha_candidate_motion_rank": 7
+        },
+        "inclusive_seconds_do_not_sum": {
+          "_smooth_closed_ring_source_scale": 0.0018645001109689474,
+          "_remove_short_alpha_anchor_edges": 0.0005246999207884073,
+          "_periodic_smoothing_spline_segments": 0.001358899986371398,
+          "_alpha_live_machine_path_is_safe": 0.0032291001407429576,
+          "_geometry_within_hausdorff_budget": 0.0021567000076174736,
+          "_catmull_rom_bezier_segments": 0.00023669993970543146,
+          "_alpha_candidate_motion_rank": 0.006955900113098323
+        },
+        "same_controls_as_after": true
+      }
+    }
+  ]
+}

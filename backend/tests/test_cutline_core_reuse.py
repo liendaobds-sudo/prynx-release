@@ -231,7 +231,7 @@ def _install_fair_stubs(monkeypatch, *, accepted=None):
 
     monkeypatch.setattr(fair_module, "protected_corner_indices", corners)
     monkeypatch.setattr(fair_module, "_uniform_points", uniform_points)
-    monkeypatch.setattr(seed_module, "build_fair_seeds", build_seeds)
+    monkeypatch.setattr(seed_module, "iter_fair_seeds", build_seeds)
     monkeypatch.setattr(fair_module, "_optimize_seed", optimize)
     monkeypatch.setattr(verify_module, "verify_fair_ring", verify)
     return state
@@ -313,6 +313,71 @@ def test_optional_optimizer_error_keeps_exact_original_source(monkeypatch):
     assert result is source and bound == 0.0
     assert source.tobytes() == saved.tobytes()
     assert state["prepare"] == {"corners": 1, "points": 1, "seeds": 1}
+
+
+def test_dense_source_is_not_excluded_before_seed_solver(monkeypatch):
+    from app.workers.cutline_polyline_reduction import split_cubic
+
+    source = list(_source_ring())
+    for _ in range(5):
+        source = [part for curve in source for part in split_cubic(curve, 0.5)]
+    source = np.asarray(source)
+    saved = source.copy()
+    assert len(source) == 128
+    state = _install_fair_stubs(monkeypatch, accepted=("fast", 0))
+    result, bound = fair_module.fair_refit_ring(source, 0.1, max_irls_rounds=3, max_nfev=3)
+    assert state["calls"] and len(result) < len(source) and bound == 0.0423
+    assert np.array_equal(source, saved)
+
+
+def test_static_source_projection_is_identical_and_reusable(monkeypatch):
+    source = _source_ring()
+    points = source[:, 0] + [0.02, -0.04]
+    expected = fair_module._closest(source, points, .04)
+    prepared = fair_module._prepare_closest(source, .04)
+    monkeypatch.setattr(fair_module, "_prepare_closest", lambda *args: pytest.fail("Nguồn bất biến đã chuẩn bị"))
+    first = fair_module._closest(source, points, .04, prepared=prepared)
+    for original, reused in zip(expected, first):
+        assert np.array_equal(original, reused)
+    first[0][:] = 0
+    second = fair_module._closest(source, points, .04, prepared=prepared)
+    for original, reused in zip(expected, second):
+        assert np.array_equal(original, reused)
+
+
+def test_fair_seed_iterator_stops_after_accepted_candidate(monkeypatch):
+    source = _source_ring()
+    state = _install_fair_stubs(monkeypatch, accepted=("fast", 0))
+    initial = seed_module.iter_fair_seeds
+
+    def lazy(*args, **kwargs):
+        candidates = initial(*args, **kwargs)
+        yield candidates[0]
+        pytest.fail("Không cần dựng seed kế khi seed đầu đã qua verifier")
+
+    monkeypatch.setattr(seed_module, "iter_fair_seeds", lazy)
+    result, bound = fair_module.fair_refit_ring(source, .1, max_irls_rounds=3, max_nfev=3)
+    assert len(result) == 2 and bound == .0423
+    assert len(state["calls"]) == 1
+
+
+def test_lazy_seed_builder_matches_eager_order_without_extra_work(monkeypatch):
+    source = _source_ring()
+    counts = []
+    candidates = [tuple(tuple(tuple(map(float, point)) for point in curve)
+                        for curve in source[:size]) for size in (2, 3, 2)]
+
+    def fit(*args, **kwargs):
+        counts.append(args[1])
+        return candidates[len(counts)-1]
+
+    monkeypatch.setattr(seed_module, "fit_seed_ring", fit)
+    generated = seed_module.iter_fair_seeds(source, .1)
+    assert counts == []
+    assert next(generated) is candidates[0]
+    assert counts == [pytest.approx(.11)]
+    assert list(generated) == [candidates[1]]
+    assert counts == [pytest.approx(.11), .1, .125]
 
 
 @pytest.mark.parametrize("count", [2, 3, 4, 11])

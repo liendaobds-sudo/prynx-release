@@ -140,32 +140,41 @@ def _candidate(points, left, right, tolerance, *, max_attempts: int = 7):
     return None
 
 
-def _shortest_path(count, candidate_at, *, max_span: int = 24):
+def _shortest_path(count, candidate_at, *, max_span: int | None = None):
     """Quy hoạch động trên DAG: không dừng vì một cạnh ngắn hơn bị từ chối.
 
     Cạnh nguồn i→i+1 luôn có sẵn. Tối ưu số cạnh trong tập xét; không tuyên bố
     tối ưu trên mọi đường Bézier hoặc mọi vị trí neo ngoài đồ thị này.
-    Bằng chứng hình học: Một đoạn Bézier bậc 3 thực tế chỉ có thể khớp thay thế
-    tối đa ~12-24 phân đoạn liên tiếp trước khi vượt sai số hình học. Giới hạn
-    max_span đưa thuật toán từ O(N^2) (33,000+ thử nghiệm tốn hàng phút) về tuyến tính O(N).
+    QUALITY/PERF (audit 2026-09-24 §CUT24.03): không cắt span theo số đoạn
+    nguồn. Xét cạnh theo cận dưới số lệnh đích, ưu tiên span ngắn trong cùng
+    chi phí; khi tìm được cạnh đạt cận thì các cạnh còn lại không thể tốt hơn.
+    Trường hợp xấu vẫn O(N²), nhưng không cần fit các cạnh không giảm chi phí.
     """
     costs = [count + 1] * count + [0]
     choices = [None] * count
+    # Các đích đã giải được chia theo chi phí. Thêm index giảm dần rồi đọc
+    # ngược giữ thứ tự (chi phí, index), không sort lại toàn bộ suffix O(N²logN).
+    destinations = {0: [count]}
     for start in range(count - 1, -1, -1):
         # PERF (audit 2026-09-11 §PREWARM.CANCEL): giải phóng worker nóng
         # khi thanh kéo đã sang bộ thông số mới, không xét hết DAG đã cũ.
         check_preview_cancelled()
         costs[start] = costs[start + 1] + 1
         choices[start] = (start + 1, None)
-        max_end = min(count, start + max_span)
-        for end in range(max_end, start + 1, -1):
-            check_preview_cancelled()
-            if costs[end] + 1 >= costs[start]:
-                continue
-            candidate = candidate_at(start, end)
-            if candidate is not None:
-                costs[start] = costs[end] + 1
-                choices[start] = (end, candidate)
+        max_end = count if max_span is None else min(count, start + max_span)
+        for suffix_cost in sorted(destinations):
+            if suffix_cost + 1 >= costs[start]:
+                break
+            for end in reversed(destinations[suffix_cost]):
+                check_preview_cancelled()
+                if not start + 1 < end <= max_end:
+                    continue
+                candidate = candidate_at(start, end)
+                if candidate is not None:
+                    costs[start] = suffix_cost + 1
+                    choices[start] = (end, candidate)
+                    break
+        destinations.setdefault(costs[start], []).append(start)
     return choices, costs[0]
 
 
@@ -234,8 +243,7 @@ def global_refit_ring(source, tolerance, units, *, max_candidate_attempts: int =
                 max_attempts=max_candidate_attempts,
             )
 
-        max_span = 12 if max_candidate_attempts <= 3 else 24
-        choices, reduced_count = _shortest_path(end - start, candidate_at, max_span=max_span)
+        choices, reduced_count = _shortest_path(end - start, candidate_at)
         if reduced_count >= end - start:
             result.extend(source[start:end])
             continue

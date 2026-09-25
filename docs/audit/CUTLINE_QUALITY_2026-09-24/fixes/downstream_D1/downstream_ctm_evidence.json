@@ -1,0 +1,35 @@
+{
+  "radius_mm": 100.0,
+  "records": [
+    {
+      "representation": "physical_coords",
+      "source": {
+        "cubic": 4,
+        "line": 0
+      },
+      "reexport": {
+        "cubic": 0,
+        "line": 257
+      },
+      "polyline_points": 258,
+      "sampled_source_to_polyline_max_mm": 0.008179068317180758,
+      "sampling_per_cubic": 4097,
+      "note": "Measured sample maximum, not continuous certificate. Same physical 4 cubics in both PDFs."
+    },
+    {
+      "representation": "normalized_ctm",
+      "source": {
+        "cubic": 4,
+        "line": 0
+      },
+      "reexport": {
+        "cubic": 0,
+        "line": 257
+      },
+      "polyline_points": 258,
+      "sampled_source_to_polyline_max_mm": 0.008179057649353345,
+      "sampling_per_cubic": 4097,
+      "note": "Measured sample maximum, not continuous certificate. Same physical 4 cubics in both PDFs."
+    }
+  ]
+}

@@ -562,10 +562,12 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
         expect(vi.mocked(detectStickerSource).mock.calls.map(call => call[1]?.pageNumber).sort()).toEqual([1, 2]);
 
         useStickerSheetStore.getState().setActivePage('tab-multi', 1);
+        useStickerSheetStore.getState().setCutlineTuning('tab-multi', { cutlineDenoise: 0 });
         useStickerSheetStore.getState().addStroke('tab-multi', {
             tool: 'erase', instanceId: 1, radius: 0.01, points: [{ x: 0.2, y: 0.3 }],
         });
         useStickerSheetStore.getState().setActivePage('tab-multi', 2);
+        useStickerSheetStore.getState().setCutlineTuning('tab-multi', { cutlineDenoise: 80 });
         const pageTwoActive = useStickerSheetStore.getState().getTab('tab-multi');
         expect(pageTwoActive.edits).toEqual([]);
         expect(pageTwoActive.pages[1].edits).toHaveLength(1);
@@ -579,9 +581,10 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
             expect.objectContaining({
                 pageOrder: [2, 1],
                 pages: [
-                    expect.objectContaining({ sourcePage: 2, edits: [] }),
-                    expect.objectContaining({ sourcePage: 1, edits: [expect.objectContaining({ kind: 'stroke' })] }),
+                    expect.objectContaining({ sourcePage: 2, edits: [], cutlineDenoise: 80 }),
+                    expect.objectContaining({ sourcePage: 1, edits: [expect.objectContaining({ kind: 'stroke' })], cutlineDenoise: 0 }),
                 ],
+                cutlineDenoise: 80,
             }),
         );
     });

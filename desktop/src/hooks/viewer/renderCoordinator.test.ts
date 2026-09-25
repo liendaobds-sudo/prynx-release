@@ -47,6 +47,42 @@ function immediateScheduler() {
 }
 
 describe('RenderCoordinator — contract và vòng đời bitmap', () => {
+    it.each(['group', 'owner'] as const)('R25.04.3: hủy %s gửi IPC ngay trước khi nhường lượt UI', async kind => {
+        const invoke = vi.fn().mockResolvedValue(true);
+        vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke }, setTimeout });
+        const coordinator = new RenderCoordinator({ scheduler: immediateScheduler(), report: vi.fn() });
+        const gate = deferred<ArrayBuffer>();
+        let running!: RenderCoordinatorRequest;
+        const old = coordinator.renderPng({
+            request: requestInput(), bypassScheduler: true,
+            render: request => { running = request; return gate.promise; },
+            encode: () => ({ url: 'blob:old', byteLength: 1 }),
+        }).catch(error => error);
+        const otherGate = deferred<ArrayBuffer>();
+        const other = coordinator.renderPng({
+            request: requestInput({ ownerId: 'viewer:other' }), bypassScheduler: true,
+            render: () => otherGate.promise,
+            encode: () => ({ url: 'blob:other', byteLength: 1 }),
+        });
+        try {
+            const cancel = () => kind === 'group'
+                ? coordinator.cancelGroup(running.ownerId, running.groupKey)
+                : coordinator.cancelOwner(running.ownerId);
+            cancel();
+            const submittedBeforeYield = invoke.mock.calls.map(([command, args]) => [command, args]);
+            cancel(); // Cleanup lặp không được phát thêm lệnh hủy vật lý.
+            await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+            gate.resolve(new ArrayBuffer(1)); otherGate.resolve(new ArrayBuffer(1));
+            await expect(old).resolves.toBeInstanceOf(SupersededTileRenderError);
+            await expect(other).resolves.toMatchObject({ url: 'blob:other' });
+            expect(submittedBeforeYield).toEqual([['cancel_pdf_render', { requestId: running.requestId }]]);
+        } finally {
+            gate.resolve(new ArrayBuffer(1)); otherGate.resolve(new ArrayBuffer(1));
+            await Promise.allSettled([old, other]);
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('giữ identity nanosecond dạng chuỗi và thay token khi file cùng path bị ghi đè', () => {
         const path = 'D:\\jobs\\same-path.pdf';
         registerRenderDocumentIdentity(path, '10:20:30');
@@ -99,6 +135,10 @@ describe('RenderCoordinator — contract và vòng đời bitmap', () => {
             color: { pipeline: 'display', profileId: null, intent: null },
         });
         expect(capturedRequest.requestId).toBeTruthy();
+        expect(coordinator.sourceTraceIdentity(source)).toMatchObject({
+            request_id: capturedRequest.requestId, generation: 1, request_age_ms: 32,
+        });
+        expect(coordinator.sourceTraceIdentity({ url: 'blob:unrelated', byteLength: 0 })).toEqual({});
         expect(report).toHaveBeenCalledWith('result', expect.objectContaining({
             status: 'ready',
             queue_ms: 0,

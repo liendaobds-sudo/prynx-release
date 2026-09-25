@@ -1995,6 +1995,8 @@ impl<'a> Renderer<'a> {
         device_path: &Path,
         rule: FillRule,
     ) -> PpeResult<()> {
+        #[cfg(feature = "perf-probe")]
+        let _span = crate::perf_probe::span(crate::perf_probe::CLIP);
         let bounds = device_path.bounds();
         let next_region = Region::from_bounds(
             bounds.left(),
@@ -2333,6 +2335,8 @@ impl<'a> Renderer<'a> {
         width: u32,
         height: u32,
     ) -> Option<Arc<Mask>> {
+        #[cfg(feature = "perf-probe")]
+        let _span = crate::perf_probe::span(crate::perf_probe::BBOX_CLIP);
         let Some(bbox) = bbox else { return clip };
         if bbox.is_empty() {
             return Mask::new(width, height).map(Arc::new);
@@ -2521,6 +2525,8 @@ impl<'a> Renderer<'a> {
         stack: &StateStack,
         depth: u32,
     ) -> PpeResult<Option<(SoftMask, ExplicitMaskEvents)>> {
+        #[cfg(feature = "perf-probe")]
+        let _span = crate::perf_probe::span(crate::perf_probe::SOFT_MASK);
         if self.smask_depth >= MAX_SOFT_MASK_DEPTH {
             return Err(PpeError::Unsupported("soft mask lồng quá sâu".into()));
         }
@@ -2769,6 +2775,16 @@ impl<'a> Renderer<'a> {
         Ok(Some((mask, explicit_mask_events)))
     }
 
+    fn can_skip_offscreen_form(&self) -> bool {
+        if self.opts.collect_text_outlines || self.opts.conservative_image_sampling {
+            return false;
+        }
+        #[cfg(feature = "perf-probe")]
+        return crate::perf_probe::offscreen_form_culling_enabled();
+        #[cfg(not(feature = "perf-probe"))]
+        true
+    }
+
     /// `Do` — vẽ XObject.
     fn do_xobject(
         &mut self,
@@ -2823,6 +2839,18 @@ impl<'a> Renderer<'a> {
                 let bbox = pdf::dict_get(self.doc, &stream.dict, "BBox")
                     .and_then(|o| pdf::num_array(self.doc, o))
                     .and_then(|v| (v.len() >= 4).then(|| Rect::new(v[0], v[1], v[2], v[3])));
+                // PERF (audit 2026-09-24 R24.10): kiểm trước khi giải nén Form,
+                // vì Form bị bỏ sẽ không đi tới execute để lưu chương trình vào cache.
+                if self.can_skip_offscreen_form() {
+                    let form_ctm = form_matrix.then(&stack.current().ctm);
+                    if self.intersect_bbox_region(
+                        stack.current().clip_region, bbox, &form_ctm,
+                        self.buffer.width(), self.buffer.height(),
+                    ).is_empty() {
+                        self.opts.check_cancelled()?;
+                        return Ok(());
+                    }
+                }
                 let form_res = pdf::dict_get_dict(self.doc, &stream.dict, "Resources")
                     .cloned()
                     .or_else(|| Some(resources.clone()));
@@ -3018,6 +3046,14 @@ impl<'a> Renderer<'a> {
             self.buffer.width(),
             self.buffer.height(),
         );
+
+        // PERF (audit 2026-09-24 R24.10): Form tự chứa, không đổi state của caller.
+        // Khi giao BBox/clip có cả lề AA vẫn rỗng, surface này không thể tạo pixel.
+        // Giữ đường thu outline và đo mực vì chúng còn đọc dữ liệu ngoài viewport.
+        if group_region.is_empty() && self.can_skip_offscreen_form() {
+            self.opts.check_cancelled()?;
+            return Ok(());
+        }
 
         if knockout {
             // Knockout group: mỗi phần tử composite với nền **ban đầu** của group,
@@ -3361,6 +3397,8 @@ impl<'a> Renderer<'a> {
         resources: Option<&Dictionary>,
         stack: &mut StateStack,
     ) -> PpeResult<()> {
+        #[cfg(feature = "perf-probe")]
+        let _span = crate::perf_probe::span(crate::perf_probe::IMAGE);
         self.opts.check_cancelled()?;
         if !self.allows_preview_object(PreviewObjectKind::Image)
             && !self.opts.needs_source_space_for_preview()
@@ -4214,12 +4252,27 @@ impl<'a> Renderer<'a> {
                     if sample_alpha <= 0.0 {
                         return None;
                     }
-                    painted.store(true, Ordering::Relaxed);
+                    // PERF (audit 2026-09-25 §R25.02): các hàng Rayon dùng chung
+                    // cờ/biên này. Chỉ ghi khi giá trị thay đổi để tránh giành cache
+                    // line ở từng pixel; min/max vẫn nguyên tử khi các hàng đua nhau.
+                    if !painted.load(Ordering::Relaxed) {
+                        painted.store(true, Ordering::Relaxed);
+                    }
                     if exact_paint_region {
-                        paint_x0.fetch_min(x, Ordering::Relaxed);
-                        paint_y0.fetch_min(y, Ordering::Relaxed);
-                        paint_x1.fetch_max(x.saturating_add(1), Ordering::Relaxed);
-                        paint_y1.fetch_max(y.saturating_add(1), Ordering::Relaxed);
+                        if x < paint_x0.load(Ordering::Relaxed) {
+                            paint_x0.fetch_min(x, Ordering::Relaxed);
+                        }
+                        if y < paint_y0.load(Ordering::Relaxed) {
+                            paint_y0.fetch_min(y, Ordering::Relaxed);
+                        }
+                        let x1 = x.saturating_add(1);
+                        let y1 = y.saturating_add(1);
+                        if x1 > paint_x1.load(Ordering::Relaxed) {
+                            paint_x1.fetch_max(x1, Ordering::Relaxed);
+                        }
+                        if y1 > paint_y1.load(Ordering::Relaxed) {
+                            paint_y1.fetch_max(y1, Ordering::Relaxed);
+                        }
                     }
                     Some((process, declared, sample_alpha))
                 },
@@ -6239,6 +6292,46 @@ mod conservative_sampling_tests {
             )
             .unwrap();
         assert_eq!(fast.data(), exact.data());
+    }
+
+    #[test]
+    fn viewer_offscreen_group_avoids_surface_allocation_but_visible_and_outline_still_render() {
+        // PERF (audit 2026-09-24 R24.10): ngân sách đủ cho trang + raster,
+        // không đủ thêm surface group. Group ngoài clip không được làm trang lỗi RAM.
+        for (bbox, collect_outlines, should_skip) in [
+            (Rect::new(100.0, 100.0, 200.0, 200.0), false, true),
+            (Rect::new(0.0, 0.0, 64.0, 64.0), false, false),
+            (Rect::new(63.5, 0.0, 80.0, 64.0), false, false),
+            (Rect::new(100.0, 100.0, 200.0, 200.0), true, false),
+        ] {
+            let doc = Document::new();
+            let buffer = InkBuffer::new_with_memory_budget(
+                64, 64, crate::ink::InkSpace::new(), 64 * 64 * 40,
+            ).unwrap();
+            let mut opts = RenderOptions::softproof();
+            opts.collect_text_outlines = collect_outlines;
+            let mut renderer = Renderer::new(
+                &doc, buffer, opts, None, BlendSpace::DeviceCmyk,
+            ).unwrap();
+            let source = FormSource::Cached(Arc::new(FormProgram {
+                program: PageProgram::compile(b"0 0 0 1 k 0 0 64 64 re f").unwrap(),
+                quality: pdf::DecodeQuality::Exact,
+            }));
+            let mut stack = StateStack::new(GraphicsState::initial(Matrix::IDENTITY));
+            let before = renderer.buffer.memory_used_bytes();
+            let result = renderer.do_transparency_group(
+                StreamSource::Form(&source), None, Matrix::IDENTITY, Some(bbox),
+                true, false, BlendSpace::DeviceCmyk, &mut stack, 0,
+            );
+            if should_skip {
+                assert!(result.is_ok(), "group ngoài viewport: {result:?}");
+                assert_eq!(renderer.buffer.memory_used_bytes(), before);
+                assert!(renderer.buffer.alpha_plane().iter().all(|v| *v == 0.0));
+                assert_eq!(stack.logical_depth(), 1);
+            } else {
+                assert!(matches!(result, Err(PpeError::MemoryBudgetExceeded { .. })));
+            }
+        }
     }
 
     #[test]

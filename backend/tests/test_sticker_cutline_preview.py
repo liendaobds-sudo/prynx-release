@@ -1187,9 +1187,17 @@ def _prime_classic_preview_artifact(
     cut_mode: str = "original",
 ):
     """Tạo session một-tem có cache Bézier đúng như preview classic vừa duyệt."""
+    import pikepdf
+
     session = _session(tmp_path)
     source_pdf = tmp_path / "source.pdf"
-    source_pdf.write_bytes(b"%PDF-1.4\n% classic preview fixture\n")
+    # TEST (audit 2026-09-24): route chuẩn hóa page box thật sau engine stub;
+    # header PDF giả làm test hỏng ở parser trước khi kiểm hợp đồng tái dùng.
+    with pikepdf.Pdf.new() as document:
+        document.add_blank_page(page_size=(180 * 72 / 100, 140 * 72 / 100))
+        # Ca same-stat đổi marker này bằng chuỗi cùng độ dài để kiểm hash byte.
+        document.docinfo["/Title"] = "classic preview fixture"
+        document.save(source_pdf)
     session.source_path = source_pdf
     session.original_name = source_pdf.name
     session.source_kind = "pdf"
@@ -1230,6 +1238,8 @@ def test_execute_classic_tai_dung_artifact_preview_khong_detect_hoac_fit_lan_hai
     remove_white_bg,
 ) -> None:
     """Nút Thực thi phải chuyển thẳng cache đã xem, không dựng một quỹ đạo khác."""
+    import pikepdf
+
     from app.api.routes import pdf_tools
     from app.workers import sticker_engine, sticker_source_pipeline
 
@@ -1295,6 +1305,11 @@ def test_execute_classic_tai_dung_artifact_preview_khong_detect_hoac_fit_lan_hai
     assert overrides[0]["path_groups"] == expected_paths
     assert overrides[0]["alpha"].shape == (140, 180)
     assert os.path.exists(response.path)
+    with pikepdf.Pdf.open(response.path) as output:
+        assert len(output.pages) == 1
+        assert list(map(float, output.pages[0].MediaBox)) == pytest.approx(
+            [0., 0., 129.6, 100.8],
+        )
 
 
 @pytest.mark.parametrize(

@@ -5,7 +5,7 @@ Port từ logic đã chạy thật trong script JSX (flattenCubicBezier + rdpAlg
 viết lại thuần Python trong module (KHÔNG copy mã GPL, KHÔNG sửa file có sẵn).
 
 Đơn vị: mm. Mặc định:
-- Làm phẳng Bezier: sai số đoạn ≤ FLATTEN_TOL_MM (0.2mm) — Requirement 1.2.
+- Làm phẳng Bezier: sai số quỹ đạo ≤ FLATTEN_TOL_MM (0.02mm).
 - Nén RDP: epsilon ~ RDP_EPS_MM (0.03mm) — loại điểm thừa, giữ hình.
 """
 
@@ -16,8 +16,12 @@ from typing import Sequence
 
 Point = tuple[float, float]
 
-FLATTEN_TOL_MM = 0.2
+FLATTEN_TOL_MM = 0.02
 RDP_EPS_MM = 0.03
+
+
+class CutGeometryError(ValueError):
+    """Không chứng nhận được hình học cắt; caller không được bỏ mất vòng đó."""
 
 
 def _dist(a: Point, b: Point) -> float:
@@ -31,30 +35,38 @@ def flatten_cubic_bezier(
     p3: Point,
     max_seg_mm: float = FLATTEN_TOL_MM,
 ) -> list[Point]:
-    """Xấp xỉ Bezier bậc 3 thành polyline.
+    """Chia de Casteljau tới khi cận sai lệch hai chiều đạt dung sai.
 
-    Số đoạn thích ứng theo độ dài cung (xấp xỉ bằng tổng đa giác điều khiển),
-    sao cho mỗi đoạn ~ max_seg_mm. Sau đó nén RDP để bỏ điểm thừa.
-    Trả danh sách điểm GỒM cả p0 và p3.
+    QUALITY (audit 2026-09-24 §CUT24.D01): ``max_seg_mm`` giữ tên để tương
+    thích caller, nay là cận sai số hình học, không phải độ dài cạnh. So cubic
+    với chord cùng tham số: hai control point hiệu sai có chuẩn <= d, nên
+    sai số <= 3*t*(1-t)*d <= 0.75*d trên TOÀN đoạn. Không RDP lần hai, không
+    dừng theo số bước khiến đường cong lớn/CTM scale vượt ngân sách.
     """
-    if max_seg_mm <= 0:
-        raise ValueError("max_seg_mm phải > 0")
-
-    approx_len = _dist(p0, p1) + _dist(p1, p2) + _dist(p2, p3)
-    steps = max(4, int(math.ceil(approx_len / max_seg_mm)))
-    steps = min(steps, 2000)  # chặn an toàn
-
-    raw: list[Point] = []
-    for i in range(steps + 1):
-        t = i / steps
-        mt = 1.0 - t
-        mt2 = mt * mt
-        t2 = t * t
-        x = mt2 * mt * p0[0] + 3 * mt2 * t * p1[0] + 3 * mt * t2 * p2[0] + t2 * t * p3[0]
-        y = mt2 * mt * p0[1] + 3 * mt2 * t * p1[1] + 3 * mt * t2 * p2[1] + t2 * t * p3[1]
-        raw.append((x, y))
-
-    return rdp_simplify(raw, RDP_EPS_MM)
+    if not math.isfinite(max_seg_mm) or max_seg_mm <= 0:
+        raise CutGeometryError("Dung sai làm phẳng phải hữu hạn và > 0 mm")
+    points = tuple((float(p[0]), float(p[1])) for p in (p0, p1, p2, p3))
+    if not all(math.isfinite(v) for p in points for v in p):
+        raise CutGeometryError("Tọa độ đường cắt phải hữu hạn")
+    result = [points[0]]
+    stack = [points]
+    while stack:
+        a, b, c, d = stack.pop()
+        q1 = (a[0]*(2/3) + d[0]/3, a[1]*(2/3) + d[1]/3)
+        q2 = (a[0]/3 + d[0]*(2/3), a[1]/3 + d[1]*(2/3))
+        bound = .75 * max(_dist(b, q1), _dist(c, q2))
+        if bound <= max_seg_mm:
+            result.append(d)
+            continue
+        midpoint = lambda u, v: (u[0]/2+v[0]/2, u[1]/2+v[1]/2)
+        ab, bc, cd = midpoint(a, b), midpoint(b, c), midpoint(c, d)
+        abc, bcd = midpoint(ab, bc), midpoint(bc, cd)
+        mid = midpoint(abc, bcd)
+        left, right = (a, ab, abc, mid), (mid, bcd, cd, d)
+        if left == (a, b, c, d) or right == (a, b, c, d):
+            raise CutGeometryError("Không chứng nhận được đường cắt ở dung sai đã chọn")
+        stack.extend((right, left))
+    return result
 
 
 def rdp_simplify(points: Sequence[Point], epsilon: float = RDP_EPS_MM) -> list[Point]:

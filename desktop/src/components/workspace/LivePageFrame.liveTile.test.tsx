@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ComponentProps } from 'react';
 
-import { LiveTile, shouldSettleAccurateTarget } from './LivePageFrame';
+import { LiveTile, shouldSettleAccurateTarget, TileLayer } from './LivePageFrame';
 import {
     shouldEnableViewerViewportAccurateTile,
     shouldMountViewerViewportLayer,
@@ -120,7 +121,393 @@ function makeProps(overrides: Record<string, unknown> = {}) {
     };
 }
 
+// UIUX (audit 2026-09-24 §R24.07): node còn mounted chưa chứng minh ảnh đang hiện;
+// kiểm các canvas có pixel cùng phủ một điểm, theo thứ tự chồng lớp DOM của TileLayer.
+function visibleViewportCanvases(root: HTMLElement, x = 320, y = 240) {
+    return Array.from(root.querySelectorAll<HTMLCanvasElement>('canvas[data-prynx-presented-tile]'))
+        .filter(canvas => {
+            if (canvas.style.display === 'none' || canvas.style.opacity === '0') return false;
+            let parent: HTMLElement | null = canvas.parentElement;
+            while (parent && parent !== root) {
+                if (parent.style.display === 'none' || parent.style.opacity === '0') return false;
+                parent = parent.parentElement;
+            }
+            const tile = canvas.closest<HTMLElement>('.tile-container');
+            if (!tile) return false;
+            const left = Number.parseFloat(tile.style.left) || 0;
+            const top = Number.parseFloat(tile.style.top) || 0;
+            return left <= x && left + Number.parseFloat(tile.style.width) >= x
+                && top <= y && top + Number.parseFloat(tile.style.height) >= y;
+        });
+}
+
+function presentedViewportTile(canvas: HTMLCanvasElement | undefined) {
+    return canvas?.dataset.prynxPresentedTile
+        ? JSON.parse(canvas.dataset.prynxPresentedTile) as { sourceToken: string; accurateOnly: boolean; zoom: number }
+        : undefined;
+}
+
+function makeViewportHarness(overrides: Partial<ComponentProps<typeof TileLayer>> = {}) {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as never);
+    const page = document.createElement('div');
+    const pageBounds = vi.spyOn(page, 'getBoundingClientRect').mockReturnValue({
+        left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480,
+    } as DOMRect);
+    const scroller = document.createElement('div');
+    scroller.style.overflowY = 'auto';
+    scroller.appendChild(page);
+    vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue({
+        left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480,
+    } as DOMRect);
+    const pending: Array<{
+        resolve: (source: TileUrlSource) => void;
+        reject: (error: unknown) => void;
+        stage: string | undefined;
+        zoom: number;
+        priority: number;
+        clipX: number;
+        clipY: number;
+    }> = [];
+    const getTileUrl = vi.fn((...args: unknown[]) => new Promise<TileUrlSource>((resolve, reject) => {
+        const options = args[7] as { colorStage?: string; priority: number };
+        pending.push({
+            resolve, reject, stage: options.colorStage, priority: options.priority, zoom: args[2] as number,
+            clipX: args[3] as number, clipY: args[4] as number,
+        });
+    }));
+    const source = (label: string, zoom: number): TileUrlSource => ({
+        url: `pxrg:r24.07:${label}`, byteLength: 640 * 480 * zoom * zoom * 4,
+        bitmap: { width: 640 * zoom, height: 480 * zoom, close: vi.fn() } as unknown as ImageBitmap,
+    });
+    const props: ComponentProps<typeof TileLayer> = {
+        fileKey: 'r24.07|revision:r1|color:accurate', displayFileKey: 'r24.07|revision:r1|color:display',
+        pageNum: 1, zoom: 3, dpr: 1, rotation: 0, displayWidth: 640, displayHeight: 480,
+        containerRef: { current: page }, getTileUrl: getTileUrl as never, onVisible: vi.fn(),
+        accurateColor: true, accurateCommitted: true, keepDisplayUntilAccurate: false,
+        ...overrides,
+    };
+    return { props, pending, source, pageBounds, scroller };
+}
+
 describe('LiveTile — cold-open màu chính xác', () => {
+    it.each([[300, 20], [430, 20], [1000, 500]])(
+        'R25.04.2: render %i ms vẫn tiến triển khi zoom mỗi %i ms', async (latency, inputGap) => {
+            vi.useFakeTimers();
+            const { props, source, pageBounds } = makeViewportHarness();
+            let serial = 0;
+            const active = new Map<string, { timer: ReturnType<typeof setTimeout>; reject: (error: unknown) => void }>();
+            props.cancelAccurateGroup = group => {
+                const pending = active.get(group);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    active.delete(group);
+                    pending.reject(new CancelledTileRenderError());
+                }
+            };
+            props.getTileUrl = vi.fn<NonNullable<ComponentProps<typeof TileLayer>['getTileUrl']>>((_p, _r, scale, _x, _y, _w, _h, options) => {
+                if (options?.priority !== 0) return new Promise<never>(() => {});
+                const group = options.groupKey!;
+                return new Promise<TileUrlSource>((resolve, reject) => {
+                    const timer = setTimeout(() => {
+                        active.delete(group);
+                        resolve(source(`IDLE-STREAM-${++serial}`, scale));
+                    }, latency);
+                    active.set(group, { timer, reject });
+                });
+            });
+            const view = render(<TileLayer {...props} />);
+            const presented = new Set<string>();
+            for (let elapsed = 20; elapsed <= 6000; elapsed += 20) {
+                await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+                const painted = presentedViewportTile(visibleViewportCanvases(view.container).at(-1));
+                if (painted) presented.add(painted.sourceToken);
+                if (elapsed % inputGap === 0) {
+                    const zoom = 3 + elapsed / 2000;
+                    const width = 640 * zoom / 3; const height = 480 * zoom / 3;
+                    pageBounds.mockReturnValue({ left: 0, top: 0, right: width, bottom: height, width, height } as DOMRect);
+                    view.rerender(<TileLayer {...props} zoom={zoom} displayWidth={width} displayHeight={height} />);
+                }
+            }
+            expect(presented.size).toBeGreaterThanOrEqual(3);
+            for (let step = 0; step < 120; step += 1) {
+                await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+            }
+            expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.zoom).toBe(6);
+        },
+    );
+
+    it('R25.04.2: target cuối được gửi sau khi ổn định, không đợi ảnh cũ chưa xong', async () => {
+        vi.useFakeTimers();
+        const cancelAccurateGroup = vi.fn();
+        const { props, pending, source } = makeViewportHarness({ cancelAccurateGroup });
+        const view = render(<TileLayer {...props} />);
+        await act(async () => pending.find(t => t.priority === 0)!.resolve(source('IDLE-A', 3)));
+        view.rerender(<TileLayer {...props} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        const old = pending.find(t => t.priority === 0 && t.zoom === 4)!;
+        for (const zoom of [5, 6, 5]) {
+            view.rerender(<TileLayer {...props} zoom={zoom}
+                displayWidth={640 * zoom / 3} displayHeight={480 * zoom / 3} />);
+            await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+        }
+        expect(pending.filter(t => t.priority === 0).map(t => t.zoom)).toEqual([3, 4]);
+        const cancelsBeforeIdle = cancelAccurateGroup.mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+        expect(pending.filter(t => t.priority === 0).map(t => t.zoom)).toEqual([3, 4, 5]);
+        expect(cancelAccurateGroup.mock.calls.length).toBeGreaterThan(cancelsBeforeIdle);
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('IDLE-A');
+        const final = pending.find(t => t.priority === 0 && t.zoom === 5)!;
+        await act(async () => final.resolve(source('IDLE-C', 5)));
+        await act(async () => old.resolve(source('IDLE-B-LATE', 4)));
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('IDLE-C');
+        expect(Array.from(view.container.querySelectorAll<HTMLCanvasElement>('canvas[data-prynx-presented-tile]'))
+            .some(canvas => presentedViewportTile(canvas)?.sourceToken.includes('IDLE-B-LATE'))).toBe(false);
+    });
+
+    it.each(['full', 'mid', 'low'])(
+        'R25.04.1: đổi zoom không phát lại atlas cũ giữa settled và target (%s)',
+        async tier => {
+            vi.useFakeTimers();
+            const previousClass = document.documentElement.className;
+            document.documentElement.className = tier === 'full' ? '' : `perf-${tier}`;
+            try {
+                const { props, pending, source, pageBounds } = makeViewportHarness({
+                    displayWidth: 4096, displayHeight: 3072,
+                });
+                const view = render(<TileLayer {...props} />);
+                await act(async () => pending.find(t => t.priority === 0)!.resolve(source('ATLAS-A', 3)));
+                await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+                expect(pending.some(t => t.priority >= 100 && t.zoom === 3)).toBe(true);
+                const beforeZoom = pending.length;
+                pageBounds.mockReturnValue({ left: 0, top: 0, right: 4096 * 4 / 3,
+                    bottom: 4096, width: 4096 * 4 / 3, height: 4096 } as DOMRect);
+                view.rerender(<TileLayer {...props} zoom={4}
+                    displayWidth={4096 * 4 / 3} displayHeight={4096} />);
+                await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+                // Log thật: 48 cell ở zoom cũ được phát rồi tháo sau 6 ms.
+                // Kiểm lời gọi ở mọi lần render, không chỉ DOM cuối đã đóng atlas.
+                expect(pending.slice(beforeZoom).filter(t => t.priority >= 100)).toHaveLength(0);
+                const newViewport = pending.slice(beforeZoom).find(t => t.priority === 0)!;
+                expect(newViewport.zoom).toBe(4);
+                const beforeReady = pending.length;
+                await act(async () => newViewport.resolve(source('ATLAS-B', 4)));
+                const newAtlas = pending.slice(beforeReady).filter(t => t.priority >= 100);
+                expect(newAtlas.length).toBeGreaterThan(0);
+                expect(newAtlas.every(t => t.zoom === 4)).toBe(true);
+                expect(pending.every(t => t.stage === 'accurate')).toBe(true);
+            } finally {
+                document.documentElement.className = previousClass;
+            }
+        },
+    );
+
+    it.each([false, true])('R25.01: viewport giữ bitmap 1:1, phần dư khung phân số không có nền trắng (PPE=%s)', async accurateColor => {
+        vi.useFakeTimers();
+        const { props, pending } = makeViewportHarness({ accurateColor, accurateCommitted: accurateColor,
+            displayWidth: 1280, displayHeight: 960 });
+        const view = render(<TileLayer {...props} />);
+        await act(async () => pending.find(t => t.priority === 0)!.resolve({
+            url: `pxrg:r25-viewport-${accurateColor}`, byteLength: 640 * 512 * 4,
+            bitmap: { width: 640, height: 512, close: vi.fn() } as unknown as ImageBitmap,
+        }));
+        const canvas = visibleViewportCanvases(view.container).at(-1)!;
+        expect(canvas).toBeDefined();
+        view.rerender(<TileLayer {...props} zoom={3.001}
+            displayWidth={1280 * 3.001 / 3} displayHeight={960 * 3.001 / 3} />);
+        // Pixel native giữ 1:1; phần dư khung phải lộ ảnh dưới thay vì nền trắng.
+        expect(canvas.width).toBe(640);
+        expect(canvas.style.width).toBe('640px');
+        expect(canvas.style.height).toBe('512px');
+        expect(canvas.style.background).toBe('transparent');
+        expect(canvas.closest<HTMLElement>('.tile-container')!.style.background).toBe('transparent');
+    });
+
+    it('R25.01: không tích lũy viewport đã nghỉ hoặc dựng DPI dự đoán khi idle', async () => {
+        vi.useFakeTimers();
+        const { props, pending, source } = makeViewportHarness();
+        const view = render(<TileLayer {...props} />);
+        await act(async () => pending.find(t => t.priority === 0)!.resolve(source('MAIN-3', 3)));
+        for (const zoom of [4, 5, 6, 5, 4, 3]) {
+            view.rerender(<TileLayer {...props} zoom={zoom}
+                displayWidth={640 * zoom / 3} displayHeight={480 * zoom / 3} />);
+            await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+            const latest = pending.filter(t => t.priority === 0).at(-1)!;
+            await act(async () => latest.resolve(source(`MAIN-${latest.zoom}`, latest.zoom)));
+            const canvases = Array.from(view.container.querySelectorAll<HTMLCanvasElement>('canvas[data-prynx-presented-tile]'));
+            expect(canvases.filter(c => presentedViewportTile(c)?.sourceToken.includes('MAIN-')).length).toBeLessThanOrEqual(2);
+        }
+        const before = pending.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+        expect(pending.length).toBe(before);
+        expect(pending.every(t => [3, 4, 5, 6].includes(t.zoom))).toBe(true);
+    });
+
+    it('R24.09: sau sharpen đầu, zoom tiếp không chờ lại 96 ms của prime', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as never);
+        const pending: Array<(source: TileUrlSource) => void> = [];
+        const getTileUrl = vi.fn(() => new Promise<TileUrlSource>(resolve => pending.push(resolve)));
+        const firstFrame: ViewerFirstFrame = {
+            nativePath: 'D:\\jobs\\gradient.pdf', documentToken: 'revision-1',
+            page: 1, dpi: 24, renderScale: 0.25, width: 640, height: 480,
+            profileId: 'fogra39', intent: 'relative',
+            proofIdentity: 'show:all|paper:0|black:0|background:profile',
+            url: 'blob:r24.09-prime', byteLength: 64,
+        };
+        const base = makeProps({ accurateOnly: true, renderPriority: 10, initialSource: firstFrame, getTileUrl });
+        const view = render(<LiveTile {...base} zoom={0.25} />);
+        view.rerender(<LiveTile {...base} zoom={1} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(96); });
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+        await act(async () => pending[0]({
+            url: 'pxrg:prime-sharpened', byteLength: 64,
+            bitmap: { width: 640, height: 480, close: vi.fn() } as unknown as ImageBitmap,
+        }));
+        view.rerender(<LiveTile {...base} zoom={1.25} />);
+        expect(getTileUrl).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([false, true])('R24.08: PPE cập nhật khi zoom còn chạy (underlay=%s)', async stableUnderlayReady => {
+        vi.useFakeTimers();
+        const { props, source, pageBounds } = makeViewportHarness({ stableUnderlayReady });
+        const requested: number[] = [];
+        props.getTileUrl = vi.fn<NonNullable<ComponentProps<typeof TileLayer>['getTileUrl']>>((_page, _rotation, scale, _x, _y, _w, _h, options) => {
+            if (options?.priority !== 0) return new Promise<never>(() => {});
+            requested.push(scale);
+            return new Promise<TileUrlSource>(resolve => setTimeout(() => resolve(source(`STREAM-${scale}`, scale)), 80));
+        });
+        const view = render(<TileLayer {...props} />);
+        const presented = new Set<number>();
+        for (let step = 1; step <= 16; step += 1) {
+            await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+            const painted = presentedViewportTile(visibleViewportCanvases(view.container).at(-1));
+            if (painted) presented.add(painted.zoom);
+            const zoom = 3 + step / 4;
+            const width = 640 * zoom / 3;
+            const height = 480 * zoom / 3;
+            pageBounds.mockReturnValue({ left: 0, top: 0, right: width, bottom: height, width, height } as DOMRect);
+            view.rerender(<TileLayer {...props} zoom={zoom} displayWidth={width} displayHeight={height} />);
+        }
+        // Đây là phép đo lifecycle có latency cố định, không phải benchmark native.
+        expect(presented.size).toBeGreaterThanOrEqual(3);
+        expect(requested.length).toBeLessThan(16);
+        for (let step = 0; step < 10; step += 1) {
+            await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        }
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.zoom).toBe(7);
+    });
+
+    it.each(['render', 'cancel', 'decode', 'canvas'])('R24.08: terminal %s vẫn chuyển sang target mới nhất', async failure => {
+        vi.useFakeTimers();
+        const { props, pending, source } = makeViewportHarness();
+        const view = render(<TileLayer {...props} />);
+        await act(async () => pending.find(item => item.priority === 0)!.resolve(source('BEFORE-FAIL', 3)));
+        view.rerender(<TileLayer {...props} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        const failed = pending.find(item => item.zoom === 4 && item.priority === 0)!;
+        view.rerender(<TileLayer {...props} zoom={5} displayWidth={640 * 5 / 3} displayHeight={800} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        expect(pending.some(item => item.zoom === 5 && item.priority === 0)).toBe(false);
+        if (failure === 'canvas') {
+            vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValueOnce(null);
+            await act(async () => failed.resolve(source('NO-CANVAS', 4)));
+        } else if (failure === 'decode') {
+            const images: HTMLImageElement[] = [];
+            vi.stubGlobal('Image', class {
+                onload: (() => void) | null = null;
+                onerror: (() => void) | null = null;
+                src = '';
+                constructor() { images.push(this as unknown as HTMLImageElement); }
+            });
+            try {
+                await act(async () => failed.resolve({ url: 'blob:r24.08-bad-image', byteLength: 64 }));
+                await act(async () => images.at(-1)!.onerror?.(new Event('error')));
+            } finally { vi.unstubAllGlobals(); }
+        } else {
+            const error = failure === 'cancel' ? new CancelledTileRenderError() : new Error('render thất bại');
+            await act(async () => failed.reject(error));
+            if (failure === 'cancel') {
+                const retry = pending.filter(item => item.zoom === 4 && item.priority === 0).at(-1)!;
+                if (retry !== failed) await act(async () => retry.reject(error));
+            }
+        }
+        const final = pending.find(item => item.zoom === 5 && item.priority === 0);
+        expect(final).toBeDefined();
+        await act(async () => final!.resolve(source('AFTER-FAIL', 5)));
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.zoom).toBe(5);
+    });
+
+    it.each([
+        { fileKey: 'doc-2|revision:r1|color:accurate' },
+        { fileKey: 'r24.07|revision:r2|color:accurate' },
+        { fileKey: 'r24.07|revision:r1|color:accurate|profile:swop' },
+        { pageNum: 2 },
+        { rotation: 90 },
+    ])('R24.08: đổi nội dung %j hủy in-flight cũ dù còn queued', async identity => {
+        vi.useFakeTimers();
+        const cancelAccurateGroup = vi.fn();
+        const { props, pending, source } = makeViewportHarness({ cancelAccurateGroup });
+        const view = render(<TileLayer {...props} />);
+        const old = pending.find(item => item.priority === 0)!;
+        view.rerender(<TileLayer {...props} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        expect(pending.filter(item => item.priority === 0)).toHaveLength(1);
+        view.rerender(<TileLayer {...props} {...identity} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        const current = pending.filter(item => item.priority === 0).at(-1)!;
+        expect(current).not.toBe(old);
+        expect(cancelAccurateGroup).toHaveBeenCalled();
+        await act(async () => current.resolve(source('NEW-IDENTITY', 4)));
+        await act(async () => old.resolve(source('OLD-IDENTITY', 3)));
+        const painted = Array.from(view.container.querySelectorAll<HTMLCanvasElement>('canvas[data-prynx-presented-tile]'));
+        expect(painted.some(canvas => presentedViewportTile(canvas)?.sourceToken.includes('OLD-IDENTITY'))).toBe(false);
+        expect(painted.some(canvas => presentedViewportTile(canvas)?.sourceToken.includes('NEW-IDENTITY'))).toBe(true);
+    });
+
+    it('R24.08: zoom-out làm tile thiếu coverage chỉ ẩn presentation, không hủy request đang chạy', async () => {
+        vi.useFakeTimers();
+        const { props, pending, source, pageBounds } = makeViewportHarness({
+            zoom: 6, displayWidth: 2560, displayHeight: 1920, stableUnderlayReady: true,
+        });
+        pageBounds.mockReturnValue({ left: -800, top: -600, right: 1760, bottom: 1320, width: 2560, height: 1920 } as DOMRect);
+        const view = render(<TileLayer {...props} />);
+        await act(async () => pending.find(item => item.priority === 0)!.resolve(source('OLD-COVERAGE', 6)));
+        view.rerender(<TileLayer {...props} zoom={6.5} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        const inFlight = pending.find(item => item.zoom === 6.5 && item.priority === 0)!;
+        pageBounds.mockReturnValue({ left: 0, top: 0, right: 1280, bottom: 960, width: 1280, height: 960 } as DOMRect);
+        view.rerender(<TileLayer {...props} zoom={3} displayWidth={1280} displayHeight={960} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        expect(visibleViewportCanvases(view.container, 1, 1)).toHaveLength(0);
+        expect(pending.some(item => item.zoom === 3 && item.priority === 0)).toBe(false);
+        await act(async () => inFlight.resolve(source('COVERAGE-B', 6.5)));
+        const final = pending.find(item => item.zoom === 3 && item.priority === 0)!;
+        expect(final).toBeDefined();
+        await act(async () => final.resolve(source('FULL-COVERAGE', 3)));
+        expect(presentedViewportTile(visibleViewportCanvases(view.container, 1, 1).at(-1))?.sourceToken).toContain('FULL-COVERAGE');
+    });
+
+    it('R24.08: tắt render hủy công việc và bật lại vẫn tới target cuối', async () => {
+        vi.useFakeTimers();
+        const cancelAccurateGroup = vi.fn();
+        const { props, pending, source } = makeViewportHarness({ cancelAccurateGroup });
+        const view = render(<TileLayer {...props} />);
+        const old = pending.find(item => item.priority === 0)!;
+        view.rerender(<TileLayer {...props} renderEnabled={false} zoom={4} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        expect(cancelAccurateGroup).toHaveBeenCalled();
+        await act(async () => old.resolve(source('DISABLED-OLD', 3)));
+        expect(visibleViewportCanvases(view.container)).toHaveLength(0);
+        expect(pending.filter(item => item.priority === 0)).toHaveLength(1);
+        view.rerender(<TileLayer {...props} zoom={4} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+        const current = pending.filter(item => item.priority === 0).at(-1)!;
+        expect(current).not.toBe(old);
+        await act(async () => current.resolve(source('ENABLED-CURRENT', current.zoom)));
+        const last = pending.filter(item => item.priority === 0).at(-1)!;
+        if (last !== current) await act(async () => last.resolve(source('ENABLED-FINAL', last.zoom)));
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.zoom).toBe(4);
+    });
+
     it.each([10, 100])('callback metadata đổi không hủy request cùng pixel (priority %s)', async renderPriority => {
         let resolveRender!: (source: TileUrlSource) => void;
         const beforeMetadata = vi.fn(() => new Promise<TileUrlSource>(resolve => { resolveRender = resolve; }));
@@ -1032,5 +1419,260 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(tile.style.opacity).toBe('1');
         expect(view.queryByText('Đang dựng hình…')).toBeNull();
         expect(view.queryByRole('status')).toBeNull();
+    });
+
+    it('AUDIT §R24.01 / F1: zoom đảo chiều và huỷ decode giữa chừng giải phóng in-flight và tải mục tiêu cuối', async () => {
+        const pending: Array<(source: TileUrlSource) => void> = [];
+        const getTileUrl = vi.fn(() => new Promise<TileUrlSource>(resolve => pending.push(resolve)));
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never);
+        const bitmapSource = (scale: number): TileUrlSource => ({
+            url: `pxrg:audit:${scale}`,
+            byteLength: 640 * 480 * scale * scale * 4,
+            bitmap: { width: 640 * scale, height: 480 * scale, close: vi.fn() } as unknown as ImageBitmap,
+        });
+
+        const props = {
+            fileKey: 'audit-file|revision:r1|color:display',
+            pageNum: 1,
+            pageInstanceId: 'audit',
+            zoom: 1,
+            rot: 0,
+            clipX: 0,
+            clipY: 0,
+            clipW: 0,
+            clipH: 0,
+            cssW: 640,
+            cssH: 480,
+            eager: true,
+            renderPriority: 10,
+            onVisible: vi.fn(),
+            getTileUrl,
+        };
+        const view = render(<LiveTile {...props} />);
+        await act(async () => { pending[0](bitmapSource(1)); });
+
+        // Zoom 1 -> 1.3
+        view.rerender(<LiveTile {...props} zoom={1.3} cssW={832} cssH={624} />);
+        expect(getTileUrl).toHaveBeenCalledTimes(2);
+
+        // Zoom đảo chiều lùi về 1.2 trong lúc 1.3 đang bay
+        view.rerender(<LiveTile {...props} zoom={1.2} cssW={768} cssH={576} />);
+        expect(getTileUrl).toHaveBeenCalledTimes(2);
+
+        // 1.3 về -> kích hoạt lượt kế tiếp cho 1.2
+        await act(async () => { pending[1](bitmapSource(1.3)); });
+        expect(getTileUrl).toHaveBeenCalledTimes(3);
+
+        // 1.2 về nhưng thấp hơn 1.3 -> bị discard chất lượng
+        await act(async () => { pending[2](bitmapSource(1.2)); });
+
+        // Người dùng zoom tiếp lên 1.4 -> KHÔNG ĐƯỢC BỊ KẸT in-flight, phải gửi request 1.4
+        view.rerender(<LiveTile {...props} zoom={1.4} cssW={896} cssH={672} />);
+        await act(async () => { await Promise.resolve(); });
+        expect(getTileUrl).toHaveBeenCalledTimes(4);
+    });
+
+    it('AUDIT §R24.01 / F1: zoom trong lúc decode PNG fallback phải tiếp tục dựng target mới', async () => {
+        const images: Array<{ onload: null | (() => void); onerror: null | (() => void); src: string }> = [];
+        class DeferredImage {
+            onload: null | (() => void) = null;
+            onerror: null | (() => void) = null;
+            naturalWidth = 640;
+            naturalHeight = 480;
+            src = '';
+            constructor() { images.push(this); }
+        }
+        vi.stubGlobal('Image', DeferredImage);
+        const getTileUrl = vi.fn(async () => ({ url: 'blob:audit-png', byteLength: 64 }));
+        const props = {
+            fileKey: 'audit-file|revision:r1|color:display',
+            pageNum: 1,
+            pageInstanceId: 'audit-decode',
+            zoom: 1,
+            rot: 0,
+            clipX: 0,
+            clipY: 0,
+            clipW: 0,
+            clipH: 0,
+            cssW: 640,
+            cssH: 480,
+            eager: true,
+            renderPriority: 10,
+            onVisible: vi.fn(),
+            getTileUrl,
+        };
+        const view = render(<LiveTile {...props} />);
+        await waitFor(() => expect(images).toHaveLength(1));
+        expect(images[0].onload).not.toBeNull();
+        view.rerender(<LiveTile {...props} zoom={2} />);
+        await act(async () => { images[0].onload?.(); await Promise.resolve(); });
+        expect(getTileUrl).toHaveBeenCalledTimes(2);
+    });
+
+    it('AUDIT §R24.04 / F2: preview chuyển sang Output Preview còn hiện tới khi PPE ready', async () => {
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage } as never);
+        const page = document.createElement('div');
+        vi.spyOn(page, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 } as DOMRect);
+        const pending: Array<{ resolve: (source: TileUrlSource) => void; stage: string | undefined }> = [];
+        const getTileUrl = vi.fn((...args: unknown[]) => new Promise<TileUrlSource>(resolve => {
+            pending.push({ resolve, stage: (args[7] as { colorStage?: string } | undefined)?.colorStage });
+        }));
+        const bitmapSource = (scale: number): TileUrlSource => ({
+            url: `pxrg:audit:${scale}`,
+            byteLength: 640 * 480 * scale * scale * 4,
+            bitmap: { width: 640 * scale, height: 480 * scale, close: vi.fn() } as unknown as ImageBitmap,
+        });
+        const view = render(<TileLayer
+            fileKey="audit-accurate"
+            displayFileKey="audit-display"
+            pageNum={1}
+            zoom={3}
+            dpr={1}
+            rotation={0}
+            displayWidth={640}
+            displayHeight={480}
+            containerRef={{ current: page }}
+            getTileUrl={getTileUrl as never}
+            onVisible={vi.fn()}
+            accurateColor
+            accurateCommitted={false}
+            keepDisplayUntilAccurate
+        />);
+        expect(pending.some(item => item.stage === undefined)).toBe(true);
+        expect(pending.some(item => item.stage === 'accurate')).toBe(true);
+        await act(async () => { pending.find(item => item.stage === undefined)!.resolve(bitmapSource(1)); });
+        // Frame display đã được draw; PPE vẫn pending. Ít nhất một canvas có pixel phải còn được giữ.
+        expect(Array.from(view.container.querySelectorAll('canvas')).some(canvas => canvas.width === 640 && canvas.height === 480)).toBe(true);
+    });
+
+    it.each([
+        { stableUnderlayReady: false, keepDisplayUntilAccurate: false },
+        { stableUnderlayReady: true, keepDisplayUntilAccurate: false },
+        { stableUnderlayReady: false, keepDisplayUntilAccurate: true },
+        { stableUnderlayReady: true, keepDisplayUntilAccurate: true },
+    ])('R24.07: zoom giữ PPE trên cùng khi target đang tải (%j)', async options => {
+        const { props, pending, source } = makeViewportHarness(options);
+        const view = render(<TileLayer {...props} />);
+        await act(async () => { pending.find(item => item.stage === 'accurate' && item.priority === 0)!.resolve(source('PPE-A', 3)); });
+        const oldCanvas = visibleViewportCanvases(view.container).at(-1);
+        expect(presentedViewportTile(oldCanvas)?.sourceToken).toContain('PPE-A');
+        view.rerender(<TileLayer {...props} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await waitFor(() => expect(pending.some(item => item.stage === 'accurate' && item.zoom === 4 && item.priority === 0)).toBe(true));
+        // Nếu policy phát nhầm display, cho nó về trước để assertion bắt đúng flash đã audit.
+        await act(async () => { pending.find(item => item.stage === undefined && item.zoom === 4)?.resolve(source('DISPLAY-B', 4)); });
+        expect(visibleViewportCanvases(view.container).at(-1)).toBe(oldCanvas);
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.accurateOnly).toBe(true);
+        expect(pending.every(item => item.stage === 'accurate')).toBe(true);
+        await act(async () => { pending.find(item => item.stage === 'accurate' && item.zoom === 4 && item.priority === 0)!.resolve(source('PPE-B', 4)); });
+        await waitFor(() => expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('PPE-B'));
+        await waitFor(() => expect(view.container.contains(oldCanvas!)).toBe(false));
+    });
+
+    it('R24.07: cold-open trang PPE không dựng hoặc khôi phục bitmap display đã cache', async () => {
+        const { props, pending, source } = makeViewportHarness({ accurateCommitted: false });
+        cacheTileUrl(`${props.displayFileKey}_1_3_0_0_0_640_480`, source('DISPLAY-CACHED', 3), props.displayFileKey!);
+        const view = render(<TileLayer {...props} />);
+        expect(pending.length).toBeGreaterThan(0);
+        expect(pending.every(item => item.stage === 'accurate')).toBe(true);
+        expect(visibleViewportCanvases(view.container)).toHaveLength(0);
+        await act(async () => { pending.find(item => item.stage === 'accurate' && item.priority === 0)!.resolve(source('PPE-FIRST', 3)); });
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))).toMatchObject({ accurateOnly: true });
+    });
+
+    it('R24.07: trang display-only vẫn thay viewport khi zoom mà không gọi PPE', async () => {
+        const { props, pending, source } = makeViewportHarness({ accurateColor: false, accurateCommitted: false });
+        const view = render(<TileLayer {...props} />);
+        await act(async () => { pending.find(item => item.priority === 0)!.resolve(source('DISPLAY-A', 3)); });
+        view.rerender(<TileLayer {...props} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await waitFor(() => expect(pending.some(item => item.zoom === 4)).toBe(true));
+        await act(async () => { pending.find(item => item.zoom === 4)!.resolve(source('DISPLAY-B', 4)); });
+        await waitFor(() => expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('DISPLAY-B'));
+        expect(pending.every(item => item.stage !== 'accurate')).toBe(true);
+    });
+
+    it('R24.07: sau khi Output Preview commit, zoom không bật lại display', async () => {
+        const { props, pending, source } = makeViewportHarness({ accurateCommitted: false, keepDisplayUntilAccurate: true });
+        const view = render(<TileLayer {...props} />);
+        await act(async () => { pending.find(item => item.stage === undefined)!.resolve(source('DISPLAY-PREVIEW', 3)); });
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.accurateOnly).toBe(false);
+        await act(async () => { pending.find(item => item.stage === 'accurate' && item.priority === 0)!.resolve(source('PPE-PREVIEW', 3)); });
+        view.rerender(<TileLayer {...props} accurateCommitted />);
+        const displayRequestsBeforeZoom = pending.filter(item => item.stage === undefined).length;
+        view.rerender(<TileLayer {...props} accurateCommitted zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await waitFor(() => expect(pending.some(item => item.stage === 'accurate' && item.zoom === 4 && item.priority === 0)).toBe(true));
+        expect(pending.filter(item => item.stage === undefined)).toHaveLength(displayRequestsBeforeZoom);
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('PPE-PREVIEW');
+    });
+
+    it('R24.07/R24.08: PPE B hoàn tất trước C, không bật lại display', async () => {
+        const { props, pending, source } = makeViewportHarness();
+        const view = render(<TileLayer {...props} />);
+        await act(async () => { pending.find(item => item.stage === 'accurate' && item.priority === 0)!.resolve(source('PPE-A', 3)); });
+        view.rerender(<TileLayer {...props} zoom={4} displayWidth={640 * 4 / 3} displayHeight={640} />);
+        await waitFor(() => expect(pending.some(item => item.zoom === 4 && item.priority === 0 && item.stage === 'accurate')).toBe(true));
+        const admitted = pending.find(item => item.zoom === 4 && item.priority === 0 && item.stage === 'accurate')!;
+        view.rerender(<TileLayer {...props} zoom={5} displayWidth={640 * 5 / 3} displayHeight={800} />);
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 32)); });
+        expect(pending.some(item => item.zoom === 5 && item.priority === 0)).toBe(false);
+        await act(async () => { admitted.resolve(source('PPE-B', 4)); });
+        await waitFor(() => expect(pending.some(item => item.zoom === 5 && item.priority === 0 && item.stage === 'accurate')).toBe(true));
+        expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('PPE-B');
+        await act(async () => { pending.find(item => item.zoom === 5 && item.priority === 0 && item.stage === 'accurate')!.resolve(source('PPE-C', 5)); });
+        await waitFor(() => expect(presentedViewportTile(visibleViewportCanvases(view.container).at(-1))?.sourceToken).toContain('PPE-C'));
+        expect(pending.every(item => item.stage === 'accurate')).toBe(true);
+    });
+
+    it('R24.07: zoom-out thiếu coverage giữ PPE ở vùng giao nhau rồi PPE mới phủ mép còn thiếu', async () => {
+        const { props, pending, source, pageBounds } = makeViewportHarness({
+            zoom: 6, displayWidth: 2560, displayHeight: 1920,
+        });
+        pageBounds.mockReturnValue({ left: -800, top: -600, right: 1760, bottom: 1320, width: 2560, height: 1920 } as DOMRect);
+        const view = render(<TileLayer {...props} />);
+        await act(async () => { pending.find(item => item.priority === 0)!.resolve(source('PPE-ZOOM-IN', 6)); });
+        const oldCanvas = view.container.querySelector<HTMLCanvasElement>('canvas[data-prynx-presented-tile]')!;
+        pageBounds.mockReturnValue({ left: 0, top: 0, right: 1280, bottom: 960, width: 1280, height: 960 } as DOMRect);
+        view.rerender(<TileLayer {...props} zoom={3} displayWidth={1280} displayHeight={960} />);
+        await waitFor(() => expect(pending.some(item => item.zoom === 3 && item.priority === 0)).toBe(true));
+        const oldTile = oldCanvas.closest<HTMLElement>('.tile-container')!;
+        const overlapX = Number.parseFloat(oldTile.style.left) + 1;
+        const overlapY = Number.parseFloat(oldTile.style.top) + 1;
+        expect(overlapX).toBeGreaterThan(1);
+        expect(overlapX).toBeLessThan(640);
+        expect(overlapY).toBeLessThan(480);
+        expect(visibleViewportCanvases(view.container, overlapX, overlapY).at(-1)).toBe(oldCanvas);
+        // Chưa có underlay: không tuyên bố mép mới đã có pixel trước target; chỉ giữ phần giao nhau.
+        expect(visibleViewportCanvases(view.container, 1, 1)).toHaveLength(0);
+        expect(pending.every(item => item.stage === 'accurate')).toBe(true);
+        await act(async () => { pending.find(item => item.zoom === 3 && item.priority === 0)!.resolve(source('PPE-ZOOM-OUT', 3)); });
+        await waitFor(() => expect(presentedViewportTile(visibleViewportCanvases(view.container, 1, 1).at(-1))?.sourceToken).toContain('PPE-ZOOM-OUT'));
+    });
+
+    it('R24.07/R24.08: pan giữ PPE và bitmap B dùng đúng clip trước khi C hoàn tất', async () => {
+        const { props, pending, source, pageBounds, scroller } = makeViewportHarness({ displayWidth: 2048, displayHeight: 1536 });
+        const movePage = (left: number) => pageBounds.mockReturnValue({
+            left, top: 0, right: left + 2048, bottom: 1536, width: 2048, height: 1536,
+        } as DOMRect);
+        movePage(0);
+        const view = render(<TileLayer {...props} />);
+        await act(async () => { pending.find(item => item.priority === 0)!.resolve(source('PPE-PAN-A', 3)); });
+        movePage(-256);
+        fireEvent.scroll(scroller);
+        await waitFor(() => expect(pending.some(item => item.priority === 0 && item.clipX === 256)).toBe(true));
+        const admitted = pending.find(item => item.priority === 0 && item.clipX === 256)!;
+        expect(presentedViewportTile(visibleViewportCanvases(view.container, 320, 240).at(-1))?.sourceToken).toContain('PPE-PAN-A');
+        movePage(-512);
+        fireEvent.scroll(scroller);
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 32)); });
+        expect(pending.some(item => item.priority === 0 && item.clipX === 512)).toBe(false);
+        await act(async () => { admitted.resolve(source('PPE-PAN-B', 3)); });
+        await waitFor(() => expect(pending.some(item => item.priority === 0 && item.clipX === 512)).toBe(true));
+        const canvasB = visibleViewportCanvases(view.container, 576, 240).at(-1)!;
+        expect(presentedViewportTile(canvasB)?.sourceToken).toContain('PPE-PAN-B');
+        expect(canvasB.closest<HTMLElement>('.tile-container')!.style.left).toBe('256px');
+        await act(async () => { pending.find(item => item.priority === 0 && item.clipX === 512)!.resolve(source('PPE-PAN-C', 3)); });
+        await waitFor(() => expect(presentedViewportTile(visibleViewportCanvases(view.container, 576, 240).at(-1))?.sourceToken).toContain('PPE-PAN-C'));
+        expect(pending.every(item => item.stage === 'accurate')).toBe(true);
     });
 });

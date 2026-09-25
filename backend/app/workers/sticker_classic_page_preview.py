@@ -140,14 +140,14 @@ def _cut_groups_svg(groups, width_pt, height_pt, preview_width, preview_height):
     return " ".join(commands), count
 
 
-def _classic_baseline_key(source_path, page_number, geometry, width, height):
+def _classic_baseline_key(source_path, page_number, geometry, width, height, *, digest=None):
     from app.workers.cutline_cubic_simplify import CUTLINE_SIMPLIFY_ALGORITHM
     stat = Path(source_path).stat()
     # PERF/QUALITY (audit 2026-09-11 §SIMPLIFY.BASELINE-CACHE): stat giúp
     # loại nhanh file không đổi; digest vẫn là chốt để không dùng CUT cũ khi
     # file bị thay nội dung nhưng giữ nguyên kích thước/thời gian.
-    with open(source_path, "rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest is None:
+        digest = source_digest(source_path)
     return json.dumps({"source": str(source_path), "digest": digest,
                        "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
                        "page": page_number,
@@ -277,13 +277,16 @@ def _render_canonical_classic_page(source_path, page_number, preview_size, geome
     if min(width, height, *preview_size) <= 0 or not all(map(math.isfinite, (width, height))):
         raise StickerSheetExportError("Kích thước trang xem trước không hợp lệ.")
     requested_simplify = float(geometry.get("cutline_simplify_mm", 0.0) or 0.0)
+    # PERF (audit 2026-09-24 §CUT24.07): một digest nội dung dùng cho hai khóa
+    # trong cùng bước; chốt nguồn đầu/cuối ở caller vẫn đọc byte mới.
+    digest = source_digest(source_path)
     baseline_key = _classic_baseline_key(
-        source_path, page_number, geometry, width, height,
+        source_path, page_number, geometry, width, height, digest=digest,
     )
     from app.workers.sticker_cutline_preview import _preview_cache_limit, _remember_preview
     # PERF (audit 2026-09-11 §SIMPLIFY.CACHE): cache chỉ giữ lệnh CUT và memo
     # của tài liệu hiện tại, không giữ artwork/PDF hoặc tích lũy các file đã đóng.
-    identity = (str(source_path), source_digest(source_path))
+    identity = (str(source_path), digest)
     if _classic_baseline_cache.get("source") != identity:
         _classic_baseline_cache.clear()
         _classic_baseline_cache.update(source=identity, entries={})
@@ -360,22 +363,17 @@ def _render_classic_page_scoped(source_path, page_number, preview_size, geometry
             Path(canonical).unlink(missing_ok=True)
 
 
-_DIGEST_CACHE: dict[tuple[str, float, int], str] = {}
-
 def source_digest(path):
-    try:
-        st = os.stat(path)
-        key = (str(path), st.st_mtime, st.st_size)
-        cached = _DIGEST_CACHE.get(key)
-        if cached is not None:
-            return cached
-        with open(path, "rb") as stream:
-            d = hashlib.file_digest(stream, "sha256").hexdigest()
-        _DIGEST_CACHE[key] = d
-        return d
-    except Exception:
-        with open(path, "rb") as stream:
-            return hashlib.file_digest(stream, "sha256").hexdigest()
+    """Hash byte thật, kể cả khi file thay nội dung nhưng giữ size/mtime.
+
+    PERF (audit 2026-09-24 §CUT24.07): bỏ cache stat không đáng tin và nhánh
+    fallback từng nuốt NameError. Lỗi I/O giữ nguyên để caller báo nguồn lỗi.
+    """
+    check_preview_cancelled()
+    with open(path, "rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    check_preview_cancelled()
+    return digest
 
 
 def whole_page_key(digest, page_number, revision, geometry, preview_size):

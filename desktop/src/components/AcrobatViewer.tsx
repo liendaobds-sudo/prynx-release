@@ -39,6 +39,7 @@ import {
 } from '../hooks/viewer/useTileRenderer';
 import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
+import { useTextMarkupStore } from '../stores/useTextMarkupStore';
 import { usePhysicalDisplayScale } from '../hooks/viewer/usePhysicalDisplayScale';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
@@ -555,9 +556,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const [activeBridgeSession, setActiveBridgeSession] = useState<ActiveBridgeSession | null>(null);
 
-    // Xóa phiên bắc cầu khi người dùng chuyển sang file khác trong viewer
+    // Xóa phiên bắc cầu và reset markup khi người dùng chuyển sang file khác trong viewer
     useEffect(() => {
         setActiveBridgeSession(null);
+        useTextMarkupStore.getState().clear();
     }, [file?.name, (file as { path?: string })?.path]);
 
     const isActiveSessionWatchingSameFile = Boolean(

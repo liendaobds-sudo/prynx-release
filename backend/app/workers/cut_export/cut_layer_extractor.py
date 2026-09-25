@@ -23,6 +23,8 @@ from typing import Optional
 
 import pikepdf
 
+from app.workers.cut_export.geometry import CutGeometryError, FLATTEN_TOL_MM, flatten_cubic_bezier
+
 # Mẫu tên LỚP CẮT (substring, không phân biệt hoa thường).
 DEFAULT_CUT_PATTERNS = (
     "result_cutline", "cutcontour", "cut_contour", "thru-cut", "thrucut",
@@ -31,7 +33,8 @@ DEFAULT_CUT_PATTERNS = (
 # Mẫu tên lớp LOẠI TRỪ (dấu định vị/ốc/marks).
 DEFAULT_EXCLUDE_PATTERNS = ("markline", "marks", "regmark", "registration")
 
-_PT_BEZIER_TOL = 0.5  # điểm; làm phẳng bezier
+_PT_TO_MM = 25.4 / 72.0
+_PT_BEZIER_TOL = FLATTEN_TOL_MM / _PT_TO_MM
 
 
 @dataclass
@@ -51,6 +54,7 @@ class CutContour:
     points: list[tuple[float, float]]   # point PDF, gốc dưới-trái
     closed: bool
     layer: str = ""
+    segments: tuple = ()
 
 
 @dataclass
@@ -177,6 +181,9 @@ class _Walker:
         gs_stack = []          # lưu (ctm, stroke_spot_cut, fill_spot_cut) cho q/Q
         cur_path = []          # list subpath; subpath = list điểm (device)
         cur_sub = None
+        cur_segments = []
+        cur_closed = False
+        sub_start = (0.0, 0.0)
         last_pt = (0.0, 0.0)   # user-space điểm hiện tại (cho bezier)
         stroke_spot_cut = False  # stroke đang dùng spot-color CutContour?
         fill_spot_cut = False    # fill đang dùng spot-color cắt?
@@ -187,10 +194,12 @@ class _Walker:
             return any(mc)
 
         def finish_subpath():
-            nonlocal cur_sub
+            nonlocal cur_sub, cur_segments, cur_closed
             if cur_sub and len(cur_sub) >= 2:
-                cur_path.append(cur_sub)
+                cur_path.append((cur_sub, tuple(cur_segments), cur_closed))
             cur_sub = None
+            cur_segments = []
+            cur_closed = False
 
         for ins in instructions:
             op = str(ins.operator)
@@ -235,12 +244,16 @@ class _Walker:
                 finish_subpath()
                 x, y = float(ops[0]), float(ops[1])
                 last_pt = (x, y)
+                sub_start = last_pt
                 cur_sub = [_apply(ctm, x, y)]
             elif op == "l" and len(ops) == 2:
                 x, y = float(ops[0]), float(ops[1])
                 last_pt = (x, y)
                 if cur_sub is not None:
-                    cur_sub.append(_apply(ctm, x, y))
+                    end = _apply(ctm, x, y)
+                    cur_segments.append((cur_sub[-1], end))
+                    cur_sub.append(end)
+                    cur_closed = False
             elif op in ("c", "v", "y"):
                 pts = [float(o) for o in ops]
                 if op == "c" and len(pts) == 6:
@@ -251,33 +264,50 @@ class _Walker:
                     p1 = (pts[0], pts[1]); p3 = (pts[2], pts[3]); p2 = p3
                 else:
                     continue
-                for fx, fy in self._flatten_bezier(last_pt, p1, p2, p3):
-                    if cur_sub is not None:
-                        cur_sub.append(_apply(ctm, fx, fy))
+                if cur_sub is not None:
+                    # QUALITY (audit 2026-09-24 §CUT24.D01): chứng nhận sau
+                    # CTM, gồm scale/shear/Form/UserUnit, trong mm vật lý.
+                    transformed = (cur_sub[-1], *(_apply(ctm, *p) for p in (p1, p2, p3)))
+                    if op == "v":
+                        transformed = (transformed[0], transformed[0], transformed[2], transformed[3])
+                    cur_segments.append(transformed)
+                    cur_sub.extend(self._flatten_bezier(*transformed))
+                    # Float roundtrip pt→mm→pt không được phá hợp đồng nối đoạn.
+                    cur_sub[-1] = transformed[-1]
+                    cur_closed = False
                 last_pt = p3
             elif op == "re" and len(ops) == 4:
                 x, y, w, h = (float(o) for o in ops)
                 rect = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]
                 finish_subpath()
-                cur_path.append([_apply(ctm, px, py) for px, py in rect])
+                device = [_apply(ctm, px, py) for px, py in rect]
+                cur_path.append((device, tuple(zip(device, device[1:])), True))
                 last_pt = (x, y)
             elif op == "h":
                 if cur_sub and len(cur_sub) >= 2:
-                    cur_sub.append(cur_sub[0])
+                    if cur_sub[-1] != cur_sub[0]:
+                        cur_segments.append((cur_sub[-1], cur_sub[0]))
+                        cur_sub.append(cur_sub[0])
+                    cur_closed = True
+                    last_pt = sub_start
             # ── Path painting ──
             elif op in ("S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"):
+                # s/b chỉ close subpath cuối; không nối đầu-cuối những đường
+                # hở trước nó trong cùng content path.
+                if op in ("s", "b", "b*") and cur_sub is not None:
+                    cur_closed = True
                 finish_subpath()
                 is_stroke = op in ("S", "s", "B", "B*", "b", "b*")
                 is_fill = op in ("f", "F", "f*", "B", "B*", "b", "b*")
                 spot_cut = (is_stroke and stroke_spot_cut) or (is_fill and fill_spot_cut)
-                if (in_cut() or spot_cut) and cur_path:
-                    fill_closed = op in ("s", "f", "F", "f*", "B", "B*", "b", "b*")
-                    for sub in cur_path:
+                if op != "n" and (in_cut() or spot_cut) and cur_path:
+                    fill_closed = is_fill
+                    for sub, segments, closed in cur_path:
                         if len(sub) >= 2:
-                            geo_closed = (abs(sub[0][0] - sub[-1][0]) < 0.05
-                                          and abs(sub[0][1] - sub[-1][1]) < 0.05)
+                            geo_closed = sub[0] == sub[-1]
                             self.result.contours.append(
-                                CutContour(points=sub, closed=fill_closed or geo_closed, layer="")
+                                CutContour(points=sub, closed=closed or fill_closed or geo_closed,
+                                           layer="", segments=segments)
                             )
                 cur_path = []
                 cur_sub = None
@@ -288,18 +318,11 @@ class _Walker:
         # end-of-stream: bỏ path chưa paint.
 
     def _flatten_bezier(self, p0, p1, p2, p3):
-        d = (math.hypot(p1[0] - p0[0], p1[1] - p0[1])
-             + math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-             + math.hypot(p3[0] - p2[0], p3[1] - p2[1]))
-        steps = max(2, min(60, int(d / max(self.cfg.flatten_tol_pt, 0.05))))
-        out = []
-        for i in range(1, steps + 1):
-            t = i / steps
-            mt = 1 - t
-            x = mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0] + t**3 * p3[0]
-            y = mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1] + t**3 * p3[1]
-            out.append((x, y))
-        return out
+        mm_points = [(x * _PT_TO_MM, y * _PT_TO_MM) for x, y in (p0, p1, p2, p3)]
+        flattened = flatten_cubic_bezier(
+            *mm_points, max_seg_mm=self.cfg.flatten_tol_pt * _PT_TO_MM,
+        )
+        return [(x / _PT_TO_MM, y / _PT_TO_MM) for x, y in flattened[1:]]
 
     def _do_xobject(self, name, resources, ctm, depth, mc):
         try:
@@ -331,6 +354,9 @@ class _Walker:
                         self.result.matched_layers.add(nm)
                         inner_mc.append(True)
             self.walk(xobj, inner_res, inner_ctm, depth + 1, inner_mc)
+        except CutGeometryError:
+            # Thiếu một vòng cắt nguy hiểm hơn báo lỗi cả lượt xuất.
+            raise
         except Exception:
             return
 
@@ -351,10 +377,13 @@ def extract_cut_contours_from_pdf(
     resources = page.get("/Resources", pikepdf.Dictionary())
     # Kích thước trang (để loại contour khung full-trang).
     mb = page.get("/MediaBox", [0, 0, 612, 792])
-    pw = abs(float(mb[2]) - float(mb[0]))
-    ph = abs(float(mb[3]) - float(mb[1]))
+    unit = float(page.get("/UserUnit", 1))
+    if not math.isfinite(unit) or unit <= 0:
+        raise ValueError("Đơn vị trang PDF phải hữu hạn và lớn hơn 0")
+    pw = abs(float(mb[2]) - float(mb[0])) * unit
+    ph = abs(float(mb[3]) - float(mb[1])) * unit
     walker = _Walker(pdf, cfg, result)
-    walker.walk(page, resources, IDENTITY, 0, [])
+    walker.walk(page, resources, (unit, 0., 0., unit, 0., 0.), 0, [])
 
     # Loại contour có bbox ≈ khổ trang (viền/limit-line) — Req 10.5.
     if pw > 0 and ph > 0:

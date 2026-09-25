@@ -269,3 +269,70 @@ def test_analytic_curvature_metrics_cover_dense_random_curve_observations():
                      / np.linalg.norm(velocity, axis=1) ** 3)
         assert metrics[2] >= float(np.max(np.abs(curvature))) - 1e-6
         assert metrics[3] >= float(np.sum(np.abs(np.diff(curvature)))) - 1e-6
+
+
+@pytest.mark.parametrize("phase", ["entry", "source_metrics", "distance"])
+def test_cancelled_verifier_aborts_instead_of_returning_geometry(monkeypatch, phase):
+    from app.workers import cutline_fair_verify as verifier
+    from app.workers.cutline_preview_cancel import (
+        PreviewCancellation, PreviewCancelled, cancellation_scope,
+    )
+
+    candidate = _circle(3.0)
+    source = [part for curve in candidate for part in split_cubic(curve, .37)]
+    token = PreviewCancellation()
+    calls = {"metrics": 0, "distance": 0}
+    original_metrics = verifier._curve_metrics
+    original_distance = verifier._distance_bound
+
+    def metrics(*args, **kwargs):
+        calls["metrics"] += 1
+        result = original_metrics(*args, **kwargs)
+        if phase == "source_metrics":
+            token.cancel()
+        return result
+
+    def distance(*args, **kwargs):
+        calls["distance"] += 1
+        if phase == "distance":
+            token.cancel()
+        return original_distance(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_curve_metrics", metrics)
+    monkeypatch.setattr(verifier, "_distance_bound", distance)
+    if phase == "entry":
+        token.cancel()
+    try:
+        with cancellation_scope(token), pytest.raises(PreviewCancelled):
+            verify_fair_ring(source, candidate, tolerance_mm=.05)
+    finally:
+        token.close()
+    assert calls == {
+        "entry": {"metrics": 0, "distance": 0},
+        "source_metrics": {"metrics": 1, "distance": 0},
+        "distance": {"metrics": 2, "distance": 1},
+    }[phase]
+
+
+def test_cancel_inside_flatten_stops_before_next_subdivision(monkeypatch):
+    from app.workers import cutline_fair_verify as verifier
+    from app.workers.cutline_preview_cancel import (
+        PreviewCancellation, PreviewCancelled, cancellation_scope,
+    )
+
+    token = PreviewCancellation()
+    original_split = verifier.split_cubic
+    splits = []
+
+    def split(*args, **kwargs):
+        splits.append(True)
+        token.cancel()
+        return original_split(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "split_cubic", split)
+    try:
+        with cancellation_scope(token), pytest.raises(PreviewCancelled):
+            verifier._flatten_ring(_circle(3.), .00001, math.inf)
+    finally:
+        token.close()
+    assert len(splits) == 1

@@ -340,10 +340,23 @@ def test_page12_flower_improves_beyond_pairwise_on_actual_pdf():
     # Chọn bằng diện tích, không hardcode thứ tự ring của extractor.
     source = max(paths, key=lambda path: Polygon([s.p0 for s in path]).area)
     groups = [{"exterior": [(s.p0, s.p1, s.p2, s.p3) for s in source], "interiors": []}]
+    saved = deepcopy(groups)
+    protected = set()
+    for previous, following in zip(source, source[1:] + source[:1]):
+        incoming = np.asarray(previous.p3) - previous.p2
+        outgoing = np.asarray(following.p1) - following.p0
+        turn = math.degrees(math.atan2(abs(incoming[0]*outgoing[1] - incoming[1]*outgoing[0]),
+                                      float(incoming @ outgoing)))
+        if turn >= 45.:
+            protected.add(following.p0)
     _old, old_stats = _simplify_cubic_path_groups_impl(groups, tolerance_mm=0.05, global_refit=False)
     result, stats = simplify_cubic_path_groups(groups, tolerance_mm=0.05)
     assert stats["changed"] and stats["after_segments"] < old_stats["after_segments"]
-    assert stats["after_segments"] <= 46
+    # Audit 24/09: baseline trước sửa đã là48 vì nguồn PDF hiện khác bộ55
+    # cubic lịch sử. So trên cùng nguồn với pairwise ở trên; không thay46
+    # bằng một con số mới và vẫn giữ band/góc/chuyển động như hợp đồng thật.
+    assert groups == saved
+    assert protected.issubset({curve[0] for curve in result[0]["exterior"]})
     assert stats["maximum_error_bound_mm"] <= 0.05
     assert _dense_distance(_sample(groups[0]["exterior"]), _sample(result[0]["exterior"])) < 0.05
     before, after = _metrics(groups[0]["exterior"], UNITS), _metrics(result[0]["exterior"], UNITS)

@@ -1,0 +1,8 @@
+{
+  "source_sha256": "4c2a730ba4f0857847b46faf2e798f78c001f1615a8cd946686bcc53aa508c10",
+  "same_digest": true,
+  "content_hash_calls": 3,
+  "caught_exceptions": [],
+  "stat_cache_enabled": false,
+  "source_guard": "Every external call reads content; one digest reused for key and identity inside worker (test covered)"
+}

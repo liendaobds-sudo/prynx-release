@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useContext } from 'react';
 import { useWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
+import { useTextMarkupStore } from '../../stores/useTextMarkupStore';
 import { matchesShortcut } from '../../lib/keyboardShortcuts';
 import { toast } from '../../components/ui/Toast'; // UIUX (audit 2026-07-27 §C-07)
 import i18n from '../../i18n'; // UIUX (audit 2026-07-27 §C-07)
@@ -558,9 +559,25 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 }
                 if (e.key.toLowerCase() === 'z') {
                     e.preventDefault();
-                    if (e.shiftKey) redo(); else undo();
+                    if (e.shiftKey) {
+                        if (useTextMarkupStore.getState().canRedo()) {
+                            useTextMarkupStore.getState().redo();
+                            return;
+                        }
+                        redo();
+                    } else {
+                        if (useTextMarkupStore.getState().canUndo()) {
+                            useTextMarkupStore.getState().undo();
+                            return;
+                        }
+                        undo();
+                    }
                 } else if (e.key.toLowerCase() === 'y') {
                     e.preventDefault();
+                    if (useTextMarkupStore.getState().canRedo()) {
+                        useTextMarkupStore.getState().redo();
+                        return;
+                    }
                     redo();
                 }
 
@@ -600,6 +617,13 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 // → trước đây bấm D lần 2 (tắt DIM) lại mở popup xóa trang.
                 if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
                 if (isObjectEditMode || isVdpMode) return;
+                // Nếu đang có text markup (highlight/ghi chú) được chọn: xóa markup trước
+                const selectedMarkupId = useTextMarkupStore.getState().selectedMarkupId;
+                if (selectedMarkupId) {
+                    e.preventDefault();
+                    useTextMarkupStore.getState().deleteMarkup(selectedMarkupId);
+                    return;
+                }
                 // Xóa khi có trang đang chọn trong thumbnail. Không phụ thuộc focus
                 // (trước đây yêu cầu focus nằm trong sidebar nên Delete hay bị chặn
                 // im lặng khi con trỏ ở vùng trang chính). Tab nền đã bị guard ở trên.

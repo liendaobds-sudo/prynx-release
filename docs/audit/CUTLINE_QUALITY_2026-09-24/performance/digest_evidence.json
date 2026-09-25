@@ -1,0 +1,32 @@
+{
+  "scope": "Gọi helper thật, không HTTP/Tauri; timer có trace instrumentation, không dùng làm benchmark speedup",
+  "source": "D:\\pdfcompare\\test\\Binder2.pdf",
+  "source_bytes": 759172,
+  "source_sha256": "4c2a730ba4f0857847b46faf2e798f78c001f1615a8cd946686bcc53aa508c10",
+  "returned_same_digest": true,
+  "os_imported_in_module": false,
+  "file_digest_calls_for_three_identical_requests": 3,
+  "cache_entries_after": 0,
+  "caught_exceptions": [
+    {
+      "line": 367,
+      "type": "NameError",
+      "message": "name 'os' is not defined"
+    },
+    {
+      "line": 367,
+      "type": "NameError",
+      "message": "name 'os' is not defined"
+    },
+    {
+      "line": 367,
+      "type": "NameError",
+      "message": "name 'os' is not defined"
+    }
+  ],
+  "elapsed_ms_with_trace": [
+    0.7341000018641353,
+    0.506900018081069,
+    0.4677999531850219
+  ]
+}

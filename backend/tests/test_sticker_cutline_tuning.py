@@ -49,6 +49,38 @@ def _wavy_polygon() -> Polygon:
     ])
 
 
+@pytest.mark.parametrize("lobes,radius,amplitude,max_nodes", [(12, 20, 5, 104), (3, 8, 1, 16)])
+def test_live_fit_chon_duong_lien_tuc_do_cong_trong_cung_ngan_sach(
+    lobes, radius, amplitude, max_nodes,
+) -> None:
+    """CUT24.04: G1 đến trước không được che C2 ít node, vẫn bám quỹ đạo."""
+    angles = np.linspace(0, 2 * math.pi, 400, endpoint=False)
+    radii = radius + amplitude * np.cos(lobes * angles)
+    reference = Polygon(np.column_stack((
+        radii * np.cos(angles), radii * np.sin(angles),
+    )) * _PT_PER_MM)
+    result = sticker_engine_module._fit_alpha_live_tuned_paths(
+        reference, reference, total_offset_pts=0, mm_to_pts=_PT_PER_MM,
+        source_pixel_mm=25.4 / 300, cutline_smoothness=50,
+        cutline_fidelity=50, curve_tension=0,
+    )
+    assert result is not None
+    geometry, paths, budget = result
+    assert budget == pytest.approx(0.29718)
+    assert geometry.is_valid and len(geometry.interiors) == 0
+    assert reference.boundary.hausdorff_distance(geometry.boundary) / _PT_PER_MM <= budget
+    assert sum(map(len, paths)) <= max_nodes
+    for path in paths:
+        metric = analyze_machine_path(
+            cubic_segments_from_tuples(path), mm_to_units=_PT_PER_MM,
+            smooth_join_threshold_degrees=1.0, short_segment_threshold_mm=0.25,
+        )
+        assert metric.disconnected_join_count == 0
+        assert metric.discontinuous_join_count == 0
+        assert metric.short_segment_count == 0
+        assert metric.maximum_curvature_jump_per_mm < 1e-6
+
+
 def _sharp_mask(kind: str, *, dpi: float = 300.0) -> np.ndarray:
     """Hai biên có góc thật từng làm fallback sinh đoạn dao cực ngắn."""
     scale = dpi / 25.4

@@ -1,0 +1,126 @@
+{
+  "executable_sha256": "ff8a97bcb773dfbc8e94bdf371f1cd087d16812491f25989bf2f5ca22f5a822d",
+  "executable_size": 29158400,
+  "fixture_sha256": "0cc8d2b1e8675ba4c675b65cd02f1000a205571a9d932ad7c65e906e08af7f2d",
+  "renders": [
+    {
+      "kind": "page",
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-2",
+        "owner_id": "audit:native-render",
+        "generation": 1,
+        "status": "ready",
+        "bitmap_width": 400,
+        "bitmap_height": 200,
+        "pipeline_identity": "pdfium-display-png-v1",
+        "cache_tier": "none",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 0,
+          "encode_ms": 0,
+          "cache_ms": 0,
+          "total_ms": 81
+        },
+        "soundness": "display-preview",
+        "unsupported_reason": null,
+        "fallback_font_sha256": null,
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "magic": "PXRG",
+      "bytes": 320016,
+      "shape": [
+        200,
+        400,
+        4
+      ],
+      "view_only_red_rgba": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "print_only_green_rgba": [
+        0,
+        255,
+        0,
+        255
+      ],
+      "screen_annotation_blue_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "kind": "clip",
+      "header": {
+        "message": "render",
+        "request_id": "zoom-runway-3",
+        "owner_id": "audit:native-render",
+        "generation": 1,
+        "status": "ready",
+        "bitmap_width": 400,
+        "bitmap_height": 200,
+        "pipeline_identity": "pdfium-display-png-v1",
+        "cache_tier": "none",
+        "timing": {
+          "queue_ms": 0,
+          "wait_ms": 0,
+          "render_ms": 0,
+          "encode_ms": 0,
+          "cache_ms": 0,
+          "total_ms": 0
+        },
+        "soundness": "display-preview",
+        "unsupported_reason": null,
+        "fallback_font_sha256": null,
+        "substituted_fonts": [],
+        "geometry_approximated": false,
+        "error": null
+      },
+      "magic": "PXRG",
+      "bytes": 320016,
+      "shape": [
+        200,
+        400,
+        4
+      ],
+      "view_only_red_rgba": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "print_only_green_rgba": [
+        0,
+        255,
+        0,
+        255
+      ],
+      "screen_annotation_blue_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    }
+  ],
+  "hello": {
+    "message": "hello",
+    "ok": true,
+    "request_id": "zoom-runway-1",
+    "nonce": "render-audit",
+    "worker_pid": 28732,
+    "protocol_version": 4,
+    "app_version": "2.0.4",
+    "tile_cache_version": "v9_opaque_white_lcd_sharp_png",
+    "pipeline_identity": "pdfium-display-png-v1",
+    "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+    "error": null
+  }
+}

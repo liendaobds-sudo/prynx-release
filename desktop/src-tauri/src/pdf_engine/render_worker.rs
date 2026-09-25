@@ -747,6 +747,8 @@ pub struct RenderRequest {
     pub color: RenderColor,
     pub pipeline_identity: String,
     pub soundness: RenderSoundness,
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1123,6 +1125,11 @@ fn validate_render_request(request: &RenderRequest) -> Result<String, String> {
 }
 
 fn png_dimensions(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
+    if bytes.len() >= 16 && &bytes[0..4] == b"PXRG" {
+        let width = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+        let height = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
+        return (Some(width), Some(height));
+    }
     if bytes.len() >= 24
         && bytes[0..8] == [137, 80, 78, 71, 13, 10, 26, 10]
         && &bytes[12..16] == b"IHDR"
@@ -1855,7 +1862,8 @@ fn render_response(
         ),
         RenderRaster::Dpi { .. } => unreachable!("PPE DPI đã tách ở nhánh accurate"),
     };
-    let render_result = crate::render_tile_png_with_timing(
+    let raw_pxrg = request.format.as_deref() == Some("pxrg");
+    let render_result = crate::render_tile_with_options(
         &path,
         request.page,
         zoom,
@@ -1864,6 +1872,8 @@ fn render_response(
         clip.and_then(|value| value.1),
         clip.and_then(|value| value.2),
         clip.and_then(|value| value.3),
+        false,
+        raw_pxrg,
     );
     match render_result {
         Ok((bytes, breakdown)) => {
@@ -3109,13 +3119,25 @@ fn cancel_active_render_request(request_id: &str) -> bool {
             request_id,
             lease.child_pid
         );
+        let _ = lease
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .kill();
+        true
+    } else {
+        // PERF (audit 2026-09-24): PDFium display worker hoàn thành render tile cực nhanh (~1-3ms)
+        // và lưu DocHandle + cache PageLRU trong worker process. Tuyệt đối KHÔNG kill worker tiến
+        // trình khi hủy tile (zoom chuột / pan liên tục)! Kill worker làm vỡ pipe (gây lỗi 28 byte),
+        // xóa sạch cache trang đã giải nén, và buộc CreateProcess tốn 30-50ms sinh worker mới.
+        // Tại đây chỉ cần ghi nhận discard in-flight; worker sau khi render xong sẽ gửi frame
+        // và ResponseRouter / PendingClientResponse sẽ tự drop mà không gây giật lag.
+        crate::perf_log(&format!(
+            "RENDER_WORKER_CANCEL mode=discard_in_flight pid={} request_id={}",
+            lease.child_pid, request_id
+        ));
+        true
     }
-    let _ = lease
-        .child
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .kill();
-    true
 }
 
 pub fn cancel_render_request(request_id: &str) -> bool {
@@ -3811,6 +3833,7 @@ fn render_display_with_policy_inner(
     clip_h: Option<i32>,
     context: Option<&ViewerRenderContext>,
     reserved_pending: Option<&PendingWorkerLease>,
+    raw_pxrg: bool,
 ) -> Result<WorkerAttempt<WorkerRenderOutput>, String> {
     if render_worker_mode() == RenderWorkerMode::Off {
         return Ok(WorkerAttempt::Disabled);
@@ -3876,6 +3899,7 @@ fn render_display_with_policy_inner(
         },
         pipeline_identity,
         soundness: RenderSoundness::DisplayPreview,
+        format: if raw_pxrg { Some("pxrg".to_string()) } else { None },
     };
     let owned_pending = if reserved_pending.is_none() {
         Some(PendingWorkerLease::register(&request_id)?)
@@ -3944,7 +3968,25 @@ pub fn render_display_with_policy(
     context: Option<&ViewerRenderContext>,
 ) -> Result<WorkerAttempt<WorkerRenderOutput>, String> {
     render_display_with_policy_inner(
-        file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, context, None,
+        file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, context, None, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_display_with_policy_raw_pxrg(
+    file_path: &str,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+    context: Option<&ViewerRenderContext>,
+    raw_pxrg: bool,
+) -> Result<WorkerAttempt<WorkerRenderOutput>, String> {
+    render_display_with_policy_inner(
+        file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, context, None, raw_pxrg,
     )
 }
 
@@ -3960,6 +4002,7 @@ pub(crate) fn render_display_with_reserved_policy(
     clip_h: Option<i32>,
     context: Option<&ViewerRenderContext>,
     pending: &PendingWorkerLease,
+    raw_pxrg: bool,
 ) -> Result<WorkerAttempt<WorkerRenderOutput>, String> {
     render_display_with_policy_inner(
         file_path,
@@ -3972,6 +4015,7 @@ pub(crate) fn render_display_with_reserved_policy(
         clip_h,
         context,
         Some(pending),
+        raw_pxrg,
     )
 }
 
@@ -4053,6 +4097,7 @@ fn render_accurate_with_policy_inner(
         },
         pipeline_identity,
         soundness: RenderSoundness::ColorVerified,
+        format: None,
     };
     let owned_pending = if reserved_pending.is_none() {
         Some(PendingWorkerLease::register(&request_id)?)
@@ -5128,6 +5173,37 @@ mod tests {
         assert!(lease.is_cancelled());
         drop(lease);
         assert!(!cancel_render_request(&request_id));
+    }
+
+    #[test]
+    fn cancel_command_khong_chan_caller_khi_registry_dang_ban() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let request_id = format!("cancel-command-{}", std::process::id());
+        let lease = PendingWorkerLease::register(&request_id).unwrap();
+        let other_id = format!("cancel-command-other-{}", std::process::id());
+        let other = PendingWorkerLease::register(&other_id).unwrap();
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let lock_thread = std::thread::spawn(move || {
+            let _guard = active_render_requests().lock().unwrap();
+            held_tx.send(()).unwrap();
+            // Timeout chỉ cứu test đỏ khỏi deadlock; không dùng làm chuẩn tốc độ.
+            release_rx.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        held_rx.recv().unwrap();
+        let mut command = Box::pin(crate::cancel_pdf_render(request_id.clone()));
+        let mut context = Context::from_waker(Waker::noop());
+        let first_poll = command.as_mut().poll(&mut context);
+        let _ = release_tx.send(());
+        let released_by_caller = lock_thread.join().unwrap();
+        assert!(matches!(first_poll, Poll::Pending), "Lệnh hủy không được chờ khóa trong poll của caller");
+        assert!(released_by_caller, "Caller phải chạy tiếp được để nhả khóa");
+        assert!(tauri::async_runtime::block_on(command));
+        assert!(lease.is_cancelled());
+        assert!(!other.is_cancelled());
+        drop(lease);
+        assert!(!tauri::async_runtime::block_on(crate::cancel_pdf_render(request_id)));
     }
 
     #[test]
@@ -6246,6 +6322,7 @@ mod tests {
             },
             pipeline_identity: RENDER_WORKER_DISPLAY_PIPELINE_ID.to_string(),
             soundness: RenderSoundness::DisplayPreview,
+            format: None,
         }
     }
 

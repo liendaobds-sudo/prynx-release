@@ -1,0 +1,580 @@
+{
+  "schema_version": 1,
+  "captured_utc": "2026-09-24T15:03:32.613719+00:00",
+  "scope": "existing-user-runtime-log-join-no-ui-control",
+  "provenance": {
+    "executable_relative_path": "desktop/src-tauri/target/debug/pdf-inspector.exe",
+    "executable_sha256": "85b3526d9263c188b931aac130dcc4a158bfa2ca49567475ba3f658761d72f1b",
+    "executable_size_bytes": 29157888,
+    "executable_modified_utc": "2026-09-24T14:57:11.917770+00:00",
+    "running_pdf_inspector_processes": null,
+    "source_sha256_at_capture": {
+      "desktop/src-tauri/src/lib.rs": "6290d054d3c3427c465d2f1d03d96db320bdfbc4d7b044d5b99b576b5cdb2707",
+      "desktop/src/components/workspace/LivePageFrame.tsx": "e34a7e495cb3d19e5cdf84a1e2d10f377e9d93fa09bd92f23c8e0ce45fb79eb4",
+      "desktop/src/hooks/viewer/useTileRenderer.ts": "dcbf100495653d5ea79f929de5d1bf82e986163dcbd61f5aed3f50206b9bc82b",
+      "desktop/src/lib/viewerFirstFrame.ts": "6421b714c4ce5e07d2b5a319ab146c2309c5c7c8c2323ab3fd2a7f04b5dfd98a"
+    },
+    "dev_server_observed": {
+      "address": "http://localhost:5173",
+      "listening_pid": 28624,
+      "transport": "IPv6 ::1",
+      "served_source_maps_matched_disk": [
+        "desktop/src/components/workspace/LivePageFrame.tsx",
+        "desktop/src/hooks/viewer/useTileRenderer.ts",
+        "desktop/src/lib/viewerFirstFrame.ts"
+      ],
+      "method": "HTTP GET transformed module and compare inline source-map sourcesContent byte-for-byte; no browser/app state mutation"
+    },
+    "log": {
+      "relative_source": "Desktop/PrynX_RenderPerf.log",
+      "size_bytes_at_read": 190645498,
+      "tail_line_count": 30000,
+      "tail_first_absolute_line": 514446,
+      "tail_last_absolute_line": 544445,
+      "tail_sha256": "8bb6f271fd74858005e26c1262076f5cf28894c21573fe1b85d24ed6f1095c22",
+      "trace_id": "Vmufnodgm-dg2qwj",
+      "trace_seq_min": 1,
+      "trace_seq_max": 21553,
+      "trace_start_log_unix_ms": 1790261846399,
+      "trace_end_log_unix_ms": 1790261955439
+    },
+    "process_inventory_at_capture": {
+      "status": "unavailable",
+      "method": "Python psutil process_iter",
+      "reason": "ModuleNotFoundError: psutil is not installed in backend/venv; original parser swallowed this import failure.",
+      "interpretation": "The original empty list did not mean the app was closed or that no pdf-inspector process existed."
+    },
+    "process_inventory_recheck": {
+      "status": "observed",
+      "checked_utc": "2026-09-24T15:05:32.168347+00:00",
+      "method": "PowerShell Get-Process -Name pdf-inspector",
+      "processes": [
+        {
+          "pid": 3008,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0208611Z"
+        },
+        {
+          "pid": 8384,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0155759Z"
+        },
+        {
+          "pid": 9108,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0276831Z"
+        },
+        {
+          "pid": 11028,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:26.3956813Z"
+        },
+        {
+          "pid": 12196,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0178421Z"
+        },
+        {
+          "pid": 15972,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0248083Z"
+        },
+        {
+          "pid": 19000,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0303495Z"
+        },
+        {
+          "pid": 19276,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:18.6240662Z"
+        },
+        {
+          "pid": 27088,
+          "process_name": "pdf-inspector",
+          "started_utc": "2026-09-24T14:57:25.0330910Z"
+        }
+      ],
+      "notes": [
+        "This is a later process observation, not a replacement timestamp for the original log snapshot.",
+        "PID 19276 was also observed before artifact creation with local start time 2026-09-24T21:57:18.6240662+07:00.",
+        "Command-line/parent-role inspection through Win32_Process returned Access denied; roles of these processes are not independently classified."
+      ]
+    }
+  },
+  "join_contract": {
+    "native_to_coordinator": "exact request_id; coordinator status ready; actual engine from native emitter, not requested color_stage",
+    "coordinator_to_fe": "instance-specific group key -> FNV-1a hash; same page, scale, payload bytes; each selected scale has exactly one matching commit per engine",
+    "limits": "FE tile-commit lacks request_id. Correlation does not prove compositor presented or image identity pixel-for-pixel."
+  },
+  "pairs": [
+    {
+      "scale": 15.958,
+      "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+      "display": {
+        "scale": 15.958,
+        "engine_actual": "PDFium",
+        "native": {
+          "event": "RENDER_WORKER_RESULT",
+          "request_id": "5a177cd1-2158-4fd5-b2cc-2fb06e5796f3",
+          "log_line": 523434,
+          "log_timestamp_unix_ms": 1790261871552,
+          "total_ms": 188,
+          "bytes": 4472848,
+          "page": 1,
+          "zoom": 15.958,
+          "dpi": null,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4607
+        },
+        "coordinator": {
+          "log_line": 523437,
+          "request_id": "5a177cd1-2158-4fd5-b2cc-2fb06e5796f3",
+          "generation": 20,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-display:viewport",
+          "group_hash": "d48e9c3e",
+          "purpose": "interactive",
+          "color_pipeline_requested": "display",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "status": "ready",
+          "total_ms": 681
+        },
+        "fe_commit": {
+          "seq": 8084,
+          "elapsed_ms": 43043,
+          "page": 1,
+          "group": "d48e9c3e",
+          "color_stage": "display",
+          "scale": 15.958,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 4472848,
+          "attempt": 1,
+          "log_line": 528372,
+          "log_timestamp_unix_ms": 1790261884234
+        }
+      },
+      "accurate": {
+        "scale": 15.958,
+        "engine_actual": "PPE",
+        "native": {
+          "event": "PPE_NATIVE_RESULT",
+          "request_id": "df673bd6-5ab8-40b5-ba65-7c73e776c002",
+          "log_line": 523476,
+          "log_timestamp_unix_ms": 1790261871694,
+          "total_ms": 708,
+          "bytes": 93721,
+          "page": 1,
+          "zoom": null,
+          "dpi": 1532.0,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4731
+        },
+        "coordinator": {
+          "log_line": 523484,
+          "request_id": "df673bd6-5ab8-40b5-ba65-7c73e776c002",
+          "generation": 20,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-accurate:viewport",
+          "group_hash": "56163ad6",
+          "purpose": "accurate",
+          "color_pipeline_requested": "accurate",
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "status": "ready",
+          "total_ms": 783
+        },
+        "fe_commit": {
+          "seq": 8093,
+          "elapsed_ms": 43061,
+          "page": 1,
+          "group": "56163ad6",
+          "color_stage": "accurate",
+          "scale": 15.958,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 93721,
+          "attempt": 1,
+          "log_line": 528381,
+          "log_timestamp_unix_ms": 1790261884252
+        }
+      }
+    },
+    {
+      "scale": 21.583,
+      "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+      "display": {
+        "scale": 21.583,
+        "engine_actual": "PDFium",
+        "native": {
+          "event": "RENDER_WORKER_RESULT",
+          "request_id": "01c16869-fd15-46b0-928f-32563c032ac6",
+          "log_line": 524666,
+          "log_timestamp_unix_ms": 1790261874682,
+          "total_ms": 175,
+          "bytes": 4325392,
+          "page": 1,
+          "zoom": 21.583,
+          "dpi": null,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4607
+        },
+        "coordinator": {
+          "log_line": 524679,
+          "request_id": "01c16869-fd15-46b0-928f-32563c032ac6",
+          "generation": 30,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-display:viewport",
+          "group_hash": "d48e9c3e",
+          "purpose": "interactive",
+          "color_pipeline_requested": "display",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "status": "ready",
+          "total_ms": 452
+        },
+        "fe_commit": {
+          "seq": 9760,
+          "elapsed_ms": 47242,
+          "page": 1,
+          "group": "d48e9c3e",
+          "color_stage": "display",
+          "scale": 21.583,
+          "natural_w": 1408,
+          "natural_h": 768,
+          "bytes": 4325392,
+          "attempt": 1,
+          "log_line": 530048,
+          "log_timestamp_unix_ms": 1790261888433
+        }
+      },
+      "accurate": {
+        "scale": 21.583,
+        "engine_actual": "PPE",
+        "native": {
+          "event": "PPE_NATIVE_RESULT",
+          "request_id": "b5b18e26-ac62-45f3-9e3f-e2ccfcca4e5f",
+          "log_line": 524755,
+          "log_timestamp_unix_ms": 1790261874896,
+          "total_ms": 560,
+          "bytes": 90397,
+          "page": 1,
+          "zoom": null,
+          "dpi": 2072.0,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4731
+        },
+        "coordinator": {
+          "log_line": 524761,
+          "request_id": "b5b18e26-ac62-45f3-9e3f-e2ccfcca4e5f",
+          "generation": 31,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-accurate:viewport",
+          "group_hash": "56163ad6",
+          "purpose": "accurate",
+          "color_pipeline_requested": "accurate",
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "status": "ready",
+          "total_ms": 624
+        },
+        "fe_commit": {
+          "seq": 9777,
+          "elapsed_ms": 47282,
+          "page": 1,
+          "group": "56163ad6",
+          "color_stage": "accurate",
+          "scale": 21.583,
+          "natural_w": 1408,
+          "natural_h": 768,
+          "bytes": 90397,
+          "attempt": 1,
+          "log_line": 530065,
+          "log_timestamp_unix_ms": 1790261888474
+        }
+      }
+    },
+    {
+      "scale": 6.583,
+      "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+      "display": {
+        "scale": 6.583,
+        "engine_actual": "PDFium",
+        "native": {
+          "event": "RENDER_WORKER_RESULT",
+          "request_id": "5351db54-2b58-4ec3-98da-c335b455fb50",
+          "log_line": 525679,
+          "log_timestamp_unix_ms": 1790261877001,
+          "total_ms": 217,
+          "bytes": 4685840,
+          "page": 1,
+          "zoom": 6.583,
+          "dpi": null,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4607
+        },
+        "coordinator": {
+          "log_line": 525685,
+          "request_id": "5351db54-2b58-4ec3-98da-c335b455fb50",
+          "generation": 38,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-display:viewport",
+          "group_hash": "d48e9c3e",
+          "purpose": "interactive",
+          "color_pipeline_requested": "display",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "status": "ready",
+          "total_ms": 712
+        },
+        "fe_commit": {
+          "seq": 11135,
+          "elapsed_ms": 50496,
+          "page": 1,
+          "group": "d48e9c3e",
+          "color_stage": "display",
+          "scale": 6.583,
+          "natural_w": 1408,
+          "natural_h": 832,
+          "bytes": 4685840,
+          "attempt": 1,
+          "log_line": 531423,
+          "log_timestamp_unix_ms": 1790261891688
+        }
+      },
+      "accurate": {
+        "scale": 6.583,
+        "engine_actual": "PPE",
+        "native": {
+          "event": "PPE_NATIVE_RESULT",
+          "request_id": "0408e603-8311-455b-b87f-65c987fd9ec5",
+          "log_line": 525743,
+          "log_timestamp_unix_ms": 1790261877213,
+          "total_ms": 776,
+          "bytes": 166491,
+          "page": 1,
+          "zoom": null,
+          "dpi": 632.0,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4731
+        },
+        "coordinator": {
+          "log_line": 525750,
+          "request_id": "0408e603-8311-455b-b87f-65c987fd9ec5",
+          "generation": 39,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-accurate:viewport",
+          "group_hash": "56163ad6",
+          "purpose": "accurate",
+          "color_pipeline_requested": "accurate",
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "status": "ready",
+          "total_ms": 876
+        },
+        "fe_commit": {
+          "seq": 11160,
+          "elapsed_ms": 50558,
+          "page": 1,
+          "group": "56163ad6",
+          "color_stage": "accurate",
+          "scale": 6.583,
+          "natural_w": 1408,
+          "natural_h": 832,
+          "bytes": 166491,
+          "attempt": 1,
+          "log_line": 531448,
+          "log_timestamp_unix_ms": 1790261891750
+        }
+      }
+    },
+    {
+      "scale": 3.958,
+      "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+      "display": {
+        "scale": 3.958,
+        "engine_actual": "PDFium",
+        "native": {
+          "event": "RENDER_WORKER_RESULT",
+          "request_id": "b396f5cc-256b-45ed-a627-866ccb2bbd1a",
+          "log_line": 526180,
+          "log_timestamp_unix_ms": 1790261878628,
+          "total_ms": 208,
+          "bytes": 4472848,
+          "page": 1,
+          "zoom": 3.958,
+          "dpi": null,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4607
+        },
+        "coordinator": {
+          "log_line": 526183,
+          "request_id": "b396f5cc-256b-45ed-a627-866ccb2bbd1a",
+          "generation": 42,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-display:viewport",
+          "group_hash": "d48e9c3e",
+          "purpose": "interactive",
+          "color_pipeline_requested": "display",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "status": "ready",
+          "total_ms": 705
+        },
+        "fe_commit": {
+          "seq": 11751,
+          "elapsed_ms": 52310,
+          "page": 1,
+          "group": "d48e9c3e",
+          "color_stage": "display",
+          "scale": 3.958,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 4472848,
+          "attempt": 1,
+          "log_line": 532039,
+          "log_timestamp_unix_ms": 1790261893501
+        }
+      },
+      "accurate": {
+        "scale": 3.958,
+        "engine_actual": "PPE",
+        "native": {
+          "event": "PPE_NATIVE_RESULT",
+          "request_id": "3e88b457-b1b8-4db0-8d34-9c1cbb130037",
+          "log_line": 526212,
+          "log_timestamp_unix_ms": 1790261878766,
+          "total_ms": 719,
+          "bytes": 253924,
+          "page": 1,
+          "zoom": null,
+          "dpi": 380.0,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4731
+        },
+        "coordinator": {
+          "log_line": 526227,
+          "request_id": "3e88b457-b1b8-4db0-8d34-9c1cbb130037",
+          "generation": 43,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-accurate:viewport",
+          "group_hash": "56163ad6",
+          "purpose": "accurate",
+          "color_pipeline_requested": "accurate",
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "status": "ready",
+          "total_ms": 800
+        },
+        "fe_commit": {
+          "seq": 11759,
+          "elapsed_ms": 52330,
+          "page": 1,
+          "group": "56163ad6",
+          "color_stage": "accurate",
+          "scale": 3.958,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 253924,
+          "attempt": 1,
+          "log_line": 532047,
+          "log_timestamp_unix_ms": 1790261893521
+        }
+      }
+    },
+    {
+      "scale": 17.708,
+      "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+      "display": {
+        "scale": 17.708,
+        "engine_actual": "PDFium",
+        "native": {
+          "event": "RENDER_WORKER_RESULT",
+          "request_id": "6c0a50dd-d0fe-4d18-9d3d-ab0a6fef343d",
+          "log_line": 542851,
+          "log_timestamp_unix_ms": 1790261951179,
+          "total_ms": 167,
+          "bytes": 4472848,
+          "page": 1,
+          "zoom": 17.708,
+          "dpi": null,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4607
+        },
+        "coordinator": {
+          "log_line": 542868,
+          "request_id": "6c0a50dd-d0fe-4d18-9d3d-ab0a6fef343d",
+          "generation": 120,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-display:viewport",
+          "group_hash": "d48e9c3e",
+          "purpose": "interactive",
+          "color_pipeline_requested": "display",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "status": "ready",
+          "total_ms": 446
+        },
+        "fe_commit": {
+          "seq": 21139,
+          "elapsed_ms": 113426,
+          "page": 1,
+          "group": "d48e9c3e",
+          "color_stage": "display",
+          "scale": 17.708,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 4472848,
+          "attempt": 1,
+          "log_line": 544031,
+          "log_timestamp_unix_ms": 1790261954617
+        }
+      },
+      "accurate": {
+        "scale": 17.708,
+        "engine_actual": "PPE",
+        "native": {
+          "event": "PPE_NATIVE_RESULT",
+          "request_id": "8915178a-aaa6-4ac2-94b1-f43a346a0511",
+          "log_line": 542964,
+          "log_timestamp_unix_ms": 1790261951468,
+          "total_ms": 640,
+          "bytes": 97610,
+          "page": 1,
+          "zoom": null,
+          "dpi": 1700.0,
+          "emitter_source": "desktop/src-tauri/src/lib.rs",
+          "emitter_source_line": 4731
+        },
+        "coordinator": {
+          "log_line": 542971,
+          "request_id": "8915178a-aaa6-4ac2-94b1-f43a346a0511",
+          "generation": 136,
+          "page": 1,
+          "group_key": "page:1:instance:p3:viewport-accurate:viewport",
+          "group_hash": "56163ad6",
+          "purpose": "accurate",
+          "color_pipeline_requested": "accurate",
+          "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+          "status": "ready",
+          "total_ms": 688
+        },
+        "fe_commit": {
+          "seq": 21164,
+          "elapsed_ms": 113480,
+          "page": 1,
+          "group": "56163ad6",
+          "color_stage": "accurate",
+          "scale": 17.708,
+          "natural_w": 1344,
+          "natural_h": 832,
+          "bytes": 97610,
+          "attempt": 1,
+          "log_line": 544056,
+          "log_timestamp_unix_ms": 1790261954672
+        }
+      }
+    }
+  ],
+  "caveats": [
+    "This records native completion and FE commit order, not screenshots or compositor present. It corroborates dual-engine handoff but does not independently measure visible flicker or colour difference.",
+    "FE viewer traces are queued for log writing; elapsed_ms/log wall timestamps are not used to compute dwell time between display and accurate. Native/FE clock domains are not directly subtracted.",
+    "The on-disk running executable hash differs from the G1 probe executable de04cafeb8c2bb66c5ce52a1b58619a78f336c379b402224ba61852ca8e7679c. Hash/mtime do not prove all current source was compiled into the running executable.",
+    "Served source maps prove what Vite currently serves; without app evaluation they do not by themselves prove which module revision is resident in every WebView.",
+    "No customer document paths, document content, or raw command lines are retained. Document identity is SHA-256 only.",
+    "Absolute log line numbers refer to the captured file prefix; verify file has not been truncated or rotated before using them."
+  ]
+}

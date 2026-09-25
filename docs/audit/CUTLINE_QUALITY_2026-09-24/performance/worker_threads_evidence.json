@@ -1,0 +1,27 @@
+{
+  "scope": "Gọi worker thật với StickerEngine giả, không render PDF và không phải benchmark đa process",
+  "logical_cpu_count": 16,
+  "requested_threads_per_worker": 1,
+  "before_worker": {
+    "openblas_env": null,
+    "numpy_openblas": [
+      {
+        "dll": "libopenblas64__v0.3.23-293-gc2f4bdbb-gcc_10_3_0-2bde3a66a51006b2b53eb373ff767a3f.dll",
+        "symbol": "openblas_get_num_threads64_",
+        "num_threads": 16
+      }
+    ],
+    "opencv_threads": 16
+  },
+  "inside_engine_after_worker_env_setup": {
+    "openblas_env": "1",
+    "numpy_openblas": [
+      {
+        "dll": "libopenblas64__v0.3.23-293-gc2f4bdbb-gcc_10_3_0-2bde3a66a51006b2b53eb373ff767a3f.dll",
+        "symbol": "openblas_get_num_threads64_",
+        "num_threads": 16
+      }
+    ],
+    "opencv_threads": 1
+  }
+}

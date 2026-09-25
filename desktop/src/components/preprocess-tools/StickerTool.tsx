@@ -1401,6 +1401,22 @@ export default function StickerTool({
                 trong preview/xuất, không chiếm thêm một control trong Nâng cao. */}
             {productType === 'sticker' && cutMode !== 'none' && (
                 <>
+                {/* QUALITY (audit 2026-09-24): số đo thuộc đúng lượt preview,
+                    không dùng số của frame cũ khi đang đổi thông số. */}
+                {cutlineSimplifyMm > 0 && (
+                    <div data-testid="sticker-cutline-quality" role="status"
+                        className="text-xs text-slate-600 dark:text-zinc-400 py-2">
+                        {simplifyPreviewPending
+                            ? t('preprocess.sticker:simplify_pending')
+                            : cutlinePreview.preview?.quality?.simplification
+                                ? t('preprocess.sticker:simplify_stats', {
+                                    before: cutlinePreview.preview.quality.simplification.before_segments,
+                                    after: cutlinePreview.preview.quality.simplification.after_segments,
+                                    error: (Math.ceil(cutlinePreview.preview.quality.simplification.maximum_error_bound_mm * 1000) / 1000).toFixed(3),
+                                })
+                                : t('preprocess.sticker:simplify_unavailable')}
+                    </div>
+                )}
                 <ToolCollapsibleSection
                     title={t('preprocess.sticker:cutline_tuning_title')}
                     storageKey="sticker_tinh_chinh"

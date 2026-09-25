@@ -1,0 +1,202 @@
+{
+  "flower12": {
+    "input": {
+      "lobes": 12,
+      "base_radius_mm": 20,
+      "amplitude_mm": 5,
+      "points": 400
+    },
+    "current": {
+      "budget_mm": 0.29718000000000006,
+      "measured_hausdorff_mm": 0.15242285619118484,
+      "quality": {
+        "machine_safe": true,
+        "segment_count": 104,
+        "short_segment_count": 0,
+        "smooth_short_arc_count": 0,
+        "disconnected_join_count": 0,
+        "unprotected_join_count": 0,
+        "protected_corner_count": 0,
+        "minimum_segment_length_mm": 0.924791927457608,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "effective_deviation_mm": 0.15478124999999998,
+        "fit_mode": "live-bezier",
+        "trajectory_cusp_count": 0,
+        "protected_cusp_count": 0,
+        "unprotected_cusp_count": 0,
+        "maximum_trajectory_turn_degrees": 10.440436364255934,
+        "minimum_wedge_width_mm": null
+      },
+      "metrics": [
+        {
+          "segment_count": 104,
+          "line_segment_count": 0,
+          "cubic_segment_count": 104,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 277.8069218193156,
+          "minimum_segment_length_mm": 0.9248322100076618,
+          "p10_segment_length_mm": 1.0150305680861635,
+          "median_segment_length_mm": 1.6718566340568883,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 104,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 0.0,
+          "maximum_join_angle_degrees": 1.4787793334710982e-06,
+          "p95_join_angle_degrees": 1.2074182697257333e-06,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 6.150379177776442,
+          "p95_curvature_jump_per_mm": 3.5811950238991965,
+          "curvature_sign_flip_count": 24,
+          "curvature_sign_flips_per_100mm": 8.639093598830302
+        }
+      ]
+    },
+    "later_c2_candidate": {
+      "budget_mm": 0.29718000000000006,
+      "measured_hausdorff_mm": 0.24531609732067006,
+      "quality": {
+        "machine_safe": true,
+        "segment_count": 101,
+        "short_segment_count": 0,
+        "smooth_short_arc_count": 0,
+        "disconnected_join_count": 0,
+        "unprotected_join_count": 0,
+        "protected_corner_count": 0,
+        "minimum_segment_length_mm": 0.7003546153509514,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "effective_deviation_mm": 0.24705468749999998,
+        "fit_mode": "live-bezier",
+        "trajectory_cusp_count": 0,
+        "protected_cusp_count": 0,
+        "unprotected_cusp_count": 0,
+        "maximum_trajectory_turn_degrees": 5.473603883324391,
+        "minimum_wedge_width_mm": null
+      },
+      "metrics": [
+        {
+          "segment_count": 101,
+          "line_segment_count": 0,
+          "cubic_segment_count": 101,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 279.00410869846564,
+          "minimum_segment_length_mm": 0.7003632565030862,
+          "p10_segment_length_mm": 0.9130593691709625,
+          "median_segment_length_mm": 1.6855865764548084,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 101,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 1.2781390330834964e-14,
+          "maximum_join_angle_degrees": 1.2074182697257333e-06,
+          "p95_join_angle_degrees": 8.537736462515939e-07,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 6.794564910705958e-14,
+          "p95_curvature_jump_per_mm": 4.285460875053104e-14,
+          "curvature_sign_flip_count": 24,
+          "curvature_sign_flips_per_100mm": 8.602023859776939
+        }
+      ]
+    }
+  },
+  "flower3": {
+    "input": {
+      "lobes": 3,
+      "base_radius_mm": 8,
+      "amplitude_mm": 1,
+      "points": 400
+    },
+    "current": {
+      "budget_mm": 0.29718000000000006,
+      "measured_hausdorff_mm": 0.11660267480208245,
+      "quality": {
+        "machine_safe": true,
+        "segment_count": 16,
+        "short_segment_count": 0,
+        "smooth_short_arc_count": 0,
+        "disconnected_join_count": 0,
+        "unprotected_join_count": 0,
+        "protected_corner_count": 0,
+        "minimum_segment_length_mm": 1.75565131711972,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "effective_deviation_mm": 0.1190625,
+        "fit_mode": "live-bezier",
+        "trajectory_cusp_count": 0,
+        "protected_cusp_count": 0,
+        "unprotected_cusp_count": 0,
+        "maximum_trajectory_turn_degrees": 3.1690850109069975,
+        "minimum_wedge_width_mm": null
+      },
+      "metrics": [
+        {
+          "segment_count": 16,
+          "line_segment_count": 0,
+          "cubic_segment_count": 16,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 51.82036292739468,
+          "minimum_segment_length_mm": 1.7556675280730065,
+          "p10_segment_length_mm": 1.8740363376713243,
+          "median_segment_length_mm": 2.353923900006844,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 16,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 0.0,
+          "maximum_join_angle_degrees": 8.537736462515939e-07,
+          "p95_join_angle_degrees": 8.537736462515939e-07,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 2.051768844946767,
+          "p95_curvature_jump_per_mm": 1.8145636921231096,
+          "curvature_sign_flip_count": 0,
+          "curvature_sign_flips_per_100mm": 0.0
+        }
+      ]
+    },
+    "later_c2_candidate": {
+      "budget_mm": 0.29718000000000006,
+      "measured_hausdorff_mm": 0.18631435830261206,
+      "quality": {
+        "machine_safe": true,
+        "segment_count": 15,
+        "short_segment_count": 0,
+        "smooth_short_arc_count": 0,
+        "disconnected_join_count": 0,
+        "unprotected_join_count": 0,
+        "protected_corner_count": 0,
+        "minimum_segment_length_mm": 1.4466531114793435,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "effective_deviation_mm": 0.1875234375,
+        "fit_mode": "live-bezier",
+        "trajectory_cusp_count": 0,
+        "protected_cusp_count": 0,
+        "unprotected_cusp_count": 0,
+        "maximum_trajectory_turn_degrees": 2.317966490353885,
+        "minimum_wedge_width_mm": null
+      },
+      "metrics": [
+        {
+          "segment_count": 15,
+          "line_segment_count": 0,
+          "cubic_segment_count": 15,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 51.98348225082206,
+          "minimum_segment_length_mm": 1.4466539081625096,
+          "p10_segment_length_mm": 1.5835488327471627,
+          "median_segment_length_mm": 3.040663981109523,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 15,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 5.0132737467518175e-15,
+          "maximum_join_angle_degrees": 8.537736462515939e-07,
+          "p95_join_angle_degrees": 8.537736462515939e-07,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 1.7208456881689926e-15,
+          "p95_curvature_jump_per_mm": 1.5654144647214705e-15,
+          "curvature_sign_flip_count": 0,
+          "curvature_sign_flips_per_100mm": 0.0
+        }
+      ]
+    }
+  }
+}

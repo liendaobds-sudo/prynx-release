@@ -945,6 +945,46 @@ mod tests {
         );
     }
 
+    // PERF (audit 2026-09-24 §R24.10): tách chi phí khởi tạo LCMS khỏi đổi pixel.
+    // Chỉ chạy thủ công để đo; không đặt ngưỡng thời gian làm CI fail theo tải máy.
+    #[test]
+    #[ignore = "đo kernel ICC bằng --ignored --nocapture, không thay benchmark PDF thật"]
+    fn profile_softproof_setup_and_viewport() {
+        use std::time::Instant;
+        let cm = fogra39().expect("benchmark cần profile FOGRA39 thật");
+        let settings = SoftProofSettings::default();
+        for count in [1, 512 * 512, 1344 * 832] {
+            let input: Vec<[f32; 4]> = (0..count).map(|i| {
+                let x = (i % 251) as f32 / 250.0;
+                let y = ((i / 251) % 251) as f32 / 250.0;
+                [x, y, 1.0 - x, 0.3 * x + 0.4 * y]
+            }).collect();
+            let mut reference = None;
+            for sample in 0..4 {
+                let started = Instant::now();
+                let srgb = Profile::new_srgb();
+                let transform: Transform<[f32; 4], [u8; 3]> = Transform::new_flags(
+                    &cm.cmyk, PixelFormat::CMYK_FLT, &srgb, PixelFormat::RGB_8,
+                    cm.proof_intent(settings), cm.proof_flags(settings),
+                ).unwrap();
+                let setup_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let percent: Vec<_> = input.iter().map(|c| c.map(|v| v * 100.0)).collect();
+                let mut pixels = vec![[0; 3]; count];
+                let started = Instant::now();
+                transform.transform_pixels(&percent, &mut pixels);
+                let transform_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let started = Instant::now();
+                let actual = cm.cmyk_to_srgb_batch_with_cancel_and_settings(&input, None, settings)
+                    .unwrap().unwrap();
+                let batch_ms = started.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(pixels, actual);
+                if let Some(before) = &reference { assert_eq!(before, &actual); }
+                else { reference = Some(actual); }
+                eprintln!("ICC_PHASE pixels={count} sample={sample} setup_ms={setup_ms:.3} transform_ms={transform_ms:.3} batch_ms={batch_ms:.3}");
+            }
+        }
+    }
+
     #[test]
     fn custom_page_background_replaces_zero_ink_and_keeps_ink_darker() {
         let cm = cm_or_skip!();

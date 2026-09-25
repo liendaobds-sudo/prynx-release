@@ -418,6 +418,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(previewApiMocks.previewStickerCutline.mock.calls[0][1].cutlineSimplifyMm).toBe(0.1);
         const execute = screen.getByRole('button', { name: 'Thực thi' }) as HTMLButtonElement;
         expect(execute.disabled).toBe(true);
+        expect(screen.getByTestId('sticker-cutline-quality').textContent).toContain('Đang cập nhật');
         invokeReactClick(execute);
         expect(authenticatedFetch).not.toHaveBeenCalled();
         expect(noteOperation).not.toHaveBeenCalled();
@@ -425,6 +426,8 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             before_segments: 18, after_segments: 12, maximum_error_bound_mm: 0.089, changed: true,
         } } });
         await waitFor(() => expect(execute.disabled).toBe(false));
+        expect(screen.getByTestId('sticker-cutline-quality').textContent).toContain('18 → 12');
+        expect(screen.getByTestId('sticker-cutline-quality').textContent).toContain('0.089 mm');
         fireEvent.click(execute);
         await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
         const form = vi.mocked(authenticatedFetch).mock.calls[0][1]?.body as FormData;

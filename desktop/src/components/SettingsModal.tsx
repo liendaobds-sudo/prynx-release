@@ -31,7 +31,9 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
     autoRenameFormat, setAutoRenameFormat,
     measurementUnit, setMeasurementUnit,
     previewQuality, setPreviewQuality,
-    showMenuBar, setShowMenuBar
+    showMenuBar, setShowMenuBar,
+    enableInteractiveLinks, setEnableInteractiveLinks,
+    enableTextSelectionToolbar, setEnableTextSelectionToolbar,
   } = useAppSettingsStore();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -283,6 +285,55 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                           <div className={`text-sm font-bold ${previewQuality === 'fast' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-zinc-300'}`}>{t('settings:toc_do_nhanh_low_res')}</div>
                           <div className="text-[11px] text-slate-500 mt-0.5">{t('settings:giam_chat_luong_render_de_xem_truoc_pdf')}</div>
                         </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5 space-y-4">
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-2">
+                      <span>📝</span>
+                      <span>{t('settings:tuong_tac_van_ban_va_lien_ket', 'Tương tác văn bản & Liên kết (Kiểu Acrobat)')}</span>
+                    </h4>
+                    
+                    <div className="flex items-start justify-between gap-4 pt-2 border-t border-slate-200/60 dark:border-white/5">
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-700 dark:text-zinc-300">
+                          {t('settings:mo_lien_ket_khi_click', 'Mở liên kết web & email khi click (Hyperlinks & Mailto)')}
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5 leading-snug">
+                          {t('settings:mo_lien_ket_desc', 'Nhận diện email (mailto:) và website trong PDF để click mở ứng dụng gửi thư / trình duyệt như Adobe Acrobat.')}
+                        </p>
+                      </div>
+                      <label className="relative flex items-center cursor-pointer group shrink-0 mt-0.5">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={enableInteractiveLinks}
+                          onChange={() => setEnableInteractiveLinks(!enableInteractiveLinks)}
+                        />
+                        <div className="w-11 h-6 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-lg peer-checked:bg-emerald-500 peer-checked:border-emerald-600 shadow-inner transition-all duration-300"></div>
+                        <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-md h-[18px] w-[18px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
+                      </label>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-4 pt-3 border-t border-slate-200/60 dark:border-white/5">
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-700 dark:text-zinc-300">
+                          {t('settings:hien_thanh_cong_cu_boi_den', 'Hiện thanh công cụ nổi khi bôi đen chữ (Text Selection Quick Tools)')}
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5 leading-snug">
+                          {t('settings:hien_thanh_cong_cu_desc', 'Hiển thị thanh công cụ nổi (Sao chép, Đánh dấu Highlight, Ghi chú Comment, Gạch chân, Gạch xoá...) khi bôi đen chữ trên trang PDF.')}
+                        </p>
+                      </div>
+                      <label className="relative flex items-center cursor-pointer group shrink-0 mt-0.5">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={enableTextSelectionToolbar}
+                          onChange={() => setEnableTextSelectionToolbar(!enableTextSelectionToolbar)}
+                        />
+                        <div className="w-11 h-6 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-lg peer-checked:bg-emerald-500 peer-checked:border-emerald-600 shadow-inner transition-all duration-300"></div>
+                        <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-md h-[18px] w-[18px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
                       </label>
                     </div>
                   </div>

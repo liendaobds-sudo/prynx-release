@@ -1,0 +1,70 @@
+{
+  "dll_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+  "flags_probe": {
+    "view_only_red": {
+      "view_bgra": [
+        0,
+        0,
+        255,
+        255
+      ],
+      "printing_bgra": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "print_only_green": {
+      "view_bgra": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "printing_bgra": [
+        0,
+        255,
+        0,
+        255
+      ]
+    },
+    "screen_annotation_blue": {
+      "view_bgra": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "printing_bgra": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "changed_pixels": 30000
+  },
+  "opaque_lcd": {
+    "chromatic_pixels": 0,
+    "partial_alpha": 0
+  },
+  "transparent_lcd": {
+    "chromatic_pixels": 0,
+    "partial_alpha": 2273
+  },
+  "opaque_gray": {
+    "chromatic_pixels": 0,
+    "partial_alpha": 0
+  },
+  "opaque_lcd_printing": {
+    "chromatic_pixels": 0,
+    "partial_alpha": 0
+  },
+  "bgrx_lcd": {
+    "chromatic_pixels": 898,
+    "partial_alpha": 0
+  },
+  "opaque_lcd_vs_opaque_gray_changed": 0,
+  "opaque_lcd_vs_printing_changed": 0
+}

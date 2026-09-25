@@ -21,6 +21,7 @@ from app.workers.cutline_geometry import (
     _newton_reparameterize,
 )
 from app.workers.cutline_machine_path import MachinePathSegment, analyze_machine_path
+from app.workers.cutline_preview_cancel import check_preview_cancelled
 
 
 Point = tuple[float, float]
@@ -240,6 +241,9 @@ def _endpoint_separator(first: Cubic, second: Cubic) -> bool:
 
 
 def _curves_disjoint(first: Cubic, second: Cubic, adjacent: bool, depth: int = 0) -> bool:
+    # PERF (audit 2026-09-24 §CUT24.08): hủy ở mỗi nhánh chứng nhận,
+    # giữ nguyên hull, sai số và độ sâu khi công việc còn hiệu lực.
+    check_preview_cancelled()
     a, b = _bounds(first), _bounds(second)
     if a[2] < b[0] - 1e-10 or b[2] < a[0] - 1e-10 or a[3] < b[1] - 1e-10 or b[3] < a[1] - 1e-10:
         return True
@@ -260,6 +264,7 @@ def _curves_disjoint(first: Cubic, second: Cubic, adjacent: bool, depth: int = 0
 
 def _continuous_paths_simple(paths) -> bool:
     """Kiểm trên control hull sau .4f: không tự giao/cắt ring khác giữa sample."""
+    check_preview_cancelled()
     if not paths or any(not path or any(a.p3 != b.p0 for a, b in zip(path, path[1:] + path[:1])) for path in paths):
         return False
     entries = [(ring, position, len(path), _segment_curve(segment))
@@ -267,9 +272,11 @@ def _continuous_paths_simple(paths) -> bool:
     bounds = [box(*_bounds(item[3])) for item in entries]
     tree = STRtree(bounds)
     for index, (ring, position, count, curve) in enumerate(entries):
+        check_preview_cancelled()
         if not chord_monotone(curve):
             return False
         for candidate in tree.query(bounds[index]):
+            check_preview_cancelled()
             candidate = int(candidate)
             if candidate <= index:
                 continue
@@ -280,6 +287,7 @@ def _continuous_paths_simple(paths) -> bool:
                     return False
             elif not _curves_disjoint(curve, other_curve, adjacent):
                 return False
+    check_preview_cancelled()
     return True
 
 

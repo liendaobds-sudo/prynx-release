@@ -1,0 +1,438 @@
+{
+  "gate": [
+    {
+      "stats": {
+        "before_segments": 16,
+        "after_segments": 7,
+        "maximum_error_bound_mm": 0.06840625000022739,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 7,
+        "line_segment_count": 0,
+        "cubic_segment_count": 7,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 51.77273990230556,
+        "minimum_segment_length_mm": 3.7735167903840967,
+        "p10_segment_length_mm": 3.886642429601361,
+        "median_segment_length_mm": 8.467906945462184,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 7,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "p95_join_angle_degrees": 8.537736462515939e-07,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.5452569347931138,
+        "p95_curvature_jump_per_mm": 0.5086366274235892,
+        "curvature_sign_flip_count": 4,
+        "curvature_sign_flips_per_100mm": 7.726073620109626
+      },
+      "sampled_distance_mm": 0.06592289014708504,
+      "levels": 0,
+      "scale": 1.0,
+      "elapsed_s": 0.3398520000046119
+    },
+    {
+      "stats": {
+        "before_segments": 128,
+        "after_segments": 7,
+        "maximum_error_bound_mm": 0.06840625000022739,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 7,
+        "line_segment_count": 0,
+        "cubic_segment_count": 7,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 51.77274065930166,
+        "minimum_segment_length_mm": 3.772700566197424,
+        "p10_segment_length_mm": 3.885918256109562,
+        "median_segment_length_mm": 8.468367098522945,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 7,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "p95_join_angle_degrees": 5.976415523761151e-07,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.545748334302946,
+        "p95_curvature_jump_per_mm": 0.5090604691039203,
+        "curvature_sign_flip_count": 4,
+        "curvature_sign_flips_per_100mm": 7.726073507142696
+      },
+      "sampled_distance_mm": 0.06600225994513688,
+      "levels": 3,
+      "scale": 1.0,
+      "elapsed_s": 0.6307604999747127
+    }
+  ],
+  "gate_safe": [
+    {
+      "stats": {
+        "before_segments": 16,
+        "after_segments": 15,
+        "maximum_error_bound_mm": 0.09887500000045477,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 15,
+        "line_segment_count": 0,
+        "cubic_segment_count": 15,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 155.4047222669934,
+        "minimum_segment_length_mm": 3.541067970023359,
+        "p10_segment_length_mm": 5.076645968567615,
+        "median_segment_length_mm": 9.814518559336435,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 15,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "p95_join_angle_degrees": 8.537736462515939e-07,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.5739222337533677,
+        "p95_curvature_jump_per_mm": 0.557374860391707,
+        "curvature_sign_flip_count": 6,
+        "curvature_sign_flips_per_100mm": 3.86088653708456
+      },
+      "sampled_distance_mm": 0.09648077245800485,
+      "levels": 0,
+      "scale": 3.0,
+      "elapsed_s": 0.8829487999901175
+    },
+    {
+      "stats": {
+        "before_segments": 128,
+        "after_segments": 15,
+        "maximum_error_bound_mm": 0.09887500000045477,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 15,
+        "line_segment_count": 0,
+        "cubic_segment_count": 15,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 155.40473030065186,
+        "minimum_segment_length_mm": 3.5410998936718494,
+        "p10_segment_length_mm": 5.0766940221047445,
+        "median_segment_length_mm": 9.81451660263916,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 15,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "p95_join_angle_degrees": 9.598670332938354e-07,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.5745562878812398,
+        "p95_curvature_jump_per_mm": 0.5575453582875757,
+        "curvature_sign_flip_count": 6,
+        "curvature_sign_flips_per_100mm": 3.860886337495759
+      },
+      "sampled_distance_mm": 0.09650917435702427,
+      "levels": 3,
+      "scale": 3.0,
+      "elapsed_s": 1.753053899970837
+    }
+  ],
+  "seam": [
+    {
+      "stats": {
+        "before_segments": 32,
+        "after_segments": 4,
+        "maximum_error_bound_mm": 4.989031636195556e-05,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 4,
+        "line_segment_count": 0,
+        "cubic_segment_count": 4,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 62.84027307324393,
+        "minimum_segment_length_mm": 15.710068268310982,
+        "p10_segment_length_mm": 15.710068268310982,
+        "median_segment_length_mm": 15.710068268310982,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 4,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 0.0,
+        "p95_join_angle_degrees": 0.0,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 2.220446049250313e-16,
+        "p95_curvature_jump_per_mm": 2.1996293675385913e-16,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 5.1198117033061695e-05,
+      "shift": 0,
+      "elapsed_s": 0.33810169994831085
+    },
+    {
+      "stats": {
+        "before_segments": 32,
+        "after_segments": 5,
+        "maximum_error_bound_mm": 4.989031636195556e-05,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 5,
+        "line_segment_count": 0,
+        "cubic_segment_count": 5,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 62.84030630052341,
+        "minimum_segment_length_mm": 2.029009508157045,
+        "p10_segment_length_mm": 6.689842499867592,
+        "median_segment_length_mm": 15.710068268310982,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 5,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "p95_join_angle_degrees": 6.83018917001275e-07,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 3.70536934468646e-15,
+        "p95_curvature_jump_per_mm": 3.5832448119776926e-15,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 5.119811703304184e-05,
+      "shift": 1,
+      "elapsed_s": 0.38768069993238896,
+      "same_start_exact_candidate": {
+        "segments": 5,
+        "start_equal": true,
+        "verification": {
+          "accepted": true,
+          "reason": "accepted",
+          "maximum_error_bound_mm": 0.0013906250004547475,
+          "sampled_maximum_error_mm": 2.0007798965067317e-07,
+          "source_metrics": {
+            "maximum_curvature_jump_per_mm": 2.7547408798511697e-14,
+            "p95_curvature_jump_per_mm": 2.390657116713157e-14,
+            "total_curvature_jump_per_mm": 2.4868995751603507e-13,
+            "total_curvature_variation_per_mm": 0.034959118776290765,
+            "maximum_abs_curvature_per_mm": 0.10080049671838054,
+            "maximum_join_angle_degrees": 8.537736462515939e-07
+          },
+          "candidate_metrics": {
+            "maximum_curvature_jump_per_mm": 7.91033905045424e-15,
+            "p95_curvature_jump_per_mm": 6.819544928760023e-15,
+            "total_curvature_jump_per_mm": 1.1310397063368782e-14,
+            "total_curvature_variation_per_mm": 0.03495911877609248,
+            "maximum_abs_curvature_per_mm": 0.10080049671837492,
+            "maximum_join_angle_degrees": 0.0
+          }
+        }
+      }
+    },
+    {
+      "stats": {
+        "before_segments": 32,
+        "after_segments": 5,
+        "maximum_error_bound_mm": 4.989031636195556e-05,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 5,
+        "line_segment_count": 0,
+        "cubic_segment_count": 5,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 62.8403427053289,
+        "minimum_segment_length_mm": 5.933460029255327,
+        "p10_segment_length_mm": 7.470747166009447,
+        "median_segment_length_mm": 15.710068268310982,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 5,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 0.0,
+        "p95_join_angle_degrees": 0.0,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 5.981326545168031e-15,
+        "p95_curvature_jump_per_mm": 5.2763349245310555e-15,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 5.119811703304184e-05,
+      "shift": 3,
+      "elapsed_s": 0.3533534000162035
+    },
+    {
+      "stats": {
+        "before_segments": 32,
+        "after_segments": 5,
+        "maximum_error_bound_mm": 4.989031636195556e-05,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 5,
+        "line_segment_count": 0,
+        "cubic_segment_count": 5,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 62.84034270532891,
+        "minimum_segment_length_mm": 5.933460029255329,
+        "p10_segment_length_mm": 7.470747166009449,
+        "median_segment_length_mm": 15.710068268310982,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 5,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 8.537736462515939e-07,
+        "p95_join_angle_degrees": 6.83018917001275e-07,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 6.564193633096238e-15,
+        "p95_curvature_jump_per_mm": 5.8231197641589456e-15,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 5.119811703304184e-05,
+      "shift": 5,
+      "elapsed_s": 0.40400390001013875
+    }
+  ],
+  "span": [
+    {
+      "source_segments": 128,
+      "current": {
+        "stats": {
+          "before_segments": 128,
+          "after_segments": 4,
+          "maximum_error_bound_mm": 0.049177062282600915,
+          "changed": true
+        },
+        "metrics": {
+          "segment_count": 4,
+          "line_segment_count": 0,
+          "cubic_segment_count": 4,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 188.45692049772754,
+          "minimum_segment_length_mm": 7.363005246642758,
+          "p10_segment_length_mm": 23.26349519775841,
+          "median_segment_length_mm": 60.36463841702825,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 4,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 0.0,
+          "maximum_join_angle_degrees": 1.2074182697257333e-06,
+          "p95_join_angle_degrees": 1.1543715762046122e-06,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 0.0019458726012319752,
+          "p95_curvature_jump_per_mm": 0.0019458726012318065,
+          "curvature_sign_flip_count": 0,
+          "curvature_sign_flips_per_100mm": 0.0
+        },
+        "sampled_distance_mm": 0.04814858377642005,
+        "elapsed_s": 1.9546800999669358
+      },
+      "all_spans": {
+        "stats": {
+          "before_segments": 128,
+          "after_segments": 4,
+          "maximum_error_bound_mm": 0.049177062282600915,
+          "changed": true
+        },
+        "metrics": {
+          "segment_count": 4,
+          "line_segment_count": 0,
+          "cubic_segment_count": 4,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 188.45692049772754,
+          "minimum_segment_length_mm": 7.363005246642758,
+          "p10_segment_length_mm": 23.26349519775841,
+          "median_segment_length_mm": 60.36463841702825,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 4,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 0.0,
+          "maximum_join_angle_degrees": 1.2074182697257333e-06,
+          "p95_join_angle_degrees": 1.1543715762046122e-06,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 0.0019458726012319752,
+          "p95_curvature_jump_per_mm": 0.0019458726012318065,
+          "curvature_sign_flip_count": 0,
+          "curvature_sign_flips_per_100mm": 0.0
+        },
+        "sampled_distance_mm": 0.04814858377642005,
+        "elapsed_s": 1.926935900002718
+      }
+    },
+    {
+      "source_segments": 256,
+      "current": {
+        "stats": {
+          "before_segments": 256,
+          "after_segments": 4,
+          "maximum_error_bound_mm": 0.04839104988346584,
+          "changed": true
+        },
+        "metrics": {
+          "segment_count": 4,
+          "line_segment_count": 0,
+          "cubic_segment_count": 4,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 188.4774639855778,
+          "minimum_segment_length_mm": 2.9452414982016517,
+          "p10_segment_length_mm": 20.61489129747877,
+          "median_segment_length_mm": 61.84407416245871,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 4,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 0.0,
+          "maximum_join_angle_degrees": 8.537736462515939e-07,
+          "p95_join_angle_degrees": 7.257075993138545e-07,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 0.0017872575074521432,
+          "p95_curvature_jump_per_mm": 0.0017872575074520567,
+          "curvature_sign_flip_count": 0,
+          "curvature_sign_flips_per_100mm": 0.0
+        },
+        "sampled_distance_mm": 0.047249628527204754,
+        "elapsed_s": 5.134157899999991
+      },
+      "all_spans": {
+        "stats": {
+          "before_segments": 256,
+          "after_segments": 4,
+          "maximum_error_bound_mm": 0.04839104988346584,
+          "changed": true
+        },
+        "metrics": {
+          "segment_count": 4,
+          "line_segment_count": 0,
+          "cubic_segment_count": 4,
+          "degenerate_segment_count": 0,
+          "total_length_mm": 188.4774639855778,
+          "minimum_segment_length_mm": 2.9452414982016517,
+          "p10_segment_length_mm": 20.61489129747877,
+          "median_segment_length_mm": 61.84407416245871,
+          "short_segment_count": 0,
+          "short_segment_ratio": 0.0,
+          "join_count": 4,
+          "disconnected_join_count": 0,
+          "maximum_endpoint_gap_mm": 0.0,
+          "maximum_join_angle_degrees": 8.537736462515939e-07,
+          "p95_join_angle_degrees": 7.257075993138545e-07,
+          "discontinuous_join_count": 0,
+          "maximum_curvature_jump_per_mm": 0.0017872575074521432,
+          "p95_curvature_jump_per_mm": 0.0017872575074520567,
+          "curvature_sign_flip_count": 0,
+          "curvature_sign_flips_per_100mm": 0.0
+        },
+        "sampled_distance_mm": 0.047249628527204754,
+        "elapsed_s": 4.99509720003698
+      }
+    }
+  ]
+}

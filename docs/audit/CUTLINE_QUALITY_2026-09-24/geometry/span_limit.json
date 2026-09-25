@@ -1,0 +1,136 @@
+[
+  {
+    "source_segments": 128,
+    "current": {
+      "stats": {
+        "before_segments": 128,
+        "after_segments": 11,
+        "maximum_error_bound_mm": 0.010433768555968587,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 11,
+        "line_segment_count": 0,
+        "cubic_segment_count": 11,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 188.46874911549725,
+        "minimum_segment_length_mm": 11.78040934392953,
+        "p10_segment_length_mm": 17.66883397715676,
+        "median_segment_length_mm": 17.668833977156776,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 11,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "p95_join_angle_degrees": 1.0305959579886636e-06,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.00021850510028370573,
+        "p95_curvature_jump_per_mm": 0.00021850510028325124,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 0.008889624378594684,
+      "elapsed_s": 0.6890561999753118
+    },
+    "all_spans": {
+      "stats": {
+        "before_segments": 128,
+        "after_segments": 4,
+        "maximum_error_bound_mm": 0.04917706228258689,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 4,
+        "line_segment_count": 0,
+        "cubic_segment_count": 4,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 188.4569204977275,
+        "minimum_segment_length_mm": 7.3630052466427705,
+        "p10_segment_length_mm": 23.263495197758413,
+        "median_segment_length_mm": 60.364638417028246,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 4,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "p95_join_angle_degrees": 1.1543715762046122e-06,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.001945872601231191,
+        "p95_curvature_jump_per_mm": 0.0019458726012310786,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 0.04814858377642774,
+      "elapsed_s": 1.494173699989915
+    }
+  },
+  {
+    "source_segments": 256,
+    "current": {
+      "stats": {
+        "before_segments": 256,
+        "after_segments": 22,
+        "maximum_error_bound_mm": 0.0034837735332973606,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 22,
+        "line_segment_count": 0,
+        "cubic_segment_count": 22,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 188.4932126429397,
+        "minimum_segment_length_mm": 2.9452414982016486,
+        "p10_segment_length_mm": 8.83561767355895,
+        "median_segment_length_mm": 8.835617673558955,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 22,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 1.2074182697257333e-06,
+        "p95_join_angle_degrees": 1.2074182697257333e-06,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.00017640790310740478,
+        "p95_curvature_jump_per_mm": 0.00016758750795054257,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 0.002253306093365359,
+      "elapsed_s": 1.3231985999736935
+    },
+    "all_spans": {
+      "stats": {
+        "before_segments": 256,
+        "after_segments": 4,
+        "maximum_error_bound_mm": 0.04839104988345775,
+        "changed": true
+      },
+      "metrics": {
+        "segment_count": 4,
+        "line_segment_count": 0,
+        "cubic_segment_count": 4,
+        "degenerate_segment_count": 0,
+        "total_length_mm": 188.4774639855778,
+        "minimum_segment_length_mm": 2.9452414982016486,
+        "p10_segment_length_mm": 20.61489129747877,
+        "median_segment_length_mm": 61.84407416245871,
+        "short_segment_count": 0,
+        "short_segment_ratio": 0.0,
+        "join_count": 4,
+        "disconnected_join_count": 0,
+        "maximum_endpoint_gap_mm": 0.0,
+        "maximum_join_angle_degrees": 0.0,
+        "p95_join_angle_degrees": 0.0,
+        "discontinuous_join_count": 0,
+        "maximum_curvature_jump_per_mm": 0.0017872575074525526,
+        "p95_curvature_jump_per_mm": 0.0017872575074523954,
+        "curvature_sign_flip_count": 0,
+        "curvature_sign_flips_per_100mm": 0.0
+      },
+      "sampled_distance_mm": 0.04724962852720885,
+      "elapsed_s": 12.71227550006006
+    }
+  }
+]

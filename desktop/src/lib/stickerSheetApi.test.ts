@@ -247,6 +247,26 @@ describe('stickerSheetApi — hợp đồng theo trang', () => {
             classic_force_contour: true, cutline_simplify_mm: .1, corner_style: 'round' });
     });
 
+    it('export giữ denoise và Simplify theo trang, kể cả tắt bằng số 0', async () => {
+        apiMocks.authenticatedFetch.mockResolvedValue(new Response(new Blob(['pdf']), { status: 200 }));
+        await exportStickerSheet('0123456789abcdef0123456789abcdef', {
+            edits: [], dpi: 300, offsetMm: 0, bleedMm: 2,
+            cutlineDenoise: 60, cutlineSimplifyMm: .1,
+            pages: [
+                { sourcePage: 1, expectedRevision: 3, edits: [], cutlineDenoise: 0, cutlineSimplifyMm: 0 },
+                { sourcePage: 2, expectedRevision: 4, edits: [], cutlineDenoise: 80, cutlineSimplifyMm: .05 },
+                { sourcePage: 3, expectedRevision: 2, edits: [] },
+            ],
+        });
+        const body = JSON.parse(String(apiMocks.authenticatedFetch.mock.calls[0][1].body));
+        expect(body).toMatchObject({ cutline_denoise: 60, cutline_simplify_mm: .1 });
+        expect(body.pages).toEqual([
+            expect.objectContaining({ source_page: 1, cutline_denoise: 0, cutline_simplify_mm: 0 }),
+            expect.objectContaining({ source_page: 2, cutline_denoise: 80, cutline_simplify_mm: .05 }),
+            expect.objectContaining({ source_page: 3, cutline_denoise: 60, cutline_simplify_mm: .1 }),
+        ]);
+    });
+
     it('preview CutContour gửi đủ tuning và edit đang hiển thị', async () => {
         apiMocks.authenticatedFetch.mockResolvedValue(responseJson({
             page_number: 2,

@@ -66,6 +66,11 @@ def apply_affine(model: CutModel, M: Affine2x3) -> CutModel:
         CutPath(
             points=[M.apply(x, y) for (x, y) in p.points],
             closed=p.closed, tool_tag=p.tool_tag, block_id=p.block_id,
+            # QUALITY (audit 2026-09-24 §CUT24.D01): biến đổi cả control point;
+            # model làm phẳng lại sau affine để cậnmm không bị scale lên.
+            segments=tuple(tuple(M.apply(x,y) for x,y in segment)
+                           for segment in p.vector_segments()),
+            flatten_tolerance_mm=p.flatten_tolerance_mm,
         )
         for p in model.paths
     ]

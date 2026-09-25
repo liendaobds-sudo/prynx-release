@@ -1,0 +1,7 @@
+{
+  "head": "2dfa2f9cb3779379597bfc348cab9c145af3c5e9",
+  "audit_harnesses_syntax_ok": 8,
+  "source_hash_mismatches_since_cases": [],
+  "source_pdf_sha256": "4c2a730ba4f0857847b46faf2e798f78c001f1615a8cd946686bcc53aa508c10",
+  "production_source_changed_by_audit": false
+}

@@ -39,15 +39,25 @@ export interface ViewportTileCoverageItem {
 export interface ViewportTileBufferState<T extends ViewportTileBufferItem> {
     visible: T | null;
     target: T | null;
+    /** Target mong muốn mới nhất; chưa phát request để không hủy target đang chạy. */
+    queued?: T;
+    /** Một target vừa được ưu tiên khi idle phải hoàn tất trước lần ưu tiên tiếp. */
+    finishBeforeIdle?: boolean;
+    failed?: boolean;
 }
 
 export type ViewportTileBufferAction<T extends ViewportTileBufferItem> =
-    | { type: 'target'; item: T | null }
+    | { type: 'target'; item: T | null; coalesce?: boolean }
+    | { type: 'idle'; key: string }
     | { type: 'ready'; key: string }
+    | { type: 'failed'; key: string }
     | { type: 'reset' };
 
 export const VIEWPORT_TILE_CROSSFADE_MIN_MS = 80;
 export const VIEWPORT_TILE_CROSSFADE_MAX_MS = 160;
+// PERF (audit 2026-09-25 §R25.04.2): cùng khoảng yên 200 ms của wheel zoom.
+// Chỉ kết thúc việc gom target cuối; không trì hoãn request đầu hoặc hạn chế worker.
+export const VIEWPORT_TILE_QUEUED_IDLE_MS = 200;
 // PERF (feedback 2026-08-09 §RENDER.F5): lớp PDFium first-paint đã giữ khung nhìn
 // liền mạch, nên PPE chỉ raster đúng viewport. Runway 64 px thử nghiệm làm tăng khoảng
 // 18% pixel và khiến đường làm nét chậm hơn mà không còn mang lại lợi ích tương ứng.
@@ -654,16 +664,39 @@ export function reduceViewportTileBuffer<T extends ViewportTileBufferItem>(
             ? state
             : { visible: null, target: null };
     }
+    if (action.type === 'idle') {
+        // Timer/callback cũ không được đưa lại target của zoom hay tài liệu trước.
+        if (!state.queued || state.queued.key !== action.key || state.finishBeforeIdle) return state;
+        return { visible: state.visible, target: state.queued, finishBeforeIdle: true };
+    }
     if (action.type === 'ready') {
         if (!state.target || state.target.key !== action.key) return state;
         if (state.visible?.key === state.target.key) return state;
-        return { visible: state.target, target: state.target };
+        return { visible: state.target, target: state.queued ?? state.target };
+    }
+    if (action.type === 'failed') {
+        if (state.target?.key !== action.key) return state;
+        return state.queued
+            ? { visible: state.visible, target: state.queued }
+            : { ...state, failed: true };
     }
     const nextTarget = action.item;
-    if (state.target?.key === nextTarget?.key) return state;
+    if (state.target?.key === nextTarget?.key) {
+        return state.queued ? { ...state, queued: undefined } : state;
+    }
     if (!nextTarget) return { visible: state.visible, target: null };
-    // Zoom/khổ/xoay/file khác không dùng lại tile cũ; double-buffer chỉ dành cho pan
-    // trong cùng hệ hình học để tránh stretch/lệch khung.
+    if (state.visible?.key === nextTarget.key) {
+        return { visible: state.visible, target: state.visible };
+    }
+    // PERF (audit 2026-09-24 §R24.08): tách mong muốn khỏi công việc đã nhận.
+    // Cùng nội dung thì cho B hoàn tất, chỉ giữ C mới nhất; đổi identity hủy ngay.
+    const sameContent = state.target?.bufferGroup === nextTarget.bufferGroup
+        || Boolean(state.target?.reuseGroup && state.target.reuseGroup === nextTarget.reuseGroup);
+    if (action.coalesce && sameContent && !state.failed
+        && state.target && state.target.key !== state.visible?.key) {
+        return state.queued?.key === nextTarget.key ? state : { ...state, queued: nextTarget };
+    }
+    // Giữ bitmap cùng nội dung; component luôn đặt nó bằng hình học của chính nó.
     const canReuseVisible = state.visible?.bufferGroup === nextTarget.bufferGroup
         || Boolean(
             state.visible?.reuseGroup
@@ -697,7 +730,8 @@ export function viewportTilePresentationItems<T extends ViewportTileBufferItem>(
     // trong lúc wheel zoom. Tile viewport cũ chỉ phủ clip của khung trước; co nó theo trang
     // sẽ tạo một “đảo ảnh” giữa nền. Khi underlay đã sẵn sàng, để compositor hiện thẳng
     // surface đó cho tới khi target của generation mới decode xong.
-    if (hasStableUnderlay && (zoomSettling || !targetIsCurrent)) return [];
+    // Giữ tile nét nếu còn phủ viewport; không suy tốc độ raster từ nhịp đổi target.
+    if (hasStableUnderlay && !visibleCoversCurrentViewport && (zoomSettling || !targetIsCurrent)) return [];
     if (!zoomSettling && targetIsCurrent) {
         const items = viewportTileBufferItems(state);
         const visibleUsesCurrentRaster = state.visible?.bufferGroup === currentBufferGroup;

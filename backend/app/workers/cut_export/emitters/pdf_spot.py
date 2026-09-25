@@ -45,10 +45,21 @@ class PdfSpotEmitter:
             if path.is_empty:
                 continue
             p = c.beginPath()
-            x0, y0 = path.points[0]
+            segments = path.vector_segments()
+            x0, y0 = segments[0][0] if segments else path.points[0]
             p.moveTo(x0 * MM_TO_PT, y0 * MM_TO_PT)
-            for x, y in path.points[1:]:
-                p.lineTo(x * MM_TO_PT, y * MM_TO_PT)
+            # QUALITY (audit 2026-09-24 §CUT24.D01): PDF hỗ trợ cubic, nên
+            # giữ đúng primitive; polyline chỉ dành nguồn/protocol chỉ có line.
+            if segments:
+                for segment in segments:
+                    if len(segment) == 4:
+                        p.curveTo(*(value*MM_TO_PT for point in segment[1:] for value in point))
+                    else:
+                        x,y = segment[-1]
+                        p.lineTo(x*MM_TO_PT,y*MM_TO_PT)
+            else:
+                for x, y in path.points[1:]:
+                    p.lineTo(x * MM_TO_PT, y * MM_TO_PT)
             if path.closed:
                 p.close()
             c.drawPath(p, stroke=1, fill=0)

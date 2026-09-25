@@ -243,8 +243,8 @@ def fit_seed_ring(source: Sequence[Cubic], fit_tolerance_mm: float, *,
     return tuple(tuple(tuple(float(value) for value in point) for point in curve) for curve in translated)
 
 
-def build_fair_seeds(source: Sequence[Cubic], tolerance_mm: float, *,
-                     protected_indices: Iterable[int] = ()) -> tuple[Ring, ...]:
+def iter_fair_seeds(source: Sequence[Cubic], tolerance_mm: float, *,
+                    protected_indices: Iterable[int] = ()):
     """Ưu tiên seed 1,1×, rồi 1× và 1,25× dung sai; chưa dùng để cắt.
 
     Lựa chọn vừa thưa trước, dự phòng seed gần nguồn hơn. Seed quá thưa
@@ -253,10 +253,18 @@ def build_fair_seeds(source: Sequence[Cubic], tolerance_mm: float, *,
     """
     values, cuts = _validated(source, tolerance_mm, protected_indices)
     if not len(values):
-        return ()
+        return
     candidates = []
     for multiplier in (1.1, 1.0, 1.25):
         candidate = fit_seed_ring(values, tolerance_mm * multiplier, protected_indices=cuts)
         if 2 <= len(candidate) < len(values) and candidate not in candidates:
             candidates.append(candidate)
-    return tuple(candidates)
+            # PERF (audit 2026-09-24 §CUT24.05): dựng seed kế tiếp chỉ khi
+            # seed trước không qua verifier; không thay thứ tự hay bỏ seed.
+            yield candidate
+
+
+def build_fair_seeds(source: Sequence[Cubic], tolerance_mm: float, *,
+                     protected_indices: Iterable[int] = ()) -> tuple[Ring, ...]:
+    """Giữ API eager cho consumer cần toàn bộ các phương án khởi tạo."""
+    return tuple(iter_fair_seeds(source, tolerance_mm, protected_indices=protected_indices))

@@ -40,7 +40,7 @@ _WRITER_POINT_ERROR = math.sqrt(2.0) * 0.5e-4
 CUTLINE_SIMPLIFY_MAX_MM = 0.1
 # Đổi salt khi thay chiến lược hội tụ để memo/cache cũ không được dùng lẫn
 # với đường preview/Execute mới.
-CUTLINE_SIMPLIFY_ALGORITHM = "free-g1-v3-fast-candidate"
+CUTLINE_SIMPLIFY_ALGORITHM = "free-g1-v4-certified-spans"
 
 
 def _sub(a: Point, b: Point) -> Point:
@@ -309,6 +309,16 @@ def _reduce_ring(
     # PERF (audit 2026-09-11 §PREWARM.CANCEL): hủy job cũ giữa các span,
     # không biến hủy thành fallback chất lượng thấp hoặc kết quả no-op.
     check_preview_cancelled()
+    from app.workers.cutline_exact_coalesce import coalesce_exact_subdivisions
+
+    # QUALITY (audit 2026-09-24 §CUT24.03): bỏ phép chia dư trước khi tối ưu
+    # xấp xỉ. Cùng cubic với seam khác vẫn tìm được các nhịp gốc; cận cộng
+    # thêm luôn so với nguồn bất biến, không biến phép gộp thành nguồn chuẩn.
+    original = source
+    source, exact_bound = coalesce_exact_subdivisions(source)
+    if exact_bound >= tolerance:
+        source, exact_bound = original, 0.0
+    tolerance -= exact_bound
     spans = [_Span(curve, (curve,)) for curve in source]
     # C2 thật giữ độ cong hai đầu. Nguồn vốn chỉ G1 được phép đổi tay nắm
     # trong band hình học, nhưng toàn ring vẫn phải có metric độ cong không xấu hơn.
@@ -345,7 +355,7 @@ def _reduce_ring(
         )
         if len(fitted) < len(curves) and _motion_not_worse(source, fitted, units, global_refit=True):
             curves, bound = fitted, fitted_bound
-    return curves, bound
+    return curves, bound + exact_bound
 
 
 def _rounded_groups(groups, offset_x: float, offset_y: float, page_height: float):

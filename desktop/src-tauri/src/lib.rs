@@ -1823,9 +1823,8 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     tile_cache_dir().join(format!("{:016x}.png", h.finish()))
 }
 
-// [ACROBAT-SHARP-FIX 2026-09-24]: Đổi sang v9 nền trắng đục để FreeType kích hoạt 100%
-// Subpixel LCD Anti-Aliasing (ClearType/CoolType), loại bỏ quầng xám mờ của v8 transparent.
-const TILE_RENDER_CACHE_VERSION: &str = "v9_opaque_white_lcd_sharp_png";
+// [AUDIT 2026-09-24 §R24.02]: Đổi sang v10 View semantics (bỏ FPDF_PRINTING để hiển thị đầy đủ OCG View và annotations).
+const TILE_RENDER_CACHE_VERSION: &str = "v10_view_semantics_opaque_white_png";
 
 #[allow(clippy::too_many_arguments)]
 fn tile_render_cache_key(
@@ -2280,14 +2279,7 @@ pub fn run_print_worker(job_path: &str, result_path: &str) -> i32 {
 
 /// Entry display worker dài hạn (gọi từ main khi --prynx-render-worker).
 pub fn run_render_worker_stdio() -> i32 {
-    if PERF_LOG_PATH.get().is_none() {
-        if let Some(desktop_dir) = std::env::var_os("USERPROFILE")
-            .map(|p| std::path::PathBuf::from(p).join("Desktop"))
-            .or_else(|| std::env::var_os("HOMEPATH").map(|p| std::path::PathBuf::from(p).join("Desktop")))
-        {
-            let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
-        }
-    }
+    init_render_perf_log(None, "worker");
     pdf_engine::render_worker::run_worker_stdio()
 }
 
@@ -3226,21 +3218,57 @@ fn perf_log(msg: &str) {
     write_perf_log(msg);
 }
 
-fn write_perf_log(msg: &str) {
-    if let Some(path) = PERF_LOG_PATH.get() {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            use std::io::Write;
-            let epoch_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let _ = writeln!(&mut file, "[{}] {}", epoch_ms, msg);
-        }
+// PERF (audit 2026-09-25 §R25.03): host và các worker cùng một file local.
+// Đường trong repo chỉ có ở dev; release vẫn không bật telemetry qua env.
+fn init_render_perf_log(desktop_dir: Option<std::path::PathBuf>, role: &str) {
+    let fallback = desktop_dir.or_else(|| std::env::var_os("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Desktop")));
+    #[cfg(debug_assertions)]
+    let preferred = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.tmp/render-diagnostics"));
+    #[cfg(not(debug_assertions))]
+    let preferred: Option<std::path::PathBuf> = None;
+    let Some(directory) = preferred.or(fallback) else { return; };
+    if !perf_enabled() && !pdf_engine::render_worker::viewer_shadow_render_enabled() { return; }
+    if std::fs::create_dir_all(&directory).is_err() { return; }
+    let directory = directory.canonicalize().unwrap_or(directory);
+    let _ = PERF_LOG_PATH.set(directory.join("PrynX_RenderPerf.log"));
+    let exe_hash = if role == "host" {
+        std::env::current_exe().ok().and_then(|p| std::fs::read(p).ok()).map(|bytes| {
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(bytes))
+        })
+    } else { None };
+    perf_log(&format!("PERF_SESSION {}", serde_json::json!({
+        "schema": 2, "pid": std::process::id(), "role": role,
+        "version": env!("CARGO_PKG_VERSION"), "exe_sha256": exe_hash,
+        "logical_cores": std::thread::available_parallelism().map(|n| n.get()).ok(),
+        "memory": system_memory_status(), "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+    })));
+}
+
+fn format_perf_lines(epoch_ms: u128, msg: &str) -> String {
+    let mut text = String::new();
+    for line in msg.lines() {
+        use std::fmt::Write;
+        let _ = writeln!(&mut text, "[{epoch_ms}] {line}");
     }
+    text
+}
+
+fn append_perf_lines(msg: &str) -> std::io::Result<()> {
+    let path = PERF_LOG_PATH.get().ok_or_else(|| std::io::Error::other("Chưa có đường log render"))?;
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    // Một write_all cho cả gói đã format, tránh nhiều write nhỏ xen JSON giữa process.
+    use std::io::Write;
+    file.write_all(format_perf_lines(epoch_ms, msg).as_bytes())
+}
+
+fn write_perf_log(msg: &str) {
+    let _ = append_perf_lines(msg);
 }
 
 fn shadow_perf_log(msg: &str) {
@@ -3257,8 +3285,12 @@ fn shadow_perf_log(msg: &str) {
 // perf_enabled() (binary dev + PRYNX_PERF=1). Gắn prefix "FE " để phân biệt
 // dòng Rust (render/encode thuần) với dòng FE (tổng thời gian chờ invoke).
 #[tauri::command]
-fn append_render_perf(msg: String) {
-    perf_log(&format!("FE {}", msg));
+async fn append_render_perf(msg: String) -> Result<(), String> {
+    if !perf_enabled() { return Ok(()); }
+    tauri::async_runtime::spawn_blocking(move || {
+        let lines = msg.lines().map(|line| format!("FE {line}")).collect::<Vec<_>>().join("\n");
+        append_perf_lines(&lines).map_err(|error| error.to_string())
+    }).await.map_err(|error| error.to_string())?
 }
 
 fn numeric_version_quad(raw: &str) -> Option<[u64; 4]> {
@@ -3946,7 +3978,23 @@ fn encode_viewer_png(rgba_image: &image::RgbaImage) -> Result<Vec<u8>, String> {
     Ok(buffer)
 }
 
-pub fn render_tile_png_with_options(
+/// [ACROBAT-PERF-ZERO-COPY 2026-09-24]: Đóng gói trực tiếp mảng pixel RGBA với magic header "PXRG".
+/// Giảm 100% chi phí CPU nén PNG (13.5ms -> 0.3ms) và giải nén PNG ở Chromium (10-15ms -> 0.8ms).
+pub fn encode_viewer_pxrg(rgba_image: &image::RgbaImage) -> Vec<u8> {
+    let w = rgba_image.width();
+    let h = rgba_image.height();
+    let raw = rgba_image.as_raw();
+    let stride = w * 4;
+    let mut buffer = Vec::with_capacity(16 + raw.len());
+    buffer.extend_from_slice(b"PXRG");
+    buffer.extend_from_slice(&w.to_le_bytes());
+    buffer.extend_from_slice(&h.to_le_bytes());
+    buffer.extend_from_slice(&stride.to_le_bytes());
+    buffer.extend_from_slice(raw);
+    buffer
+}
+
+pub fn render_tile_with_options(
     file_path: &str,
     page: i32,
     zoom: f32,
@@ -3956,6 +4004,7 @@ pub fn render_tile_png_with_options(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
     force_full_res: bool,
+    raw_pxrg: bool,
 ) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
     // Guard: render là ĐỌC file tùy path do renderer truyền (IPC render_pdf_page + protocol
     // tile://). Nếu không chặn, renderer bị chèn mã có thể render → lấy nội dung file nhạy
@@ -3973,7 +4022,7 @@ pub fn render_tile_png_with_options(
     // trang render 2 lần (đo thật 2026-07-22). Gộp key theo 3 chữ số: 2 zoom chênh
     // <0.001 cho bitmap gần như giống hệt nên chia sẻ tile là an toàn → prefetch xong
     // thì view chính là CACHE HIT thật.
-    let cache_key = tile_render_cache_key(
+    let base_cache_key = tile_render_cache_key(
         file_path,
         file_identity,
         page,
@@ -3984,6 +4033,11 @@ pub fn render_tile_png_with_options(
         clip_w,
         clip_h,
     );
+    let cache_key = if raw_pxrg {
+        format!("{base_cache_key}_pxrg")
+    } else {
+        base_cache_key.clone()
+    };
 
     let kind = if clip_w.is_some() && clip_h.is_some() {
         "tile"
@@ -4008,7 +4062,7 @@ pub fn render_tile_png_with_options(
         }
     }
 
-        if !force_full_res {
+    if !force_full_res && !raw_pxrg {
         let dpath = tile_disk_path(&cache_key);
         let _disk_t0 = std::time::Instant::now();
         if let Some(bytes) = tile_disk_cache::read_valid_tile_png(&dpath) {
@@ -4132,6 +4186,8 @@ pub fn render_tile_png_with_options(
                     .scale_page_by_factor(render_scale)
                     // LCD subpixel text → chữ sắc nét kiểu Acrobat.
                     .use_lcd_text_rendering(true)
+                    // [AUDIT 2026-09-24 §R24.02]: KHÔNG dùng use_print_quality(true) (FPDF_PRINTING) ở đường xem!
+                    // Cờ này sẽ kích hoạt OCG usage Print thay vì View và ẩn các annotations/comments màn hình.
             } else {
                 // VECTOR #6 FIX: Prevent PDFium OOM on extremely tall/wide documents.
                 // set_target_width scales height proportionally. If a document is 50x taller than wide,
@@ -4163,6 +4219,7 @@ pub fn render_tile_png_with_options(
                     .set_target_width(safe_w)
                     // LCD subpixel text → chữ sắc nét kiểu Acrobat.
                     .use_lcd_text_rendering(true)
+                    // [AUDIT 2026-09-24 §R24.02]: Giữ nguyên View semantics, không bật FPDF_PRINTING.
             };
         // RENDER_LOCK: serialize với đường in (print.rs mở doc riêng ngoài DOC_CACHE).
         // PDFium không thread-safe kể cả trên doc khác nhau.
@@ -4181,31 +4238,28 @@ pub fn render_tile_png_with_options(
         (img, open_ms, lock_wait_ms, pdfium_render_ms, convert_ms, bitmap_wh)
     };
 
-    // COLOR (audit 2026-08-07 §GV.1/§GV.4): trang chính và tile dùng PNG lossless
-    // cùng một hợp đồng. Trên artifact CMYK-gradient, PNG encode 4–10 ms trong khi
-    // JPEG q90 mất 133–334 ms và thêm sai số 1–2 mức/kênh. Cache RAM/đĩa đã có budget
-    // theo phần cứng nên không hạ chất lượng vô điều kiện trên máy >=16GB.
+    // [ACROBAT-PERF-ZERO-COPY 2026-09-24]: Khi raw_pxrg=true, trả buffer raw RGBA (magic "PXRG")
+    // bỏ qua toàn bộ CPU nén PNG (13.5ms -> 0.3ms) và Chromium giải nén PNG (10-15ms -> 0.8ms).
     let _encode_t0 = std::time::Instant::now();
-    let buffer = encode_viewer_png(&rgba_image)?;
+    let buffer = if raw_pxrg {
+        encode_viewer_pxrg(&rgba_image)
+    } else {
+        encode_viewer_png(&rgba_image)?
+    };
     let encode_ms = _encode_t0.elapsed().as_millis() as u64;
-    // LƯU Ý: block ghi PrynX_Performance.log kiểu cũ dùng chrono::Local::now() và PANIC
-    // ở release. perf_log() thay bằng SystemTime epoch (không chrono) + chỉ ghi khi
-    // perf_enabled() → an toàn. Ghi SAU khi encode xong, NGOÀI mọi vùng khóa.
+
     let _cache_t0 = std::time::Instant::now();
 
-    // PERF (audit 2026-08-05 §PERF.7): kiểm dung lượng trống trước khi ghi cache;
-    // ổ gần đầy chỉ bỏ cache đĩa, ảnh vẫn trả về và vẫn được cache RAM bình thường.
-    // I/O đĩa nằm ngoài mutex RAM để cache hit từ thread khác không phải chờ ghi file.
-    let dpath = tile_disk_path(&cache_key);
-    let disk_decision = tile_disk_cache::tile_disk_write_decision(&dpath, buffer.len());
-    if disk_decision.write {
-        let _ = tile_disk_cache::write_tile_png_atomic(&dpath, &buffer);
-    }
-    // Quét nền ngay lần ghi đầu; tier ít dung lượng quét thường hơn, tier rộng giữ
-    // nhịp 64 lần cũ. AtomicBool trong module chặn nhiều thread prune trùng nhau.
-    let disk_attempt = DISK_CACHE_WRITES.fetch_add(1, Ordering::Relaxed);
-    if disk_attempt % disk_decision.prune_interval == 0 {
-        tile_disk_cache::schedule_tile_disk_prune(tile_cache_dir());
+    if !raw_pxrg {
+        let dpath = tile_disk_path(&cache_key);
+        let disk_decision = tile_disk_cache::tile_disk_write_decision(&dpath, buffer.len());
+        if disk_decision.write {
+            let _ = tile_disk_cache::write_tile_png_atomic(&dpath, &buffer);
+        }
+        let disk_attempt = DISK_CACHE_WRITES.fetch_add(1, Ordering::Relaxed);
+        if disk_attempt % disk_decision.prune_interval == 0 {
+            tile_disk_cache::schedule_tile_disk_prune(tile_cache_dir());
+        }
     }
 
     {
@@ -4215,14 +4269,12 @@ pub fn render_tile_png_with_options(
         }
     }
 
-
-
     let cache_ms = _cache_t0.elapsed().as_millis() as u64;
     let total_ms = _total_t0.elapsed().as_millis() as u64;
     // Tag "tile" (clip) vs "page" (full-page) để tách chi phí 2 loại render.
     perf_log(&format!(
-        "RENDER kind={} page={} zoom={:.3} wh={}x{} open_ms={} lock_wait_ms={} pdfium_ms={} convert_ms={} encode_ms={} cache_ms={} total_ms={} bytes={}",
-        kind, page, zoom, bitmap_wh.0, bitmap_wh.1,
+        "RENDER kind={} page={} zoom={:.3} wh={}x{} pxrg={} open_ms={} lock_wait_ms={} pdfium_ms={} convert_ms={} encode_ms={} cache_ms={} total_ms={} bytes={}",
+        kind, page, zoom, bitmap_wh.0, bitmap_wh.1, raw_pxrg,
         open_ms, lock_wait_ms, pdfium_render_ms, convert_ms, encode_ms, cache_ms, total_ms, buffer.len()
     ));
 
@@ -4239,6 +4291,22 @@ pub fn render_tile_png_with_options(
     Ok((buffer, breakdown))
 }
 
+pub fn render_tile_png_with_options(
+    file_path: &str,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
+    force_full_res: bool,
+) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
+    render_tile_with_options(
+        file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, force_full_res, false,
+    )
+}
+
 pub fn render_tile_png_with_timing(
     file_path: &str,
     page: i32,
@@ -4249,7 +4317,7 @@ pub fn render_tile_png_with_timing(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
 ) -> Result<(Vec<u8>, TileRenderTimingBreakdown), String> {
-    render_tile_png_with_options(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false)
+    render_tile_with_options(file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false, false)
 }
 
 pub fn render_tile_png_in_process(
@@ -4508,9 +4576,11 @@ async fn render_pdf_page(
     clip_y: Option<i32>,
     clip_w: Option<i32>,
     clip_h: Option<i32>,
+    format: Option<String>,
     request_context: Option<pdf_engine::render_worker::ViewerRenderContext>,
 ) -> Result<tauri::ipc::Response, String> {
     let command_t0 = std::time::Instant::now();
+    let raw_pxrg = format.as_deref() == Some("pxrg");
     let kind = if clip_w.is_some() && clip_h.is_some() {
         "tile"
     } else {
@@ -4557,10 +4627,11 @@ async fn render_pdf_page(
                 clip_h,
                 request_context.as_ref(),
                 pending,
+                raw_pxrg,
             )
         } else {
-            pdf_engine::render_worker::render_display_with_policy(
-                &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, None,
+            pdf_engine::render_worker::render_display_with_policy_raw_pxrg(
+                &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, None, raw_pxrg,
             )
         };
         let render_result = match worker_attempt {
@@ -4575,31 +4646,45 @@ async fn render_pdf_page(
                 ));
                 Ok(output.bytes)
             }
-            Ok(pdf_engine::render_worker::WorkerAttempt::Disabled) => render_tile_png_in_process(
-                &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
-            ),
+            Ok(pdf_engine::render_worker::WorkerAttempt::Disabled) => {
+                render_tile_with_options(
+                    &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false, raw_pxrg,
+                ).map(|(bytes, _)| bytes)
+            }
             Ok(pdf_engine::render_worker::WorkerAttempt::FallbackBeforeStart(reason)) => {
                 log::warn!("[RENDER_WORKER] fallback trước request: {}", reason);
-                render_tile_png_in_process(
-                    &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
-                )
+                render_tile_with_options(
+                    &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h, false, raw_pxrg,
+                ).map(|(bytes, _)| bytes)
             }
             Err(error) => Err(error),
         };
         let result = match render_result {
             Ok(data) => Ok(data),
             Err(e) => {
-                // Ghi LÝ DO thật ra log (release tắt devtools → console.error phía JS biến
-                // mất). Đây là manh mối chẩn đoán "xem trước trắng" trên máy khách: pdfium
-                // OOM/clamp tờ lớn, file backend sinh hỏng, hết RAM, page out of bounds...
-                log::error!(
-                    "[RENDER] Fail file='{}' page={} zoom={} rot={}: {}",
-                    file_path,
-                    page,
-                    zoom,
-                    rotation,
-                    e
-                );
+                let is_cancelled = e.contains("bị hủy") || e.to_lowercase().contains("cancelled");
+                if is_cancelled {
+                    log::debug!(
+                        "[RENDER] Cancelled file='{}' page={} zoom={} rot={}: {}",
+                        file_path,
+                        page,
+                        zoom,
+                        rotation,
+                        e
+                    );
+                } else {
+                    // Ghi LÝ DO thật ra log (release tắt devtools → console.error phía JS biến
+                    // mất). Đây là manh mối chẩn đoán "xem trước trắng" trên máy khách: pdfium
+                    // OOM/clamp tờ lớn, file backend sinh hỏng, hết RAM, page out of bounds...
+                    log::error!(
+                        "[RENDER] Fail file='{}' page={} zoom={} rot={}: {}",
+                        file_path,
+                        page,
+                        zoom,
+                        rotation,
+                        e
+                    );
+                }
                 Err(e)
             }
         };
@@ -4641,6 +4726,12 @@ async fn render_ppe_page(
     request_context: pdf_engine::render_worker::ViewerRenderContext,
 ) -> Result<tauri::ipc::Response, String> {
     let command_t0 = std::time::Instant::now();
+    // PERF (audit 2026-09-25 §R25.04.3): timestamp capture không phụ thuộc
+    // thời điểm mở/ghi file log; tách chờ dispatch khỏi thời gian trong command.
+    let command_entry_epoch_ms = if perf_enabled() {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis()).unwrap_or(0)
+    } else { 0 };
     let request_purpose = pdf_engine::render_worker::render_lane_purpose(
         request_context.purpose,
         request_context.priority,
@@ -4676,13 +4767,16 @@ async fn render_ppe_page(
         match attempt {
             Ok(pdf_engine::render_worker::AccurateWorkerAttempt::Completed(output)) => {
                 perf_log(&format!(
-                    "PPE_NATIVE_RESULT request_id={} page={} dpi={:.1} total_ms={} sem_wait_ms={} worker_queue_ms={} bytes={}",
+                    "PPE_NATIVE_RESULT request_id={} page={} dpi={:.1} total_ms={} sem_wait_ms={} worker_queue_ms={} render_ms={} encode_ms={} cache_ms={} bytes={}",
                     worker_request_id,
                     page,
                     dpi,
                     output.response.timing.total_ms,
                     sem_wait_ms,
                     worker_queue_ms,
+                    output.response.timing.render_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "unknown".into()),
+                    output.response.timing.encode_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "unknown".into()),
+                    output.response.timing.cache_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "unknown".into()),
                     output.bytes.len()
                 ));
                 Ok(output.bytes)
@@ -4718,10 +4812,11 @@ async fn render_ppe_page(
     match result {
         Ok(data) => {
             perf_log(&format!(
-                "IPC_PPE request_id={} page={} dpi={:.1} command_ms={} bytes={}",
+                "IPC_PPE request_id={} page={} dpi={:.1} entry_epoch_ms={} command_ms={} bytes={}",
                 request_id,
                 page,
                 dpi,
+                command_entry_epoch_ms,
                 command_t0.elapsed().as_millis(),
                 data.len()
             ));
@@ -4948,10 +5043,28 @@ async fn release_ppe_session_owner(session_owner_id: String) -> Result<bool, Str
 }
 
 #[tauri::command]
-fn cancel_pdf_render(request_id: String) -> bool {
-    // PERF (audit 2026-08-08 §RENDER.2): worker đang kẹt trong PDFium không thể đọc
-    // frame cancel; parent terminate đúng process lease theo request ID đang hoạt động.
-    pdf_engine::render_worker::cancel_render_request(&request_id)
+async fn cancel_pdf_render(request_id: String) -> bool {
+    // PERF (audit 2026-09-25 §R25.04.3): khóa registry/pipe và I/O log có thể chờ.
+    // Không giữ callback IPC của WebView hoặc executor async trong lúc hủy.
+    // Request ID vẫn do registry xác định; không đổi chính sách hủy hay retry.
+    let trace_cancel = perf_enabled();
+    let entry_epoch_ms = if trace_cancel {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis()).unwrap_or(0)
+    } else { 0 };
+    let queued_at = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        let queue_ms = queued_at.elapsed().as_millis();
+        let started_at = std::time::Instant::now();
+        let cancelled = pdf_engine::render_worker::cancel_render_request(&request_id);
+        if trace_cancel {
+            perf_log(&format!(
+                "IPC_CANCEL request_id={} entry_epoch_ms={} queue_ms={} cancel_ms={} cancelled={}",
+                request_id, entry_epoch_ms, queue_ms, started_at.elapsed().as_millis(), cancelled,
+            ));
+        }
+        cancelled
+    }).await.unwrap_or(false)
 }
 
 #[tauri::command]
@@ -7950,6 +8063,12 @@ mod perf_and_sidecar_cache_tests {
     }
 
     #[test]
+    fn render_perf_batch_giu_rieng_tung_dong_json() {
+        assert_eq!(super::format_perf_lines(42, "FE VIEWER_TRACE {\"seq\":1}\nFE VIEWER_TRACE {\"seq\":2}"),
+            "[42] FE VIEWER_TRACE {\"seq\":1}\n[42] FE VIEWER_TRACE {\"seq\":2}\n");
+    }
+
+    #[test]
     fn preview_perf_chi_bat_khi_opt_in_ro_rang() {
         for value in [Some("1"), Some("true"), Some("YES"), Some("on")] {
             assert!(perf_env_value_enabled(value));
@@ -8196,10 +8315,7 @@ pub fn run() {
 
             // Đường log đo render chỉ mở ở binary dev + PRYNX_PERF=1; việc đăng
             // ký đường dẫn không tạo file và release không có đường bật lại.
-            if let Ok(desktop_dir) = app.handle().path().desktop_dir() {
-                let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
-                perf_log("PERF_ENABLED viewer telemetry initialized");
-            }
+            init_render_perf_log(app.handle().path().desktop_dir().ok(), "host");
 
             // ══════════════════════════════════════════════════════════════
             // VECTOR #9 FIX: Kill WebView2 debug env vars BEFORE anything

@@ -138,6 +138,11 @@ def _estimate_cut_model_bytes(model: CutModel) -> int:
     for path in model.paths:
         estimated += _ESTIMATED_PATH_BYTES
         estimated += len(path.points) * _ESTIMATED_POINT_BYTES
+        # QUALITY (audit 2026-09-24 §CUT24.D01): model giữ thêm primitive
+        # và snapshot điểm; admission RAM phải tính cả phần hình học này.
+        estimated += len(path._vector_points) * 8
+        estimated += sum(64 + len(segment) * _ESTIMATED_POINT_BYTES
+                         for segment in path.segments)
         if path.tool_tag:
             estimated += len(path.tool_tag.encode("utf-8", errors="replace"))
     estimated += len(model.marks) * _ESTIMATED_MARK_BYTES

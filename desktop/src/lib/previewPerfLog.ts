@@ -12,7 +12,17 @@ let enabledPromise: Promise<boolean> | null = null;
 let enabledValue: boolean | undefined;
 let invokePromise: Promise<InvokeFn | null> | null = null;
 let viewerTraceSequence = 0;
-let viewerTraceWriteQueue: Promise<void> = Promise.resolve();
+let latestZoomInputSequence: number | null = null;
+// PERF (audit 2026-09-25 §R25.03): giới hạn kích thước gói IPC, không bỏ sự kiện
+// hoặc giới hạn render. Một lần ghi đang chạy; sự kiện mới gom cho gói tiếp theo.
+const TRACE_BATCH_BYTES = 64 * 1024;
+const TRACE_BATCH_DELAY_MS = 25;
+type PendingTrace = { line: string; done: () => void };
+const pendingTraces: PendingTrace[] = [];
+let traceTimer: ReturnType<typeof setTimeout> | null = null;
+let traceFlush: Promise<void> | null = null;
+let failedTraceEvents = 0;
+let diagnosticCleanup: (() => void) | null = null;
 const viewerTraceSession = `V${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 function elapsedMs(): number {
@@ -34,6 +44,7 @@ async function isPreviewPerfEnabled(): Promise<boolean> {
       }
     })().then((enabled) => {
       enabledValue = enabled;
+      if (enabled) startBrowserDiagnostics();
       return enabled;
     });
   }
@@ -69,113 +80,159 @@ export function viewerTraceHash(value: unknown): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-function compactTracePayload(extra: Record<string, unknown>): Record<string, unknown> {
+function compactTracePayload(extra: Record<string, unknown>, depth = 0): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(extra)) {
     if (value === undefined || value === null) continue;
     if (typeof value === 'number') {
       if (Number.isFinite(value)) result[key] = Math.round(value * 1000) / 1000;
-      continue;
-    }
-    if (typeof value === 'boolean') {
+    } else if (typeof value === 'boolean') {
       result[key] = value;
-      continue;
-    }
-    if (typeof value === 'string') {
-      result[key] = value.slice(0, 120);
-      continue;
-    }
-    if (Array.isArray(value)) {
-      result[key] = value.slice(0, 12);
+    } else if (typeof value === 'string') {
+      result[key] = value.slice(0, 240);
+    } else if (Array.isArray(value)) {
+      result[key] = value.slice(0, 12).map(item => {
+        if (item && typeof item === 'object') {
+          return depth < 2 ? compactTracePayload(item as Record<string, unknown>, depth + 1) : null;
+        }
+        if (typeof item === 'string') return item.slice(0, 240);
+        return typeof item === 'number' && !Number.isFinite(item) ? null : item;
+      });
+    } else if (typeof value === 'object' && depth < 2) {
+      // Clip raster là object: logger cũ đã bỏ mất toàn bộ x/y/width/height.
+      result[key] = compactTracePayload(value as Record<string, unknown>, depth + 1);
     }
   }
   return result;
 }
 
-/**
- * Trace chẩn đoán Viewer/PPE. Ghi trực tiếp qua Tauri vào Desktop log để không
- * phụ thuộc route beacon của backend và không cần mở DevTools.
- */
-export function viewerTraceLog(
-  event: string,
-  extra: Record<string, unknown> = {},
-): Promise<void> {
-  if (typeof window === 'undefined') return Promise.resolve();
-  if (enabledValue === false) return Promise.resolve();
-
-  // Tauri command và worker native cùng ghi chung một file. FE phải tuần tự hóa
-  // các dòng của chính nó; nếu fire-and-forget đồng thời, các dòng JSON có thể
-  // dính vào nhau và mất thứ tự timeline (đã thấy ở log PPE cũ).
-  const write = async (): Promise<void> => {
-    try {
-      // PERF (audit 2026-08-14 §LOG.1): kể cả Dev cũng phải opt-in bằng PRYNX_PERF;
-      // không để mỗi lần chạy run_dev tự tạo PrynX_RenderPerf.log và bơm IPC theo tile.
-      if (enabledValue !== true && !(await isPreviewPerfEnabled())) return;
-      const payload = {
-        event: event.slice(0, 80),
-        trace_id: viewerTraceSession,
-        seq: ++viewerTraceSequence,
-        elapsed_ms: elapsedMs(),
-        ...compactTracePayload(extra),
-      };
-      const line = `VIEWER_TRACE ${JSON.stringify(payload)}`;
-      try {
-        const invoke = await getInvoke();
-        if (typeof invoke === 'function') {
-          await invoke('append_render_perf', { msg: line });
-          return;
-        }
-      } catch {
-        // Web mode/phiên Tauri cũ không có command này → thử beacon bên dưới.
-      }
-
-      try {
-        if (!(await isPreviewPerfEnabled())) return;
-        await authenticatedFetch(`${getApiUrl()}/imposition/perf-beacon`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msg: line, elapsed_ms: elapsedMs() }),
-        });
-      } catch {
-        /* trace không được làm gián đoạn render */
-      }
-    } catch {
-      /* Một lỗi telemetry không được tạo unhandled rejection trong UI. */
-    }
+function eventPayload(extra: Record<string, unknown>): Record<string, unknown> {
+  const seq = ++viewerTraceSequence;
+  if (extra.event === 'zoom-input') latestZoomInputSequence = seq;
+  return {
+    ...compactTracePayload(extra),
+    schema: 2,
+    trace_id: viewerTraceSession,
+    seq,
+    latest_zoom_input_seq: latestZoomInputSequence,
+    event_epoch_ms: Date.now(),
+    elapsed_ms: elapsedMs(),
   };
-  viewerTraceWriteQueue = viewerTraceWriteQueue.then(write, write);
-  return viewerTraceWriteQueue;
 }
 
-export async function previewPerfLog(msg: string, extra?: Record<string, unknown>): Promise<void> {
-  // PERF (audit 2026-08-05 §PERF.3): chỉ tốn một IPC ở lần đầu để đọc cờ;
-  // Dev và release đều mặc định không dựng payload, không ghi Desktop và không gửi HTTP.
+/** Chỉ bật probe DOM đắt hơn khi người dùng đã bật chẩn đoán native. */
+export function viewerTraceEnabled(): boolean { return enabledValue === true; }
+
+async function writeTraceBatch(lines: string[]): Promise<void> {
+  const msg = lines.join('\n');
+  const invoke = await getInvoke();
+  if (typeof invoke === 'function') {
+    await invoke('append_render_perf', { msg });
+    return;
+  }
+  const response = await authenticatedFetch(`${getApiUrl()}/imposition/perf-beacon`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ msg, elapsed_ms: elapsedMs() }),
+  });
+  if (!response.ok) throw new Error('Không ghi được log chẩn đoán.');
+}
+
+/** Chờ ghi các dòng đã gom; lỗi log không được chặn thao tác người dùng. */
+export function flushViewerTraceLogs(): Promise<void> {
+  if (traceTimer !== null) { clearTimeout(traceTimer); traceTimer = null; }
+  if (traceFlush) return traceFlush;
+  traceFlush = (async () => {
+    while (pendingTraces.length > 0) {
+      const batch: PendingTrace[] = [];
+      let bytes = 0;
+      while (pendingTraces.length && (bytes === 0 || bytes + pendingTraces[0].line.length * 3 <= TRACE_BATCH_BYTES)) {
+        const entry = pendingTraces.shift()!;
+        batch.push(entry);
+        bytes += entry.line.length * 3; // biên trên UTF-8 bảo thủ cho JSON UTF-16
+      }
+      const failedBefore = failedTraceEvents;
+      const lines = batch.map(entry => entry.line);
+      if (failedBefore) lines.unshift(`TRACE_TRANSPORT ${JSON.stringify({
+        ...eventPayload({}), failed_events: failedBefore,
+      })}`);
+      try {
+        await writeTraceBatch(lines);
+        failedTraceEvents -= failedBefore;
+      } catch {
+        failedTraceEvents += batch.length;
+      } finally {
+        batch.forEach(entry => entry.done());
+      }
+    }
+  })().finally(() => {
+    traceFlush = null;
+    if (pendingTraces.length && traceTimer === null) {
+      traceTimer = setTimeout(() => { traceTimer = null; void flushViewerTraceLogs(); }, TRACE_BATCH_DELAY_MS);
+    }
+  });
+  return traceFlush;
+}
+
+async function enqueueTrace(line: string): Promise<void> {
   if (enabledValue === false) return;
   if (enabledValue !== true && !(await isPreviewPerfEnabled())) return;
-
-  // Ưu tiên ghi thẳng qua Tauri IPC (vào PrynX_RenderPerf.log) để không spam HTTP request về FastAPI sidecar
-  try {
-    const invoke = await getInvoke();
-    if (typeof invoke === 'function') {
-      const extraStr = extra ? JSON.stringify(compactTracePayload(extra)) : '';
-      const line = `PREVIEW_PERF ${msg} ${extraStr}`.trim();
-      await invoke('append_render_perf', { msg: line });
-      return;
+  return new Promise<void>(done => {
+    pendingTraces.push({ line, done });
+    if (traceTimer === null && traceFlush === null) {
+      traceTimer = setTimeout(() => { traceTimer = null; void flushViewerTraceLogs(); }, TRACE_BATCH_DELAY_MS);
     }
-  } catch {
-    // Web mode / fallback
-  }
-
-  try {
-    await authenticatedFetch(`${getApiUrl()}/imposition/perf-beacon`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ msg, elapsed_ms: elapsedMs(), ...extra }),
-    });
-  } catch {
-    /* ignore — không chặn UI */
-  }
+  });
 }
+
+/** Capture thời gian ngay tại lời gọi; thời điểm ghi file không thay thế thời điểm sự kiện. */
+export function viewerTraceLog(event: string, extra: Record<string, unknown> = {}): Promise<void> {
+  if (typeof window === 'undefined' || enabledValue === false) return Promise.resolve();
+  return enqueueTrace(`VIEWER_TRACE ${JSON.stringify(eventPayload({ ...extra, event: event.slice(0, 80) }))}`);
+}
+
+export function previewPerfLog(msg: string, extra: Record<string, unknown> = {}): Promise<void> {
+  if (typeof window === 'undefined' || enabledValue === false) return Promise.resolve();
+  return enqueueTrace(`PREVIEW_PERF ${msg} ${JSON.stringify(eventPayload(extra))}`);
+}
+
+function startBrowserDiagnostics(): void {
+  if (diagnosticCleanup) return;
+  const onHide = () => { void flushViewerTraceLogs(); };
+  const onVisibility = () => {
+    void viewerTraceLog('document-visibility', { state: document.visibilityState });
+    if (document.visibilityState === 'hidden') onHide();
+  };
+  let observer: PerformanceObserver | null = null;
+  if (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('longtask')) {
+    observer = new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        void viewerTraceLog('ui-long-task', {
+          start_epoch_ms: performance.timeOrigin + entry.startTime,
+          duration_ms: entry.duration,
+        });
+      }
+    });
+    try { observer.observe({ type: 'longtask' }); } catch { observer.disconnect(); observer = null; }
+  }
+  window.addEventListener('pagehide', onHide);
+  document.addEventListener('visibilitychange', onVisibility);
+  diagnosticCleanup = () => {
+    observer?.disconnect();
+    window.removeEventListener('pagehide', onHide);
+    document.removeEventListener('visibilitychange', onVisibility);
+  };
+  void viewerTraceLog('telemetry-session', {
+    time_origin_ms: performance.timeOrigin, dpr: window.devicePixelRatio,
+    viewport_w: window.innerWidth, viewport_h: window.innerHeight,
+    logical_cores: navigator.hardwareConcurrency, user_agent: navigator.userAgent,
+    paint_measurement: 'DOM va rAF opportunity; khong phai xac nhan pixel man hinh',
+  });
+}
+
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  diagnosticCleanup?.();
+  void flushViewerTraceLogs();
+});
 
 /**
  * Trace kích thước bình bản chỉ dành cho vòng dev. Gửi về sidecar local để marker

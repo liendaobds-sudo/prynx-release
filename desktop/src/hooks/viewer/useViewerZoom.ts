@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
+import { viewerTraceLog } from '../../lib/previewPerfLog';
 import {
     capturePageViewportAnchor,
     capturePagePointViewportAnchor,
@@ -307,6 +308,11 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     useLayoutEffect(() => {
         const el = internalScrollRef.current;
         if (!el) return;
+        void viewerTraceLog('zoom-layout', {
+            page: activePageRef.current, zoom, fit_mode: fitMode,
+            viewport_w: el.clientWidth, viewport_h: el.clientHeight,
+            scroll_x: el.scrollLeft, scroll_y: el.scrollTop,
+        });
         let focal = zoomTargetRef.current;
         if (!focal) {
             // Không có tâm con trỏ (nút +/- hoặc nhập %): neo về TÂM khung nhìn — chỉ khi đang
@@ -382,7 +388,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             if (isZoomingRef.current || raf !== null) return;
             raf = requestAnimationFrame(() => {
                 raf = null;
-                if (!isZoomingRef.current) trackCenterAnchor();
+                if (!isZoomingRef.current) {
+                    trackCenterAnchor();
+                    void viewerTraceLog('viewport-pan', {
+                        page: activePageRef.current, zoom: currentZoomRef.current,
+                        scroll_x: el.scrollLeft, scroll_y: el.scrollTop,
+                        viewport_w: el.clientWidth, viewport_h: el.clientHeight,
+                    });
+                }
             });
         };
         el.addEventListener('scroll', onScroll, { passive: true });
@@ -451,6 +464,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                         // nhấp nháy + giật khi commit. Cách này mượt như nút +/- mà vẫn bám con trỏ.
                         pendingZoomRef.current = (pendingZoomRef.current ?? currentZoomRef.current) * Math.exp(e.deltaY * -0.001);
                         pendingZoomRef.current = Math.max(0.01, Math.min(64, pendingZoomRef.current));
+                        // PERF (audit 2026-09-25 §R25.03): ghi tại handler thật, trước rAF/setZoom.
+                        void viewerTraceLog('zoom-input', {
+                            page: activePageRef.current, zoom_before: currentZoomRef.current,
+                            zoom_target: pendingZoomRef.current, delta_y: e.deltaY, delta_mode: e.deltaMode,
+                            event_time_ms: e.timeStamp,
+                            input_delay_ms: e.timeStamp <= performance.now() ? performance.now() - e.timeStamp : undefined,
+                            viewport_w: el.clientWidth, viewport_h: el.clientHeight,
+                        });
                         lastZoomMouseRef.current = {
                             mouseX,
                             mouseY,
@@ -467,6 +488,9 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                                 if (target != null && Math.abs(target - old) > 1e-4) {
                                     const m = lastZoomMouseRef.current || { mouseX: 0, mouseY: 0 };
                                     zoomTargetRef.current = { ...m, ratio: target / old };
+                                    void viewerTraceLog('zoom-dispatch', {
+                                        page: activePageRef.current, zoom_before: old, zoom_target: target,
+                                    });
                                     setZoom(target);
                                 }
                             });
@@ -476,6 +500,9 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                         zoomTimeoutRef.current = setTimeout(() => {
                             isZoomingRef.current = false;
                             pendingZoomRef.current = null;
+                            void viewerTraceLog('zoom-idle', {
+                                page: activePageRef.current, zoom: currentZoomRef.current,
+                            });
                         }, 200);
                     }
                 }

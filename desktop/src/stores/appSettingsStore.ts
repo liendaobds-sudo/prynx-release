@@ -161,6 +161,8 @@ interface AppSettingsState {
   showRulers: boolean;
   showMenuBar: boolean;
   viewerDarkBackground: boolean;
+  enableInteractiveLinks: boolean;
+  enableTextSelectionToolbar: boolean;
   setLanguage: (lang: AppLanguage) => void;
   toggleToolVisibility: (toolKey: string) => void;
   toggleFavoriteTool: (toolKey: string) => void;
@@ -172,6 +174,8 @@ interface AppSettingsState {
   setShowMenuBar: (show: boolean) => void;
   setViewerDarkBackground: (dark: boolean) => void;
   toggleViewerDarkBackground: () => void;
+  setEnableInteractiveLinks: (enabled: boolean) => void;
+  setEnableTextSelectionToolbar: (enabled: boolean) => void;
   toolMenuWidth: number;
   toolConfigWidth: number;
   homeToolMenuWidth: number;
@@ -315,6 +319,10 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       viewerDarkBackground: false,
       setViewerDarkBackground: (dark) => set({ viewerDarkBackground: dark }),
       toggleViewerDarkBackground: () => set((state) => ({ viewerDarkBackground: !state.viewerDarkBackground })),
+      enableInteractiveLinks: true,
+      enableTextSelectionToolbar: true,
+      setEnableInteractiveLinks: (enabled) => set({ enableInteractiveLinks: enabled }),
+      setEnableTextSelectionToolbar: (enabled) => set({ enableTextSelectionToolbar: enabled }),
       toolMenuWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       toolConfigWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       homeToolMenuWidth: 320,

@@ -1,0 +1,456 @@
+{
+  "captured_utc": "2026-09-24T16:00:14.275628+00:00",
+  "scope": "user-runtime-after-R24.08-R24.09-user-reports-still-blurry",
+  "trace_id": "Vmufpi59w-lnsjf5",
+  "seq_range": [
+    1,
+    4506
+  ],
+  "fe_records": 4506,
+  "log": {
+    "relative_source": "Desktop/PrynX_RenderPerf.log",
+    "suffix_start_byte": 200794631,
+    "size_at_capture": 203407295,
+    "suffix_sha256": "dfcadbda74754cd8c741ebc6dcdd35b27027464a4e025582e9072cbb55d94f62"
+  },
+  "provenance": {
+    "frontend_sha256": "77b9ccba487c6724f671790197da48c56f07237457354f9b0881762b6f3f79f2",
+    "worker_sha256": "85b3526d9263c188b931aac130dcc4a158bfa2ca49567475ba3f658761d72f1b",
+    "runtime_has_queued_key": true
+  },
+  "document_identity_sha256": "6b7a9ffaa8112df28e5f67353e70a4b2dab5eaf1077279df033598f4a8eec493",
+  "coordinator_filter": {
+    "owner_sha256": "948ffaf8690657aff0b0ec1d10beeef5ddffc77f97a254e6805f27db8f263ebe",
+    "group_key": "page:1:instance:p1:viewport-accurate:viewport"
+  },
+  "counts": {
+    "main_requests": 13,
+    "ready": 13,
+    "cancelled": 0,
+    "fe_commits": 13
+  },
+  "native_ms": {
+    "n": 13,
+    "min": 416,
+    "median": 475,
+    "max": 657
+  },
+  "request_to_decode_ms": {
+    "n": 13,
+    "median": 550
+  },
+  "requests": [
+    {
+      "request_id": "1af65367-c146-4f76-8672-01c8d65d5e99",
+      "status": "ready",
+      "page": 1,
+      "dpi": 104,
+      "coordinator_total_ms": 849,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 657,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 538350
+    },
+    {
+      "request_id": "c222f69c-371a-4f52-9dcd-468b1bbe9c5f",
+      "status": "ready",
+      "page": 1,
+      "dpi": 692,
+      "coordinator_total_ms": 503,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 490,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 146810
+    },
+    {
+      "request_id": "773535ef-62f5-4b0c-b598-a4f227b4f255",
+      "status": "ready",
+      "page": 1,
+      "dpi": 632,
+      "coordinator_total_ms": 666,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 475,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 160400
+    },
+    {
+      "request_id": "05b6015d-adf4-478e-ad2f-34ca73e45eea",
+      "status": "ready",
+      "page": 1,
+      "dpi": 428,
+      "coordinator_total_ms": 534,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 518,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 233442
+    },
+    {
+      "request_id": "e5857a78-9446-41cc-bdbb-a02d245e4126",
+      "status": "ready",
+      "page": 1,
+      "dpi": 764,
+      "coordinator_total_ms": 430,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 418,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 111243
+    },
+    {
+      "request_id": "d1a4f668-eef6-451e-925b-0d0f1ae4ff8d",
+      "status": "ready",
+      "page": 1,
+      "dpi": 632,
+      "coordinator_total_ms": 604,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 416,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 149207
+    },
+    {
+      "request_id": "5503360a-1e2d-49cd-a2ff-71713144898c",
+      "status": "ready",
+      "page": 1,
+      "dpi": 464,
+      "coordinator_total_ms": 654,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 439,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 199442
+    },
+    {
+      "request_id": "755f9ab2-a7d8-48bc-872e-ff84ca3612df",
+      "status": "ready",
+      "page": 1,
+      "dpi": 1388,
+      "coordinator_total_ms": 491,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 478,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 95391
+    },
+    {
+      "request_id": "d9cf11f0-1e0a-40ab-9cca-214b99e21445",
+      "status": "ready",
+      "page": 1,
+      "dpi": 1532,
+      "coordinator_total_ms": 648,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 448,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 93691
+    },
+    {
+      "request_id": "23a9d513-ed0c-47d9-912d-0fa30ffa7157",
+      "status": "ready",
+      "page": 1,
+      "dpi": 2072,
+      "coordinator_total_ms": 550,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 487,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 90266
+    },
+    {
+      "request_id": "d853ab46-5d15-4548-9846-d010df1e0574",
+      "status": "ready",
+      "page": 1,
+      "dpi": 1136,
+      "coordinator_total_ms": 475,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 463,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 103429
+    },
+    {
+      "request_id": "c6bd00c8-fbdb-4fc1-8b53-cb130ddfeb27",
+      "status": "ready",
+      "page": 1,
+      "dpi": 1028,
+      "coordinator_total_ms": 652,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 500,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 99279
+    },
+    {
+      "request_id": "3ba8b927-941d-49d8-a34f-faca007923d2",
+      "status": "ready",
+      "page": 1,
+      "dpi": 632,
+      "coordinator_total_ms": 483,
+      "actual_engine": "PPE",
+      "native_timing": {
+        "total_ms": 470,
+        "sem_wait_ms": 0,
+        "worker_queue_ms": 0
+      },
+      "bytes": 154906
+    }
+  ],
+  "fe_commits": [
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 139,
+      "elapsed_ms": 65852,
+      "tile_id": "e3840872",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 1.083,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 850
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 155,
+      "elapsed_ms": 66255,
+      "tile_id": "63563dd4",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 7.208,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 504
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 886,
+      "elapsed_ms": 68572,
+      "tile_id": "e4e6aea0",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 6.583,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 666
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 921,
+      "elapsed_ms": 68692,
+      "tile_id": "37e380f4",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 4.458,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 534
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 933,
+      "elapsed_ms": 68750,
+      "tile_id": "bab4932c",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 7.958,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 431
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 1859,
+      "elapsed_ms": 72473,
+      "tile_id": "dd18cff8",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 6.583,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 604
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 2617,
+      "elapsed_ms": 74798,
+      "tile_id": "9f8f742a",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 4.833,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 655
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 2628,
+      "elapsed_ms": 74817,
+      "tile_id": "be17173e",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 14.458,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 492
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 3326,
+      "elapsed_ms": 77299,
+      "tile_id": "7b12bd02",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 15.958,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 648
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 3350,
+      "elapsed_ms": 77345,
+      "tile_id": "a3039e4b",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 21.583,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 550
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 3362,
+      "elapsed_ms": 77364,
+      "tile_id": "68de264d",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 11.833,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 476
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 4169,
+      "elapsed_ms": 78681,
+      "tile_id": "49df5fb4",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 10.708,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 652
+    },
+    {
+      "event": "tile-first-pixel",
+      "trace_id": "Vmufpi59w-lnsjf5",
+      "seq": 4181,
+      "elapsed_ms": 78697,
+      "tile_id": "ac02fc7b",
+      "page": 1,
+      "instance": "3193b387",
+      "priority": 0,
+      "group": "ac83131c",
+      "attempt": 1,
+      "scale": 6.583,
+      "color_stage": "accurate",
+      "native_to_decode_ms": 483
+    }
+  ],
+  "kernel_probe": {
+    "scope": "print_engine-release-ICC-only-not-running-dev-worker-or-PDF",
+    "command": "cargo test --offline --release profile_softproof_setup_and_viewport -- --ignored --nocapture",
+    "exit_code": 0,
+    "test_count": 1,
+    "viewport_pixels": 1118208,
+    "setup_ms": [
+      0.82,
+      0.823,
+      0.932,
+      0.771
+    ],
+    "serial_transform_ms": [
+      260.923,
+      270.03,
+      273.797,
+      262.845
+    ],
+    "batch_ms": [
+      42.419,
+      47.858,
+      50.959,
+      36.118
+    ],
+    "byte_parity": true
+  },
+  "caveats": [
+    "Different wheel sequence from pre-patch trace: not a controlled A/B speedup.",
+    "FE commit is not compositor presentation. elapsed_ms/log timestamps are queued and cannot measure display dwell.",
+    "Zero semaphore/worker queue excludes only those measured queue points.",
+    "Kernel release benchmark does not attribute the running dev worker total; actual PDF raster/encode still needs the source file.",
+    "No application restart, worker binary replacement or native optimization in this diagnosis."
+  ]
+}

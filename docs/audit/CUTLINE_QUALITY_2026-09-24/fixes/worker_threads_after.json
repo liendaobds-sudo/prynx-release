@@ -1,0 +1,60 @@
+{
+  "scope": "Actual decorated worker with engine stub, no PDF/render/pool benchmark",
+  "requested_threads": 1,
+  "before": {
+    "blas": [
+      {
+        "dll": "libopenblas64__v0.3.23-293-gc2f4bdbb-gcc_10_3_0-2bde3a66a51006b2b53eb373ff767a3f.dll",
+        "threads": 16
+      },
+      {
+        "dll": "libopenblas_v0.3.20-571-g3dec11c6-gcc_10_3_0-c2315440d6b6cef5037bad648efc8c59.dll",
+        "threads": 16
+      }
+    ],
+    "opencv": 16,
+    "env": {
+      "OPENBLAS_NUM_THREADS": null,
+      "OMP_NUM_THREADS": null,
+      "MKL_NUM_THREADS": null
+    }
+  },
+  "inside": {
+    "blas": [
+      {
+        "dll": "libopenblas64__v0.3.23-293-gc2f4bdbb-gcc_10_3_0-2bde3a66a51006b2b53eb373ff767a3f.dll",
+        "threads": 1
+      },
+      {
+        "dll": "libopenblas_v0.3.20-571-g3dec11c6-gcc_10_3_0-c2315440d6b6cef5037bad648efc8c59.dll",
+        "threads": 1
+      }
+    ],
+    "opencv": 1,
+    "env": {
+      "OPENBLAS_NUM_THREADS": null,
+      "OMP_NUM_THREADS": null,
+      "MKL_NUM_THREADS": null
+    }
+  },
+  "after": {
+    "blas": [
+      {
+        "dll": "libopenblas64__v0.3.23-293-gc2f4bdbb-gcc_10_3_0-2bde3a66a51006b2b53eb373ff767a3f.dll",
+        "threads": 16
+      },
+      {
+        "dll": "libopenblas_v0.3.20-571-g3dec11c6-gcc_10_3_0-c2315440d6b6cef5037bad648efc8c59.dll",
+        "threads": 16
+      }
+    ],
+    "opencv": 16,
+    "env": {
+      "OPENBLAS_NUM_THREADS": null,
+      "OMP_NUM_THREADS": null,
+      "MKL_NUM_THREADS": null
+    }
+  },
+  "restored": true,
+  "picklable": true
+}

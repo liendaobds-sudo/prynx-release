@@ -54,8 +54,8 @@ pub mod perf_probe {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
-    static NANOS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
-    static CALLS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+    static NANOS: [AtomicU64; 14] = [const { AtomicU64::new(0) }; 14];
+    static CALLS: [AtomicU64; 14] = [const { AtomicU64::new(0) }; 14];
     pub const END_PATH: usize = 0;
     pub const PAINT_COLOR: usize = 1;
     pub const COVERAGE: usize = 2;
@@ -66,6 +66,17 @@ pub mod perf_probe {
     pub const GROUP_SETUP: usize = 7;
     pub const GROUP_FINISH: usize = 8;
     pub const FINALIZE_RGB: usize = 9;
+    // PERF (audit 2026-09-24 R24.10): tách phần raster còn ngoài các span vector.
+    pub const IMAGE: usize = 10;
+    pub const SOFT_MASK: usize = 11;
+    pub const CLIP: usize = 12;
+    pub const BBOX_CLIP: usize = 13;
+
+    /// Đối chứng A/B trong profiler; biến này không tồn tại trong worker mặc định.
+    pub fn offscreen_form_culling_enabled() -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var("PRYNX_PROBE_DISABLE_FORM_CULLING").as_deref() != Ok("1"))
+    }
 
     pub struct Span(usize, Instant);
     pub fn span(stage: usize) -> Span {
@@ -84,7 +95,8 @@ pub mod perf_probe {
     }
     pub fn snapshot() -> Vec<(&'static str, u64, f64)> {
         ["end_path", "paint_color", "coverage", "composite", "composite_rgb",
-         "state", "path_build", "group_setup", "group_finish", "finalize_rgb"]
+         "state", "path_build", "group_setup", "group_finish", "finalize_rgb",
+         "image", "soft_mask", "clip", "bbox_clip"]
             .into_iter()
             .enumerate()
             .map(|(i, name)| (
@@ -100,7 +112,7 @@ pub mod perf_probe {
         reset();
         { let _span = span(PAINT_COLOR); }
         let snapshot = snapshot();
-        assert_eq!(snapshot.len(), 10);
+        assert_eq!(snapshot.len(), 14);
         assert_eq!(snapshot[PAINT_COLOR].0, "paint_color");
         assert!(snapshot[PAINT_COLOR].1 >= 1);
         assert!(snapshot[PAINT_COLOR].2.is_finite() && snapshot[PAINT_COLOR].2 >= 0.0);

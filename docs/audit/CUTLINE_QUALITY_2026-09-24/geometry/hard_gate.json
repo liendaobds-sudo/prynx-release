@@ -1,0 +1,68 @@
+[
+  {
+    "stats": {
+      "before_segments": 16,
+      "after_segments": 7,
+      "maximum_error_bound_mm": 0.06840625000022739,
+      "changed": true
+    },
+    "metrics": {
+      "segment_count": 7,
+      "line_segment_count": 0,
+      "cubic_segment_count": 7,
+      "degenerate_segment_count": 0,
+      "total_length_mm": 51.77273990230556,
+      "minimum_segment_length_mm": 3.7735167903840967,
+      "p10_segment_length_mm": 3.886642429601361,
+      "median_segment_length_mm": 8.467906945462184,
+      "short_segment_count": 0,
+      "short_segment_ratio": 0.0,
+      "join_count": 7,
+      "disconnected_join_count": 0,
+      "maximum_endpoint_gap_mm": 0.0,
+      "maximum_join_angle_degrees": 8.537736462515939e-07,
+      "p95_join_angle_degrees": 8.537736462515939e-07,
+      "discontinuous_join_count": 0,
+      "maximum_curvature_jump_per_mm": 0.5452569347931138,
+      "p95_curvature_jump_per_mm": 0.5086366274235892,
+      "curvature_sign_flip_count": 4,
+      "curvature_sign_flips_per_100mm": 7.726073620109626
+    },
+    "sampled_distance_mm": 0.06592289014708504,
+    "levels": 0,
+    "elapsed_s": 1.952759200008586
+  },
+  {
+    "stats": {
+      "before_segments": 128,
+      "after_segments": 128,
+      "maximum_error_bound_mm": 0.0,
+      "changed": false
+    },
+    "metrics": {
+      "segment_count": 128,
+      "line_segment_count": 0,
+      "cubic_segment_count": 128,
+      "degenerate_segment_count": 0,
+      "total_length_mm": 51.820382210486606,
+      "minimum_segment_length_mm": 0.15202503160166325,
+      "p10_segment_length_mm": 0.18671681393783673,
+      "median_segment_length_mm": 0.29808029647874396,
+      "short_segment_count": 38,
+      "short_segment_ratio": 0.296875,
+      "join_count": 128,
+      "disconnected_join_count": 0,
+      "maximum_endpoint_gap_mm": 0.0,
+      "maximum_join_angle_degrees": 1.2074182697257333e-06,
+      "p95_join_angle_degrees": 1.2074182697257333e-06,
+      "discontinuous_join_count": 0,
+      "maximum_curvature_jump_per_mm": 2.0517688449468356,
+      "p95_curvature_jump_per_mm": 0.6333266792256291,
+      "curvature_sign_flip_count": 0,
+      "curvature_sign_flips_per_100mm": 0.0
+    },
+    "sampled_distance_mm": 6.998241748747559e-16,
+    "levels": 3,
+    "elapsed_s": 3.357222600025125
+  }
+]

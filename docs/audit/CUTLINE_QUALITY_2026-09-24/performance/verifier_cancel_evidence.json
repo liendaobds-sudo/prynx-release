@@ -1,0 +1,9 @@
+{
+  "scope": "Hủy trong callback metric đầu tiên của verifier thật; circle 8->4 cubic; không solver/PDF/HTTP/Tauri",
+  "token_cancelled": true,
+  "verifier_returned_accepted_after_cancel": true,
+  "metric_calls_after_cancel": 2,
+  "distance_bound_calls_after_cancel": 1,
+  "elapsed_ms_instrumented": 125.43109990656376,
+  "limitation": "Chứng minh verifier tiếp tục tính sau cancel, không chứng minh publish stale; job caller vẫn chặn publish. Chưa đo latency worst-case."
+}

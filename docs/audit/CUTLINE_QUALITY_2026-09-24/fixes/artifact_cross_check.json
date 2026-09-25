@@ -1,0 +1,24 @@
+[
+  {
+    "mode": "original",
+    "sampled_distance_mm": [
+      0.09802903205808057
+    ],
+    "same_artwork_pixels": true,
+    "same_artwork_placement": true,
+    "same_page_box": true,
+    "before": 73,
+    "after": 56
+  },
+  {
+    "mode": "round",
+    "sampled_distance_mm": [
+      0.09017811264193618
+    ],
+    "same_artwork_pixels": true,
+    "same_artwork_placement": true,
+    "same_page_box": true,
+    "before": 51,
+    "after": 45
+  }
+]

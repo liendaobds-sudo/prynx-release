@@ -1,0 +1,80 @@
+{
+  "captured_local": "2026-09-24T21:10:12.9287737+07:00",
+  "head": "2dfa2f9cb3779379597bfc348cab9c145af3c5e9",
+  "scope": "working-tree-read-only-render-audit",
+  "sources": [
+    {
+      "path": "desktop/src/components/AcrobatViewer.tsx",
+      "sha256": "82da46d5af85e8ab5dae63487aacdb34edd145911000747122311985d2188e3e",
+      "size_bytes": 175571,
+      "modified_local": "2026-09-24T20:46:53.2873411+07:00"
+    },
+    {
+      "path": "desktop/src/components/workspace/LivePageFrame.tsx",
+      "sha256": "d8013c754a96ce22096a63f796cf8e05a9597d96a1305d73fb0a1577f2a26552",
+      "size_bytes": 473377,
+      "modified_local": "2026-09-24T21:03:19.3506602+07:00"
+    },
+    {
+      "path": "desktop/src/components/workspace/livePageFramePolicy.ts",
+      "sha256": "fae77b7b7b2b92b10743bb71a111cd165181dd1bb032efd7b3b80ad3eee81548",
+      "size_bytes": 16573,
+      "modified_local": "2026-09-24T18:45:05.5342410+07:00"
+    },
+    {
+      "path": "desktop/src/components/workspace/viewportTilePolicy.ts",
+      "sha256": "fd28535fd506c90e7c5933b8058a65e19df21558367510fb554f2e20ea1694c9",
+      "size_bytes": 27948,
+      "modified_local": "2026-09-24T18:45:18.6279967+07:00"
+    },
+    {
+      "path": "desktop/src/hooks/viewer/usePdfLoader.ts",
+      "sha256": "cfdf7a997e631fc5383e01e3f755d40d440e918c47b9b0a1eb65af7b4d95e5f9",
+      "size_bytes": 55019,
+      "modified_local": "2026-09-24T13:39:24.0431524+07:00"
+    },
+    {
+      "path": "desktop/src/hooks/viewer/useTileRenderer.ts",
+      "sha256": "053b491a58feb904d2513494339256ff228701464f4aa02c54cadf99c8435f12",
+      "size_bytes": 44273,
+      "modified_local": "2026-09-24T17:25:00.6334085+07:00"
+    },
+    {
+      "path": "desktop/src/hooks/viewer/renderCoordinator.ts",
+      "sha256": "bed1fe8cd0ffb73024c5329baf78981a901a74b21c3a1da09ecb69580eba0d3e",
+      "size_bytes": 25637,
+      "modified_local": "2026-09-23T07:04:04.5640892+07:00"
+    },
+    {
+      "path": "desktop/src/hooks/viewer/tileRenderScheduler.ts",
+      "sha256": "d8ce3bfb2e69b0a1440138795510bc84edd5feec9db706fb1bd2ad3516b5394e",
+      "size_bytes": 14257,
+      "modified_local": "2026-09-23T04:45:20.7152503+07:00"
+    },
+    {
+      "path": "desktop/src-tauri/src/lib.rs",
+      "sha256": "a387e73347742414bde540abe6084429d139ab5395fb75dbc941c4511a035adc",
+      "size_bytes": 392477,
+      "modified_local": "2026-09-24T20:10:08.2661457+07:00"
+    },
+    {
+      "path": "desktop/src-tauri/src/pdf_engine/render_worker.rs",
+      "sha256": "c936796488755bb74e6bf09d98722681e931d293c3e76bf237f4d832938c265c",
+      "size_bytes": 271923,
+      "modified_local": "2026-09-24T20:09:57.3667020+07:00"
+    },
+    {
+      "path": "scripts/ppe_viewer_webview_baseline.mjs",
+      "sha256": "5d64e826f98114757f55b1026b970ed28886af28908cfea492ee4fc253657e67",
+      "size_bytes": 123598,
+      "modified_local": "2026-09-23T11:13:49.5217719+07:00"
+    }
+  ],
+  "validation": {
+    "typecheck": "passed",
+    "existing_tests_passed": 161,
+    "audit_assertions_reproducing_bugs": 5,
+    "native_probes": "direct DLL and current EXE worker",
+    "acrobat_gui_ab": "not run"
+  }
+}

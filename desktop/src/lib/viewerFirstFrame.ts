@@ -397,7 +397,7 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
     } catch (error) {
       void viewerTraceLog('first-frame-prime-failed', {
         path: tracePath,
-        error: error instanceof Error ? error.name : typeof error,
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
         total_ms: Math.round(performance.now() - startedAt),
       });
       return null;

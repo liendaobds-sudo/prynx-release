@@ -31,6 +31,7 @@ import {
     usesNativeAccurateWorker,
 } from './useTileRenderer';
 import { registerRenderDocumentIdentity, renderPipelineIdentity } from './renderCoordinator';
+import type { TileUrlSource } from '../../lib/tileUrlCache';
 import {
     computeAccurateViewerBaseZoom,
     computeRenderZoomPure,
@@ -720,6 +721,31 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         unmount();
     });
 
+    it('R25.04.3: gửi viewport PPE trước khi nhường lượt cho công việc UI tiếp theo', async () => {
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:\\jobs\\invoke-before-yield.pdf', name: 'invoke-before-yield.pdf', type: 'application/pdf' },
+            pdfRef: null,
+            pdfUrl: 'localfile://invoke-before-yield',
+            activePage: 1,
+            isActive: true,
+            viewerEngineMode: 'ppe-only',
+        }));
+        const pending = result.current.getTileUrl(
+            1, 0, 8, 5120, 3392, 1344, 768,
+            { colorStage: 'accurate', priority: 0, groupKey: 'viewport-before-yield' },
+        );
+        // Không await ở đây: wheel/React có thể chiếm nhiều lượt ngay sau stack này.
+        // Native cần được nhận việc trước, để raster chạy đồng thời với UI.
+        const submitted = transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page');
+        await act(async () => { await pending; });
+        unmount();
+        expect(submitted).toHaveLength(1);
+        expect(submitted[0][1]).toMatchObject({
+            page: 1, clipX: 5120, clipY: 3392, clipW: 1344, clipH: 768,
+            requestContext: { priority: 0, purpose: 'accurate' },
+        });
+    });
+
     it('ppe-only fail-loud khi capability chưa được PPE hỗ trợ', async () => {
         transportMocks.invoke.mockImplementation((command: string) => {
             if (command === 'render_ppe_page') {
@@ -1030,6 +1056,35 @@ describe('Viewer — định tuyến render màu chính xác', () => {
 
         expect(transportMocks.invoke).not.toHaveBeenCalled();
         expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
+        unmount();
+    });
+
+    it('AUDIT §R24.05 / F3: lỗi createImageBitmap trên PXRG phải fallback raster thật, không cache GIF trắng', async () => {
+        const bytes = new ArrayBuffer(16 + 2 * 2 * 4);
+        new Uint8Array(bytes).set([0x50, 0x58, 0x52, 0x47]); // "PXRG"
+        const header = new DataView(bytes);
+        header.setUint32(4, 2, true); // width = 2
+        header.setUint32(8, 2, true); // height = 2
+        header.setUint32(12, 8, true); // stride = 8
+        new Uint8Array(bytes, 16).fill(255);
+        transportMocks.invoke.mockImplementation(async (command: string) => command === 'render_pdf_page' ? bytes : true);
+        vi.stubGlobal('ImageData', class { constructor(..._args: unknown[]) {} });
+        const decoder = vi.fn(async () => { throw new Error('decode allocation failed'); });
+        vi.stubGlobal('createImageBitmap', decoder);
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:\\audit\\pxrg.pdf', name: 'pxrg.pdf', type: 'application/pdf' },
+            pdfRef: null,
+            pdfUrl: 'localfile://audit-pxrg',
+            activePage: 1,
+            isActive: true,
+        }));
+        let source: TileUrlSource | undefined;
+        await act(async () => { source = await result.current.getTileUrl(1, 0, 1); });
+        expect(decoder).toHaveBeenCalledTimes(1);
+        expect(source?.cacheable).toBe(true);
+        expect(source?.bitmap).toBeUndefined();
+        expect(source?.url).toMatch(/^data:image\/bmp;base64,/);
+        expect(source?.url).not.toMatch(/^data:image\/gif/);
         unmount();
     });
 });

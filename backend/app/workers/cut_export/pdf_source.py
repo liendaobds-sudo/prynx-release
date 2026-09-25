@@ -15,8 +15,8 @@ import hashlib
 import os
 from typing import Optional
 
-from app.workers.cut_export.cut_model import CutModel
-from app.workers.cut_export.cut_model_builder import build_cut_model
+from app.workers.cut_export.cut_model import CutModel, CutPath
+from app.workers.cut_export.cut_model_builder import build_cut_model, _extract_source_names
 
 PT_TO_MM = 25.4 / 72.0
 _HASH_CHUNK_BYTES = 1024 * 1024
@@ -76,8 +76,9 @@ def _page_size_mm_from_pdf(pdf, page_idx: int) -> tuple[float, float]:
     """Lấy khổ trang từ PDF đang mở, không parse lại tài liệu."""
     pg = pdf.pages[page_idx]
     mb = pg.get("/MediaBox", [0, 0, 612, 792])
-    w = abs(float(mb[2]) - float(mb[0])) * PT_TO_MM
-    h = abs(float(mb[3]) - float(mb[1])) * PT_TO_MM
+    unit = float(pg.get("/UserUnit", 1))
+    w = abs(float(mb[2]) - float(mb[0])) * PT_TO_MM * unit
+    h = abs(float(mb[3]) - float(mb[1])) * PT_TO_MM * unit
     return w, h
 
 
@@ -105,17 +106,20 @@ def _build_cut_model_from_result(pdf, page_idx: int, result, pont_config: Option
     """Dựng CutModel từ kết quả đã trích trong cùng phiên mở PDF."""
     if not result.contours:
         raise _missing_cut_error(page_idx, result)
-    geoms = [
-        [(x * PT_TO_MM, y * PT_TO_MM) for (x, y) in contour.points]
-        for contour in result.contours
-    ]
     sheet_w_mm, sheet_h_mm = _page_size_mm_from_pdf(pdf, page_idx)
-    return build_cut_model(
-        geoms,
+    # QUALITY (audit 2026-09-24 §CUT24.D01): không chạy RDP lần hai trên
+    # polyline đã chứng nhận; giữ đường hở và thứ tự/winding các vòng lỗ.
+    return CutModel(
+        paths=[CutPath(
+            points=[(x * PT_TO_MM, y * PT_TO_MM) for x, y in contour.points],
+            closed=contour.closed,
+            segments=tuple(tuple((x*PT_TO_MM, y*PT_TO_MM) for x,y in segment)
+                           for segment in contour.segments),
+        ) for contour in result.contours],
         marks=[],
         sheet_w_mm=sheet_w_mm,
         sheet_h_mm=sheet_h_mm,
-        pont_config=pont_config,
+        source_names=_extract_source_names(pont_config),
     )
 
 
