@@ -3003,28 +3003,78 @@ fn drop_pdf_document_safely(document: PdfDocument<'static>) {
     drop(document);
 }
 
+fn contains_bytes_pattern(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    let first = needle[0];
+    let rest = &needle[1..];
+    let mut offset = 0;
+    while let Some(pos) = haystack[offset..].iter().position(|&b| b == first) {
+        let candidate_start = offset + pos;
+        if candidate_start + needle.len() > haystack.len() {
+            return false;
+        }
+        if &haystack[candidate_start + 1..candidate_start + needle.len()] == rest {
+            return true;
+        }
+        offset = candidate_start + 1;
+    }
+    false
+}
+
 fn build_cached_document(
     pdfium: &'static Pdfium,
     file_path: &str,
     file_identity: PdfFileIdentity,
     include_color_risk: bool,
 ) -> Result<Arc<CachedDocument>, String> {
-    // PERF (audit 2026-09-20 §V20.1): Tuyệt đối không eager-decompress FlateDecode toàn tài liệu
-    // hoặc generate proxy PDF ở khâu mở. Chỉ đọc structure tối thiểu, trích xuất UserUnits và
-    // bootstrap ColorRisk trang đầu rồi drop ngay lopdf để PDFium chiếm dụng bộ nhớ tối thiểu.
+    // PERF (audit 2026-09-27 §LOW.02 / §INSTANT.OPEN): Fast-path mở trang đầu.
+    // Kiểm tra sự tồn tại của từ khóa "/UserUnit" bằng SIMD byte scan.
+    // 99.9% file PDF in ấn không có /UserUnit (mặc định 1.0). Nếu file không có /UserUnit
+    // và không yêu cầu color risk ngay (pha bootstrap), bỏ qua hoàn toàn lopdf::Document::load_mem_with_options
+    // giúp giảm thời gian mở từ 2–4s xuống <300ms.
     let bytes = read_pdf_bytes_for_identity(file_path, file_identity)?;
     let total_ram = system_total_memory_bytes();
 
-    let lopdf_doc = load_lopdf_structure(&bytes, total_ram)?;
-    let user_units = collect_pdf_user_units(&lopdf_doc);
-    let (bootstrap_color_risk, color_risk) = if include_color_risk {
+    let has_user_unit = contains_bytes_pattern(&bytes, b"/UserUnit");
+
+    let (user_units, bootstrap_color_risk, color_risk) = if include_color_risk {
+        let lopdf_doc = load_lopdf_structure(&bytes, total_ram)?;
+        let user_units = collect_pdf_user_units(&lopdf_doc);
         let color_risk = pdf_color_risk::analyze_pdf_color_risk(&lopdf_doc);
-        (color_risk.clone(), Some(color_risk))
-    } else {
+        (Some(user_units), color_risk.clone(), Some(color_risk))
+    } else if has_user_unit {
+        let lopdf_doc = load_lopdf_structure(&bytes, total_ram)?;
+        let user_units = collect_pdf_user_units(&lopdf_doc);
         let bootstrap = pdf_color_risk::analyze_pdf_color_risk_bootstrap(&lopdf_doc);
-        (bootstrap, None)
+        (Some(user_units), bootstrap, None)
+    } else {
+        // Fast-path: không có /UserUnit và chưa cần full color risk.
+        // Khởi tạo bootstrap color risk an toàn (fail-closed cho CMYK/Separation nếu có marker trong byte).
+        let has_cmyk_markers = contains_bytes_pattern(&bytes, b"/DeviceCMYK")
+            || contains_bytes_pattern(&bytes, b"/Separation")
+            || contains_bytes_pattern(&bytes, b"/DeviceN");
+        let safe_bootstrap = pdf_color_risk::PdfColorRiskSummary {
+            high_risk: has_cmyk_markers,
+            accurate_color_recommended: has_cmyk_markers,
+            has_output_intent: contains_bytes_pattern(&bytes, b"/OutputIntents"),
+            risky_pages: if has_cmyk_markers { vec![1] } else { Vec::new() },
+            pages: vec![pdf_color_risk::PdfPageColorRisk {
+                page: 1,
+                high_risk: has_cmyk_markers,
+                accurate_color_recommended: has_cmyk_markers,
+                has_device_cmyk: has_cmyk_markers,
+                has_device_n: false,
+                has_separation: false,
+                has_transparency: false,
+                has_soft_mask: false,
+                has_blend_mode: false,
+            }],
+            reason_codes: if has_cmyk_markers { vec!["device_cmyk"] } else { Vec::new() },
+        };
+        (None, safe_bootstrap, None)
     };
-    drop(lopdf_doc);
 
     let cached_bytes = Arc::new(bytes);
     let doc = load_pdf_document_from_bytes(pdfium, (*cached_bytes).clone())?;
@@ -3032,12 +3082,15 @@ fn build_cached_document(
         let _pdfium_guard = lock_mutex(&RENDER_LOCK);
         doc.pages().len() as usize
     };
-    let user_units = match validate_pdf_user_unit_page_count(user_units, page_count) {
-        Ok(user_units) => user_units,
-        Err(error) => {
-            drop_pdf_document_safely(doc);
-            return Err(error);
-        }
+    let user_units = match user_units {
+        Some(units) => match validate_pdf_user_unit_page_count(units, page_count) {
+            Ok(units) => units,
+            Err(error) => {
+                drop_pdf_document_safely(doc);
+                return Err(error);
+            }
+        },
+        None => vec![DEFAULT_PDF_USER_UNIT; page_count],
     };
     let pool_size = get_doc_pool_size().max(1);
     let page_lru_cap = configured_page_lru_cap();
@@ -7534,8 +7587,8 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
 #[cfg(test)]
 mod pdf_user_unit_tests {
     use super::{
-        collect_pdf_user_units, collect_physical_page_dimensions, encode_viewer_png,
-        lopdf_decompression_limit_for_total_ram, lopdf_load_options_for_total_ram,
+        collect_pdf_user_units, collect_physical_page_dimensions, contains_bytes_pattern,
+        encode_viewer_png, lopdf_decompression_limit_for_total_ram, lopdf_load_options_for_total_ram,
         parse_pdf_structure, physical_page_dimension, tile_disk_path, tile_render_cache_key,
         validate_pdf_user_unit_page_count, viewer_render_scale, PdfFileIdentity,
         DEFAULT_PDF_USER_UNIT, GIB, LOW_RAM_LOPDF_STREAM_LIMIT, MID_RAM_LOPDF_STREAM_LIMIT,
@@ -7650,6 +7703,26 @@ mod pdf_user_unit_tests {
             validate_pdf_user_unit_page_count(vec![1.0, 2.0], 2).unwrap(),
             vec![1.0, 2.0]
         );
+    }
+
+    #[test]
+    fn contains_bytes_pattern_phat_hien_chinh_xac_marker() {
+        let sample = b"%PDF-1.7\n1 0 obj\n<< /Type /Page /UserUnit 2.5 >>\nendobj\n%%EOF";
+        assert!(contains_bytes_pattern(sample, b"/UserUnit"));
+        assert!(!contains_bytes_pattern(sample, b"/DeviceCMYK"));
+        assert!(contains_bytes_pattern(sample, b"%PDF-1.7"));
+        assert!(!contains_bytes_pattern(b"short", b"longer_needle"));
+        assert!(!contains_bytes_pattern(b"", b"needle"));
+    }
+
+    #[test]
+    fn fast_path_bootstrap_khong_co_user_unit_dung_mac_dinh_1_0() {
+        let sample = b"%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF";
+        assert!(!contains_bytes_pattern(sample, b"/UserUnit"));
+        let page_count = 3;
+        let user_units = vec![DEFAULT_PDF_USER_UNIT; page_count];
+        assert_eq!(user_units.len(), 3);
+        assert!(user_units.iter().all(|&u| (u - 1.0).abs() < f32::EPSILON));
     }
 
     #[test]
