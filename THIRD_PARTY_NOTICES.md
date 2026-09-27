@@ -165,7 +165,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [iniconfig](https://github.com/pytest-dev/iniconfig) | 2.3.0 | MIT | build/test |
 | [Jinja2](https://github.com/pallets/jinja/) | 3.1.6 | BSD License | build/test |
 | [kombu](https://kombu.readthedocs.io) | 5.6.2 | BSD-3-Clause | build/test |
-| [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.4 | BSD-3-Clause | build/test |
+| [lazy_loader](https://github.com/scientific-python/lazy_loader) | 0.4 | BSD License | phát hành |
 | [lxml](https://lxml.de/) | 6.1.3 | BSD-3-Clause | build/test |
 | [Mako](https://www.makotemplates.org/) | 1.4.3 | MIT | build/test |
 | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | 4.2.0 | MIT License | build/test |
@@ -1652,7 +1652,7 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | Apache-2.0 OR MIT | 90 |
 | Apache-2.0 | 46 |
 | MIT/Apache-2.0 | 35 |
-| BSD-3-Clause | 33 |
+| BSD-3-Clause | 32 |
 | ISC | 29 |
 | Unicode-3.0 | 24 |
 | Zlib OR Apache-2.0 OR MIT | 22 |
@@ -1660,8 +1660,8 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 16 |
 | Unlicense OR MIT | 16 |
 | BSD-2-Clause | 15 |
+| BSD License | 9 |
 | Apache-2.0/MIT | 8 |
-| BSD License | 8 |
 
 4 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
 
