@@ -492,7 +492,12 @@ describe('StickerCutlineTool — quay lại luồng cũ, AI là tùy chọn', ()
         resolveCommit();
         await waitFor(() => expect(screen.getByRole('button', { name: 'Bình tem bế' })).toBeTruthy());
         const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
-        const resultCard = screen.getByRole('status');
+        // AUTO có vùng trạng thái riêng; thẻ hoàn tất được nhận diện bằng
+        // hành động tiếp theo, không giả định toàn công cụ chỉ có một status.
+        const resultCard = screen.getByRole('button', { name: 'Bình tem bế' })
+            .closest('[role="status"]');
+        if (!resultCard) throw new Error('Thiếu thẻ kết quả sau khi xuất.');
+        expect(screen.getByTestId('sticker-sheet-cutline-quality').getAttribute('role')).toBe('status');
         expect(settingsToggle.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING)
             .toBeTruthy();
         await waitFor(() => expect(settingsToggle.getAttribute('aria-expanded')).toBe('false'));

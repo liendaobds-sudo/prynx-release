@@ -12,7 +12,7 @@ import {
     type StickerSourceDetectionPayload,
     type StickerSourceInspectPayload,
 } from '../../lib/stickerSheetApi';
-import { useStickerSheetStore } from './stickerSheetStore';
+import { resolveStickerSheetAutoSimplifyMm, useStickerSheetStore } from './stickerSheetStore';
 
 
 vi.mock('../../lib/stickerSheetApi', () => ({
@@ -170,21 +170,22 @@ function prepareSuccessfulFlow(sessionId = 'a'.repeat(32), dpi: [number, number]
     vi.mocked(detectStickerSource).mockResolvedValue(detection(sessionId, dpi));
 }
 
+function cutlinePreviewPayload(pageNumber = 1, fingerprint = 'f'.repeat(64)): Awaited<ReturnType<typeof previewStickerCutline>> {
+    return {
+        page_number: pageNumber, mask_revision: 1,
+        preview_width_px: 120, preview_height_px: 80,
+        paths: [{ instance_id: 1, d: 'M 1 1 C 2 1 3 2 4 4 Z', segment_count: 1 }],
+        fingerprint, segment_count: 1,
+    };
+}
+
 describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
     beforeEach(() => {
         useStickerSheetStore.setState({ tabs: {} });
         vi.clearAllMocks();
         vi.mocked(confirmStickerSource).mockResolvedValue(true);
         vi.mocked(loadStickerSourcePreview).mockResolvedValue(new Blob(['source-preview']));
-        vi.mocked(previewStickerCutline).mockResolvedValue({
-            page_number: 1,
-            mask_revision: 1,
-            preview_width_px: 120,
-            preview_height_px: 80,
-            paths: [{ instance_id: 1, d: 'M 1 1 C 2 1 3 2 4 4 Z', segment_count: 1 }],
-            fingerprint: 'f'.repeat(64),
-            segment_count: 1,
-        });
+        vi.mocked(previewStickerCutline).mockResolvedValue(cutlinePreviewPayload());
         let index = 0;
         Object.defineProperty(URL, 'createObjectURL', {
             configurable: true,
@@ -213,6 +214,160 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
 
         expect(useStickerSheetStore.getState().getTab('tab-mode').mode).toBe('ai-sheet');
         expect(useStickerSheetStore.getState().getTab('tab-mode').status).toBe('idle');
+    });
+
+    it('AUTO gửi 0,1 mm ngay từ preview đầu và giữ nguyên ở payload xuất', async () => {
+        prepareSuccessfulFlow();
+        vi.mocked(exportStickerSheet).mockResolvedValue({
+            blob: new Blob(['pdf']), filename: 'auto.pdf', stickerCount: 1,
+        });
+        useStickerSheetStore.getState().selectSource('tab-auto-first', new File(['image'], 'sheet.png'));
+        await useStickerSheetStore.getState().detectStickers('tab-auto-first');
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(
+            useStickerSheetStore.getState().getTab('tab-auto-first').isCutlinePreviewing,
+        ).toBe(false));
+        await useStickerSheetStore.getState().confirmMask('tab-auto-first');
+        await useStickerSheetStore.getState().exportFile('tab-auto-first');
+
+        const exported = vi.mocked(exportStickerSheet).mock.calls[0][1];
+        // QUALITY (audit 2026-09-28 §SHEET.AUTO): thiếu field từng âm thầm về 0.
+        expect({
+            preview: vi.mocked(previewStickerCutline).mock.calls[0][1].cutlineSimplifyMm,
+            global: exported.cutlineSimplifyMm,
+            pages: exported.pages?.map(page => page.cutlineSimplifyMm),
+        }).toEqual({ preview: 0.1, global: 0.1, pages: [0.1] });
+        useStickerSheetStore.getState().finishExport('tab-auto-first');
+    });
+
+    it.each([
+        ['alpha', 0.1], ['simple-bg', 0.1], ['ai', 0.1], ['manual', 0.1],
+        ['existing-cut', 0], ['vector', 0], ['page-box', 0],
+    ] as const)('AUTO dùng đúng hợp đồng nguồn %s, không suy từ định dạng PDF', (boundary, expected) => {
+        const manifest = detection().manifest;
+        manifest.source_kind = 'pdf';
+        manifest.boundary_source = boundary;
+        expect(resolveStickerSheetAutoSimplifyMm(manifest, 'original')).toBe(expected);
+        expect(resolveStickerSheetAutoSimplifyMm(manifest, 'bleed')).toBe(expected);
+        expect(resolveStickerSheetAutoSimplifyMm(manifest, 'none')).toBe(0);
+    });
+
+    it('AUTO chưa nhận diện hoặc yêu cầu giữ hình học gốc đều trả số không tường minh', () => {
+        expect(resolveStickerSheetAutoSimplifyMm(null, 'original')).toBe(0);
+        const manifest = detection().manifest;
+        manifest.vector_geometry_ref = { preserve_original: true };
+        expect(resolveStickerSheetAutoSimplifyMm(manifest, 'original')).toBe(0);
+        expect(resolveStickerSheetAutoSimplifyMm(manifest, 'bleed')).toBe(0);
+    });
+
+    it('AUTO theo từng trang trộn raster/vector/dao gốc và đúng thứ tự xuất', async () => {
+        const sessionId = 'm'.repeat(32);
+        const boundaries = ['alpha', 'vector', 'existing-cut'] as const;
+        const expected = [0.1, 0, 0];
+        vi.mocked(inspectStickerSource).mockResolvedValue(multiPageInspection(3, sessionId));
+        vi.mocked(detectStickerSource).mockImplementation(async (_sessionId, options) => {
+            const pageNumber = options?.pageNumber || 1;
+            const payload = detectionForPage(pageNumber, sessionId);
+            payload.manifest.page_count = 3;
+            payload.manifest.source_kind = 'pdf';
+            payload.manifest.boundary_source = boundaries[pageNumber - 1];
+            if (pageNumber === 3) payload.manifest.vector_geometry_ref = { preserve_original: true };
+            return payload;
+        });
+        vi.mocked(previewStickerCutline).mockImplementation(async (_sessionId, options) => (
+            cutlinePreviewPayload(options.pageNumber)
+        ));
+        vi.mocked(exportStickerSheet).mockResolvedValue({
+            blob: new Blob(['pdf']), filename: 'mixed.pdf', stickerCount: 3,
+        });
+        useStickerSheetStore.getState().selectSource('tab-auto-mixed', new File(['pdf'], 'mixed.pdf'));
+        await useStickerSheetStore.getState().detectAllStickers('tab-auto-mixed');
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(2));
+        expect(vi.mocked(previewStickerCutline).mock.calls.map(([, options]) => (
+            [options.pageNumber, options.cutlineSimplifyMm]
+        )).sort((left, right) => Number(left[0]) - Number(right[0]))).toEqual([[1, 0.1], [2, 0]]);
+        for (const pageNumber of [1, 2, 3]) {
+            await useStickerSheetStore.getState().confirmMask('tab-auto-mixed', pageNumber);
+        }
+        // Trang active vẫn là raster: global không được rò vào trang khác khi đảo thứ tự.
+        for (const order of [[3, 1, 2], [1, 3, 2], [2, 1, 3]]) {
+            await useStickerSheetStore.getState().exportFile('tab-auto-mixed', 'pdf', order);
+            expect(exportStickerSheet).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({
+                pageOrder: order,
+                cutlineSimplifyMm: expected[order[0] - 1],
+                pages: order.map(sourcePage => expect.objectContaining({
+                    sourcePage, cutlineSimplifyMm: expected[sourcePage - 1],
+                })),
+            }));
+            useStickerSheetStore.getState().finishExport('tab-auto-mixed');
+        }
+    });
+
+    it('AUTO tắt về 0 khi bỏ đường cắt và dựng lại preview 0,1 khi bật lại', async () => {
+        prepareSuccessfulFlow();
+        vi.mocked(exportStickerSheet).mockResolvedValue({
+            blob: new Blob(['pdf']), filename: 'no-cut.pdf', stickerCount: 1,
+        });
+        useStickerSheetStore.getState().selectSource('tab-auto-none', new File(['image'], 'sheet.png'));
+        await useStickerSheetStore.getState().detectStickers('tab-auto-none');
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+        useStickerSheetStore.getState().setOutputSettings('tab-auto-none', { cutMode: 'none' });
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(2));
+        expect(vi.mocked(previewStickerCutline).mock.calls[1][1]).toMatchObject({
+            cutMode: 'none', cutlineSimplifyMm: 0,
+        });
+        await useStickerSheetStore.getState().confirmMask('tab-auto-none');
+        await useStickerSheetStore.getState().exportFile('tab-auto-none');
+        expect(exportStickerSheet).toHaveBeenLastCalledWith('a'.repeat(32), expect.objectContaining({
+            cutMode: 'none', drawCutContour: false, cutlineSimplifyMm: 0,
+            pages: [expect.objectContaining({ sourcePage: 1, cutlineSimplifyMm: 0 })],
+        }));
+        useStickerSheetStore.getState().finishExport('tab-auto-none');
+        useStickerSheetStore.getState().setOutputSettings('tab-auto-none', { cutMode: 'original' });
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(3));
+        expect(vi.mocked(previewStickerCutline).mock.calls[2][1]).toMatchObject({
+            cutMode: 'original', cutlineSimplifyMm: 0.1,
+        });
+    });
+
+    it.each([
+        { label: 'chế độ cắt', changes: { cutMode: 'none' }, expected: { cutMode: 'none', cutlineSimplifyMm: 0 } },
+        { label: 'offset cùng dung sai', changes: { offsetMm: 1 }, expected: { cutMode: 'original', offsetMm: 1, cutlineSimplifyMm: 0.1 } },
+    ] as const)('AUTO không công bố preview cũ của trang nền khi đổi $label', async ({ label, changes, expected }) => {
+        const tabId = `tab-auto-late-${label}`;
+        const sessionId = 'b'.repeat(32);
+        vi.mocked(inspectStickerSource).mockResolvedValue(multiPageInspection(2, sessionId));
+        vi.mocked(detectStickerSource).mockImplementation(async (_sessionId, options) => (
+            detectionForPage(options?.pageNumber || 1, sessionId)
+        ));
+        let resolveOld!: (payload: Awaited<ReturnType<typeof previewStickerCutline>>) => void;
+        vi.mocked(previewStickerCutline).mockImplementation(async (_sessionId, options) => {
+            if (options.pageNumber === 2 && options.cutMode === 'original' && options.offsetMm === 0) {
+                return new Promise(resolve => { resolveOld = resolve; });
+            }
+            return cutlinePreviewPayload(options.pageNumber, 'n'.repeat(64));
+        });
+        useStickerSheetStore.getState().selectSource(tabId, new File(['pdf'], 'batch.pdf'));
+        await useStickerSheetStore.getState().detectAllStickers(tabId);
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(2));
+        const oldRequestIndex = vi.mocked(previewStickerCutline).mock.calls.findIndex(([, options]) => (
+            options.pageNumber === 2 && options.cutMode === 'original'
+        ));
+        const oldRequest = vi.mocked(previewStickerCutline).mock.results[oldRequestIndex];
+        useStickerSheetStore.getState().setOutputSettings(tabId, changes);
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(3));
+        resolveOld(cutlinePreviewPayload(2, 'o'.repeat(64)));
+        // Chờ chính response cũ được tiêu thụ, không lấy cờ đã bị invalidate làm bằng chứng.
+        await oldRequest.value;
+        await vi.waitFor(() => expect(
+            useStickerSheetStore.getState().getTab(tabId).pages[2].isCutlinePreviewing,
+        ).toBe(false));
+        expect(useStickerSheetStore.getState().getTab(tabId).pages[2].cutlinePreview).toBeNull();
+        useStickerSheetStore.getState().setActivePage(tabId, 2);
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(4));
+        expect(vi.mocked(previewStickerCutline).mock.calls[3][1]).toMatchObject({
+            pageNumber: 2, ...expected,
+        });
     });
 
     it('chọn file chỉ tạo preview; detect giữ một session và confirm mới mở export', async () => {
@@ -862,12 +1017,14 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
     });
 
     it('hai tab giữ nguồn, session và kết quả độc lập', async () => {
+        const vectorDetection = detection('2'.repeat(32));
+        vectorDetection.manifest.boundary_source = 'vector';
         vi.mocked(inspectStickerSource)
             .mockResolvedValueOnce(inspection('1'.repeat(32)))
             .mockResolvedValueOnce(inspection('2'.repeat(32)));
         vi.mocked(detectStickerSource)
             .mockResolvedValueOnce(detection('1'.repeat(32)))
-            .mockResolvedValueOnce(detection('2'.repeat(32)));
+            .mockResolvedValueOnce(vectorDetection);
         useStickerSheetStore.getState().selectSource('tab-1', new File(['1'], 'one.png'));
         useStickerSheetStore.getState().selectSource('tab-2', new File(['2'], 'two.pdf'));
 
@@ -878,6 +1035,10 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
 
         expect(useStickerSheetStore.getState().getTab('tab-1').manifest?.session_id).toBe('1'.repeat(32));
         expect(useStickerSheetStore.getState().getTab('tab-2').manifest?.session_id).toBe('2'.repeat(32));
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(2));
+        expect(Object.fromEntries(vi.mocked(previewStickerCutline).mock.calls.map(([sessionId, options]) => (
+            [sessionId, options.cutlineSimplifyMm]
+        )))).toEqual({ ['1'.repeat(32)]: 0.1, ['2'.repeat(32)]: 0 });
     });
 
     it('sửa mask sau xác nhận buộc xác nhận lại', async () => {

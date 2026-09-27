@@ -86,9 +86,11 @@ def trace_simplify(folder):
         key = hashlib.sha256(json.dumps({"rings": _rings(groups), "options": options},
                                         sort_keys=True).encode()).hexdigest()
         started = time.perf_counter()
+        cpu_started = time.process_time()
         result = original(groups, **options)
         with (folder / f"simplify-{os.getpid()}.jsonl").open("a", encoding="utf-8") as log:
             log.write(json.dumps({"key": key, "seconds": time.perf_counter() - started,
+                                  "cpu_seconds": time.process_time() - cpu_started,
                                   "stats": result[1]}) + "\n")
         return result
     cubic.simplify_cubic_path_groups = traced

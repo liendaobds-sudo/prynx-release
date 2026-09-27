@@ -140,7 +140,10 @@ def _optimize_seed(
     max_nfev: int = 35,
 ):
     from scipy.optimize import least_squares
+    from app.workers.cutline_fair_solver import resolve_fair_least_squares
     from app.workers.cutline_fair_jacobian import build_fair_jacobian, compress_fair_samples
+
+    least_squares = resolve_fair_least_squares(least_squares)
 
     encoded = _encode(seed, source, protected)
     if encoded is None:

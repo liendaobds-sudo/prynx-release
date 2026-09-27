@@ -1,4 +1,5 @@
 mod combine_image_pdf;
+mod cutline_lsmr;
 mod dieline_engine;
 mod dieline_license;
 mod dieline_request;
@@ -179,6 +180,10 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Image Compare
     image_compare::register_module(m)?;
     nfp_solver::register_module(m)?;
+
+    // PERF (audit 2026-09-27 §CUT.NATIVE): vòng LSMR riêng, không chạm PDFium.
+    m.add_function(wrap_pyfunction!(cutline_lsmr::cutline_lsmr, m)?)?;
+    m.add_function(wrap_pyfunction!(cutline_lsmr::cutline_lsmr_version, m)?)?;
 
     // Packaging engine runs outside the WebView and is exposed only through
     // the feature-gated sidecar route.

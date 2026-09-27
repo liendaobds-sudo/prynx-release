@@ -20,6 +20,7 @@ import {
 import { localFileUrl } from '../../lib/localFileTransport';
 import { imageFilesToPdfFile } from '../../lib/imageNormalizer';
 import { getFileArrayBuffer } from '../../lib/utils';
+import { DEFAULT_AUTO_CUTLINE_SIMPLIFY_MM } from './stickerToolPolicy';
 import {
     DEFAULT_STICKER_OUTPUT_SETTINGS,
     sanitizeStickerOutputSettings,
@@ -76,6 +77,19 @@ export interface StickerMergeEdit {
 }
 
 export type StickerSheetEdit = StickerMaskStroke | StickerMergeEdit;
+
+export function resolveStickerSheetAutoSimplifyMm(
+    manifest: StickerSourceDetection | null,
+    cutMode: StickerOutputSettings['cutMode'],
+): number {
+    // QUALITY (feedback 2026-09-28 §SHEET.SIMPLIFY): chọn sau nhận diện,
+    // trước preview đầu tiên; cùng policy cho từng trang khi xuất. Không
+    // làm lại CUT/vector gốc hoặc coi trang chưa nhận diện là nguồn raster.
+    if (!manifest || cutMode === 'none'
+        || manifest.vector_geometry_ref?.preserve_original === true) return 0;
+    return ['alpha', 'simple-bg', 'ai', 'manual'].includes(manifest.boundary_source)
+        ? DEFAULT_AUTO_CUTLINE_SIMPLIFY_MM : 0;
+}
 
 export interface StickerCutlineTuning {
     smoothness: number;
@@ -242,9 +256,12 @@ function sameStickerOutputSettings(
     );
 }
 
+type CutlineGeometrySettings = Pick<StickerOutputSettings,
+    'cutMode' | 'offsetMm' | 'cornerStyle' | 'fillHoles' | 'bleedMm'>;
+
 function cutlineGeometryChanged(
-    previous: StickerOutputSettings,
-    next: StickerOutputSettings,
+    previous: CutlineGeometrySettings,
+    next: CutlineGeometrySettings,
 ): boolean {
     if (
         previous.cutMode !== next.cutMode
@@ -1544,6 +1561,10 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     curveTension: item.state.curveTension,
                     // QUALITY (audit 2026-09-24 NODE.1): xuất đúng denoise đã preview.
                     cutlineDenoise: item.state.cutlineDenoise,
+                    // Số 0 tường minh chặn trang vector/CUT kế thừa mức của trang ảnh.
+                    cutlineSimplifyMm: resolveStickerSheetAutoSimplifyMm(
+                        item.state.manifest, settings.cutMode,
+                    ),
                     minDetailAreaMm2: item.state.minDetailAreaMm2,
                 })),
                 pageOrder,
@@ -1565,6 +1586,9 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 cutlineFidelity: exportPages[0].state.cutlineFidelity,
                 curveTension: exportPages[0].state.curveTension,
                 cutlineDenoise: exportPages[0].state.cutlineDenoise,
+                cutlineSimplifyMm: resolveStickerSheetAutoSimplifyMm(
+                    exportPages[0].state.manifest, settings.cutMode,
+                ),
                 minDetailAreaMm2: exportPages[0].state.minDetailAreaMm2,
                 signal: controller.signal,
             });
@@ -2006,6 +2030,7 @@ type StickerCutlinePreviewRequest = {
     curveTension: number;
     minDetailAreaMm2: number;
     cutlineDenoise: number;
+    cutlineSimplifyMm: number;
 };
 
 function cutlineRequestKey(tabId: string, pageNumber: number): string {
@@ -2054,6 +2079,7 @@ function scheduleCurrentCutlinePreview(
         curveTension: page.curveTension,
         minDetailAreaMm2: page.minDetailAreaMm2,
         cutlineDenoise: page.cutlineDenoise,
+        cutlineSimplifyMm: resolveStickerSheetAutoSimplifyMm(page.manifest, tab.outputSettings.cutMode),
     };
     const key = cutlineRequestKey(tabId, pageNumber);
     CUTLINE_DESIRED.set(key, request);
@@ -2108,6 +2134,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
             curveTension: requested.curveTension,
             minDetailAreaMm2: requested.minDetailAreaMm2,
             cutlineDenoise: requested.cutlineDenoise,
+            cutlineSimplifyMm: requested.cutlineSimplifyMm,
         });
         const queued = CUTLINE_DESIRED.has(key);
         useStickerSheetStore.setState(state => {
@@ -2119,6 +2146,15 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
                 || (currentPage.manifest.mask_revision ?? 1) !== payload.mask_revision
                 || currentPage.isRefining
             ) return state;
+            // QUALITY (feedback 2026-09-28 §SHEET.SIMPLIFY): đổi cấu hình chung
+            // đã xóa preview trang nền nhưng không chạy lại ngay trang đó.
+            // Không để phản hồi cũ (.1/0 hoặc offset cũ) lấp cache vừa xóa;
+            // mở lại trang phải dựng đúng hình học/mức AUTO sẽ dùng khi xuất.
+            // Trang đang kéo slider vẫn được hiện frame trung gian khi có lượt mới chờ.
+            if (!queued && (cutlineGeometryChanged(requested, current.outputSettings)
+                || requested.cutlineSimplifyMm !== resolveStickerSheetAutoSimplifyMm(
+                    currentPage.manifest, current.outputSettings.cutMode,
+                ))) return state;
             if (
                 current.isExporting
                 || ['confirming', 'exporting'].includes(current.status)

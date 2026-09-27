@@ -2873,16 +2873,24 @@ def test_narrow_image_bleed_keeps_cardinal_points_closed(
             if str(xobjects[name].get("/Subtype")) == "/Image"
             and xobjects[name].get("/SMask") is not None
         ]
-        assert len(bleed_images) == 1
+        # QUALITY (audit 2026-09-27 §CLIP.ART): Alpha gốc dùng một lớp bù
+        # dưới artwork và một lớp mí ở trên, không clip mất chi tiết nguồn.
+        # Giữ oracle màu/độ phủ bốn tiếp tuyến sau khi ghép cả hai opacity;
+        # nguồn opaque bỏ nền vẫn giữ biểu diễn một lớp như trước.
+        assert len(bleed_images) == (2 if transparent else 1)
         bleed_image = bleed_images[0]
         width = int(bleed_image.get("/Width"))
         height = int(bleed_image.get("/Height"))
         bleed_rgb = np.frombuffer(
             bleed_image.read_bytes(), dtype=np.uint8
         ).reshape(height, width, 3)
-        bleed_alpha = np.frombuffer(
-            bleed_image.get("/SMask").read_bytes(), dtype=np.uint8
-        ).reshape(height, width)
+        bleed_alpha = np.zeros((height, width), dtype=np.uint32)
+        for layer in bleed_images:
+            assert int(layer.Width) == width and int(layer.Height) == height
+            rgb = np.frombuffer(layer.read_bytes(), dtype=np.uint8).reshape(height, width, 3)
+            assert np.array_equal(rgb, bleed_rgb)
+            alpha = np.frombuffer(layer.SMask.read_bytes(), dtype=np.uint8).reshape(height, width)
+            bleed_alpha = 255 - ((255 - bleed_alpha) * (255 - alpha.astype(np.uint32)) + 127) // 255
 
     center_y, center_x = height // 2, width // 2
     cardinal_rays = {

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Redo2, Undo2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { tv } from '../../i18n';
 import { StickerBleedColorControl } from './StickerOutputSettingsPanel';
 import {
     useStickerSheetStore,
+    resolveStickerSheetAutoSimplifyMm,
     type PrepareStickerWorkspaceSource,
     type StickerMaskTool,
 } from './stickerSheetStore';
@@ -98,6 +100,7 @@ export default function StickerSheetPanel({
     pageOrder,
     prepareWorkspaceSource,
 }: Props) {
+    const { t } = useTranslation();
     const tab = useStickerSheetStore(state => state.tabs[tabId]);
     const state = tab || useStickerSheetStore.getState().getTab(tabId);
     const actionsRef = useRef(useStickerSheetStore.getState());
@@ -111,6 +114,28 @@ export default function StickerSheetPanel({
     const manifest = state.manifest;
     const sourcePreviewLoading = Boolean(state.inspection && !state.sourcePreviewReady);
     const hasMask = Boolean(manifest) && ['mask-review', 'confirming', 'mask-ready', 'exporting'].includes(state.status);
+    const autoSimplifyMm = resolveStickerSheetAutoSimplifyMm(manifest, state.outputSettings.cutMode);
+    const simplifyPending = state.isRefining || state.isCutlinePreviewing;
+    const preview = state.cutlinePreview;
+    // UIUX/QUALITY (audit 2026-09-28 §SHEET.AUTO): chỉ dùng tổng đã được
+    // backend chốt cho đúng trang/revision. Số đo frame trước không phải
+    // kết quả mới khi đang đổi thông số, sửa mask hoặc request bị lỗi.
+    const previewSimplification = !simplifyPending && !state.error && manifest && preview
+        && manifest.source_page === state.activeSourcePage
+        && preview.page_number === state.activeSourcePage
+        && preview.mask_revision === (manifest.mask_revision ?? 1)
+        && preview.preview_width_px === manifest.preview_width_px
+        && preview.preview_height_px === manifest.preview_height_px
+        ? preview.quality?.simplification : null;
+    const simplification = previewSimplification
+        && Number.isInteger(previewSimplification.before_segments)
+        && Number.isInteger(previewSimplification.after_segments)
+        && previewSimplification.before_segments > 0
+        && previewSimplification.after_segments > 0
+        && previewSimplification.after_segments <= previewSimplification.before_segments
+        && Number.isFinite(previewSimplification.maximum_error_bound_mm)
+        && previewSimplification.maximum_error_bound_mm >= 0
+        ? previewSimplification : null;
     const [settingsOpen, setSettingsOpen] = useState(state.status === 'mask-review');
     const busy = state.isRefining
         || state.isCutlinePreviewing
@@ -316,6 +341,30 @@ export default function StickerSheetPanel({
                             {tv('Đã nhận diện')} {manifest.instances.length} {tv('tem')}
                         </div>
                     </div>
+
+                    {autoSimplifyMm > 0 && (
+                        <div data-testid="sticker-sheet-cutline-quality" role="status"
+                            className="rounded-lg bg-violet-50/70 px-3 py-2 text-[10px] text-slate-600 dark:bg-violet-950/20 dark:text-zinc-400">
+                            <div className="mb-1 flex items-center justify-between gap-2 font-semibold">
+                                <span>{t('preprocess.sticker:simplify_label')}</span>
+                                <span className="text-violet-700 dark:text-violet-300">
+                                    {t('preprocess.sticker:simplify_auto')}
+                                </span>
+                            </div>
+                            <div>{simplifyPending
+                                ? t('preprocess.sticker:simplify_pending')
+                                : simplification
+                                    ? t('preprocess.sticker:simplify_stats', {
+                                        before: simplification.before_segments,
+                                        after: simplification.after_segments,
+                                        error: (Math.ceil(simplification.maximum_error_bound_mm * 1000) / 1000).toFixed(3),
+                                    })
+                                    : t('preprocess.sticker:simplify_unavailable')}</div>
+                            {simplification?.changed === false && (
+                                <div>{t('preprocess.sticker:simplify_unchanged')}</div>
+                            )}
+                        </div>
+                    )}
 
                     {canTuneCutline && (
                         <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-950/20">

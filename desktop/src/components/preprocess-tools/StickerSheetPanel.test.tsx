@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,10 +9,30 @@ import {
     inspectStickerSource,
     previewStickerCutline,
     refineStickerSource,
+    type StickerCutlinePreview,
 } from '../../lib/stickerSheetApi';
 import { imageFilesToPdfFile } from '../../lib/imageNormalizer';
 import StickerSheetPanel from './StickerSheetPanel';
-import { useStickerSheetStore } from './stickerSheetStore';
+import { useStickerSheetStore, type StickerSheetTabState } from './stickerSheetStore';
+
+function patchTab(patch: Partial<StickerSheetTabState>): void {
+    useStickerSheetStore.setState(state => ({
+        tabs: { ...state.tabs, tab: { ...state.tabs.tab, ...patch } },
+    }));
+}
+
+function simplifiedPreview(patch: Partial<StickerCutlinePreview> = {}): StickerCutlinePreview {
+    return {
+        page_number: 1, mask_revision: 1, preview_width_px: 1200, preview_height_px: 900,
+        paths: [{ instance_id: 1, d: 'M 1 1 C 2 2 3 3 4 4 Z', segment_count: 76,
+            quality: { simplification: { before_segments: 99, after_segments: 40,
+                maximum_error_bound_mm: 0.05, changed: true } } }],
+        fingerprint: 'b'.repeat(64), segment_count: 76,
+        quality: { simplification: { before_segments: 200, after_segments: 76,
+            maximum_error_bound_mm: 0.099001, changed: true } },
+        ...patch,
+    };
+}
 
 
 vi.mock('../../lib/stickerSheetApi', async importOriginal => {
@@ -76,6 +96,120 @@ describe('StickerSheetPanel', () => {
                 },
             },
         });
+    });
+
+    describe('AUTO Simplify', () => {
+        it('ẩn số đo cũ lúc chờ, hiển thị tổng preview rồi bỏ số đo khi đổi thông số', () => {
+            patchTab({ isCutlinePreviewing: true, cutlinePreview: simplifiedPreview() });
+            render(<StickerSheetPanel tabId="tab" />);
+            const status = screen.getByTestId('sticker-sheet-cutline-quality');
+            expect(within(status).getByText('Tự động')).toBeTruthy();
+            expect(within(status).getByText('Đang cập nhật đường đơn giản hóa…')).toBeTruthy();
+            expect(within(status).queryByText(/Điểm neo:/)).toBeNull();
+
+            act(() => patchTab({ isCutlinePreviewing: false, cutlinePreview: simplifiedPreview() }));
+            expect(within(status).getByText('Điểm neo: 200 → 76 · Cận sai lệch thêm: 0.100 mm')).toBeTruthy();
+            expect(within(status).queryByText(/99 → 40/)).toBeNull();
+            fireEvent.change(screen.getByRole('slider', { name: 'Mức khử răng cưa đường bế' }), {
+                target: { value: '45' },
+            });
+            expect(within(status).getByText('Đang cập nhật đường đơn giản hóa…')).toBeTruthy();
+            expect(within(status).queryByText(/Điểm neo:/)).toBeNull();
+            act(() => useStickerSheetStore.getState().disposeTab('tab'));
+        });
+
+        it.each(['refining', 'error', 'missing-quality', 'revision', 'page', 'manifest-page', 'dimensions'] as const)(
+            'không công bố số đo thành công với %s', reason => {
+                const current = useStickerSheetStore.getState().getTab('tab');
+                if (!current.manifest) throw new Error('Thiếu fixture manifest');
+                const preview = simplifiedPreview();
+                const patch: Partial<StickerSheetTabState> = { cutlinePreview: preview };
+                if (reason === 'refining') patch.isRefining = true;
+                if (reason === 'error') patch.error = 'Không cập nhật được preview.';
+                if (reason === 'missing-quality') preview.quality = null;
+                if (reason === 'revision') patch.manifest = { ...current.manifest, mask_revision: 2 };
+                if (reason === 'page') patch.activeSourcePage = 2;
+                if (reason === 'manifest-page') patch.manifest = { ...current.manifest, source_page: 2 };
+                if (reason === 'dimensions') preview.preview_width_px = 1199;
+                patchTab(patch);
+                render(<StickerSheetPanel tabId="tab" />);
+                const status = screen.getByTestId('sticker-sheet-cutline-quality');
+                expect(within(status).queryByText(/Điểm neo:/)).toBeNull();
+                expect(within(status).queryByText('Giữ nguyên đường cắt.')).toBeNull();
+                expect(within(status).getByText(reason === 'refining'
+                    ? 'Đang cập nhật đường đơn giản hóa…'
+                    : 'Chưa có số đo đường mới; hãy chờ xem trước hoàn tất.')).toBeTruthy();
+            },
+        );
+
+        it('giữ nguyên chỉ được hiển thị sau khi có số đo hợp lệ của đúng lượt', () => {
+            patchTab({ cutlinePreview: simplifiedPreview({ quality: { simplification: {
+                before_segments: 76, after_segments: 76, maximum_error_bound_mm: 0, changed: false,
+            } } }) });
+            render(<StickerSheetPanel tabId="tab" />);
+            const status = screen.getByTestId('sticker-sheet-cutline-quality');
+            expect(within(status).getByText('Điểm neo: 76 → 76 · Cận sai lệch thêm: 0.000 mm')).toBeTruthy();
+            expect(within(status).getByText('Giữ nguyên đường cắt.')).toBeTruthy();
+        });
+
+        it('chuyển trang lấy đúng số đo đã chốt của trang đó và bỏ số đo khi revision đổi', () => {
+            const current = useStickerSheetStore.getState().getTab('tab');
+            if (!current.manifest) throw new Error('Thiếu fixture manifest');
+            const first = simplifiedPreview();
+            const second = simplifiedPreview({ page_number: 2, quality: { simplification: {
+                before_segments: 300, after_segments: 90, maximum_error_bound_mm: 0.081001, changed: true,
+            } } });
+            patchTab({ sourceImageCount: 2, cutlinePreview: first, pages: {
+                1: { ...current, cutlinePreview: first },
+                2: { ...current, manifest: { ...current.manifest, source_page: 2 }, cutlinePreview: second },
+            } });
+            render(<StickerSheetPanel tabId="tab" pageOrder={[1, 2]} />);
+            const status = screen.getByTestId('sticker-sheet-cutline-quality');
+            expect(within(status).getByText(/200 → 76/)).toBeTruthy();
+            act(() => useStickerSheetStore.getState().setActivePage('tab', 2));
+            expect(within(status).queryByText(/200 → 76/)).toBeNull();
+            expect(within(status).getByText('Điểm neo: 300 → 90 · Cận sai lệch thêm: 0.082 mm')).toBeTruthy();
+            act(() => patchTab({ manifest: { ...current.manifest!, source_page: 2, mask_revision: 2 } }));
+            expect(within(status).queryByText(/Điểm neo:/)).toBeNull();
+            expect(within(status).getByText('Chưa có số đo đường mới; hãy chờ xem trước hoàn tất.')).toBeTruthy();
+        });
+
+        it.each(['nonfinite', 'negative', 'increased', 'empty'] as const)('không trình bày metadata %s thành thành công', reason => {
+            const preview = simplifiedPreview();
+            const stats = preview.quality!.simplification!;
+            if (reason === 'nonfinite') stats.maximum_error_bound_mm = Number.NaN;
+            if (reason === 'negative') stats.maximum_error_bound_mm = -0.1;
+            if (reason === 'increased') stats.after_segments = stats.before_segments + 1;
+            if (reason === 'empty') stats.before_segments = stats.after_segments = 0;
+            patchTab({ cutlinePreview: preview });
+            render(<StickerSheetPanel tabId="tab" />);
+            const status = screen.getByTestId('sticker-sheet-cutline-quality');
+            expect(within(status).queryByText(/Điểm neo:/)).toBeNull();
+            expect(within(status).getByText('Chưa có số đo đường mới; hãy chờ xem trước hoàn tất.')).toBeTruthy();
+        });
+
+        it.each(['alpha', 'simple-bg', 'ai', 'manual'] as const)('hiển thị tự động cho nguồn %s đã nhận diện', boundarySource => {
+            const current = useStickerSheetStore.getState().getTab('tab');
+            if (!current.manifest) throw new Error('Thiếu fixture manifest');
+            patchTab({ manifest: { ...current.manifest, boundary_source: boundarySource } });
+            render(<StickerSheetPanel tabId="tab" />);
+            expect(screen.getByTestId('sticker-sheet-cutline-quality')).toBeTruthy();
+        });
+
+        it.each(['existing-cut', 'vector', 'page-box', 'preserved', 'none', 'undetected'] as const)(
+            'không bày AUTO cho nhánh cần bảo toàn %s', reason => {
+                const current = useStickerSheetStore.getState().getTab('tab');
+                if (!current.manifest) throw new Error('Thiếu fixture manifest');
+                if (reason === 'none') patchTab({ outputSettings: { ...current.outputSettings, cutMode: 'none' } });
+                else if (reason === 'undetected') patchTab({ status: 'source-ready', manifest: null });
+                else patchTab({ manifest: { ...current.manifest,
+                    boundary_source: reason === 'preserved' ? 'alpha' : reason,
+                    vector_geometry_ref: reason === 'preserved' ? { preserve_original: true } : null,
+                } });
+                render(<StickerSheetPanel tabId="tab" />);
+                expect(screen.queryByTestId('sticker-sheet-cutline-quality')).toBeNull();
+            },
+        );
     });
 
     it('hiển thị số tem và chuyển công cụ mà không bày nút rà soát mơ hồ', () => {

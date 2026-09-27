@@ -177,6 +177,26 @@ def compute_cut_bleed_offsets(cut_mode: str, bleed_pts: float, offset_pts: float
     return total, outer
 
 
+def _can_preserve_native_artwork_alpha(
+    *, source_rendered_transparent: bool, has_alpha: bool,
+    rectangle_mode: bool, selection_page_mode: bool, has_mask_override: bool,
+    edge_bite_mm: float, removes_background: bool,
+) -> bool:
+    """Giữ Alpha gốc khi không có yêu cầu sửa mask artwork.
+
+    QUALITY (audit 2026-09-27 §CLIP.ART): cờ Alpha toàn tài liệu/ảnh có
+    SMask chỉ gợi ý cách render, không chứng minh trang thật sự trong suốt.
+    Phải có Alpha từ toàn trang gốc render trên nền trong suốt. Mask dựng
+    cho dao có lọc chi tiết/khử răng cưa nên không được cắt lại artwork này.
+    """
+    return bool(
+        source_rendered_transparent and has_alpha
+        and not rectangle_mode and not selection_page_mode
+        and not has_mask_override and not removes_background
+        and math.isfinite(float(edge_bite_mm)) and float(edge_bite_mm) == 0.0
+    )
+
+
 def _downscale_factor(h: int, w: int, max_dim: int = 1000) -> int:
     """Hệ số hạ mẫu để cạnh dài ≲ max_dim (1 = không hạ)."""
     longest = max(h, w)
@@ -9204,6 +9224,7 @@ class StickerEngine:
                 smooth_seconds = 0.0
                 compress_seconds = 0.0
                 alpha_fallback_used = False
+                source_rendered_transparent = False
                 alpha_contour_warning = None
                 # QUALITY (audit 2026-08-06 §BG.1): nhánh bóc nền trắng không tách
                 # được nền (nền màu / trắng ngà) → đánh dấu để cảnh báo đúng lý do.
@@ -9464,6 +9485,7 @@ class StickerEngine:
                                     img = np.array(bitmap.to_numpy(), copy=True)
                                 finally:
                                     bitmap.close()
+                            source_rendered_transparent = True
                             if img.ndim != 3 or img.shape[2] != 4:
                                 raise RuntimeError("PDFium không trả về ảnh RGBA cho contour Alpha.")
                             img_native = img[:, :, :3].copy()
@@ -9805,6 +9827,7 @@ class StickerEngine:
                 
                 bleed_stream_data = None
                 mask_bytes_data = None
+                bleed_underlay_mask_bytes = None
                 img_pil = None
                 bleed_ring = None
                 sticker_footprint = None
@@ -10361,6 +10384,16 @@ class StickerEngine:
                 # ============================================================
                 # STEP B: Generate bleed using dieline_poly for perfect alignment
                 # ============================================================
+                preserve_native_artwork_alpha = _can_preserve_native_artwork_alpha(
+                    source_rendered_transparent=source_rendered_transparent,
+                    has_alpha=has_alpha,
+                    rectangle_mode=rectangle_mode,
+                    selection_page_mode=selection_page_mode,
+                    has_mask_override=(approved_payload is not None or alpha_path_payload is not None),
+                    edge_bite_mm=edge_bite_mm,
+                    removes_background=(white_bg_mask_built or color_bg_detected is not None
+                                        or alpha_fallback_used or page_box_mask_built),
+                )
                 if bleed_mm > 0.0 and not use_vector_rectangle_bleed:
                     debug_step = f"Generate Bleed Page {page_idx}"
                     bleed_px = math.ceil(bleed_mm * px_per_mm)
@@ -11010,9 +11043,54 @@ class StickerEngine:
                             bleed_rgb_for_storage.shape[1],
                             bleed_rgb_for_storage.shape[0],
                         )
-                        mask_bytes_data = zlib.compress(
-                            bleed_ring.tobytes(), compression_level
-                        )
+                        if preserve_native_artwork_alpha and _sampled_seam_overlay:
+                            # QUALITY (audit 2026-09-27 §CLIP.ART): vành bù màu
+                            # ở DƯỚI ảnh gốc, kể cả các đảo nhỏ mà mask dao đã
+                            # loại. Chỉ mối nối quanh footprint được tô đè
+                            # để giữ xử lý halo cũ. Không threshold/lọc Alpha gốc
+                            # lần nữa và không biến các chi tiết ảnh thành clip.
+                            # Rasterize polygon và nội suy SMask có miền đỡ một
+                            # pixel quanh biên. Giữ phần đó trong mối nối để
+                            # không tái tạo quầng sáng nguồn thấp DPI; đây không
+                            # phải nới offset dao hay clip lại artwork.
+                            seam_footprint = cv2.dilate(
+                                sticker_footprint, np.ones((3, 3), dtype=np.uint8),
+                            )
+                            # Đảo Alpha thật đã bị bộ lọc dao bỏ không phải
+                            # halo để tô lại. Giữ cả phần bán trong suốt của đảo,
+                            # chừa miền nội suy SMask, kể cả khi nó sát footprint.
+                            # Nhãn chỉ dùng cho lớp màu, không đổi mask/CUT.
+                            # Chỉ gán nhãn vùng ảnh nguồn, không cấp mảng int32
+                            # cho cả phần padding bù xén có thể rất rộng.
+                            source_support = (img[:, :, 3] > 0).astype(np.uint8)
+                            _, source_labels = cv2.connectedComponents(source_support, connectivity=8)
+                            source_footprint = sticker_footprint[
+                                pad_top:pad_top + source_support.shape[0],
+                                pad_left:pad_left + source_support.shape[1],
+                            ]
+                            retained_labels = np.unique(source_labels[source_footprint != 0])
+                            excluded_support = (source_support != 0) & ~np.isin(source_labels, retained_labels)
+                            if np.any(excluded_support):
+                                protected_support = cv2.dilate(
+                                    np.pad(excluded_support.astype(np.uint8), (pad_rows, pad_cols), mode="constant"),
+                                    np.ones((3, 3), dtype=np.uint8),
+                                )
+                                seam_footprint[protected_support != 0] = 0
+                                del protected_support
+                            del source_support, source_labels, source_footprint, retained_labels, excluded_support
+                            seam_mask = cv2.bitwise_and(bleed_ring, seam_footprint)
+                            mask_bytes_data = zlib.compress(seam_mask.tobytes(), compression_level)
+                            # Giữ ĐỦ ring phía dưới: hai mask rời R-seam/seam
+                            # nội suy độc lập không cộng opacity tuyến tính,
+                            # tạo đường sáng tại ranh dù tổng mẫu đúng bằng R.
+                            # Mí phía trên chỉ làm sạch biên; Form gốc ở giữa
+                            # che lớp dưới tại mọi chi tiết đục vốn được giữ.
+                            bleed_underlay_mask_bytes = zlib.compress(bleed_ring.tobytes(), compression_level)
+                            del seam_mask, seam_footprint
+                        else:
+                            mask_bytes_data = zlib.compress(
+                                bleed_ring.tobytes(), compression_level
+                            )
                         compress_seconds = time.perf_counter() - compress_started
                         # Save comprehensive debug images for first page
                         if page_idx == 0 and self.debug:
@@ -11216,6 +11294,25 @@ class StickerEngine:
                         f"{str(img_name)} Do",
                         "Q",
                     ]
+                    if bleed_underlay_mask_bytes is not None:
+                        # Hai lớp dùng cùng màu/CTM, chỉ khác opacity; artwork
+                        # nguyên bản nằm giữa. Không copy nội dung các trang.
+                        underlay_mask_obj = pikepdf.Stream(doc_out, bleed_underlay_mask_bytes)
+                        for key, value in mask_obj.stream_dict.items():
+                            if str(key) != "/Length":
+                                underlay_mask_obj[key] = value
+                        underlay_obj = pikepdf.Stream(doc_out, bleed_stream_data)
+                        for key, value in img_obj.stream_dict.items():
+                            if str(key) not in {"/Length", "/SMask"}:
+                                underlay_obj[key] = value
+                        underlay_obj.SMask = underlay_mask_obj
+                        underlay_name = page_out.add_resource(underlay_obj, pikepdf.Name.XObject)
+                        page_content_stream.extend([
+                            "q",
+                            f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm",
+                            f"{str(underlay_name)} Do",
+                            "Q",
+                        ])
                     if (
                         bleed_color_type in ("image", "trajectory", "inpaint")
                         and not rectangle_mode
@@ -11236,6 +11333,9 @@ class StickerEngine:
                 # màu RGB). Nay luôn vẽ lại form XObject gốc. Khi có bleed: clip artwork
                 # vào đúng footprint (CÙNG biên với bleed_ring → không hở mép trắng),
                 # phần ngoài footprint để lộ bleed bên dưới.
+                # QUALITY (audit 2026-09-27 §CLIP.ART): ngoại lệ nguồn Alpha
+                # đã chứng minh giữ nguyên Form/SMask, không clip lại bằng mask
+                # dao. Các mask chỉnh sửa/lẹm mép vẫn dùng đường clip cũ.
 
                 page_content_stream.append("q")
                 if use_vector_rectangle_bleed and (
@@ -11271,7 +11371,8 @@ class StickerEngine:
                     page_content_stream.append(
                         f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
                     )
-                elif bleed_stream_data and sticker_footprint is not None:
+                elif (bleed_stream_data and sticker_footprint is not None
+                      and not preserve_native_artwork_alpha):
                     # Trace footprint (đã đóng kín, hole-filled) thành đường clip vector.
                     # footprint là raster trong KHÔNG GIAN ẢNH ĐỆM (padded); ánh xạ về
                     # toạ độ trang giống vị trí đặt ảnh bleed: (shift_x + px/scale,

@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-09-05 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-09-28 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -125,49 +125,49 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 
 | Tên | Phiên bản | Giấy phép | Phạm vi |
 |---|---|---|---|
+| [agent-detector](https://github.com/patrick91/agent-detector) | 2.0.0 | MIT | build/test |
 | [aiofiles](https://github.com/Tinche/aiofiles) | 24.1.0 | Apache-2.0 | phát hành |
 | [alembic](https://alembic.sqlalchemy.org) | 1.13.0 | MIT | phát hành |
-| [amqp](http://github.com/celery/py-amqp) | 5.3.1 | BSD | build/test |
+| [amqp](http://github.com/celery/py-amqp) | 5.4.0 | BSD | build/test |
 | [annotated-doc](https://github.com/fastapi/annotated-doc) | 0.0.5 | MIT | build/test |
 | [annotated-types](https://github.com/annotated-types/annotated-types) | 0.8.0 | MIT | build/test |
-| anyio | 4.14.2 | MIT | build/test |
-| [billiard](https://github.com/celery/billiard) | 4.2.4 | BSD | build/test |
+| anyio | 4.15.1 | MIT | build/test |
+| [billiard](https://github.com/celery/billiard) | 4.3.0 | BSD | build/test |
 | [celery](https://docs.celeryq.dev/) | 5.4.0 | BSD-3-Clause | phát hành |
 | [certifi](https://github.com/certifi/python-certifi) | 2026.7.22 | MPL-2.0 | build/test |
-| cffi | 2.1.0 | MIT-0 | build/test |
-| [chardet](https://github.com/chardet/chardet) | 7.4.3 | 0BSD | build/test |
-| charset-normalizer | 3.4.9 | MIT | build/test |
-| [click](https://github.com/pallets/click/) | 8.4.2 | BSD-3-Clause | build/test |
+| cffi | 2.1.1 | MIT-0 | build/test |
+| [chardet](https://github.com/chardet/chardet) | 7.6.0 | 0BSD | build/test |
+| charset-normalizer | 3.5.1 | MIT | build/test |
+| [click](https://github.com/pallets/click/) | 8.5.0 | BSD-3-Clause | build/test |
 | [click-didyoumean](https://github.com/click-contrib/click-didyoumean) | 0.3.1 | MIT | build/test |
 | [click-plugins](https://github.com/click-contrib/click-plugins) | 1.1.1.2 | New BSD | build/test |
-| [click-repl](https://github.com/untitaker/click-repl) | 0.3.0 | MIT | build/test |
+| [click-repl](https://github.com/click-contrib/click-repl) | 0.4.0 | MIT | build/test |
 | [colorama](https://github.com/tartley/colorama) | 0.4.6 | BSD License | build/test |
-| [cryptography](https://github.com/pyca/cryptography) | 50.0.0 | Apache-2.0 OR BSD-3-Clause | build/test |
-| [Deprecated](https://github.com/laurent-laporte-pro/deprecated) | 1.3.1 | MIT | build/test |
-| detect-installer | 0.1.0 | 0BSD | build/test |
+| [cryptography](https://github.com/pyca/cryptography) | 50.0.1 | Apache-2.0 OR BSD-3-Clause | build/test |
+| detect-installer | 0.2.1 | 0BSD | build/test |
 | [dnspython](https://www.dnspython.org) | 2.8.0 | ISC | build/test |
 | [email-validator](https://github.com/JoshData/python-email-validator) | 2.3.0 | Unlicense | build/test |
 | [et_xmlfile](https://foss.heptapod.net/openpyxl/et_xmlfile) | 2.0.0 | MIT | build/test |
 | [fastapi](https://github.com/fastapi/fastapi) | 0.138.1 | MIT | phát hành |
 | [fastapi-cli](https://github.com/fastapi/fastapi-cli) | 0.0.32 | MIT | build/test |
-| [fastapi-cloud-cli](https://github.com/fastapilabs/fastapi-cloud-cli) | 0.23.0 | MIT | build/test |
-| [fastar](https://github.com/DoctorJohn/fastar) | 0.11.0 | MIT | build/test |
+| [fastapi-cloud-cli](https://github.com/fastapilabs/fastapi-cloud-cli) | 0.26.0 | MIT | build/test |
+| [fastar](https://github.com/DoctorJohn/fastar) | 0.12.0 | MIT | build/test |
 | [flatbuffers](https://google.github.io/flatbuffers/) | 25.12.19 | Apache 2.0 | build/test |
 | [fonttools](http://github.com/fonttools/fonttools) | 4.60.2 | MIT | phát hành |
-| [greenlet](https://greenlet.readthedocs.io) | 3.5.4 | MIT AND PSF-2.0 | build/test |
+| [greenlet](https://greenlet.readthedocs.io) | 3.5.6 | MIT AND PSF-2.0 | build/test |
 | [h11](https://github.com/python-hyper/h11) | 0.16.0 | MIT | build/test |
 | [httpcore](https://www.encode.io/httpcore/) | 1.0.9 | BSD-3-Clause | build/test |
 | [httptools](https://github.com/MagicStack/httptools) | 0.8.0 | MIT | build/test |
 | [httpx](https://github.com/encode/httpx) | 0.27.0 | BSD-3-Clause | phát hành |
 | [hypothesis](https://hypothesis.works) | 6.155.3 | MPL-2.0 | phát hành |
-| [idna](https://github.com/kjd/idna) | 3.18 | BSD-3-Clause | build/test |
+| [idna](https://github.com/kjd/idna) | 3.20 | BSD-3-Clause | build/test |
 | [ImageIO](https://github.com/imageio/imageio) | 2.37.4 | BSD-2-Clause | build/test |
 | [iniconfig](https://github.com/pytest-dev/iniconfig) | 2.3.0 | MIT | build/test |
 | [Jinja2](https://github.com/pallets/jinja/) | 3.1.6 | BSD License | build/test |
 | [kombu](https://kombu.readthedocs.io) | 5.6.2 | BSD-3-Clause | build/test |
-| [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.5 | BSD-3-Clause | build/test |
-| [lxml](https://lxml.de/) | 6.1.1 | BSD-3-Clause | build/test |
-| [Mako](https://www.makotemplates.org/) | 1.3.12 | MIT | build/test |
+| [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.6 | BSD-3-Clause | build/test |
+| [lxml](https://lxml.de/) | 6.1.3 | BSD-3-Clause | build/test |
+| [Mako](https://www.makotemplates.org/) | 1.4.3 | MIT | build/test |
 | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | 4.2.0 | MIT License | build/test |
 | [MarkupSafe](https://github.com/pallets/markupsafe/) | 3.0.3 | BSD-3-Clause | build/test |
 | [maturin](https://github.com/pyo3/maturin) | 1.13.3 | MIT OR Apache-2.0 | phát hành |
@@ -176,27 +176,27 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [networkx](https://networkx.org/) | 3.6.1 | BSD-3-Clause | build/test |
 | [Nuitka](https://nuitka.net) | 4.1.2 | GNU Affero General Public License v3 | phát hành |
 | [numpy](https://numpy.org) | 1.26.4 | BSD License | build/test |
-| [onnxruntime-directml](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
+| [onnxruntime](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
 | [opencv-python-headless](https://github.com/opencv/opencv-python) | 4.10.0.84 | Apache 2.0 | phát hành |
 | [openpyxl](https://openpyxl.readthedocs.io) | 3.1.5 | MIT | phát hành |
 | ordered-set | 4.1.0 | MIT License | phát hành |
-| [packaging](https://github.com/pypa/packaging) | 26.2 | Apache-2.0 OR BSD-2-Clause | build/test |
+| [packaging](https://github.com/pypa/packaging) | 26.3 | Apache-2.0 OR BSD-2-Clause | build/test |
 | pdfcompare_native | 0.1.0 | CHƯA XÁC ĐỊNH | build/test |
 | [pdfminer.six](https://github.com/pdfminer/pdfminer.six) | 20260107 | MIT | build/test |
 | [pdfplumber](https://github.com/jsvine/pdfplumber) | 0.11.10 | MIT License | phát hành |
 | [pikepdf](https://github.com/pikepdf/pikepdf) | 10.12.0 | MPL-2.0 | phát hành |
 | [pillow](https://python-pillow.github.io) | 12.3.0 | MIT-CMU | phát hành |
-| [pip](https://pip.pypa.io/) | 26.2 | MIT | build/test |
+| [pip](https://pip.pypa.io/) | 24.0 | MIT | build/test |
 | pluggy | 1.6.0 | MIT | build/test |
 | [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) | 3.0.53 | BSD License | build/test |
-| [protobuf](https://developers.google.com/protocol-buffers/) | 7.35.1 | 3-Clause BSD License | build/test |
+| [protobuf](https://developers.google.com/protocol-buffers/) | 7.36.2 | 3-Clause BSD License | build/test |
 | [psycopg2-binary](https://psycopg.org/) | 2.9.9 | LGPL with exceptions | phát hành |
 | [pycparser](https://github.com/eliben/pycparser) | 3.0 | BSD-3-Clause | build/test |
-| [pydantic](https://github.com/pydantic/pydantic) | 2.13.4 | MIT | build/test |
+| [pydantic](https://github.com/pydantic/pydantic) | 2.13.5 | MIT | build/test |
 | [pydantic-extra-types](https://github.com/pydantic/pydantic-extra-types) | 2.11.1 | MIT | build/test |
 | [pydantic-settings](https://github.com/pydantic/pydantic-settings) | 2.5.0 | MIT | phát hành |
-| [pydantic_core](https://github.com/pydantic/pydantic) | 2.46.4 | MIT | build/test |
-| [Pygments](https://pygments.org) | 2.20.0 | BSD-2-Clause | build/test |
+| [pydantic_core](https://github.com/pydantic/pydantic) | 2.46.5 | MIT | build/test |
+| [Pygments](https://pygments.org) | 2.21.0 | BSD-2-Clause | build/test |
 | [pypdf](https://github.com/py-pdf/pypdf) | 6.14.2 | BSD-3-Clause | phát hành |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | 5.13.0 | BSD-3-Clause, Apache-2.0, dependency licenses | phát hành |
 | [pyserial](https://github.com/pyserial/pyserial) | 3.5 | BSD | phát hành |
@@ -212,12 +212,12 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [redis](https://github.com/redis/redis-py) | 5.1.0 | MIT | phát hành |
 | [reportlab](https://www.reportlab.com/) | 4.2.0 | BSD License | phát hành |
 | [rich](https://github.com/Textualize/rich) | 15.0.0 | MIT | build/test |
-| rich-toolkit | 0.20.3 | MIT | build/test |
-| rignore | 0.8.0 | MIT | build/test |
+| rich-toolkit | 0.20.5 | MIT | build/test |
+| rignore | 0.8.1 | MIT | build/test |
 | [scikit-image](https://scikit-image.org) | 0.24.0 | BSD License | phát hành |
 | [scipy](https://scipy.org/) | 1.12.0 | BSD License | phát hành |
 | [segno](https://github.com/heuer/segno/) | 1.6.6 | BSD License | phát hành |
-| [sentry-sdk](https://github.com/getsentry/sentry-python) | 2.66.1 | MIT | build/test |
+| [sentry-sdk](https://github.com/getsentry/sentry-python) | 2.70.0 | MIT | build/test |
 | [setuptools](https://github.com/pypa/setuptools) | 65.5.0 | MIT License | build/test |
 | [shapely](https://github.com/shapely/shapely) | 2.0.6 | BSD 3-Clause | phát hành |
 | [shellingham](https://github.com/sarugaku/shellingham) | 1.5.4 | ISC License | build/test |
@@ -228,18 +228,17 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [starlette](https://github.com/Kludex/starlette) | 1.3.1 | BSD-3-Clause | phát hành |
 | [sympy](https://sympy.org) | 1.14.0 | BSD | build/test |
 | [tifffile](https://www.cgohlke.com) | 2026.3.3 | BSD-3-Clause | build/test |
-| [typer](https://github.com/fastapi/typer) | 0.27.0 | MIT | build/test |
-| [typing-inspection](https://github.com/pydantic/typing-inspection) | 0.4.2 | MIT | build/test |
+| [typer](https://github.com/fastapi/typer) | 0.27.2 | MIT | build/test |
+| [typing-inspection](https://github.com/pydantic/typing-inspection) | 0.4.4 | MIT | build/test |
 | [typing_extensions](https://github.com/python/typing_extensions) | 4.16.0 | PSF-2.0 | build/test |
-| [tzdata](https://github.com/python/tzdata) | 2026.3 | Apache-2.0 | build/test |
+| [tzdata](https://github.com/python/tzdata) | 2026.4 | Apache-2.0 | build/test |
 | [uharfbuzz](https://github.com/trufont/uharfbuzz) | 0.55.0 | Apache License 2.0 | phát hành |
-| urllib3 | 2.7.0 | MIT | build/test |
+| urllib3 | 2.8.0 | MIT | build/test |
 | [uvicorn](https://www.uvicorn.org/) | 0.30.0 | BSD-3-Clause | phát hành |
 | [vine](https://github.com/celery/vine) | 5.1.0 | BSD | build/test |
-| [watchfiles](https://github.com/samuelcolvin/watchfiles) | 1.2.0 | MIT | build/test |
-| [wcwidth](https://github.com/jquast/wcwidth) | 0.8.2 | MIT | build/test |
+| [watchfiles](https://github.com/samuelcolvin/watchfiles) | 1.3.0 | MIT | build/test |
+| [wcwidth](https://github.com/jquast/wcwidth) | 0.9.1 | MIT License | build/test |
 | [websockets](https://github.com/python-websockets/websockets) | 13.0 | BSD-3-Clause | phát hành |
-| [wrapt](https://github.com/GrahamDumpleton/wrapt) | 2.3.0 | BSD-2-Clause | build/test |
 | [zstandard](https://github.com/indygreg/python-zstandard) | 0.25.0 | BSD-3-Clause | phát hành |
 
 ## 4. Crate Rust
@@ -271,6 +270,7 @@ là có trong bản phát hành.
 | [arrayref](https://github.com/droundy/arrayref) | 0.3.9 | BSD-2-Clause |
 | [arrayvec](https://github.com/bluss/arrayvec) | 0.7.6 | MIT OR Apache-2.0 |
 | [arrayvec](https://github.com/bluss/arrayvec) | 0.7.8 | MIT OR Apache-2.0 |
+| [ash](https://github.com/ash-rs/ash) | 0.38.0+1.3.281 | MIT OR Apache-2.0 |
 | [async-broadcast](https://github.com/smol-rs/async-broadcast) | 0.7.2 | MIT OR Apache-2.0 |
 | [async-channel](https://github.com/smol-rs/async-channel) | 2.5.0 | Apache-2.0 OR MIT |
 | [async-executor](https://github.com/smol-rs/async-executor) | 1.14.0 | Apache-2.0 OR MIT |
@@ -294,6 +294,7 @@ là có trong bản phát hành.
 | [bitflags](https://github.com/bitflags/bitflags) | 1.3.2 | MIT/Apache-2.0 |
 | [bitflags](https://github.com/bitflags/bitflags) | 2.13.1 | MIT OR Apache-2.0 |
 | [bitvec](https://github.com/bitvecto-rs/bitvec) | 1.0.1 | MIT |
+| [block](http://github.com/SSheldon/rust-block) | 0.1.6 | MIT |
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.10.4 | MIT OR Apache-2.0 |
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.12.1 | MIT OR Apache-2.0 |
 | [block-padding](https://github.com/RustCrypto/utils) | 0.4.2 | MIT OR Apache-2.0 |
@@ -318,6 +319,7 @@ là có trong bản phát hành.
 | [bytemuck](https://github.com/Lokathor/bytemuck) | 1.25.0 | Zlib OR Apache-2.0 OR MIT |
 | [bytemuck](https://github.com/Lokathor/bytemuck) | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | [bytemuck_derive](https://github.com/Lokathor/bytemuck) | 1.11.0 | Zlib OR Apache-2.0 OR MIT |
+| [bytemuck_derive](https://github.com/Lokathor/bytemuck) | 1.12.1 | Zlib OR Apache-2.0 OR MIT |
 | [byteorder](https://github.com/BurntSushi/byteorder) | 1.5.0 | Unlicense OR MIT |
 | [byteorder-lite](https://github.com/image-rs/byteorder-lite) | 0.1.0 | Unlicense OR MIT |
 | [bytes](https://github.com/tokio-rs/bytes) | 1.11.1 | MIT |
@@ -342,6 +344,7 @@ là có trong bản phát hành.
 | [cipher](https://github.com/RustCrypto/traits) | 0.4.4 | MIT OR Apache-2.0 |
 | [cipher](https://github.com/RustCrypto/traits) | 0.5.2 | MIT OR Apache-2.0 |
 | [clipper2-rust](https://github.com/larsbrubaker/clipper2-rust) | 1.1.0 | BSL-1.0 |
+| [codespan-reporting](https://github.com/brendanzab/codespan) | 0.11.1 | Apache-2.0 |
 | [color_quant](https://github.com/image-rs/color_quant) | 1.1.0 | MIT |
 | [combine](https://github.com/Marwes/combine) | 4.6.7 | MIT |
 | [concurrent-queue](https://github.com/smol-rs/concurrent-queue) | 2.5.0 | Apache-2.0 OR MIT |
@@ -354,8 +357,10 @@ là có trong bản phát hành.
 | [const-random-macro](https://github.com/tkaitchuck/constrandom) | 0.1.16 | MIT OR Apache-2.0 |
 | [cookie](https://github.com/SergioBenitez/cookie-rs) | 0.18.1 | MIT OR Apache-2.0 |
 | [core-foundation](https://github.com/servo/core-foundation-rs) | 0.10.1 | MIT OR Apache-2.0 |
+| [core-foundation](https://github.com/servo/core-foundation-rs) | 0.9.4 | MIT OR Apache-2.0 |
 | [core-foundation-sys](https://github.com/servo/core-foundation-rs) | 0.8.7 | MIT OR Apache-2.0 |
 | [core-graphics](https://github.com/servo/core-foundation-rs) | 0.25.0 | MIT OR Apache-2.0 |
+| [core-graphics-types](https://github.com/servo/core-foundation-rs) | 0.1.3 | MIT OR Apache-2.0 |
 | [core-graphics-types](https://github.com/servo/core-foundation-rs) | 0.2.0 | MIT OR Apache-2.0 |
 | [cow-utils](https://github.com/RReverser/cow-utils-rs) | 0.1.3 | MIT |
 | [cpubits](https://github.com/RustCrypto/utils) | 0.1.1 | MIT OR Apache-2.0 |
@@ -396,6 +401,7 @@ là có trong bản phát hành.
 | [dlopen2](https://github.com/OpenByteDev/dlopen2) | 0.8.2 | MIT |
 | [dlopen2_derive](https://github.com/OpenByteDev/dlopen2) | 0.4.3 | MIT |
 | [dlv-list](https://github.com/sgodwincs/dlv-list-rs) | 0.5.2 | MIT OR Apache-2.0 |
+| [document-features](https://github.com/slint-ui/document-features) | 0.2.12 | MIT OR Apache-2.0 |
 | [dom_query](https://github.com/niklak/dom_query) | 0.27.0 | MIT |
 | [dpi](https://github.com/rust-windowing/winit) | 0.1.2 | Apache-2.0 AND MIT |
 | [dtoa](https://github.com/dtolnay/dtoa) | 1.0.11 | MIT OR Apache-2.0 |
@@ -484,11 +490,19 @@ là có trong bản phát hành.
 | [gif](https://github.com/image-rs/image-gif) | 0.14.2 | MIT OR Apache-2.0 |
 | [gio](https://github.com/gtk-rs/gtk-rs-core) | 0.18.4 | MIT |
 | [gio-sys](https://github.com/gtk-rs/gtk-rs-core) | 0.18.1 | MIT |
+| [gl_generator](https://github.com/brendanzab/gl-rs/) | 0.14.0 | Apache-2.0 |
 | [glib](https://github.com/gtk-rs/gtk-rs-core) | 0.18.5 | MIT |
 | [glib-macros](https://github.com/gtk-rs/gtk-rs-core) | 0.18.5 | MIT |
 | [glib-sys](https://github.com/gtk-rs/gtk-rs-core) | 0.18.1 | MIT |
 | [glob](https://github.com/rust-lang/glob) | 0.3.3 | MIT OR Apache-2.0 |
+| [glow](https://github.com/grovesNL/glow) | 0.16.0 | MIT OR Apache-2.0 OR Zlib |
+| [glutin_wgl_sys](https://github.com/rust-windowing/glutin) | 0.6.1 | Apache-2.0 |
 | [gobject-sys](https://github.com/gtk-rs/gtk-rs-core) | 0.18.0 | MIT |
+| [gpu-alloc](https://github.com/zakarumych/gpu-alloc) | 0.6.2 | MIT OR Apache-2.0 |
+| [gpu-alloc-types](https://github.com/zakarumych/gpu-alloc) | 0.3.1 | MIT OR Apache-2.0 |
+| [gpu-allocator](https://github.com/Traverse-Research/gpu-allocator) | 0.27.0 | MIT OR Apache-2.0 |
+| [gpu-descriptor](https://github.com/zakarumych/gpu-descriptor) | 0.3.2 | MIT OR Apache-2.0 |
+| [gpu-descriptor-types](https://github.com/zakarumych/gpu-descriptor) | 0.2.0 | MIT OR Apache-2.0 |
 | [gtk](https://github.com/gtk-rs/gtk3-rs) | 0.18.2 | MIT |
 | [gtk-sys](https://github.com/gtk-rs/gtk3-rs) | 0.18.2 | MIT |
 | [gtk3-macros](https://github.com/gtk-rs/gtk3-rs) | 0.18.2 | MIT |
@@ -505,6 +519,7 @@ là có trong bản phát hành.
 | [heck](https://github.com/withoutboats/heck) | 0.5.0 | MIT OR Apache-2.0 |
 | [hermit-abi](https://github.com/hermit-os/hermit-rs) | 0.5.2 | MIT OR Apache-2.0 |
 | [hex](https://github.com/KokaKiwi/rust-hex) | 0.4.3 | MIT OR Apache-2.0 |
+| [hexf-parse](https://github.com/lifthrasiir/hexf) | 0.2.1 | CC0-1.0 |
 | [hmac](https://github.com/RustCrypto/MACs) | 0.12.1 | MIT OR Apache-2.0 |
 | [html5ever](https://github.com/servo/html5ever) | 0.38.0 | MIT OR Apache-2.0 |
 | [http](https://github.com/hyperium/http) | 1.4.1 | MIT OR Apache-2.0 |
@@ -567,6 +582,8 @@ là có trong bản phát hành.
 | [json-patch](https://github.com/idubrov/json-patch) | 3.0.1 | MIT/Apache-2.0 |
 | [jsonptr](https://github.com/chanced/jsonptr) | 0.6.3 | MIT OR Apache-2.0 |
 | [keyboard-types](https://github.com/pyfisch/keyboard-types) | 0.7.0 | MIT OR Apache-2.0 |
+| [khronos-egl](https://github.com/timothee-haudebourg/khronos-egl) | 6.0.0 | MIT/Apache-2.0 |
+| [khronos_api](https://github.com/brendanzab/gl-rs/) | 3.1.0 | Apache-2.0 |
 | [lcms2](https://github.com/kornelski/rust-lcms2) | 6.1.1 | MIT |
 | [lcms2-sys](https://github.com/kornelski/rust-lcms2-sys) | 4.0.7 | MIT |
 | [leb128fmt](https://github.com/bluk/leb128fmt) | 0.1.0 | MIT OR Apache-2.0 |
@@ -576,16 +593,19 @@ là có trong bản phát hành.
 | [libc](https://github.com/rust-lang/libc) | 0.2.189 | MIT OR Apache-2.0 |
 | [libdbus-sys](https://github.com/diwic/dbus-rs) | 0.2.7 | Apache-2.0/MIT |
 | [libloading](https://github.com/nagisa/rust_libloading/) | 0.7.4 | ISC |
+| [libloading](https://github.com/nagisa/rust_libloading/) | 0.8.9 | ISC |
 | [libloading](https://github.com/nagisa/rust_libloading/) | 0.9.0 | ISC |
 | [libm](https://github.com/rust-lang/compiler-builtins) | 0.2.16 | MIT |
 | [libredox](https://gitlab.redox-os.org/redox-os/libredox) | 0.1.17 | MIT |
 | [linux-raw-sys](https://github.com/sunfishcode/linux-raw-sys) | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [litemap](https://github.com/unicode-org/icu4x) | 0.8.2 | Unicode-3.0 |
+| [litrs](https://github.com/LukasKalbertodt/litrs) | 1.0.0 | MIT OR Apache-2.0 |
 | [lock_api](https://github.com/Amanieu/parking_lot) | 0.4.14 | MIT OR Apache-2.0 |
 | [log](https://github.com/rust-lang/log) | 0.4.30 | MIT OR Apache-2.0 |
 | [log](https://github.com/rust-lang/log) | 0.4.32 | MIT OR Apache-2.0 |
 | [log](https://github.com/rust-lang/log) | 0.4.33 | MIT OR Apache-2.0 |
 | [lopdf](https://github.com/J-F-Liu/lopdf) | 0.44.0 | MIT |
+| [malloc_buf](https://github.com/SSheldon/malloc_buf) | 0.0.6 | MIT |
 | [markup5ever](https://github.com/servo/html5ever) | 0.38.0 | MIT OR Apache-2.0 |
 | [matrixmultiply](https://github.com/bluss/matrixmultiply/) | 0.3.11 | MIT/Apache-2.0 |
 | [maybe-owned](https://github.com/rustonaut/maybe-owned) | 0.3.4 | MIT OR Apache-2.0 |
@@ -593,14 +613,17 @@ là có trong bản phát hành.
 | [memchr](https://github.com/BurntSushi/memchr) | 2.8.1 | Unlicense OR MIT |
 | [memchr](https://github.com/BurntSushi/memchr) | 2.8.3 | Unlicense OR MIT |
 | [memoffset](https://github.com/Gilnaa/memoffset) | 0.9.1 | MIT |
+| [metal](https://github.com/gfx-rs/metal-rs) | 0.31.0 | MIT OR Apache-2.0 |
 | [mime](https://github.com/hyperium/mime) | 0.3.17 | MIT OR Apache-2.0 |
 | [minisign-verify](https://github.com/jedisct1/rust-minisign-verify) | 0.2.5 | MIT |
 | [miniz_oxide](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide) | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | [mio](https://github.com/tokio-rs/mio) | 1.2.0 | MIT |
 | [moxcms](https://github.com/awxkee/moxcms) | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | [muda](https://github.com/tauri-apps/muda) | 0.19.2 | Apache-2.0 OR MIT |
+| [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) | 24.0.0 | MIT OR Apache-2.0 |
 | [ndarray](https://github.com/rust-ndarray/ndarray) | 0.17.2 | MIT OR Apache-2.0 |
 | [ndk](https://github.com/rust-mobile/ndk) | 0.9.0 | MIT OR Apache-2.0 |
+| [ndk-sys](https://github.com/rust-mobile/ndk) | 0.5.0+25.2.9519653 | MIT OR Apache-2.0 |
 | [ndk-sys](https://github.com/rust-mobile/ndk) | 0.6.0+11769913 | MIT OR Apache-2.0 |
 | [new_debug_unreachable](https://github.com/mbrubeck/rust-debug-unreachable) | 1.0.6 | MIT |
 | [nom](https://github.com/rust-bakery/nom) | 8.0.0 | MIT |
@@ -613,6 +636,7 @@ là có trong bản phát hành.
 | [num_enum_derive](https://github.com/illicitonion/num_enum) | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
 | [num_threads](https://github.com/jhpratt/num_threads) | 0.1.7 | MIT OR Apache-2.0 |
 | [numpy](https://github.com/PyO3/rust-numpy) | 0.29.0 | BSD-2-Clause |
+| [objc](http://github.com/SSheldon/rust-objc) | 0.2.7 | MIT |
 | [objc2](https://github.com/madsmtm/objc2) | 0.6.4 | MIT |
 | [objc2-app-kit](https://github.com/madsmtm/objc2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | [objc2-cloud-kit](https://github.com/madsmtm/objc2) | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
@@ -636,6 +660,7 @@ là có trong bản phát hành.
 | [open](https://github.com/Byron/open-rs) | 5.3.5 | MIT |
 | [openssl-probe](https://github.com/rustls/openssl-probe) | 0.2.1 | MIT OR Apache-2.0 |
 | [option-ext](https://github.com/soc/option-ext) | 0.2.0 | MPL-2.0 |
+| [ordered-float](https://github.com/reem/rust-ordered-float) | 4.6.0 | MIT |
 | [ordered-multimap](https://github.com/sgodwincs/ordered-multimap-rs) | 0.7.3 | MIT |
 | [ordered-stream](https://github.com/danieldg/ordered-stream) | 0.2.0 | MIT OR Apache-2.0 |
 | [os_pipe](https://github.com/oconnor663/os_pipe.rs) | 1.2.3 | MIT |
@@ -667,6 +692,7 @@ là có trong bản phát hành.
 | [png](https://github.com/image-rs/image-png) | 0.17.16 | MIT OR Apache-2.0 |
 | [png](https://github.com/image-rs/image-png) | 0.18.1 | MIT OR Apache-2.0 |
 | [polling](https://github.com/smol-rs/polling) | 3.11.0 | Apache-2.0 OR MIT |
+| [pollster](https://github.com/zesterer/pollster) | 0.4.0 | Apache-2.0/MIT |
 | [polyval](https://github.com/RustCrypto/universal-hashes) | 0.6.2 | Apache-2.0 OR MIT |
 | [portable-atomic](https://github.com/taiki-e/portable-atomic) | 1.14.0 | Apache-2.0 OR MIT |
 | [portable-atomic-util](https://github.com/taiki-e/portable-atomic-util) | 0.2.7 | Apache-2.0 OR MIT |
@@ -674,6 +700,7 @@ là có trong bản phát hành.
 | [powerfmt](https://github.com/jhpratt/powerfmt) | 0.2.0 | MIT OR Apache-2.0 |
 | [ppv-lite86](https://github.com/cryptocorrosion/cryptocorrosion) | 0.2.21 | MIT OR Apache-2.0 |
 | [precomputed-hash](https://github.com/emilio/precomputed-hash) | 0.1.1 | MIT |
+| [presser](https://github.com/EmbarkStudios/presser) | 0.3.1 | MIT OR Apache-2.0 |
 | [prettyplease](https://github.com/dtolnay/prettyplease) | 0.2.37 | MIT OR Apache-2.0 |
 | [proc-macro-crate](https://github.com/bkchr/proc-macro-crate) | 1.3.1 | MIT OR Apache-2.0 |
 | [proc-macro-crate](https://github.com/bkchr/proc-macro-crate) | 2.0.2 | MIT OR Apache-2.0 |
@@ -682,6 +709,7 @@ là có trong bản phát hành.
 | [proc-macro-error-attr](https://gitlab.com/CreepySkeleton/proc-macro-error) | 1.0.4 | MIT OR Apache-2.0 |
 | [proc-macro2](https://github.com/dtolnay/proc-macro2) | 1.0.106 | MIT OR Apache-2.0 |
 | [proc-macro2](https://github.com/dtolnay/proc-macro2) | 1.0.107 | MIT OR Apache-2.0 |
+| [profiling](https://github.com/aclysma/profiling) | 1.0.18 | MIT OR Apache-2.0 |
 | [ptr_meta](https://github.com/djkoloski/ptr_meta) | 0.1.4 | MIT |
 | [ptr_meta_derive](https://github.com/djkoloski/ptr_meta) | 0.1.4 | MIT |
 | [pxfm](https://github.com/awxkee/pxfm) | 0.1.29 | BSD-3-Clause OR Apache-2.0 |
@@ -706,6 +734,7 @@ là có trong bản phát hành.
 | [rand_core](https://github.com/rust-random/rand_core) | 0.10.1 | MIT OR Apache-2.0 |
 | [rand_core](https://github.com/rust-random/rand) | 0.6.4 | MIT OR Apache-2.0 |
 | [rand_core](https://github.com/rust-random/rand) | 0.9.5 | MIT OR Apache-2.0 |
+| [range-alloc](https://github.com/gfx-rs/range-alloc) | 0.1.5 | MIT OR Apache-2.0 |
 | [rangemap](https://github.com/jeffparsons/rangemap) | 1.7.1 | MIT/Apache-2.0 |
 | [raw-window-handle](https://github.com/rust-windowing/raw-window-handle) | 0.6.2 | MIT OR Apache-2.0 OR Zlib |
 | [rawpointer](https://github.com/bluss/rawpointer/) | 0.2.1 | MIT/Apache-2.0 |
@@ -720,6 +749,7 @@ là có trong bản phát hành.
 | [regex-syntax](https://github.com/rust-lang/regex) | 0.8.10 | MIT OR Apache-2.0 |
 | [regress](https://github.com/ridiculousfish/regress) | 0.10.5 | MIT OR Apache-2.0 |
 | [rend](https://github.com/djkoloski/rend) | 0.4.2 | MIT |
+| [renderdoc-sys](https://github.com/ebkalderon/renderdoc-rs) | 1.1.0 | MIT OR Apache-2.0 |
 | [reqwest](https://github.com/seanmonstar/reqwest) | 0.13.4 | MIT OR Apache-2.0 |
 | [rfd](https://github.com/PolyMeilex/rfd) | 0.16.0 | MIT |
 | [ring](https://github.com/briansmith/ring) | 0.17.14 | Apache-2.0 AND ISC |
@@ -731,6 +761,7 @@ là có trong bản phát hành.
 | [rstar](https://github.com/georust/rstar) | 0.12.2 | MIT OR Apache-2.0 |
 | [rust-ini](https://github.com/zonyitoo/rust-ini) | 0.21.3 | MIT |
 | [rust_decimal](https://github.com/paupino/rust-decimal) | 1.42.0 | MIT |
+| [rustc-hash](https://github.com/rust-lang-nursery/rustc-hash) | 1.1.0 | Apache-2.0/MIT |
 | [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.2 | Apache-2.0 OR MIT |
 | [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.3 | Apache-2.0 OR MIT |
 | [rustc_version](https://github.com/djc/rustc-version-rs) | 0.4.1 | MIT OR Apache-2.0 |
@@ -789,6 +820,7 @@ là có trong bản phát hành.
 | [simdutf8](https://github.com/rusticstuff/simdutf8) | 0.1.5 | MIT OR Apache-2.0 |
 | [siphasher](https://github.com/jedisct1/rust-siphash) | 1.0.3 | MIT/Apache-2.0 |
 | [slab](https://github.com/tokio-rs/slab) | 0.4.12 | MIT |
+| [slotmap](https://github.com/orlp/slotmap) | 1.1.1 | Zlib |
 | [small_btree](https://github.com/boa-dev/boa) | 0.1.0 | Unlicense OR MIT |
 | [smallvec](https://github.com/servo/rust-smallvec) | 1.15.1 | MIT OR Apache-2.0 |
 | [smallvec](https://github.com/servo/rust-smallvec) | 1.15.2 | MIT OR Apache-2.0 |
@@ -797,6 +829,7 @@ là có trong bản phát hành.
 | [soup3](https://gitlab.gnome.org/World/Rust/soup3-rs) | 0.5.0 | MIT |
 | [soup3-sys](https://gitlab.gnome.org/World/Rust/soup3-rs) | 0.5.0 | MIT |
 | [spade](https://github.com/Stoeoef/spade) | 2.15.1 | MIT OR Apache-2.0 |
+| [spirv](https://github.com/gfx-rs/rspirv) | 0.3.0+sdk-1.3.268.0 | Apache-2.0 |
 | [spki](https://github.com/RustCrypto/formats/tree/master/spki) | 0.7.3 | Apache-2.0 OR MIT |
 | [stable_deref_trait](https://github.com/storyyeller/stable_deref_trait) | 1.2.1 | MIT OR Apache-2.0 |
 | [static_assertions](https://github.com/nvzqz/static-assertions-rs) | 1.1.0 | MIT OR Apache-2.0 |
@@ -805,12 +838,15 @@ là có trong bản phát hành.
 | [string_cache_codegen](https://github.com/servo/string-cache) | 0.6.1 | MIT OR Apache-2.0 |
 | [stringprep](https://github.com/sfackler/rust-stringprep) | 0.1.5 | MIT/Apache-2.0 |
 | [strsim](https://github.com/rapidfuzz/strsim-rs) | 0.11.1 | MIT |
+| [strum](https://github.com/Peternator7/strum) | 0.26.3 | MIT |
+| [strum_macros](https://github.com/Peternator7/strum) | 0.26.4 | MIT |
 | [subtle](https://github.com/dalek-cryptography/subtle) | 2.6.1 | BSD-3-Clause |
 | [swift-rs](https://github.com/Brendonovich/swift-rs) | 1.0.7 | MIT OR Apache-2.0 |
 | [syn](https://github.com/dtolnay/syn) | 1.0.109 | MIT OR Apache-2.0 |
 | [syn](https://github.com/dtolnay/syn) | 2.0.117 | MIT OR Apache-2.0 |
 | [syn](https://github.com/dtolnay/syn) | 2.0.119 | MIT OR Apache-2.0 |
 | [syn](https://github.com/dtolnay/syn) | 3.0.3 | MIT OR Apache-2.0 |
+| [syn](https://github.com/dtolnay/syn) | 3.0.6 | MIT OR Apache-2.0 |
 | [sync_wrapper](https://github.com/Actyx/sync_wrapper) | 1.0.2 | Apache-2.0 |
 | [synstructure](https://github.com/mystor/synstructure) | 0.13.2 | MIT |
 | [system-deps](https://github.com/gdesmott/system-deps) | 6.2.2 | MIT OR Apache-2.0 |
@@ -840,6 +876,7 @@ là có trong bản phát hành.
 | [tauri-winres](https://github.com/tauri-apps/winres) | 0.3.6 | MIT |
 | [tempfile](https://github.com/Stebalien/tempfile) | 3.27.0 | MIT OR Apache-2.0 |
 | [tendril](https://github.com/servo/html5ever) | 0.5.0 | MIT OR Apache-2.0 |
+| [termcolor](https://github.com/BurntSushi/termcolor) | 1.4.1 | Unlicense OR MIT |
 | [thin-vec](https://github.com/mozilla/thin-vec) | 0.2.18 | MIT OR Apache-2.0 |
 | [thiserror](https://github.com/dtolnay/thiserror) | 1.0.69 | MIT OR Apache-2.0 |
 | [thiserror](https://github.com/dtolnay/thiserror) | 2.0.18 | MIT OR Apache-2.0 |
@@ -900,6 +937,7 @@ là có trong bản phát hành.
 | [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | 0.1.25 | MIT OR Apache-2.0 |
 | [unicode-properties](https://github.com/unicode-rs/unicode-properties) | 0.1.4 | MIT/Apache-2.0 |
 | [unicode-segmentation](https://github.com/unicode-rs/unicode-segmentation) | 1.13.2 | MIT OR Apache-2.0 |
+| [unicode-width](https://github.com/unicode-rs/unicode-width) | 0.1.14 | MIT OR Apache-2.0 |
 | [unicode-xid](https://github.com/unicode-rs/unicode-xid) | 0.2.6 | MIT OR Apache-2.0 |
 | [universal-hash](https://github.com/RustCrypto/traits) | 0.5.1 | MIT OR Apache-2.0 |
 | [untrusted](https://github.com/briansmith/untrusted) | 0.9.0 | ISC |
@@ -916,6 +954,7 @@ là có trong bản phát hành.
 | [vecmath](https://github.com/pistondevelopers/vecmath) | 1.0.0 | MIT |
 | [version-compare](https://gitlab.com/timvisee/version-compare) | 0.2.1 | MIT |
 | [version_check](https://github.com/SergioBenitez/version_check) | 0.9.5 | MIT/Apache-2.0 |
+| viewer_gpu | 0.1.0 | CHƯA XÁC ĐỊNH |
 | [visioncortex](https://github.com/visioncortex/visioncortex/) | 0.9.1 | MIT OR Apache-2.0 |
 | [vswhom](https://github.com/nabijaczleweli/vswhom.rs) | 0.1.0 | MIT |
 | [vswhom-sys](https://github.com/nabijaczleweli/vswhom-sys.rs) | 0.1.3 | MIT |
@@ -951,24 +990,34 @@ là có trong bản phát hành.
 | [webview2-com-sys](https://github.com/wravery/webview2-rs) | 0.38.2 | MIT |
 | [weezl](https://github.com/image-rs/weezl) | 0.1.12 | MIT OR Apache-2.0 |
 | [weezl](https://github.com/image-rs/weezl) | 0.2.1 | MIT OR Apache-2.0 |
+| [wgpu](https://github.com/gfx-rs/wgpu) | 24.0.5 | MIT OR Apache-2.0 |
+| [wgpu-core](https://github.com/gfx-rs/wgpu) | 24.0.5 | MIT OR Apache-2.0 |
+| [wgpu-hal](https://github.com/gfx-rs/wgpu) | 24.0.4 | MIT OR Apache-2.0 |
+| [wgpu-types](https://github.com/gfx-rs/wgpu) | 24.0.0 | MIT OR Apache-2.0 |
 | [winapi](https://github.com/retep998/winapi-rs) | 0.3.9 | MIT/Apache-2.0 |
 | [winapi-i686-pc-windows-gnu](https://github.com/retep998/winapi-rs) | 0.4.0 | MIT/Apache-2.0 |
 | [winapi-util](https://github.com/BurntSushi/winapi-util) | 0.1.11 | Unlicense OR MIT |
 | [winapi-x86_64-pc-windows-gnu](https://github.com/retep998/winapi-rs) | 0.4.0 | MIT/Apache-2.0 |
 | [window-vibrancy](https://github.com/tauri-apps/tauri-plugin-vibrancy) | 0.6.0 | Apache-2.0 OR MIT |
+| [windows](https://github.com/microsoft/windows-rs) | 0.58.0 | MIT OR Apache-2.0 |
 | [windows](https://github.com/microsoft/windows-rs) | 0.61.3 | MIT OR Apache-2.0 |
 | [windows-collections](https://github.com/microsoft/windows-rs) | 0.2.0 | MIT OR Apache-2.0 |
+| [windows-core](https://github.com/microsoft/windows-rs) | 0.58.0 | MIT OR Apache-2.0 |
 | [windows-core](https://github.com/microsoft/windows-rs) | 0.61.2 | MIT OR Apache-2.0 |
 | [windows-core](https://github.com/microsoft/windows-rs) | 0.62.2 | MIT OR Apache-2.0 |
 | [windows-future](https://github.com/microsoft/windows-rs) | 0.2.1 | MIT OR Apache-2.0 |
+| [windows-implement](https://github.com/microsoft/windows-rs) | 0.58.0 | MIT OR Apache-2.0 |
 | [windows-implement](https://github.com/microsoft/windows-rs) | 0.60.2 | MIT OR Apache-2.0 |
+| [windows-interface](https://github.com/microsoft/windows-rs) | 0.58.0 | MIT OR Apache-2.0 |
 | [windows-interface](https://github.com/microsoft/windows-rs) | 0.59.3 | MIT OR Apache-2.0 |
 | [windows-link](https://github.com/microsoft/windows-rs) | 0.1.3 | MIT OR Apache-2.0 |
 | [windows-link](https://github.com/microsoft/windows-rs) | 0.2.1 | MIT OR Apache-2.0 |
 | [windows-numerics](https://github.com/microsoft/windows-rs) | 0.2.0 | MIT OR Apache-2.0 |
 | [windows-registry](https://github.com/microsoft/windows-rs) | 0.5.3 | MIT OR Apache-2.0 |
+| [windows-result](https://github.com/microsoft/windows-rs) | 0.2.0 | MIT OR Apache-2.0 |
 | [windows-result](https://github.com/microsoft/windows-rs) | 0.3.4 | MIT OR Apache-2.0 |
 | [windows-result](https://github.com/microsoft/windows-rs) | 0.4.1 | MIT OR Apache-2.0 |
+| [windows-strings](https://github.com/microsoft/windows-rs) | 0.1.0 | MIT OR Apache-2.0 |
 | [windows-strings](https://github.com/microsoft/windows-rs) | 0.4.2 | MIT OR Apache-2.0 |
 | [windows-strings](https://github.com/microsoft/windows-rs) | 0.5.1 | MIT OR Apache-2.0 |
 | [windows-sys](https://github.com/microsoft/windows-rs) | 0.45.0 | MIT OR Apache-2.0 |
@@ -1023,6 +1072,7 @@ là có trong bản phát hành.
 | [x11](https://github.com/AltF02/x11-rs) | 2.21.0 | MIT |
 | [x11-dl](https://github.com/AltF02/x11-rs) | 2.21.0 | MIT |
 | [xattr](https://github.com/Stebalien/xattr) | 1.6.1 | MIT OR Apache-2.0 |
+| [xml-rs](https://github.com/kornelski/xml-rs) | 0.8.29 | MIT |
 | [yoke](https://github.com/unicode-org/icu4x) | 0.8.2 | Unicode-3.0 |
 | [yoke](https://github.com/unicode-org/icu4x) | 0.8.3 | Unicode-3.0 |
 | [yoke-derive](https://github.com/unicode-org/icu4x) | 0.8.2 | Unicode-3.0 |
@@ -1591,27 +1641,27 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 ## 6. Thống kê
 
 - Nhị phân đóng gói: 6
-- Thư viện Python: 116
-- Crate Rust: 799
+- Thư viện Python: 115
+- Crate Rust: 850
 - Gói npm: 531
 
 | Giấy phép | Số thành phần |
 |---|---|
-| MIT | 624 |
-| MIT OR Apache-2.0 | 383 |
+| MIT | 630 |
+| MIT OR Apache-2.0 | 412 |
 | Apache-2.0 OR MIT | 90 |
-| Apache-2.0 | 41 |
-| MIT/Apache-2.0 | 34 |
+| Apache-2.0 | 46 |
+| MIT/Apache-2.0 | 35 |
 | BSD-3-Clause | 33 |
-| ISC | 28 |
+| ISC | 29 |
 | Unicode-3.0 | 24 |
-| Zlib OR Apache-2.0 OR MIT | 21 |
+| Zlib OR Apache-2.0 OR MIT | 22 |
 | MPL-2.0 | 20 |
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 16 |
-| BSD-2-Clause | 16 |
-| Unlicense OR MIT | 15 |
+| Unlicense OR MIT | 16 |
+| BSD-2-Clause | 15 |
+| Apache-2.0/MIT | 8 |
 | BSD License | 8 |
-| Apache-2.0/MIT | 6 |
 
-3 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
+4 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
 
