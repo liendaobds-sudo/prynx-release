@@ -323,7 +323,9 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                         pipelineIdentity: renderPipelineIdentity(accurateColorEnabled ? 'accurate' : 'display', effectiveProfileId || 'fogra39', effectiveIntent || 'relative'),
                         soundness: accurateColorEnabled ? 'color-verified' : 'display-preview',
                     },
-                    bypassScheduler: accurateColorEnabled,
+                    // PERF (audit 2026-09-27 §LOW.04): Thumbnail tuyệt đối không bypass scheduler.
+                    // Phải xếp hàng ở background lane (priority 500) để nhường quyền ưu tiên cho trang chính.
+                    bypassScheduler: false,
                     render: async request => {
                         activeRequestId = request.requestId;
                         const { invoke } = await import('@tauri-apps/api/core');
