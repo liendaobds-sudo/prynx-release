@@ -338,8 +338,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'cover_numbering' || activeDashboardTool === 'stick_text_number';
     const showRulers = useAppSettingsStore(state => state.showRulers);
-    // GPU Viewport tạm thời khóa ở bản production, chỉ cho phép chạy ở môi trường DEV (import.meta.env.DEV)
-    const nativeGpuRequested = Boolean(import.meta.env.DEV) && useAppSettingsStore(state => state.nativeGpuViewportEnabled);
+    // GPU Viewport tạm thời khóa hoàn toàn (kể cả DEV), chỉ bật khi có cờ VITE_ENABLE_GPU_VIEWPORT === 'true'
+    const nativeGpuRequested = Boolean(import.meta.env.DEV)
+        && (import.meta.env.VITE_ENABLE_GPU_VIEWPORT as string | undefined) === 'true'
+        && useAppSettingsStore(state => state.nativeGpuViewportEnabled);
     const [nativeGpuFailure, setNativeGpuFailure] = useState<string | null>(null);
     const [nativeViewportVisible, setNativeViewportVisible] = useState(false);
     const nativeViewportKeepAliveRef = useRef(false);

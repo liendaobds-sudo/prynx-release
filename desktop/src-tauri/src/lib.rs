@@ -3375,20 +3375,15 @@ fn perf_enabled() -> bool {
 pub(crate) fn gpu_diagnostics_enabled() -> bool {
     static VERBOSE: OnceLock<bool> = OnceLock::new();
     *VERBOSE.get_or_init(|| {
-        cfg!(debug_assertions)
-            || perf_enabled()
-            || std::env::var("PRYNX_GPU_DIAGNOSTICS").as_deref() == Ok("1")
+        std::env::var("PRYNX_GPU_DIAGNOSTICS").as_deref() == Ok("1")
     })
 }
 
 fn perf_log(msg: &str) {
-    if !perf_enabled() && !gpu_diagnostics_enabled() {
+    if !perf_enabled() {
         return;
     }
     write_perf_log(msg);
-    log::info!(target: "gpu_viewport", "{msg}");
-    #[cfg(debug_assertions)]
-    eprintln!("[GPU_VIEW] {msg}");
 }
 
 // PERF (audit 2026-09-25 §R25.03): host và các worker cùng một file local.

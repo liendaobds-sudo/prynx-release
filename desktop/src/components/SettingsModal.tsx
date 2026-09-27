@@ -262,8 +262,8 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:chat_luong_preview_pdf')}</h4>
-                    {/* GPU Viewport tạm thời khóa chỉ hiển thị ở bản DEV để nghiên cứu sau */}
-                    {import.meta.env.DEV && (
+                    {/* GPU Viewport tạm thời khóa, chỉ hiển thị ở DEV khi có cờ VITE_ENABLE_GPU_VIEWPORT để nghiên cứu sau */}
+                    {import.meta.env.DEV && (import.meta.env.VITE_ENABLE_GPU_VIEWPORT as string | undefined) === 'true' && (
                       <label className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-amber-300/40 cursor-pointer">
                         <input type="checkbox" className="mt-1" checked={nativeGpuViewportEnabled}
                           onChange={event => setNativeGpuViewportEnabled(event.target.checked)} />
