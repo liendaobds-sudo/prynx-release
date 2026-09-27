@@ -11,7 +11,7 @@ import zlib
 import math
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from app.workers.cutline_simplify_memo import with_simplify_memo, current_simplify_memo
+from app.workers.cutline_simplify_memo import with_simplify_memo, current_simplify_memo, shared_simplify_job
 from app.workers.numerical_worker_threads import with_worker_thread_budget
 from concurrent.futures.process import BrokenProcessPool
 from typing import Optional, Tuple
@@ -8723,6 +8723,7 @@ def _process_sticker_chunk(args: dict):
             approved_contour_overrides=args.get("approved_contour_overrides"),
             _page_subset=args["page_indices"],
             _simplify_memo=args.get("simplify_memo"),
+            _shared_simplify_memo=args.get("shared_simplify_memo"),
         )
         # result = (bytes, metas, pages_no_dieline, any_dieline)
         t_chunk = time.perf_counter() - t0
@@ -12155,12 +12156,26 @@ class StickerEngine:
                 per_w_ram,
                 env_override="STICKER_MAX_WORKERS",
             ) as admitted_workers:
-                return self._run_sticker_chunks(
-                    args_list,
-                    admitted_workers,
-                    use_pool=pool_enabled,
-                    spill_dir=chunk_spill_dir,
+                # PERF (audit 2026-09-27 §CUT.REUSE): mỗi khóa hình học chỉ
+                # có một worker giải; khuôn khác vẫn chạy đồng thời. Broker
+                # sống đúng một lần chạy pool, đóng trước retry/fallback.
+                share_simplify = (
+                    pool_enabled and admitted_workers > 1 and len(args_list) > 1
+                    and kw.get("draw_cut_contour", True) and cut_mode != "none"
+                    and not kw.get("rectangle_mode") and not kw.get("cut_first_page_only")
+                    and kw.get("shape_mode", "auto_safe") in {"auto_safe", "contour"}
+                    and (kw.get("cutline_simplify_auto") or float(kw.get("cutline_simplify_mm") or 0) > 0)
                 )
+                with shared_simplify_job(
+                    enabled=share_simplify, records=current_simplify_memo(), total_ram_mb=_total_ram_mb(),
+                ) as shared:
+                    job_args = [dict(args, shared_simplify_memo=shared) for args in args_list]
+                    return self._run_sticker_chunks(
+                        job_args,
+                        admitted_workers,
+                        use_pool=pool_enabled,
+                        spill_dir=chunk_spill_dir,
+                    )
 
         try:
             results = _run_admitted(n_workers, use_pool)

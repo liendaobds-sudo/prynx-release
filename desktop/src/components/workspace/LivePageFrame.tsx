@@ -73,7 +73,7 @@ import {
     scrollElementVerticallyIntoView,
 } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
-import { previewPerfLog, viewerTraceEnabled, viewerTraceHash, viewerTraceLog } from '../../lib/previewPerfLog';
+import { getScopedZoomContext, previewPerfLog, viewerTraceEnabled, viewerTraceHash, viewerTraceLog } from '../../lib/previewPerfLog';
 import {
     adoptViewerFirstFrame,
     peekViewerFirstFrame,
@@ -680,6 +680,56 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         presentationProbeFramesRef.current.add(first);
     }, [rot, traceTileEvent]);
 
+    const recordSharpnessCommit = useCallback((
+        source: TileUrlSource,
+        naturalW: number,
+        naturalH: number,
+        scale: number,
+        paramsAtRequest?: string,
+        surfaceMode: 'canvas-bitmap' | 'img' = 'canvas-bitmap',
+    ) => {
+        const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
+        // Scope hóa context zoom theo tab/owner và page để không bị lẫn lộn giữa các tab (§SHARP.R2)
+        const zoomCtx = getScopedZoomContext({ page: pageNum, tabId: renderOwnerId });
+        const nowEpoch = Date.now();
+        const inputToCommitMs = zoomCtx.epoch > 0 ? nowEpoch - zoomCtx.epoch : null;
+        const targetZoom = zoomCtx.target > 0 ? zoomCtx.target : (zoom || 1);
+
+        // NÉT HÌNH HỌC (§SHARP.R1): So sánh pixel vật lý của bitmap với (CSS Box * DPR)
+        // chứ không so sánh trực tiếp scale với targetZoom vì scale nhận từ rasterScale (đã nhân DPR).
+        const curCssW = (cssW || clipW) as number;
+        const curCssH = (cssH || clipH) as number;
+        const expectedPixelsX = (curCssW > 0 ? curCssW : 1) * dpr;
+        const expectedPixelsY = (curCssH > 0 ? curCssH : 1) * dpr;
+        const pixelRatioX = naturalW > 0 ? naturalW / expectedPixelsX : 1;
+        const pixelRatioY = naturalH > 0 ? naturalH / expectedPixelsY : 1;
+
+        // Đủ nét khi mật độ điểm ảnh đạt >= 98% device pixel (không bị phóng đại mờ do underlay).
+        // Dư mật độ (oversampled do bucket 12 DPI hoặc zoom-out) vẫn tính là ĐỦ NÉT (§SHARP.R1).
+        const isTargetSharp = Math.min(pixelRatioX, pixelRatioY) >= 0.98;
+
+        traceTileEvent('tile-sharpness-commit', {
+            ...nativeRenderCoordinator.sourceTraceIdentity(source),
+            sharpness_attempt_id: zoomCtx.seq ? `zoom_${zoomCtx.seq}` : null,
+            input_to_commit_ms: inputToCommitMs,
+            displayed_scale: scale,
+            target_scale: targetZoom,
+            dpr,
+            surface_mode: surfaceMode,
+            pixel_ratio_x: Math.round(pixelRatioX * 1000) / 1000,
+            pixel_ratio_y: Math.round(pixelRatioY * 1000) / 1000,
+            is_target_sharp: isTargetSharp,
+            decode_ms: source.decodeMs ?? null,
+            display_decode_ms: paramsAtRequest && tileTimingRef.current?.params === paramsAtRequest
+                ? Math.round(performance.now() - tileTimingRef.current.startedAt)
+                : null,
+            natural_w: naturalW,
+            natural_h: naturalH,
+            proof_engine: source.proof?.engine ?? 'unknown',
+            soundness: source.proof?.soundness ?? 'display-preview',
+        });
+    }, [cssW, clipW, cssH, clipH, pageNum, renderOwnerId, traceTileEvent, zoom]);
+
     const renderBitmapToCanvas = useCallback((
         source: TileUrlSource,
         scale: number,
@@ -732,6 +782,8 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             natural_w: bm.width,
             natural_h: bm.height,
         });
+
+        recordSharpnessCommit(source, bm.width, bm.height, scale, paramsAtRequest, 'canvas-bitmap');
 
         traceSurfacePresentation(canvas, source, bm.width, bm.height, scale);
         onTileReadyRef.current?.({ scale });
@@ -1213,6 +1265,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                                     ? Math.round(performance.now() - tileTimingRef.current.startedAt)
                                     : null,
                             });
+                            recordSharpnessCommit(source, preImg.naturalWidth, preImg.naturalHeight, scale, paramsAtRequest, 'img');
                             // PERF (audit 2026-08-08 §RENDER.1): chỉ mở metadata pha B
                             // sau khi bitmap trang active đã render + decode + hiện lên DOM.
                             onRenderReadyRef.current?.();
@@ -2276,10 +2329,8 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
     const effBoxH = isVert ? (field.width ?? 0) : (field.height ?? 0);
     const boxWPx = Math.max(1, (effBoxW / 25.4 * 72) * scale);
     const boxHPx = Math.max(1, (effBoxH / 25.4 * 72) * scale);
-    // [VDP BASELINE PARITY] Khoảng cách từ đỉnh khung tới baseline: (boxH + fontPx) / 2.
-    // SVG text với dominantBaseline="alphabetic" neo đường chân chữ (baseline) chính xác 100%
-    // tại toạ độ y này, khớp tuyệt đối 1:1 với dòng kẻ và chữ gốc trên phôi in PDF.
-    const baselineY = (boxHPx + fontPx) / 2;
+    // Căn giữa văn bản theo chiều dọc trong khung (y="50%" + dominantBaseline="central")
+    // khớp hoàn hảo với ReportLab canvas backend (Paragraph wrapOn + ty = rl_y + (h - text_h) / 2).
 
     const [scaleX, setScaleX] = useState<number>(1);
     const [naturalWidth, setNaturalWidth] = useState<number>(0);
@@ -2410,24 +2461,45 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
                         : undefined,
                 }}
             >
-                <text
-                    x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
-                    y={baselineY}
-                    dominantBaseline="alphabetic"
-                    textAnchor={align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start'}
-                    fill={field.fontColor || '#1e293b'}
-                    stroke={hasStroke ? field.strokeColor : undefined}
-                    strokeWidth={hasStroke ? Math.max(0.5, (field.strokeWidth || 0.75) * scale * (96 / 72) * 2) : undefined}
-                    strokeLinejoin={(field.strokeLineJoin as any) || 'round'}
-                    strokeLinecap={(field.strokeLineCap as any) || 'round'}
-                    paintOrder="stroke fill"
-                    fontSize={`${fontPx}px`}
-                    fontFamily={fontFamily}
-                    fontWeight={field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal'}
-                    fontStyle={field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal'}
-                >
-                    {text}
-                </text>
+                {(() => {
+                    const lines = String(text ?? '').split('\n');
+                    return (
+                        <text
+                            x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
+                            y="50%"
+                            dominantBaseline="central"
+                            textAnchor={align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start'}
+                            fill={field.fontColor || '#1e293b'}
+                            stroke={hasStroke ? field.strokeColor : undefined}
+                            strokeWidth={hasStroke ? Math.max(0.5, (field.strokeWidth || 0.75) * scale * (96 / 72) * 2) : undefined}
+                            strokeLinejoin={(field.strokeLineJoin as any) || 'round'}
+                            strokeLinecap={(field.strokeLineCap as any) || 'round'}
+                            paintOrder="stroke fill"
+                            fontSize={`${fontPx}px`}
+                            fontFamily={fontFamily}
+                            fontWeight={field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal'}
+                            fontStyle={field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal'}
+                        >
+                            {lines.length <= 1 ? (
+                                text
+                            ) : (
+                                lines.map((line, idx) => {
+                                    const lineH = field.lineHeight ? Number(field.lineHeight) : 1.15;
+                                    const totalH = (lines.length - 1) * fontPx * lineH;
+                                    return (
+                                        <tspan
+                                            key={idx}
+                                            x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
+                                            dy={idx === 0 ? `${-totalH / 2}px` : `${fontPx * lineH}px`}
+                                        >
+                                            {line}
+                                        </tspan>
+                                    );
+                                })
+                            )}
+                        </text>
+                    );
+                })()}
             </svg>
         </span>
     );
@@ -3440,11 +3512,15 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
     // (Đặt ở vùng hooks đầu component để KHÔNG bị các early-return phía dưới làm
     //  lệch số lượng hook giữa các lần render.)
     const vdpRafRef = useRef<number | null>(null);
-    const vdpPendingRef = useRef<{ curX: number; curY: number } | null>(null);
+    const vdpPendingRef = useRef<{ curX: number; curY: number; ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean } | null>(null);
     const vdpInteractionRef = useRef(vdpInteraction);
     useEffect(() => { vdpInteractionRef.current = vdpInteraction; }, [vdpInteraction]);
 
-    const applyVdpDrag = (curX: number, curY: number) => {
+    const applyVdpDrag = (
+        curX: number,
+        curY: number,
+        modifiers?: { ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean }
+    ) => {
         const interaction = vdpInteractionRef.current;
         if (!interaction || !onVdpFieldsChange || !pageDim) return;
         const dx = curX - interaction.startX;
@@ -3460,6 +3536,10 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
         const pageHmm = pageDim.h * 25.4 / 72;
         const clampPos = (v: number, size: number, max: number) => Math.max(0, Math.min(v, Math.max(0, max - size)));
 
+        const isCtrl = Boolean(modifiers?.ctrlKey);
+        const isShift = Boolean(modifiers?.shiftKey);
+        const isAlt = Boolean(modifiers?.altKey);
+
         onVdpFieldsChange((prev: VdpToolField[]) => prev.map((f: VdpToolField) => {
             if (!interaction.fieldIds.includes(f.id)) return f;
             const startData = interaction.startFields[f.id];
@@ -3472,37 +3552,113 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                 return { ...f, x, y };
             } else if (interaction.type === 'resize') {
                 const handle = interaction.handle || 'se';
-                let newX = startData.x, newY = startData.y;
-                let newW = startData.w, newH = startData.h;
-                if (handle.includes('e')) newW = startData.w + dxMM;
-                if (handle.includes('w')) newW = startData.w - dxMM;
-                if (handle.includes('s')) newH = startData.h + dyMM;
-                if (handle.includes('n')) newH = startData.h - dyMM;
-                newW = Math.max(5, newW);
-                newH = Math.max(5, newH);
-                if (f.type === 'qrcode') {
-                    const size = Math.max(newW, newH);
-                    newW = size;
-                    newH = size;
+                const hasE = handle.includes('e');
+                const hasW = handle.includes('w');
+                const hasS = handle.includes('s');
+                const hasN = handle.includes('n');
+
+                // 1. Tính toán delta kích thước thô (Alt: kéo từ tâm ra 2 phía chuẩn Illustrator)
+                const dw = isAlt ? (hasE ? 2 * dxMM : hasW ? -2 * dxMM : 0) : (hasE ? dxMM : hasW ? -dxMM : 0);
+                const dh = isAlt ? (hasS ? 2 * dyMM : hasN ? -2 * dyMM : 0) : (hasS ? dyMM : hasN ? -dyMM : 0);
+
+                let rawW = hasE || hasW ? startData.w + dw : startData.w;
+                let rawH = hasS || hasN ? startData.h + dh : startData.h;
+
+                let newW = Math.max(5, rawW);
+                let newH = Math.max(5, rawH);
+
+                // 2. Shift: Khóa tỉ lệ khung hình (Aspect Ratio chuẩn Illustrator)
+                const startAspect = startData.w / Math.max(0.001, startData.h);
+                if (isShift) {
+                    if (handle.length === 2) {
+                        // Kéo 4 góc: chọn trục di chuyển chủ đạo để scale đều
+                        const scaleX = newW / Math.max(0.001, startData.w);
+                        const scaleY = newH / Math.max(0.001, startData.h);
+                        const scaleFactor = Math.abs(dxMM) > Math.abs(dyMM) ? scaleX : scaleY;
+                        newW = Math.max(5, startData.w * Math.max(0.05, scaleFactor));
+                        newH = Math.max(5, newW / startAspect);
+                    } else if (hasE || hasW) {
+                        // Kéo cạnh ngang: chiều cao tự co/dãn theo tỉ lệ
+                        newH = Math.max(5, newW / startAspect);
+                    } else if (hasN || hasS) {
+                        // Kéo cạnh dọc: chiều rộng tự co/dãn theo tỉ lệ
+                        newW = Math.max(5, newH * startAspect);
+                    }
                 }
-                if (handle.includes('w')) newX = startData.x + (startData.w - newW);
-                if (handle.includes('n')) newY = startData.y + (startData.h - newH);
-                // Không cho khung vượt biên trang (tránh QR/nội dung tràn rồi bị cắt).
+
+                // QR Code luôn giữ hình vuông
+                if (f.type === 'qrcode') {
+                    const s = Math.max(5, Math.min(newW, newH));
+                    newW = s;
+                    newH = s;
+                }
+
+                // 3. Tính toạ độ (x, y) theo điểm neo (anchor) chuẩn Illustrator
+                let newX = startData.x;
+                let newY = startData.y;
+
+                if (isAlt) {
+                    // Kéo từ tâm: tâm (cx, cy) giữ nguyên
+                    const cx = startData.x + startData.w / 2;
+                    const cy = startData.y + startData.h / 2;
+                    newX = cx - newW / 2;
+                    newY = cy - newH / 2;
+                } else {
+                    // Trục X
+                    if (hasW) {
+                        newX = startData.x + (startData.w - newW);
+                    } else if (hasE) {
+                        newX = startData.x;
+                    } else if (isShift) {
+                        // Kéo n/s có Shift thì mở rộng đều 2 bên X
+                        newX = startData.x + (startData.w - newW) / 2;
+                    }
+
+                    // Trục Y
+                    if (hasN) {
+                        newY = startData.y + (startData.h - newH);
+                    } else if (hasS) {
+                        newY = startData.y;
+                    } else if (isShift) {
+                        // Kéo e/w có Shift thì mở rộng đều 2 bên Y
+                        newY = startData.y + (startData.h - newH) / 2;
+                    }
+                }
+
+                // 4. Giữ khung trong biên trang in
                 newX = Math.max(0, newX);
                 newY = Math.max(0, newY);
                 newW = Math.min(newW, pageWmm - newX);
                 newH = Math.min(newH, pageHmm - newY);
-                if (f.type === 'qrcode') { const s = Math.max(5, Math.min(newW, newH)); newW = s; newH = s; }
-                else { newW = Math.max(5, newW); newH = Math.max(5, newH); }
-                // Text + handle GÓC (nw/ne/sw/se): scale cỡ chữ theo khung như Illustrator,
-                // thay vì chỉ đổi khung rồi để auto-fit bóp lúc tràn (chữ "kẹt" không co
-                // theo khung nữa). Handle CẠNH (n/s/e/w) giữ cỡ chữ — chỉ đổi vùng chảy
-                // chữ (giống nới rộng text box). QR/barcode/image không dính.
-                if (f.type === 'text' && handle.length === 2 && startData.fontSize) {
-                    const ratio = Math.min(newW / startData.w, newH / startData.h);
-                    const scaledFs = Math.max(1, Math.round(startData.fontSize * ratio * 10) / 10);
-                    return { ...f, x: newX, y: newY, width: newW, height: newH, fontSize: scaledFs };
+                if (f.type === 'qrcode') {
+                    const s = Math.max(5, Math.min(newW, newH));
+                    newW = s;
+                    newH = s;
+                } else {
+                    newW = Math.max(5, newW);
+                    newH = Math.max(5, newH);
                 }
+
+                // 5. Cỡ chữ (fontSize) chuẩn Adobe Illustrator:
+                // - KÉO BÌNH THƯỜNG (không giữ Ctrl): KHÔNG đổi fontSize, chỉ thu/phóng khung chứa.
+                // - GIỮ CTRL (Ctrl hoặc Ctrl + Shift): Cả khung và cỡ chữ co dãn theo tỉ lệ!
+                if (f.type === 'text') {
+                    if (isCtrl) {
+                        const ratioW = newW / Math.max(0.001, startData.w);
+                        const ratioH = newH / Math.max(0.001, startData.h);
+                        const fontScaleRatio = isShift
+                            ? ratioW
+                            : handle.length === 2
+                                ? Math.min(ratioW, ratioH)
+                                : (hasN || hasS ? ratioH : ratioW);
+                        const baseFs = startData.fontSize || f.fontSize || 12;
+                        const scaledFs = Math.max(1, Math.round(baseFs * fontScaleRatio * 10) / 10);
+                        return { ...f, x: newX, y: newY, width: newW, height: newH, fontSize: scaledFs };
+                    }
+                    // Bình thường: giữ nguyên cỡ chữ đã đặt (khung thu nhỏ lại mà chữ không bị bóp)
+                    return { ...f, x: newX, y: newY, width: newW, height: newH, fontSize: startData.fontSize || f.fontSize };
+                }
+
                 return { ...f, x: newX, y: newY, width: newW, height: newH };
             }
             return f;
@@ -3532,32 +3688,57 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
         const flush = () => {
             vdpRafRef.current = null;
             const p = vdpPendingRef.current;
-            if (p) applyVdpDrag(p.curX, p.curY);
+            if (p) applyVdpDrag(p.curX, p.curY, { ctrlKey: p.ctrlKey, shiftKey: p.shiftKey, altKey: p.altKey });
         };
         const onMove = (e: PointerEvent) => {
             e.preventDefault();
             if (!containerRef.current) return;
             const rect = containerRef.current.getBoundingClientRect();
             const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
-            vdpPendingRef.current = { curX: coords.x, curY: coords.y };
+            vdpPendingRef.current = {
+                curX: coords.x,
+                curY: coords.y,
+                ctrlKey: e.ctrlKey || e.metaKey,
+                shiftKey: e.shiftKey,
+                altKey: e.altKey,
+            };
             if (vdpRafRef.current == null) vdpRafRef.current = requestAnimationFrame(flush);
         };
-        const onUp = () => {
+        const onUp = (e: PointerEvent) => {
             if (vdpRafRef.current != null) { cancelAnimationFrame(vdpRafRef.current); vdpRafRef.current = null; }
             const p = vdpPendingRef.current;
-            if (p) applyVdpDrag(p.curX, p.curY);
+            if (p) {
+                applyVdpDrag(p.curX, p.curY, {
+                    ctrlKey: e.ctrlKey || e.metaKey || p.ctrlKey,
+                    shiftKey: e.shiftKey || p.shiftKey,
+                    altKey: e.altKey || p.altKey,
+                });
+            }
             vdpPendingRef.current = null;
             vdpInteractionRef.current = null;
             setVdpInteraction(null);
             window.getSelection()?.removeAllRanges();
         };
+        const onKeyChange = (e: KeyboardEvent) => {
+            const p = vdpPendingRef.current;
+            if (p) {
+                p.ctrlKey = e.ctrlKey || e.metaKey;
+                p.shiftKey = e.shiftKey;
+                p.altKey = e.altKey;
+                if (vdpRafRef.current == null) vdpRafRef.current = requestAnimationFrame(flush);
+            }
+        };
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', onUp);
         window.addEventListener('pointercancel', onUp);
+        window.addEventListener('keydown', onKeyChange);
+        window.addEventListener('keyup', onKeyChange);
         return () => {
             window.removeEventListener('pointermove', onMove);
             window.removeEventListener('pointerup', onUp);
             window.removeEventListener('pointercancel', onUp);
+            window.removeEventListener('keydown', onKeyChange);
+            window.removeEventListener('keyup', onKeyChange);
             if (vdpRafRef.current != null) { cancelAnimationFrame(vdpRafRef.current); vdpRafRef.current = null; }
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3835,7 +4016,6 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                 // [CONTINUOUS PICK]: Giữ nguyên chế độ chọn trường (isPickingVdpText = true)
                 // để người dùng có thể nhấp chọn liên tiếp nhiều trường trên trang mà không cần bấm lại nút.
                 // Khi chọn xong, người dùng chỉ cần bấm nút "Xong" hoặc phím Esc.
-                toast.success(t('Đã thêm trường "{{name}}". Tiếp tục chọn hoặc bấm Xong.', { name: newField.name }));
 
                 if (res.working_fid && res.working_pdf_url) {
                     window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
@@ -3937,11 +4117,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                     setSelectedVdpFieldIds([newField.id]);
                 }
 
-                const kindName = newField.type === 'qrcode' ? 'mã QR' : 'mã vạch';
-                toast.success(t('Đã thêm trường {{kind}} "{{name}}". Tiếp tục chọn hoặc bấm Xong.', {
-                    kind: kindName,
-                    name: newField.name,
-                }));
+                // Trường mới đã được thêm và chọn tự động (không spam popup toast)
 
                 if (res.working_fid && res.working_pdf_url) {
                     window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
@@ -8068,66 +8244,75 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                                  const fieldsToMove = newSelection.includes(field.id) ? newSelection : groupFields;
                                  
                                  if (e.altKey) {
-                                     // DUPLICATE LOGIC
+                                     // DUPLICATE LOGIC (Alt-drag clone chuẩn Illustrator/Photoshop)
                                      const newGroupId = `group_${Date.now()}`;
-                                     const hasMultiple = fieldsToMove.length > 1 || field.groupId;
+                                     const hasMultiple = fieldsToMove.length > 1 || Boolean(field.groupId);
                                      const newFieldsToMove: string[] = [];
                                      const startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> = {};
-                                     
-                                     onVdpFieldsChange?.((prev: VdpToolField[]) => {
-                                         const copies: VdpToolField[] = [];
-                                         fieldsToMove.forEach((id: string) => {
-                                             const f = prev.find((tf: VdpToolField) => tf.id === id);
-                                             if (!f) return;
-                                             
-                                             const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-                                             newFieldsToMove.push(copyId);
-                                             startFields[copyId] = { x: (f.x ?? 0) + 5, y: (f.y ?? 0) + 5, w: f.width ?? 0, h: f.height ?? 0, fontSize: f.fontSize };
-                                             
-                                             let newName = f.name;
-                                             let newTextContent = f.textContent;
-                                             
-                                             if (newName) {
-                                                 const match = newName.match(/^(.*?)(\d+)$/);
-                                                 if (match) {
-                                                     const baseName = match[1];
-                                                     const currentNum = parseInt(match[2], 10);
-                                                     let nextNum = currentNum + 1;
-                                                     while (prev.some((ef: VdpToolField) => ef.name === `${baseName}${nextNum}`) || copies.some(c => c.name === `${baseName}${nextNum}`)) {
-                                                         nextNum++;
-                                                     }
-                                                     newName = `${baseName}${nextNum}`;
-                                                 } else {
-                                                     let nextNum = 2;
-                                                     while (prev.some((ef: VdpToolField) => ef.name === `${newName}_${nextNum}`) || copies.some(c => c.name === `${newName}_${nextNum}`)) {
-                                                         nextNum++;
-                                                     }
-                                                     newName = `${newName}_${nextNum}`;
+                                     const copies: VdpToolField[] = [];
+
+                                     fieldsToMove.forEach((id: string) => {
+                                         const f = vdpFields.find((tf: VdpToolField) => tf.id === id);
+                                         if (!f) return;
+                                         
+                                         const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                                         newFieldsToMove.push(copyId);
+                                         
+                                         const fx = f.x ?? 0;
+                                         const fy = f.y ?? 0;
+                                         const fw = f.width ?? 0;
+                                         const fh = f.height ?? 0;
+                                         // Neo toạ độ bắt đầu đúng vị trí gốc dưới con trỏ chuột, không cộng lệch 5mm để tránh giật
+                                         startFields[copyId] = { x: fx, y: fy, w: fw, h: fh, fontSize: f.fontSize };
+                                         
+                                         let newName = f.name;
+                                         let newTextContent = f.textContent;
+                                         
+                                         if (newName) {
+                                             const match = newName.match(/^(.*?)(\d+)$/);
+                                             if (match) {
+                                                 const baseName = match[1];
+                                                 const currentNum = parseInt(match[2], 10);
+                                                 let nextNum = currentNum + 1;
+                                                 while (vdpFields.some((ef: VdpToolField) => ef.name === `${baseName}${nextNum}`) || copies.some(c => c.name === `${baseName}${nextNum}`)) {
+                                                     nextNum++;
                                                  }
+                                                 newName = `${baseName}${nextNum}`;
+                                             } else {
+                                                 let nextNum = 2;
+                                                 while (vdpFields.some((ef: VdpToolField) => ef.name === `${newName}_${nextNum}`) || copies.some(c => c.name === `${newName}_${nextNum}`)) {
+                                                     nextNum++;
+                                                 }
+                                                 newName = `${newName}_${nextNum}`;
                                              }
-                                             
-                                             if (newTextContent && f.name) {
-                                                 newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
-                                             }
-                                             
-                                             copies.push({
-                                                 ...f,
-                                                 id: copyId,
-                                                 name: newName,
-                                                 textContent: newTextContent,
-                                                 x: (f.x ?? 0) + 5,
-                                                 y: (f.y ?? 0) + 5,
-                                                 groupId: hasMultiple ? newGroupId : undefined
-                                             });
+                                         }
+                                         
+                                         if (newTextContent && f.name) {
+                                             newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
+                                         }
+                                         
+                                         copies.push({
+                                             ...f,
+                                             id: copyId,
+                                             name: newName,
+                                             textContent: newTextContent,
+                                             x: fx,
+                                             y: fy,
+                                             groupId: hasMultiple ? newGroupId : undefined,
+                                             qrStyle: f.qrStyle ? { ...f.qrStyle } : undefined,
+                                             conditions: f.conditions ? JSON.parse(JSON.stringify(f.conditions)) : undefined,
+                                             rules: f.rules ? JSON.parse(JSON.stringify(f.rules)) : undefined
                                          });
-                                         return [...prev, ...copies];
                                      });
+
+                                     // 1. Đồng bộ thêm bản sao vào danh sách
+                                     onVdpFieldsChange?.((prev: VdpToolField[]) => [...prev, ...copies]);
                                      
-                                     setTimeout(() => {
-                                         setSelectedVdpFieldIds(newFieldsToMove);
-                                         onVdpBoxSelect?.(newFieldsToMove);
-                                     }, 10);
+                                     // 2. Chuyển vùng chọn sang các trường bản sao mới
+                                     setSelectedVdpFieldIds(newFieldsToMove);
+                                     onVdpBoxSelect?.(newFieldsToMove);
                                      
+                                     // 3. Khởi tạo tương tác di chuyển đồng bộ ngay lập tức để con trỏ chuột bám dính trường mới
                                      const moveData = {
                                          type: 'move' as const,
                                          startX: startCoords.x,
@@ -8334,6 +8519,13 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                                                       [field.id]: { x: field.x ?? 0, y: field.y ?? 0, w: field.width ?? 0, h: field.height ?? 0, fontSize: field.fontSize }
                                                   }
                                               };
+                                              vdpPendingRef.current = {
+                                                  curX: startCoords.x,
+                                                  curY: startCoords.y,
+                                                  ctrlKey: e.ctrlKey || e.metaKey,
+                                                  shiftKey: e.shiftKey,
+                                                  altKey: e.altKey,
+                                              };
                                               vdpInteractionRef.current = resizeData;
                                               setVdpInteraction(resizeData);
                                           }}
@@ -8376,6 +8568,63 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                          onClick={(e) => e.stopPropagation()}
                          onContextMenu={(e) => e.preventDefault()}
                      >
+                         <button
+                             onClick={() => {
+                                 const f = vdpFields.find(tf => tf.id === vdpCtxMenu.fieldId);
+                                 if (f && onVdpFieldsChange) {
+                                     const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                                     let newName = f.name;
+                                     const match = newName?.match(/^(.*?)(\d+)$/);
+                                     if (match) {
+                                         const baseName = match[1];
+                                         let nextNum = parseInt(match[2], 10) + 1;
+                                         while (vdpFields.some(ef => ef.name === `${baseName}${nextNum}`)) nextNum++;
+                                         newName = `${baseName}${nextNum}`;
+                                     } else if (newName) {
+                                         newName = `${newName}_2`;
+                                     }
+                                     let newTextContent = f.textContent;
+                                     if (newTextContent && f.name) {
+                                         newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
+                                     }
+                                     const copy: VdpToolField = {
+                                         ...f,
+                                         id: copyId,
+                                         name: newName,
+                                         textContent: newTextContent,
+                                         x: (f.x ?? 0) + 5,
+                                         y: (f.y ?? 0) + 5,
+                                         groupId: undefined,
+                                         qrStyle: f.qrStyle ? { ...f.qrStyle } : undefined,
+                                         conditions: f.conditions ? JSON.parse(JSON.stringify(f.conditions)) : undefined,
+                                         rules: f.rules ? JSON.parse(JSON.stringify(f.rules)) : undefined
+                                     };
+                                     onVdpFieldsChange((prev: VdpToolField[]) => [...prev, copy]);
+                                     setSelectedVdpFieldIds([copyId]);
+                                     onVdpBoxSelect?.([copyId]);
+                                 }
+                                 setVdpCtxMenu(null);
+                             }}
+                             className="w-full text-left px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors flex items-center justify-between"
+                         >
+                             <span>{t('misc.livePageFrame:nhan_ban', 'Nhân bản')}</span>
+                             <span className="text-[10px] text-slate-400 font-mono">Ctrl+D</span>
+                         </button>
+                         <button
+                             onClick={() => {
+                                 if (onVdpFieldsChange) {
+                                     onVdpFieldsChange((prev: VdpToolField[]) => prev.filter((tf: VdpToolField) => tf.id !== vdpCtxMenu.fieldId));
+                                     setSelectedVdpFieldIds([]);
+                                     onVdpBoxSelect?.([]);
+                                 }
+                                 setVdpCtxMenu(null);
+                             }}
+                             className="w-full text-left px-3 py-2 text-[13px] font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg outline-none transition-colors flex items-center justify-between"
+                         >
+                             <span>{t('misc.livePageFrame:xoa_truong', 'Xóa trường')}</span>
+                             <span className="text-[10px] text-red-400/80 font-mono">Delete</span>
+                         </button>
+                         <div className="h-px bg-slate-100 dark:bg-white/5 my-1 mx-2"></div>
                          <div className="px-3 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">{t('misc.livePageFrame:xoay_khung')}</div>
                          {items.map((it) => (
                              <button

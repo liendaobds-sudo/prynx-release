@@ -561,6 +561,18 @@ export default function DataMergeTool({
     const selectionFileId = useWorkspaceStore((s) => s.selectionFileId);
     const vdpLivePreview = useWorkspaceStore((s) => s.vdpLivePreview);
     const setVdpLivePreview = useWorkspaceStore((s) => s.setVdpLivePreview);
+    const [showMainHelp, setShowMainHelp] = useState(false);
+    const [helpTab, setHelpTab] = useState<'workflow' | 'hotkeys' | 'fields_syntax'>('workflow');
+
+    // Đóng modal Trợ giúp bằng phím ESC
+    useEffect(() => {
+        if (!showMainHelp || !isActive) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); setShowMainHelp(false); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [showMainHelp, isActive]);
 
     const handleAutoDetectTags = async () => {
         const fid = selectionFileId || (pdfFile as any)?.path;
@@ -912,7 +924,7 @@ export default function DataMergeTool({
         }
     };
 
-    const { deleteSelectedField } = useVdpTool(vdpFields, setDataMergeFields, selectedFieldIds, onSelectField, isActive);
+    const { deleteSelectedField, duplicateSelectedFields } = useVdpTool(vdpFields, setDataMergeFields, selectedFieldIds, onSelectField, isActive);
 
     const selectedFieldId = selectedFieldIds[0];
     const selectedField = vdpFields.find(f => f.id === selectedFieldId);
@@ -1409,15 +1421,305 @@ export default function DataMergeTool({
     return (
         <div className="flex w-full flex-col gap-4">
             {/* Header */}
-            <div className="flex items-center gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700">
-                <div className="flex-1 min-w-0 text-center">
-                    <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
+            <div className="flex items-center gap-2 pt-1 pb-2.5 border-b border-slate-200 dark:border-zinc-700 shrink-0">
+                <div className="flex-1 min-w-0">
+                    <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
                         <span>🔤</span>
-                        <span>{t('preprocess.dataMerge:tron_du_lieu_vdp')}</span>
+                        <span>{t('preprocess.dataMerge:tron_du_lieu_vdp', 'Trộn dữ liệu VDP')}</span>
                     </h2>
-                    <p className="text-[11px] text-slate-500 mt-1">{t('preprocess.dataMerge:ve_vung_du_lieu_truc_tiep_tren_pdf')}</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">{t('preprocess.dataMerge:ve_vung_du_lieu_truc_tiep_tren_pdf')}</p>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setShowMainHelp(true)}
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1 bg-blue-50 hover:bg-blue-100 dark:bg-blue-500/10 dark:hover:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-md font-medium text-xs transition-colors cursor-pointer"
+                    title={t('preprocess.dataMerge:huong_dan_su_dung', 'Hướng dẫn Trộn dữ liệu VDP')}
+                >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <circle cx="12" cy="12" r="9" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" />
+                        <path strokeLinecap="round" d="M12 16.5h.01" />
+                    </svg>
+                    <span>Trợ giúp</span>
+                </button>
             </div>
+
+            {/* Modal Trợ giúp Trộn dữ liệu VDP */}
+            {showMainHelp && (
+                <div
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+                    onClick={() => setShowMainHelp(false)}
+                >
+                    <div
+                        className="max-w-2xl w-full max-h-[85vh] flex flex-col bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-zinc-700 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0">
+                            <div className="flex items-center gap-2.5">
+                                <span className="text-xl">🔤</span>
+                                <div>
+                                    <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
+                                        {t('preprocess.dataMerge:huong_dan_vdp_title', 'Hướng dẫn Trộn dữ liệu biến đổi (VDP)')}
+                                    </h3>
+                                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                        In thiệp mời, chứng chỉ, thẻ nhân viên, mã vạch & tem biến đổi
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowMainHelp(false)}
+                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                        </div>
+
+                        {/* Navigation Tabs */}
+                        <div className="flex items-center gap-1 px-5 pt-2.5 border-b border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('workflow')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'workflow'
+                                        ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>🚀</span>
+                                <span>Quy trình 4 bước</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('hotkeys')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'hotkeys'
+                                        ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>⚡</span>
+                                <span>Phím tắt & Chuột (Illustrator)</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('fields_syntax')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'fields_syntax'
+                                        ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>🏷️</span>
+                                <span>Loại trường & Placeholder nâng cao</span>
+                            </button>
+                        </div>
+
+                        {/* Content Area */}
+                        <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600 dark:text-zinc-300 scroller-thin leading-relaxed">
+                            {helpTab === 'workflow' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/20 p-3.5">
+                                        <div className="font-bold text-blue-900 dark:text-blue-300 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>📊</span>
+                                            <span>Bước 1: Nạp nguồn dữ liệu</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 text-[11px] mb-1.5">
+                                            Hỗ trợ 4 hình thức nạp nguồn dữ liệu linh hoạt:
+                                        </p>
+                                        <ul className="space-y-1 text-[11px] list-disc list-inside text-slate-600 dark:text-zinc-300">
+                                            <li><strong>File CSV:</strong> Nhập nhanh dữ liệu phân tách dấu phẩy. Có thể chọn nhiều file CSV cùng lúc để chạy hàng loạt (mỗi file ra 1 tab PDF kết quả riêng).</li>
+                                            <li><strong>File Excel (.xlsx):</strong> Tự động đọc danh sách sheet để bạn chọn sheet cần in.</li>
+                                            <li><strong>Google Sheets:</strong> Dán link bảng tính Google Sheets đã bật chế độ chia sẻ công khai.</li>
+                                            <li><strong>Nhập tay:</strong> Gõ hoặc dán nội dung văn bản (mỗi dòng = 1 bản ghi/trang in).</li>
+                                        </ul>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>🎯</span>
+                                            <span>Bước 2: Đặt các trường lên bản vẽ PDF</span>
+                                        </div>
+                                        <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-zinc-300">
+                                            <div>• <strong>Kéo thả từ thanh công cụ:</strong> Nhấp giữ chuột vào Chữ (Text), Mã QR, Mã vạch (Barcode) hoặc Hình ảnh rồi kéo thả vào đúng vị trí cần in trên trang.</div>
+                                            <div>• <strong>Chọn trường trực tiếp từ thiết kế:</strong> Nhấp nút <em>"Chọn trường"</em> rồi click vào dòng chữ có sẵn trên bản PDF mẫu.</div>
+                                            <div>• <strong>Quét thẻ tự động:</strong> Bấm <em>"Quét thẻ &#123;&#123;...&#125;&#125;"</em> để phần mềm tự tìm tất cả placeholder có sẵn trong file in.</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>🔗</span>
+                                            <span>Bước 3: Ghép cột dữ liệu (Field Mapping)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 text-[11px]">
+                                            Chọn từng trường trong danh sách để gán cột dữ liệu tương ứng từ file Excel/CSV. Trường đã ghép cột sẽ có huy hiệu tích xanh <span className="text-emerald-600 font-bold">✓ Đã ghép</span>.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>🖨️</span>
+                                            <span>Bước 4: Định dạng font, màu in & Xuất file PDF</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 text-[11px]">
+                                            Điều chỉnh Font chữ, Cỡ chữ, Căn lề, Màu mực in CMYK, xoay góc (0°, 90°, 180°, 270°). Xem thử trực tiếp dữ liệu từng dòng ngay trên trang, sau đó bấm <strong>"Tạo file PDF"</strong> để sinh file hoàn chỉnh.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {helpTab === 'hotkeys' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/20 p-3.5">
+                                        <div className="font-bold text-blue-900 dark:text-blue-300 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>🎯</span>
+                                            <span>Nhân bản tức thì tại vị trí chuột (Alt-Drag)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 mb-2">
+                                            Giữ phím <kbd className="px-1.5 py-0.5 text-[11px] font-mono font-bold bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Alt</kbd> và nhấp kéo chuột từ bất kỳ trường nào (Chữ, Mã QR, Mã vạch, Ảnh). Bản sao mới sẽ được tạo ngay lập tức dưới mũi tên chuột và bám dính chuyển động chuột chuẩn 100% như Adobe Illustrator.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2.5 flex items-center gap-2">
+                                            <span>⌨️</span>
+                                            <span>Bảng phím tắt bàn phím & Thao tác chuột</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Sao chép trường</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">C</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Dán trường (+5mm)</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">V</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Nhân bản tức thì</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">D</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Chọn tất cả các trường</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">A</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Xóa trường đang chọn</span>
+                                                <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs text-red-600">Delete</kbd>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Vi chỉnh vị trí (0.5mm)</span>
+                                                <span className="font-mono font-bold text-slate-500">Mũi tên ↑ ↓ ← →</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2 flex items-center gap-2">
+                                            <span>📐</span>
+                                            <span>Cơ chế co dãn 8 điểm viền (Illustrator Parity)</span>
+                                        </div>
+                                        <ul className="space-y-1.5 text-[11px] list-disc list-inside text-slate-600 dark:text-zinc-300">
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Kéo thông thường (không giữ phím):</strong> Chỉ thay đổi khung chứa bao quanh (cỡ chữ và tỉ lệ giữ nguyên).</li>
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Giữ phím Ctrl khi kéo:</strong> Cả khung viền và nội dung (chữ / barcode / qrcode / ảnh) co dãn đồng thời.</li>
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Giữ phím Shift khi kéo:</strong> Khóa cố định tỉ lệ khung hình (Aspect Ratio).</li>
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Giữ Ctrl + Shift khi kéo:</strong> Vừa khóa tỉ lệ khung hình, vừa co dãn đồng thời cỡ chữ/nội dung.</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+
+                            {helpTab === 'fields_syntax' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2 flex items-center gap-2">
+                                            <span>🔤</span>
+                                            <span>Cú pháp Placeholder và Định dạng chữ nâng cao</span>
+                                        </div>
+                                        <div className="space-y-2 text-[11px]">
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <div className="flex items-center justify-between mb-0.5">
+                                                    <code className="font-mono font-bold text-blue-600 dark:text-blue-400">&#123;GiaTien|money&#125;</code>
+                                                    <span className="text-[10px] text-emerald-600 font-semibold">Ví dụ: 150.000 đ</span>
+                                                </div>
+                                                <span className="text-slate-500">Tự động định dạng tiền tệ dấu chấm ngăn cách hàng nghìn.</span>
+                                            </div>
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <div className="flex items-center justify-between mb-0.5">
+                                                    <code className="font-mono font-bold text-blue-600 dark:text-blue-400">&#123;NgaySinh|date:DD/MM/YYYY&#125;</code>
+                                                    <span className="text-[10px] text-emerald-600 font-semibold">Ví dụ: 25/12/1990</span>
+                                                </div>
+                                                <span className="text-slate-500">Định dạng ngày tháng năm theo chuẩn Việt Nam.</span>
+                                            </div>
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <div className="flex items-center justify-between mb-0.5">
+                                                    <code className="font-mono font-bold text-blue-600 dark:text-blue-400">&#123;HoTen|upper&#125; / &#123;HoTen|title&#125;</code>
+                                                    <span className="text-[10px] text-emerald-600 font-semibold">NGUYỄN VĂN A / Nguyễn Văn A</span>
+                                                </div>
+                                                <span className="text-slate-500">Chuyển đổi VIẾT HOA toàn bộ hoặc Viết Hoa Chữ Cái Đầu Từ.</span>
+                                            </div>
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <div className="flex items-center justify-between mb-0.5">
+                                                    <code className="font-mono font-bold text-blue-600 dark:text-blue-400">&#123;MaSo|pad:6&#125;</code>
+                                                    <span className="text-[10px] text-emerald-600 font-semibold">Ví dụ: 000125</span>
+                                                </div>
+                                                <span className="text-slate-500">Đệm số 0 vào đầu chuỗi đủ số ký tự quy định.</span>
+                                            </div>
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <div className="flex items-center justify-between mb-0.5">
+                                                    <code className="font-mono font-bold text-blue-600 dark:text-blue-400">&#123;HoVaTen[1]&#125; / &#123;HoVaTen[2]&#125;</code>
+                                                    <span className="text-[10px] text-emerald-600 font-semibold">Tách Họ / Tên</span>
+                                                </div>
+                                                <span className="text-slate-500">Tách lấy từ thứ nhất hoặc các từ tiếp theo trong một chuỗi văn bản.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2 flex items-center gap-2">
+                                            <span>🔲</span>
+                                            <span>Mã QR, Mã vạch & Hình ảnh động</span>
+                                        </div>
+                                        <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-zinc-300">
+                                            <div>• <strong>Mã QR (QR Code):</strong> Tùy chỉnh kiểu chấm mắt mã (vuông, tròn, mềm), màu sắc mắt và nền, mức độ sửa lỗi (L, M, Q, H). Dữ liệu tự động lấy theo từng dòng bản ghi.</div>
+                                            <div>• <strong>Mã vạch (Barcode):</strong> Hỗ trợ các chuẩn công nghiệp Code 128, EAN-13, UPC-A, Code 39, ITF-14, Codabar. Tùy chọn hiện dòng text số và chiều cao thanh vạch.</div>
+                                            <div>• <strong>Hình ảnh động (Image):</strong> Tự động chèn ảnh thẻ, chữ ký hoặc logo từ đường dẫn lưu trong file dữ liệu.</div>
+                                            <div>• <strong>Điều kiện logic (Conditions & Rules):</strong> Ẩn/hiện trường dựa theo giá trị cột (Bằng, Khác, Chứa...) hoặc tự động đổi màu chữ theo điều kiện.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="px-5 py-3 border-t border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 flex items-center justify-between shrink-0">
+                            <span className="text-[11px] text-slate-400">
+                                Nhấn <kbd className="px-1 py-0.5 text-[10px] font-mono bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded">ESC</kbd> để đóng
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setShowMainHelp(false)}
+                                className="text-[12px] px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition-colors shadow-sm cursor-pointer"
+                            >
+                                {t('preprocess.dataMerge:da_hieu', 'Đã hiểu')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Data Section: CSV / Excel / Google Sheets / Nhập tay */}
             <VdpSection step="1" title={t('preprocess.dataMerge:du_lieu_csv_excel_sheets_nhap_tay')} defaultOpen>
@@ -1823,13 +2125,26 @@ export default function DataMergeTool({
                                                         {field.type}
                                                     </span>
                                                     {isSelected && (
-                                                        <button 
-                                                            onClick={(e) => { e.stopPropagation(); deleteSelectedField(); }}
-                                                            className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                                            title={t('preprocess.dataMerge:xoa_truong_nay')}
-                                                        >
-                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                                                        </button>
+                                                        <div className="flex items-center gap-1">
+                                                            <button 
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); duplicateSelectedFields(); }}
+                                                                className="text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-500/10 dark:hover:bg-blue-500/20 p-1.5 rounded transition-colors"
+                                                                title={`${t('preprocess.dataMerge:nhan_ban', 'Nhân bản')} (Ctrl+D)`}
+                                                            >
+                                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                                </svg>
+                                                            </button>
+                                                            <button 
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); deleteSelectedField(); }}
+                                                                className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
+                                                                title={t('preprocess.dataMerge:xoa_truong_nay')}
+                                                            >
+                                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                                            </button>
+                                                        </div>
                                                     )}
                                                 </div>
                                             </div>

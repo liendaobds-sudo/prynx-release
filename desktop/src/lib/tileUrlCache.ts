@@ -13,6 +13,8 @@ export interface TileUrlSource {
   cacheable?: boolean;
   /** COLOR (audit 2026-09-27 §V27.04): nguồn pixel thật, không suy từ slot yêu cầu. */
   proof?: Readonly<TilePixelProof>;
+  /** Thời gian giải mã bitmap (ms) từ mảng bytes thô / PXRG / PNG. */
+  decodeMs?: number;
 }
 
 export interface TilePixelProof {

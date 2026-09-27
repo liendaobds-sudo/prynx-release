@@ -310,6 +310,7 @@ function rawRgbaToBmpDataUrl(width: number, height: number, rgbaBytes: Uint8Arra
 }
 
 async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSource> {
+    const decodeT0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const u8 = new Uint8Array(bytes);
     // [PERF 2026-09-24 §ZERO-COPY-PXRG]: Nhận dạng định dạng Raw RGBA Direct Bitmap
     // Loại bỏ hoàn toàn CPU nén PNG ở Rust và giải nén PNG ở Chromium, giảm độ trễ từ 30ms xuống 0.8ms.
@@ -336,6 +337,7 @@ async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSou
             }
         }
 
+        const decodeMs = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - decodeT0) * 100) / 100;
         if (bitmap) {
             return {
                 url: `pxrg:${width}x${height}:${bytes.byteLength}`,
@@ -344,6 +346,7 @@ async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSou
                 height,
                 byteLength: bytes.byteLength,
                 cacheable: true,
+                decodeMs,
             };
         }
 
@@ -364,6 +367,7 @@ async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSou
                         height,
                         byteLength: bytes.byteLength,
                         cacheable: true,
+                        decodeMs: Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - decodeT0) * 100) / 100,
                     };
                 }
             } catch {
@@ -381,6 +385,7 @@ async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSou
                 height,
                 byteLength: bytes.byteLength,
                 cacheable: true,
+                decodeMs: Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - decodeT0) * 100) / 100,
             };
         } catch {
             throw new Error(`Không thể giải mã PXRG bitmap ${width}x${height}`);
@@ -402,12 +407,14 @@ async function createTileSourceFromBytes(bytes: ArrayBuffer): Promise<TileUrlSou
             // Môi trường test jsdom hoặc lỗi decode -> an toàn fallback
         }
     }
+    const decodeMs = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - decodeT0) * 100) / 100;
     return {
         url,
         bitmap,
         width,
         height,
         byteLength: blob.size,
+        decodeMs,
     };
 }
 

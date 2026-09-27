@@ -42,6 +42,10 @@ export interface VdpToolField {
 export type VdpFieldsUpdater = VdpToolField[] | ((previous: VdpToolField[]) => VdpToolField[]);
 export type SetVdpFields = (updater: VdpFieldsUpdater) => void;
 
+// Clipboard lưu trữ các trường VDP sao chép (dùng chung qua các lần render)
+let vdpClipboard: VdpToolField[] = [];
+let vdpPasteCount = 0;
+
 export function useVdpTool(
     vdpFields: VdpToolField[],
     setVdpFields: SetVdpFields | undefined,
@@ -76,6 +80,92 @@ export function useVdpTool(
         setVdpFields((prev) => prev.map(f => selectedFieldIds.includes(f.id) ? { ...f, groupId: undefined } : f));
     }, [selectedFieldIds, setVdpFields]);
 
+    const copySelectedFields = useCallback(() => {
+        if (selectedFieldIds.length === 0) return;
+        vdpClipboard = vdpFields
+            .filter(f => selectedFieldIds.includes(f.id))
+            .map(f => ({ ...f }));
+        vdpPasteCount = 0;
+    }, [selectedFieldIds, vdpFields]);
+
+    const pasteFields = useCallback(() => {
+        if (!setVdpFields || vdpClipboard.length === 0) return;
+        vdpPasteCount++;
+        const offsetMM = 5 * vdpPasteCount; // 5mm offset mỗi lần dán liên tiếp
+        const newGroupId = `group_${Date.now()}`;
+        const hasMultiple = vdpClipboard.length > 1;
+        const newFieldIds: string[] = [];
+        const copies: VdpToolField[] = [];
+        const dims = workspaceStore?.getState().viewerPageDimMm ?? null;
+
+        vdpClipboard.forEach(f => {
+            const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            newFieldIds.push(copyId);
+
+            let newName = f.name;
+            if (newName) {
+                const match = newName.match(/^(.*?)(\d+)$/);
+                if (match) {
+                    const baseName = match[1];
+                    const currentNum = parseInt(match[2], 10);
+                    let nextNum = currentNum + 1;
+                    while (vdpFields.some(ef => ef.name === `${baseName}${nextNum}`) || copies.some(c => c.name === `${baseName}${nextNum}`)) {
+                        nextNum++;
+                    }
+                    newName = `${baseName}${nextNum}`;
+                } else {
+                    let nextNum = 2;
+                    while (vdpFields.some(ef => ef.name === `${newName}_${nextNum}`) || copies.some(c => c.name === `${newName}_${nextNum}`)) {
+                        nextNum++;
+                    }
+                    newName = `${newName}_${nextNum}`;
+                }
+            }
+
+            let newTextContent = f.textContent;
+            if (newTextContent && f.name) {
+                newTextContent = newTextContent.replace(new RegExp(`\\{${f.name}\\}`, 'g'), `{${newName}}`);
+            }
+
+            let nx = (f.x ?? 0) + offsetMM;
+            let ny = (f.y ?? 0) + offsetMM;
+            if (dims) {
+                nx = Math.max(0, Math.min(nx, Math.max(0, dims.w - (f.width ?? 10))));
+                ny = Math.max(0, Math.min(ny, Math.max(0, dims.h - (f.height ?? 10))));
+            } else {
+                nx = Math.max(0, nx);
+                ny = Math.max(0, ny);
+            }
+
+            copies.push({
+                ...f,
+                id: copyId,
+                name: newName,
+                textContent: newTextContent,
+                x: nx,
+                y: ny,
+                groupId: hasMultiple ? newGroupId : undefined,
+                qrStyle: f.qrStyle ? { ...f.qrStyle } : undefined,
+                conditions: f.conditions ? JSON.parse(JSON.stringify(f.conditions)) : undefined,
+                rules: f.rules ? JSON.parse(JSON.stringify(f.rules)) : undefined,
+            });
+        });
+
+        setVdpFields(prev => [...prev, ...copies]);
+        if (onSelectField) {
+            onSelectField(newFieldIds);
+        }
+    }, [setVdpFields, vdpFields, onSelectField, workspaceStore]);
+
+    const duplicateSelectedFields = useCallback(() => {
+        if (selectedFieldIds.length === 0 || !setVdpFields) return;
+        const selected = vdpFields.filter(f => selectedFieldIds.includes(f.id));
+        if (selected.length === 0) return;
+        vdpClipboard = selected.map(f => ({ ...f }));
+        vdpPasteCount = 0;
+        pasteFields();
+    }, [selectedFieldIds, vdpFields, setVdpFields, pasteFields]);
+
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             // Bỏ qua nếu tool thuộc tab nền (không active) — tránh phím tắt lây giữa các tab.
@@ -86,10 +176,41 @@ export function useVdpTool(
                 (e.target instanceof HTMLElement && e.target.isContentEditable)) { // UIUX (audit 2026-07-27 §D-02)
                 return;
             }
+
+            // Ctrl+C (hoặc Cmd+C): Sao chép trường đang chọn
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+                if (selectedFieldIds.length > 0) {
+                    e.preventDefault();
+                    copySelectedFields();
+                }
+                return;
+            }
+            // Ctrl+V (hoặc Cmd+V): Dán trường đã sao chép
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+                if (vdpClipboard.length > 0) {
+                    e.preventDefault();
+                    pasteFields();
+                }
+                return;
+            }
+            // Ctrl+D (hoặc Cmd+D): Nhân bản tức thì (Duplicate)
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+                if (selectedFieldIds.length > 0) {
+                    e.preventDefault();
+                    duplicateSelectedFields();
+                }
+                return;
+            }
+            // Ctrl+A (hoặc Cmd+A): Chọn tất cả các trường
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                if (vdpFields.length > 0 && onSelectField) {
+                    e.preventDefault();
+                    onSelectField(vdpFields.map(f => f.id));
+                }
+                return;
+            }
+
             // UIUX (audit 2026-07-27 §D-02): phím mũi tên di chuyển field đang chọn.
-            // field.x/y lưu theo "mm phồng" (CSS px) — cộng thẳng vào x/y như drag làm.
-            // Để bước nhảy TRÒN SỐ theo mm THẬT (hiển thị = lưu × 0.75): 0.5mm thật
-            // = 0.5/0.75 đơn vị lưu; Shift = 5mm thật = 5/0.75 đơn vị lưu.
             const ARROW_DELTA: Record<string, [number, number]> = {
                 ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
             };
@@ -97,10 +218,6 @@ export function useVdpTool(
                 e.preventDefault(); // không cuộn trang khi đang di chuyển field
                 const step = (e.shiftKey ? 5 : 0.5) / 0.75;
                 const [dx, dy] = ARROW_DELTA[e.key];
-                // UIUX (audit 2026-07-27 §D-02) fix-verify: kẹp biên trang khi nudge.
-                // viewerPageDimMm CÙNG đơn vị "CSS-mm" với field.x/y/width/height
-                // (AcrobatViewer set = mm thật × 96/72; VdpAlignPanel cũng dùng thẳng
-                // pageDimMm.w với f.x/f.width) → kẹp trực tiếp, không đổi đơn vị.
                 const dims = workspaceStore?.getState().viewerPageDimMm ?? null;
                 setVdpFields((prev) => prev.map(f => {
                     if (!selectedFieldIds.includes(f.id)) return f;
@@ -110,7 +227,6 @@ export function useVdpTool(
                         nx = Math.max(0, Math.min(nx, dims.w - (f.width || 0)));
                         ny = Math.max(0, Math.min(ny, dims.h - (f.height || 0)));
                     } else {
-                        // Không có kích thước trang → tối thiểu không cho âm.
                         nx = Math.max(0, nx);
                         ny = Math.max(0, ny);
                     }
@@ -132,12 +248,15 @@ export function useVdpTool(
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedFieldIds, setVdpFields, onSelectField, isActive, workspaceStore, deleteSelectedField, handleGroupFields, handleUngroupFields]);
+    }, [selectedFieldIds, vdpFields, setVdpFields, onSelectField, isActive, workspaceStore, deleteSelectedField, handleGroupFields, handleUngroupFields, copySelectedFields, pasteFields, duplicateSelectedFields]);
 
     return {
         updateSelectedField,
         deleteSelectedField,
         handleGroupFields,
-        handleUngroupFields
+        handleUngroupFields,
+        copySelectedFields,
+        pasteFields,
+        duplicateSelectedFields,
     };
 }

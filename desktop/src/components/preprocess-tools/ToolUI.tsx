@@ -63,6 +63,72 @@ export const ToolDivider = () => (
     <div className="h-px bg-slate-200 dark:bg-white/10 w-full my-4" />
 );
 
+// UIUX (audit 2026-09-27): Section thu/xổ theo bước có số thứ tự và badge trạng thái chuẩn VDP
+export interface VdpSectionProps {
+    step?: string | number;
+    title: string;
+    badge?: React.ReactNode;
+    defaultOpen?: boolean;
+    accent?: boolean;
+    color?: 'indigo' | 'blue' | 'teal';
+    children: React.ReactNode;
+}
+
+export function VdpSection({
+    step,
+    title,
+    badge,
+    defaultOpen = true,
+    accent,
+    color = 'indigo',
+    children,
+}: VdpSectionProps) {
+    const [open, setOpen] = useState(defaultOpen);
+    const borderClass = accent
+        ? color === 'blue'
+            ? 'border-blue-300 dark:border-blue-700'
+            : color === 'teal'
+                ? 'border-teal-300 dark:border-teal-700'
+                : 'border-indigo-300 dark:border-indigo-700'
+        : 'border-slate-200 dark:border-zinc-700';
+
+    const headerBg = accent
+        ? color === 'blue'
+            ? 'bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30'
+            : color === 'teal'
+                ? 'bg-teal-50 dark:bg-teal-900/20 hover:bg-teal-100 dark:hover:bg-teal-900/30'
+                : 'bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/30'
+        : 'bg-slate-50 dark:bg-zinc-800/60 hover:bg-slate-100 dark:hover:bg-zinc-800';
+
+    const stepBg = accent
+        ? color === 'blue'
+            ? 'bg-blue-500'
+            : color === 'teal'
+                ? 'bg-teal-600'
+                : 'bg-indigo-600'
+        : 'bg-slate-400 dark:bg-zinc-600';
+
+    return (
+        <div className={`shrink-0 rounded-lg border overflow-hidden transition-all ${borderClass}`}>
+            <button
+                type="button"
+                onClick={() => setOpen(o => !o)}
+                className={`w-full flex items-center justify-between px-3 py-2 transition-colors ${headerBg}`}
+            >
+                <span className="text-[13px] font-bold text-slate-700 dark:text-zinc-200 flex items-center gap-2">
+                    {step && <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] text-white ${stepBg}`}>{step}</span>}
+                    <span>{title}</span>
+                    {badge}
+                </span>
+                <svg className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+            {open && <div className="p-3 space-y-3">{children}</div>}
+        </div>
+    );
+}
+
 interface ToolCardOptionProps {
     selected: boolean;
     onClick: () => void;

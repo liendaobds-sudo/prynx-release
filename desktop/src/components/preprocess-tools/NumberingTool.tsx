@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, previewVdpRecord, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
 import { ProgressBar } from '../ui/ProgressBar';
-import { toast } from '../ui/Toast'; // UIUX (audit 2026-07-27 §D-07)
-import { formatError, isCanceled } from '@/lib/errorMessages'; // UIUX (audit 2026-07-27 §D-15)
+import { toast } from '../ui/Toast';
+import { formatError, isCanceled } from '@/lib/errorMessages';
 import { CmykColorPicker } from './DataMergeTool';
-import { ToolNumberInput } from './ToolUI';
+import { ToolNumberInput, VdpSection } from './ToolUI';
 import { FontSelector } from './FontSelector';
 import { useVdpTool, type SetVdpFields, type VdpToolField } from '@/hooks/useVdpTool';
 import { startVdpDrag } from '../../utils/vdpDrag';
@@ -46,8 +46,17 @@ export interface FieldSequenceConfig {
   setStartStr: string;
   seqTotal: number;
   seqStart: number;
-    formatTemplate: string;
+  formatTemplate: string;
 }
+
+export const SET_FORMAT_PRESETS = [
+  { value: '{%b}-{%t}', label: 'A-01 (Ký tự - Số, gạch nối)' },
+  { value: '{%b}/{%t}', label: 'A/01 (Ký tự / Số, gạch chéo)' },
+  { value: '{%b}.{%t}', label: 'A.01 (Ký tự . Số, dấu chấm)' },
+  { value: '{%b} {%t}', label: 'A 01 (Khoảng cách)' },
+  { value: '{%b}{%t}', label: 'A01 (Viết liền)' },
+  { value: '__custom__', label: '⚙️ Tùy chỉnh khác...' },
+] as const;
 
 function sequenceSeed(cfg: FieldSequenceConfig): number {
   // NUM (audit 2026-09-23 §NUM23.01): preview, live-view và output đều gọi
@@ -148,6 +157,208 @@ export function computeSequenceFromConfig(cfg: FieldSequenceConfig): string[] {
   return rawSequence;
 }
 
+/** Sơ đồ mini trực quan mô phỏng quy luật nhảy số trên tờ in */
+function FinishingPreviewDiagram({
+    applyStyle,
+    sortMethod = 'rows',
+    rawSequence = [],
+    numSlots = 0,
+    totalPages = 1,
+}: {
+    applyStyle: 'stack' | 'linear';
+    sortMethod?: VdpSortMethod;
+    rawSequence?: string[];
+    numSlots?: number;
+    totalPages?: number;
+}) {
+    const { t } = useTranslation();
+
+    // Helper sinh giá trị số mẫu thực tế khớp với cấu hình của người dùng
+    const getVal = (index: number): string => {
+        if (rawSequence && rawSequence.length > index && rawSequence[index] !== undefined && rawSequence[index] !== '') {
+            return rawSequence[index];
+        }
+        if (rawSequence && rawSequence.length > 0) {
+            const first = rawSequence[0];
+            const m = first.match(/^(.*?)(\d+)(\D*)$/);
+            if (m) {
+                const prefix = m[1];
+                const numStr = m[2];
+                const suffix = m[3];
+                const baseNum = parseInt(numStr, 10) || 1;
+                const targetNum = baseNum + index;
+                const targetStr = numStr.startsWith('0') ? String(targetNum).padStart(numStr.length, '0') : String(targetNum);
+                return `${prefix}${targetStr}${suffix}`;
+            }
+        }
+        return `#${String(index + 1).padStart(3, '0')}`;
+    };
+
+    // Số slot tượng trưng hiển thị: nếu user đã đặt 1, 2, 3 vị trí thì hiện đúng số đó. Nếu chưa đặt hoặc >=4 thì hiện 4 (2x2).
+    const displaySlotCount = (numSlots >= 1 && numSlots <= 3) ? numSlots : 4;
+    const effectiveTotalPages = (totalPages && totalPages >= 2) ? totalPages : 50;
+
+    const slotValuesSheet1: string[] = [];
+    const slotValuesSheet2: string[] = [];
+
+    for (let s = 0; s < displaySlotCount; s++) {
+        if (applyStyle === 'linear') {
+            slotValuesSheet1.push(getVal(s));
+            slotValuesSheet2.push(getVal(displaySlotCount + s));
+        } else {
+            slotValuesSheet1.push(getVal(s * effectiveTotalPages + 0));
+            slotValuesSheet2.push(getVal(s * effectiveTotalPages + 1));
+        }
+    }
+
+    interface GridBox {
+        orderLabel: string;
+        val: string;
+    }
+
+    const arrange4Grid = (vals: string[], baseOrder: number = 1): { tl: GridBox; tr: GridBox; bl: GridBox; br: GridBox } => {
+        const v0 = vals[0] || '';
+        const v1 = vals[1] || '';
+        const v2 = vals[2] || '';
+        const v3 = vals[3] || '';
+
+        const o1 = `${baseOrder}`;
+        const o2 = `${baseOrder + 1}`;
+        const o3 = `${baseOrder + 2}`;
+        const o4 = `${baseOrder + 3}`;
+
+        switch (sortMethod) {
+            case 'cols': // Quét theo cột (N): Cột trái (1 -> 2), Cột phải (3 -> 4)
+                return {
+                    tl: { orderLabel: o1, val: v0 },
+                    bl: { orderLabel: o2, val: v1 },
+                    tr: { orderLabel: o3, val: v2 },
+                    br: { orderLabel: o4, val: v3 },
+                };
+            case 'ushape': // Rắn bò (U): Hàng trên (1 -> 2), Hàng dưới lượn ngược (4 <- 3)
+            case 'clockwise':
+                return {
+                    tl: { orderLabel: o1, val: v0 },
+                    tr: { orderLabel: o2, val: v1 },
+                    br: { orderLabel: o3, val: v2 },
+                    bl: { orderLabel: o4, val: v3 },
+                };
+            case 'rows': // Quét theo hàng (Z): Hàng trên (1 -> 2), Hàng dưới (3 -> 4)
+            default:
+                return {
+                    tl: { orderLabel: o1, val: v0 },
+                    tr: { orderLabel: o2, val: v1 },
+                    bl: { orderLabel: o3, val: v2 },
+                    br: { orderLabel: o4, val: v3 },
+                };
+        }
+    };
+
+    const sheet1Grid = displaySlotCount === 4 ? arrange4Grid(slotValuesSheet1, 1) : null;
+    const sheet2Grid = displaySlotCount === 4 ? arrange4Grid(slotValuesSheet2, applyStyle === 'linear' ? 5 : 1) : null;
+
+    const renderBox = (box: GridBox) => (
+        <div 
+            className="p-1 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 flex items-center justify-between px-1.5"
+            title={box.val}
+        >
+            <span className="text-[8px] font-sans font-normal opacity-50 bg-indigo-200/50 dark:bg-indigo-800/50 w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0">
+                {box.orderLabel}
+            </span>
+            <span className="truncate font-mono font-bold text-[11px] flex-1 text-center">
+                {box.val}
+            </span>
+        </div>
+    );
+
+    return (
+        <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700/80 space-y-2">
+            <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-zinc-300">
+                <span className="flex items-center gap-1.5">
+                    <span>{t('preprocess.numbering:so_do_minh_hoa', 'Sơ đồ mô phỏng thứ tự nhảy')}</span>
+                    {numSlots > 0 && (
+                        <span className="text-[9px] font-normal text-slate-400">
+                            ({numSlots} vị trí/tờ)
+                        </span>
+                    )}
+                </span>
+                <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800">
+                        {applyStyle === 'stack' ? t('preprocess.numbering:dong_cuon_xen_chong', 'Đóng cuốn') : t('preprocess.numbering:tem_roi_thu_tu', 'Tem rời')}
+                    </span>
+                    <span className="text-[10px] font-medium text-slate-500 dark:text-zinc-400 bg-slate-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+                        {sortMethod === 'rows' ? 'Hàng (Z)' : sortMethod === 'cols' ? 'Cột (N)' : sortMethod === 'ushape' ? 'Rắn bò (U)' : 'Kim đồng hồ'}
+                    </span>
+                </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center">
+                {/* Tờ in 1 */}
+                <div className="p-2 rounded border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Tờ in 1</span>
+                    {sheet1Grid ? (
+                        <div className="grid grid-cols-2 gap-1 text-[11px] font-mono font-bold">
+                            {renderBox(sheet1Grid.tl)}
+                            {renderBox(sheet1Grid.tr)}
+                            {renderBox(sheet1Grid.bl)}
+                            {renderBox(sheet1Grid.br)}
+                        </div>
+                    ) : (
+                        <div className={`grid gap-1 text-[11px] font-mono font-bold ${displaySlotCount === 1 ? 'grid-cols-1' : displaySlotCount === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+                            {slotValuesSheet1.map((val, idx) => (
+                                <div key={idx} className="p-1 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 flex items-center justify-between px-1.5" title={val}>
+                                    <span className="text-[8px] font-sans font-normal opacity-50 bg-indigo-200/50 dark:bg-indigo-800/50 w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0">
+                                        {idx + 1}
+                                    </span>
+                                    <span className="truncate font-mono font-bold text-[11px] flex-1 text-center">{val}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                {/* Tờ in 2 */}
+                <div className="p-2 rounded border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Tờ in 2</span>
+                    {sheet2Grid ? (
+                        <div className="grid grid-cols-2 gap-1 text-[11px] font-mono font-bold">
+                            {renderBox(sheet2Grid.tl)}
+                            {renderBox(sheet2Grid.tr)}
+                            {renderBox(sheet2Grid.bl)}
+                            {renderBox(sheet2Grid.br)}
+                        </div>
+                    ) : (
+                        <div className={`grid gap-1 text-[11px] font-mono font-bold ${displaySlotCount === 1 ? 'grid-cols-1' : displaySlotCount === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+                            {slotValuesSheet2.map((val, idx) => (
+                                <div key={idx} className="p-1 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 flex items-center justify-between px-1.5" title={val}>
+                                    <span className="text-[8px] font-sans font-normal opacity-50 bg-indigo-200/50 dark:bg-indigo-800/50 w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0">
+                                        {applyStyle === 'linear' ? displaySlotCount + idx + 1 : idx + 1}
+                                    </span>
+                                    <span className="truncate font-mono font-bold text-[11px] flex-1 text-center">{val}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+            <p className="text-[10px] text-slate-500 dark:text-zinc-400 leading-snug">
+                {applyStyle === 'stack' ? (
+                    <>
+                        💡 <strong>Đóng cuốn xén chồng:</strong> Số nhảy xuyên suốt giữa các tờ in (Tờ 1: <span className="font-mono text-indigo-600 dark:text-indigo-400 font-semibold">{slotValuesSheet1[0]}</span>, Tờ 2: <span className="font-mono text-indigo-600 dark:text-indigo-400 font-semibold">{slotValuesSheet2[0]}</span>...). In xong, xén từng cọc giấy rồi xếp chồng các cọc lên nhau theo thứ tự sẽ được các tập vé liền mạch.
+                    </>
+                ) : (
+                    <>
+                        💡 <strong>Tem rời liên tục:</strong> Số seri nhảy lần lượt trên từng tờ in theo {
+                            sortMethod === 'rows' ? 'hàng ngang (từ trái qua phải, từ trên xuống dưới - chữ Z)' :
+                            sortMethod === 'cols' ? 'cột dọc (từ trên xuống dưới, từ trái qua phải - chữ N)' :
+                            sortMethod === 'ushape' ? 'kiểu rắn bò (hàng trên từ trái qua phải, hàng dưới lượn ngược lại)' :
+                            'vòng tròn theo chiều kim đồng hồ'
+                        }. Thích hợp in nhãn dán, decal hoặc vé rời.
+                    </>
+                )}
+            </p>
+        </div>
+    );
+}
+
 export default function NumberingTool({
   pdfFile,
   getWorkingFile,
@@ -162,16 +373,15 @@ export default function NumberingTool({
   const { t } = useTranslation();
     const isPickingVdpText = useWorkspaceStore(s => s.isPickingVdpText);
     const setIsPickingVdpText = useWorkspaceStore(s => s.setIsPickingVdpText);
-    const vdpLivePreview = useWorkspaceStore(s => s.vdpLivePreview);
     const setVdpLivePreview = useWorkspaceStore(s => s.setVdpLivePreview);
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
-    // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
     const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
     const [spawnNewTab, setSpawnNewTab] = useState(true);
     const [showHelp, setShowHelp] = useState(false);
+    const [helpTab, setHelpTab] = useState<'hotkeys' | 'config' | 'cutstack'>('hotkeys');
 
-    // Hủy polling VDP khi unmount để không poll vô hạn nền (#13).
+    // Hủy polling VDP khi unmount
     const pollAbortRef = useRef<AbortController | null>(null);
     const activeVdpJobRef = useRef<string | null>(null);
     const [activeVdpJobId, setActiveVdpJobId] = useState<string | null>(null);
@@ -188,7 +398,7 @@ export default function NumberingTool({
         pollAbortRef.current?.abort();
     };
 
-    // Đóng modal trợ giúp bằng phím ESC (chỉ gắn listener khi modal đang mở).
+    // Đóng modal trợ giúp bằng phím ESC
     useEffect(() => {
         if (!showHelp || !isActive) return;
         const onKey = (e: KeyboardEvent) => {
@@ -222,6 +432,7 @@ export default function NumberingTool({
     const [seqTotal, setSeqTotal] = useState<number>(50);
     const [seqStart, setSeqStart] = useState<number>(1);
     const [formatTemplate, setFormatTemplate] = useState<string>('{%b}-{%t}');
+    const [isCustomFormat, setIsCustomFormat] = useState<boolean>(false);
 
     // Application Style & Sorting
     const [sortMethod, setSortMethod] = useState<VdpSortMethod>('rows');
@@ -241,15 +452,41 @@ export default function NumberingTool({
     const {
         updateSelectedField,
         deleteSelectedField,
+        duplicateSelectedFields,
         handleGroupFields,
         handleUngroupFields
     } = useVdpTool(vdpFields, setVdpFields, selectedFieldIds, onSelectField, isActive);
+
+    // UIUX (audit 2026-09-27): Tự động nhận diện chuỗi số mẫu (Smart Extract) khi người dùng nhấp chọn từ PDF
+    const extractedIdsRef = useRef<Set<string>>(new Set());
 
     // Sync vdpFields names to "Slot 1", "Slot 2" automatically
     useEffect(() => {
         if (!setVdpFields || vdpFields.length === 0) return;
         let needsUpdate = false;
         const seen = new Set<string>();
+
+        // Auto-extract pattern if text is picked from PDF
+        vdpFields.forEach(f => {
+            if (f.textContent && !f.textContent.startsWith('{') && !extractedIdsRef.current.has(f.id)) {
+                extractedIdsRef.current.add(f.id);
+                const match = f.textContent.match(/^(.*?)(\d+)(\D*)$/);
+                if (match) {
+                    setPrefix(match[1]);
+                    const sNum = parseInt(match[2], 10) || 1;
+                    setStartNum(sNum);
+                    if (match[2].startsWith('0')) {
+                        setPadZero(true);
+                        setPadLength(match[2].length);
+                    } else {
+                        setPadZero(false);
+                    }
+                    setSuffix(match[3]);
+                    // Tự động trích xuất cấu hình vào Bước 2 mà không spam popup toast
+                }
+            }
+        });
+
         const updated = vdpFields.map((f, idx) => {
             const isAuto = !f.name || /^Truong_\d+$/.test(f.name);
             if (isAuto || seen.has(f.name)) {
@@ -264,7 +501,7 @@ export default function NumberingTool({
             return f;
         });
         if (needsUpdate) setVdpFields(updated);
-    }, [vdpFields.length]);
+    }, [vdpFields.length, setVdpFields, t]);
 
     const currentSharedConfig: FieldSequenceConfig = useMemo(() => ({
         genMethod,
@@ -383,6 +620,7 @@ export default function NumberingTool({
             setSeqTotal(cfg.seqTotal);
             setSeqStart(cfg.seqStart);
             setFormatTemplate(cfg.formatTemplate);
+            setIsCustomFormat(!SET_FORMAT_PRESETS.some(p => p.value === cfg.formatTemplate && p.value !== '__custom__'));
         }
     };
 
@@ -394,6 +632,23 @@ export default function NumberingTool({
         });
         setFieldConfigs(updated);
         toast.success(t('preprocess.numbering:da_sao_chep_cai_dat'));
+    };
+
+    // Thao tác nhanh: Gộp tất cả các vị trí thành 1 số (cuống & thân vé)
+    const handleQuickGroupAll = () => {
+        if (!setVdpFields || vdpFields.length < 2) return;
+        const newGroupId = `grp_${Date.now().toString(36)}`;
+        const updated = vdpFields.map(f => ({ ...f, groupId: newGroupId }));
+        setVdpFields(updated);
+        toast.success(t('preprocess.numbering:da_gop_nhom_cung_so', 'Đã gộp tất cả vị trí mang cùng 1 số seri (Cuống & Thân vé)'));
+    };
+
+    // Thao tác nhanh: Tách các vị trí thành số độc lập
+    const handleQuickUngroupAll = () => {
+        if (!setVdpFields || vdpFields.length === 0) return;
+        const updated = vdpFields.map(f => ({ ...f, groupId: undefined }));
+        setVdpFields(updated);
+        toast.info(t('preprocess.numbering:da_tach_rieng_vi_tri', 'Đã tách các vị trí thành số nhảy độc lập'));
     };
 
     // Tính toán số lượng của từng slot và phát hiện chênh lệch (Length Mismatch)
@@ -511,7 +766,6 @@ export default function NumberingTool({
                 for (let s = 0; s < numSlots; s++) {
                     const slot = slots[s];
                     const seq = seqMap.get(slot.id) || [];
-                    // Dùng ký tự khoảng trắng ' ' cho trang bị thiếu số để không in lỗi MISSING đỏ lên bản in
                     const val = (seq[p] !== undefined && seq[p] !== '') ? seq[p] : ' ';
                     slot.fields.forEach(f => {
                         row[f.name] = val;
@@ -549,139 +803,9 @@ export default function NumberingTool({
         return csvData;
     }, [vdpFields.length, buildSortedSlots, sequenceMode, fieldConfigs, currentSharedConfig, generateSequence, t, applyStyle]);
 
-    const handleGenerate = async () => {
-        if (slotLengthStats.isMismatch) {
-            const confirmMsg = `${t('preprocess.numbering:canh_bao_lech_so_luong')}:\n` +
-                slotLengthStats.stats.map(s => `• ${s.name}: ${s.count} số`).join('\n') + 
-                `\n\n${t('preprocess.numbering:trang_thieu_se_trong')}\n` +
-                t('preprocess.numbering:xac_nhan_chay_lech', { min: slotLengthStats.minCount, max: slotLengthStats.maxCount });
-            if (!window.confirm(confirmMsg)) {
-                return;
-            }
-        }
-        try {
-            setIsGenerating(true);
-            setStatusMessage(t('preprocess.numbering:dang_tinh_toan_ma_tran_so'));
-            const csvData = generateDataMatrix();
-            
-            if (!pdfFile) throw new Error(t('preprocess.numbering:chua_co_file_pdf_goc'));
-            
-            setStatusMessage(t('preprocess.numbering:dang_day_du_lieu_len_may_chu', { n: csvData.length }));
-            // Tuân thủ kết quả cuối cùng: dùng file đã áp dụng sửa đổi trang làm template.
-            const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
-
-            // Đảm bảo tất cả các field gửi lên backend đều có textContent chứa token {fieldName}
-            // để vdp_engine thực sự thay thế đúng số nhảy từ ma trận csvData
-            const fieldsForJob = vdpFields.map(f => {
-                const content = f.textContent;
-                const hasToken = typeof content === 'string' && content.includes('{') && content.includes('}');
-                return {
-                    ...f,
-                    textContent: hasToken ? content : `{${f.name}}`
-                };
-            });
-
-            const jobId = await startVdpJobBackend(templateFile, fieldsForJob, csvData, 'vdp.numbering');
-            activeVdpJobRef.current = jobId;
-            setActiveVdpJobId(jobId);
-            
-            pollAbortRef.current = new AbortController();
-            // UIUX (audit 2026-07-27 §D-07): lưu thêm {processed,total} vào state cho ProgressBar
-            const result = await pollVdpJob(jobId, (m, info) => { setStatusMessage(m); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
-            const blob = result.blob;
-            const path = result.path;
-            if (!blob) throw new Error(t('preprocess.numbering:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
-            // LIFECYCLE (audit 2026-08-25 §REV.11): callback luôn nhận artifact kèm lease backend.
-            const outputBlob = tagArtifactLeaseToken(blob, result.artifactLease);
-            const outName = `Numbered_${pdfFile.name}`;
-            
-            if (spawnNewTab && onSpawnTab) {
-                onSpawnTab(outputBlob, outName, path ?? undefined);
-                setStatusMessage(t('preprocess.numbering:hoan_thanh_da_tao_tab_pdf_moi'));
-            } else if (onApplyResult) {
-                await onApplyResult(outputBlob, outName, path ?? undefined);
-                setStatusMessage(t('preprocess.numbering:hoan_thanh_da_ghi_de_file_hien_tai'));
-            }
-        } catch (error: unknown) {
-            // UIUX (audit 2026-07-27 §D-15): hủy → báo nhẹ; lỗi khác → câu Việt + hướng khắc phục
-            if (isCanceled(error)) { setStatusMessage(t('preprocess.numbering:da_huy', 'Đã hủy')); return; }
-            console.error(error);
-            setStatusMessage(formatError(error, t('preprocess.numbering:khong_chay_duoc_vdp', 'Không chạy được VDP'))); // UIUX (audit 2026-07-27 §D-15)
-        } finally {
-            activeVdpJobRef.current = null;
-            setActiveVdpJobId(null);
-            setProgressInfo(null); // UIUX (audit 2026-07-27 §D-07)
-            setIsGenerating(false);
-        }
-    };
-
-    // ─── Xem trước trực quan (Visual Live Preview) chuẩn VDP ──────────────────
+    // ─── Đồng bộ Live Preview Vector trực tiếp lên Canvas chính ──────────────
     const [previewIndex, setPreviewIndex] = useState<number>(1);
-    const [previewImg, setPreviewImg] = useState<string | null>(null);
-    const [previewLoading, setPreviewLoading] = useState<boolean>(false);
-    const [previewMsg, setPreviewMsg] = useState<string>('');
-    const [showSummaryText, setShowSummaryText] = useState<boolean>(false);
-    const previewAbortRef = useRef<AbortController | null>(null);
-
-    // Huỷ request preview khi unmount
-    useEffect(() => () => { previewAbortRef.current?.abort(); }, []);
-
-    // Đồng bộ ma trận số nhảy realtime lên view chính
-    useEffect(() => {
-        if (vdpFields.length === 0) {
-            setVdpLivePreview(prev => {
-                if (prev.totalRecords === 0 && prev.currentRecord === null) return prev;
-                return { ...prev, totalRecords: 0, currentRecord: null };
-            });
-            return;
-        }
-        try {
-            const matrix = generateDataMatrix();
-            if (matrix && matrix.length > 0) {
-                const safeIdx = Math.max(1, Math.min(matrix.length, previewIndex));
-                setVdpLivePreview({
-                    totalRecords: matrix.length,
-                    recordIndex: safeIdx,
-                    currentRecord: matrix[safeIdx - 1] || null,
-                    sourceTitle: `Số nhảy: Trang ${safeIdx}/${matrix.length}`,
-                });
-            }
-        } catch {
-            // Chưa đủ cấu hình dãy số
-        }
-    }, [vdpFields, generateDataMatrix, previewIndex, setVdpLivePreview]);
-
-    // Lắng nghe sự kiện đổi record từ view chính để đồng bộ về sidebar
-    useEffect(() => {
-        const handleIndexChange = (e: Event) => {
-            const ce = e as CustomEvent<{ index: number }>;
-            const idx = ce.detail?.index;
-            if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
-                setPreviewIndex(idx);
-            }
-        };
-        window.addEventListener('vdp-preview-index-change', handleIndexChange);
-        return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
-    }, [previewIndex]);
-
     const rawSequence = useMemo(() => generateSequence(), [generateSequence]);
-
-    // Đảm bảo activeConfigSlotId hợp lệ
-    useEffect(() => {
-        if (sortedSlots.length === 0) return;
-        if (!activeConfigSlotId || !sortedSlots.some(s => s.id === activeConfigSlotId)) {
-            setActiveConfigSlotId(sortedSlots[0].id);
-        }
-    }, [sortedSlots, activeConfigSlotId]);
-
-    // Khi người dùng click chọn trường trên canvas, đồng bộ activeConfigSlotId
-    useEffect(() => {
-        if (sequenceMode !== 'per_field' || selectedFieldIds.length === 0) return;
-        const matching = sortedSlots.find(s => s.fields.some(f => selectedFieldIds.includes(f.id)));
-        if (matching && matching.id !== activeConfigSlotId) {
-            handleSelectSlotConfig(matching.id);
-        }
-    }, [selectedFieldIds, sequenceMode, sortedSlots, activeConfigSlotId]);
 
     const slotSequenceMap = useMemo(() => {
         const map = new Map<string, string[]>();
@@ -731,232 +855,432 @@ export default function NumberingTool({
         return list;
     }, [numSlots, totalPages, previewIndex, sequenceMode, sortedSlots, slotSequenceMap, rawSequence, applyStyle]);
 
-    // Gọi /vdp/preview để kết xuất ảnh bản in thực tế có số nhảy
-    const runPreview = useCallback(async (targetIndex: number) => {
-        if (vdpFields.length === 0) {
-            setPreviewImg(null);
-            setPreviewMsg(t('preprocess.numbering:keo_tha_it_nhat_1_slot_len_man_hinh_de'));
-            return;
-        }
-
-        let csvData: Record<string, string>[];
-        try {
-            csvData = generateDataMatrix();
-        } catch {
-            setPreviewImg(null);
-            return;
-        }
-
-        if (csvData.length === 0) {
-            setPreviewImg(null);
-            return;
-        }
-
-        const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
-        if (!templateFile) return;
-
-        const pIdx = Math.max(0, Math.min(csvData.length - 1, targetIndex - 1));
-        const row = csvData[pIdx] || {};
-
-        const fieldsForJob = vdpFields.map(f => {
-            const content = f.textContent;
-            const hasToken = typeof content === 'string' && content.includes('{') && content.includes('}');
-            return {
-                ...f,
-                textContent: hasToken ? content : `{${f.name}}`
-            };
-        });
-
-        previewAbortRef.current?.abort();
-        const ac = new AbortController();
-        previewAbortRef.current = ac;
-
-        setPreviewLoading(true);
-        setPreviewMsg('');
-        try {
-            const result = await previewVdpRecord({
-                fields: fieldsForJob,
-                requestedIndex: 1,
-                template: templateFile,
-                rows: [row],
-                columns: Object.keys(row),
-                hasHeader: true,
-                signal: ac.signal,
-            });
-            if (ac.signal.aborted) return;
-            if (result.image_png_base64) {
-                setPreviewImg(`data:image/png;base64,${result.image_png_base64}`);
-                setPreviewMsg('');
-            } else {
-                setPreviewImg(null);
-                setPreviewMsg(result.message || '');
-            }
-        } catch (err: unknown) {
-            if (ac.signal.aborted) return;
-            console.error('Lỗi tạo bản xem trước số nhảy:', err);
-            setPreviewMsg(formatError(err, 'Không thể tạo bản xem trước'));
-        } finally {
-            if (!ac.signal.aborted) setPreviewLoading(false);
-        }
-    }, [vdpFields, generateDataMatrix, getWorkingFile, pdfFile, t]);
-
-    // Tự động kết xuất xem trước khi người dùng đổi trang hoặc sửa cấu hình (debounce 400ms)
+    // Tự động đẩy dữ liệu sang vdpLivePreview để hiển thị thanh điều hướng trên Canvas
     useEffect(() => {
-        if (vdpFields.length === 0 || !pdfFile) {
-            setPreviewImg(null);
+        if (vdpFields.length === 0) {
+            setVdpLivePreview(prev => {
+                if (prev.totalRecords === 0 && prev.currentRecord === null) return prev;
+                return { ...prev, totalRecords: 0, currentRecord: null };
+            });
             return;
         }
-        const timer = setTimeout(() => {
-            void runPreview(previewIndex);
-        }, 400);
-        return () => clearTimeout(timer);
-    }, [
-        previewIndex, vdpFields, runPreview, pdfFile, sequenceMode, fieldConfigs,
-        startNum, endNum, increment, padZero, padLength, prefix, suffix,
-        applyStyle, sortMethod, setStartStr, setTotal, seqTotal, seqStart, formatTemplate
-    ]);
-
-    const previewLines = useMemo(() => {
         try {
-            if (vdpFields.length === 0) return [t('preprocess.numbering:keo_tha_it_nhat_1_slot_len_man_hinh_de')];
-            const maxPreviewPages = Math.min(totalPages, 3);
-            const lines: string[] = [];
-
-            if (sequenceMode === 'per_field') {
-                for (let p = 0; p < maxPreviewPages; p++) {
-                    const items: string[] = [];
-                    for (let s = 0; s < numSlots; s++) {
-                        const slot = sortedSlots[s];
-                        const seq = slotSequenceMap.get(slot.id) || [];
-                        items.push(`${slot.name}: ${seq[p] || ''}`);
-                    }
-                    lines.push(`${t('preprocess.numbering:trang', { n: p + 1 })} ${items.join(' | ')}`);
-                }
-                return lines;
+            const matrix = generateDataMatrix();
+            if (matrix && matrix.length > 0) {
+                const safeIdx = Math.max(1, Math.min(matrix.length, previewIndex));
+                setVdpLivePreview(prev => ({
+                    ...prev,
+                    enabled: true, // Tự động bật xem trước trên Canvas chính
+                    totalRecords: matrix.length,
+                    recordIndex: safeIdx,
+                    currentRecord: matrix[safeIdx - 1] || null,
+                    sourceTitle: `Số nhảy: Trang ${safeIdx}/${matrix.length}`,
+                }));
             }
-
-            if (rawSequence.length === 0) return [t('preprocess.numbering:day_so_trong')];
-
-            for (let p = 0; p < maxPreviewPages; p++) {
-                let pageStr = `${t('preprocess.numbering:trang', { n: p + 1 })} `;
-                let itemsAdded = 0;
-                for (let s = 0; s < numSlots; s++) {
-                    const indexInSequence = applyStyle === 'linear' ? (p * numSlots + s) : (s * totalPages + p);
-                    if (indexInSequence < rawSequence.length) {
-                        pageStr += (itemsAdded > 0 ? ', ' : '') + rawSequence[indexInSequence];
-                        itemsAdded++;
-                        if (pageStr.length > 50) {
-                            pageStr += ', ...';
-                            break;
-                        }
-                    }
-                }
-                lines.push(pageStr);
-            }
-            return lines;
         } catch {
-            return [];
+            // Đang chỉnh sửa dãy số
         }
-    }, [vdpFields.length, totalPages, sequenceMode, numSlots, sortedSlots, slotSequenceMap, rawSequence, t, applyStyle]);
+    }, [vdpFields, generateDataMatrix, previewIndex, setVdpLivePreview]);
+
+    // Lắng nghe sự kiện chuyển record từ thanh điều hướng Canvas về sidebar
+    useEffect(() => {
+        const handleIndexChange = (e: Event) => {
+            const ce = e as CustomEvent<{ index: number }>;
+            const idx = ce.detail?.index;
+            if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
+                setPreviewIndex(idx);
+            }
+        };
+        window.addEventListener('vdp-preview-index-change', handleIndexChange);
+        return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
+    }, [previewIndex]);
+
+    // Đảm bảo activeConfigSlotId hợp lệ
+    useEffect(() => {
+        if (sortedSlots.length === 0) return;
+        if (!activeConfigSlotId || !sortedSlots.some(s => s.id === activeConfigSlotId)) {
+            setActiveConfigSlotId(sortedSlots[0].id);
+        }
+    }, [sortedSlots, activeConfigSlotId]);
+
+    // Khi người dùng click chọn trường trên canvas, đồng bộ activeConfigSlotId
+    useEffect(() => {
+        if (sequenceMode !== 'per_field' || selectedFieldIds.length === 0) return;
+        const matching = sortedSlots.find(s => s.fields.some(f => selectedFieldIds.includes(f.id)));
+        if (matching && matching.id !== activeConfigSlotId) {
+            handleSelectSlotConfig(matching.id);
+        }
+    }, [selectedFieldIds, sequenceMode, sortedSlots, activeConfigSlotId]);
+
+    // Chạy tạo file kết quả PDF
+    const handleGenerate = async () => {
+        if (slotLengthStats.isMismatch) {
+            const confirmMsg = `${t('preprocess.numbering:canh_bao_lech_so_luong')}:\n` +
+                slotLengthStats.stats.map(s => `• ${s.name}: ${s.count} số`).join('\n') + 
+                `\n\n${t('preprocess.numbering:trang_thieu_se_trong')}\n` +
+                t('preprocess.numbering:xac_nhan_chay_lech', { min: slotLengthStats.minCount, max: slotLengthStats.maxCount });
+            if (!window.confirm(confirmMsg)) {
+                return;
+            }
+        }
+        try {
+            setIsGenerating(true);
+            setStatusMessage(t('preprocess.numbering:dang_tinh_toan_ma_tran_so'));
+            const csvData = generateDataMatrix();
+            
+            if (!pdfFile) throw new Error(t('preprocess.numbering:chua_co_file_pdf_goc'));
+            
+            setStatusMessage(t('preprocess.numbering:dang_day_du_lieu_len_may_chu', { n: csvData.length }));
+            const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
+
+            const fieldsForJob = vdpFields.map(f => {
+                const content = f.textContent;
+                const hasToken = typeof content === 'string' && content.includes('{') && content.includes('}');
+                return {
+                    ...f,
+                    textContent: hasToken ? content : `{${f.name}}`
+                };
+            });
+
+            const jobId = await startVdpJobBackend(templateFile, fieldsForJob, csvData, 'vdp.numbering');
+            activeVdpJobRef.current = jobId;
+            setActiveVdpJobId(jobId);
+            
+            pollAbortRef.current = new AbortController();
+            const result = await pollVdpJob(jobId, (m, info) => { setStatusMessage(m); setProgressInfo(info ?? null); }, true, pollAbortRef.current.signal);
+            const blob = result.blob;
+            const path = result.path;
+            if (!blob) throw new Error(t('preprocess.numbering:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
+            const outputBlob = tagArtifactLeaseToken(blob, result.artifactLease);
+            const outName = `Numbered_${pdfFile.name}`;
+            
+            if (spawnNewTab && onSpawnTab) {
+                onSpawnTab(outputBlob, outName, path ?? undefined);
+                setStatusMessage(t('preprocess.numbering:hoan_thanh_da_tao_tab_pdf_moi'));
+            } else if (onApplyResult) {
+                await onApplyResult(outputBlob, outName, path ?? undefined);
+                setStatusMessage(t('preprocess.numbering:hoan_thanh_da_ghi_de_file_hien_tai'));
+            }
+        } catch (error: unknown) {
+            if (isCanceled(error)) { setStatusMessage(t('preprocess.numbering:da_huy', 'Đã hủy')); return; }
+            console.error(error);
+            setStatusMessage(formatError(error, t('preprocess.numbering:khong_chay_duoc_vdp', 'Không chạy được VDP')));
+        } finally {
+            activeVdpJobRef.current = null;
+            setActiveVdpJobId(null);
+            setProgressInfo(null);
+            setIsGenerating(false);
+        }
+    };
+
+    const selectedField = selectedFieldIds.length > 0 ? vdpFields.find(f => f.id === selectedFieldIds[0]) : null;
+    const hasGroupedFields = vdpFields.some(f => Boolean(f.groupId));
 
     return (
-        <div className="flex w-full flex-col gap-4">
+        <div className="flex w-full flex-col gap-3">
             {/* Header */}
-            <div className="flex items-center gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700 shrink-0">
-                <div className="flex-1 min-w-0 text-center">
-                    <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
+            <div className="flex items-center gap-2 pt-1 pb-2.5 border-b border-slate-200 dark:border-zinc-700 shrink-0">
+                <div className="flex-1 min-w-0">
+                    <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
                         <span>🔢</span>
-                        <span>{t('preprocess.numbering:nhay_so_tu_dong')}</span>
+                        <span>{t('preprocess.numbering:nhay_so_tu_dong', 'Nhảy số tự động')}</span>
                     </h2>
-                    <p className="text-[11px] text-slate-500 mt-1">Numbering & Ticket Generator</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Numbering & Ticket Generator</p>
                 </div>
                 <button
                     type="button"
                     onClick={() => setShowHelp(true)}
-                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-500/10 dark:hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-md font-medium transition-colors cursor-pointer"
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-500/10 dark:hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-md font-medium text-xs transition-colors cursor-pointer"
                     title={t('preprocess.numbering:huong_dan_su_dung')}
                 >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
+                    <span>Trợ giúp</span>
                 </button>
             </div>
 
+            {/* Modal Trợ giúp */}
             {showHelp && (
                 <div
-                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
                     onClick={() => setShowHelp(false)}
                 >
                     <div
-                        className="max-w-lg w-full max-h-[80vh] overflow-auto bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-700"
+                        className="max-w-2xl w-full max-h-[85vh] flex flex-col bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-zinc-700 overflow-hidden"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
-                            <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">{t('preprocess.numbering:huong_dan_nhay_so')}</span>
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0">
+                            <div className="flex items-center gap-2.5">
+                                <span className="text-xl">🔢</span>
+                                <div>
+                                    <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
+                                        {t('preprocess.numbering:huong_dan_nhay_so', 'Hướng dẫn Nhảy số tự động')}
+                                    </h3>
+                                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                        Cẩm nang thao tác nhanh, quy cách thành phẩm & mẹo thợ in
+                                    </p>
+                                </div>
+                            </div>
                             <button
                                 type="button"
                                 onClick={() => setShowHelp(false)}
-                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
                             >
                                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                         </div>
-                        <div className="p-4 space-y-3 text-[12px] text-slate-600 dark:text-zinc-300">
-                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
-                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.numbering:help_slot_tieu_de')}</div>
-                                <div className="text-slate-500 dark:text-zinc-400">{t('preprocess.numbering:help_slot_noi_dung')}</div>
-                            </div>
 
-                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
-                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.numbering:help_che_do_tieu_de')}</div>
-                                <div className="mb-1"><b>{t('preprocess.numbering:day_so_1_2_3')}</b> → {t('preprocess.numbering:help_che_do_range')}</div>
-                                <div className="text-slate-500 dark:text-zinc-400"><b>{t('preprocess.numbering:theo_bo_a_01_b_01')}</b> → {t('preprocess.numbering:help_che_do_set')}</div>
-                            </div>
-
-                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
-                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.numbering:help_sort_tieu_de')}</div>
-                                <div className="text-slate-500 dark:text-zinc-400">{t('preprocess.numbering:help_sort_noi_dung')}</div>
-                            </div>
-
-                            <div className="rounded-lg border border-amber-200 dark:border-amber-800 p-3 bg-amber-50 dark:bg-amber-900/20">
-                                <div className="font-bold text-amber-700 dark:text-amber-300 mb-1">{t('preprocess.numbering:help_phanbo_tieu_de')}</div>
-                                <div className="mb-1 text-amber-700/90 dark:text-amber-300/90"><b>{t('preprocess.numbering:theo_thu_tu_linear')}</b> → {t('preprocess.numbering:help_phanbo_linear')}</div>
-                                <div className="text-amber-700/90 dark:text-amber-300/90"><b>{t('preprocess.numbering:xep_chong_stacked')}</b> → {t('preprocess.numbering:help_phanbo_stack')}</div>
-                            </div>
-
-                            <div className="text-[11px] text-slate-500 dark:text-zinc-400">{t('preprocess.numbering:help_ghi_chu')}</div>
+                        {/* Navigation Tabs */}
+                        <div className="flex items-center gap-1 px-5 pt-2.5 border-b border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('hotkeys')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'hotkeys'
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>⚡</span>
+                                <span>Phím tắt & Chuột (Illustrator)</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('config')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'config'
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>📋</span>
+                                <span>Các bước cấu hình</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('cutstack')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'cutstack'
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>✂️</span>
+                                <span>Cắt xén & Đóng cuốn (Quan trọng)</span>
+                            </button>
                         </div>
-                        <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-700 text-right">
+
+                        {/* Content Area */}
+                        <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600 dark:text-zinc-300 scroller-thin leading-relaxed">
+                            {helpTab === 'hotkeys' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5">
+                                        <div className="font-bold text-indigo-900 dark:text-indigo-300 text-[13px] flex items-center gap-2 mb-1.5">
+                                            <span>🎯</span>
+                                            <span>Nhân bản tức thì tại vị trí chuột (Alt-Drag)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 mb-2">
+                                            Giữ phím <kbd className="px-1.5 py-0.5 text-[11px] font-mono font-bold bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Alt</kbd> và nhấp kéo chuột từ một ô số bất kỳ. Bản sao mới sẽ được tạo ngay lập tức dưới mũi tên chuột và bám dính chuyển động chuột chuẩn 100% như Adobe Illustrator.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2.5 flex items-center gap-2">
+                                            <span>⌨️</span>
+                                            <span>Bảng phím tắt bàn phím</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Sao chép ô số</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">C</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Dán ô số (+5mm)</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">V</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Nhân bản tức thì</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">D</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Chọn tất cả các ô</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">A</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Xóa ô số đang chọn</span>
+                                                <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs text-red-600">Delete</kbd>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Vi chỉnh vị trí (0.5mm)</span>
+                                                <span className="font-mono font-bold text-slate-500">Mũi tên ↑ ↓ ← →</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2 flex items-center gap-2">
+                                            <span>📐</span>
+                                            <span>Cơ chế kéo co dãn 8 điểm viền (Illustrator Parity)</span>
+                                        </div>
+                                        <ul className="space-y-1.5 text-[11px] list-disc list-inside text-slate-600 dark:text-zinc-300">
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Kéo thông thường (không giữ phím):</strong> Chỉ thay đổi kích thước khung viền bao quanh để vừa vặn vùng in; cỡ chữ <em>giữ nguyên 100%</em>.</li>
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Giữ phím Ctrl khi kéo:</strong> Cả khung viền và cỡ chữ co dãn đồng thời theo chuyển động chuột.</li>
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Giữ phím Shift khi kéo:</strong> Khóa cố định tỉ lệ khung hình (Aspect Ratio).</li>
+                                            <li><strong className="text-slate-800 dark:text-zinc-100">Giữ Ctrl + Shift khi kéo:</strong> Vừa khóa tỉ lệ khung hình, vừa co dãn cỡ chữ theo đúng chuẩn Illustrator.</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+
+                            {helpTab === 'config' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-teal-200 dark:border-teal-900/50 bg-teal-50/50 dark:bg-teal-950/20 p-3.5">
+                                        <div className="font-bold text-teal-900 dark:text-teal-300 text-[13px] mb-1 flex items-center gap-2">
+                                            <span>🎯</span>
+                                            <span>Tự động nhận diện số mẫu (Smart Extract)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 text-[11px]">
+                                            Bấm nút <strong>"Chọn số mẫu"</strong> rồi nhấp trực tiếp vào chuỗi số có sẵn trên thiết kế PDF (ví dụ <code className="px-1 py-0.5 bg-white dark:bg-zinc-800 rounded font-mono text-teal-700 dark:text-teal-400">No. 000125</code>). Phần mềm tự động xác định vị trí, kích thước, font chữ, màu sắc, đồng thời tự tách tiền tố <code className="px-1 py-0.5 bg-white dark:bg-zinc-800 rounded font-mono">No. </code>, số bắt đầu <code className="px-1 py-0.5 bg-white dark:bg-zinc-800 rounded font-mono">125</code> và số chữ số đệm <code className="px-1 py-0.5 bg-white dark:bg-zinc-800 rounded font-mono">6 chữ số</code> mà không cần gõ tay.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>🔗</span>
+                                            <span>1-Click Gộp cuống và thân vé (Group)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 text-[11px]">
+                                            Đối với các loại vé xe, biên lai có cả phần cuống lưu và thân giao khách: sau khi tạo 2 vị trí số, chỉ cần chọn cả 2 ô rồi bấm <strong>"Nhóm"</strong> (hoặc nút bấm tiện ích <em>"1-click gộp chung cuống & thân vé"</em>). Hai ô sẽ được liên kết và tự động nhận chung một con số giống hệt nhau trên mỗi tờ in.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2 flex items-center gap-2">
+                                            <span>⚙️</span>
+                                            <span>Hai chế độ sinh số</span>
+                                        </div>
+                                        <div className="space-y-2 text-[11px]">
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <strong className="text-slate-800 dark:text-zinc-200 block mb-0.5">1. Dãy số liên tục (1, 2, 3...)</strong>
+                                                <span className="text-slate-500 dark:text-zinc-400">Đếm tăng dần từ số Bắt đầu đến Đến số theo bước nhảy (mặc định 1). Hỗ trợ thêm Tiền tố (Prefix), Hậu tố (Suffix) và số lượng số 0 đệm đầu (ví dụ <code className="font-mono text-indigo-600 dark:text-indigo-400">No. 0001</code>).</span>
+                                            </div>
+                                            <div className="p-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <strong className="text-slate-800 dark:text-zinc-200 block mb-0.5">2. Theo bộ (A-01, B-01...)</strong>
+                                                <span className="text-slate-500 dark:text-zinc-400">Chia nhỏ thành nhiều bộ ký tự, mỗi bộ tự động đếm lại từ đầu (ví dụ A-01 ➔ A-50, B-01 ➔ B-50...). Giao diện cung cấp sẵn các mẫu thông dụng như <code className="font-mono font-bold text-slate-700 dark:text-zinc-300">A-01</code>, <code className="font-mono font-bold text-slate-700 dark:text-zinc-300">A/01</code>, <code className="font-mono font-bold text-slate-700 dark:text-zinc-300">A.01</code>, <code className="font-mono font-bold text-slate-700 dark:text-zinc-300">A 01</code>.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {helpTab === 'cutstack' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-amber-300 dark:border-amber-800/80 bg-amber-50 dark:bg-amber-950/25 p-4">
+                                        <div className="font-bold text-amber-900 dark:text-amber-300 text-[13px] mb-1.5 flex items-center gap-2">
+                                            <span>⚠️</span>
+                                            <span>Đóng cuốn (Xén chồng / Cut & Stack) — BẮT BUỘC CHO VÉ XE & BIÊN LAI</span>
+                                        </div>
+                                        <p className="text-slate-700 dark:text-zinc-200 text-[11px] mb-2 leading-relaxed">
+                                            Khi in vé đóng cuốn (ví dụ cuốn 50 vé) mà trên 1 tờ in có nhiều vé (ví dụ 4 vé/tờ):
+                                        </p>
+                                        <div className="p-3 bg-white dark:bg-zinc-900 border border-amber-200 dark:border-amber-800 rounded-lg text-[11px] space-y-1 mb-2">
+                                            <div>• <strong>Tờ 1:</strong> mang số <code className="font-mono text-amber-700 dark:text-amber-400 font-bold">001, 051, 101, 151</code></div>
+                                            <div>• <strong>Tờ 2:</strong> mang số <code className="font-mono text-amber-700 dark:text-amber-400 font-bold">002, 052, 102, 152</code></div>
+                                            <div>• <strong>Tờ 50:</strong> mang số <code className="font-mono text-amber-700 dark:text-amber-400 font-bold">050, 100, 150, 200</code></div>
+                                        </div>
+                                        <p className="text-amber-900 dark:text-amber-300 text-[11px] font-semibold">
+                                            💡 Lợi ích vượt trội: Sau khi in xong toàn bộ cọc giấy, đưa thẳng vào máy xén để xén rời thành 4 cọc nhỏ. Chồng cọc này lên cọc kia là có ngay dãy số liên tục từ 1 đến 200 mà KHÔNG CẦN CÔNG NHÂN PHẢI NHẶT TAY!
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-1 flex items-center gap-2">
+                                            <span>🏷️</span>
+                                            <span>Nhãn dán / Tem rời (Tuyến tính / Linear)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 text-[11px]">
+                                            Số nhảy lần lượt từ trái sang phải, trên xuống dưới ngay trên từng tờ in (Tờ 1 mang số <code className="font-mono">1, 2, 3, 4</code>; Tờ 2 mang số <code className="font-mono">5, 6, 7, 8</code>). Dành riêng cho tem nhãn decal, sticker bóc dùng trực tiếp theo từng tờ in.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2 flex items-center gap-2">
+                                            <span>🧭</span>
+                                            <span>Hướng nhảy số trên trang</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                            <div className="p-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <strong className="block text-slate-700 dark:text-zinc-200">Quét theo hàng (Z)</strong>
+                                                <span className="text-slate-500">Chạy ngang hàng trên từ trái qua phải, rồi xuống hàng dưới.</span>
+                                            </div>
+                                            <div className="p-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <strong className="block text-slate-700 dark:text-zinc-200">Quét theo cột (N)</strong>
+                                                <span className="text-slate-500">Chạy dọc cột trái từ trên xuống dưới, rồi sang cột kế tiếp.</span>
+                                            </div>
+                                            <div className="p-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <strong className="block text-slate-700 dark:text-zinc-200">Rắn bò (U-Shape)</strong>
+                                                <span className="text-slate-500">Chạy lượn vòng ziczac (hàng trên sang phải, hàng dưới quay về trái).</span>
+                                            </div>
+                                            <div className="p-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg">
+                                                <strong className="block text-slate-700 dark:text-zinc-200">Chiều kim đồng hồ</strong>
+                                                <span className="text-slate-500">Chạy vòng tròn khép kín quanh các vị trí trên trang in.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="px-5 py-3 border-t border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 flex items-center justify-between shrink-0">
+                            <span className="text-[11px] text-slate-400">
+                                Nhấn <kbd className="px-1 py-0.5 text-[10px] font-mono bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded">ESC</kbd> để đóng
+                            </span>
                             <button
                                 type="button"
                                 onClick={() => setShowHelp(false)}
-                                className="text-[12px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-medium transition-colors"
+                                className="text-[12px] px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold transition-colors shadow-sm cursor-pointer"
                             >
-                                {t('preprocess.numbering:da_hieu')}
+                                {t('preprocess.numbering:da_hieu', 'Đã hiểu')}
                             </button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Step 1: Number Placement on Page */}
-            <div className="shrink-0 space-y-3">
-                <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.numbering:1_chi_dinh_vi_tri')}</span>
-                    {vdpFields.length > 0 && (
-                        <span className="text-[11px] font-bold text-teal-700 dark:text-teal-300 bg-teal-100 dark:bg-teal-900/50 px-2 py-0.5 rounded-full">
-                            {vdpFields.length} Slots
+            {/* ── BƯỚC 1: VỊ TRÍ NHẢY SỐ TRÊN TRANG ── */}
+            <VdpSection
+                step="1"
+                title={t('preprocess.numbering:1_chi_dinh_vi_tri', 'Vị trí nhảy số')}
+                defaultOpen={true}
+                badge={
+                    vdpFields.length > 0 ? (
+                        <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-900/50 px-2 py-0.5 rounded-full">
+                            {vdpFields.length} vị trí {hasGroupedFields ? '· Đã nhóm' : ''}
                         </span>
-                    )}
-                </div>
-
+                    ) : undefined
+                }
+            >
+                {/* Hai nút hành động: Chọn số mẫu & Kéo thả vị trí */}
                 <div className="grid grid-cols-2 gap-2">
                     <button
                         type="button"
                         onClick={() => {
                             const next = !isPickingVdpText;
                             setIsPickingVdpText(next);
-                            if (next) {
-                                toast.info(t('preprocess.numbering:continuous_select_notice'));
-                            }
+
                         }}
                         className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
                             isPickingVdpText
@@ -974,85 +1298,127 @@ export default function NumberingTool({
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                             </svg>
                         )}
-                        <span className="truncate">{isPickingVdpText ? t('✓ Xong chọn số mẫu') : t('preprocess.numbering:chon_so_mau_btn')}</span>
+                        <span className="truncate">{isPickingVdpText ? t('✓ Xong chọn số mẫu') : t('preprocess.numbering:chon_so_mau_btn', 'Chọn số mẫu')}</span>
                     </button>
 
                     <div 
                         onPointerDown={(e) => startVdpDrag(e, 'text', t('preprocess.numbering:vi_tri_nhay_so_slot'))}
-                        className="bg-indigo-50 border-2 border-indigo-200 dark:bg-indigo-900/20 dark:border-indigo-800 p-2.5 rounded-lg cursor-grab active:cursor-grabbing hover:border-indigo-400 flex items-center justify-center gap-2 transition-colors shadow-sm select-none"
+                        className="bg-indigo-50 border border-indigo-200 dark:bg-indigo-900/20 dark:border-indigo-800 p-2.5 rounded-lg cursor-grab active:cursor-grabbing hover:border-indigo-400 flex items-center justify-center gap-2 transition-colors shadow-sm select-none"
                         title={t('preprocess.numbering:keo_vi_tri_btn')}
                     >
                         <svg className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" /></svg>
-                        <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 truncate">{t('preprocess.numbering:keo_vi_tri_btn')}</span>
+                        <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 truncate">{t('preprocess.numbering:keo_vi_tri_btn', 'Kéo vị trí')}</span>
                     </div>
                 </div>
 
-                {/* Placed Slots Summary / Empty State */}
+                {/* Danh sách Slots & Thao tác gộp nhóm (Cuống & Thân vé) */}
                 {vdpFields.length === 0 ? (
                     <div className="text-[11px] text-slate-400 dark:text-zinc-500 bg-slate-50 dark:bg-zinc-800/40 p-2.5 rounded border border-dashed border-slate-200 dark:border-zinc-700 flex items-center gap-2">
                         <svg className="w-4 h-4 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        <span>{t('preprocess.numbering:chua_co_slot_hint')}</span>
+                        <span>{t('preprocess.numbering:chua_co_slot_hint', 'Bấm "Chọn số mẫu" hoặc kéo nút bên phải vào trang PDF')}</span>
                     </div>
                 ) : (
-                    <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400">
-                            <span>{t('preprocess.numbering:da_dat_slots', { n: vdpFields.length })}</span>
-                            <span className="text-[10px] text-indigo-500">{t('preprocess.numbering:click_to_select')}</span>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto p-1.5 bg-slate-50 dark:bg-zinc-800/40 rounded border border-slate-200 dark:border-zinc-700">
+                    <div className="space-y-2">
+                        {/* Nút hỗ trợ nhanh Gộp cùng số seri (cuống & thân vé) */}
+                        {vdpFields.length >= 2 && (
+                            <div className="flex items-center gap-2">
+                                {hasGroupedFields ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleQuickUngroupAll}
+                                        className="flex-1 py-1 px-2 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300 rounded text-[11px] font-medium transition-colors flex items-center justify-center gap-1"
+                                    >
+                                        ✂️ {t('preprocess.numbering:tach_rieng_tat_ca', 'Tách thành các số độc lập')}
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={handleQuickGroupAll}
+                                        className="flex-1 py-1 px-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded text-[11px] font-semibold transition-colors flex items-center justify-center gap-1"
+                                        title="Dành cho vé có cuống và thân vé cùng mang 1 số seri"
+                                    >
+                                        🔗 {t('preprocess.numbering:gop_cung_so_ve', 'Gộp chung số (Cuống & Thân vé)')}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1.5 bg-slate-50 dark:bg-zinc-800/40 rounded border border-slate-200 dark:border-zinc-700">
                             {vdpFields.map((f, idx) => {
                                 const isSelected = selectedFieldIds.includes(f.id);
                                 return (
                                     <button
                                         key={f.id}
                                         type="button"
-                                        onClick={() => {
-                                            onSelectField?.([f.id]);
-                                        }}
-                                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                                        onClick={() => onSelectField?.([f.id])}
+                                        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium transition-all ${
                                             isSelected 
                                                 ? 'bg-indigo-600 text-white shadow-xs' 
                                                 : 'bg-white dark:bg-zinc-700 text-slate-700 dark:text-zinc-200 hover:bg-slate-100 border border-slate-200 dark:border-zinc-600'
                                         }`}
                                     >
-                                        <span className="w-1.5 h-1.5 rounded-full bg-teal-400 shrink-0" />
+                                        <span className={`w-1.5 h-1.5 rounded-full ${f.groupId ? 'bg-amber-400' : 'bg-teal-400'} shrink-0`} />
                                         <span>{f.name || `Slot ${idx + 1}`}</span>
-                                        <span className="text-[9px] opacity-70">({Math.round(f.x ?? 0)}, {Math.round(f.y ?? 0)})</span>
+                                        {f.groupId && <span className="text-[9px] opacity-80">(Liên kết)</span>}
+                                        <span className="text-[9px] opacity-60">({Math.round(f.x ?? 0)}, {Math.round(f.y ?? 0)})</span>
                                     </button>
                                 );
                             })}
                         </div>
                     </div>
                 )}
-            </div>
+            </VdpSection>
 
-            <div className="h-px bg-slate-200 dark:bg-zinc-700 w-full shrink-0" />
+            {/* ── BƯỚC 2: CẤU HÌNH DẢI SỐ ── */}
+            <VdpSection
+                step="2"
+                title={t('preprocess.numbering:2_cau_hinh_day_so', 'Cấu hình dải số')}
+                defaultOpen={true}
+                badge={
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-400">
+                        {genMethod === 'range' ? `${prefix}${padZero ? String(startNum).padStart(padLength, '0') : startNum}${suffix} → ${endNum}` : `${setTotal} bộ x ${seqTotal} số`}
+                    </span>
+                }
+            >
+                {/* Thông báo liên kết với Mẹc Bìa */}
+                {jobLinked && (
+                    <div className="flex items-center gap-1.5 p-2 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-md text-[11px] text-emerald-800 dark:text-emerald-300">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                        <span className="font-semibold">Đang liên kết dải số ruột với Mẹc Bìa</span>
+                    </div>
+                )}
 
-            {/* Step 2: Numbering Sequence Rules */}
-            <div className="shrink-0 space-y-3">
-                <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.numbering:2_cau_hinh_day_so')}</span>
+                {/* Chọn kiểu số và tùy chọn riêng từng ô (nếu có từ 2 ô trở lên) */}
+                <div className="flex items-center justify-between gap-2 pb-1">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-zinc-300">
+                        <span className="text-[11px] text-slate-500 font-normal">Kiểu số:</span>
+                        <select
+                            value={genMethod}
+                            onChange={(e) => setGenMethod(e.target.value as 'range' | 'set')}
+                            className="h-7 px-2 text-xs font-bold border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-800 text-indigo-600 dark:text-indigo-400 focus:outline-none cursor-pointer"
+                        >
+                            <option value="range">Dãy số liên tục (1, 2, 3...)</option>
+                            <option value="set">Theo bộ chữ &amp; số (A-01, B-01...)</option>
+                        </select>
+                    </div>
+
+                    {vdpFields.length >= 2 && (
+                        <button
+                            type="button"
+                            onClick={() => setSequenceMode(m => m === 'shared' ? 'per_field' : 'shared')}
+                            className={`text-[11px] font-semibold px-2 py-1 rounded transition-colors flex items-center gap-1 cursor-pointer ${
+                                sequenceMode === 'per_field'
+                                    ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300'
+                                    : 'text-indigo-600 dark:text-indigo-400 hover:bg-slate-100 dark:hover:bg-zinc-800'
+                            }`}
+                            title="Bật khi muốn các ô số trên trang chạy các dải số khác nhau (ví dụ: Ô 1 là Số vé, Ô 2 là Số ghế)"
+                        >
+                            {sequenceMode === 'per_field' ? '✓ Đang chia dải số riêng' : '⚙️ Dải số riêng từng ô'}
+                        </button>
+                    )}
                 </div>
 
-                {/* Mode Switch: Shared Sequence vs Per-Field Sequence */}
-                <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-md">
-                    <button 
-                        type="button"
-                        className={`flex-1 text-xs py-1.5 rounded font-bold transition-all ${sequenceMode === 'shared' ? 'bg-white dark:bg-zinc-700 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700/50'}`}
-                        onClick={() => setSequenceMode('shared')}
-                    >
-                        {t('preprocess.numbering:chung_mot_day_so')}
-                    </button>
-                    <button 
-                        type="button"
-                        className={`flex-1 text-xs py-1.5 rounded font-bold transition-all ${sequenceMode === 'per_field' ? 'bg-white dark:bg-zinc-700 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700/50'}`}
-                        onClick={() => setSequenceMode('per_field')}
-                    >
-                        {t('preprocess.numbering:rieng_tung_truong')}
-                    </button>
-                </div>
-
-                {/* Per-Field Slot Selector & Copy action */}
+                {/* Per-Field Slot Selector & Copy action (chỉ hiện khi người dùng chủ động chọn Dải số riêng từng ô) */}
                 {sequenceMode === 'per_field' && sortedSlots.length > 0 && (
                     <div className="p-2 bg-indigo-50/60 dark:bg-indigo-950/30 rounded-lg border border-indigo-200 dark:border-indigo-800/60 space-y-1.5">
                         <div className="flex items-center justify-between text-[11px]">
@@ -1108,11 +1474,8 @@ export default function NumberingTool({
                             </svg>
                             <div className="flex-1 min-w-0">
                                 <div className="font-bold text-[12px] text-amber-800 dark:text-amber-300">
-                                    {t('preprocess.numbering:canh_bao_lech_so_luong')}
+                                    {t('preprocess.numbering:canh_bao_lech_so_luong', 'Lệch số lượng giữa các trường')}
                                 </div>
-                                <p className="text-[11px] text-amber-700 dark:text-amber-300/90 mt-0.5 leading-snug">
-                                    {t('preprocess.numbering:lech_so_luong_desc')}
-                                </p>
                                 <div className="flex flex-wrap gap-1.5 mt-1.5 font-mono text-[10px]">
                                     {slotLengthStats.stats.map(s => (
                                         <span key={s.id} className={`px-1.5 py-0.5 rounded ${s.count === slotLengthStats.maxCount ? 'bg-amber-200/80 dark:bg-amber-900/60 font-bold' : 'bg-white dark:bg-zinc-800 border border-amber-200 dark:border-amber-800'}`}>
@@ -1126,82 +1489,63 @@ export default function NumberingTool({
                             <button
                                 type="button"
                                 onClick={handleSyncToMaxCount}
-                                className="flex-1 py-1 px-2 text-[10px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded shadow-xs transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                                title="Tự động tăng số kết thúc của các trường ít hơn"
+                                className="flex-1 py-1 px-2 text-[10px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded shadow-xs transition-colors cursor-pointer"
                             >
-                                ⚡ {t('preprocess.numbering:nut_dong_bo_max', { count: slotLengthStats.maxCount })}
+                                ⚡ Đồng bộ lớn nhất ({slotLengthStats.maxCount})
                             </button>
                             <button
                                 type="button"
                                 onClick={handleSyncToMinCount}
-                                className="py-1 px-2 text-[10px] font-medium bg-white dark:bg-zinc-800 hover:bg-amber-100 dark:hover:bg-zinc-700 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 rounded shadow-xs transition-colors cursor-pointer"
-                                title="Tự động giảm số kết thúc của các trường nhiều hơn"
+                                className="py-1 px-2 text-[10px] font-medium bg-white dark:bg-zinc-800 hover:bg-amber-100 text-amber-800 rounded shadow-xs transition-colors cursor-pointer border border-amber-300"
                             >
-                                ✂️ {t('preprocess.numbering:nut_cat_ngan_min', { count: slotLengthStats.minCount })}
+                                ✂️ Cắt ngắn ({slotLengthStats.minCount})
                             </button>
                         </div>
                     </div>
                 )}
 
-                <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-md">
-                    <button 
-                        className={`flex-1 text-xs py-1.5 rounded font-bold transition-all ${genMethod === 'range' ? 'bg-white dark:bg-zinc-700 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700/50'}`}
-                        onClick={() => setGenMethod('range')}
-                    >
-                        {t('preprocess.numbering:day_so_1_2_3')}
-                    </button>
-                    <button 
-                        className={`flex-1 text-xs py-1.5 rounded font-bold transition-all ${genMethod === 'set' ? 'bg-white dark:bg-zinc-700 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700/50'}`}
-                        onClick={() => setGenMethod('set')}
-                    >
-                        {t('preprocess.numbering:theo_bo_a_01_b_01')}
-                    </button>
-                </div>
-
                 <div className="p-3 border border-slate-200 dark:border-zinc-700 rounded-lg space-y-3 bg-slate-50/50 dark:bg-zinc-800/20">
                     {genMethod === 'range' ? (
                         <div className="space-y-3">
+                            {/* Smart Extract */}
                             <div className="flex flex-col gap-1 pb-3 border-b border-slate-200 dark:border-zinc-700">
-                                <label className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase">{t('preprocess.numbering:trich_xuat_tu_dong_smart_extract')}</label>
-                                <div className="flex gap-2">
-                                    <input 
-                                        type="text" 
-                                        placeholder={t('preprocess.numbering:vi_du_no_00123_vip')}
-                                        className="flex-1 h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900"
-                                        onChange={(e) => {
-                                            const val = e.target.value;
-                                            // Bắt cụm số CUỐI (phần seri), không phải cụm số đầu:
-                                            // đuôi \D* chỉ nhận ký-tự-không-số nên engine buộc
-                                            // \d+ trườn tới cụm số cuối; "AB12-0045" → tiền tố
-                                            // "AB12-", số "0045", hậu tố "".
-                                            const match = val.match(/^(.*?)(\d+)(\D*)$/);
-                                            if (match) {
-                                                setPrefix(match[1]);
-                                                setStartNum(parseInt(match[2], 10) || 1);
-                                                if (match[2].startsWith('0')) {
-                                                    setPadZero(true);
-                                                    setPadLength(match[2].length);
-                                                } else {
-                                                    setPadZero(false);
-                                                }
-                                                setSuffix(match[3]);
+                                <label className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase">
+                                    {t('preprocess.numbering:trich_xuat_tu_dong_smart_extract', 'Trích xuất tự động từ chuỗi mẫu')}
+                                </label>
+                                <input 
+                                    type="text" 
+                                    placeholder={t('preprocess.numbering:vi_du_no_00123_vip', 'Ví dụ: No. 00123-VIP')}
+                                    className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900"
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        const match = val.match(/^(.*?)(\d+)(\D*)$/);
+                                        if (match) {
+                                            setPrefix(match[1]);
+                                            setStartNum(parseInt(match[2], 10) || 1);
+                                            if (match[2].startsWith('0')) {
+                                                setPadZero(true);
+                                                setPadLength(match[2].length);
+                                            } else {
+                                                setPadZero(false);
                                             }
-                                        }}
-                                    />
-                                </div>
+                                            setSuffix(match[3]);
+                                        }
+                                    }}
+                                />
                                 <span className="text-[9px] text-slate-500">{t('preprocess.numbering:nhap_chuoi_mau_phan_mem_se_tu_tach_tien')}</span>
                             </div>
+
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bat_dau_tu')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bat_dau_tu', 'Bắt đầu từ')}</label>
                                     <input type="number" value={startNum} onChange={e => setStartNum(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:den_so')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:den_so', 'Đến số')}</label>
                                     <input type="number" value={endNum} onChange={e => setEndNum(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:buoc_nhay')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:buoc_nhay', 'Bước nhảy')}</label>
                                     <input type="number" min={1} value={increment} onChange={e => setIncrement(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             </div>
@@ -1210,67 +1554,112 @@ export default function NumberingTool({
                         <div className="space-y-3">
                             <div className="grid grid-cols-2 gap-2">
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:so_luong_bo')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:so_luong_bo', 'Số lượng bộ')}</label>
                                     <input type="number" value={setTotal} onChange={e => setSetTotal(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bo_bat_dau_ky_tu_so')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bo_bat_dau_ky_tu_so', 'Ký tự bộ (A, B, C...)')}</label>
                                     <input type="text" value={setStartStr} onChange={e => setSetStartStr(e.target.value)} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:so_luong_ve_bo')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:so_luong_ve_bo', 'Số vé mỗi bộ')}</label>
                                     <input type="number" value={seqTotal} onChange={e => setSeqTotal(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bat_dau_tu_so')}</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bat_dau_tu_so', 'Bắt đầu từ số')}</label>
                                     <input type="number" value={seqStart} onChange={e => setSeqStart(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:cau_truc_hien_thi')}</label>
-                                <input type="text" value={formatTemplate} onChange={e => setFormatTemplate(e.target.value)} placeholder="{%b}-{%t}" className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded font-mono" />
-                                <span className="text-[9px] text-slate-400">{t('preprocess.numbering:dung_b_cho_bo_va_t_cho_stt', { b: '{%b}', t: '{%t}' })}</span>
+                            <div className="flex flex-col gap-1.5">
+                                <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:kieu_ghep_bo_so', 'Định dạng ghép bộ & số')}</label>
+                                <select
+                                    value={isCustomFormat || !SET_FORMAT_PRESETS.some(p => p.value === formatTemplate && p.value !== '__custom__') ? '__custom__' : formatTemplate}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val === '__custom__') {
+                                            setIsCustomFormat(true);
+                                        } else {
+                                            setIsCustomFormat(false);
+                                            setFormatTemplate(val);
+                                        }
+                                    }}
+                                    className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 font-medium"
+                                >
+                                    {SET_FORMAT_PRESETS.map(p => (
+                                        <option key={p.value} value={p.value}>{p.label}</option>
+                                    ))}
+                                </select>
+                                {(isCustomFormat || !SET_FORMAT_PRESETS.some(p => p.value === formatTemplate && p.value !== '__custom__')) && (
+                                    <div className="space-y-1 pt-1">
+                                        <input
+                                            type="text"
+                                            value={formatTemplate}
+                                            onChange={e => setFormatTemplate(e.target.value)}
+                                            placeholder="{%b}-{%t}"
+                                            className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded font-mono"
+                                        />
+                                        <span className="text-[9px] text-slate-400">
+                                            {t('preprocess.numbering:dung_b_cho_bo_va_t_cho_stt', { b: '{%b}', t: '{%t}' })}
+                                        </span>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
                     
+                    {/* Tiền tố, Hậu tố & Đệm số 0 */}
                     <div className="border-t border-slate-200 dark:border-zinc-700 pt-3 grid grid-cols-2 gap-2">
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:tien_to')}</label>
+                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:tien_to', 'Tiền tố')}</label>
                             <input type="text" value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="VD: No." className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:hau_to')}</label>
+                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:hau_to', 'Hậu tố')}</label>
                             <input type="text" value={suffix} onChange={e => setSuffix(e.target.value)} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                         </div>
                         <div className="flex flex-col gap-1 col-span-2">
                             <div className="flex items-center gap-2 mb-1">
                                 <input type="checkbox" checked={padZero} onChange={e => setPadZero(e.target.checked)} id="padZero" />
-                                <label htmlFor="padZero" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">{t('preprocess.numbering:dem_so_0_vao_dau')}</label>
+                                <label htmlFor="padZero" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">{t('preprocess.numbering:dem_so_0_vao_dau', 'Đệm số 0 vào đầu (001, 002...)')}</label>
                             </div>
                             {padZero && (
                                 <div className="flex items-center gap-2">
-                                    <span className="text-[10px] text-slate-500">{t('preprocess.numbering:chieu_dai_co_dinh')}</span>
+                                    <span className="text-[10px] text-slate-500">{t('preprocess.numbering:chieu_dai_co_dinh', 'Chiều dài cố định:')}</span>
                                     <input type="number" min={1} value={padLength} onChange={e => setPadLength(Number(e.target.value))} className="w-16 h-7 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             )}
                             <div className="flex items-center gap-2 mt-1">
                                 <input type="checkbox" checked={isShuffle} onChange={e => setIsShuffle(e.target.checked)} id="isShuffle" />
-                                <label htmlFor="isShuffle" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">{t('preprocess.numbering:xao_tron_ngau_nhien_lam_ve_boc_tham')}</label>
+                                <label htmlFor="isShuffle" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">{t('preprocess.numbering:xao_tron_ngau_nhien_lam_ve_boc_tham', 'Xáo trộn ngẫu nhiên (Làm vé bốc thăm)')}</label>
                             </div>
                         </div>
                     </div>
+
+                    {/* Mẫu số xem trước trực quan */}
+                    <div className="border-t border-slate-200 dark:border-zinc-700/80 pt-2.5 flex items-center justify-between text-xs bg-indigo-50/50 dark:bg-indigo-950/20 -mx-3 -mb-3 px-3 py-2 rounded-b-lg">
+                        <span className="text-[11px] text-slate-500 dark:text-zinc-400 font-medium flex items-center gap-1">
+                            <span>🔍</span> {t('preprocess.numbering:mau_so_tao_ra', 'Mẫu số:')}
+                        </span>
+                        <span className="font-mono text-xs font-semibold text-indigo-600 dark:text-indigo-400 truncate max-w-[210px]" title={rawSequence.slice(0, 5).join(', ')}>
+                            {rawSequence.length > 0 
+                                ? `${rawSequence.slice(0, 3).join(', ')}${rawSequence.length > 3 ? ', ...' : ''}`
+                                : t('preprocess.numbering:day_so_trong', 'Dãy số trống')}
+                        </span>
+                    </div>
                 </div>
-            </div>
+            </VdpSection>
 
-            <div className="h-px bg-slate-200 dark:bg-zinc-700 w-full shrink-0" />
-
-            {/* Step 3: Finishing & Output Ordering */}
-            <div className="shrink-0 space-y-3">
-                <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.numbering:3_cach_ra_thanh_pham')}</span>
-                </div>
-
+            {/* ── BƯỚC 3: QUY CÁCH THÀNH PHẨM ── */}
+            <VdpSection
+                step="3"
+                title={t('preprocess.numbering:3_cach_ra_thanh_pham', 'Quy cách thành phẩm')}
+                defaultOpen={true}
+                badge={
+                    <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
+                        {applyStyle === 'stack' ? 'Đóng cuốn (Stack)' : 'Tem rời (Linear)'}
+                    </span>
+                }
+            >
                 <div className="grid grid-cols-2 gap-2">
                     {/* Card 1: Cut & Stack (Đóng cuốn xén chồng) */}
                     <button
@@ -1286,11 +1675,11 @@ export default function NumberingTool({
                             <div className="flex items-center gap-1.5 mb-1">
                                 <span className="text-base">📚</span>
                                 <span className="text-xs font-bold text-slate-800 dark:text-zinc-200">
-                                    {t('preprocess.numbering:dong_cuon_xen_chong')}
+                                    {t('preprocess.numbering:dong_cuon_xen_chong', 'Đóng cuốn xén chồng')}
                                 </span>
                             </div>
                             <p className="text-[10px] text-slate-500 dark:text-zinc-400 leading-snug">
-                                {t('preprocess.numbering:dong_cuon_desc')}
+                                {t('preprocess.numbering:dong_cuon_desc', 'Cắt xén theo cọc rồi xếp chồng')}
                             </p>
                         </div>
                         {applyStyle === 'stack' && (
@@ -1315,11 +1704,11 @@ export default function NumberingTool({
                             <div className="flex items-center gap-1.5 mb-1">
                                 <span className="text-base">🏷️</span>
                                 <span className="text-xs font-bold text-slate-800 dark:text-zinc-200">
-                                    {t('preprocess.numbering:tem_roi_thu_tu')}
+                                    {t('preprocess.numbering:tem_roi_thu_tu', 'Tem rời liên tục')}
                                 </span>
                             </div>
                             <p className="text-[10px] text-slate-500 dark:text-zinc-400 leading-snug">
-                                {t('preprocess.numbering:tem_roi_desc')}
+                                {t('preprocess.numbering:tem_roi_desc', 'Nhảy số thứ tự từng con trên tờ in')}
                             </p>
                         </div>
                         {applyStyle === 'linear' && (
@@ -1331,307 +1720,188 @@ export default function NumberingTool({
                     </button>
                 </div>
 
-                {/* Secondary order dropdown */}
+                {/* Thứ tự quét trên trang */}
                 <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-zinc-700/60">
                     <label className="text-[11px] font-medium text-slate-600 dark:text-zinc-400 shrink-0">
-                        {t('preprocess.numbering:thu_tu_tren_trang')}
+                        {t('preprocess.numbering:thu_tu_tren_trang', 'Thứ tự trên trang')}
                     </label>
                     <select 
                         value={sortMethod} 
                         onChange={e => setSortMethod(e.target.value as 'rows'|'cols'|'ushape'|'clockwise')}
                         className="h-7 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200"
                     >
-                        <option value="rows">{t('preprocess.numbering:quet_theo_hang_z')}</option>
-                        <option value="cols">{t('preprocess.numbering:quet_theo_cot_n')}</option>
-                        <option value="ushape">{t('preprocess.numbering:chu_u_u_shape')}</option>
-                        <option value="clockwise">{t('preprocess.numbering:vong_tron_clockwise')}</option>
+                        <option value="rows">{t('preprocess.numbering:quet_theo_hang_z', 'Quét theo hàng (Z)')}</option>
+                        <option value="cols">{t('preprocess.numbering:quet_theo_cot_n', 'Quét theo cột (N)')}</option>
+                        <option value="ushape">{t('preprocess.numbering:chu_u_u_shape', 'Rắn bò (U-Shape)')}</option>
+                        <option value="clockwise">{t('preprocess.numbering:vong_tron_clockwise', 'Theo chiều kim đồng hồ')}</option>
                     </select>
                 </div>
-            </div>
 
-            <div className="h-px bg-slate-200 dark:bg-zinc-700 w-full shrink-0" />
+                {/* Sơ đồ trực quan */}
+                <FinishingPreviewDiagram 
+                    applyStyle={applyStyle} 
+                    sortMethod={sortMethod}
+                    rawSequence={rawSequence}
+                    numSlots={numSlots}
+                    totalPages={totalPages}
+                />
+            </VdpSection>
 
-            {/* Tool settings for selected slot */}
-            {selectedFieldIds.length >= 1 && (
-                <div className="shrink-0 pt-3 border-t border-slate-200 dark:border-zinc-700">
-                    <VdpAlignPanel
-                        vdpFields={vdpFields}
-                        setVdpFields={setVdpFields}
-                        selectedFieldIds={selectedFieldIds}
-                        pageDimMm={viewerPageDimMm}
-                    />
-                </div>
-            )}
-            {selectedFieldIds.length > 0 && (
-                <div className="shrink-0 space-y-3 pt-3 border-t border-slate-200 dark:border-zinc-700">
-                    <div className="flex items-center justify-between">
-                        <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-300">
-                            {t('preprocess.numbering:dinh_dang')} {selectedFieldIds.length > 1 ? t('preprocess.numbering:n_truong', { n: selectedFieldIds.length }) : vdpFields.find(f=>f.id===selectedFieldIds[0])?.name}
+            {/* ── BƯỚC 4: ĐỊNH DẠNG CHỮ & CĂN CHỈNH ── */}
+            <VdpSection
+                step="4"
+                title={t('preprocess.numbering:4_dinh_dang_chu_can_le', 'Định dạng chữ & Căn chỉnh')}
+                defaultOpen={selectedFieldIds.length > 0}
+                badge={
+                    selectedField ? (
+                        <span className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-800">
+                            {selectedField.name || 'Slot'} · {selectedField.fontSize || 13}pt
                         </span>
-                        {selectedFieldIds.length > 1 && (
-                            <button onClick={handleGroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-slate-600 dark:text-zinc-300 font-medium">
-                                {t('preprocess.numbering:group_nhom')}
-                            </button>
-                        )}
-                        {selectedFieldIds.length > 0 && vdpFields.find(f=>f.id===selectedFieldIds[0])?.groupId && (
-                            <button onClick={handleUngroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-red-500 font-medium">
-                                {t('preprocess.numbering:ungroup_bo_nhom')}
-                            </button>
-                        )}
-                        {selectedFieldIds.length > 0 && (
-                            <button 
-                                onClick={deleteSelectedField}
-                                className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                title={t('preprocess.numbering:xoa_truong_nay')}
-                            >
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                            </button>
-                        )}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                        <div className="flex flex-col gap-1 col-span-2">
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:font_chu_font_family')}</span>
-                            <FontSelector 
-                                value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontName || 'Helvetica'}
-                                fontFile={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontFile}
-                                onChange={(fontName, fontFile) => updateSelectedField({ fontName, fontFile })}
-                            />
-                        </div>
-                        <div className="flex flex-col gap-1 col-span-2">
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:net_font_font_style')}</span>
-                            <select 
-                                value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontStyle || 'normal'}
-                                onChange={(e) => updateSelectedField({ fontStyle: e.target.value })}
-                                className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
-                            >
-                                <option value="normal">Regular</option>
-                                <option value="bold">Bold</option>
-                                <option value="italic">Italic</option>
-                                <option value="bolditalic">Bold Italic</option>
-                            </select>
-                        </div>
-                        
-                        <ToolNumberInput 
-                            label={t('preprocess.numbering:co_chu')}
-                            value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontSize || 13}
-                            onChange={(val) => updateSelectedField({ fontSize: val })}
-                            suffix="pt" step={1}
+                    ) : undefined
+                }
+            >
+                {selectedFieldIds.length >= 1 ? (
+                    <div className="space-y-3">
+                        <VdpAlignPanel
+                            vdpFields={vdpFields}
+                            setVdpFields={setVdpFields}
+                            selectedFieldIds={selectedFieldIds}
+                            pageDimMm={viewerPageDimMm}
                         />
-                        <ToolNumberInput 
-                            label={t('preprocess.numbering:dong_leading')}
-                            value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.lineHeight || 1}
-                            onChange={(val) => updateSelectedField({ lineHeight: val })}
-                            suffix="em" step={0.1}
-                        />
-                        <ToolNumberInput 
-                            label={t('preprocess.numbering:khoang_cach_tracking')}
-                            value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.characterSpacing || 0}
-                            onChange={(val) => updateSelectedField({ characterSpacing: val })}
-                            suffix="pt" step={0.5}
-                        />
-                        <div>
-                            <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:can_le')}</span>
+
+                        <div className="flex items-center justify-between pt-1 border-t border-slate-200 dark:border-zinc-700">
+                            <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-300">
+                                {t('preprocess.numbering:dinh_dang', 'Định dạng:')} {selectedFieldIds.length > 1 ? `${selectedFieldIds.length} trường` : selectedField?.name}
+                            </span>
                             <div className="flex items-center gap-1.5">
-                                <select 
-                                    value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.alignment || 'left'}
-                                    onChange={(e) => updateSelectedField({ alignment: e.target.value })}
-                                    className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                                {selectedFieldIds.length > 1 && (
+                                    <button onClick={handleGroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-slate-600 dark:text-zinc-300 font-medium">
+                                        {t('preprocess.numbering:group_nhom', 'Nhóm')}
+                                    </button>
+                                )}
+                                {selectedField?.groupId && (
+                                    <button onClick={handleUngroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-red-500 font-medium">
+                                        {t('preprocess.numbering:ungroup_bo_nhom', 'Bỏ nhóm')}
+                                    </button>
+                                )}
+                                <button 
+                                    type="button"
+                                    onClick={duplicateSelectedFields}
+                                    className="text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-500/10 dark:hover:bg-blue-500/20 p-1.5 rounded transition-colors"
+                                    title={`${t('preprocess.numbering:nhan_ban', 'Nhân bản')} (Ctrl+D)`}
                                 >
-                                    <option value="left">{t('preprocess.numbering:trai')}</option>
-                                    <option value="center">{t('preprocess.numbering:giua')}</option>
-                                    <option value="right">{t('preprocess.numbering:phai')}</option>
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                    </svg>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onClick={deleteSelectedField}
+                                    className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
+                                    title={t('preprocess.numbering:xoa_truong_nay')}
+                                >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="flex flex-col gap-1 col-span-2">
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:font_chu_font_family')}</span>
+                                <FontSelector 
+                                    value={selectedField?.fontName || 'Helvetica'}
+                                    fontFile={selectedField?.fontFile}
+                                    onChange={(fontName, fontFile) => updateSelectedField({ fontName, fontFile })}
+                                />
+                            </div>
+                            <div className="flex flex-col gap-1 col-span-2">
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:net_font_font_style')}</span>
+                                <select 
+                                    value={selectedField?.fontStyle || 'normal'}
+                                    onChange={(e) => updateSelectedField({ fontStyle: e.target.value })}
+                                    className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-indigo-500 transition-all"
+                                >
+                                    <option value="normal">Regular</option>
+                                    <option value="bold">Bold</option>
+                                    <option value="italic">Italic</option>
+                                    <option value="bolditalic">Bold Italic</option>
                                 </select>
                             </div>
-                        </div>
-                        <div className="col-span-2">
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:mau_chu')}</span>
-                            <CmykColorPicker
-                                label={t('preprocess.numbering:mau_cmyk')}
-                                value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontColor || '#000000'}
-                                onChange={(hex: string) => updateSelectedField({ fontColor: hex })}
+                            
+                            <ToolNumberInput 
+                                label={t('preprocess.numbering:co_chu', 'Cỡ chữ')}
+                                value={selectedField?.fontSize || 13}
+                                onChange={(val) => updateSelectedField({ fontSize: val })}
+                                suffix="pt" step={1}
                             />
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Preview Section — Trực quan chuẩn VDP */}
-            <div className="shrink-0 space-y-2 mt-3 pt-2 border-t border-slate-200 dark:border-zinc-700">
-                <div className="flex items-center justify-between">
-                    <span className="text-[12px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5">
-                        <svg className="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                        </svg>
-                        {t('preprocess.numbering:xem_truoc_ket_qua_slots', { n: vdpFields.length })}
-                    </span>
-                    <button
-                        type="button"
-                        onClick={() => setShowSummaryText(prev => !prev)}
-                        className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
-                    >
-                        <span>{showSummaryText ? 'Thu gọn' : 'Xem dạng danh sách'}</span>
-                    </button>
-                </div>
-
-                {/* Nút bật/tắt xem trực tiếp số nhảy trên view chính */}
-                <button
-                    type="button"
-                    onClick={() => setVdpLivePreview((prev: any) => ({ ...prev, enabled: !prev.enabled }))}
-                    className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
-                        vdpLivePreview.enabled
-                            ? 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-400 ring-offset-1 shadow-teal-500/20 shadow-md'
-                            : 'bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-700'
-                    }`}
-                    title={vdpLivePreview.enabled ? t('Bấm để tắt xem trước trên view chính') : t('Bật xem trước số nhảy thật trên view chính')}
-                >
-                    <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-teal-500'}`} />
-                    <span>{vdpLivePreview.enabled ? t('✓ Đang xem số nhảy thật trên View chính') : t('👁️ Bật xem trực tiếp trên View chính')}</span>
-                </button>
-
-                {/* Thanh điều hướng trang (Prev, Input page, Next, Nút Xem) */}
-                <div className="flex items-center gap-1.5">
-                    <button
-                        type="button"
-                        onClick={() => {
-                            const next = Math.max(1, previewIndex - 1);
-                            setPreviewIndex(next);
-                            void runPreview(next);
-                        }}
-                        disabled={previewLoading || previewIndex <= 1}
-                        title="Trang trước"
-                        className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shadow-sm"
-                    >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-                        </svg>
-                    </button>
-
-                    <div className="flex items-center gap-1 flex-1 min-w-0 justify-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded h-8 px-2 shadow-inner">
-                        <span className="text-[11px] text-slate-500 dark:text-zinc-400 shrink-0">Trang</span>
-                        <input
-                            type="number"
-                            min={1}
-                            max={totalPages || 1}
-                            value={previewIndex}
-                            onChange={(e) => setPreviewIndex(Math.max(1, Math.min(totalPages || 1, Number(e.target.value) || 1)))}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') void runPreview(previewIndex);
-                            }}
-                            className="w-14 text-center font-bold text-[12px] bg-transparent text-indigo-600 dark:text-indigo-400 focus:outline-none"
-                        />
-                        <span className="text-[11px] text-slate-500 dark:text-zinc-400 shrink-0">
-                            / {totalPages.toLocaleString('vi-VN')}
-                        </span>
-                    </div>
-
-                    <button
-                        type="button"
-                        onClick={() => {
-                            const next = Math.min(totalPages, previewIndex + 1);
-                            setPreviewIndex(next);
-                            void runPreview(next);
-                        }}
-                        disabled={previewLoading || previewIndex >= totalPages}
-                        title="Trang tiếp theo"
-                        className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shadow-sm"
-                    >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                        </svg>
-                    </button>
-
-                    <button
-                        type="button"
-                        onClick={() => void runPreview(previewIndex)}
-                        disabled={previewLoading || vdpFields.length === 0}
-                        className="shrink-0 h-8 px-3 text-[11px] font-bold bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white rounded transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
-                    >
-                        {previewLoading ? (
-                            <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                            </svg>
-                        )}
-                        <span>{t('preprocess.dataMerge:nut_xem', 'Xem')}</span>
-                    </button>
-                </div>
-
-                {/* Khung hiển thị ảnh xem trước trực quan (Live Render Preview) */}
-                <div className="relative rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 overflow-hidden min-h-[140px] flex items-center justify-center shadow-inner">
-                    {previewImg ? (
-                        <div className="relative inline-block w-full">
-                            <img
-                                src={previewImg}
-                                alt={`Xem trước trang ${previewIndex}`}
-                                className="block w-full h-auto select-none rounded"
-                                draggable={false}
+                            <ToolNumberInput 
+                                label={t('preprocess.numbering:dong_leading', 'Dòng')}
+                                value={selectedField?.lineHeight || 1}
+                                onChange={(val) => updateSelectedField({ lineHeight: val })}
+                                suffix="em" step={0.1}
                             />
-                        </div>
-                    ) : (
-                        <div className="text-[12px] text-slate-400 dark:text-zinc-500 py-7 px-3 text-center flex flex-col items-center gap-2">
-                            <svg className="w-8 h-8 opacity-35 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                            </svg>
-                            <span>{vdpFields.length === 0 ? t('preprocess.numbering:keo_tha_it_nhat_1_slot_len_man_hinh_de') : 'Bấm "Xem" để kết xuất trực quan số nhảy trên bản in'}</span>
-                        </div>
-                    )}
-
-                    {previewLoading && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-[1px] z-10">
-                            <span className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-                            <span className="text-[11px] text-slate-700 dark:text-zinc-200 font-medium">Đang tạo bản xem trước...</span>
-                        </div>
-                    )}
-                </div>
-
-                {/* Thông báo lỗi hoặc thông tin nếu có */}
-                {previewMsg && (
-                    <div className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1.5 rounded border border-amber-200 dark:border-amber-800/30 leading-snug">
-                        {previewMsg}
-                    </div>
-                )}
-
-                {/* Chip giá trị các Slot trên trang hiện tại */}
-                {currentSlotValues.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 pt-0.5">
-                        {currentSlotValues.map((sv, idx) => (
-                            <div key={idx} className="flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/40 text-[11px]">
-                                <span className="font-semibold text-indigo-700 dark:text-indigo-300">{sv.name}:</span>
-                                <span className="font-mono text-slate-800 dark:text-zinc-100 font-bold bg-white dark:bg-zinc-800 px-1.5 py-0.5 rounded shadow-xs">{sv.value}</span>
+                            <ToolNumberInput 
+                                label={t('preprocess.numbering:khoang_cach_tracking', 'Khoảng cách')}
+                                value={selectedField?.characterSpacing || 0}
+                                onChange={(val) => updateSelectedField({ characterSpacing: val })}
+                                suffix="pt" step={0.5}
+                            />
+                            <div>
+                                <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:can_le', 'Căn lề')}</span>
+                                <div className="flex items-center gap-1.5">
+                                    <select 
+                                        value={selectedField?.alignment || 'left'}
+                                        onChange={(e) => updateSelectedField({ alignment: e.target.value })}
+                                        className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-indigo-500 transition-all"
+                                    >
+                                        <option value="left">{t('preprocess.numbering:trai', 'Trái')}</option>
+                                        <option value="center">{t('preprocess.numbering:giua', 'Giữa')}</option>
+                                        <option value="right">{t('preprocess.numbering:phai', 'Phải')}</option>
+                                    </select>
+                                </div>
                             </div>
-                        ))}
+                            <div className="col-span-2">
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:mau_chu', 'Màu in')}</span>
+                                <CmykColorPicker
+                                    label={t('preprocess.numbering:mau_cmyk', 'Màu CMYK')}
+                                    value={selectedField?.fontColor || '#000000'}
+                                    onChange={(hex: string) => updateSelectedField({ fontColor: hex })}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="text-[11px] text-slate-400 dark:text-zinc-500 p-3 bg-slate-50 dark:bg-zinc-800/40 rounded border border-dashed border-slate-200 dark:border-zinc-700 text-center">
+                        {t('preprocess.numbering:nhap_chon_truong_de_dinh_dang', 'Nhấp chọn một trường nhảy số trên bản vẽ để chỉnh Font chữ, Cỡ chữ, Căn lề và Màu in CMYK')}
+                    </div>
+                )}
+            </VdpSection>
+
+            {/* ── THANH TỔNG KẾT LIVE PREVIEW VÀ NÚT CHẠY ── */}
+            <div className="mt-auto pt-3 shrink-0 border-t border-slate-200 dark:border-zinc-700 space-y-2.5">
+                {/* Chip xem nhanh số nhảy trên trang hiện tại */}
+                {currentSlotValues.length > 0 && (
+                    <div className="flex flex-col gap-1 p-2 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60">
+                        <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-semibold text-indigo-900 dark:text-indigo-300">
+                                👁️ {t('preprocess.numbering:trang_hien_tai', 'Số nhảy trang')} {previewIndex}/{totalPages}
+                            </span>
+                            <span className="text-[10px] text-slate-500 dark:text-zinc-400">
+                                {t('preprocess.numbering:xem_truc_tiep_tren_canvas', 'Đang hiển thị trên Canvas')}
+                            </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 pt-0.5">
+                            {currentSlotValues.map((sv, idx) => (
+                                <div key={idx} className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-white dark:bg-zinc-800 border border-indigo-200 dark:border-indigo-700 text-[11px] shadow-2xs">
+                                    <span className="font-semibold text-indigo-700 dark:text-indigo-300">{sv.name}:</span>
+                                    <span className="font-mono text-slate-800 dark:text-zinc-100 font-bold">{sv.value}</span>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 )}
 
-                {/* Danh sách text tóm tắt (thu gọn / mở rộng) */}
-                {showSummaryText && (
-                    <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-md p-2.5 font-mono text-[10px] text-slate-600 dark:text-zinc-400 whitespace-pre-wrap leading-relaxed shadow-inner mt-1.5">
-                        {previewLines.join('\n')}
-                    </div>
-                )}
-            </div>
-
-            {/* Run Button */}
-            <div className="mt-auto pt-4 shrink-0 border-t border-slate-200 dark:border-zinc-700">
-                {/* Warning bar above Run Button when mismatch exists */}
-                {slotLengthStats.isMismatch && (
-                    <div className="mb-2.5 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 flex items-center justify-between gap-2 shadow-2xs">
-                        <span className="flex items-center gap-1.5 min-w-0">
-                            <svg className="w-4 h-4 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-                            <span className="truncate">Lệch số lượng ({slotLengthStats.minCount} vs {slotLengthStats.maxCount} số).</span>
-                        </span>
-                        <button
-                            type="button"
-                            onClick={handleSyncToMaxCount}
-                            className="text-[10px] font-bold text-amber-700 dark:text-amber-400 hover:underline shrink-0 cursor-pointer bg-amber-200/60 dark:bg-amber-900/60 px-2 py-0.5 rounded"
-                        >
-                            Đồng bộ ngay
-                        </button>
-                    </div>
-                )}
-                {/* UIUX (audit 2026-07-27 §D-07): đang chạy job → ProgressBar % thật + nút Hủy */}
+                {/* Tiến độ job và thông báo */}
                 {statusMessage && (
                     isGenerating ? (
                         <ProgressBar
@@ -1639,32 +1909,34 @@ export default function NumberingTool({
                             processed={progressInfo?.processed}
                             total={progressInfo?.total}
                             onCancel={activeVdpJobId ? () => void cancelActiveVdp().catch((err) => setStatusMessage(formatError(err))) : undefined}
-                            className="mb-3"
+                            className="mb-2"
                         />
                     ) : (
-                        <div className="mb-3 p-2 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-[11px] rounded animate-pulse text-center font-medium">
+                        <div className="p-2 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-[11px] rounded text-center font-medium">
                             {statusMessage}
                         </div>
                     )
                 )}
                 
-                <div className="mb-3 flex items-center gap-2 px-1">
+                {/* Mở kết quả tab mới */}
+                <div className="flex items-center gap-2 px-1">
                     <input
                         type="checkbox"
                         id="spawnNewTabNum"
                         checked={spawnNewTab}
                         onChange={(e) => setSpawnNewTab(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 bg-white dark:bg-zinc-900 border-slate-300 dark:border-zinc-600 cursor-pointer"
+                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 bg-white dark:bg-zinc-900 border-slate-300 dark:border-zinc-600 cursor-pointer"
                     />
                     <label htmlFor="spawnNewTabNum" className="text-[11px] text-slate-600 dark:text-zinc-400 cursor-pointer select-none">
                         {t('preprocess.numbering:mo_ket_qua_sang_tab_moi_thay_vi_de_file')}
                     </label>
                 </div>
                 
+                {/* Nút bấm Chạy */}
                 <button
                     onClick={handleGenerate}
                     disabled={isGenerating || vdpFields.length === 0}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
+                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer"
                 >
                     {isGenerating ? (
                         <>
@@ -1679,7 +1951,7 @@ export default function NumberingTool({
                     <button
                         type="button"
                         onClick={() => void cancelActiveVdp().catch((err) => setStatusMessage(err?.message || String(err)))}
-                        className="mt-2 w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-700"
+                        className="w-full rounded-lg bg-red-600 py-2 text-sm font-bold text-white hover:bg-red-700 transition-colors"
                     >
                         {t('tabs.imposition:huy_bo_cancel')}
                     </button>

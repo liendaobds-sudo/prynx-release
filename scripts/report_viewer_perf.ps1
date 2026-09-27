@@ -18,6 +18,11 @@ $lines = if ($Tail -gt 0) {
 
 $bootstrapMs = @()
 $firstPixelMs = @()
+$attempts = @{}
+$inputToCommitMs = @()
+$decodeMsList = @()
+$sharpCommits = 0
+$targetSharpCommits = 0
 $ppeTotalMs = @()
 $ppeSemWaitMs = @()
 $ppeWorkerQueueMs = @()
@@ -53,7 +58,7 @@ function Get-Stats([object[]]$Values) {
 }
 
 foreach ($line in $lines) {
-    if ($line -match 'FE VIEWER_TRACE (\{.*\})') {
+    if ($line -match '(?:FE )?VIEWER_TRACE (\{.*\})') {
         try {
             $event = $matches[1] | ConvertFrom-Json
             switch ([string]$event.event) {
@@ -66,6 +71,34 @@ foreach ($line in $lines) {
                 }
                 'tile-slow' { $counts.tileSlow++ }
                 'tile-priority-promote' { $counts.priorityPromote++ }
+                'tile-sharpness-commit' {
+                    $sharpCommits++
+                    if ($null -ne $event.decode_ms) { $decodeMsList += [double]$event.decode_ms }
+                    if ($event.is_target_sharp) { $targetSharpCommits++ }
+                    if ($null -ne $event.input_to_commit_ms) { $inputToCommitMs += [double]$event.input_to_commit_ms }
+
+                    $attemptId = [string]$event.sharpness_attempt_id
+                    if (-not [string]::IsNullOrEmpty($attemptId)) {
+                        if (-not $attempts.ContainsKey($attemptId)) {
+                            $attempts[$attemptId] = [ordered]@{
+                                first_readable_ms = $null
+                                target_sharp_ms = $null
+                                is_target_sharp = $false
+                            }
+                        }
+                        $entry = $attempts[$attemptId]
+                        $latency = if ($null -ne $event.input_to_commit_ms) { [double]$event.input_to_commit_ms } else { $null }
+                        if ($null -ne $latency -and ($null -eq $entry.first_readable_ms -or $latency -lt $entry.first_readable_ms)) {
+                            $entry.first_readable_ms = $latency
+                        }
+                        if ($event.is_target_sharp -eq $true -and $null -ne $latency) {
+                            $entry.is_target_sharp = $true
+                            if ($null -eq $entry.target_sharp_ms -or $latency -lt $entry.target_sharp_ms) {
+                                $entry.target_sharp_ms = $latency
+                            }
+                        }
+                    }
+                }
             }
         } catch {
             # Log nhiều worker có thể bị xen byte; bỏ qua JSON hỏng, giữ các phase khác.
@@ -111,6 +144,24 @@ $formMissTotal = ($cacheFormMisses | Measure-Object -Sum).Sum
 $imageDenominator = $imageHitTotal + $imageMissTotal
 $formDenominator = $formHitTotal + $formMissTotal
 
+$firstReadableList = @()
+$targetSharpList = @()
+$successfulAttempts = 0
+$incompleteAttempts = 0
+
+foreach ($kv in $attempts.GetEnumerator()) {
+    $att = $kv.Value
+    if ($null -ne $att.first_readable_ms) {
+        $firstReadableList += $att.first_readable_ms
+    }
+    if ($att.is_target_sharp -and $null -ne $att.target_sharp_ms) {
+        $targetSharpList += $att.target_sharp_ms
+        $successfulAttempts++
+    } else {
+        $incompleteAttempts++
+    }
+}
+
 [ordered]@{
     log = (Resolve-Path -LiteralPath $LogPath).Path
     lines = $lines.Count
@@ -120,6 +171,19 @@ $formDenominator = $formHitTotal + $formMissTotal
     ppe_total_ms = Get-Stats $ppeTotalMs
     ppe_sem_wait_ms = Get-Stats $ppeSemWaitMs
     ppe_worker_queue_ms = Get-Stats $ppeWorkerQueueMs
+    time_to_sharp = [ordered]@{
+        total_attempts = ($successfulAttempts + $incompleteAttempts)
+        successful_sharp_attempts = $successfulAttempts
+        incomplete_attempts = $incompleteAttempts
+        first_readable_ms = Get-Stats $firstReadableList
+        target_sharp_ms = Get-Stats $targetSharpList
+        decode_ms = Get-Stats $decodeMsList
+        raw_commits = [ordered]@{
+            total = $sharpCommits
+            target_sharp = $targetSharpCommits
+            latency_ms = Get-Stats $inputToCommitMs
+        }
+    }
     cache = [ordered]@{
         image_hits = $imageHitTotal
         image_misses = $imageMissTotal

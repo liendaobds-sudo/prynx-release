@@ -107,4 +107,33 @@ describe('preview performance logging gate', () => {
         expect(last).toContain('"failed_events":2');
         expect(last).toContain('"event":"recovered"');
     });
+
+    it('scope hóa zoom context theo tabId và page để không bị lẫn lộn giữa các tab (§SHARP.R2)', async () => {
+        installPerfInvoke(false);
+        const { viewerTraceLog, getScopedZoomContext } = await loadPerfLogger();
+
+        await viewerTraceLog('zoom-input', {
+            tab_id: 'tab-A',
+            page: 1,
+            zoom_target: 2.5,
+        });
+
+        await viewerTraceLog('zoom-input', {
+            tab_id: 'tab-B',
+            page: 3,
+            zoom_target: 1.2,
+        });
+
+        // Tab A trang 1 phải giữ nguyên target 2.5
+        const ctxA = getScopedZoomContext({ tabId: 'tab-A', page: 1 });
+        expect(ctxA.target).toBe(2.5);
+
+        // Tab B trang 3 phải có target 1.2
+        const ctxB = getScopedZoomContext({ tabId: 'tab-B', page: 3 });
+        expect(ctxB.target).toBe(1.2);
+
+        // Tab A trang 2 chưa có zoom riêng nhưng tra theo tab A không bị ghi đè bởi tab B
+        const ctxGlobal = getScopedZoomContext();
+        expect(ctxGlobal.target).toBe(1.2); // Global là thao tác gần nhất
+    });
 });

@@ -52,7 +52,7 @@ interface UseViewerZoomProps {
     actualWidth100: number;
     navigatePage: (p: number) => void;
     toolMode: 'pointer' | 'hand' | 'dimension';
-    hasRightPanelTool?: boolean;
+    tabId?: string;
 }
 
 export function useViewerZoom(props: UseViewerZoomProps) {
@@ -60,7 +60,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode,
         fitPageSizes, pageDisplayMode, activePage, actualWidth100,
-        navigatePage, toolMode, hasRightPanelTool,
+        navigatePage, toolMode, tabId,
     } = props;
 
     const [mainWidth, setMainWidth] = useState(0);
@@ -179,17 +179,8 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             setIsZoomReady(true);
         } else if (hasFitGeometry && fitMode === 'custom') {
             setIsZoomReady(true);
-            // UIUX: Đảm bảo khi đang mở bảng thiết lập công cụ bên phải, các bảng thiết lập
-            // TUYỆT ĐỐI KHÔNG ĐƯỢC ĐÈ LÊN TRANG VIEW. Nếu zoom hiện tại khiến trang tràn/bị bảng che khuất:
-            // Tự động thu nhỏ lại để vừa trọn khung nhìn (như mẫu).
-            if (hasRightPanelTool) {
-                const maxFit = calcFitPageZoom();
-                if (currentZoomRef.current > maxFit + 0.005) {
-                    setZoom(Math.min(1.0, maxFit));
-                }
-            }
         }
-    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom, internalScrollRef, hasRightPanelTool]);
+    }, [mainWidth, mainHeight, fitMode, getFitGeometry, calcFitWidthZoom, calcFitPageZoom, setZoom, internalScrollRef]);
     /* eslint-enable react-hooks/set-state-in-effect */
 
     // Sau fit: căn giữa THEO TRANG ĐANG XEM (anchor #pdf-page-container-N), không theo
@@ -505,7 +496,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                         pendingZoomRef.current = Math.max(0.01, Math.min(64, pendingZoomRef.current));
                         // PERF (audit 2026-09-25 §R25.03): ghi tại handler thật, trước rAF/setZoom.
                         void viewerTraceLog('zoom-input', {
-                            page: activePageRef.current, zoom_before: currentZoomRef.current,
+                            page: activePageRef.current, tab_id: tabId, zoom_before: currentZoomRef.current,
                             zoom_target: pendingZoomRef.current, delta_y: e.deltaY, delta_mode: e.deltaMode,
                             event_time_ms: e.timeStamp,
                             input_delay_ms: e.timeStamp <= performance.now() ? performance.now() - e.timeStamp : undefined,

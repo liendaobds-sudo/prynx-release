@@ -140,7 +140,7 @@ def _optimize_seed(
     max_nfev: int = 35,
 ):
     from scipy.optimize import least_squares
-    from app.workers.cutline_fair_jacobian import build_fair_jacobian
+    from app.workers.cutline_fair_jacobian import build_fair_jacobian, compress_fair_samples
 
     encoded = _encode(seed, source, protected)
     if encoded is None:
@@ -186,8 +186,14 @@ def _optimize_seed(
         weights *= math.sqrt(step/.03)
         # PERF (audit 2026-09-10 §SIMPERF.2): đạo hàm của đúng residual cũ,
         # không giảm vòng lặp/mẫu hay đổi trọng số để lấy tốc độ.
-        analytic = build_fair_jacobian(indices, parameters, weights, fair_scale,
-                                       smooth, free, angle_delta)
+        # PERF (audit 2026-09-27 §CUT.QR): giữ mọi mẫu/trọng số nhưng đổi cơ
+        # sở hàng để LSMR giải cùng bài toán trên ma trận nhỏ hơn. Không bớt
+        # lượt seed/IRLS/Newton hay nới dung sai chứng nhận sau solver.
+        compact_indices, compact_basis, compact_target = compress_fair_samples(
+            indices, parameters, weights, target,
+        )
+        analytic = build_fair_jacobian(compact_indices, None, None, fair_scale,
+                                       smooth, free, angle_delta, weighted_basis=compact_basis)
         template = values.ravel().copy()
         def decode_free(candidate):
             full = template.copy()
@@ -198,7 +204,8 @@ def _optimize_seed(
             # trong mỗi bước; đây là điểm thoát thật khi UI đã đổi yêu cầu.
             check_preview_cancelled()
             curves = decode_free(candidate)
-            data = ((_evaluate(curves, indices, parameters)-target)*weights[:, None]).ravel()
+            data = (np.einsum('ij,ijk->ik', compact_basis, curves[compact_indices])
+                    - compact_target).ravel()
             return np.r_[data, fair_scale*smooth*_curvature_jumps(curves)]
         def jacobian(candidate):
             check_preview_cancelled()

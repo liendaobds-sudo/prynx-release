@@ -67,6 +67,18 @@ export default function CoverNumberingTool({
 
     const [status, setStatus] = useState('');
     const [busy, setBusy] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
+    const [helpTab, setHelpTab] = useState<'variables' | 'hotkeys' | 'workflow'>('variables');
+
+    // Đóng modal Trợ giúp bằng phím ESC
+    useEffect(() => {
+        if (!showHelp || !isActive) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); setShowHelp(false); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [showHelp, isActive]);
     // UIUX (audit 2026-07-27 §D-07): tiến độ job VDP ({processed,total}) cho ProgressBar
     const [progressInfo, setProgressInfo] = useState<VdpProgressInfo | null>(null);
     const [spawnNewTab, setSpawnNewTab] = useState(true);
@@ -119,7 +131,7 @@ export default function CoverNumberingTool({
         [coverPagesStr, totalPages],
     );
 
-    const { handleGroupFields, handleUngroupFields, deleteSelectedField } =
+    const { handleGroupFields, handleUngroupFields, deleteSelectedField, duplicateSelectedFields } =
         useVdpTool(vdpFields, setVdpFields, selectedFieldIds, onSelectField, isActive);
 
     const job: NumberingJob = useMemo(() => ({ ...v }), [v]);
@@ -344,12 +356,336 @@ export default function CoverNumberingTool({
 
     return (
         <div className="flex w-full flex-col gap-4">
-            <div className="flex items-center gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700 shrink-0">
-                <div className="flex-1 text-center">
-                    <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2"><span>🔖</span><span>{t('preprocess.coverNumbering:mec_bia_chay_so_bia')}</span></h2>
-                    <p className="text-[11px] text-slate-500 mt-1">Booklet Cover Numbering</p>
+            <div className="flex items-center justify-between gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700 shrink-0">
+                <div className="flex-1">
+                    <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                        <span>🔖</span>
+                        <span>{t('preprocess.coverNumbering:mec_bia_chay_so_bia')}</span>
+                    </h2>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Booklet Cover Numbering</p>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setShowHelp(true)}
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-500/10 dark:hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-md font-medium text-xs transition-colors cursor-pointer"
+                    title={t('preprocess.numbering:huong_dan_su_dung', 'Hướng dẫn sử dụng')}
+                >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <circle cx="12" cy="12" r="9" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" />
+                        <path strokeLinecap="round" d="M12 16.5h.01" />
+                    </svg>
+                    <span>Trợ giúp</span>
+                </button>
             </div>
+
+            {/* Modal Trợ giúp Chạy số bìa */}
+            {showHelp && (
+                <div
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+                    onClick={() => setShowHelp(false)}
+                >
+                    <div
+                        className="max-w-2xl w-full max-h-[85vh] flex flex-col bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-zinc-700 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0">
+                            <div className="flex items-center gap-2.5">
+                                <span className="text-xl">🔖</span>
+                                <div>
+                                    <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
+                                        Hướng dẫn Chạy số bìa sách / sổ / phiếu
+                                    </h3>
+                                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                        Ý nghĩa biến, liên kết dải số ruột & thao tác phím tắt chuột chuẩn Illustrator
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowHelp(false)}
+                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        {/* Navigation Tabs */}
+                        <div className="flex items-center gap-1 px-5 pt-2.5 border-b border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('variables')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'variables'
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>🏷️</span>
+                                <span>Biến {'{X}, {Y}, {Z}'} & Group</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('workflow')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'workflow'
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>🔗</span>
+                                <span>Liên kết dải số ruột & Nguồn bìa</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setHelpTab('hotkeys')}
+                                className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+                                    helpTab === 'hotkeys'
+                                        ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                                }`}
+                            >
+                                <span>⚡</span>
+                                <span>Phím tắt & Chuột (Illustrator)</span>
+                            </button>
+                        </div>
+
+                        {/* Content Area */}
+                        <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600 dark:text-zinc-300 scroller-thin leading-relaxed">
+                            {helpTab === 'variables' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5">
+                                        <div className="font-bold text-indigo-900 dark:text-indigo-300 text-[13px] flex items-center gap-2 mb-2">
+                                            <span>🎯</span>
+                                            <span>Bộ 3 biến số bìa động: {'{X}'}, {'{Y}'}, {'{Z}'}</span>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                                            <div className="bg-white dark:bg-zinc-800/80 p-3 rounded-lg border border-indigo-100 dark:border-indigo-800/60 shadow-2xs">
+                                                <div className="font-bold text-indigo-600 dark:text-indigo-400 text-xs flex items-center gap-1.5 mb-1">
+                                                    <span className="px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-900/50 rounded font-mono">{'{X}'}</span>
+                                                    <span>Số thứ tự cuốn</span>
+                                                </div>
+                                                <p className="text-[11px] text-slate-600 dark:text-zinc-300">
+                                                    Đại diện cho số quyển / số cuốn: Cuốn số 001, Cuốn 002... Số bắt đầu do bạn quy định ở mục <i>Số cuốn bắt đầu {'{X}'}</i>.
+                                                </p>
+                                            </div>
+                                            <div className="bg-white dark:bg-zinc-800/80 p-3 rounded-lg border border-sky-100 dark:border-sky-800/60 shadow-2xs">
+                                                <div className="font-bold text-sky-600 dark:text-sky-400 text-xs flex items-center gap-1.5 mb-1">
+                                                    <span className="px-1.5 py-0.5 bg-sky-100 dark:bg-sky-900/50 rounded font-mono">{'{Y}'}</span>
+                                                    <span>Số ruột đầu cuốn</span>
+                                                </div>
+                                                <p className="text-[11px] text-slate-600 dark:text-zinc-300">
+                                                    Số thứ tự bắt đầu của ruột nằm trong cuốn đó (VD: Vé số 0001, Phiếu 0101, Hóa đơn 0201...).
+                                                </p>
+                                            </div>
+                                            <div className="bg-white dark:bg-zinc-800/80 p-3 rounded-lg border border-rose-100 dark:border-rose-800/60 shadow-2xs">
+                                                <div className="font-bold text-rose-600 dark:text-rose-400 text-xs flex items-center gap-1.5 mb-1">
+                                                    <span className="px-1.5 py-0.5 bg-rose-100 dark:bg-rose-900/50 rounded font-mono">{'{Z}'}</span>
+                                                    <span>Số ruột cuối cuốn</span>
+                                                </div>
+                                                <p className="text-[11px] text-slate-600 dark:text-zinc-300">
+                                                    Số thứ tự kết thúc của ruột trong cuốn đó (VD: Vé số 0100, Phiếu 0200...). Cặp {'{Y}'} - {'{Z}'} thể hiện dải số ruột của bìa.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5 space-y-2">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] flex items-center gap-2">
+                                            <span>📦</span>
+                                            <span>Quy tắc Group (Nhóm cụm trường theo từng con bìa)</span>
+                                        </div>
+                                        <p className="text-[11px] text-slate-600 dark:text-zinc-300">
+                                            Nếu một tờ in bìa chứa nhiều con bìa (ví dụ tờ in 2 bìa hoặc 4 bìa trên 1 tờ):
+                                        </p>
+                                        <ul className="list-disc pl-5 space-y-1.5 text-[11px] text-slate-600 dark:text-zinc-300">
+                                            <li>
+                                                Mỗi con bìa cần một bộ biến (ví dụ gồm cả {'{X}'}, {'{Y}'}, {'{Z}'} hoặc chỉ {'{X}'} và {'{Y}'}).
+                                            </li>
+                                            <li>
+                                                <b>Cách gom cụm:</b> Quét chuột chọn hoặc giữ <kbd className="px-1 py-0.5 font-mono text-[10px] bg-white dark:bg-zinc-800 border rounded">Shift</kbd> click chọn các trường thuộc về con bìa số 1, sau đó nhấn nút <b>Group</b> (hoặc phím <kbd className="px-1 py-0.5 font-mono text-[10px] bg-white dark:bg-zinc-800 border rounded">Ctrl+G</kbd>).
+                                            </li>
+                                            <li>
+                                                Lặp lại cho các con bìa còn lại. Hệ thống sẽ tự nhận diện <b>Cụm 1, Cụm 2...</b> và phân bổ dải số cho từng con bìa đúng theo thứ tự xếp hoặc cắt chồng.
+                                            </li>
+                                            <li>
+                                                <b>Cách tách nhóm:</b> Chọn một trường trong cụm rồi bấm nút <b>Ungroup</b> (hoặc phím <kbd className="px-1 py-0.5 font-mono text-[10px] bg-white dark:bg-zinc-800 border rounded">Ctrl+Shift+G</kbd>).
+                                            </li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+
+                            {helpTab === 'workflow' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-teal-200 dark:border-teal-900/50 bg-teal-50/50 dark:bg-teal-950/20 p-3.5">
+                                        <div className="font-bold text-teal-900 dark:text-teal-300 text-[13px] flex items-center gap-2 mb-1.5">
+                                            <span>🔗</span>
+                                            <span>Liên kết dải số ruột (Đảm bảo ruột & bìa khớp 100%)</span>
+                                        </div>
+                                        <p className="text-[11px] text-slate-600 dark:text-zinc-300 leading-relaxed mb-2">
+                                            Khi tích chọn <b>"Liên kết mẹc số"</b>, hệ thống sẽ tự động đọc cấu hình số bắt đầu, số kết thúc, tổng số cuốn và chế độ phân bổ từ công cụ <b>Chạy số ruột</b>. Khi bạn chỉnh dải số ruột, thông số bìa sẽ tự động cập nhật đồng bộ, tránh nhầm lẫn sai sót giữa bìa và ruột.
+                                        </p>
+                                        <p className="text-[11px] text-slate-500 dark:text-zinc-400 italic">
+                                            * Nếu bạn in bìa độc lập cho một lô hàng ruột đã in trước đó, hãy bỏ tích liên kết để tự do chỉnh sửa dải số.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5 space-y-2">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] flex items-center gap-2">
+                                            <span>📄</span>
+                                            <span>Nguồn trang bìa & File thiết kế</span>
+                                        </div>
+                                        <div className="space-y-2 text-[11px]">
+                                            <div className="p-2.5 rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700">
+                                                <div className="font-semibold text-slate-800 dark:text-zinc-100 mb-0.5">Trường hợp 1: File bìa riêng biệt (Khuyên dùng)</div>
+                                                <p className="text-slate-600 dark:text-zinc-300">File PDF đang mở là file dàn tờ in bìa riêng. Cứ giữ mặc định, kéo các trường vào vị trí ô số trên bìa.</p>
+                                            </div>
+                                            <div className="p-2.5 rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700">
+                                                <div className="font-semibold text-slate-800 dark:text-zinc-100 mb-0.5">Trường hợp 2: Bìa & ruột nằm chung 1 file PDF</div>
+                                                <p className="text-slate-600 dark:text-zinc-300">Tích chọn <i>"Bìa & ruột nằm chung 1 file, gán trang bìa"</i> và nhập số trang bìa (VD: Trang 1, Trang 2...). Hệ thống sẽ chỉ nhảy số bìa lên đúng trang được gán, giữ nguyên các trang ruột.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-950/20 p-3.5 space-y-1.5">
+                                        <div className="font-bold text-amber-900 dark:text-amber-300 text-[13px] flex items-center gap-2">
+                                            <span>⚠️</span>
+                                            <span>Lưu ý quan trọng khi chạy số bìa</span>
+                                        </div>
+                                        <p className="text-[11px] text-amber-900/90 dark:text-amber-200/90">
+                                            Hãy luôn bấm <b>"👁️ Bật xem trực tiếp trên View chính"</b> để lật xem từng trang bìa thực tế trước khi xuất file. Đảm bảo số bìa {'{X}'} và dải số ruột {'{Y}'} - {'{Z}'} khớp chuẩn chỉnh với thứ tự đóng cuốn.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {helpTab === 'hotkeys' && (
+                                <div className="space-y-3.5">
+                                    <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5">
+                                        <div className="font-bold text-indigo-900 dark:text-indigo-300 text-[13px] flex items-center gap-2 mb-1.5">
+                                            <span>🎯</span>
+                                            <span>Nhân bản tức thì tại vị trí chuột (Alt-Drag)</span>
+                                        </div>
+                                        <p className="text-slate-600 dark:text-zinc-300 mb-2">
+                                            Giữ phím <kbd className="px-1.5 py-0.5 text-[11px] font-mono font-bold bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Alt</kbd> và nhấp kéo chuột từ một ô số bìa bất kỳ. Bản sao mới sẽ được tạo ngay lập tức dưới mũi tên chuột và bám dính chuyển động chuột chuẩn 100% như Adobe Illustrator.
+                                        </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] mb-2.5 flex items-center gap-2">
+                                            <span>⌨️</span>
+                                            <span>Bảng phím tắt bàn phím</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Sao chép trường</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">C</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Dán trường</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">V</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Nhân bản nhanh</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">D</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Xóa trường</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Delete</kbd>
+                                                    <span className="text-slate-400">/</span>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">⌫</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Gom nhóm Cụm</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">G</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Hủy nhóm Cụm</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Ctrl</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">⇧</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">G</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Dịch chuyển tinh chỉnh</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">↑</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">↓</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">←</kbd>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">→</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Dịch chuyển nhanh (10pt)</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Shift</kbd>
+                                                    <span className="text-slate-400">+</span>
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Mũi tên</kbd>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Chọn nhiều trường</span>
+                                                <div className="flex gap-1">
+                                                    <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Shift</kbd>
+                                                    <span className="text-slate-400">+</span>
+                                                    <span className="text-[10px] text-slate-500 self-center">Click</span>
+                                                </div>
+                                            </div>
+                                            <div className="p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 flex items-center justify-between">
+                                                <span className="text-slate-700 dark:text-zinc-200 font-medium">Đóng bảng trợ giúp</span>
+                                                <kbd className="px-1.5 py-0.5 font-mono font-bold bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded shadow-2xs">Esc</kbd>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 p-3.5 space-y-2">
+                                        <div className="font-bold text-slate-800 dark:text-zinc-100 text-[13px] flex items-center gap-2">
+                                            <span>🔲</span>
+                                            <span>8 điểm điều khiển biên (Bounding Box Handles)</span>
+                                        </div>
+                                        <p className="text-[11px] text-slate-600 dark:text-zinc-300">
+                                            Khi một trường được chọn, khung bao quanh hiển thị 8 điểm mút neo (4 góc và 4 cạnh). Bạn có thể rê chuột vào bất kỳ mút nào để kéo dãn chiều rộng, tăng giảm chiều cao, hoặc phóng to/thu nhỏ vùng in số một cách trực quan và chính xác.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="px-5 py-3 border-t border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 flex items-center justify-between shrink-0">
+                            <span className="text-[11px] text-slate-400 dark:text-zinc-500">
+                                Nhấn <kbd className="px-1 py-0.5 font-mono text-[10px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded">Esc</kbd> để đóng
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setShowHelp(false)}
+                                className="px-4 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors cursor-pointer"
+                            >
+                                Đã hiểu
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Cấu hình Job */}
             <div className="shrink-0 space-y-3">
@@ -405,11 +741,7 @@ export default function CoverNumberingTool({
                 <button
                     type="button"
                     onClick={() => {
-                        const next = !isPickingVdpText;
-                        setIsPickingVdpText(next);
-                        if (next) {
-                            toast.info(t('preprocess.coverNumbering:continuous_select_notice'));
-                        }
+                        setIsPickingVdpText(prev => !prev);
                     }}
                     className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${
                         isPickingVdpText
@@ -433,16 +765,49 @@ export default function CoverNumberingTool({
                     <span className="text-slate-500">{t('preprocess.coverNumbering:n_cum_n_truong', { clusters: clusters.length, fields: vdpFields.length })}</span>
                     {selectedFieldIds.length > 1 && (
                         <button 
+                            type="button"
                             onClick={() => {
                                 handleGroupFields();
                             }} 
-                            className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded font-medium"
+                            className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 px-2 py-1 rounded font-medium transition-colors"
+                            title="Gom nhóm các trường thành 1 cụm (Ctrl+G)"
                         >
                             Group
                         </button>
                     )}
-                    {selectedFieldIds.length > 0 && <button onClick={handleUngroupFields} className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded text-red-500 font-medium">Ungroup</button>}
-                    {selectedFieldIds.length > 0 && <button onClick={deleteSelectedField} className="text-red-500 px-2 py-1 rounded bg-red-50 dark:bg-red-500/10">{t('preprocess.coverNumbering:xoa')}</button>}
+                    {selectedFieldIds.length > 0 && (
+                        <button 
+                            type="button"
+                            onClick={handleUngroupFields} 
+                            className="bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 px-2 py-1 rounded text-red-500 font-medium transition-colors"
+                            title="Hủy nhóm cụm trường (Ctrl+Shift+G)"
+                        >
+                            Ungroup
+                        </button>
+                    )}
+                    {selectedFieldIds.length > 0 && (
+                        <div className="flex items-center gap-1.5 ml-auto">
+                            <button
+                                type="button"
+                                onClick={duplicateSelectedFields}
+                                className="px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 font-medium flex items-center gap-1 transition-colors"
+                                title="Nhân bản trường đã chọn (Ctrl+D)"
+                            >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                                <span>Nhân bản</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={deleteSelectedField}
+                                className="text-red-500 px-2 py-1 rounded bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 transition-colors"
+                                title="Xóa trường đã chọn (Delete)"
+                            >
+                                {t('preprocess.coverNumbering:xoa')}
+                            </button>
+                        </div>
+                    )}
                 </div>
                 {/* Nút bật/tắt xem trực tiếp trên view chính */}
                 <button

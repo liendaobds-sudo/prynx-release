@@ -106,9 +106,73 @@ function compactTracePayload(extra: Record<string, unknown>, depth = 0): Record<
   return result;
 }
 
-function eventPayload(extra: Record<string, unknown>): Record<string, unknown> {
-  const seq = ++viewerTraceSequence;
-  if (extra.event === 'zoom-input') latestZoomInputSequence = seq;
+interface ScopedZoomContext {
+  seq: number;
+  epoch: number;
+  target: number;
+  page?: number;
+  tabId?: string;
+}
+
+const scopedZoomContextMap = new Map<string, ScopedZoomContext>();
+let latestGlobalZoomContext: ScopedZoomContext | null = null;
+
+export function recordZoomInputContext(params: {
+  seq: number;
+  epoch: number;
+  target: number;
+  page?: number;
+  tabId?: string;
+}): void {
+  latestGlobalZoomContext = params;
+  if (params.page !== undefined) {
+    if (params.tabId) {
+      scopedZoomContextMap.set(`${params.tabId}:${params.page}`, params);
+    }
+    scopedZoomContextMap.set(`page:${params.page}`, params);
+    // Giới hạn kích thước cache tránh phình bộ nhớ
+    if (scopedZoomContextMap.size > 100) {
+      const firstKey = scopedZoomContextMap.keys().next().value;
+      if (firstKey) scopedZoomContextMap.delete(firstKey);
+    }
+  }
+}
+
+export function getScopedZoomContext(scope?: { page?: number; tabId?: string }): {
+  seq: number | null;
+  epoch: number;
+  target: number;
+} {
+  if (scope?.tabId && scope?.page !== undefined) {
+    const key = `${scope.tabId}:${scope.page}`;
+    const found = scopedZoomContextMap.get(key);
+    if (found) return found;
+  }
+  if (scope?.page !== undefined) {
+    const key = `page:${scope.page}`;
+    const found = scopedZoomContextMap.get(key);
+    if (found) return found;
+  }
+  if (latestGlobalZoomContext) {
+    return latestGlobalZoomContext;
+  }
+  return { seq: null, epoch: 0, target: 0 };
+}
+
+export function getLatestZoomContext(): { seq: number | null; epoch: number; target: number } {
+  return getScopedZoomContext();
+}
+
+function eventPayload(extra: Record<string, unknown>, existingSeq?: number): Record<string, unknown> {
+  const seq = existingSeq ?? ++viewerTraceSequence;
+  if (extra.event === 'zoom-input' && existingSeq === undefined) {
+    latestZoomInputSequence = seq;
+    const epoch = Date.now();
+    const target = Number(extra.zoom_target) || 0;
+    const tabId = typeof extra.tab_id === 'string' ? extra.tab_id : undefined;
+    const page = typeof extra.page === 'number' ? extra.page : undefined;
+    recordZoomInputContext({ seq, epoch, target, tabId, page });
+  }
   return {
     ...compactTracePayload(extra),
     schema: 2,
@@ -189,8 +253,18 @@ export function viewerTraceLog(event: string, extra: Record<string, unknown> = {
   if (import.meta.env.DEV) {
     console.debug(`[VIEWER_TRACE] ${event}`, extra);
   }
+  let seq: number | undefined;
+  if (event === 'zoom-input') {
+    seq = ++viewerTraceSequence;
+    latestZoomInputSequence = seq;
+    const epoch = Date.now();
+    const target = Number(extra.zoom_target) || 0;
+    const tabId = typeof extra.tab_id === 'string' ? extra.tab_id : undefined;
+    const page = typeof extra.page === 'number' ? extra.page : undefined;
+    recordZoomInputContext({ seq, epoch, target, tabId, page });
+  }
   if (typeof window === 'undefined' || enabledValue === false) return Promise.resolve();
-  return enqueueTrace(`VIEWER_TRACE ${JSON.stringify(eventPayload({ ...extra, event: event.slice(0, 80) }))}`);
+  return enqueueTrace(`VIEWER_TRACE ${JSON.stringify(eventPayload({ ...extra, event: event.slice(0, 80) }, seq))}`);
 }
 
 export function previewPerfLog(msg: string, extra: Record<string, unknown> = {}): Promise<void> {

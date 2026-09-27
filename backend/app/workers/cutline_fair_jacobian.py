@@ -8,6 +8,45 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
+from app.workers.cutline_preview_cancel import check_preview_cancelled
+
+
+def compress_fair_samples(indices, parameters, weights, target):
+    """Đổi cơ sở trực giao của mọi mẫu, không giảm mẫu hay lập JᵀJ.
+
+    PERF (audit 2026-09-27 §CUT.QR): mỗi cubic có bốn Bernstein và hai
+    cột đích x/y. Với A=[WB, WY]=QR, ||WB·P-WY||²=||RB·P-RY||².
+    Giữ cả hai cột đích trong QR để phần sai số hằng cũng còn trong cost,
+    ftol và trust-region. Sáu hàng là hạng đại số, không phải cap chất lượng.
+    QR chỉ làm một lần mỗi vòng đối ứng; LSMR không nhân hàng nghìn hàng
+    phụ thuộc tuyến tính trong mọi bước Newton. Góc/độ cong/verifier giữ nguyên.
+    """
+    check_preview_cancelled()
+    t, u = parameters, 1 - parameters
+    basis = np.column_stack([u**3, 3*u*u*t, 3*u*t*t, t**3]) * weights[:, None]
+    weighted_target = target * weights[:, None]
+    order = np.argsort(indices, kind="stable")
+    boundaries = np.r_[0, np.flatnonzero(np.diff(indices[order])) + 1, len(order)]
+    compact_indices, blocks = [], []
+    for begin, end in zip(boundaries[:-1], boundaries[1:]):
+        check_preview_cancelled()
+        selection = order[begin:end]
+        if not len(selection):
+            continue
+        block = np.column_stack([basis[selection], weighted_target[selection]])
+        if len(block) > block.shape[1]:
+            try:
+                reduced = np.linalg.qr(block, mode="r")
+                if np.isfinite(reduced).all():
+                    block = reduced
+            except np.linalg.LinAlgError:
+                # QR lỗi thì giữ nguyên mọi hàng của bài toán cũ, không bỏ fit.
+                pass
+        compact_indices.extend([int(indices[selection[0]])] * len(block))
+        blocks.append(block)
+    check_preview_cancelled()
+    data = np.vstack(blocks) if blocks else np.empty((0, 6))
+    return np.asarray(compact_indices, dtype=np.intp), data[:, :4], data[:, 4:]
 
 
 def _curvature_gradient(velocity, acceleration):
@@ -52,7 +91,8 @@ def _curvature_value_gradient(curves, values, angle_delta, *, end=False):
     return left, right
 
 
-def build_fair_jacobian(indices, parameters, weights, fair_scale, smooth, free, angle_delta):
+def build_fair_jacobian(indices, parameters, weights, fair_scale, smooth, free, angle_delta,
+                        *, weighted_basis=None):
     """Chuẩn bị cấu trúc cho một vòng đối ứng; mỗi lần gọi nhận values/curves.
 
     ``curves`` phải là kết quả decode của cùng ``values``. Chỉ các biến free
@@ -72,12 +112,18 @@ def build_fair_jacobian(indices, parameters, weights, fair_scale, smooth, free, 
     fair_columns = (neighbours[:, :, None]*5+np.arange(5)).reshape(count, 15)
     rows = np.r_[rows, np.repeat(2*samples+np.arange(count), 15)]
     columns = np.r_[columns, fair_columns.ravel()]
-    t, u = parameters, 1-parameters
-    b0, b1, b2, b3 = u**3, 3*u*u*t, 3*u*t*t, t**3
-    left_anchor = (b0+b1)*weights
-    right_anchor = (b2+b3)*weights
-    left_weight = b1*weights
-    right_weight = -(b2*weights)
+    if weighted_basis is None:
+        t, u = parameters, 1-parameters
+        b0, b1, b2, b3 = u**3, 3*u*u*t, 3*u*t*t, t**3
+        left_anchor = (b0+b1)*weights
+        right_anchor = (b2+b3)*weights
+        left_weight = b1*weights
+        right_weight = -(b2*weights)
+    else:
+        # Cùng đạo hàm control-points, chỉ đổi cơ sở hàng bằng QR bất biến.
+        b0, b1, b2, b3 = weighted_basis.T
+        left_anchor, right_anchor = b0+b1, b2+b3
+        left_weight, right_weight = b1, -b2
 
     # PERF (audit 2026-09-11 §CUTRUNTIME.CSR): cấu trúc thưa và cột free
     # không đổi trong một vòng đối ứng. Dựng ánh xạ COO -> CSR một lần,

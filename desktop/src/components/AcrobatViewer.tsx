@@ -78,6 +78,7 @@ type ViewerFile = File & {
     path?: string;
     isBlank?: boolean;
     __editCommit?: boolean;
+    __pathRebaseOnly?: boolean;
 };
 
 type ViewerPdfObject = {
@@ -1192,8 +1193,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         fitPageSizes,
         pageDisplayMode, setPageDisplayMode: setPageDisplayMode as (m: string) => void,
         activePage, actualWidth100: fitPageSizes[0]?.width || calibratedActualWidth100,
-        navigatePage, toolMode,
-        hasRightPanelTool,
+        navigatePage, toolMode, tabId,
     });
 
     // UIUX: Đảm bảo khi mở bất kỳ công cụ nào ở menu phải, trang view tự động thu lại
@@ -1221,14 +1221,20 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // UIUX (Khắc phục kế thừa zoom lớn từ file cũ): Khi chuyển file mà không có initialViewState riêng,
     // đặt lại chế độ fitMode = 'smart' để tài liệu mới tự căn vừa màn hình, không bị kẹt ở zoom của file trước.
+    // [VDP/EDIT COMMIT FIX]: Nếu file là commit nội dung (__editCommit) như khi bóc trường số/chữ VDP,
+    // TUYỆT ĐỐI KHÔNG reset fitMode -> Giữ nguyên 100% mức zoom và vị trí cuộn mà người dùng đang làm việc.
     const lastFilePathRef = useRef<string | null>(null);
     useEffect(() => {
         const currentPath = file?.path ?? null;
+        if ((file as ViewerFile)?.__editCommit || (file as ViewerFile)?.__pathRebaseOnly) {
+            lastFilePathRef.current = currentPath;
+            return;
+        }
         if (lastFilePathRef.current !== null && lastFilePathRef.current !== currentPath && !initialViewState) {
             setFitMode('smart');
         }
         lastFilePathRef.current = currentPath;
-    }, [file?.path, initialViewState, setFitMode]);
+    }, [file, initialViewState, setFitMode]);
 
     // UIUX (audit 2026-08-25 §NW.4): usePdfLoader reset page/zoom khi đổi file,
     // nên seed cửa sổ con chỉ được áp sau trạng thái `ready` + pageOrder thật.
