@@ -5,6 +5,7 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFString } from 'pdf-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OpenInDesignModal from './OpenInDesignModal';
+import { useAuthStore } from '../../stores/useAuthStore';
 
 const mocks = vi.hoisted(() => ({
     invoke: vi.fn(),
@@ -129,6 +130,7 @@ describe('OpenInDesignModal', () => {
         mocks.openDialog.mockReset();
         localStorage.clear();
         Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+        useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
     });
 
     afterEach(() => {

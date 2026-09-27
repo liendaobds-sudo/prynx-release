@@ -7,6 +7,7 @@ import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspac
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
 import { QuickDeleteModal } from './AcrobatModals';
 import { ViewerContextMenu } from './ViewerContextMenu';
+import { useAuthStore } from '../../stores/useAuthStore';
 
 const makeHotkeyProps = (containerRef: React.RefObject<HTMLDivElement>) => ({
     containerRef,
@@ -53,6 +54,10 @@ const makeHotkeyProps = (containerRef: React.RefObject<HTMLDivElement>) => ({
 const makeWrapper = (store: ReturnType<typeof createWorkspaceStore>) => (
     { children }: PropsWithChildren,
 ) => <WorkspaceContext.Provider value={store}>{children}</WorkspaceContext.Provider>;
+
+beforeEach(() => {
+    useAuthStore.setState({ licensePlan: 'pro', licenseFeatures: null });
+});
 
 afterEach(() => {
     document.body.innerHTML = '';
