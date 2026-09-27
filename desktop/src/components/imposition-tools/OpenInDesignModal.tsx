@@ -10,7 +10,7 @@
 //     Illustrator mở THẲNG, không hiện dialog "PDF Import Options" (chọn trang).
 //   - "Cả khuôn + in": mở thẳng file kết quả trên đĩa (nhiều trang → có thể qua dialog AI).
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { buildSavePlan, sanitizeFilename, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
 import { fetchLocalFileBuffer } from '../../lib/localFileTransport';
@@ -120,6 +120,10 @@ export default function OpenInDesignModal({
     const [scope, setScope] = useState<Scope>('cut_only');
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState('');
+    // UIUX (audit 2026-09-25 §OPENAPP.RACE): lỗi đọc PDF khởi tạo chạy nền có thể
+    // về sau một click của người dùng. Không để kết quả cũ ghi đè thông báo mới
+    // (đặc biệt thông báo khóa tính năng Pro).
+    const statusEpochRef = useRef(0);
     // Danh sách trang khuôn (mỗi tờ 1 mục) — tính từ số trang PDF khi mở.
     const [cutPages, setCutPages] = useState<CutPage[]>([]);
     // Tập tờ khuôn đang chọn (theo pageIndex). Chọn 1 tờ → PDF 1 trang (né dialog AI);
@@ -155,6 +159,7 @@ export default function OpenInDesignModal({
     useEffect(() => {
         if (!open || (!resultBlob && !resultFilePath)) { setCutPages([]); return; }
         let active = true;
+        const statusEpoch = ++statusEpochRef.current;
         (async () => {
             try {
                 const { PDFDocument } = await import('pdf-lib');
@@ -201,7 +206,7 @@ export default function OpenInDesignModal({
                 setAnchor(hit ? hit.pageIndex : null);
             } catch (e) {
                 // Không đọc được PDF kết quả → báo ngay thay vì im lặng mất lưới tờ khuôn.
-                if (active) {
+                if (active && statusEpochRef.current === statusEpoch) {
                     setCutPages([]); setSelected(new Set()); setAnchor(null);
                     setStatus(t('misc.openInDesign:loi_khi_mo', { msg: errorMessage(e) }));
                 }
@@ -338,6 +343,8 @@ export default function OpenInDesignModal({
     };
 
     const doOpen = async (appPath?: string, which?: 'illustrator' | 'corel') => {
+        // Một thao tác mới làm vô hiệu các lỗi khởi tạo PDF còn đang chờ.
+        statusEpochRef.current += 1;
         if (!canUse('prepress.app_bridge', licensePlan, licenseFeatures)) {
             setStatus(t('misc.viewerContextMenu:tinh_nang_pro_notice', 'Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.'));
             return;

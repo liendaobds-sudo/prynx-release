@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from 'vitest';
+import { createWorkspaceStore } from '../stores/useWorkspaceStore';
+import { createImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 
 import {
     createViewerVirtualizationContext,
+    nativeViewerAllowsWorkspaceOverlays,
     matchesPageOverlayTarget,
     renderPageOverlayForFrame,
     selectionAfterViewerScroll,
@@ -14,6 +17,20 @@ import {
 
 
 describe('AcrobatViewer — nhắm lớp phủ theo trang Viewer', () => {
+    it('trạng thái xem thường từ store thật cho phép native, lớp phủ đang bật thì không', () => {
+        const workspace = createWorkspaceStore();
+        const tools = createImposerSettingsStore('native-viewer-policy-regression');
+        const allowed = () => nativeViewerAllowsWorkspaceOverlays(tools.getState().activeDashboardTool, workspace.getState().bleedView);
+        expect(allowed()).toBe(true);
+        workspace.getState().setBleedView({ show: true, mm: 3 });
+        expect(allowed()).toBe(false);
+        workspace.getState().setBleedView({ show: false, mm: 3 });
+        expect(allowed()).toBe(true);
+        tools.getState().setActiveDashboardTool('sticker_imposer');
+        expect(allowed()).toBe(false);
+        tools.getState().setActiveDashboardTool('none');
+        expect(allowed()).toBe(true);
+    });
     it('không phủ cả hai bản nhân đôi có cùng số trang nguồn', () => {
         const common = {
             originalPageNum: 3,

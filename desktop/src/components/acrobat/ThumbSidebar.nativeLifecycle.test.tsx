@@ -98,7 +98,7 @@ describe('Thumbnail native — lifecycle thật qua coordinator', () => {
         vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:thumb-${++blobId}`);
         vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
         probe.invoke.mockImplementation((command: string, args: RenderArgs) => {
-            if (command !== 'render_pdf_page') return Promise.resolve(true);
+            if (command !== 'render_pdf_page' && command !== 'render_ppe_page') return Promise.resolve(true);
             return new Promise<ArrayBuffer>(resolve => pending.push({ args, resolve }));
         });
     });
@@ -208,5 +208,64 @@ describe('Thumbnail native — lifecycle thật qua coordinator', () => {
         probe.visibleIds = ['thumb-copy-b'];
         view.rerender(<ThumbSidebar {...props} />);
         expect([...probe.observed].filter(element => !element.isConnected)).toHaveLength(0);
+    });
+
+    it('khi accurateColorEnabled bật: gọi render_ppe_page với priority 500 và pipeline accurate', async () => {
+        const props = {
+            ...sidebarProps(),
+            pageOrder: [3],
+            pageInstanceIds: ['page-3'],
+            accurateColorEnabled: true,
+            accurateColorProfileId: 'fogra39',
+            accurateColorIntent: 'relative',
+        };
+        const view = render(<ThumbSidebar {...props} />);
+        fireEvent(window, new Event('prynx-main-tile-ready'));
+        await waitFor(() => {
+            const call = probe.invoke.mock.calls.find(([command]) => command === 'render_ppe_page');
+            expect(call).toBeDefined();
+            expect(call![1]).toMatchObject({
+                filePath: 'D:\\test.pdf',
+                page: 3,
+                sessionOwnerId: expect.any(String),
+                requestContext: expect.objectContaining({
+                    priority: 500,
+                    purpose: 'accurate',
+                    pipelineIdentity: 'ppe-fogra39-relative-view-knockout-png-v5-native-worker',
+                }),
+            });
+        });
+        await finishRequests();
+        await waitFor(() => expect(view.container.querySelectorAll('img')).toHaveLength(1));
+    });
+
+    it('khi render_ppe_page lỗi: tự động fallback về render_pdf_page', async () => {
+        probe.invoke.mockImplementation((command: string, args: RenderArgs) => {
+            if (command === 'render_ppe_page') {
+                return Promise.reject(new Error('PPE capability missing'));
+            }
+            if (command === 'render_pdf_page') {
+                return new Promise<ArrayBuffer>(resolve => pending.push({ args, resolve }));
+            }
+            return Promise.resolve(true);
+        });
+        const props = {
+            ...sidebarProps(),
+            pageOrder: [3],
+            pageInstanceIds: ['page-3'],
+            accurateColorEnabled: true,
+        };
+        const view = render(<ThumbSidebar {...props} />);
+        fireEvent(window, new Event('prynx-main-tile-ready'));
+        await waitFor(() => {
+            const call = probe.invoke.mock.calls.find(([command]) => command === 'render_pdf_page');
+            expect(call).toBeDefined();
+            expect(call![1]).toMatchObject({
+                filePath: 'D:\\test.pdf',
+                page: 3,
+            });
+        });
+        await finishRequests();
+        await waitFor(() => expect(view.container.querySelectorAll('img')).toHaveLength(1));
     });
 });

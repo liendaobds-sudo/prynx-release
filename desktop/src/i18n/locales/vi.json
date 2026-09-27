@@ -1103,7 +1103,13 @@
     "xem_truoc_se_in_o": "📋 Xem trước — sẽ in ở {{pos}}",
     "xong": "Xong",
     "dao_cat_reset_moi_phien": "Dao cắt về mặc định mỗi phiên để an toàn — chọn lại nếu cần dao khác",
-    "giai_thich": "Giải thích"
+    "giai_thich": "Giải thích",
+    "cat_het_kho_giay": "Cắt đứt hết khổ giấy (máy bế CNC chia rời cụm)",
+    "cat_het_kho_giay_desc": "Kéo dài đường cắt phân cách ra tận 2 mép đối diện của tờ giấy để dao bế CNC cắt đứt rời các cụm trực tiếp, không cần dùng dao xén.",
+    "dau_be_xong_xen": "Dấu bế xong xén",
+    "dau_be_xong_xen_desc": "Vẽ các vạch dấu xén tại mép giấy và ranh giới phân cách giữa các cụm để canh dao xén chia rời cụm sau khi bế.",
+    "duong_cat_chia_cum": "Đường cắt chia cụm",
+    "xem_mau": "Màu:"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Không tải được danh sách máy bế (${res.status})",
@@ -3261,7 +3267,9 @@
     "copy_sang_file": "Copy sang file…",
     "di_chuyen_sang_file": "Di chuyển sang file…",
     "khong_co_file_khac": "Không có file khác đang mở",
-    "tinh_nang_pro_notice": "Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro."
+    "tinh_nang_pro_notice": "Tính năng Liên kết Illustrator & CorelDRAW dành cho gói PrynX Pro.",
+    "da_dong_bo_trang_sua": "Đã cập nhật trang sửa từ {{app}} vào PrynX!",
+    "da_dong_bo_toan_bo_file": "Đã cập nhật thay đổi từ {{app}}!"
   },
   "misc.viewerHelpers": {
     "dang_tai": "Đang tải...",
@@ -3620,7 +3628,8 @@
     "se_dung_n_trang_bia": "Sẽ dùng {{n}} trang bìa: {{list}}. Trang còn lại là ruột (dùng Mẹc Số).",
     "tao_bia_n_cuon": "Tạo bìa ({{n}} cuốn)",
     "da_huy": "Đã hủy",
-    "khong_chay_duoc_vdp": "Không chạy được VDP"
+    "khong_chay_duoc_vdp": "Không chạy được VDP",
+    "continuous_select_notice": "Chế độ chọn liên tục đã bật: Nhấp vào chữ hoặc số trên bản thiết kế bìa để chọn làm trường VDP, bấm \"Xong\" hoặc phím Esc khi hoàn tất."
   },
   "preprocess.dataMerge": {
     "1_chon_cot": "1. Chọn cột",
@@ -4223,7 +4232,8 @@
     "da_dong_bo_so_luong": "Đã đồng bộ số lượng tất cả các trường thành {{count}} số.",
     "da_cat_ngan_so_luong": "Đã cắt ngắn số lượng tất cả các trường thành {{count}} số.",
     "xac_nhan_chay_lech": "Các trường đang bị lệch số lượng ({{min}} vs {{max}} số). Bạn có chắc chắn muốn xuất PDF không?",
-    "trang_thieu_se_trong": "Các trang thiếu sẽ để trống số."
+    "trang_thieu_se_trong": "Các trang thiếu sẽ để trống số.",
+    "continuous_select_notice": "Chế độ chọn liên tục đã bật: Nhấp vào các con số mẫu trên bản thiết kế để làm Slot số nhảy, bấm \"Xong\" hoặc phím Esc khi hoàn tất."
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Bật cho file scan từ giấy. Tắt nếu file đã sạch (export từ Photoshop/AI).",
@@ -4752,7 +4762,51 @@
     "use_dpi_suggestion": "Dùng gợi ý DPI",
     "confirmed_size": "Kích thước đã xác nhận",
     "unconfirmed_size": "Chưa xác nhận mm; SVG sẽ ở trạng thái cần kiểm tra.",
-    "dpi_suggestion_warning": "DPI nguồn chỉ là gợi ý; hãy đối chiếu kích thước in thực tế."
+    "dpi_suggestion_warning": "DPI nguồn chỉ là gợi ý; hãy đối chiếu kích thước in thực tế.",
+    "ui_bang_mau": "Bảng màu",
+    "ui_bo_chon_mau": "Bộ chọn màu",
+    "ui_bo_chon_mau_nen": "Bộ chọn màu nền",
+    "ui_chuyen_logo_sang_tab_tem_be_e_tao_uong_vien_cat_sticker": "Chuyển logo sang tab Tem bế để tạo đường viền cắt sticker",
+    "ui_danh_sach_logo": "Danh sách logo",
+    "ui_danh_sach_anh_logo": "Danh sách ảnh logo",
+    "ui_hay_tao_preview_vector_truoc_khi_tao_tem_be": "Hãy tạo preview vector trước khi tạo tem bế.",
+    "ui_hay_tao_preview_vector_truoc_khi_ua_sang_binh_ban": "Hãy tạo preview vector trước khi đưa sang Bình bản.",
+    "ui_ho_tro_png_jpeg_webp_toi_a_500mb": "Hỗ trợ PNG, JPEG, WebP (tối đa 500MB)",
+    "ui_khong_the_ket_noi_backend": "Không thể kết nối backend.",
+    "ui_khong_the_phan_tich_anh": "Không thể phân tích ảnh.",
+    "ui_khong_the_xoa_mang_vector_a_chon": "Không thể xóa mảng vector đã chọn.",
+    "ui_khong_at_tieu_chuan_xuat_vector_hay_ieu_chinh_thong_so": "Không đạt tiêu chuẩn xuất vector; hãy điều chỉnh thông số.",
+    "ui_keo_tha_anh_logo_vao_ay_hoac_bam_e_chon": "Kéo thả ảnh logo vào đây hoặc bấm để chọn",
+    "ui_luu_file_svg_that_bai": "Lưu file SVG thất bại.",
+    "ui_nen": "Nền",
+    "ui_preset_in_an_1_cham": "Preset In Ấn (1-Chạm)",
+    "ui_them_logo_khac": "Thêm logo khác",
+    "ui_thong_so_ky_thuat_chi_tiet": "Thông số kỹ thuật chi tiết",
+    "ui_tao_tem_be": "Tạo Tem bế",
+    "ui_tao_preview_that_bai": "Tạo preview thất bại.",
+    "ui_tai_file_svg_vector_ve_may": "Tải file SVG vector về máy",
+    "ui_tu_giac_nan_phoi_canh_phai_loi_4_iem_khong_giao_cat_va_nam_tron_trong_anh": "Tứ giác nắn phối cảnh phải lồi, 4 điểm không giao cắt và nằm trọn trong ảnh.",
+    "ui_xoa": "Xóa",
+    "ui_xoa_logo_nay": "Xóa logo này",
+    "ui_ang_trich_xuat_mau_goi_y": "Đang trích xuất màu gợi ý…",
+    "ui_ang_xuat_svg": "Đang xuất SVG…",
+    "ui_a_huy_luu_file": "Đã hủy lưu file.",
+    "ui_a_huy_tao_preview": "Đã hủy tạo preview.",
+    "ui_a_mo_logo_vector_trong_tab_binh_ban": "Đã mở logo vector trong tab Bình bản.",
+    "ui_a_mo_logo_vector_trong_tab_tem_be": "Đã mở logo vector trong tab Tem bế.",
+    "ui_a_phuc_hoi_mang_vector_vua_xoa": "Đã phục hồi mảng vector vừa xóa.",
+    "ui_a_tao_vector_mot_so_chi_so_can_ban_kiem_tra": "Đã tạo vector; một số chỉ số cần bạn kiểm tra.",
+    "ui_a_xoa_1_mang_rac_khoi_vector_bam_hoan_tac_neu_muon_phuc_hoi": "Đã xóa 1 mảng rác khỏi vector. Bấm Hoàn tác nếu muốn phục hồi.",
+    "ui_a_ap_dung_preset_bieu_tuong_toi_uu_hinh_tron_oval_khoi_hop": "Đã áp dụng Preset Biểu tượng: tối ưu hình tròn/oval/khối hộp.",
+    "ui_a_ap_dung_preset_chu_ky_net_manh_giu_tron_ven_net_ve_manh": "Đã áp dụng Preset Chữ ký & Nét mảnh: giữ trọn vẹn nét vẽ mảnh.",
+    "ui_a_ap_dung_preset_con_dau_scan_loc_nen_giay_trang_giu_muc_dau": "Đã áp dụng Preset Con dấu scan: lọc nền giấy trắng, giữ mực dấu.",
+    "ui_a_ap_dung_preset_logo_chu_bao_ve_dau_tieng_viet_uu_tien_canh_thang": "Đã áp dụng Preset Logo Chữ: bảo vệ dấu tiếng Việt, ưu tiên cạnh thẳng.",
+    "ui_ong_cong_cu": "Đóng công cụ",
+    "ui_ua_logo_vector_nay_sang_tab_binh_ban_e_xep_trang_in": "Đưa logo vector này sang tab Bình bản để xếp trang in",
+    "ui_ua_vao_binh_ban": "Đưa vào Bình bản",
+    "ui_uong_net_toi_uu": "Đường nét & Tối ưu",
+    "ui_a_dung": "đã dựng",
+    "ui_an": "Ẩn"
   },
   "preprocess.preflight": {
     "anh_chua_embed_mat_link": "Ảnh chưa Embed (Mất Link)",
@@ -5518,6 +5572,8 @@
     "cau_hinh_he_do_luong_va_chat_luong_hien": "Cấu hình hệ đo lường và chất lượng hiển thị hình ảnh Preview.",
     "chat_luong_cao_net_cang": "Chất lượng cao (Nét căng)",
     "chat_luong_preview_pdf": "Chất lượng Preview PDF",
+    "gpu_viewer_title": "Trình xem GPU mới (thử nghiệm)",
+    "gpu_viewer_description": "Dùng GPU ngay khi mở trang ở chế độ xem từng trang. Con trỏ chọn chữ, bàn tay kéo trang; các công cụ chưa hỗ trợ tiếp tục dùng trình xem hiện hành.",
     "chon_thu_muc": "Chọn thư mục",
     "chon_thu_muc_luu_mac_dinh": "Chọn thư mục lưu mặc định",
     "chua_thiet_lap_luon_hoi_khi_luu": "Chưa thiết lập (Luôn hỏi khi lưu)",
@@ -5548,7 +5604,25 @@
     "toc_do_nhanh_low_res": "Tốc độ nhanh (Low-res)",
     "vi_du": "Ví dụ:",
     "vi_tri_luu_mac_dinh": "Vị trí lưu mặc định",
-    "xoa_mac_dinh": "Xóa mặc định"
+    "xoa_mac_dinh": "Xóa mặc định",
+    "bam_de_chon_hoac_xoa": "Nhấp để chọn (phím Delete để xóa, Ctrl+Z để hoàn tác)",
+    "danh_dau_highlight": "Đánh dấu văn bản (Highlight)",
+    "gach_chan": "Gạch chân (Underline)",
+    "gach_xoa": "Gạch xoá (Strikethrough)",
+    "ghi_chu_acrobat": "Ghi chú Acrobat",
+    "hien_thanh_cong_cu_boi_den": "Hiện thanh công cụ nổi khi bôi đen chữ (Text Selection Quick Tools)",
+    "hien_thanh_cong_cu_desc": "Hiển thị thanh công cụ nổi (Sao chép, Đánh dấu Highlight, Ghi chú Comment, Gạch chân, Gạch xoá...) khi bôi đen chữ trên trang PDF.",
+    "huy": "Hủy",
+    "luu_ghi_chu": "Lưu",
+    "mo_lien_ket_desc": "Nhận diện email (mailto:) và website trong PDF để click mở ứng dụng gửi thư / trình duyệt như Adobe Acrobat.",
+    "mo_lien_ket_khi_click": "Mở liên kết web & email khi click (Hyperlinks & Mailto)",
+    "nhap_de_xem_ghi_chu": "Nhấp để xem/sửa ghi chú",
+    "nhap_ghi_chu_placeholder": "Nhập ghi chú...",
+    "sao_chep": "Sao chép văn bản (Copy)",
+    "them_ghi_chu": "Thêm ghi chú (Comment)",
+    "tra_loi_placeholder": "Trả lời...",
+    "tuong_tac_van_ban_va_lien_ket": "Tương tác văn bản & Liên kết (Kiểu Acrobat)",
+    "xoa_ghi_chu": "Xóa ghi chú"
   },
   "print": {
     "title": "In tài liệu",
@@ -6367,5 +6441,13 @@
     "tuy_chinh_dpi": "Tùy chỉnh DPI",
     "ap_dung_tuy_chinh": "Tối ưu theo {{dpi}} DPI",
     "tiep_tuc_mo_anh_goc": "Mở ảnh gốc không nén (Nguy cơ đơ máy)"
+  },
+  "common": {
+    "cancel": "Hủy bỏ",
+    "close": "Đóng"
+  },
+  "workspace.vdpRecordNavigator": {
+    "live_data_on": "👁️ Dữ liệu thật: BẬT",
+    "preview_off": "👁️ Xem trước: TẮT"
   }
 }

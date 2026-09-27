@@ -163,6 +163,9 @@ interface AppSettingsState {
   viewerDarkBackground: boolean;
   enableInteractiveLinks: boolean;
   enableTextSelectionToolbar: boolean;
+  nativeGpuViewportEnabled: boolean;
+  nativeGpuMigratedToOff_v1?: boolean;
+  setNativeGpuViewportEnabled: (enabled: boolean) => void;
   setLanguage: (lang: AppLanguage) => void;
   toggleToolVisibility: (toolKey: string) => void;
   toggleFavoriteTool: (toolKey: string) => void;
@@ -284,6 +287,33 @@ export function normalizePersistedRightMenuSettings(
   };
 }
 
+/**
+ * UIUX (audit 2026-09-26): Hướng A — Baseline sản xuất ổn định.
+ * Tắt GPU viewport mặc định cho cài đặt mới và thực hiện di trú một lần
+ * cho các bản cài đặt cũ (từ true sang false) để đảm bảo độ ổn định cao nhất.
+ */
+export function normalizePersistedGpuSettings(
+  persistedState: unknown,
+): { nativeGpuViewportEnabled: boolean; nativeGpuMigratedToOff_v1: boolean } {
+  const persisted = isRecord(persistedState) ? persistedState : {};
+  const alreadyMigrated = persisted.nativeGpuMigratedToOff_v1 === true;
+
+  if (!alreadyMigrated) {
+    // Migration v1: Tự động đưa về false cho toàn bộ người dùng hiện có
+    return {
+      nativeGpuViewportEnabled: false,
+      nativeGpuMigratedToOff_v1: true,
+    };
+  }
+
+  return {
+    nativeGpuViewportEnabled: typeof persisted.nativeGpuViewportEnabled === 'boolean'
+      ? persisted.nativeGpuViewportEnabled
+      : false,
+    nativeGpuMigratedToOff_v1: true,
+  };
+}
+
 export const useAppSettingsStore = create<AppSettingsState>()(
   persist(
     (set, get) => ({
@@ -323,6 +353,10 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       enableTextSelectionToolbar: true,
       setEnableInteractiveLinks: (enabled) => set({ enableInteractiveLinks: enabled }),
       setEnableTextSelectionToolbar: (enabled) => set({ enableTextSelectionToolbar: enabled }),
+      // UIUX (audit 2026-09-26): Hướng A làm mặc định sản xuất ổn định (tắt GPU viewport).
+      nativeGpuViewportEnabled: false,
+      nativeGpuMigratedToOff_v1: true,
+      setNativeGpuViewportEnabled: (enabled) => set({ nativeGpuViewportEnabled: enabled }),
       toolMenuWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       toolConfigWidth: TOOL_MENU_FULL_DEFAULT_WIDTH,
       homeToolMenuWidth: 320,
@@ -408,6 +442,8 @@ export const useAppSettingsStore = create<AppSettingsState>()(
           ...currentState,
           ...persisted,
           ...normalizePersistedRightMenuSettings(persistedState, currentState),
+          // UIUX (audit 2026-09-26): Tắt GPU mặc định và tự động migrate bản cũ về false.
+          ...normalizePersistedGpuSettings(persistedState),
         };
       },
       // Storage Tauri là ASYNC → ngôn ngữ đã lưu chỉ có sau khi rehydrate xong.

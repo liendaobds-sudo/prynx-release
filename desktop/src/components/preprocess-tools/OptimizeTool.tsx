@@ -81,9 +81,23 @@ export default function OptimizeTool({ tabId, pdfFile, onFileFixed }: Props) {
         }
 
         try {
-            const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
+            const sourceFile = (await getWorkingFile()) || pdfFile;
+            const nativePath = typeof (sourceFile as File & { path?: unknown }).path === 'string'
+                ? (sourceFile as File & { path: string }).path
+                : '';
+            const useNativeResultPath = typeof window !== 'undefined'
+                && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+                && Boolean(nativePath);
             const formData = new FormData();
-            formData.append('file', realFile, pdfFile.name);
+            if (useNativeResultPath) {
+                // PERF (audit 2026-09-25 §PDF.OPT.PATH): nén PDF lớn ngay trên
+                // sidecar cùng máy, tránh nhân đôi 1–2 GB trong WebView.
+                formData.append('file_path', nativePath);
+                formData.append('return_path', 'true');
+            } else {
+                const realFile = await prepareFileForUpload(sourceFile);
+                formData.append('file', realFile, sourceFile.name);
+            }
             formData.append('preset', preset);
             formData.append('image_dpi', String(imageDpi));
             formData.append('strip_metadata', stripMetadata ? 'true' : 'false');
@@ -101,7 +115,38 @@ export default function OptimizeTool({ tabId, pdfFile, onFileFixed }: Props) {
                 throw new Error(errData?.detail || t('preprocess.optimize:loi_server', { status: response.status }));
             }
 
-            const blob = await response.blob();
+            let blob: Blob;
+            let resultPath: string | undefined;
+            let payloadStats: { original_size?: number; size?: number; ratio?: number } | null = null;
+            const responseType = (response.headers.get('content-type') || '').toLowerCase();
+            if (useNativeResultPath && responseType.includes('application/json')) {
+                const payload = await response.json() as {
+                    path?: unknown;
+                    original_size?: unknown;
+                    size?: unknown;
+                    ratio?: unknown;
+                };
+                if (typeof payload.path !== 'string' || !payload.path.trim()) {
+                    throw new Error('Backend Tối ưu không trả về đường dẫn file kết quả hợp lệ.');
+                }
+                resultPath = payload.path;
+                payloadStats = {
+                    original_size: Number(payload.original_size),
+                    size: Number(payload.size),
+                    ratio: Number(payload.ratio),
+                };
+                blob = new Blob([], { type: 'application/pdf' });
+                Object.defineProperty(blob, 'path', {
+                    value: resultPath,
+                    configurable: true,
+                });
+                Object.defineProperty(blob, 'nativeSize', {
+                    value: payloadStats.size,
+                    configurable: true,
+                });
+            } else {
+                blob = await response.blob();
+            }
 
             const headerOriginalSize = parseInt(response.headers.get('X-Original-Size') || '0');
             const headerOutputSize = parseInt(
@@ -111,20 +156,26 @@ export default function OptimizeTool({ tabId, pdfFile, onFileFixed }: Props) {
             );
             const originalSize = headerOriginalSize > 0
                 ? headerOriginalSize
-                : (pdfFile.size > 0 ? pdfFile.size : blob.size);
-            const outputSize = headerOutputSize > 0 ? headerOutputSize : blob.size;
+                : (payloadStats?.original_size && payloadStats.original_size > 0
+                    ? payloadStats.original_size
+                    : (sourceFile.size > 0 ? sourceFile.size : blob.size));
+            const outputSize = headerOutputSize > 0
+                ? headerOutputSize
+                : (payloadStats?.size && payloadStats.size > 0 ? payloadStats.size : blob.size);
 
             const headerRatio = parseFloat(response.headers.get('X-Compression-Ratio') || '0');
             const ratio = headerRatio !== 0
                 ? headerRatio
-                : (originalSize > 0 ? Math.round((1 - outputSize / originalSize) * 1000) / 10 : 0);
+                : (payloadStats?.ratio !== undefined && Number.isFinite(payloadStats.ratio)
+                    ? payloadStats.ratio
+                    : (originalSize > 0 ? Math.round((1 - outputSize / originalSize) * 1000) / 10 : 0));
 
             setResult({ originalSize, outputSize, ratio });
             setProgress('');
 
             if (onFileFixed) {
                 const newName = `optimized_${pdfFile.name}`;
-                await onFileFixed(blob, newName, undefined, recipeTicket);
+                await onFileFixed(blob, newName, resultPath, recipeTicket);
             } else {
                 recipeRecorder.discardPending(recipeTicket);
             }

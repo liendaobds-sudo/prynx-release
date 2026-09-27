@@ -35,6 +35,9 @@ lopdf = { version = "0.44", default-features = false }
 # PERF/COLOR (audit 2026-08-09 §L3A): worker Viewer gọi thẳng PPE Rust;
 # không vòng HTTP/Python và không thêm renderer bên ngoài.
 print_engine = { path = "../../print_engine" }
+viewer_gpu = { path = "../../viewer_gpu" }
+wgpu = "24"
+raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif"] }
 urlencoding = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -65,10 +68,13 @@ webview2-com = "=0.38.2"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Printing",
     "Win32_Storage_Xps",
     "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
+    "Win32_System_ProcessStatus",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
     # [PROC-LIFECYCLE FIX 2026-08-28 §UP.7] Job Object cho sidecar + worker
@@ -82,6 +88,7 @@ windows = { version = "0.61", features = [
     "Win32_Security_Cryptography",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -94,4 +101,8 @@ opt-level = 3
 # PERF (audit 2026-09-25 §R25.02): PPE chạy kernel raster trong worker Viewer;
 # tối ưu lõi như PDFium/image, giữ shell dev và không bật LTO cho vòng sửa-thử.
 [profile.dev.package.print_engine]
+opt-level = 3
+
+# PERF (audit 2026-09-25 R25.GPU.33): kernel clip/mask trong run_dev.
+[profile.dev.package.viewer_gpu]
 opt-level = 3

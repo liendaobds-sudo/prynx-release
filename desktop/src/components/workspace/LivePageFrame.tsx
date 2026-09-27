@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import {pinNativeFallbackRaster,shouldProduceNativeFallback,type FrozenFallbackRaster} from './nativeFallbackPolicy';
 import { Page } from 'react-pdf';
 import { localFileUrl, resolveFontUrl } from '../../lib/localFileTransport';
 import { authenticatedFetch, getApiUrl, getSystemFonts, pickVdpTextField, pickVdpObjectField, detectVdpObjectType } from '../../lib/api';
@@ -15,6 +16,8 @@ import { normalizePageHoverPosition } from '../../lib/outputPreviewSampling';
 import {
     cacheTileUrl,
     getCachedTileSource,
+    tileHasMatchingProof,
+    type TilePixelProof,
     getCachedTileUrl,
     hasCachedTileUrl,
     type TileUrlSource,
@@ -128,6 +131,7 @@ import {
     shouldEnableViewerAccurateLayer,
     shouldEnableViewerViewportAccurateTile,
     viewerPanGridRenderPolicy,
+    viewerPanGridTargetRasterPending,
     shouldPresentViewerPanGrid,
     shouldUseViewerDisplayLayer,
     shouldUseViewerAccurateSimulation,
@@ -260,6 +264,7 @@ interface TileRequestOptions {
 }
 
 interface LiveTileProps {
+    requiredProof?: Pick<TilePixelProof, 'documentToken' | 'page' | 'profileId' | 'intent' | 'proofIdentity'>;
     fileKey: string;
     pageNum: number;
     pageInstanceId?: string;
@@ -296,6 +301,7 @@ interface LiveTileProps {
 }
 
 interface TileLayerProps {
+    requiredProof?: Pick<TilePixelProof, 'documentToken' | 'page' | 'profileId' | 'intent' | 'proofIdentity'>;
     fileKey: string;
     displayFileKey: string;
     pageNum: number;
@@ -364,7 +370,7 @@ export function shouldSettleAccurateTarget(input: {
         && input.loadedParams !== input.currentParams;
 }
 // Export ở mức component để regression test không cho hiện PDFium trong cold-open PPE.
-export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileFailed, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 0, seamlessGridPresentation = false, initialSource, preserveUnderlay = false }: LiveTileProps) => {
+export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible, onRenderReady, onTileReady, onTileFailed, onTileUnmount, renderOwnerId, renderPriority = 100, renderEnabled = true, showLoadStatus = false, loadLabels, progressiveAccurate = false, accurateOnly = false, cancelAccurateGroup, presentationFadeMs = 0, seamlessGridPresentation = false, initialSource, preserveUnderlay = false, requiredProof }: LiveTileProps) => {
     const viewerDarkBackground = useAppSettingsStore(s => s.viewerDarkBackground);
     const tileRef = useRef<LoadableTileElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
@@ -736,14 +742,15 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     // On mount: immediately restore cached image (no white flash!)
     useEffect(() => {
         const initial = initialCacheParamsRef.current;
-        const cachedSource = getCachedTileSource(initial.currentParams);
+        const candidate = getCachedTileSource(initial.currentParams);
+        const cachedSource = candidate && (!requiredProof || initial.requestedColorRank < 2 || tileHasMatchingProof(candidate,requiredProof)) ? candidate : undefined;
         if (cachedSource?.bitmap && canvasRef.current) {
             loadedParamsRef.current = initial.currentParams;
             cachedRenderReadyParamsRef.current = initial.currentParams;
             renderBitmapToCanvas(cachedSource, initial.zoom, initial.currentParams);
             return;
         }
-        const cachedUrl = cachedSource?.url ?? getCachedTileUrl(initial.currentParams);
+        const cachedUrl = cachedSource?.url ?? (!requiredProof || initial.requestedColorRank < 2 ? getCachedTileUrl(initial.currentParams) : undefined);
         if (cachedUrl && imgRef.current) {
             loadedParamsRef.current = initial.currentParams;
             cachedRenderReadyParamsRef.current = initial.currentParams;
@@ -759,11 +766,11 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             // Trang chính đã hiển thị (từ cache) → mở cổng cho thumbnail tải.
             window.dispatchEvent(new CustomEvent('prynx-main-tile-ready'));
         }
-    }, [renderBitmapToCanvas]); // Only on mount
+    }, [renderBitmapToCanvas, requiredProof]);
 
     useEffect(() => {
         const source = initialSource as (ViewerFirstFrame & TileUrlSource) | undefined;
-        if (!source || hasLoadedOnce.current) return;
+        if (!source || hasLoadedOnce.current || (requiredProof && !tileHasMatchingProof(source,requiredProof))) return;
         // PERF (audit 2026-08-14 §VIEW.FIRST.1): bitmap này đã render + decode trước
         // khi Workspace mount. Nhận thẳng làm target hiện tại, không phát lại PPE.
         loadedParamsRef.current = currentParams;
@@ -797,7 +804,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             cached: keptInCache,
             surface_mode: source.bitmap ? 'canvas-bitmap' : 'img',
         });
-    }, [currentParams, fileKey, initialSource, renderBitmapToCanvas, requestedColorRank, surfaceParams, traceTileEvent, zoom]);
+    }, [currentParams, fileKey, initialSource, renderBitmapToCanvas, requestedColorRank, surfaceParams, traceTileEvent, zoom, requiredProof]);
     
     useEffect(() => {
         const el = tileRef.current;
@@ -876,7 +883,8 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
         }
         
         // Check cache before scheduling network load
-        const cachedSource = getCachedTileSource(currentParams);
+        const candidate = getCachedTileSource(currentParams);
+        const cachedSource = candidate && (!requiredProof || requestedColorRank < 2 || tileHasMatchingProof(candidate,requiredProof)) ? candidate : undefined;
         if (cachedSource?.bitmap && canvasRef.current) {
             adoptedInitialFrameRef.current = false;
             loadedParamsRef.current = currentParams;
@@ -885,7 +893,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             traceTileEvent('tile-cache-hit', { zoom, requested_color_rank: requestedColorRank, surface_mode: 'canvas-bitmap' });
             return;
         }
-        const cachedUrl = cachedSource?.url ?? getCachedTileUrl(currentParams);
+        const cachedUrl = cachedSource?.url ?? (!requiredProof || requestedColorRank < 2 ? getCachedTileUrl(currentParams) : undefined);
         if (cachedUrl && imgRef.current) {
             adoptedInitialFrameRef.current = false;
             loadedParamsRef.current = currentParams;
@@ -1016,6 +1024,12 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
                 tileRequest
                     .then((source: TileUrlSource) => {
                         const { url } = source;
+                        // COLOR (audit 2026-09-27 §V27.04): kiểm trước decode/cache/swap,
+                        // giữ frame proof cũ khi producer trả sai engine hoặc revision.
+                        if (requiredProof && colorStage === 'accurate' && !tileHasMatchingProof(source,requiredProof)) {
+                            if (!hasCachedTileUrl(url)) { source.bitmap?.close(); if (url.startsWith('blob:')) URL.revokeObjectURL(url); }
+                            throw new Error('Ảnh trả về không khớp nguồn hoặc hợp đồng màu PPE.');
+                        }
                         traceTileEvent('tile-url-resolved', {
                             ...nativeRenderCoordinator.sourceTraceIdentity(source),
                             source_id: viewerTraceHash(source.url),
@@ -1635,7 +1649,7 @@ type BufferedViewportPanGridPlan = {
     outer: BufferedViewportTileSpec[];
 };
 
-export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false }: TileLayerProps) => {
+export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageInstanceId, zoom, dpr, accurateDpiAnchor = 96, rotation, displayWidth, displayHeight, containerRef, getTileUrl, onVisible, onRenderReady, onAccurateCommitted, renderOwnerId, accurateColor = false, accurateCommitted = false, waitForAccurateBase = false, keepDisplayUntilAccurate = false, renderEnabled = true, cancelAccurateGroup, initialPpeFrame, stableUnderlayReady = false, requiredProof }: TileLayerProps) => {
     const traceLayerIdRef = useRef(
         viewerTraceHash(`layer:${pageInstanceId || 'page'}:${pageNum}`),
     );
@@ -1954,8 +1968,14 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
         accurateCommitted,
         Boolean(tileBuffer.visible),
         panGridPhaseReady,
-        zoomSettling || !panGridPlanIsCurrent || !currentViewportReady || Boolean(tileBuffer.queued)
-            || Boolean(tileBuffer.target && tileBuffer.target.key !== tileBuffer.visible?.key),
+        viewerPanGridTargetRasterPending(
+            zoomSettling,
+            panGridPlanIsCurrent,
+            currentViewportReady,
+            tileBuffer.queued?.bufferGroup,
+            tileBuffer.target?.bufferGroup,
+            bufferGroup,
+        ),
     );
     const activePanGridTiles = renderEnabled && panGridPlan && panGridPolicy.near
         ? [
@@ -2085,6 +2105,7 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                     <div key={`vp_${tileSpec.key}`} style={{ opacity: presentedKeys.has(tileSpec.key) ? 1 : 0 }}>
                         {useDisplayLayer && (
                             <LiveTile
+                                requiredProof={requiredProof}
                                 key="display"
                                 fileKey={displayFileKey || fileKey}
                                 pageNum={pageNum}
@@ -2114,6 +2135,7 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                         )}
                         {accurateColor && (
                             <LiveTile
+                                requiredProof={requiredProof}
                                 key="accurate"
                                 fileKey={fileKey}
                                 pageNum={pageNum}
@@ -2173,6 +2195,7 @@ export const TileLayer = React.memo(({ fileKey, displayFileKey, pageNum, pageIns
                 const phase = index < (panGridPlan?.near.length ?? 0) ? 'near' : 'outer';
                 return (
                     <LiveTile
+                        requiredProof={requiredProof}
                         key={`vp_pan_grid_${tileSpec.key}`}
                         fileKey={fileKey}
                         pageNum={pageNum}
@@ -3132,8 +3155,14 @@ function resolveFieldLiveText(
     return defaultTemplate;
 }
 
+// PERF (audit 2026-09-27 §V27.01): khóa hợp đồng nguồn ở biên caller, kể cả
+// khi các props công cụ cũ bên trong chưa được tách hết khỏi kiểu legacy.
+export interface LivePageFrameSourceProps {
+    nativeFilePath: string | null | undefined;
+    [key: string]: unknown;
+}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const LivePageFrame = (props: any) => {
+export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode = (props: any) => {
   const { t } = useTranslation();
     const tileLoadLabels = useMemo<TileLoadLabels>(() => ({
         loading: t('misc.livePageFrame:dang_dung_hinh', 'Đang dựng hình…'),
@@ -3149,6 +3178,11 @@ export const LivePageFrame = (props: any) => {
         setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage,
         isImageFile: isImage, nativeFilePath, previewRevision,
         editSession, totalPages, tabId, isViewerActive, renderOwnerId, renderDocumentToken, prefetchPage,
+        renderEnabled: liveRenderEnabled = true,
+        // Native GPU chưa present scene hiện tại: chỉ giữ một preview PDFium
+        // nền nhẹ trong lúc handoff, không dựng PPE accurate song song.
+        nativeViewportPending: nativeGpuPending = false,
+        nativeViewportPresented: nativeGpuPresented = false,
         accurateColorPage: detectorRequiresAccurate,
         accurateColorProfileId,
         accurateColorIntent,
@@ -3160,6 +3194,7 @@ export const LivePageFrame = (props: any) => {
     const [accurateCommittedKey, setAccurateCommittedKey] = useState<string | null>(null);
     const [accurateBaseReadyKey, setAccurateBaseReadyKey] = useState<string | null>(null);
     const [hasRenderedBaseState, setHasRenderedBaseState] = useState(false);
+    const nativeFallbackRaster = useRef<FrozenFallbackRaster | null>(null);
     const traceFrameIdRef = useRef(
         viewerTraceHash(`${tabId || 'tab'}:${pageInstanceId || 'page'}:${originalPageNum}`),
     );
@@ -3236,7 +3271,7 @@ export const LivePageFrame = (props: any) => {
         setBaseDisplayReadyKey(null);
         setAccurateBaseReadyKey(null);
         setAccurateCommittedKey(null);
-    }, [pdfUrl, previewRevision, originalPageNum]);
+    }, [pdfUrl, previewRevision, originalPageNum, renderDocumentToken, accurateColorProfileId, accurateColorIntent, accurateColorProofIdentity]);
     const effectiveFid = selectionFileId || nativeFilePath || (typeof pdfUrl === 'string' && pdfUrl.startsWith('file://') ? decodeURIComponent(pdfUrl.replace('file:///', '').replace('file://', '')) : '') || '';
     const accurateColorPage = shouldUseViewerAccurateSimulation(
         detectorRequiresAccurate === true,
@@ -3258,6 +3293,11 @@ export const LivePageFrame = (props: any) => {
         accurateColorProofIdentity,
     );
     const accuratePageCommitKey = `${accurateFileKey}:${originalPageNum}`;
+    const requiredProof = useMemo(() => ({ documentToken: renderDocumentToken || 'memory', page: originalPageNum,
+        profileId: (accurateColorProfileId || 'fogra39').trim().toLowerCase(),
+        intent: (accurateColorIntent || 'relative').trim().toLowerCase(),
+        proofIdentity: accurateColorProofIdentity || 'show:all|paper:0|black:0|background:profile',
+    }), [renderDocumentToken, originalPageNum, accurateColorProfileId, accurateColorIntent, accurateColorProofIdentity]);
     const accurateCommitted = accurateCommittedKey === accuratePageCommitKey;
     // UIUX (audit 2026-09-24 §R24.07): chỉ giữ display khi trang thông thường vừa bật
     // Output Preview. Trang đã chọn PPE không chèn PDFium lên khung PPE mồi trong
@@ -3296,6 +3336,10 @@ export const LivePageFrame = (props: any) => {
 
     const previewFramePage = typeof viewerPageNum === 'number' ? viewerPageNum : originalPageNum;
     const viewerIsActive = isViewerActive !== false;
+    // PERF (audit 2026-09-27 §V27.02/C2): giữ surface/bitmap đã có để phục hồi,
+    // chỉ ngừng sinh request mới khi native có proof của scene hiện hành.
+    const producerEnabled = shouldProduceNativeFallback(liveRenderEnabled,nativeGpuPresented,
+        hasRenderedBaseState || Boolean(effectivePpeFrame));
     const effectiveRenderOwnerId = renderOwnerId || `${tabId || 'viewer'}:${pdfUrl || nativeFilePath || 'memory'}`;
     const pageRenderPriority = viewerPageRenderPriority(
         viewerIsActive,
@@ -4174,14 +4218,14 @@ export const LivePageFrame = (props: any) => {
         const elapsedSinceLastDispatch = now - lastDispatchedZoomTimeRef.current;
         const targetZoom = computeRenderZoom(zoom);
 
-        // Leading-edge: nếu đã qua hơn 16ms từ lần gửi trước (chu kỳ 60 FPS), cập nhật ngay lập tức!
-        if (elapsedSinceLastDispatch >= 16) {
+        // Leading-edge: nếu đã qua hơn 48ms từ lần gửi trước, cập nhật ngay lập tức!
+        if (elapsedSinceLastDispatch >= 48) {
             lastDispatchedZoomTimeRef.current = now;
             setRenderZoom(targetZoom);
         } else {
-            // Nếu chưa đủ 16ms, đặt lịch cập nhật sau khoảng thời gian còn lại (tối đa 16ms)
+            // Nếu chưa đủ 48ms, đặt lịch cập nhật sau khoảng thời gian còn lại (tối đa 48ms)
             if (trailingZoomTimerRef.current) clearTimeout(trailingZoomTimerRef.current);
-            const remaining = Math.max(8, 16 - elapsedSinceLastDispatch);
+            const remaining = Math.max(16, 48 - elapsedSinceLastDispatch);
             trailingZoomTimerRef.current = setTimeout(() => {
                 lastDispatchedZoomTimeRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
                 setRenderZoom(computeRenderZoom(zoom));
@@ -4842,7 +4886,8 @@ export const LivePageFrame = (props: any) => {
             zoom * dpr,
         );
         const accurateBaseWithinSurfaceBudget = selectedAccurateBaseZoom !== null;
-        const accurateBaseZoom = selectedAccurateBaseZoom ?? roleAccurateBaseZoom;
+        const accurateBaseZoom = nativeGpuPresented && nativeFallbackRaster.current?.identity === accurateFileKey
+            ? nativeFallbackRaster.current.zoom : selectedAccurateBaseZoom ?? roleAccurateBaseZoom;
         const renderAccurateUnderlay = shouldRenderViewerAccurateUnderlay(
             shouldRenderBasePage,
             accurateColorPage,
@@ -4887,6 +4932,17 @@ export const LivePageFrame = (props: any) => {
             accurateCommitted,
             accurateBaseReady,
         );
+        // Đồng nhất số liệu audit với nhánh render thật bên dưới. Trong lúc
+        // HWND PPE đang chờ first-present:
+        // - Trang accurate: giữ đúng 1 surface PPE accurate base làm underlay chuẩn màu Fogra39.
+        // - Trang thông thường: PDFium display là lớp giữ chỗ nhẹ.
+        const allowAccurateBaseForGpu = !nativeGpuPending || accurateColorPage;
+        const diagnosticRenderAccurateUnderlay = allowAccurateBaseForGpu && renderAccurateUnderlay;
+        const diagnosticRenderAccurateBaseTile = allowAccurateBaseForGpu && renderAccurateBaseTile;
+        const diagnosticKeepAccurateBaseMounted = allowAccurateBaseForGpu && keepAccurateBaseMounted;
+        const diagnosticRequestAccurateBase = allowAccurateBaseForGpu && requestAccurateBase;
+        const diagnosticUseDisplayBase = (nativeGpuPending && !accurateColorPage) || useDisplayBase;
+        const diagnosticMountViewportLayer = !nativeGpuPending && mountViewportLayer;
         const policySignature = [
             traceFrameIdRef.current,
             originalPageNum,
@@ -4899,10 +4955,13 @@ export const LivePageFrame = (props: any) => {
             directFullPageSurface,
             fullPageWithinSurfaceBudget,
             accurateBaseWithinSurfaceBudget,
-            renderAccurateUnderlay,
+            diagnosticRenderAccurateUnderlay,
+            nativeGpuPending,
+            nativeGpuPresented,
+            producerEnabled,
             needsTiling,
             renderBaseTile,
-            renderAccurateBaseTile,
+            diagnosticRenderAccurateBaseTile,
             bgZoom,
             accurateBaseZoom,
         ].join('|');
@@ -4917,6 +4976,8 @@ export const LivePageFrame = (props: any) => {
             accurate_color: accurateColorPage,
             image: Boolean(isImage),
             render_enabled: Boolean(getTileUrl),
+            producer_enabled: producerEnabled,
+            fallback_proof_ready: hasRenderedBaseState || Boolean(effectivePpeFrame),
             zoom,
             render_zoom: renderZoom,
             target_render_zoom: fullPageTargetRenderZoom,
@@ -4936,12 +4997,14 @@ export const LivePageFrame = (props: any) => {
             force_viewport: forceViewport,
             needs_tiling: needsTiling,
             render_base_tile: renderBaseTile,
-            render_accurate_base: renderAccurateBaseTile,
-            render_accurate_underlay: renderAccurateUnderlay,
-            use_display_base: useDisplayBase,
-            keep_accurate_base_mounted: keepAccurateBaseMounted,
-            request_accurate_base: requestAccurateBase,
-            mount_viewport_layer: mountViewportLayer,
+            render_accurate_base: diagnosticRenderAccurateBaseTile,
+            render_accurate_underlay: diagnosticRenderAccurateUnderlay,
+            native_gpu_pending: nativeGpuPending,
+            native_gpu_presented: nativeGpuPresented,
+            use_display_base: diagnosticUseDisplayBase,
+            keep_accurate_base_mounted: diagnosticKeepAccurateBaseMounted,
+            request_accurate_base: diagnosticRequestAccurateBase,
+            mount_viewport_layer: diagnosticMountViewportLayer,
             background_zoom: bgZoom,
             accurate_base_zoom: accurateBaseZoom,
             display_base_ready: baseDisplayReadyKey === `${viewerTraceHash(`${pdfUrl || nativeFilePath || 'memory'}:${originalPageNum}`)}:${originalPageNum}:${bgZoom}`,
@@ -4950,6 +5013,9 @@ export const LivePageFrame = (props: any) => {
         });
     }, [
         accurateBaseReadyKey,
+        nativeGpuPresented,
+        producerEnabled,
+        hasRenderedBaseState,
         accurateColorPage,
         accurateCommittedKey,
         accurateDpiAnchor,
@@ -4964,6 +5030,7 @@ export const LivePageFrame = (props: any) => {
         isImage,
         isViewerActive,
         keepDisplayUntilAccurate,
+        nativeGpuPending,
         nativeFilePath,
         outerHeight,
         outerWidth,
@@ -6470,9 +6537,12 @@ export const LivePageFrame = (props: any) => {
                     outerHeight,
                     zoom * dpr,
                 );
-                const accurateBaseWithinSurfaceBudget = selectedAccurateBaseZoom !== null;
-                const accurateBaseZoom = selectedAccurateBaseZoom ?? roleAccurateBaseZoom;
-                const renderAccurateUnderlay = shouldRenderViewerAccurateUnderlay(
+                const canPinFallback = selectedAccurateBaseZoom !== null || nativeFallbackRaster.current?.identity === accurateFileKey;
+                nativeFallbackRaster.current = pinNativeFallbackRaster(nativeFallbackRaster.current,accurateFileKey,nativeGpuPresented && canPinFallback,selectedAccurateBaseZoom ?? roleAccurateBaseZoom);
+                const accurateBaseWithinSurfaceBudget = selectedAccurateBaseZoom !== null || nativeFallbackRaster.current !== null;
+                const accurateBaseZoom = nativeFallbackRaster.current?.zoom ?? selectedAccurateBaseZoom ?? roleAccurateBaseZoom;
+                const allowAccurateBaseForGpu = !nativeGpuPending || accurateColorPage;
+                const renderAccurateUnderlay = allowAccurateBaseForGpu && shouldRenderViewerAccurateUnderlay(
                     shouldRenderBasePage,
                     accurateColorPage,
                     needsTiling,
@@ -6481,13 +6551,13 @@ export const LivePageFrame = (props: any) => {
                     Boolean(effectivePpeFrame),
                     isActiveFrame,
                 );
-                const renderAccurateBaseTile = shouldRenderViewerAccurateBaseTile(
+                const renderAccurateBaseTile = allowAccurateBaseForGpu && (shouldRenderViewerAccurateBaseTile(
                     shouldRenderBasePage,
                     accurateColorPage,
                     needsTiling,
                     accurateBaseWithinSurfaceBudget,
                     accurateLayoutSettled,
-                ) || renderAccurateUnderlay;
+                ) || renderAccurateUnderlay);
                 const displayBaseReadyKey = `${displayFileKey}:${originalPageNum}:${bgZoom}`;
                 const displayBaseReady = baseDisplayReadyKey === displayBaseReadyKey;
                 // UIUX (audit 2026-09-23 §ZOOM.FLASH.1): readiness thuộc surface
@@ -6500,7 +6570,7 @@ export const LivePageFrame = (props: any) => {
                 );
                 const accurateBaseIdentity = `${accuratePageCommitKey}:${accurateBaseZoom}`;
                 const accurateBaseReady = accurateBaseReadyKey === accurateBaseIdentity;
-                const keepAccurateBaseMounted = shouldKeepViewerAccurateBaseMounted(
+                const keepAccurateBaseMounted = allowAccurateBaseForGpu && shouldKeepViewerAccurateBaseMounted(
                     accurateColorPage,
                     renderAccurateBaseTile,
                     accurateCommitted,
@@ -6511,13 +6581,16 @@ export const LivePageFrame = (props: any) => {
                     keepAccurateBaseMounted,
                     Boolean(effectivePpeFrame && !accurateCommitted),
                 );
-                const requestAccurateBase = shouldRequestViewerAccurateBase(
+                const requestAccurateBase = allowAccurateBaseForGpu && shouldRequestViewerAccurateBase(
                     renderAccurateBaseTile,
                     accurateCommitted,
                     accurateBaseReady,
                     accurateBaseWithinSurfaceBudget,
                 );
-                const useDisplayBase = shouldUseViewerDisplayLayer(
+                // Trong handoff native:
+                // - Trang màu rủi ro/accurate: fallback BẮT BUỘC là PPE accurate base để không sai màu Fogra39.
+                // - Trang thông thường (sRGB): PDFium là preview giữ chỗ nhẹ trong lúc chờ GPU.
+                const useDisplayBase = (nativeGpuPending && !accurateColorPage) || shouldUseViewerDisplayLayer(
                     accurateColorPage,
                     accurateCommitted,
                     keepDisplayUntilAccurate,
@@ -6560,6 +6633,7 @@ export const LivePageFrame = (props: any) => {
                                 alt=""
                                 aria-hidden="true"
                                 data-prynx-initial-ppe-frame="true"
+                                onLoad={isActiveFrame && viewerIsActive ? onFirstPageRenderReady : undefined}
                                 className="absolute inset-0 z-[9] h-full w-full select-none"
                                 draggable={false}
                                 style={{
@@ -6596,7 +6670,7 @@ export const LivePageFrame = (props: any) => {
                                     onTileUnmount={() => setBaseDisplayReadyKey(null)}
                                     renderOwnerId={effectiveRenderOwnerId}
                                     renderPriority={pageRenderPriority}
-                                    renderEnabled={renderBaseTile}
+                                    renderEnabled={producerEnabled && renderBaseTile}
                                     showLoadStatus={isActiveFrame && renderBaseTile}
                                     loadLabels={tileLoadLabels}
                                 />
@@ -6608,6 +6682,7 @@ export const LivePageFrame = (props: any) => {
                                     // UIUX (feedback 2026-08-14 §VIEW.SWAP): giữ một surface PPE
                                     // toàn trang làm underlay; viewport tile vẫn dựng đúng mật độ đích.
                                     fileKey={accurateFileKey}
+                                    requiredProof={requiredProof}
                                     key="full-accurate"
                                     pageNum={originalPageNum}
                                     pageInstanceId={`${pageInstanceId || `page-${originalPageNum}`}:accurate-base`}
@@ -6640,7 +6715,7 @@ export const LivePageFrame = (props: any) => {
                                     presentationFadeMs={0}
                                     renderOwnerId={baseRenderOwnerId}
                                     renderPriority={pageRenderPriority}
-                                    renderEnabled={shouldEnableViewerAccurateLayer(
+                                    renderEnabled={producerEnabled && shouldEnableViewerAccurateLayer(
                                         requestAccurateBase,
                                         displayBaseReady,
                                         accurateCommitted,
@@ -6657,7 +6732,7 @@ export const LivePageFrame = (props: any) => {
                                 />
                             </div>
                         )}
-                        {shouldMountViewerViewportLayer(
+                        {!nativeGpuPending && shouldMountViewerViewportLayer(
                             needsTiling,
                             accurateColorPage,
                             isActiveFrame,
@@ -6666,6 +6741,7 @@ export const LivePageFrame = (props: any) => {
                         ) && (
                             <div className="absolute inset-0 z-[12]">
                                 <TileLayer
+                                    requiredProof={accurateColorPage ? requiredProof : undefined}
                                     fileKey={accurateColorPage ? accurateFileKey : displayFileKey}
                                     displayFileKey={displayFileKey}
                                     pageNum={originalPageNum}
@@ -6692,7 +6768,7 @@ export const LivePageFrame = (props: any) => {
                                         && !needsTiling
                                         && !accurateCommitted}
                                     keepDisplayUntilAccurate={keepDisplayUntilAccurate}
-                                    renderEnabled={needsTiling}
+                                    renderEnabled={producerEnabled && needsTiling}
                                     cancelAccurateGroup={cancelAccurateGroup}
                                     initialPpeFrame={effectivePpeFrame}
                                     stableUnderlayReady={accurateColorPage

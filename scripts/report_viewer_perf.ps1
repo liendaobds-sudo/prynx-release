@@ -26,6 +26,10 @@ $cacheImageMisses = @()
 $cacheFormHits = @()
 $cacheFormMisses = @()
 $affinity = @{ assign = 0; hit = 0; drop = 0 }
+$governor = @{ ppeMemoryBudget = 0; gpuMemory = 0; tileCachePressure = 0; poolAdmission = 0; surfaceErrors = 0 }
+$latestPpeMemory = $null
+$latestGpuMemory = $null
+$latestPoolAdmission = $null
 $counts = @{
     pdfLoadStart = 0
     tileSlow = 0
@@ -84,6 +88,20 @@ foreach ($line in $lines) {
     if ($line -match 'RENDER_WORKER_AFFINITY action=(assign|hit|drop)') {
         $affinity[$matches[1]]++
     }
+    if ($line -match 'PPE_MEMORY_BUDGET total_bytes=(\d+) available_bytes=(\d+) working_set_bytes=(\d+) lanes=(\d+) emergency=(\w+) render_bytes=(\d+) cache_bytes=(\d+)') {
+        $governor.ppeMemoryBudget++
+        $latestPpeMemory = [ordered]@{ total_bytes = [double]$matches[1]; available_bytes = [double]$matches[2]; working_set_bytes = [double]$matches[3]; lanes = [int]$matches[4]; emergency = [bool]::Parse($matches[5]); render_bytes = [double]$matches[6]; cache_bytes = [double]$matches[7] }
+    }
+    if ($line -match 'GPU_MEMORY total_bytes=(\d+) available_bytes=(\d+) budget_bytes=(\d+) current_bytes=(\d+) system_pressure=(\w+) gpu_pressure=(\w+)') {
+        $governor.gpuMemory++
+        $latestGpuMemory = [ordered]@{ total_bytes = [double]$matches[1]; available_bytes = [double]$matches[2]; budget_bytes = [double]$matches[3]; current_bytes = [double]$matches[4]; system_pressure = [bool]::Parse($matches[5]); gpu_pressure = [bool]::Parse($matches[6]) }
+    }
+    if ($line -match 'TILE_CACHE_PRESSURE ') { $governor.tileCachePressure++ }
+    if ($line -match 'POOL_ADMISSION ') {
+        $governor.poolAdmission++
+        $latestPoolAdmission = $line
+    }
+    if ($line -match 'GPU_SURFACE_ERROR ') { $governor.surfaceErrors++ }
 }
 
 $imageHitTotal = ($cacheImageHits | Measure-Object -Sum).Sum
@@ -111,5 +129,8 @@ $formDenominator = $formHitTotal + $formMissTotal
         form_hit_ratio = if ($formDenominator -gt 0) { [Math]::Round($formHitTotal / $formDenominator, 4) } else { $null }
     }
     affinity = $affinity
+    governor = $governor
+    latest_ppe_memory = $latestPpeMemory
+    latest_gpu_memory = $latestGpuMemory
+    latest_pool_admission = $latestPoolAdmission
 } | ConvertTo-Json -Depth 6
-

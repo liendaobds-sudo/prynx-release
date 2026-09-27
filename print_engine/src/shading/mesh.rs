@@ -45,7 +45,7 @@ const MAX_TRIANGLES: usize = 400_000;
 const PATCH_SUBDIV: usize = 10;
 
 /// Một tam giác của lưới, toạ độ trong **không gian shading**.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MeshTriangle {
     pub p: [[f32; 2]; 3],
     /// Thành phần màu tại ba đỉnh, trong colorspace của shading.

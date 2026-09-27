@@ -145,7 +145,7 @@ export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
                 title={vdpLivePreview.enabled ? t('Đang xem dữ liệu thật (Bấm để tắt)') : t('Bật xem trước dữ liệu biến đổi thời gian thực')}
             >
                 <span className={`w-2 h-2 rounded-full ${vdpLivePreview.enabled ? 'bg-white animate-pulse' : 'bg-slate-400 dark:bg-zinc-500'}`} />
-                <span>{vdpLivePreview.enabled ? t('👁️ Dữ liệu thật: BẬT') : t('👁️ Xem trước: TẮT')}</span>
+                <span>{vdpLivePreview.enabled ? t('workspace.vdpRecordNavigator:live_data_on') : t('workspace.vdpRecordNavigator:preview_off')}</span>
             </button>
 
             <div className="h-4 w-px bg-slate-200 dark:bg-zinc-700" />

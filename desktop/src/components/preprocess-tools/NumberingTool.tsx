@@ -955,7 +955,7 @@ export default function NumberingTool({
                             const next = !isPickingVdpText;
                             setIsPickingVdpText(next);
                             if (next) {
-                                toast.info(t('Chế độ chọn liên tục đã bật: Nhấp vào các con số mẫu trên bản thiết kế để làm Slot số nhảy, bấm "Xong" hoặc phím Esc khi hoàn tất.'));
+                                toast.info(t('preprocess.numbering:continuous_select_notice'));
                             }
                         }}
                         className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${

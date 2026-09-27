@@ -27,7 +27,7 @@ use crate::pdf;
 const MAX_CS_DEPTH: u32 = 8;
 
 /// Colorspace PDF đã phân giải.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ColorSpace {
     DeviceGray,
     DeviceRGB,

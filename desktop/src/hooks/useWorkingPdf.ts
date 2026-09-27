@@ -35,9 +35,25 @@ const sourcePageCountPromises = new WeakMap<File, Promise<number>>();
 function resolveSourcePageCount(f: File): Promise<number> {
     const cached = sourcePageCountPromises.get(f);
     if (cached) return cached;
-    const pending = getFileArrayBuffer(f)
-        .then(ab => PDFDocument.load(ab, { ignoreEncryption: true }))
-        .then(doc => doc.getPageCount());
+    const pending = (async () => {
+        // PERF (audit 2026-09-25 §PDF.OPT.COUNT): identity order cũng đi qua
+        // đây trước upload. Đếm trang native để không đọc cả PDF 1,5 GB vào
+        // WebView chỉ nhằm xác nhận file chưa sửa; lỗi metadata không được
+        // tự chuyển về đường đọc bytes gây lại cùng đỉnh cấp phát.
+        if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__ && f.path) {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const metadata = await invoke<{ numPages?: unknown } | null>(
+                'get_pdf_viewer_bootstrap', { filePath: f.path },
+            );
+            const count = metadata?.numPages;
+            if (typeof count !== 'number' || !Number.isSafeInteger(count) || count <= 0) {
+                throw new Error('Không đọc được số trang PDF. Vui lòng mở lại file rồi thử lại.');
+            }
+            return count;
+        }
+        const ab = await getFileArrayBuffer(f);
+        return (await PDFDocument.load(ab, { ignoreEncryption: true })).getPageCount();
+    })();
     sourcePageCountPromises.set(f, pending);
     void pending.catch(() => sourcePageCountPromises.delete(f));
     return pending;

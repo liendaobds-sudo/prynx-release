@@ -960,6 +960,34 @@ def test_optimize_pdf_without_gs(sample_pdf, tmp_path):
     assert os.path.isfile(out) and os.path.getsize(out) > 0
 
 
+def test_optimize_local_path_returns_artifact_without_uploading_bytes(sample_pdf, tmp_path, monkeypatch):
+    """Desktop không được materialize PDF lớn vào WebView khi tối ưu."""
+    from app.api.routes import pdf_tools as pdf_tools_routes
+
+    results = tmp_path / "results"
+    results.mkdir()
+    monkeypatch.setattr(pdf_tools_routes, "RESULTS_DIR", str(results))
+
+    payload = asyncio.run(
+        pdf_tools_routes.optimize_pdf_endpoint(
+            file=None,
+            file_path=sample_pdf,
+            preset="ebook",
+            image_dpi=300,
+            strip_metadata="true",
+            grayscale="false",
+            return_path=True,
+            license_info={},
+        )
+    )
+
+    assert isinstance(payload, dict)
+    assert os.path.isfile(payload["path"])
+    assert payload["size"] == os.path.getsize(payload["path"])
+    assert os.path.isfile(sample_pdf), "direct-path không được xóa file nguồn"
+    os.remove(payload["path"])
+
+
 def test_optimize_unsupported_is_422_and_cleans_files(tmp_path, monkeypatch):
     """File không hỗ trợ là 422 có chủ đích, không phải lỗi subprocess/HTTP 500."""
     from io import BytesIO

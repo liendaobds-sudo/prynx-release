@@ -722,36 +722,20 @@ export function viewportTilePresentationItems<T extends ViewportTileBufferItem>(
     currentBufferGroup: string,
     currentReuseGroup: string,
     zoomSettling: boolean,
-    visibleCoversCurrentViewport = true,
-    hasStableUnderlay = false,
+    _visibleCoversCurrentViewport = true,
+    _hasStableUnderlay = false,
 ): T[] {
     const targetIsCurrent = state.target?.bufferGroup === currentBufferGroup;
-    // UIUX (feedback 2026-08-14 §VIEW.SWAP): underlay toàn trang mới là surface liên tục
-    // trong lúc wheel zoom. Tile viewport cũ chỉ phủ clip của khung trước; co nó theo trang
-    // sẽ tạo một “đảo ảnh” giữa nền. Khi underlay đã sẵn sàng, để compositor hiện thẳng
-    // surface đó cho tới khi target của generation mới decode xong.
-    // Giữ tile nét nếu còn phủ viewport; không suy tốc độ raster từ nhịp đổi target.
-    if (hasStableUnderlay && !visibleCoversCurrentViewport && (zoomSettling || !targetIsCurrent)) return [];
+    // UIUX (feedback 2026-08-14 §VIEW.SWAP / audit 2026-09-27 §PPE.ZOOM_SHARPNESS):
+    // Duy trì độ nét liên tục như Adobe Acrobat / Illustrator khi zoom:
+    // Tile viewport đã decode của generation trước được giữ nguyên và scale mượt theo khổ sống
+    // (parent scale lại rect bằng CSS). Không được ẩn về nền mờ 72-150 DPI trong lúc zoom.
     if (!zoomSettling && targetIsCurrent) {
-        const items = viewportTileBufferItems(state);
-        const visibleUsesCurrentRaster = state.visible?.bufferGroup === currentBufferGroup;
-        // UIUX (feedback 2026-08-11 §PAN.F1): pan cùng mật độ chỉ làm clip dịch chuyển.
-        // Giữ phần tile cũ đã decode trong lúc target mới tải; nếu tháo nó sớm thì toàn
-        // viewport rơi xuống nền mờ. Chỉ chặn “đảo nét” khi zoom/khổ raster thật sự đổi.
-        if (!visibleCoversCurrentViewport
-            && !visibleUsesCurrentRaster
-            && state.target
-            && state.visible
-            && state.visible.key !== state.target.key) {
-            // Không có underlay thì giữ tile cũ tới khi target thật sự commit; rút cả hai
-            // surface nhìn thấy trước thời điểm đó sẽ làm trang chớp trắng.
-            return hasStableUnderlay ? [state.target] : items;
-        }
-        return items;
+        return viewportTileBufferItems(state);
     }
 
-    // PERF (feedback 2026-08-09 §ZOOM.F2): khi live zoom hoặc rAF chưa tạo target
-    // mới, tiếp tục trình bày bitmap đã decode của đúng tài liệu/trang/pipeline.
-    // Parent sẽ scale lại rect theo khổ sống; zoom-out vì thế giữ nguyên độ nét.
+    // Khi live zoom hoặc rAF chưa tạo target mới, tiếp tục trình bày bitmap đã decode
+    // của đúng tài liệu/trang/pipeline. Parent sẽ scale lại rect theo khổ sống;
+    // zoom-in và zoom-out vì thế giữ nguyên độ nét liên tục.
     return state.visible?.reuseGroup === currentReuseGroup ? [state.visible] : [];
 }

@@ -93,7 +93,7 @@ export default function GiantImageOptimizationModal({
               type="button"
               onClick={onCancel}
               className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-              aria-label={t('common:cancel', 'Đóng')}
+              aria-label={t('common:close', 'Đóng')}
             >
               <X className="h-4 w-4" />
             </button>

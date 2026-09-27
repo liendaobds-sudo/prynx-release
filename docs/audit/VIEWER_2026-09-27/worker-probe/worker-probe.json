@@ -1,0 +1,1514 @@
+{
+  "schema_version": 1,
+  "scope": "existing-debug-exe-worker-headless-not-ui",
+  "created_at": "2026-09-27T01:12:43+0700",
+  "complete": true,
+  "input": {
+    "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+    "size_bytes": "18059736",
+    "modified_nanos": "1786537844338201000",
+    "created_nanos": "1789112087207559900",
+    "token": "18059736:1786537844338201000:1789112087207559900",
+    "sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1"
+  },
+  "exe": {
+    "path": "D:\\pdfcompare\\desktop\\src-tauri\\target\\debug\\pdf-inspector.exe",
+    "size_bytes": "39919616",
+    "modified_nanos": "1790445372312297000",
+    "created_nanos": "1790445369921373400",
+    "token": "39919616:1790445372312297000:1790445369921373400",
+    "sha256": "4c7a8b752494925df574e2e34ac68fde99fde6e23d6206fb2d5f3308d67f8dc4"
+  },
+  "source_manifest": [
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\main.rs",
+      "size_bytes": "1554",
+      "modified_nanos": "1790311547213548200",
+      "created_nanos": "1779781259991255800",
+      "token": "1554:1790311547213548200:1779781259991255800",
+      "sha256": "59ad3ac436350fcb6201555d8b42b732de99f66d3aaa0dde7433b8800b67182f"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\lib.rs",
+      "size_bytes": "412944",
+      "modified_nanos": "1790386607523411500",
+      "created_nanos": "1789723149749223400",
+      "token": "412944:1790386607523411500:1789723149749223400",
+      "sha256": "543d548153d74a6cbcc683a7e12ccf59a2a012056760c599ee44861f250353aa"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\scene_worker.rs",
+      "size_bytes": "10513",
+      "modified_nanos": "1790323298955213900",
+      "created_nanos": "1790311546509637000",
+      "token": "10513:1790323298955213900:1790311546509637000",
+      "sha256": "3f04671594d3eda34a1e3b052785de31388e6d21918d994be1b178f3e9ba9b3b"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs",
+      "size_bytes": "274436",
+      "modified_nanos": "1790374368278368500",
+      "created_nanos": "1790244298638720800",
+      "token": "274436:1790374368278368500:1790244298638720800",
+      "sha256": "0db397c7bc9d9429aabe435e4d82b50cf3b8b42fe9cdeed2240ebe2687fb697f"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker\\work_queue.rs",
+      "size_bytes": "3408",
+      "modified_nanos": "1790153525065286000",
+      "created_nanos": "1790153370969092300",
+      "token": "3408:1790153525065286000:1790153370969092300",
+      "sha256": "8fa2ab8816f3b0e3ea8a4df7e3a60ef0f0a366ae75e1fd93b2b511bf59aef395"
+    },
+    {
+      "path": "D:\\pdfcompare\\print_engine\\src\\scene\\wire.rs",
+      "size_bytes": "12200",
+      "modified_nanos": "1790313790720244100",
+      "created_nanos": "1790311447758524400",
+      "token": "12200:1790313790720244100:1790311447758524400",
+      "sha256": "749dd10108e1360f3e673dedd9326a041bd63ff5ff336ef7071498cbd834a3d2"
+    },
+    {
+      "path": "D:\\pdfcompare\\print_engine\\src\\image\\sampler.rs",
+      "size_bytes": "57965",
+      "modified_nanos": "1790312004375423800",
+      "created_nanos": "1785084852936476800",
+      "token": "57965:1790312004375423800:1785084852936476800",
+      "sha256": "5897b4620e109af77294fea68283397b8277d569c1836fb61aace8fc49417654"
+    },
+    {
+      "path": "D:\\pdfcompare\\print_engine\\src\\content\\retained.rs",
+      "size_bytes": "29301",
+      "modified_nanos": "1790314465436987500",
+      "created_nanos": "1790309898155408500",
+      "token": "29301:1790314465436987500:1790309898155408500",
+      "sha256": "3ff25f1bcdd538b34fea4c3cb0e4c6f960b236ea51ea2ecbe6d6f623a912d30d"
+    },
+    {
+      "path": "D:\\pdfcompare\\print_engine\\src\\session.rs",
+      "size_bytes": "48813",
+      "modified_nanos": "1790150832558430200",
+      "created_nanos": "1786244212096699700",
+      "token": "48813:1790150832558430200:1786244212096699700",
+      "sha256": "8b3bd71ce161288f12f13b9d66568ece3ae89d3436741ffa4f60ff8f2ed40bbc"
+    },
+    {
+      "path": "D:\\pdfcompare\\print_engine\\src\\page.rs",
+      "size_bytes": "41792",
+      "modified_nanos": "1790311822013726300",
+      "created_nanos": "1785086511748280000",
+      "token": "41792:1790311822013726300:1785086511748280000",
+      "sha256": "46a17e8798f03c5f05a07037fa6a4eb880daacd96650c53d0dfe9d945f402cd5"
+    },
+    {
+      "path": "D:\\pdfcompare\\print_engine\\src\\color\\icc.rs",
+      "size_bytes": "44913",
+      "modified_nanos": "1790314044226302100",
+      "created_nanos": "1785044988758681800",
+      "token": "44913:1790314044226302100:1785044988758681800",
+      "sha256": "2dd03893491447f2d5376b97fadc95f4b97fdda74618ddde394f66d3c288dde1"
+    }
+  ],
+  "icc": {
+    "path": "D:\\pdfcompare\\backend\\app\\assets\\icc\\FOGRA39.icc",
+    "size_bytes": "654352",
+    "modified_nanos": "1779781255018672600",
+    "created_nanos": "1779781255018672600",
+    "token": "654352:1779781255018672600:1779781255018672600",
+    "sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77"
+  },
+  "harness": {
+    "path": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\probe_workers.py",
+    "size_bytes": "20824",
+    "modified_nanos": "1790446299288237900",
+    "created_nanos": "1790446231375356600",
+    "token": "20824:1790446299288237900:1790446231375356600",
+    "sha256": "8b90cf88943d3f9f17eb0caadae9f914d0d12657c0e3c70ecf2d1687371e0f59"
+  },
+  "config": {
+    "fresh_children_per_mode": 3,
+    "requests_per_child": 3,
+    "dpi": 96.0,
+    "page": 1,
+    "timeout_seconds": 60.0
+  },
+  "scene": [
+    {
+      "run": 1,
+      "pid": 19444,
+      "spawn_ms": 4.2034,
+      "arguments": [
+        "--prynx-scene-worker",
+        "--prynx-scene-session"
+      ],
+      "samples": [
+        {
+          "iteration": 1,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 509.679,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 43761,
+              "compile_us": 272107,
+              "transport_us": 0,
+              "worker_reused": false
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 104,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 7.4329,
+          "probe_hash_ms": 50.8247,
+          "residual_transport_ms": 193.81099999999998
+        },
+        {
+          "iteration": 2,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 440.305,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 0,
+              "compile_us": 270274,
+              "transport_us": 0,
+              "worker_reused": true
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 99,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 6.4124,
+          "probe_hash_ms": 50.7756,
+          "residual_transport_ms": 170.031
+        },
+        {
+          "iteration": 3,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 433.3117,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 0,
+              "compile_us": 269132,
+              "transport_us": 0,
+              "worker_reused": true
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 99,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 5.9603,
+          "probe_hash_ms": 50.1538,
+          "residual_transport_ms": 164.17969999999997
+        }
+      ],
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    {
+      "run": 2,
+      "pid": 22736,
+      "spawn_ms": 2.5526,
+      "arguments": [
+        "--prynx-scene-worker",
+        "--prynx-scene-session"
+      ],
+      "samples": [
+        {
+          "iteration": 1,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 518.9929,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 43589,
+              "compile_us": 271694,
+              "transport_us": 0,
+              "worker_reused": false
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 104,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 5.9161,
+          "probe_hash_ms": 51.3983,
+          "residual_transport_ms": 203.70989999999995
+        },
+        {
+          "iteration": 2,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 457.3608,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 0,
+              "compile_us": 282343,
+              "transport_us": 0,
+              "worker_reused": true
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 99,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 8.8165,
+          "probe_hash_ms": 50.2278,
+          "residual_transport_ms": 175.01779999999997
+        },
+        {
+          "iteration": 3,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 470.1021,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 0,
+              "compile_us": 284474,
+              "transport_us": 0,
+              "worker_reused": true
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 99,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 5.9493,
+          "probe_hash_ms": 50.1662,
+          "residual_transport_ms": 185.62810000000002
+        }
+      ],
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    {
+      "run": 3,
+      "pid": 17464,
+      "spawn_ms": 2.9756,
+      "arguments": [
+        "--prynx-scene-worker",
+        "--prynx-scene-session"
+      ],
+      "samples": [
+        {
+          "iteration": 1,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 533.3033,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 55790,
+              "compile_us": 278503,
+              "transport_us": 0,
+              "worker_reused": false
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 104,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 5.9542,
+          "probe_hash_ms": 50.2345,
+          "residual_transport_ms": 199.01030000000003
+        },
+        {
+          "iteration": 2,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 430.2533,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 0,
+              "compile_us": 270425,
+              "transport_us": 0,
+              "worker_reused": true
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 99,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 5.6854,
+          "probe_hash_ms": 49.9258,
+          "residual_transport_ms": 159.8283
+        },
+        {
+          "iteration": 3,
+          "request": {
+            "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+            "page": 1,
+            "revision": 1,
+            "identity": "18059736:1786537844338201000:1789112087207559900"
+          },
+          "wire_request_wall_ms": 432.749,
+          "reply": {
+            "error": null,
+            "stats": {
+              "parse_us": 0,
+              "compile_us": 265828,
+              "transport_us": 0,
+              "worker_reused": true
+            }
+          },
+          "scene_wire_bytes": 98550669,
+          "reply_header_bytes": 99,
+          "scene_metadata_bytes": 475517,
+          "scene_wire_sha256": "f89e62259e01d74cdf81ca66db400ed82ad7e33d8d4e86081ca883e2bb45cb59",
+          "scene_images": [
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 1,
+              "samples_bytes": 10897232,
+              "stencil_bytes": 0,
+              "alpha_bytes": 0
+            },
+            {
+              "width": 4042,
+              "height": 2696,
+              "n_comps": 4,
+              "samples_bytes": 43588928,
+              "stencil_bytes": 0,
+              "alpha_bytes": 43588928
+            }
+          ],
+          "scene_commands": 487,
+          "scene_clips": 37,
+          "scene_masks": 8,
+          "scene_bounds": {
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 748.346,
+            "y1": 561.26
+          },
+          "scene_warnings": {
+            "skipped_ops": [],
+            "approximated_colorspaces": [],
+            "dropped_objects": 0,
+            "unsupported_transparency": false,
+            "hidden_content_risk": false,
+            "substituted_fonts": [],
+            "colorspaces_used": [
+              "DeviceCMYK",
+              "DeviceGray",
+              "Separation"
+            ]
+          },
+          "probe_json_decode_ms": 8.4458,
+          "probe_hash_ms": 50.4673,
+          "residual_transport_ms": 166.92100000000005
+        }
+      ],
+      "exit_code": 0,
+      "stderr_tail": ""
+    }
+  ],
+  "ppe": [
+    {
+      "run": 1,
+      "pid": 20328,
+      "spawn_ms": 4.345,
+      "arguments": [
+        "--prynx-render-worker"
+      ],
+      "samples": [
+        {
+          "iteration": 1,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-1-1",
+            "owner_id": "audit-ppe-1",
+            "session_owner_id": "audit-ppe-session-1",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 698.6461,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-1-1",
+            "owner_id": "audit-ppe-1",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 625,
+              "encode_ms": 19,
+              "cache_ms": 0,
+              "total_ms": 697
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-1-sample-1.png",
+          "worker_residual_ms": 53
+        },
+        {
+          "iteration": 2,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-1-2",
+            "owner_id": "audit-ppe-1",
+            "session_owner_id": "audit-ppe-session-1",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 412.5581,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-1-2",
+            "owner_id": "audit-ppe-1",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 383,
+              "encode_ms": 24,
+              "cache_ms": 0,
+              "total_ms": 410
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-1-sample-2.png",
+          "worker_residual_ms": 3
+        },
+        {
+          "iteration": 3,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-1-3",
+            "owner_id": "audit-ppe-1",
+            "session_owner_id": "audit-ppe-session-1",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 422.0377,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-1-3",
+            "owner_id": "audit-ppe-1",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 399,
+              "encode_ms": 19,
+              "cache_ms": 0,
+              "total_ms": 420
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-1-sample-3.png",
+          "worker_residual_ms": 2
+        }
+      ],
+      "hello": {
+        "request": {
+          "message": "hello",
+          "request_id": "audit-hello-1",
+          "parent_pid": 14828,
+          "nonce": "audit-14828-1",
+          "expected_app_version": "2.0.4",
+          "expected_tile_cache_version": "v10_view_semantics_opaque_white_png",
+          "expected_pipeline_identity": "pdfium-display-png-v1"
+        },
+        "response": {
+          "message": "hello",
+          "ok": true,
+          "request_id": "audit-hello-1",
+          "nonce": "audit-14828-1",
+          "worker_pid": 20328,
+          "protocol_version": 4,
+          "app_version": "2.0.4",
+          "tile_cache_version": "v10_view_semantics_opaque_white_png",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+          "error": null
+        },
+        "wall_ms": 31.8623
+      },
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    {
+      "run": 2,
+      "pid": 11952,
+      "spawn_ms": 4.0281,
+      "arguments": [
+        "--prynx-render-worker"
+      ],
+      "samples": [
+        {
+          "iteration": 1,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-2-1",
+            "owner_id": "audit-ppe-2",
+            "session_owner_id": "audit-ppe-session-2",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 716.2062,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-2-1",
+            "owner_id": "audit-ppe-2",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 642,
+              "encode_ms": 19,
+              "cache_ms": 0,
+              "total_ms": 714
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-2-sample-1.png",
+          "worker_residual_ms": 53
+        },
+        {
+          "iteration": 2,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-2-2",
+            "owner_id": "audit-ppe-2",
+            "session_owner_id": "audit-ppe-session-2",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 390.5546,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-2-2",
+            "owner_id": "audit-ppe-2",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 368,
+              "encode_ms": 19,
+              "cache_ms": 0,
+              "total_ms": 389
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-2-sample-2.png",
+          "worker_residual_ms": 2
+        },
+        {
+          "iteration": 3,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-2-3",
+            "owner_id": "audit-ppe-2",
+            "session_owner_id": "audit-ppe-session-2",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 400.6399,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-2-3",
+            "owner_id": "audit-ppe-2",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 377,
+              "encode_ms": 19,
+              "cache_ms": 0,
+              "total_ms": 399
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-2-sample-3.png",
+          "worker_residual_ms": 3
+        }
+      ],
+      "hello": {
+        "request": {
+          "message": "hello",
+          "request_id": "audit-hello-2",
+          "parent_pid": 14828,
+          "nonce": "audit-14828-2",
+          "expected_app_version": "2.0.4",
+          "expected_tile_cache_version": "v10_view_semantics_opaque_white_png",
+          "expected_pipeline_identity": "pdfium-display-png-v1"
+        },
+        "response": {
+          "message": "hello",
+          "ok": true,
+          "request_id": "audit-hello-2",
+          "nonce": "audit-14828-2",
+          "worker_pid": 11952,
+          "protocol_version": 4,
+          "app_version": "2.0.4",
+          "tile_cache_version": "v10_view_semantics_opaque_white_png",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+          "error": null
+        },
+        "wall_ms": 30.8799
+      },
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    {
+      "run": 3,
+      "pid": 22864,
+      "spawn_ms": 4.3065,
+      "arguments": [
+        "--prynx-render-worker"
+      ],
+      "samples": [
+        {
+          "iteration": 1,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-3-1",
+            "owner_id": "audit-ppe-3",
+            "session_owner_id": "audit-ppe-session-3",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 732.0741,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-3-1",
+            "owner_id": "audit-ppe-3",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 652,
+              "encode_ms": 20,
+              "cache_ms": 0,
+              "total_ms": 730
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-3-sample-1.png",
+          "worker_residual_ms": 58
+        },
+        {
+          "iteration": 2,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-3-2",
+            "owner_id": "audit-ppe-3",
+            "session_owner_id": "audit-ppe-session-3",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 395.1089,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-3-2",
+            "owner_id": "audit-ppe-3",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 371,
+              "encode_ms": 20,
+              "cache_ms": 0,
+              "total_ms": 393
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-3-sample-2.png",
+          "worker_residual_ms": 2
+        },
+        {
+          "iteration": 3,
+          "request": {
+            "message": "render",
+            "request_id": "audit-ppe-3-3",
+            "owner_id": "audit-ppe-3",
+            "session_owner_id": "audit-ppe-session-3",
+            "group_key": "audit-page1",
+            "generation": 1,
+            "purpose": "interactive",
+            "priority": 0,
+            "document": {
+              "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+              "size_bytes": "18059736",
+              "modified_nanos": "1786537844338201000",
+              "created_nanos": "1789112087207559900",
+              "token": "18059736:1786537844338201000:1789112087207559900"
+            },
+            "page": 1,
+            "rotation": 0,
+            "raster": {
+              "kind": "dpi",
+              "dpi": 96.0,
+              "clip": null
+            },
+            "color": {
+              "pipeline": "accurate",
+              "profile_id": "fogra39",
+              "intent": "relative"
+            },
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "soundness": "color-verified",
+            "format": null
+          },
+          "wire_request_wall_ms": 400.9803,
+          "response": {
+            "message": "render",
+            "request_id": "audit-ppe-3-3",
+            "owner_id": "audit-ppe-3",
+            "generation": 1,
+            "status": "ready",
+            "bitmap_width": 998,
+            "bitmap_height": 748,
+            "pipeline_identity": "ppe-fogra39-relative-view-knockout-png-v5-native-worker",
+            "cache_tier": "rendered",
+            "timing": {
+              "queue_ms": 0,
+              "wait_ms": 0,
+              "render_ms": 378,
+              "encode_ms": 19,
+              "cache_ms": 0,
+              "total_ms": 399
+            },
+            "soundness": "color-verified",
+            "unsupported_reason": null,
+            "fallback_font_sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+            "substituted_fonts": [],
+            "geometry_approximated": false,
+            "error": null
+          },
+          "png_bytes": 480826,
+          "png_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+          "png_dimensions": [
+            998,
+            748
+          ],
+          "png_artifact": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-3-sample-3.png",
+          "worker_residual_ms": 2
+        }
+      ],
+      "hello": {
+        "request": {
+          "message": "hello",
+          "request_id": "audit-hello-3",
+          "parent_pid": 14828,
+          "nonce": "audit-14828-3",
+          "expected_app_version": "2.0.4",
+          "expected_tile_cache_version": "v10_view_semantics_opaque_white_png",
+          "expected_pipeline_identity": "pdfium-display-png-v1"
+        },
+        "response": {
+          "message": "hello",
+          "ok": true,
+          "request_id": "audit-hello-3",
+          "nonce": "audit-14828-3",
+          "worker_pid": 22864,
+          "protocol_version": 4,
+          "app_version": "2.0.4",
+          "tile_cache_version": "v10_view_semantics_opaque_white_png",
+          "pipeline_identity": "pdfium-display-png-v1",
+          "pdfium_sha256": "01be7a757183793f15eb35de9d9da424fc07d24b5560e8c3822f52812b2ad89a",
+          "error": null
+        },
+        "wall_ms": 42.5011
+      },
+      "exit_code": 0,
+      "stderr_tail": ""
+    }
+  ],
+  "limitations": [
+    "Không đo GPU upload/present, WebView hay input-to-screen; không chứng minh 60fps.",
+    "Cold là process/session mới; không xóa cache filesystem Windows.",
+    "Source manifest không chứng minh EXE được build từ đúng source hiện tại.",
+    "Scene residual gồm init màu, serialize/pipe/probe decode/hash; không gọi là IPC thuần.",
+    "Scene consumer Python chỉ consume/validate wire, không dựng RetainedPage host Rust.",
+    "PPE total_ms nội bộ chưa tách cold-open, pool-lock, raster và quy màu đầy đủ.",
+    "PPE Hello vẫn khởi tạo/hash PDFium; được ghi riêng, không nhập vào raster.",
+    "N nhỏ chỉ là probe; không dùng làm P95/P99 có ý nghĩa thống kê."
+  ]
+}

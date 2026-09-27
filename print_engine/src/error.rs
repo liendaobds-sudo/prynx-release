@@ -82,7 +82,7 @@ pub type PpeResult<T> = Result<T, PpeError>;
 /// nhưng không có `Tj` nào dùng). Những mục này **không** hạ độ tin cậy: mọi
 /// nhánh thực sự mất nội dung đều đã tự tăng `dropped_objects` hoặc bật
 /// `unsupported_transparency` / `hidden_content_risk` tại đúng chỗ nó xảy ra.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RenderWarnings {
     /// Operator content stream engine bỏ qua (tên op → số lần).
     ///

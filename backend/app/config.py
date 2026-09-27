@@ -66,7 +66,7 @@ settings.UPLOAD_DIR = os.path.abspath(settings.UPLOAD_DIR)
 settings.RESULTS_DIR = os.path.abspath(settings.RESULTS_DIR)
 
 # DEV_MODE or IS_DESKTOP_APP: override DB to SQLite (Desktop app must use SQLite)
-if settings.DEV_MODE or settings.IS_DESKTOP_APP:
+if settings.DEV_MODE or settings.IS_DESKTOP_APP or not settings.DATABASE_URL:
     db_path = Path("./data").resolve()
     db_path.mkdir(parents=True, exist_ok=True)
     settings.DATABASE_URL = f"sqlite:///{db_path / 'pdfcompare.db'}"

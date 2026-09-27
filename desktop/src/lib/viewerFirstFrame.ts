@@ -367,6 +367,11 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
         profileId: 'fogra39',
         intent: 'relative',
         proofIdentity: DEFAULT_PROOF_IDENTITY,
+        // COLOR (audit 2026-09-27 §V27.04): frame mồi cũng phải có provenance
+        // như tile thường; compositor không tự gán proof dựa vào tên layer.
+        proof: {engine:'ppe-native',soundness:'color-verified',documentToken,page:1,
+          profileId:'fogra39',intent:'relative',proofIdentity:DEFAULT_PROOF_IDENTITY,
+          pipelineIdentity:'ppe-fogra39-relative-view-knockout-png-v5-native-worker'},
         url,
         byteLength: bytes.byteLength,
         cacheable: true,

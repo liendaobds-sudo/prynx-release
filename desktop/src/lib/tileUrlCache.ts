@@ -11,6 +11,28 @@ export interface TileUrlSource {
   byteLength: number;
   /** False khi ảnh chỉ là fallback tạm; không giữ dưới cache key của pipeline khác. */
   cacheable?: boolean;
+  /** COLOR (audit 2026-09-27 §V27.04): nguồn pixel thật, không suy từ slot yêu cầu. */
+  proof?: Readonly<TilePixelProof>;
+}
+
+export interface TilePixelProof {
+  engine: 'ppe-native' | 'ppe-http' | 'pdfium' | 'pdfjs';
+  soundness: 'color-verified' | 'display-preview';
+  documentToken: string;
+  page: number;
+  profileId: string | null;
+  intent: string | null;
+  proofIdentity: string;
+  pipelineIdentity: string;
+}
+
+export function tileHasMatchingProof(source: TileUrlSource, expected: Pick<TilePixelProof, 'documentToken' | 'page' | 'profileId' | 'intent' | 'proofIdentity'>): boolean {
+  const proof = source.proof;
+  return !!proof && (proof.engine === 'ppe-native' || proof.engine === 'ppe-http')
+    && proof.soundness === 'color-verified'
+    && proof.documentToken === expected.documentToken && proof.page === expected.page
+    && proof.profileId === expected.profileId && proof.intent === expected.intent
+    && proof.proofIdentity === expected.proofIdentity;
 }
 
 type TileUrlCacheEntry = TileUrlSource & { namespace: string };
@@ -89,6 +111,7 @@ export class TileUrlLruCache {
     let width: number | undefined;
     let height: number | undefined;
     let cacheable: boolean | undefined;
+    let proof: Readonly<TilePixelProof> | undefined;
 
     if (typeof sourceOrUrl === 'string') {
       url = sourceOrUrl;
@@ -102,6 +125,7 @@ export class TileUrlLruCache {
       width = sourceOrUrl.width;
       height = sourceOrUrl.height;
       cacheable = sourceOrUrl.cacheable;
+      proof = sourceOrUrl.proof ? Object.freeze({ ...sourceOrUrl.proof }) : undefined;
     }
 
     const previous = this.entries.get(key);
@@ -116,7 +140,7 @@ export class TileUrlLruCache {
 
     if (this.maxBytes !== null && safeBytes > this.maxBytes) return false;
     this.evictUntilFits(safeBytes);
-    this.entries.set(key, { url, bitmap, width, height, byteLength: safeBytes, cacheable, namespace });
+    this.entries.set(key, { url, bitmap, width, height, byteLength: safeBytes, cacheable, proof, namespace });
     this._currentBytes += safeBytes;
     return true;
   }

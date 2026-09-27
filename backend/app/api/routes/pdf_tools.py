@@ -465,9 +465,15 @@ def _strip_pdf_metadata(pdf_path: str) -> None:
                     del pdf.docinfo[k]
             except Exception:
                 pass
+            # Adobe Illustrator / Photoshop / InDesign PieceInfo (AIPDFPrivateData có thể chiếm hàng GB)
+            if "/PieceInfo" in pdf.Root:
+                del pdf.Root["/PieceInfo"]
+            for page in pdf.pages:
+                if "/PieceInfo" in page:
+                    del page["/PieceInfo"]
             fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
             os.close(fd)
-            pdf.save(tmp_path)
+            pdf.save(tmp_path, object_stream_mode=pikepdf.ObjectStreamMode.generate)
         os.replace(tmp_path, pdf_path)
         tmp_path = None
     except Exception as e:
@@ -1148,11 +1154,13 @@ async def ocr_searchable_endpoint(
 
 @router.post("/optimize")
 async def optimize_pdf_endpoint(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
     preset: str = Form("ebook"),
     image_dpi: int = Form(300),
     strip_metadata: str = Form("true"),
     grayscale: str = Form("false"),
+    return_path: bool = Form(False),
     license_info: dict = Depends(require_license),
 ):
     """
@@ -1167,9 +1175,20 @@ async def optimize_pdf_endpoint(
 
     Returns the optimized PDF with compression stats in headers.
     """
-    import asyncio
-
-    source_path = await save_upload(file)
+    path_arg = file_path.strip().strip('"') if isinstance(file_path, str) else ""
+    return_path = return_path if isinstance(return_path, bool) else False
+    if path_arg:
+        # PERF (audit 2026-09-25 §PDF.OPT.PATH): sidecar cùng máy đọc thẳng
+        # file lớn trên đĩa; không chuyển 1–2 GB qua WebView/IPC.
+        source_path = validate_imposition_pdf_path(path_arg)
+        source_name = os.path.basename(source_path)
+        delete_source = False
+    elif file is not None:
+        source_path = await save_upload(file)
+        source_name = file.filename or "document.pdf"
+        delete_source = True
+    else:
+        raise HTTPException(status_code=400, detail="Thiếu file PDF cần tối ưu.")
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"optimized_{job_id}.pdf")
 
@@ -1185,13 +1204,14 @@ async def optimize_pdf_endpoint(
         # GS-SUNSET (audit 2026-08-08 §GS.1): optimize chỉ dùng engine nội bộ.
         # Kết quả unsupported là giới hạn có chủ đích, không phải lỗi server và
         # không được chuyển tiếp sang một executable ngoài sản phẩm.
-        native = await asyncio.to_thread(
+        native = await run_in_threadpool(
             pdf_actions_native.optimize_pdf,
             source_path,
             output_path,
             preset,
             float(image_dpi) if preset == "custom" else None,
             do_gray,
+            do_strip,
         )
         if not native.get("supported"):
             warnings = "; ".join(native.get("warnings", []))
@@ -1206,21 +1226,25 @@ async def optimize_pdf_endpoint(
                 detail=unsupported_message("Tối ưu PDF"),
             )
 
-        if do_strip:
-            try:
-                await run_in_threadpool(_strip_pdf_metadata, output_path)
-            except Exception as se:  # noqa: BLE001
-                logger.warning("strip metadata sau optimize lỗi: %s", se)
-
         output_size = os.path.getsize(output_path)
         ratio = (
             round((1 - output_size / original_size) * 100, 1)
             if original_size > 0
             else 0
         )
+        if return_path:
+            # PERF (audit 2026-09-25 §PDF.OPT.PATH): giao ownership artifact
+            # cho desktop; caller không phải tải lại file lớn vào JS heap.
+            return {
+                "path": os.path.abspath(output_path),
+                "filename": f"optimized_{source_name}",
+                "size": output_size,
+                "original_size": original_size,
+                "ratio": ratio,
+            }
         return FileResponse(
             path=output_path,
-            filename=f"optimized_{file.filename}",
+            filename=f"optimized_{source_name}",
             media_type="application/pdf",
             headers={
                 "X-Original-Size": str(original_size),
@@ -1242,8 +1266,9 @@ async def optimize_pdf_endpoint(
             detail="Tối ưu thất bại do engine nội bộ không xử lý được file này.",
         ) from e
     finally:
-        try: os.remove(source_path)
-        except OSError: pass
+        if delete_source:
+            try: os.remove(source_path)
+            except OSError: pass
 
 @router.post("/encrypt")
 async def encrypt_pdf_endpoint(

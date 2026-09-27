@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "schema": "viewer-gpu-fixtures-v1",
+  "fixtures": [
+    {
+      "id": "R01",
+      "name": "CMNM2026 - Giay moi_BLUE - in.pdf",
+      "expected_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "expected_size_bytes": 17869243,
+      "page": 1,
+      "baseline_trace_id": "Vmug8p305-zncw82",
+      "baseline_snapshot_sha256": "f0563577890b9dd0d5f2c850b07c84910bcc7a4daef25ab9be6f54a45ccc4817",
+      "standard_locations": [
+        "C:\\Users\\Khanh Pham\\Desktop\\PDF\\CMNM2026 - Giay moi_BLUE - in.pdf"
+      ],
+      "metrics_baseline": {
+        "ipc_send_ms": { "p50": 1.0, "min": 0.0, "max": 2.0 },
+        "ppe_render_ms": { "p50": 330.0, "min": 269.0, "max": 478.0 },
+        "worker_total_ms": { "p50": 351.5, "min": 288.0, "max": 511.0 },
+        "encode_png_ms": { "p50": 20.0, "min": 16.0, "max": 28.0 },
+        "frontend_request_ms": { "p50": 395.5, "min": 296.0, "max": 684.0 },
+        "last_wheel_to_density_98_ms": { "p50": 574.0, "min": 393.0, "max": 911.0 },
+        "ui_long_tasks_count": 31,
+        "ui_long_task_duration_ms": { "min": 51.0, "max": 107.0 }
+      },
+      "feature_tags": [
+        "large_bitmap_image",
+        "soft_mask_smask",
+        "transparency_group",
+        "isolated_knockout",
+        "cmyk_icc"
+      ],
+      "clips": [
+        { "dpi": 104, "label": "full_page_low_dpi", "width": 880, "height": 622 },
+        { "dpi": 848, "label": "zoom_viewport_mid", "width": 1920, "height": 1080 },
+        { "dpi": 2072, "label": "zoom_viewport_high", "width": 1920, "height": 1080 }
+      ],
+      "description": "Tài liệu người dùng thực tế tại trace Vmug8p305-zncw82: chứa hình ảnh lớn, soft mask, transparency groups phức tạp."
+    }
+  ]
+}

@@ -231,7 +231,7 @@ enum RgbSurfaceMode {
 pub const MAX_COLORANTS: usize = 64;
 
 /// Một loại mực.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Colorant {
     Cyan,
     Magenta,
@@ -292,7 +292,7 @@ const SPOT_ALT_LUT_STEPS: usize = 33;
 /// (hàm `FunctionType 2` với `N != 1`, hoặc sampled), nên nhân giá trị ở tint 1.0
 /// với 0.5 cho ra màu khác màu thật. Bảng này được lấy mẫu **một lần mỗi kẽm mỗi
 /// trang** lúc gặp colorspace, nên chi phí không đáng kể.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpotAlternate {
     lut: Vec<[f32; 4]>,
 }
@@ -339,7 +339,7 @@ impl SpotAlternate {
 /// Tập kênh mà một nguồn màu **khai báo** (participation set).
 ///
 /// Bitmask theo chỉ số kênh trong [`InkSpace`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelMask(u64);
 
 impl ChannelMask {
@@ -381,7 +381,7 @@ impl ChannelMask {
 /// Giữ cố định như vậy để plate output, công thức TAC và soft-proof không phải
 /// tra cứu động, và để so sánh golden với GS `tiffsep` (vốn luôn xuất 4 plate
 /// process) là so cùng thứ tự.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InkSpace {
     colorants: Vec<Colorant>,
     /// Chỉ giữ bốn kênh process; mực pha được quy về CMYK qua tint transform.
@@ -540,7 +540,7 @@ impl InkSpace {
 }
 
 /// Màu nguồn đã quy về không gian mực, kèm ngữ nghĩa overprint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InkPaint {
     /// Lượng mực theo từng kênh; độ dài = số kênh của [`InkSpace`] khi tạo.
     pub ink: Vec<f32>,

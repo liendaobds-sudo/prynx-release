@@ -12143,10 +12143,27 @@ class StickerEngine:
         # được nhả, thay vì gom cả bộ trong RAM process cha.
         chunk_spill = tempfile.TemporaryDirectory(prefix="prynx_sticker_chunks_")
         chunk_spill_dir = chunk_spill.name
+
+        from app.core.heavy_job_scheduler import process_pool_admission
+
+        def _run_admitted(requested_workers: int, pool_enabled: bool):
+            # PERF (audit 2026-09-25 §G2): chỉ giữ reservation trong lúc pool
+            # thật sự tồn tại; nhánh fallback tuần tự cũng không vượt ngân sách.
+            with process_pool_admission(
+                "sticker",
+                requested_workers,
+                per_w_ram,
+                env_override="STICKER_MAX_WORKERS",
+            ) as admitted_workers:
+                return self._run_sticker_chunks(
+                    args_list,
+                    admitted_workers,
+                    use_pool=pool_enabled,
+                    spill_dir=chunk_spill_dir,
+                )
+
         try:
-            results = self._run_sticker_chunks(
-                args_list, n_workers, use_pool=use_pool, spill_dir=chunk_spill_dir
-            )
+            results = _run_admitted(n_workers, use_pool)
             used_pool = use_pool
         except Exception as pool_err:
             if use_pool and _is_process_pool_crash(pool_err):
@@ -12165,12 +12182,7 @@ class StickerEngine:
                         # PERF (audit 2026-08-05 §ALPHA.P1): pool lớn chết không
                         # được rơi thẳng về 1 worker. Thử lại nửa pool để vẫn tận
                         # dụng máy mạnh; cùng args/chunk nên artifact không đổi.
-                        results = self._run_sticker_chunks(
-                            args_list,
-                            n_workers=retry_workers,
-                            use_pool=True,
-                            spill_dir=chunk_spill_dir,
-                        )
+                        results = _run_admitted(retry_workers, True)
                         used_pool = True
                         logger.info(
                             "[STICKER] reduced pool retry completed workers=%d "
@@ -12195,10 +12207,7 @@ class StickerEngine:
                     _mark_pool_crash_sticky()
                     try:
                         # Peak RAM thấp hơn: một chunk một lúc trong process cha.
-                        results = self._run_sticker_chunks(
-                            args_list, n_workers=1, use_pool=False,
-                            spill_dir=chunk_spill_dir,
-                        )
+                        results = _run_admitted(1, False)
                     except Exception as seq_err:
                         logger.error(
                             "[STICKER] sequential fallback ALSO failed: %s",

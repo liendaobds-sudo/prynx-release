@@ -4,6 +4,8 @@ Ngày: 25/09/2026. Trạng thái: **thiết kế đích đề xuất, chưa tri�
 
 Yêu cầu: một hướng phát triển thống nhất để zoom/pan nét và nhanh, chấm dứt chuỗi vá timer rồi nhờ người dùng thử lại. Tài liệu này thay phần định hướng thăm dò F–H ở `RENDER_ZOOM_RUNTIME_FIXES_2026-09-25.md` bằng một kiến trúc đích và các chốt triển khai. Các kết quả đo/bản sửa trước vẫn giữ nguyên giá trị và giới hạn đã ghi.
 
+Kế hoạch chi tiết: [Triển khai PPE Viewer GPU và native viewport](KE_HOACH_TRIEN_KHAI_PPE_VIEWER_GPU_2026-09-25.md) — gói việc G0–G4, ranh giới module/process, tiêu chí nghiệm thu, log/replay, chuyển consumer, rollback và ước lượng nguồn lực. Các gate hiện chưa được triển khai/nghiệm thu.
+
 ## 1. Quyết định đề xuất
 
 **Xây PPE Viewer dựa trên scene bất biến, render graph và raster/composite GPU, trình bày bằng native viewport có vòng frame riêng.** Giữ Tauri/React cho shell/panel; giữ PPE làm nguồn semantics PDF, màu, chữ, clip và transparency. CPU PPE là backend tương thích và đường đối chiếu, không chuyển PDFium/PPE theo động tác zoom.

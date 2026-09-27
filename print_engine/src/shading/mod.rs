@@ -32,7 +32,7 @@ use crate::geom::{Matrix, Rect};
 use crate::pdf;
 
 /// Kiểu shading đã phân giải.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ShadingKind {
     /// Kiểu 1 — màu là hàm của (x, y) trong `domain`.
     FunctionBased {
@@ -62,7 +62,7 @@ pub enum ShadingKind {
 }
 
 /// Shading đã phân giải, sẵn sàng lấy màu theo điểm.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Shading {
     pub kind: ShadingKind,
     pub colorspace: ColorSpace,

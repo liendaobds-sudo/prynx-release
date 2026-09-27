@@ -3,6 +3,7 @@ import { useWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceSt
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTextMarkupStore } from '../../stores/useTextMarkupStore';
 import { matchesShortcut } from '../../lib/keyboardShortcuts';
+import { isAppBackgrounded } from '../../lib/appVisibility';
 import { toast } from '../../components/ui/Toast'; // UIUX (audit 2026-07-27 §C-07)
 import i18n from '../../i18n'; // UIUX (audit 2026-07-27 §C-07)
 import type { ViewerContextMenuState } from '../../components/acrobat/ViewerContextMenu';
@@ -639,8 +640,14 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             }
         };
 
-        const restoreToolAfterSpace = () => {
+        const restoreToolAfterSpace = (force = false) => {
             if (!isSpacebarHeldRef.current) return false;
+            // UIUX: Trong ứng dụng desktop Tauri, khi click vào Win32 Child HWND (GPU Viewport),
+            // WebView2 sẽ nhận sự kiện window.blur nhưng ứng dụng vẫn đang ở foreground (!isAppBackgrounded()).
+            // Chỉ bỏ qua khi đang chạy trong runtime Tauri thật; ở môi trường test/web không có native child HWND.
+            if (!force && typeof window !== 'undefined' && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) && !isAppBackgrounded()) {
+                return false;
+            }
             isSpacebarHeldRef.current = false;
             const previousMode = prevToolModeRef.current;
             spaceStartedInCropRef.current = false;
@@ -656,7 +663,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             if (e.code === 'Space' && isSpacebarHeldRef.current) {
                 e.preventDefault();
                 const startedInCrop = spaceStartedInCropRef.current;
-                restoreToolAfterSpace();
+                restoreToolAfterSpace(true);
 
                 // A quick Space tap in Crop is still a pan gesture, never page navigation.
                 if (!startedInCrop && Date.now() - spacePressTimeRef.current < 250) {
@@ -674,11 +681,12 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
 
         document.addEventListener('keydown', handleKeyDown);
         document.addEventListener('keyup', handleKeyUp);
-        window.addEventListener('blur', restoreToolAfterSpace);
+        const handleWindowBlur = () => { restoreToolAfterSpace(false); };
+        window.addEventListener('blur', handleWindowBlur);
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('keyup', handleKeyUp);
-            window.removeEventListener('blur', restoreToolAfterSpace);
+            window.removeEventListener('blur', handleWindowBlur);
         };
     }, [isViewerLive, isBlockingDialogOpen, selectedIndices, activePage, pageOrder.length, undo, redo, rotateSelectedPages, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setSelectedIndices, setLastSelectedIndex, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen, workspaceStore]);
 
@@ -728,5 +736,8 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         return () => document.removeEventListener('keydown', handleEscape);
     }, [isViewerLive, isBlockingDialogOpen, workspaceStore, setIsInsertModalOpen, setIsExtractModalOpen, setIsDeleteModalOpen, setContextMenu]);
 
-    return { commitSnapshot, undo, redo };
+    // PERF (audit 2026-09-25 §R25.GPU.29): Space chỉ đổi cách tương tác tạm
+    // thời, không phải lệnh chuyển renderer rồi parse/upload lại trang.
+    const renderToolMode = isSpacebarHeldRef.current ? prevToolModeRef.current : toolMode;
+    return { commitSnapshot, undo, redo, renderToolMode };
 }

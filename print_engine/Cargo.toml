@@ -43,5 +43,7 @@ hayro-font = "0.4"
 # PERF (audit 2026-08-05 §PERF.8): pool dùng chung cho kernel full-frame thuần dữ liệu.
 # Không tạo pool theo request; nhiều tác vụ PPE cùng chia sẻ số luồng CPU của Rayon.
 rayon = "1.12"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
 
 [dev-dependencies]

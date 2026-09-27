@@ -3,6 +3,7 @@ import { createJSONStorage } from 'zustand/middleware';
 
 import {
   createLatestSettingsWriteQueue,
+  normalizePersistedGpuSettings,
   normalizePersistedRightMenuSettings,
   useAppSettingsStore,
 } from './appSettingsStore';
@@ -285,3 +286,54 @@ describe('appSettingsStore — persistence menu công cụ phải', () => {
     });
   });
 });
+
+describe('appSettingsStore — migration và default của nativeGpuViewportEnabled', () => {
+  it('cài đặt mới (fresh install) mặc định tắt GPU viewport và đánh dấu đã migrate', () => {
+    const res = normalizePersistedGpuSettings({});
+    expect(res).toEqual({
+      nativeGpuViewportEnabled: false,
+      nativeGpuMigratedToOff_v1: true,
+    });
+  });
+
+  it('người dùng cũ có nativeGpuViewportEnabled: true nhưng chưa có cờ migration được tự động chuyển về false', () => {
+    const legacyState = {
+      nativeGpuViewportEnabled: true,
+      toolMenuWidth: 390,
+    };
+    const res = normalizePersistedGpuSettings(legacyState);
+    expect(res).toEqual({
+      nativeGpuViewportEnabled: false,
+      nativeGpuMigratedToOff_v1: true,
+    });
+  });
+
+  it('người dùng sau khi đã migrate chủ động bật true thì giữ nguyên true khi hydrate', () => {
+    const userExplicitlyEnabledState = {
+      nativeGpuViewportEnabled: true,
+      nativeGpuMigratedToOff_v1: true,
+    };
+    const res = normalizePersistedGpuSettings(userExplicitlyEnabledState);
+    expect(res).toEqual({
+      nativeGpuViewportEnabled: true,
+      nativeGpuMigratedToOff_v1: true,
+    });
+  });
+
+  it('người dùng sau khi đã migrate chủ động tắt false thì giữ nguyên false khi hydrate', () => {
+    const userDisabledState = {
+      nativeGpuViewportEnabled: false,
+      nativeGpuMigratedToOff_v1: true,
+    };
+    const res = normalizePersistedGpuSettings(userDisabledState);
+    expect(res).toEqual({
+      nativeGpuViewportEnabled: false,
+      nativeGpuMigratedToOff_v1: true,
+    });
+  });
+
+  it('giá trị khởi tạo mặc định trong store là false', () => {
+    expect(useAppSettingsStore.getState().nativeGpuViewportEnabled).toBe(false);
+  });
+});
+

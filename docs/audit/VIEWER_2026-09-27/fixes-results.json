@@ -1,0 +1,191 @@
+{
+  "generated_at": "2026-09-27T04:04:29.165019+07:00",
+  "scope": "source-auto-headless-artifact; GUI/displayed FPS unobserved by user instruction",
+  "input_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+  "gpu_benchmark_exe_sha256": "f8ca814277af0ae86cfde507afae4085fd4af673740a63c65f9f27080dd2df41",
+  "gpu_first_frame_sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e",
+  "warm_full_complete_ms": {
+    "n": 10,
+    "min_ms": 29.6495,
+    "p50_ms": 31.335,
+    "p95_ms": 32.021,
+    "max_ms": 32.021
+  },
+  "warm_partial_complete_ms": {
+    "n": 10,
+    "min_ms": 19.2611,
+    "p50_ms": 20.8765,
+    "p95_ms": 22.4067,
+    "max_ms": 22.4067
+  },
+  "cold_frame_complete_ms": 311.1577,
+  "scene_wall_ms": 388.542,
+  "gpu_init_ms": 331.4259,
+  "ppe_cold_ms": {
+    "n": 3,
+    "min_ms": 662.2596,
+    "p50_ms": 673.4182,
+    "p95_ms": 687.2659,
+    "max_ms": 687.2659
+  },
+  "ppe_warm_ms": {
+    "n": 6,
+    "min_ms": 352.1223,
+    "p50_ms": 366.3057,
+    "p95_ms": 368.0742,
+    "max_ms": 368.0742
+  },
+  "full_image_pairs": [
+    {
+      "run": 0,
+      "camera": 0,
+      "identical": true,
+      "sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e"
+    },
+    {
+      "run": 0,
+      "camera": 1,
+      "identical": true,
+      "sha256": "eb05d7daf16a1c21e30b51745a83a45f48bfe8a44fb4fef710651ffea44d4dd8"
+    },
+    {
+      "run": 1,
+      "camera": 0,
+      "identical": true,
+      "sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e"
+    },
+    {
+      "run": 1,
+      "camera": 1,
+      "identical": true,
+      "sha256": "eb05d7daf16a1c21e30b51745a83a45f48bfe8a44fb4fef710651ffea44d4dd8"
+    },
+    {
+      "run": 2,
+      "camera": 0,
+      "identical": true,
+      "sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e"
+    },
+    {
+      "run": 2,
+      "camera": 1,
+      "identical": true,
+      "sha256": "eb05d7daf16a1c21e30b51745a83a45f48bfe8a44fb4fef710651ffea44d4dd8"
+    }
+  ],
+  "roi_pairs": 12,
+  "roi_different_bytes": 0,
+  "ppe_png_count": 9,
+  "ppe_png_hashes": [
+    "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b"
+  ],
+  "source_snapshot": [
+    {
+      "path": "desktop\\src\\components\\AcrobatViewer.tsx",
+      "sha256": "a896f769115b92a8b1d910e90b4710339472ff475145190aa191de2743eff49e"
+    },
+    {
+      "path": "desktop\\src\\components\\workspace\\LivePageFrame.tsx",
+      "sha256": "81bdffc4a0900312d66cc2cc4644fd727abb2902c213f1019e91e5504195d1b4"
+    },
+    {
+      "path": "desktop\\src\\components\\acrobat\\NativeGpuViewportContainer.tsx",
+      "sha256": "e489bdc6e75390ddebe4b23f77a961b8283024ae12b390cf5f4d7f30a3622579"
+    },
+    {
+      "path": "desktop\\src\\hooks\\viewer\\useNativeGpuViewport.ts",
+      "sha256": "bdf59bc46277c2cc192c0069db3190204bab77a4733b5447e0b78caea5786bd0"
+    },
+    {
+      "path": "desktop\\src\\hooks\\viewer\\useTileRenderer.ts",
+      "sha256": "ce45912d72ae7928ae1f6b7a0782753fd6c7b10ad15367669a0e56aa9f2f7950"
+    },
+    {
+      "path": "desktop\\src\\lib\\viewerFirstFrame.ts",
+      "sha256": "a049f02f92ba45e74324d799f27d53ad573fa4c248629e56b556013f89e09921"
+    },
+    {
+      "path": "desktop\\src\\lib\\tileUrlCache.ts",
+      "sha256": "e7fdc0948f9416b74aeead31ce1f54549f049fa0d91ced96ca109f2dcfe6fda5"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\lib.rs",
+      "sha256": "ae1305b2894ab4a32c62bd85e48f67dfd164da64054b38c0cfc67cf6dd59ae7d"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\commands.rs",
+      "sha256": "fc447687ea79012a962813b92988dd2586dd60805556aadad854a7e855a94882"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\scene_cache.rs",
+      "sha256": "e928bafc1dd1e9d616e98020753d0c4c20eee5bad140d4779492eb89ac6c3ae7"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\scene_worker.rs",
+      "sha256": "2df3b7d79a8d23ec7fafbf4851d1197738c42078d9b098fe9e619b278bb92511"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\presenter.rs",
+      "sha256": "a3c4b0f140aaf686c4c8a3e0313255555f77a2f884be96e960e2e599bcc343b4"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\refinement.rs",
+      "sha256": "ee176b128f50219a807e80ce4af075e63d54883809deb676de6060cc08a28469"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\detail_cache.rs",
+      "sha256": "f19912525414fb5928cd87ce702dc4ab9fa0b31d11f000915898fcd1e945e2c8"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\document_renderer.rs",
+      "sha256": "b4d1cfc34150a1aec5a51531a067bfda1c3ff6fc242df3005156a9ed0d7ab3f5"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\viewport\\win32_host.rs",
+      "sha256": "53bb8f3a77903cbded49478520e83a6ddf35064cbf926f85214f584bebcb7e38"
+    },
+    {
+      "path": "viewer_gpu\\src\\retained_renderer.rs",
+      "sha256": "f78c19e8ac712f342d401cfa68500a7c2de7b14c5f7f4783ca7628b2197153e0"
+    },
+    {
+      "path": "viewer_gpu\\src\\retained_material.rs",
+      "sha256": "dd534e66b663336e8fd678e1b49c499907071beb4e863dd5edcf398c2099e67e"
+    },
+    {
+      "path": "viewer_gpu\\src\\resident_present.rs",
+      "sha256": "030204ed57e7265a999fd787a804e6f28ef65b2a5ca7a2d46673d160601e3dd9"
+    },
+    {
+      "path": "desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs",
+      "sha256": "a0bc36072a24ea0bb576f58d6214509af5a272eba86379366713d09cb085c635"
+    },
+    {
+      "path": "viewer_gpu\\src\\timing.rs",
+      "sha256": "97fda239d7090168afbe61faef4afac52dde59ca44352d2e5c9e3e46edde6843"
+    },
+    {
+      "path": "viewer_gpu\\src\\lib.rs",
+      "sha256": "3794bd3b237036488f799d3a903c8da61d48615581428d851ed0f013f5140a0c"
+    },
+    {
+      "path": "viewer_gpu\\src\\device.rs",
+      "sha256": "274a4a8dbd3a252d0fd0de9fd13c1e3e452b667ec2b50e8f3e456bd24c4f178c"
+    },
+    {
+      "path": "desktop\\src-tauri\\examples\\viewer_audit_worker.rs",
+      "sha256": "92d3e3af1cf7af000dbaa57b9dec74c05edb27c7002fd998066456e32e75f845"
+    },
+    {
+      "path": "desktop\\src\\components\\workspace\\nativeFallbackPolicy.ts",
+      "sha256": "2d7a706c62436c607f88a111fa0886ee5b6175bf5105d7f3034e8486dbe02099"
+    }
+  ],
+  "limits": [
+    "Đây là kernel headless, không phải HWND/displayed FPS hoặc A/B Acrobat.",
+    "N nhỏ; percentile chỉ mô tả mẫu, không chứng nhận SLA P99.",
+    "optimized-gpu-final là thử nghiệm staging có observer overhead, không phải đường production cuối.",
+    "Không gộp timing debug chưa tối ưu với Cargo dev kernel opt-level=3.",
+    "Không build/cài installer hoặc thao tác cửa sổ ứng dụng đang mở."
+  ]
+}

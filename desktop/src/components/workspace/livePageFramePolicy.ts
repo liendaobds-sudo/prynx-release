@@ -176,14 +176,14 @@ export function viewerPanGridRenderPolicy(
 export function shouldPresentViewerPanGrid(
     planIsCurrent: boolean,
     viewportCovered: boolean,
-    zoomSettling: boolean,
-    hasStableUnderlay: boolean,
+    _zoomSettling: boolean,
+    _hasStableUnderlay: boolean,
 ): boolean {
-    // UIUX (feedback 2026-08-14 §VIEW.SWAP): các cell vẫn decode ở nền nhưng chỉ
-    // được đưa vào compositor cùng lúc khi hợp của chúng đã phủ kín viewport.
+    // UIUX (feedback 2026-08-14 §VIEW.SWAP / audit 2026-09-27 §PPE.ZOOM_SHARPNESS):
+    // Giữ atlas/grid đã phủ kín hiển thị liên tục kể cả trong lúc zoom;
+    // không ẩn làm lộ nền mờ khi người dùng đang cuộn chuột.
     return planIsCurrent
-        && viewportCovered
-        && !(zoomSettling && hasStableUnderlay);
+        && viewportCovered;
 }
 
 export function shouldUseViewerDisplayLayer(
@@ -279,6 +279,28 @@ export function shouldKeepViewerAccurateBaseMounted(
     return accurateColorPage
         && fullPageWithinSurfaceBudget
         && (renderAccurateBaseTile || accurateCommitted);
+}
+
+/**
+ * PERF/UIUX (audit 2026-09-25 §PAN.PREFETCH): khi pan trong cùng DPI bucket,
+ * target viewport mới có thể còn đang chờ nhưng các cell PPE kế cận vẫn dùng
+ * chung raster identity. Không khóa atlas trong trường hợp này; chỉ khóa khi
+ * zoom đổi bucket hoặc chưa có frame accurate đầu tiên. Nhờ vậy vùng sắp đi vào
+ * khung được dựng nền song song, không làm chậm request tương tác priority 0.
+ */
+export function viewerPanGridTargetRasterPending(
+    zoomSettling: boolean,
+    planIsCurrent: boolean,
+    viewportReady: boolean,
+    queuedBufferGroup: string | null | undefined,
+    targetBufferGroup: string | null | undefined,
+    currentBufferGroup: string,
+): boolean {
+    if (zoomSettling || !planIsCurrent || !viewportReady) return true;
+    return Boolean(
+        (queuedBufferGroup && queuedBufferGroup !== currentBufferGroup)
+        || (targetBufferGroup && targetBufferGroup !== currentBufferGroup),
+    );
 }
 
 /**

@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PPEViewerSceneIR",
+  "description": "Schema dac ta Scene IR Version 1 cho PPE Viewer GPU (Bat bien theo Camera/Zoom)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "document_revision",
+    "page_index",
+    "page_box",
+    "rotation_degrees",
+    "user_unit",
+    "draw_commands",
+    "resources"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "document_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "page_box": {
+      "type": "object",
+      "required": ["media_box", "crop_box"],
+      "properties": {
+        "media_box": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "crop_box": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "bleed_box": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "trim_box": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        }
+      },
+      "additionalProperties": false
+    },
+    "rotation_degrees": {
+      "type": "integer",
+      "enum": [0, 90, 180, 270]
+    },
+    "user_unit": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "draw_commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "command_type", "bounds"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0 },
+          "command_type": {
+            "type": "string",
+            "enum": [
+              "path",
+              "text_run",
+              "image",
+              "shading",
+              "clip_push",
+              "clip_pop",
+              "group_push",
+              "group_pop",
+              "mask_push",
+              "mask_pop"
+            ]
+          },
+          "bounds": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "paint_mode": {
+            "type": "string",
+            "enum": ["fill", "stroke", "fill_and_stroke", "clip", "none"]
+          },
+          "color_space": { "type": "string" },
+          "color_values": {
+            "type": "array",
+            "items": { "type": "number" }
+          },
+          "alpha": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "overprint": { "type": "boolean" },
+          "payload_ref": { "type": "string" }
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["fonts", "images", "shadings"],
+      "properties": {
+        "fonts": { "type": "object" },
+        "images": { "type": "object" },
+        "shadings": { "type": "object" },
+        "patterns": { "type": "object" },
+        "extgstates": { "type": "object" }
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

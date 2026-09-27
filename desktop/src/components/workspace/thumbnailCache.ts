@@ -23,6 +23,8 @@ interface ThumbnailRenderRequestInput {
     pageWidthPx96?: number | null;
     cssWidth: number;
     devicePixelRatio?: number | null;
+    profileId?: string | null;
+    intent?: string | null;
 }
 
 /**
@@ -35,6 +37,8 @@ export function createThumbnailRenderRequest({
     pageWidthPx96,
     cssWidth,
     devicePixelRatio,
+    profileId,
+    intent,
 }: ThumbnailRenderRequestInput): ThumbnailRenderRequest {
     // UIUX (audit 2026-08-22 §UX.TH.01): producer/consumer phải dùng cùng DPR,
     // oversample và đơn vị px@96; lệch một nhánh sẽ làm tile chờ cache vĩnh viễn.
@@ -52,9 +56,12 @@ export function createThumbnailRenderRequest({
     );
     const zoom = Math.max(0.1, pixelWidth / safePageWidthPx96);
     const zoomMilli = Math.round(zoom * 1000);
+    // COLOR (audit 2026-09-26): Phân biệt cache key khi bật mô phỏng màu in FOGRA39/Relative.
+    // Khi không có profileId (mặc định display PDFium raw RGB), giữ nguyên định dạng cũ.
+    const colorSuffix = profileId ? `_${profileId}_${intent || 'relative'}` : '';
 
     return {
-        cacheKey: `${revision}_${safePageNum}_0_${zoomMilli}`,
+        cacheKey: `${revision}_${safePageNum}_0_${zoomMilli}${colorSuffix}`,
         pixelWidth,
         zoom,
         zoomMilli,

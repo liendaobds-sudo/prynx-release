@@ -29,6 +29,17 @@ def _workers(**kwargs):
     return sm.plan_worker_count(**kwargs)[0]
 
 
+def test_working_set_budget_preserves_full_small_file_and_reacts_to_pressure(gia_lap_ram):
+    gia_lap_ram(32 * 1024.0, 20 * 1024.0)
+    budget = sm.process_pool_budget_mb()
+    assert budget > 15 * sm.estimate_pdf_worker_mb(20 * 1024 * 1024)
+    assert budget < 15 * sm.estimate_pdf_worker_mb(1400 * 1024 * 1024)
+    gia_lap_ram(32 * 1024.0, 512.0)
+    assert sm.process_pool_budget_mb() == 0.0
+    gia_lap_ram(None, None)
+    assert sm.process_pool_budget_mb() is None
+
+
 def test_may_manh_khong_bi_ha_tran(gia_lap_ram):
     """>=16 GB: giữ nguyên `cpu_count - 1`, kể cả khi RAM khả dụng đang thấp.
 

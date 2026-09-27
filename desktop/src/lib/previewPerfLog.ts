@@ -186,11 +186,17 @@ async function enqueueTrace(line: string): Promise<void> {
 
 /** Capture thời gian ngay tại lời gọi; thời điểm ghi file không thay thế thời điểm sự kiện. */
 export function viewerTraceLog(event: string, extra: Record<string, unknown> = {}): Promise<void> {
+  if (import.meta.env.DEV) {
+    console.debug(`[VIEWER_TRACE] ${event}`, extra);
+  }
   if (typeof window === 'undefined' || enabledValue === false) return Promise.resolve();
   return enqueueTrace(`VIEWER_TRACE ${JSON.stringify(eventPayload({ ...extra, event: event.slice(0, 80) }))}`);
 }
 
 export function previewPerfLog(msg: string, extra: Record<string, unknown> = {}): Promise<void> {
+  if (import.meta.env.DEV) {
+    console.debug(`[PREVIEW_PERF] ${msg}`, extra);
+  }
   if (typeof window === 'undefined' || enabledValue === false) return Promise.resolve();
   return enqueueTrace(`PREVIEW_PERF ${msg} ${JSON.stringify(eventPayload(extra))}`);
 }

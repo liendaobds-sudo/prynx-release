@@ -1,0 +1,31 @@
+[package]
+name = "embedding_spike"
+version = "0.1.0"
+edition = "2021"
+description = "Spike kiem chung nhung Child HWND, DPI V2, wgpu Surface va modal lifecycle cho PPE Viewer GPU"
+
+[workspace]
+
+[[bin]]
+name = "embedding_spike"
+path = "src/main.rs"
+
+[dependencies]
+wgpu = "24"
+pollster = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+]
+
+# KHONG dat [profile.release] o day (quy tac bat di bat dich cua PrynX).

@@ -16,7 +16,7 @@
 use crate::error::{PpeError, PpeResult};
 
 /// Hàm PDF đã phân giải, sẵn sàng `eval`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PdfFunction {
     /// Kiểu 0 — bảng mẫu nội suy đa tuyến tính.
     Sampled {
@@ -280,7 +280,7 @@ fn eval_sampled(
 ///
 /// Khối `{…}` được lưu dạng lồng nhau ngay khi parse, nên lúc chạy không phải
 /// tìm dấu ngoặc khớp — `if`/`ifelse` chỉ là chọn nhánh đã dựng sẵn.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PsOp {
     Num(f32),
     // Số học

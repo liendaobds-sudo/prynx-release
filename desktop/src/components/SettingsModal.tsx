@@ -31,6 +31,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
     autoRenameFormat, setAutoRenameFormat,
     measurementUnit, setMeasurementUnit,
     previewQuality, setPreviewQuality,
+    nativeGpuViewportEnabled, setNativeGpuViewportEnabled,
     showMenuBar, setShowMenuBar,
     enableInteractiveLinks, setEnableInteractiveLinks,
     enableTextSelectionToolbar, setEnableTextSelectionToolbar,
@@ -261,6 +262,22 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:chat_luong_preview_pdf')}</h4>
+                    {/* GPU Viewport tạm thời khóa chỉ hiển thị ở bản DEV để nghiên cứu sau */}
+                    {import.meta.env.DEV && (
+                      <label className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-amber-300/40 cursor-pointer">
+                        <input type="checkbox" className="mt-1" checked={nativeGpuViewportEnabled}
+                          onChange={event => setNativeGpuViewportEnabled(event.target.checked)} />
+                        <span>
+                          <span className="flex items-center gap-2 text-sm font-semibold">
+                            {t('settings:gpu_viewer_title')}
+                            <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                              DEV ONLY / R&D
+                            </span>
+                          </span>
+                          <span className="block text-xs text-slate-500 mt-1">{t('settings:gpu_viewer_description')}</span>
+                        </span>
+                      </label>
+                    )}
                     <div className="flex flex-col gap-3">
                       <label 
                         className="flex items-start gap-3 cursor-pointer group p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors border border-transparent hover:border-slate-200 dark:hover:border-zinc-700"

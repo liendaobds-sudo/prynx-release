@@ -22,7 +22,7 @@
 //! ra một con số nghe hợp lý.
 
 /// Blend mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BlendMode {
     #[default]
     Normal,

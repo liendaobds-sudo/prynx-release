@@ -1103,7 +1103,13 @@
     "xem_truoc_se_in_o": "📋 Preview — will print at {{pos}}",
     "xong": "Done",
     "dao_cat_reset_moi_phien": "The cutter resets to the safe default each session — select another cutter again if needed",
-    "giai_thich": "Explanation"
+    "giai_thich": "Explanation",
+    "cat_het_kho_giay": "Cut through the full sheet (CNC die cutter separates clusters)",
+    "cat_het_kho_giay_desc": "Extend the separator cut to both opposite sheet edges so the CNC die cutter separates clusters directly without a guillotine.",
+    "dau_be_xong_xen": "Die-cut and trim marks",
+    "dau_be_xong_xen_desc": "Draw trim marks at the sheet edges and cluster boundaries so the guillotine can separate clusters after die cutting.",
+    "duong_cat_chia_cum": "Cluster-separation cut line",
+    "xem_mau": "Color:"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Could not load cutter list (${res.status})",
@@ -3261,7 +3267,9 @@
     "copy_sang_file": "Copy to file…",
     "di_chuyen_sang_file": "Move to file…",
     "khong_co_file_khac": "No other file is open",
-    "tinh_nang_pro_notice": "External link with Illustrator & CorelDRAW requires PrynX Pro."
+    "tinh_nang_pro_notice": "External link with Illustrator & CorelDRAW requires PrynX Pro.",
+    "da_dong_bo_trang_sua": "Updated the edited page from {{app}} in PrynX!",
+    "da_dong_bo_toan_bo_file": "Updated changes from {{app}} in PrynX!"
   },
   "misc.viewerHelpers": {
     "dang_tai": "Loading...",
@@ -3620,7 +3628,8 @@
     "se_dung_n_trang_bia": "Will use {{n}} cover pages: {{list}}. Remaining pages are inner (use Numbering).",
     "tao_bia_n_cuon": "Create covers ({{n}} booklets)",
     "da_huy": "Cancelled",
-    "khong_chay_duoc_vdp": "Could not run VDP"
+    "khong_chay_duoc_vdp": "Could not run VDP",
+    "continuous_select_notice": "Continuous selection is on: click text or a number on the cover artwork to choose a VDP field, then click “Done” or press Esc."
   },
   "preprocess.dataMerge": {
     "1_chon_cot": "1. Choose column",
@@ -4223,7 +4232,8 @@
     "da_dong_bo_so_luong": "Synchronized all fields to {{count}} items.",
     "da_cat_ngan_so_luong": "Trimmed all fields to {{count}} items.",
     "xac_nhan_chay_lech": "Sequence counts differ ({{min}} vs {{max}}). Do you want to proceed?",
-    "trang_thieu_se_trong": "Missing pages will remain blank."
+    "trang_thieu_se_trong": "Missing pages will remain blank.",
+    "continuous_select_notice": "Continuous selection is on: click sample numbers on the artwork to create variable-number slots, then click “Done” or press Esc."
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Enable for paper-scanned files. Disable if the file is already clean (exported from Photoshop/AI).",
@@ -4752,7 +4762,51 @@
     "use_dpi_suggestion": "Use DPI suggestion",
     "confirmed_size": "Confirmed size",
     "unconfirmed_size": "Print size is not confirmed; the SVG will require review.",
-    "dpi_suggestion_warning": "Source DPI is only a suggestion; verify the actual print size."
+    "dpi_suggestion_warning": "Source DPI is only a suggestion; verify the actual print size.",
+    "ui_bang_mau": "Color palette",
+    "ui_bo_chon_mau": "Color picker",
+    "ui_bo_chon_mau_nen": "Background color picker",
+    "ui_chuyen_logo_sang_tab_tem_be_e_tao_uong_vien_cat_sticker": "Send logo to the Die-cut tab to create a sticker cut outline",
+    "ui_danh_sach_logo": "Logo list",
+    "ui_danh_sach_anh_logo": "Logo image list",
+    "ui_hay_tao_preview_vector_truoc_khi_tao_tem_be": "Create a vector preview before making a die-cut.",
+    "ui_hay_tao_preview_vector_truoc_khi_ua_sang_binh_ban": "Create a vector preview before sending it to Imposition.",
+    "ui_ho_tro_png_jpeg_webp_toi_a_500mb": "PNG, JPEG, and WebP supported (up to 500 MB)",
+    "ui_khong_the_ket_noi_backend": "Could not connect to the backend.",
+    "ui_khong_the_phan_tich_anh": "Could not analyze the image.",
+    "ui_khong_the_xoa_mang_vector_a_chon": "Could not delete the selected vector path.",
+    "ui_khong_at_tieu_chuan_xuat_vector_hay_ieu_chinh_thong_so": "The vector output did not meet the export standard; adjust the settings.",
+    "ui_keo_tha_anh_logo_vao_ay_hoac_bam_e_chon": "Drop a logo image here or click to choose one",
+    "ui_luu_file_svg_that_bai": "Could not save the SVG file.",
+    "ui_nen": "Background",
+    "ui_preset_in_an_1_cham": "Print Preset (One Click)",
+    "ui_them_logo_khac": "Add another logo",
+    "ui_thong_so_ky_thuat_chi_tiet": "Detailed technical specifications",
+    "ui_tao_tem_be": "Create die-cut",
+    "ui_tao_preview_that_bai": "Could not create the preview.",
+    "ui_tai_file_svg_vector_ve_may": "Download vector SVG",
+    "ui_tu_giac_nan_phoi_canh_phai_loi_4_iem_khong_giao_cat_va_nam_tron_trong_anh": "The perspective quadrilateral must be convex, non-intersecting, and fully inside the image.",
+    "ui_xoa": "Delete",
+    "ui_xoa_logo_nay": "Delete this logo",
+    "ui_ang_trich_xuat_mau_goi_y": "Extracting suggested colors…",
+    "ui_ang_xuat_svg": "Exporting SVG…",
+    "ui_a_huy_luu_file": "SVG save cancelled.",
+    "ui_a_huy_tao_preview": "Preview cancelled.",
+    "ui_a_mo_logo_vector_trong_tab_binh_ban": "Opened the vector logo in the Imposition tab.",
+    "ui_a_mo_logo_vector_trong_tab_tem_be": "Opened the vector logo in the Die-cut tab.",
+    "ui_a_phuc_hoi_mang_vector_vua_xoa": "Restored the deleted vector path.",
+    "ui_a_tao_vector_mot_so_chi_so_can_ban_kiem_tra": "Vector created; review some metrics before use.",
+    "ui_a_xoa_1_mang_rac_khoi_vector_bam_hoan_tac_neu_muon_phuc_hoi": "Removed one stray vector path. Click Undo to restore it.",
+    "ui_a_ap_dung_preset_bieu_tuong_toi_uu_hinh_tron_oval_khoi_hop": "Applied the Icon preset: optimized circles, ovals, and box shapes.",
+    "ui_a_ap_dung_preset_chu_ky_net_manh_giu_tron_ven_net_ve_manh": "Applied the Signature & Fine Strokes preset: preserved delicate strokes.",
+    "ui_a_ap_dung_preset_con_dau_scan_loc_nen_giay_trang_giu_muc_dau": "Applied the Scanned Stamp preset: filtered white paper and kept stamp ink.",
+    "ui_a_ap_dung_preset_logo_chu_bao_ve_dau_tieng_viet_uu_tien_canh_thang": "Applied the Letter Logo preset: protected Vietnamese diacritics and straight edges.",
+    "ui_ong_cong_cu": "Close tool",
+    "ui_ua_logo_vector_nay_sang_tab_binh_ban_e_xep_trang_in": "Send this vector logo to Imposition for print layout",
+    "ui_ua_vao_binh_ban": "Send to Imposition",
+    "ui_uong_net_toi_uu": "Strokes & Optimization",
+    "ui_a_dung": "built",
+    "ui_an": "Hide"
   },
   "preprocess.preflight": {
     "anh_chua_embed_mat_link": "Image not embedded (broken link)",
@@ -5518,6 +5572,8 @@
     "cau_hinh_he_do_luong_va_chat_luong_hien": "Configure the measurement system and preview image quality.",
     "chat_luong_cao_net_cang": "High Quality (Sharp)",
     "chat_luong_preview_pdf": "PDF Preview Quality",
+    "gpu_viewer_title": "New GPU viewer (experimental)",
+    "gpu_viewer_description": "Use GPU when a page opens in single-page view. The pointer selects text and the hand pans; unsupported tools continue using the existing viewer.",
     "chon_thu_muc": "Choose folder",
     "chon_thu_muc_luu_mac_dinh": "Choose default save folder",
     "chua_thiet_lap_luon_hoi_khi_luu": "Not set (Always ask when saving)",
@@ -5548,7 +5604,25 @@
     "toc_do_nhanh_low_res": "Fast (Low-res)",
     "vi_du": "Example:",
     "vi_tri_luu_mac_dinh": "Default save location",
-    "xoa_mac_dinh": "Clear default"
+    "xoa_mac_dinh": "Clear default",
+    "bam_de_chon_hoac_xoa": "Click to select (Delete to remove, Ctrl+Z to undo)",
+    "danh_dau_highlight": "Highlight text",
+    "gach_chan": "Underline",
+    "gach_xoa": "Strikethrough",
+    "ghi_chu_acrobat": "Acrobat comment",
+    "hien_thanh_cong_cu_boi_den": "Show floating tools when selecting text (Text Selection Quick Tools)",
+    "hien_thanh_cong_cu_desc": "Show floating tools (Copy, Highlight, Comment, Underline, Strikethrough…) when text is selected on a PDF page.",
+    "huy": "Cancel",
+    "luu_ghi_chu": "Save",
+    "mo_lien_ket_desc": "Recognize email (mailto:) and website links in PDFs and open them in a mail app or browser like Adobe Acrobat.",
+    "mo_lien_ket_khi_click": "Open web and email links on click (Hyperlinks & Mailto)",
+    "nhap_de_xem_ghi_chu": "Click to view/edit comment",
+    "nhap_ghi_chu_placeholder": "Enter a comment…",
+    "sao_chep": "Copy text",
+    "them_ghi_chu": "Add comment",
+    "tra_loi_placeholder": "Reply…",
+    "tuong_tac_van_ban_va_lien_ket": "Text and link interaction (Acrobat style)",
+    "xoa_ghi_chu": "Delete comment"
   },
   "print": {
     "title": "Print document",
@@ -6367,5 +6441,13 @@
     "tuy_chinh_dpi": "Custom DPI",
     "ap_dung_tuy_chinh": "Optimize to {{dpi}} DPI",
     "tiep_tuc_mo_anh_goc": "Open uncompressed original (Risk of freezing)"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "close": "Close"
+  },
+  "workspace.vdpRecordNavigator": {
+    "live_data_on": "👁️ Live data: ON",
+    "preview_off": "👁️ Preview: OFF"
   }
 }

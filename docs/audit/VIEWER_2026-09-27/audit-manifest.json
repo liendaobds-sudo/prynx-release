@@ -1,0 +1,179 @@
+{
+  "captured_at": "2026-09-27T01:27:56.2514496+07:00",
+  "head": "bb139dde242804fb44d0514f2c6688bbd686e13a",
+  "files": [
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\components\\AcrobatViewer.tsx",
+      "bytes": 186257,
+      "modified": "2026-09-26T23:53:38.2943780+07:00",
+      "sha256": "f92689529ed3d7a06f30327eedf4a8fa4d8e9709ebb8fa497b90f5348fdf36c6"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\components\\workspace\\LivePageFrame.tsx",
+      "bytes": 483487,
+      "modified": "2026-09-27T00:39:19.2124115+07:00",
+      "sha256": "2d4cf840e540717c60b1b6b0b23551a7d3c45986943bf755c3a94d3e39f325d0"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\components\\acrobat\\NativeGpuViewportContainer.tsx",
+      "bytes": 11292,
+      "modified": "2026-09-26T23:53:50.6753449+07:00",
+      "sha256": "075e4808c4ca81cba190a506931ce74406064ace4de033eeaa9c0a1bb59bcd48"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\useNativeGpuViewport.ts",
+      "bytes": 19227,
+      "modified": "2026-09-26T22:10:32.3120867+07:00",
+      "sha256": "1591932bc390c0f73c6a7ea8997b1ebdd0792065b89b2ec6bca5d8fae9cf4b14"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\useTileRenderer.ts",
+      "bytes": 51116,
+      "modified": "2026-09-25T15:01:38.9582264+07:00",
+      "sha256": "4de290942a075157c93354047c8cd3aafce93399b855c5e89b83adb016efa6ca"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\lib\\viewerFirstFrame.ts",
+      "bytes": 19376,
+      "modified": "2026-09-24T21:54:43.3690565+07:00",
+      "sha256": "6421b714c4ce5e07d2b5a319ab146c2309c5c7c8c2323ab3fd2a7f04b5dfd98a"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src\\lib\\tileUrlCache.ts",
+      "bytes": 9936,
+      "modified": "2026-09-18T15:01:06.6234739+07:00",
+      "sha256": "70c9ed862383df6b428380428efb36d385341e00a8fdbca1feaf9d617c8736cb"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\lib.rs",
+      "bytes": 412944,
+      "modified": "2026-09-26T08:36:47.5234115+07:00",
+      "sha256": "543d548153d74a6cbcc683a7e12ccf59a2a012056760c599ee44861f250353aa"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\commands.rs",
+      "bytes": 28067,
+      "modified": "2026-09-26T22:09:33.9579454+07:00",
+      "sha256": "c0a72ce3051ec2f6d6bed0f548b906880a4a15732150e11fa86a3bfe8da0d9c7"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\scene_cache.rs",
+      "bytes": 10497,
+      "modified": "2026-09-26T08:40:59.1937296+07:00",
+      "sha256": "fe04adf9fc6da39f81bb90b4856b3c2d24708741d65f32a8151854ba266a7d5b"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\scene_worker.rs",
+      "bytes": 10513,
+      "modified": "2026-09-25T15:01:38.9552139+07:00",
+      "sha256": "3f04671594d3eda34a1e3b052785de31388e6d21918d994be1b178f3e9ba9b3b"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\presenter.rs",
+      "bytes": 24086,
+      "modified": "2026-09-26T23:54:03.7251900+07:00",
+      "sha256": "e37599badebc49019e27ce6307239cee59335282c12316bf265a5cc7f56071ab"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\refinement.rs",
+      "bytes": 15868,
+      "modified": "2026-09-26T07:28:25.0839958+07:00",
+      "sha256": "b884c632a102ed0bc4d7babe8138db180f338ae69eec2a11c4c91fed71a73398"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\detail_cache.rs",
+      "bytes": 3508,
+      "modified": "2026-09-26T06:57:49.2089795+07:00",
+      "sha256": "446cb38cfed6096b1135e21a01cc2e566f5a7b52f45b88a07f72fcd51554655e"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\document_renderer.rs",
+      "bytes": 19662,
+      "modified": "2026-09-26T06:43:59.2922086+07:00",
+      "sha256": "73137ff72fd853115eb202e1dfe398af05d42a056aa4e589a0c0129ab66e0601"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\viewport\\win32_host.rs",
+      "bytes": 48404,
+      "modified": "2026-09-26T23:32:22.4689013+07:00",
+      "sha256": "36fb4429b56ac1f3627aebd6501ea1db609596ba10fcfa5de6f51e3831a9c858"
+    },
+    {
+      "path": "D:\\pdfcompare\\viewer_gpu\\src\\retained_renderer.rs",
+      "bytes": 47220,
+      "modified": "2026-09-26T06:43:49.8804648+07:00",
+      "sha256": "84899cbf8160163fbdc2a6ef59639b7cf2416a192f768cc6b6d2f4ee1522df3e"
+    },
+    {
+      "path": "D:\\pdfcompare\\viewer_gpu\\src\\retained_material.rs",
+      "bytes": 15654,
+      "modified": "2026-09-27T00:35:43.0869365+07:00",
+      "sha256": "9a3e36a30c6fede9ed52264f3e882aab355b3837d50ff2d06936ac2f2960b5c5"
+    },
+    {
+      "path": "D:\\pdfcompare\\viewer_gpu\\src\\resident_present.rs",
+      "bytes": 12788,
+      "modified": "2026-09-26T07:25:10.8300051+07:00",
+      "sha256": "030204ed57e7265a999fd787a804e6f28ef65b2a5ca7a2d46673d160601e3dd9"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\src\\pdf_engine\\render_worker.rs",
+      "bytes": 274436,
+      "modified": "2026-09-26T05:12:48.2783685+07:00",
+      "sha256": "0db397c7bc9d9429aabe435e4d82b50cf3b8b42fe9cdeed2240ebe2687fb697f"
+    },
+    {
+      "path": "D:\\pdfcompare\\desktop\\src-tauri\\target\\debug\\pdf-inspector.exe",
+      "bytes": 39919616,
+      "modified": "2026-09-27T00:56:12.3122970+07:00",
+      "sha256": "4c7a8b752494925df574e2e34ac68fde99fde6e23d6206fb2d5f3308d67f8dc4"
+    },
+    {
+      "path": "D:\\pdfcompare\\viewer_gpu\\target\\debug\\deps\\scene_startup-c77044890b812f5b.exe",
+      "bytes": 22452736,
+      "modified": "2026-09-27T00:37:39.9701270+07:00",
+      "sha256": "a71351df601df019b37064f89c156ee952f855ae4671637202f267eeb275082a"
+    },
+    {
+      "path": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+      "bytes": 18059736,
+      "modified": "2026-08-12T19:30:44.3382010+07:00",
+      "sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1"
+    },
+    {
+      "path": "D:\\pdfcompare\\backend\\app\\assets\\icc\\FOGRA39.icc",
+      "bytes": 654352,
+      "modified": "2026-05-26T14:40:55.0186726+07:00",
+      "sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77"
+    }
+  ],
+  "notes": [
+    "Read-only source/binary snapshot at end of audit; not build provenance.",
+    "No production patch, no rebuild/restart, no PDF modification.",
+    "Source worktree was already dirty at start."
+  ],
+  "verification": {
+    "vitest": {
+      "files": 4,
+      "passed": 83,
+      "exit_code": 0
+    },
+    "typecheck": {
+      "exit_code": 0
+    },
+    "first_frame_wiring": {
+      "exit_code": 1,
+      "expected_failure": true,
+      "positive_control": true
+    },
+    "worker_probe": {
+      "scene": 9,
+      "ppe": 9,
+      "complete": true
+    },
+    "gpu_headless_test": {
+      "passed": 1,
+      "not_ui_benchmark": true
+    }
+  }
+}

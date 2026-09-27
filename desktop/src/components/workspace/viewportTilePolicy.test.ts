@@ -686,10 +686,10 @@ describe('viewport tile — double buffer khi pan', () => {
             false,
             covers,
             true,
-        )).toEqual([target]);
+        )).toEqual([visible, target]);
     });
 
-    it('đã có underlay toàn trang thì ẩn tile viewport cũ nếu không phủ kín trong lúc zoom settle', () => {
+    it('đã có underlay toàn trang vẫn giữ tile viewport cũ để duy trì độ nét liên tục trong lúc zoom settle', () => {
         const reuseGroup = 'file:page:accurate:rot0';
         const visible = item('A', 'zoom:4', reuseGroup);
 
@@ -700,7 +700,7 @@ describe('viewport tile — double buffer khi pan', () => {
             true,
             false,
             true,
-        )).toEqual([]);
+        )).toEqual([visible]);
     });
 
     it('giữ tile viewport cũ nếu phủ kín viewport trong lúc zoom settle để duy trì độ nét như Acrobat', () => {

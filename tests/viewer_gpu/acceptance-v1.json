@@ -1,0 +1,93 @@
+{
+  "version": "1.0.0",
+  "name": "acceptance-v1",
+  "description": "Bo tieu chi nghiem thu chinh thuc cho PPE Viewer GPU (G0 - G4)",
+  "reference_fixture": "R01",
+  "criteria": {
+    "P01": {
+      "name": "Compositor resident frame work",
+      "metric": "p95_ms",
+      "threshold": 16.7,
+      "operator": "<=",
+      "unit": "ms",
+      "description": "Compositor khi tai nguyen da resident tren GPU dat chuan 60Hz"
+    },
+    "P02": {
+      "name": "Camera input latency",
+      "metric": "p95_ms",
+      "threshold": 33.0,
+      "operator": "<=",
+      "unit": "ms",
+      "description": "Native input toi present tren man hinh khi tai nguyen resident"
+    },
+    "P03": {
+      "name": "New visual in uncached region",
+      "metric": "p95_ms",
+      "threshold": 100.0,
+      "operator": "<=",
+      "unit": "ms",
+      "description": "Tao anh moi o scale/vung chua cache voi scene/resource warm"
+    },
+    "P04": {
+      "name": "Final image settle after zoom stops",
+      "metric": "p95_ms",
+      "threshold": 150.0,
+      "operator": "<=",
+      "unit": "ms",
+      "description": "Do net toi da toan vung nhin sau khi dung thao tac zoom"
+    },
+    "P05": {
+      "name": "Continuous sharpening during gesture",
+      "metric": "max_stall_ms",
+      "threshold": 150.0,
+      "operator": "<=",
+      "unit": "ms",
+      "description": "Khong co khoang trong >150ms ma vung thieu chat luong khong duoc cap nhat pixel huu ich"
+    },
+    "P06": {
+      "name": "Quality during gesture",
+      "metric": "density_ratio",
+      "threshold": 0.80,
+      "final_density_threshold": 0.98,
+      "operator": ">=",
+      "unit": "ratio",
+      "description": "It nhat 95% dien tich trang co density >= 0.8 trong thao tac va >= 0.98 khi ket thuc"
+    },
+    "P07": {
+      "name": "Pipeline continuity & integrity",
+      "metric": "blank_frames_count",
+      "threshold": 0,
+      "operator": "==",
+      "unit": "count",
+      "description": "0 blank frame, 0 seam trang, 0 commit sai document/revision, 0 doi engine/mau giua wheel"
+    },
+    "P08": {
+      "name": "Cold open / page jump overhead",
+      "metric": "ratio_vs_baseline",
+      "threshold": 1.10,
+      "operator": "<=",
+      "unit": "ratio",
+      "description": "Khong cham hon baseline doi chung qua 10%; khong cho compile ca tai lieu"
+    },
+    "P09": {
+      "name": "Logging overhead",
+      "metric": "overhead_percentage",
+      "threshold": 3.0,
+      "operator": "<=",
+      "unit": "percent",
+      "description": "Logging nhe bat/tat lech trung vi va p95 <= 3%"
+    }
+  },
+  "color_and_geometry": {
+    "delta_e00_p95": 1.0,
+    "delta_e00_max": 2.0,
+    "edge_displacement_max_px": 1.0,
+    "overprint_simulation_required": true,
+    "cmyk_spot_separation_preservation": true
+  },
+  "hardware_invariants": {
+    "tier_ge_16gb_no_arbitrary_caps": true,
+    "device_loss_graceful_recovery": true,
+    "zero_full_frame_gpu_readback": true
+  }
+}

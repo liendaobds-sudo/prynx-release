@@ -6,6 +6,48 @@ import pytest
 from app.core import heavy_job_scheduler as scheduler
 
 
+def test_different_feature_families_share_memory_and_release_on_failure():
+    # N-Up và Sticker không được cùng nhận lại 100 MB như hai ngân sách riêng.
+    with scheduler.memory_reservation("nup-test", 70.0, lambda: 100.0):
+        with scheduler.process_pool_admission(
+            "sticker-test", 4, 20.0, budget_provider=lambda: 100.0
+        ) as workers:
+            assert workers == 1
+            assert sum(scheduler._RESERVED_MEMORY_MB_BY_KIND.values()) == 90.0
+    assert not scheduler._RESERVED_MEMORY_MB_BY_KIND
+    with pytest.raises(RuntimeError):
+        with scheduler.process_pool_admission(
+            "failed-test", 4, 20.0, budget_provider=lambda: 100.0
+        ) as workers:
+            assert workers == 4
+            raise RuntimeError("worker failed")
+    assert not scheduler._RESERVED_MEMORY_MB_BY_KIND
+
+
+def test_pool_admission_full_small_job_reduced_large_job_and_env(monkeypatch):
+    for estimate, expected in [(256.0, 15), (3000.0, 4)]:
+        with scheduler.process_pool_admission(
+            "pool-test", 15, estimate, budget_provider=lambda: 12000.0
+        ) as workers:
+            assert workers == expected
+    monkeypatch.setenv("PRYNX_TEST_POOL", "15")
+    with scheduler.process_pool_admission(
+        "pool-test", 15, 3000.0, env_override="PRYNX_TEST_POOL",
+        budget_provider=lambda: 100.0,
+    ) as workers:
+        assert workers == 15
+    assert not scheduler._RESERVED_MEMORY_MB_BY_KIND
+
+
+def test_pool_admission_rejects_before_spawn_when_one_worker_cannot_fit():
+    with pytest.raises(scheduler.HeavyJobMemoryUnavailable):
+        with scheduler.process_pool_admission(
+            "pool-test", 15, 3000.0, budget_provider=lambda: 500.0
+        ):
+            pytest.fail("Không được spawn worker vượt ngân sách")
+    assert not scheduler._RESERVED_MEMORY_MB_BY_KIND
+
+
 class TrackingSlots:
     def __init__(self):
         self.acquires = 0

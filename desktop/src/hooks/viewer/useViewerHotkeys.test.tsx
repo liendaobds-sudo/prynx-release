@@ -3,7 +3,7 @@ import type { PropsWithChildren } from 'react';
 import { fireEvent, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
+import { createWorkspaceStore, WorkspaceContext, useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useTextMarkupStore } from '../../stores/useTextMarkupStore';
 import { useViewerHotkeys } from './useViewerHotkeys';
 
@@ -62,6 +62,25 @@ afterEach(() => {
 });
 
 describe('useViewerHotkeys document undo fallback', () => {
+    it('Space giữ renderer theo công cụ gốc; H mới chọn bàn tay lâu dài', () => {
+        const { result } = renderHook(() => {
+            const toolMode = useWorkspaceStore(s => s.viewerToolMode);
+            const hotkeys = useViewerHotkeys(makeProps({ toolMode }));
+            return { toolMode, renderToolMode: hotkeys.renderToolMode };
+        }, { wrapper: makeWrapper() });
+        expect(result.current).toEqual({ toolMode: 'pointer', renderToolMode: 'pointer' });
+        for (let i = 0; i < 3; i++) {
+            fireEvent.keyDown(document, { key: ' ', code: 'Space' });
+            expect(result.current).toEqual({ toolMode: 'hand', renderToolMode: 'pointer' });
+            fireEvent.keyUp(document, { key: ' ', code: 'Space' });
+            expect(result.current).toEqual({ toolMode: 'pointer', renderToolMode: 'pointer' });
+        }
+        fireEvent.keyDown(document, { key: 'h', code: 'KeyH' });
+        expect(result.current).toEqual({ toolMode: 'hand', renderToolMode: 'hand' });
+        fireEvent.keyDown(document, { key: ' ', code: 'Space' });
+        fireEvent.keyUp(document, { key: ' ', code: 'Space' });
+        expect(result.current).toEqual({ toolMode: 'hand', renderToolMode: 'hand' });
+    });
     it('Ctrl+Z hoàn tác file đã xử lý khi không còn lịch sử thao tác trang', () => {
         const onDocumentUndo = vi.fn();
         renderHook(() => useViewerHotkeys(makeProps({ onDocumentUndo })), {

@@ -37,6 +37,10 @@ use crate::text::outlines::{
 };
 use crate::text::state::{TextObject, TextRenderMode};
 
+#[path = "retained.rs"]
+mod retained;
+use crate::scene::retained::Recorder;
+
 const EXPLICIT_MASK_DECODE_REASON: &str = "ảnh /Mask explicit không giải mã được";
 const FORM_STREAM_DECODE_REASON: &str = "Do Form (không giải nén được content stream)";
 const SMASK_STREAM_DECODE_REASON: &str = "SMask /G (content stream chỉ phục hồi được)";
@@ -300,6 +304,13 @@ impl RenderOptions {
         }
     }
 
+    /// Đường xem trang: OCG /View, appearance tĩnh và overprint tắt như Viewer
+    /// đang phát hành. Output Preview/đo kẽm vẫn chọn chính sách riêng.
+    pub fn viewer() -> Self {
+        Self::softproof().with_overprint_simulation(false)
+            .with_optional_content_usage(OptionalContentUsage::View).with_annotations(true)
+    }
+
     /// Gắn tỷ lệ DPI của render trang cho các guard phụ thuộc độ phân giải.
     pub(crate) fn with_device_scale(mut self, dpi: f32) -> Self {
         self.device_scale = (dpi / 72.0).max(0.0);
@@ -411,7 +422,7 @@ enum PreviewObjectKind {
     SmoothShade,
 }
 /// Blending color space đang hiệu lực của trang/group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlendSpace {
     DeviceCmyk,
     DeviceRgb,
@@ -457,6 +468,8 @@ impl ShadingCoverage<'_> {
 
 /// Bộ render một trang vào [`InkBuffer`].
 pub struct Renderer<'a> {
+    // PERF (audit 2026-09-25 §R25.GPU.02): backend scene dùng chung state machine.
+    retained: Option<Recorder>,
     doc: &'a Document,
     buffer: InkBuffer,
     raster: Rasterizer,
@@ -654,6 +667,7 @@ impl<'a> Renderer<'a> {
         }
         let optional_content_usage = opts.optional_content_usage;
         Ok(Renderer {
+            retained: None,
             doc,
             buffer,
             raster,
@@ -1073,9 +1087,11 @@ impl<'a> Renderer<'a> {
         depth: u32,
     ) -> PpeResult<()> {
         let previous_stream_base = self.stream_base_ctm;
+        let previous_retained_base = self.retained.as_mut().and_then(|r|r.stream_base.replace(stack.current().clone()));
         self.stream_base_ctm = stack.current().ctm;
         let result = self.execute_program_inner(program, resources, stack, depth);
         self.stream_base_ctm = previous_stream_base;
+        if let Some(r)=self.retained.as_mut(){r.stream_base=previous_retained_base;}
         result
     }
 
@@ -1770,6 +1786,9 @@ impl<'a> Renderer<'a> {
             stroke = None;
         }
 
+        if self.retained.is_some() {
+            return self.retain_path(built, fill, stroke.is_some(), pending_clip, stack, resources);
+        }
         let Some(user_path) = built else {
             // Đường dẫn rỗng: nếu có `W` thì clip thành rỗng (đúng spec).
             if pending_clip.is_some() {
@@ -2188,7 +2207,16 @@ impl<'a> Renderer<'a> {
             None => None,
         };
 
+        if self.retained.is_some() {
+            if let Some(obj) = &smask_obj {
+                stack.current_mut().retained.mask = self.retain_soft_mask(obj, stack, depth)?;
+            }
+            if let Some(ais) = pdf::dict_get(self.doc, entry, "AIS").and_then(as_bool) {
+                stack.current_mut().retained.alpha_is_shape = ais;
+            }
+        }
         let soft_mask = match &smask_obj {
+            _ if self.retained.is_some() => None,
             None => None,
             Some(obj) if matches!(pdf::name_str(obj).as_deref(), Some("None")) => {
                 Some(None) // xoá mặt nạ đang có
@@ -2425,6 +2453,8 @@ impl<'a> Renderer<'a> {
         {
             return false;
         }
+        // Recorder giữ hình học; buffer 1×1 chỉ đăng ký mực, không phải viewport.
+        if self.retained.is_some() { return true; }
         !self
             .bbox_region(Some(rect), ctm, self.buffer.width(), self.buffer.height())
             .is_empty()
@@ -2793,6 +2823,9 @@ impl<'a> Renderer<'a> {
         stack: &mut StateStack,
         depth: u32,
     ) -> PpeResult<()> {
+        if self.retained.is_some() {
+            return self.retain_xobject(name, resources, stack, depth);
+        }
         let Some(xobjects) = pdf::dict_get_dict(self.doc, resources, "XObject") else {
             return Ok(());
         };
@@ -3397,6 +3430,9 @@ impl<'a> Renderer<'a> {
         resources: Option<&Dictionary>,
         stack: &mut StateStack,
     ) -> PpeResult<()> {
+        if self.retained.is_some() {
+            return self.retain_image(entry, resources, stack);
+        }
         #[cfg(feature = "perf-probe")]
         let _span = crate::perf_probe::span(crate::perf_probe::IMAGE);
         self.opts.check_cancelled()?;
@@ -4115,6 +4151,9 @@ impl<'a> Renderer<'a> {
             }
         };
 
+        if self.retained.is_some() {
+            return self.retain_shading(shading, stack);
+        }
         let ctm = stack.current().ctm;
         let gs = stack.current();
         let coverage = ShadingCoverage::GraphicsState {
@@ -5253,6 +5292,9 @@ impl<'a> Renderer<'a> {
                 .note_skipped_op(&format!("font thay thế: {}", font.base_font));
         }
 
+        if self.retained.is_some() {
+            return self.retain_glyph(outline.as_ref(), trm, mode, stack, resources);
+        }
         let full = trm.then(&gs_ctm);
         let Some(device_path) = outline.as_ref().clone().transform(to_ts(&full)) else {
             return Ok(());
@@ -5496,6 +5538,9 @@ impl<'a> Renderer<'a> {
         };
         let stream_recovered = decoded.quality == pdf::DecodeQuality::Recovered;
         let data = decoded.bytes;
+        if self.retained.is_some() && stream_recovered {
+            return Err(PpeError::Unsupported("Type3 có stream chỉ phục hồi được".into()));
+        }
         // CORRECTNESS (audit 2026-08-31 §PPE-A06): classify width operator trước
         // mọi mutation rồi replay chính PageProgram này; d1 là glyph uncoloured,
         // d0 vẫn được dùng màu nội bộ. Operator width đầu tiên thắng nếu file hỏng.
@@ -5612,6 +5657,13 @@ impl<'a> Renderer<'a> {
     /// Clip chữ chỉ có hiệu lực **sau** `ET` (§9.4.3). Áp sớm sẽ cắt mất chính
     /// những glyph đang được gom.
     fn finish_text_clip(&mut self, stack: &mut StateStack) -> PpeResult<()> {
+        if let Some(recorder) = self.retained.as_mut() {
+            let paths = std::mem::take(&mut recorder.text_clip);
+            if !paths.is_empty() {
+                stack.current_mut().retained.intersect(paths, FillRule::NonZero);
+            }
+            return Ok(());
+        }
         let Some(PendingTextClip {
             mask: text_mask,
             region: text_region,

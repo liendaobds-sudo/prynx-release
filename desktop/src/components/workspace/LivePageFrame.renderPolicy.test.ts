@@ -213,7 +213,7 @@ describe('Viewer — policy ghép tile progressive', () => {
     it('chỉ hiện atlas trong một lần swap sau khi đã phủ kín viewport', () => {
         expect(shouldPresentViewerPanGrid(true, false, false, true)).toBe(false);
         expect(shouldPresentViewerPanGrid(true, true, false, true)).toBe(true);
-        expect(shouldPresentViewerPanGrid(true, true, true, true)).toBe(false);
+        expect(shouldPresentViewerPanGrid(true, true, true, true)).toBe(true);
         expect(shouldPresentViewerPanGrid(true, true, true, false)).toBe(true);
         expect(shouldPresentViewerPanGrid(false, true, false, true)).toBe(false);
     });

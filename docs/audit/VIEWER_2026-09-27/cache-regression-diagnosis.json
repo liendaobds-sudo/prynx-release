@@ -1,0 +1,629 @@
+{
+  "scope": "diagnosis_only; no application changes/control/restart; no scanout assertion",
+  "snapshot": {
+    "path": "D:\\pdfcompare\\.tmp\\render-diagnostics\\PrynX_RenderPerf.log",
+    "sha256": "3f5b1a96d35cf9ca22b83a724fd159c3ba1350c9a764debd24a1e25fabc1e79f",
+    "sha256_scope": "prefix [0, snapshot_bytes), đọc theo stream; không gồm append sau lúc bắt đầu",
+    "snapshot_bytes": 114979626,
+    "snapshot_lines": 492730,
+    "size_before": 114979626,
+    "size_after": 115167372,
+    "mtime_ns_before": 1790465207975559000,
+    "mtime_ns_after": 1790465210919940800,
+    "changed_during_read": true,
+    "incomplete_last_line_ignored": false,
+    "selected_host": {
+      "line": 213287,
+      "epoch_ms": 1790464335370,
+      "arch": "x86_64",
+      "exe_sha256": "6e298bafb4b6b25649b918ab3c6b9bbaa76e281d011fb9d6712bab98db30ab59",
+      "logical_cores": 16,
+      "memory": {
+        "availableBytes": 20068057088,
+        "installedBytes": 34359738368,
+        "totalBytes": 34359738368,
+        "usableBytes": 34107990016
+      },
+      "os": "windows",
+      "pid": 17540,
+      "role": "host",
+      "schema": 2,
+      "version": "2.0.4"
+    },
+    "host_sessions_seen": [
+      {
+        "line": 1,
+        "epoch_ms": 1790427790154,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 20654084096,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 9028,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 31977,
+        "epoch_ms": 1790429887623,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19486019584,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 20008,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 67255,
+        "epoch_ms": 1790431707255,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19510640640,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 20216,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 86680,
+        "epoch_ms": 1790433005403,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17983307776,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 14920,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 123768,
+        "epoch_ms": 1790434924661,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18536837120,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 13504,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 133824,
+        "epoch_ms": 1790435543460,
+        "arch": "x86_64",
+        "exe_sha256": "9ba895496a8150100d28b52e773edc41d423b2c24c173e99d726be98bb0de4da",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18189250560,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 13928,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 133897,
+        "epoch_ms": 1790436765183,
+        "arch": "x86_64",
+        "exe_sha256": "0b11fa4e16f85b241c999fbad1a70c94f3e4ca17d2b5f5da8192520562bd1e8b",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17871532032,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 20000,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 147818,
+        "epoch_ms": 1790439571437,
+        "arch": "x86_64",
+        "exe_sha256": "0b11fa4e16f85b241c999fbad1a70c94f3e4ca17d2b5f5da8192520562bd1e8b",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18051919872,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 22648,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 192782,
+        "epoch_ms": 1790440890927,
+        "arch": "x86_64",
+        "exe_sha256": "0963f4eb5b4c171aa007d43cbdd40d4ca9edb8fed601867161c981c21aa11e51",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18219884544,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 21920,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 202984,
+        "epoch_ms": 1790441798600,
+        "arch": "x86_64",
+        "exe_sha256": "e5e59f336fc6c0440ab8e45c77bdf0291c870535a77ae28ff36e28d542d96bdc",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17777651712,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 19784,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 205591,
+        "epoch_ms": 1790445375714,
+        "arch": "x86_64",
+        "exe_sha256": "4c7a8b752494925df574e2e34ac68fde99fde6e23d6206fb2d5f3308d67f8dc4",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18190770176,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 11016,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 211959,
+        "epoch_ms": 1790447972010,
+        "arch": "x86_64",
+        "exe_sha256": "49a55b66ecd7ba236551061eb4743259f574e7a23f2cb7f9dd0b71894a5ec4af",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19065790464,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 19436,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212032,
+        "epoch_ms": 1790448294817,
+        "arch": "x86_64",
+        "exe_sha256": "de9a2ab9a323257a83de733235bb4ed709291a448000d6af031be5ba922c2329",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19091550208,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 23564,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212265,
+        "epoch_ms": 1790449167618,
+        "arch": "x86_64",
+        "exe_sha256": "fd0e0d0fdf78367c67ebd5858ea2031d697c93ee15e03b70cb7bceaa19f5e392",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18586804224,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 23104,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212338,
+        "epoch_ms": 1790449490995,
+        "arch": "x86_64",
+        "exe_sha256": "a066b154dc5aae0d90bbb31c9cd518e5f54e516be591084e32c0ff65f532c2c9",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18930159616,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 6496,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212411,
+        "epoch_ms": 1790450329445,
+        "arch": "x86_64",
+        "exe_sha256": "7d6c6e1d182a5cda42544736722edc3e3e4e3fc97e1e62365a0c7b6f52fabebd",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18831933440,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 10640,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212484,
+        "epoch_ms": 1790451967540,
+        "arch": "x86_64",
+        "exe_sha256": "5b4bb43d3da9938a4d68d0f57cb4fdb0455f3a4a7a7766f3f2834e14f80dd0f4",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19172925440,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 24312,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212557,
+        "epoch_ms": 1790452479007,
+        "arch": "x86_64",
+        "exe_sha256": "b628eeb094b98ddbd0bcb5ac779fda3c01868351691683e5cc57ab5a4424aa74",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19292639232,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 12988,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212630,
+        "epoch_ms": 1790452485680,
+        "arch": "x86_64",
+        "exe_sha256": "b628eeb094b98ddbd0bcb5ac779fda3c01868351691683e5cc57ab5a4424aa74",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19081846784,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 23100,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212703,
+        "epoch_ms": 1790452770813,
+        "arch": "x86_64",
+        "exe_sha256": "7d1f42289e16741053bb1bb66bb80e107de9452d136a079ed491337e4d81105a",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19382382592,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 5552,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212776,
+        "epoch_ms": 1790452806736,
+        "arch": "x86_64",
+        "exe_sha256": "2c9b32cebc45f57fae027f079cfd8645e5106d2565aaa0be5863882b2eb222dc",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18891337728,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 8204,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212849,
+        "epoch_ms": 1790453431807,
+        "arch": "x86_64",
+        "exe_sha256": "04e01a3402e1f47c86bdcc9cdad5b12209fac05f1aae8a5325ea900ca3e1f4bb",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19305926656,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 16760,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212922,
+        "epoch_ms": 1790454516845,
+        "arch": "x86_64",
+        "exe_sha256": "a0161d4d45eb0592daa47981c99e49ed31fec7ba92055b2fe17227fbbf8a7fda",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19426062336,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 1536,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 212995,
+        "epoch_ms": 1790454706012,
+        "arch": "x86_64",
+        "exe_sha256": "fdf5f69b34025d966f542c3c8f463fdce1031302df0800eab8a793c6150bbf50",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19335159808,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 21220,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 213068,
+        "epoch_ms": 1790455694089,
+        "arch": "x86_64",
+        "exe_sha256": "1b5879df3fafaec4bac990527d1ed3470ea1e8a861bbe65b2ecc7b3a20f05f8b",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19151183872,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 13720,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 213141,
+        "epoch_ms": 1790456067247,
+        "arch": "x86_64",
+        "exe_sha256": "4da5def6b8867e7c8fe9828122fa1f2bbf1c152b7fe0b33bea06c376107c3d69",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17535553536,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 21612,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 213214,
+        "epoch_ms": 1790456278447,
+        "arch": "x86_64",
+        "exe_sha256": "6e298bafb4b6b25649b918ab3c6b9bbaa76e281d011fb9d6712bab98db30ab59",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18877927424,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 22748,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 213287,
+        "epoch_ms": 1790464335370,
+        "arch": "x86_64",
+        "exe_sha256": "6e298bafb4b6b25649b918ab3c6b9bbaa76e281d011fb9d6712bab98db30ab59",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 20068057088,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 17540,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      }
+    ],
+    "selected_session_parse_errors": []
+  },
+  "running_binary_sha256": "6e298bafb4b6b25649b918ab3c6b9bbaa76e281d011fb9d6712bab98db30ab59",
+  "sources": [
+    {
+      "path": "desktop/src-tauri/src/viewport/detail_cache.rs",
+      "sha256": "f19912525414fb5928cd87ce702dc4ab9fa0b31d11f000915898fcd1e945e2c8"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/presenter.rs",
+      "sha256": "a3c4b0f140aaf686c4c8a3e0313255555f77a2f884be96e960e2e599bcc343b4"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/refinement.rs",
+      "sha256": "ee176b128f50219a807e80ce4af075e63d54883809deb676de6060cc08a28469"
+    },
+    {
+      "path": "viewer_gpu/src/retained_renderer.rs",
+      "sha256": "f78c19e8ac712f342d401cfa68500a7c2de7b14c5f7f4783ca7628b2197153e0"
+    },
+    {
+      "path": "viewer_gpu/src/resident_present.rs",
+      "sha256": "030204ed57e7265a999fd787a804e6f28ef65b2a5ca7a2d46673d160601e3dd9"
+    },
+    {
+      "path": "docs/audit/VIEWER_2026-09-27/repro_detail_cache_convergence.rs",
+      "sha256": "9bb8b3fc6871acde0a25b760fac9442e8b2b389813900a55123f982488d61786"
+    }
+  ],
+  "prior_result_present": true,
+  "heavy_window_ms": [
+    1790464438005,
+    1790464443575
+  ],
+  "heavy_identity": "Giay moi_BLUE - in.pdf on Desktop, NOT the outlined test fixture",
+  "heavy_detail_encode_ms": {
+    "N": 6,
+    "min_ms": 26.726,
+    "p50_ms": 30.218,
+    "p95_ms": 89.693,
+    "max_ms": 89.693,
+    "gt_16_667_ms": 6,
+    "gt_50_ms": 1
+  },
+  "heavy_3x5_encode_ms": {
+    "N": 31,
+    "min_ms": 8.618,
+    "p50_ms": 9.722,
+    "p95_ms": 11.655,
+    "max_ms": 12.291,
+    "gt_16_667_ms": 0,
+    "gt_50_ms": 0
+  },
+  "heavy_3x5_coverage_bytes": [
+    9470456
+  ],
+  "idle_window_ms": [
+    1790464610300,
+    1790464854349
+  ],
+  "idle_identity": "Another document, page 2/revision 12; not the Giay moi sample",
+  "idle_counts": {
+    "GPU_FRAME_TIMING": 34668,
+    "GPU_SCENE_PRESENT": 34668,
+    "GPU_SCENE_REFINE": 11556,
+    "GPU_DETAIL_CACHE": 23112
+  },
+  "idle_cache_actions": {
+    "insert": 11556,
+    "miss": 11556
+  },
+  "idle_cache_entries": 123,
+  "idle_frame_cpu_ms": {
+    "N": 34668,
+    "min_ms": 1.978,
+    "p50_ms": 5.965,
+    "p95_ms": 9.204,
+    "max_ms": 32.637,
+    "gt_16_667_ms": 121,
+    "gt_50_ms": 0
+  },
+  "probe_stdout": "integer_control step=0 region=[0, 0, 1289, 5] repeated=false entries=1\ninteger_control step=1 region=[1287, 0, 5, 733] repeated=false entries=2\ninteger_control converged=true steps=2 entries=3\nfractional_pan step=0 region=[0, 0, 1290, 5] repeated=false entries=1\nfractional_pan step=1 region=[1285, 2, 7, 731] repeated=false entries=2\nfractional_pan step=2 region=[1288, 0, 4, 4] repeated=false entries=3\nfractional_pan step=3 region=[0, 0, 3, 5] repeated=false entries=4\nfractional_pan step=4 region=[1, 0, 1286, 5] repeated=false entries=4\nfractional_pan step=5 region=[1285, 0, 6, 4] repeated=false entries=5\nfractional_pan step=7 region=[0, 0, 3, 5] repeated=true entries=6\nfractional_pan converged=false repeated_region_after_insert=[0, 0, 3, 5] entries=6\nfractional_identity_roundtrip=Matrix { a: 1.0000001, b: 0.0, c: 0.0, d: 1.0000001, e: 0.00024414063, f: -0.00012207031 }\nsame_origin_small_crop retained_full=false entries=1 bytes=60\nSUMMARY fractional_converged=false same_origin_coverage_loss=true\n",
+  "probe_stderr": "",
+  "limits": [
+    "Probe uses current cache source and existing compiled dependencies, not the running process internals.",
+    "Fractional matrix is a synthetic reproducer; native logs round pan and omit exact ROI coordinates.",
+    "ready_us/request_age_us measures age of last FrameRequest, NOT individual refinement duration.",
+    "No exact raster proof or scanout capture for the live reported blurry region.",
+    "Synthetic iteration limit32 is a diagnostic bound, not a proposed production cap."
+  ]
+}

@@ -2079,12 +2079,25 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
         chunk_start_idx += len(chunk)
         
     if len(args_list) > 0:
-        if num_workers <= 1 or len(args_list) == 1:
-            for args in args_list:
-                chunk_paths.append(process_chunk(args))
-        else:
-            with ProcessPoolExecutor(max_workers=num_workers) as pool:
-                chunk_paths = list(pool.map(process_chunk, args_list))
+        from app.core.heavy_job_scheduler import process_pool_admission
+        from app.core.system_memory import estimate_pdf_worker_mb
+
+        per_worker_mb = estimate_pdf_worker_mb(
+            template_bytes,
+            raster_mb=(variable_image_bytes / (1024 * 1024)) / max(1, num_workers),
+        )
+        # PERF (audit 2026-09-25 §G2): VDP không spawn cả pool trước khi có
+        # reservation; số chunk giữ nguyên để output/parity không đổi.
+        with process_pool_admission(
+            "vdp", max(1, num_workers), per_worker_mb,
+            env_override="PRYNX_VDP_WORKERS",
+        ) as admitted_workers:
+            if admitted_workers <= 1 or len(args_list) == 1:
+                for args in args_list:
+                    chunk_paths.append(process_chunk(args))
+            else:
+                with ProcessPoolExecutor(max_workers=admitted_workers) as pool:
+                    chunk_paths = list(pool.map(process_chunk, args_list))
     
     # Chunk đã đọc xong template → xoá bản canonical tạm (nếu có).
     abort_if_requested()

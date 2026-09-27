@@ -1,0 +1,133 @@
+{
+  "scope": "R8 source + AUTO + final composited pixel artifacts; no user-window acceptance/scanout claim",
+  "sources": [
+    {
+      "path": "desktop/src-tauri/src/viewport/controller.rs",
+      "sha256": "463d64da0545528aba749c2d16f92e0b931b12d8ba72efc3b147b1386127d4b5"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/scheduler.rs",
+      "sha256": "8834cb94e3aad461e14ac7b3f37fe1fa95e996ff26dfe13ff8c97d88ea7615e1"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/scheduler_regression_tests.rs",
+      "sha256": "3d505ec328fb80172ce53de688969bb8c5a1d01abc0e9c1012c73173e66581d2"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/keyboard_commands.rs",
+      "sha256": "31158ea497a42aa06abd55a408717ecbe338fbbe991ebec705aa9d5996a7f824"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/win32_host.rs",
+      "sha256": "3b4593e798fac3cfa3716611cfa312ccd6080f3fb3b6256a4e307fcf96ca08a4"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/commands.rs",
+      "sha256": "4dbff01de2bf5d8a498520784e876a155e07a0b0883f0d59b175b914f0392d5b"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/interaction.rs",
+      "sha256": "3d2aa8dc098949a460b97ae692562d436a9012a34630a0f802bc500c94c0771f"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/detail_cache.rs",
+      "sha256": "bee0ee3f98c26edf76be4dda71d019112ea0678c59e6f3ee9839673fb96ee83a"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/refinement_policy.rs",
+      "sha256": "25dc2eaee428fd0d8244badebb5a18316893f7373c0e025c96c19603550dad98"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/refinement_liveness_tests.rs",
+      "sha256": "596d1b80ebf86a360419a6f62890dd1f48898ac937ee14e0fd79663048157022"
+    },
+    {
+      "path": "viewer_gpu/src/resident_present.rs",
+      "sha256": "ea07c6f36acdea52c92f94bd783b0b60900d5bb65b368392473346cf3fcf9b25"
+    },
+    {
+      "path": "viewer_gpu/tests/settled_composition.rs",
+      "sha256": "bd366d9f3a9e6bd8612c7507573bd9d078800fdaab55c14da02dbcf50d6bfecb"
+    },
+    {
+      "path": "desktop/src/hooks/viewer/useNativeGpuViewport.ts",
+      "sha256": "55f380158045d4274dd08504c7ef3758debdb7bc38ddc68ee4d68a69b3e215d7"
+    },
+    {
+      "path": "desktop/src/hooks/viewer/nativeViewportInteraction.ts",
+      "sha256": "fd0c248744d20c4f5601540039d56101be6e58746486dacc5d91008b9a7e68f2"
+    },
+    {
+      "path": "desktop/src/components/acrobat/NativeGpuViewportContainer.tsx",
+      "sha256": "562c12083eecee239384b5c58823b2749c07cee41016179bb532a9e7a1b38414"
+    },
+    {
+      "path": "desktop/src/components/AcrobatViewer.tsx",
+      "sha256": "28ce5a23ee4c6610ced9bd6116b880cf4fbb6c64bb1a1255bd6bfa906e2045e1"
+    }
+  ],
+  "pixels": [
+    {
+      "artifact": "r8-desktop-rgba.json",
+      "sha256": "bef29c16b7843cf89e1317b2ff321c9bb43acefac07762db55fd780e2c3b08b6",
+      "pdf_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "format": "Rgba8Unorm",
+      "cameras": 32,
+      "composed_different_bytes": 0,
+      "refinements": 20,
+      "idle_checks": 3840
+    },
+    {
+      "artifact": "r8-desktop-bgra.json",
+      "sha256": "a8c0c4f327bd6650f5470877778752e96a4d84f8f86b752678b1e52acf605a18",
+      "pdf_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "format": "Bgra8UnormSrgb",
+      "cameras": 32,
+      "composed_different_bytes": 0,
+      "refinements": 20,
+      "idle_checks": 3840
+    },
+    {
+      "artifact": "r8-outline-rgba.json",
+      "sha256": "dbb8bb3896099adfa2b89ff2634e68c2783b69317ca50efbdc016ba83313f1b8",
+      "pdf_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+      "format": "Rgba8Unorm",
+      "cameras": 32,
+      "composed_different_bytes": 0,
+      "refinements": 20,
+      "idle_checks": 3840
+    },
+    {
+      "artifact": "r8-outline-bgra.json",
+      "sha256": "95982e937a418c2b7202828b3c1012265debb30c1275589d03c3ff679d90cc27",
+      "pdf_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+      "format": "Bgra8UnormSrgb",
+      "cameras": 32,
+      "composed_different_bytes": 0,
+      "refinements": 20,
+      "idle_checks": 3840
+    }
+  ],
+  "presenter": {
+    "artifact": "r8-presenter-outline/result.json",
+    "sha256": "2ad23d6cd03ef6e91968a0615139771c18f087c5efcb04df432c9243d992a3fa",
+    "settle_after_input_ms": 47.192,
+    "foreground_unchanged": true,
+    "idle_error_reported": true
+  },
+  "verification": {
+    "frontend": "341 files,3940 pass,2 skipped",
+    "typecheck": "passed",
+    "viewport": "78 pass,7 ignored (separate probes executed)",
+    "gpu": "56 pass,5 ignored",
+    "cargo_check_lib_examples": "passed",
+    "cargo_build_bin": "passed; real EXE linked"
+  },
+  "exe_sha256": "e5cbc444ca6f4a9040234712c36d15926d687c1aa2e73140a06eb112e12f854f",
+  "limits": [
+    "Frame composition tested in RGBA and native BGRA sRGB; not physical monitor capture.",
+    "Owned hidden HWND probe is code-only, no focus/global input or app restart.",
+    "Native-to-DOM pan handoff on layout changes and synchronous repeated navigation downstream remain unverified.",
+    "Existing unrelated trailing blank line in appSettingsStore.test.ts was left untouched."
+  ]
+}

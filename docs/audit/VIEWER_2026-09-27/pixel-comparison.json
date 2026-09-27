@@ -1,0 +1,53 @@
+{
+  "scope": "headless_artifact_comparison_not_display_or_acrobat_acceptance",
+  "reference": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\worker-probe\\ppe-run-1-sample-1.png",
+  "width": 998,
+  "height": 748,
+  "reference_sha256": "1ab7fe755cb5ebef7d15c5674ad2a0b8c358989d403c0b5258d3fda0c4fffe9b",
+  "limitations": [
+    "PPE worker EXE và standalone GPU test là hai binary khác nhau.",
+    "Camera GPU là scale 96/72, pan 0; không có WebView/scan-out/monitor ICC.",
+    "RGB MAE không phải DeltaE hoặc chứng nhận FOGRA39/Acrobat."
+  ],
+  "comparisons": [
+    {
+      "run": 0,
+      "path": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\gpu-headless\\run-0-camera-0.rgba",
+      "sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e",
+      "mean_abs_rgb_0_255": 1.0346700531187152,
+      "max_abs_channel": 141,
+      "fraction_pixels_any_channel_gt_2": 0.0731436134300687,
+      "fraction_pixels_any_channel_gt_10": 0.025535027273798933,
+      "fraction_exact_rgb": 0.43244644368951807,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "fraction_gray_82_86_89": 0.0
+    },
+    {
+      "run": 1,
+      "path": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\gpu-headless\\run-1-camera-0.rgba",
+      "sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e",
+      "mean_abs_rgb_0_255": 1.0346700531187152,
+      "max_abs_channel": 141,
+      "fraction_pixels_any_channel_gt_2": 0.0731436134300687,
+      "fraction_pixels_any_channel_gt_10": 0.025535027273798933,
+      "fraction_exact_rgb": 0.43244644368951807,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "fraction_gray_82_86_89": 0.0
+    },
+    {
+      "run": 2,
+      "path": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\gpu-headless\\run-2-camera-0.rgba",
+      "sha256": "7f4e272990e0d345a6de41a2f656b5932a4e0dd051e9cb9e079e5dc44521834e",
+      "mean_abs_rgb_0_255": 1.0346700531187152,
+      "max_abs_channel": 141,
+      "fraction_pixels_any_channel_gt_2": 0.0731436134300687,
+      "fraction_pixels_any_channel_gt_10": 0.025535027273798933,
+      "fraction_exact_rgb": 0.43244644368951807,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "fraction_gray_82_86_89": 0.0
+    }
+  ]
+}

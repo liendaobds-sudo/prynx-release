@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+// PERF (audit 2026-09-25 §R25.GPU.33): kiểm Send/Sync của cache texture wgpu lồng trong registry scene.
 use tauri::http::{self};
 use tauri::Manager;
 
@@ -28,6 +30,7 @@ mod pdf_engine;
 pub(crate) mod process_guard;
 mod security;
 mod tile_disk_cache;
+pub mod viewport;
 
 // Document Handle Pool - Capped to 1 to eliminate the massive
 // sequential initialization overhead of `load_pdf_from_file` for large VDP files.
@@ -1466,7 +1469,8 @@ mod sidecar_startup_tests {
         sidecar_creation_matches, sidecar_generation_matches, sidecar_recovery_action,
         sidecar_restart_delay, sidecar_shutdown_proof, sidecar_shutdown_request,
         sidecar_startup_timeout_error, sidecar_stream_notice, startup_retry_delay,
-        verify_startup_proof, SidecarProcessIdentity, SidecarRecoveryAction,
+        verify_startup_proof, webview2_browser_arguments, SidecarProcessIdentity,
+        SidecarRecoveryAction,
         SIDECAR_SECURITY_ENV_KEYS, SIDECAR_STARTUP_TIMEOUT,
     };
     use std::ffi::OsString;
@@ -1617,6 +1621,18 @@ mod sidecar_startup_tests {
                 .iter()
                 .any(|blocked| name.eq_ignore_ascii_case(blocked))
         }));
+    }
+
+    #[test]
+    fn webview2_release_khong_ke_thua_co_env_debug() {
+        let attacker_args = Some("--remote-debugging-port=9222 --user-data-dir=C:\\tmp\\debug");
+        let release_args = webview2_browser_arguments(attacker_args, true);
+        assert!(!release_args.contains("remote-debugging-port"));
+        assert!(!release_args.contains("user-data-dir"));
+        assert!(release_args.contains("--disable-features=CalculateNativeWinOcclusion"));
+
+        let debug_args = webview2_browser_arguments(attacker_args, false);
+        assert!(debug_args.contains("remote-debugging-port"));
     }
 
     #[test]
@@ -2598,6 +2614,23 @@ impl TileCache {
             current_bytes: 0,
         }
     }
+    fn set_budget(&mut self, max_bytes: Option<usize>) -> bool {
+        if self.max_bytes == max_bytes {
+            return false;
+        }
+        self.max_bytes = max_bytes;
+        if let Some(max_bytes) = max_bytes {
+            while self.current_bytes > max_bytes {
+                let Some(oldest) = self.queue.pop_front() else {
+                    break;
+                };
+                if let Some(removed) = self.map.remove(&oldest) {
+                    self.current_bytes = self.current_bytes.saturating_sub(removed.len());
+                }
+            }
+        }
+        true
+    }
     fn get(&mut self, key: &str) -> Option<Vec<u8>> {
         if self.map.contains_key(key) {
             self.queue.retain(|k| k != key);
@@ -2674,6 +2707,56 @@ fn configured_tile_cache_budget() -> Option<usize> {
     tile_cache_budget_for_total_ram(system_total_memory_bytes())
 }
 
+// PERF (audit 2026-09-25 §G0/G1): máy mạnh giữ cache không giới hạn ở trạng thái
+// bình thường. Chỉ khi RAM khả dụng xuống dưới 10% tổng RAM mới thu tạm cache;
+// đây là van an toàn theo áp lực thực tế, không phải hard-cap cho máy mạnh.
+fn pressure_tile_cache_budget(
+    total_bytes: Option<u64>,
+    available_bytes: Option<u64>,
+    normal_budget: Option<usize>,
+    override_active: bool,
+) -> Option<usize> {
+    if override_active {
+        return normal_budget;
+    }
+    let (Some(total), Some(available)) = (total_bytes, available_bytes) else {
+        return normal_budget;
+    };
+    if total >= 16 * GIB && available.saturating_mul(10) < total {
+        let budget = (available / 4).clamp(64 * MIB as u64, 512 * MIB as u64);
+        return Some(budget.min(usize::MAX as u64) as usize);
+    }
+    normal_budget
+}
+
+fn tile_cache_budget_override_is_explicit() -> bool {
+    std::env::var("PRYNX_TILE_CACHE_MB")
+        .ok()
+        .and_then(|raw| parse_tile_cache_budget_override(Some(&raw)))
+        .is_some()
+}
+
+fn reconcile_tile_cache_pressure(cache: &mut TileCache) {
+    let status = system_memory_status();
+    let budget = pressure_tile_cache_budget(
+        status.map(|value| value.total_bytes),
+        status.map(|value| value.available_bytes),
+        configured_tile_cache_budget(),
+        tile_cache_budget_override_is_explicit(),
+    );
+    if cache.set_budget(budget) {
+        let policy = budget
+            .map(|bytes| format!("{} MiB", bytes / MIB))
+            .unwrap_or_else(|| "unbounded".to_string());
+        perf_log(&format!(
+            "TILE_CACHE_PRESSURE budget={} total_bytes={} available_bytes={}",
+            policy,
+            status.map(|value| value.total_bytes).unwrap_or_default(),
+            status.map(|value| value.available_bytes).unwrap_or_default()
+        ));
+    }
+}
+
 fn tile_cache() -> &'static Mutex<TileCache> {
     TILE_CACHE.get_or_init(|| {
         let budget = configured_tile_cache_budget();
@@ -2744,6 +2827,32 @@ fn system_memory_status() -> Option<SystemMemoryStatus> {
 
 fn system_total_memory_bytes() -> Option<u64> {
     system_memory_status().map(|status| status.total_bytes)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn process_working_set_bytes() -> Option<u64> {
+    use windows::Win32::System::{
+        ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        Threading::GetCurrentProcess,
+    };
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+        .ok()?;
+    }
+    Some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn process_working_set_bytes() -> Option<u64> {
+    None
 }
 
 #[tauri::command]
@@ -3210,12 +3319,23 @@ static PERF_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 fn perf_enabled() -> bool {
     preview_perf_enabled()
 }
+pub(crate) fn gpu_diagnostics_enabled() -> bool {
+    static VERBOSE: OnceLock<bool> = OnceLock::new();
+    *VERBOSE.get_or_init(|| {
+        cfg!(debug_assertions)
+            || perf_enabled()
+            || std::env::var("PRYNX_GPU_DIAGNOSTICS").as_deref() == Ok("1")
+    })
+}
 
 fn perf_log(msg: &str) {
-    if !perf_enabled() {
+    if !perf_enabled() && !gpu_diagnostics_enabled() {
         return;
     }
     write_perf_log(msg);
+    log::info!(target: "gpu_viewport", "{msg}");
+    #[cfg(debug_assertions)]
+    eprintln!("[GPU_VIEW] {msg}");
 }
 
 // PERF (audit 2026-09-25 §R25.03): host và các worker cùng một file local.
@@ -3257,14 +3377,56 @@ fn format_perf_lines(epoch_ms: u128, msg: &str) -> String {
     text
 }
 
+// PERF (audit 2026-09-27 §V27.05): chỉ writer nền chạm đĩa. Giữ timestamp
+// lúc phát event, không đổi nó thành thời điểm flush và không chặn input HWND.
+enum PerfLogMessage { Lines(u128,String), Flush(std::sync::mpsc::SyncSender<()>) }
+fn run_perf_writer(path: std::path::PathBuf, receiver: std::sync::mpsc::Receiver<PerfLogMessage>) {
+    use std::io::Write;
+    let mut file=std::fs::OpenOptions::new().create(true).append(true).open(path).ok();
+    while let Ok(message)=receiver.recv() {
+        match message {
+            PerfLogMessage::Lines(at,text)=>{
+                if let Some(file)=file.as_mut(){let _=file.write_all(format_perf_lines(at,&text).as_bytes());}
+            },
+            PerfLogMessage::Flush(done)=>{if let Some(file)=file.as_mut(){let _=file.flush();}let _=done.send(());},
+        }
+    }
+}
+fn perf_log_sender() -> std::io::Result<&'static std::sync::mpsc::Sender<PerfLogMessage>> {
+    static WRITER:OnceLock<Result<std::sync::mpsc::Sender<PerfLogMessage>,String>>=OnceLock::new();
+    let path=PERF_LOG_PATH.get().ok_or_else(||std::io::Error::other("Chưa có đường log render"))?.clone();
+    WRITER.get_or_init(||{
+        // Không dùng số slot diagnostic để giới hạn renderer trên máy mạnh.
+        let (sender,receiver)=std::sync::mpsc::channel();
+        std::thread::Builder::new().name("prynx-perf-writer".into()).spawn(move||run_perf_writer(path,receiver))
+            .map(|_|sender).map_err(|e|e.to_string())
+    }).as_ref().map_err(|error|std::io::Error::other(error.clone()))
+}
 fn append_perf_lines(msg: &str) -> std::io::Result<()> {
-    let path = PERF_LOG_PATH.get().ok_or_else(|| std::io::Error::other("Chưa có đường log render"))?;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     let epoch_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    // Một write_all cho cả gói đã format, tránh nhiều write nhỏ xen JSON giữa process.
-    use std::io::Write;
-    file.write_all(format_perf_lines(epoch_ms, msg).as_bytes())
+    perf_log_sender()?.send(PerfLogMessage::Lines(epoch_ms,msg.to_owned())).map_err(std::io::Error::other)
+}
+
+/// Chỉ dùng ở collector/headless shutdown; không gọi từ vòng present/UI.
+pub fn flush_render_perf_log() {
+    if let Ok(sender)=perf_log_sender(){let (done,ack)=std::sync::mpsc::sync_channel(1);
+        if sender.send(PerfLogMessage::Flush(done)).is_ok(){let _=ack.recv_timeout(std::time::Duration::from_secs(2));}}
+}
+
+#[cfg(test)]
+mod viewer_perf_writer_tests {
+    #[test]
+    fn background_writer_preserves_event_timestamp_and_flush_order(){
+        let path=std::env::temp_dir().join(format!("prynx-v27-log-{}-{}.log",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let (tx,rx)=std::sync::mpsc::channel();let output=path.clone();
+        let worker=std::thread::spawn(move||super::run_perf_writer(output,rx));
+        tx.send(super::PerfLogMessage::Lines(42,"first\nsecond".into())).unwrap();
+        let (done,ack)=std::sync::mpsc::sync_channel(1);tx.send(super::PerfLogMessage::Flush(done)).unwrap();
+        ack.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),"[42] first\n[42] second\n");
+        drop(tx);worker.join().unwrap();std::fs::remove_file(path).unwrap();
+    }
 }
 
 fn write_perf_log(msg: &str) {
@@ -3716,6 +3878,8 @@ async fn close_pdf_document(file_path: String, owner_id: Option<String>) -> Resu
         return Ok(false);
     }
     tauri::async_runtime::spawn_blocking(move || {
+        // PERF (audit 2026-09-25 §R25.GPU.31): lease tài liệu cuối đã đóng.
+        viewport::scene_cache::close_document(&file_path);
         match pdf_engine::render_worker::close_document_with_policy(&file_path)? {
             pdf_engine::render_worker::WorkerAttempt::Completed(closed) => Ok(closed),
             pdf_engine::render_worker::WorkerAttempt::Disabled => {
@@ -4047,6 +4211,7 @@ pub fn render_tile_with_options(
     if !force_full_res {
         let cache_lock = tile_cache();
         if let Ok(mut cache) = cache_lock.lock() {
+            reconcile_tile_cache_pressure(&mut cache);
             if let Some(data) = cache.get(&cache_key) {
                 let total_ms = _total_t0.elapsed().as_millis();
                 perf_log(&format!(
@@ -4074,6 +4239,7 @@ pub fn render_tile_with_options(
             ));
             let cache_lock = tile_cache();
             if let Ok(mut cache) = cache_lock.lock() {
+                reconcile_tile_cache_pressure(&mut cache);
                 cache.insert(cache_key.clone(), bytes.clone());
             }
             return Ok((bytes, TileRenderTimingBreakdown { total_ms: total_ms as u64, ..Default::default() }));
@@ -4265,6 +4431,7 @@ pub fn render_tile_with_options(
     {
         let cache_lock = tile_cache();
         if let Ok(mut cache) = cache_lock.lock() {
+            reconcile_tile_cache_pressure(&mut cache);
             cache.insert(cache_key.clone(), buffer.clone());
         }
     }
@@ -5171,13 +5338,37 @@ fn is_admin_or_device_share(norm: &str) -> bool {
     matches!(parts.next(), Some(share) if share.ends_with('$'))
 }
 
+/// Nhận diện Alternate Data Stream (ví dụ `file.pdf:secret`) mà không nhầm dấu `:`
+/// trong ký tự ổ đĩa Windows (`C:`).
+fn has_windows_alternate_stream(path: &str) -> bool {
+    // Bóc alias trước khi tìm dấu `:` để không coi `C:` trong `\\?\C:` hoặc
+    // `\??\C:` là Alternate Data Stream.
+    let normalized = strip_path_prefix_aliases(path);
+    let bytes = normalized.as_bytes();
+    let after_drive = if bytes.len() >= 2 && bytes[1] == b':' {
+        &normalized[2..]
+    } else {
+        normalized.as_str()
+    };
+    after_drive.contains(':')
+}
+
 /// Phần so khớp thuần chuỗi. Nhận chuỗi ĐÃ chuẩn hoá bởi `strip_path_prefix_aliases`.
 fn is_sensitive_path_text(norm: &str) -> bool {
     // Chống path traversal
     if norm.contains("\\..\\") || norm.ends_with("\\..") || norm.starts_with("..\\") {
         return true;
     }
-    if is_admin_or_device_share(norm) {
+    // SEC (audit 2026-09-25 §SEC.29): đồng bộ deny-list với render worker cho
+    // ADS, GLOBALROOT và named pipe. `strip_path_prefix_aliases` đã bóc `\\?\`
+    // / `\??\`, nên kiểm tra cả dạng còn tiền tố và dạng đã bóc.
+    if is_admin_or_device_share(norm)
+        || has_windows_alternate_stream(norm)
+        || norm.starts_with(r"\\?\globalroot\")
+        || norm.starts_with(r"\\?\pipe\")
+        || norm.starts_with(r"globalroot\")
+        || norm.starts_with(r"pipe\")
+    {
         return true;
     }
     let norm = norm.to_string();
@@ -7729,6 +7920,23 @@ mod doc_cache_tests {
     }
 
     #[test]
+    fn tile_cache_pressure_is_emergency_only_and_respects_override() {
+        let normal = None;
+        assert_eq!(
+            pressure_tile_cache_budget(Some(32 * GIB), Some(16 * GIB), normal, false),
+            None
+        );
+        assert_eq!(
+            pressure_tile_cache_budget(Some(32 * GIB), Some(GIB), normal, false),
+            Some(256 * MIB)
+        );
+        assert_eq!(
+            pressure_tile_cache_budget(Some(32 * GIB), Some(GIB), Some(64 * MIB), true),
+            Some(64 * MIB)
+        );
+    }
+
+    #[test]
     fn page_lru_chi_giam_tren_hai_tier_ram_thap() {
         assert_eq!(page_lru_cap_for_total_ram(Some(4 * GIB)), 6);
         assert_eq!(page_lru_cap_for_total_ram(Some(8 * GIB)), 12);
@@ -7837,6 +8045,15 @@ mod batch_folder_tests {
         assert!(!is_sensitive_path("C:\\Users\\bob\\Documents\\artwork.pdf"));
         assert!(!is_sensitive_path("D:/jobs/proof.png"));
         assert!(!is_sensitive_path("C:\\profiles\\CoatedFOGRA39.icc"));
+    }
+
+    #[test]
+    fn sensitive_path_chan_ads_globalroot_va_named_pipe() {
+        assert!(is_sensitive_path("C:\\jobs\\artwork.pdf:secret"));
+        assert!(is_sensitive_path("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"));
+        assert!(is_sensitive_path("\\\\?\\pipe\\prynx-debug"));
+        assert!(is_sensitive_path("\\??\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"));
+        assert!(!is_sensitive_path("C:\\jobs\\artwork.pdf"));
     }
 
     /// SEC (audit 2026-08-28 §SEC.04): trước bản vá, mọi ca dưới đây trả `false` (lọt)
@@ -8141,6 +8358,25 @@ mod perf_and_sidecar_cache_tests {
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
+const WEBVIEW2_SAFE_BROWSER_ARGUMENTS: &str = "--force-color-profile=srgb --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding";
+
+/// Release không được kế thừa cờ WebView2 từ môi trường của tiến trình cha.
+/// Dev vẫn cho phép cờ tự chọn để giữ workflow DevTools/debug hiện có.
+#[cfg(any(test, target_os = "windows"))]
+fn webview2_browser_arguments(existing: Option<&str>, release: bool) -> String {
+    if release {
+        WEBVIEW2_SAFE_BROWSER_ARGUMENTS.to_string()
+    } else {
+        let existing = existing.unwrap_or_default();
+        if existing.trim().is_empty() {
+            WEBVIEW2_SAFE_BROWSER_ARGUMENTS.to_string()
+        } else {
+            format!("{} {}", existing, WEBVIEW2_SAFE_BROWSER_ARGUMENTS)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Panic hook: release chỉ ghi marker tổng quát. Message/vị trí có thể lộ
@@ -8171,17 +8407,21 @@ pub fn run() {
     // được tạo (env var phải set sớm; config additionalBrowserArgs không đủ tin cậy).
     #[cfg(target_os = "windows")]
     {
-        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
-        // CHỈ thêm các cờ AN TOÀN (không mở remote-debugging-port) — không tạo lỗ hổng.
-        // COLOR (feedback 2026-08-10 §VIEWER.C2): bitmap PPE đã là sRGB. Ép display
-        // surface về sRGB để WebView2 không đổi lần hai qua ICC màn hình rồi làm màu
-        // Viewer khác Acrobat trên cùng máy. Cờ này không đổi dữ liệu PDF/soft-proof.
-        let flags = "--force-color-profile=srgb --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding";
-        let merged = if existing.trim().is_empty() {
-            flags.to_string()
-        } else {
-            format!("{} {}", existing, flags)
-        };
+        // SEC (audit 2026-09-25 §SEC.28): phải dọn các biến điều khiển WebView2
+        // TRƯỚC khi tạo Builder/WebView. Khối dọn trong setup vẫn giữ lại để không
+        // truyền cờ debug cho child process, nhưng đã quá muộn để bảo vệ WebView.
+        #[cfg(not(debug_assertions))]
+        {
+            std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
+            std::env::remove_var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER");
+            std::env::remove_var("WEBVIEW2_USER_DATA_FOLDER");
+            std::env::remove_var("NODE_OPTIONS");
+            std::env::remove_var("ELECTRON_RUN_AS_NODE");
+        }
+
+        // Release chỉ dùng allowlist cờ đã duyệt; không nối với giá trị từ tiến trình cha.
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+        let merged = webview2_browser_arguments(existing.as_deref(), cfg!(not(debug_assertions)));
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
     }
 
@@ -8199,7 +8439,7 @@ pub fn run() {
         .manage(Mutex::new(document_window_registry::DocumentWindowRegistry::default()))
         // SEC (audit 2026-08-04 §BE.03): không expose command nghiệp vụ không có
         // consumer/quyền native. Mọi bình bản và xóa đường bế đi qua sidecar đã gate.
-        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, stat_system_files, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, document_window_registry::request_document_save_grant, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, device_identity::get_device_public_identity, device_identity::sign_device_license_challenge, license_renewal::begin_license_renewal, license_renewal::finish_license_renewal, license_renewal::commit_license_renewal, security::get_license_runtime_policy, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::begin_license_validation, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::load_clock_anchor, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app, bridge_installer::sync_design_bridges, bridge_installer::get_design_bridge_status, activate_main_window])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, render_ppe_page, shadow_render_ppe_page, release_ppe_session_owner, cancel_pdf_render, get_pdf_viewer_bootstrap, get_pdf_metadata, close_pdf_document, get_system_memory_status, get_current_display_metrics, take_startup_system_file_batch, get_startup_args, mark_frontend_interactive, prepare_for_update, read_system_file, get_file_size, stat_system_file, stat_system_files, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, take_pending_system_file_batches, get_pending_system_files, write_file_atomic, copy_file_atomic, delete_file_scoped, read_dir_json, preview_perf_logging_enabled, append_render_perf, log_frontend_error, grant_upscale_file_path, document_window_registry::create_document_window, document_window_registry::take_document_window_bootstrap, document_window_registry::show_document_window_ready, document_window_registry::request_document_save_grant, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, device_identity::get_device_public_identity, device_identity::sign_device_license_challenge, license_renewal::begin_license_renewal, license_renewal::finish_license_renewal, license_renewal::commit_license_renewal, security::get_license_runtime_policy, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::begin_license_validation, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::load_clock_anchor, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app, bridge_installer::sync_design_bridges, bridge_installer::get_design_bridge_status, activate_main_window, viewport::set_native_gpu_viewport_interaction, viewport::set_native_gpu_viewport_exclusions, viewport::set_native_gpu_viewport_visibility, viewport::load_native_gpu_scene, viewport::open_native_gpu_viewport, viewport::resize_native_gpu_viewport, viewport::set_native_gpu_viewport_zoom, viewport::fit_native_gpu_viewport_page, viewport::get_native_gpu_viewport_camera, viewport::trigger_native_gpu_viewport_invalidation, viewport::close_native_gpu_viewport])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 state.enqueue(args);

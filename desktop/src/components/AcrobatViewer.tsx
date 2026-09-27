@@ -59,6 +59,13 @@ import {
 import type { DocumentWindowViewState } from '../lib/documentWindow';
 import type { WorkspaceHistoryEntry } from '../lib/workspaceHistory';
 import { isGeneratedWorkspaceFile } from '../lib/nativeFileAccess';
+import { NativeGpuViewportContainer } from './acrobat/NativeGpuViewportContainer';
+import { viewerTraceLog } from '../lib/previewPerfLog';
+import { nativeViewerAllowsWorkspaceOverlays } from './AcrobatViewer.helpers';
+
+// UIUX (audit 2026-09-27 §V27.CAMERA): hệ tọa độ bitmap hiện có dùng px@96;
+// Smart Fit đổi mức 100% vật lý sang CSS px/PDF point bằng cùng tỷ số này.
+const VIEWER_BITMAP_DPI = 96;
 
 const getRenderedPageElement = (scroller: HTMLElement, page: number): HTMLElement | null => {
     const container = scroller.querySelector<HTMLElement>(`#pdf-page-container-${page}`);
@@ -331,6 +338,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'cover_numbering' || activeDashboardTool === 'stick_text_number';
     const showRulers = useAppSettingsStore(state => state.showRulers);
+    // GPU Viewport tạm thời khóa ở bản production, chỉ cho phép chạy ở môi trường DEV (import.meta.env.DEV)
+    const nativeGpuRequested = Boolean(import.meta.env.DEV) && useAppSettingsStore(state => state.nativeGpuViewportEnabled);
+    const [nativeGpuFailure, setNativeGpuFailure] = useState<string | null>(null);
+    const [nativeViewportVisible, setNativeViewportVisible] = useState(false);
+    const nativeViewportKeepAliveRef = useRef(false);
     const toggleRulers = useAppSettingsStore(state => state.toggleRulers);
     const measurementUnit = useAppSettingsStore(state => state.measurementUnit);
     const setMeasurementUnit = useAppSettingsStore(state => state.setMeasurementUnit);
@@ -776,6 +788,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [accurateColorSourceKey, activePage, notifyFirstPageRenderReady]);
     const accuratePrefetchReady = accuratePrefetchGate?.sourceKey === accurateColorSourceKey
         && accuratePrefetchGate.page === activePage;
+    const handleNativeFrameReady = useCallback((ready: boolean) => {
+        setNativeViewportVisible(ready);
+        // PERF (audit 2026-09-27 §V27.01/C2): native cũng mở cổng metadata;
+        // ngừng producer fallback không được làm loader chờ LiveTile mãi.
+        if (ready && isActive !== false) handleActivePageRenderReady();
+    }, [handleActivePageRenderReady, isActive]);
 
     // Helper: mọi thao tác đổi thứ tự trang PHẢI cập nhật pageOrder VÀ pageInstanceIds
     // cùng lúc (bất biến: 2 mảng luôn cùng độ dài). Rotation keyed theo instance-id nên
@@ -824,6 +842,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         getTextBlocksForPage,
         renderOwnerId,
         renderDocumentToken,
+        nativeSceneDocumentToken,
         accurateColorError,
         cancelAccurateGroup,
     } = useTileRenderer({
@@ -1119,7 +1138,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const objectEdit = useObjectEditHistory();
 
     // ═══ Hook: Viewer Hotkeys ═══
-    const { commitSnapshot, undo, redo } = useViewerHotkeys({
+    const { commitSnapshot, undo, redo, renderToolMode } = useViewerHotkeys({
         containerRef, sidebarRef,
         // isActive: false khi tab nền — hotkey D/F7/Delete chỉ tab đang xem.
         // undefined (caller cũ) → coi như active + fallback DOM.
@@ -1161,8 +1180,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         isZoomReady,
         thumbBaseWidth,
         isZoomingRef,
+        lastZoomMouseRef,
         applyFitWidth, applyFitPage,
-        handleDragStart,
+        handlePageWheel, handleDragStart,
         updateViewportRect,
     } = useViewerZoom({
         containerRef, sidebarRef, internalScrollRef,
@@ -1196,6 +1216,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             return () => cancelAnimationFrame(id1);
         }
     }, [activeDashboardTool, hasRightPanelTool, setFitMode, applyFitPage]);
+
+    // UIUX (Khắc phục kế thừa zoom lớn từ file cũ): Khi chuyển file mà không có initialViewState riêng,
+    // đặt lại chế độ fitMode = 'smart' để tài liệu mới tự căn vừa màn hình, không bị kẹt ở zoom của file trước.
+    const lastFilePathRef = useRef<string | null>(null);
+    useEffect(() => {
+        const currentPath = file?.path ?? null;
+        if (lastFilePathRef.current !== null && lastFilePathRef.current !== currentPath && !initialViewState) {
+            setFitMode('smart');
+        }
+        lastFilePathRef.current = currentPath;
+    }, [file?.path, initialViewState, setFitMode]);
 
     // UIUX (audit 2026-08-25 §NW.4): usePdfLoader reset page/zoom khi đổi file,
     // nên seed cửa sổ con chỉ được áp sau trạng thái `ready` + pageOrder thật.
@@ -2563,6 +2594,60 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [pageOrder, pageDisplayMode, activePage]);
 
     const renderRows = pageDisplayMode.includes('scroll') ? scrollRowsMemo : fitRowsMemo;
+    // Chỉ gắn surface khi hợp đồng công cụ hiện tại được hỗ trợ. Không để HWND
+    // che text selection, overlay hiệu chỉnh, ruler hay nội dung chưa ghi về PDF.
+    const nativeSourcePage = pageOrder[activePage - 1] ?? activePage;
+    const nativeDocumentKey = `${file?.path ?? ''}:${nativeSceneDocumentToken}:${nativeSourcePage}`;
+    // R34.01/02: native chỉ nhận hợp đồng màu mà PPE/GPU đang thực hiện đúng.
+    // Display preview vẫn giữ đường PDFium/Viewer cũ, không tự biến thành soft-proof.
+    const nativeColorContractReady = accurateColorEnabled && !viewerDarkBackground
+        && viewerSimulationProfileId === 'fogra39';
+    // PERF (audit 2026-09-25 §R25.GPU.34): tách điều kiện giữ lease khỏi điều
+    // kiện được phép đưa HWND lên trên WebView. Trước đây đổi sang một công cụ
+    // bên phải làm `enabled=false`, hook unmount và gọi DestroyWindow ngay giữa
+    // refinement Vulkan; đó là nguyên nhân của chuỗi crash 0xe0000008 khi mở
+    // Optimize. Công cụ chỉ cần ẩn native surface, không cần hủy rồi mở lại.
+    const nativeViewportBaseReady = nativeGpuRequested && nativeColorContractReady && Boolean(file?.path) && isActive !== false
+        && !nativeGpuFailure && !file?.type?.startsWith('image/') && pageDisplayMode === 'single_fit'
+        && !showOutputPreview && !ocgPreviewUrl && !highlightBoxes
+        && !pageOverlay && !pageOverlayRenderer && Object.keys(editSession?.previews ?? {}).length === 0;
+    // PERF (audit 2026-09-26 §R34.06): thước nằm ngoài vùng HWND (container đã
+    // chừa 20px ở left/top), nên không được dùng showRulers để rơi cả trang về
+    // PDFium. Trước đây điều kiện này làm GPU chỉ xuất hiện sau khi đổi công cụ
+    // (thường là Bàn tay), trong khi setting GPU đang bật. Các chế độ cần DOM
+    // thật (DIM/object/crop/VDP/lớp phủ) vẫn bị loại ở các điều kiện bên dưới.
+    const nativeSceneEligible = nativeViewportBaseReady
+        && !isObjectEditMode && !isCropMode && !isVdpMode && nativeViewerAllowsWorkspaceOverlays(activeDashboardTool, bleedView)
+        && guides.length === 0 && dimensions.length === 0 && !(pageRotations[pageInstanceIds[activePage - 1]] ?? 0);
+    // Chỉ giữ một lease đã mở trước đó. Nếu người dùng mở thẳng công cụ
+    // Optimize từ trạng thái chưa có native viewport thì không âm thầm khởi
+    // tạo GPU ở nền; khi quay lại Viewer mới mở một lease sạch.
+    useLayoutEffect(() => {
+        if (nativeSceneEligible) nativeViewportKeepAliveRef.current = true;
+        if (!nativeViewportBaseReady) nativeViewportKeepAliveRef.current = false;
+    }, [nativeSceneEligible, nativeViewportBaseReady]);
+    const nativeViewportShouldMount = nativeViewportBaseReady
+        && (nativeSceneEligible || nativeViewportKeepAliveRef.current);
+    // UIUX (audit 2026-09-25 §R25.GPU.30): setting chọn renderer; pointer/hand chỉ đổi input.
+    const useNativeScene = nativeSceneEligible && renderToolMode !== 'dimension';
+    // PERF (audit 2026-09-25 §R25.GPU.28): ghi quyết định thật tại consumer;
+    // bật setting không chứng minh nhánh native đã được mount.
+    const nativePolicyTrace = JSON.stringify({
+        requested: nativeGpuRequested, mounted: nativeViewportShouldMount, selected: useNativeScene, failure: nativeGpuFailure,
+        color_contract: nativeColorContractReady ? 'fogra39-relative-color-verified' : 'display-pdfium',
+        page: nativeSourcePage, file: Boolean(file?.path), active: isActive !== false,
+        display_mode: pageDisplayMode, tool: toolMode, render_tool: renderToolMode, dashboard_tool: activeDashboardTool,
+        rulers: showRulers, object_edit: isObjectEditMode, crop: isCropMode, vdp: isVdpMode,
+        output_preview: showOutputPreview, ocg: Boolean(ocgPreviewUrl), bleed: bleedView.show,
+        highlight: Boolean(highlightBoxes), overlay: Boolean(pageOverlay || pageOverlayRenderer),
+        edit_previews: Object.keys(editSession?.previews ?? {}).length,
+        guides: guides.length, dimensions: dimensions.length, rotation: pageRotations[pageInstanceIds[activePage - 1]] ?? 0,
+    });
+    useEffect(() => { void viewerTraceLog('native-renderer-policy', JSON.parse(nativePolicyTrace)); }, [nativePolicyTrace]);
+    useEffect(() => { setNativeGpuFailure(null); setNativeViewportVisible(false); }, [nativeDocumentKey, nativeGpuRequested]);
+    const nativeVisible = !isDeleteModalOpen && !isInsertModalOpen && !isExtractModalOpen
+        && !isExportImageOpen && !crossFileInsertPending && !isAutoTrimOpen && !showOutputPreview;
+
     centerVirtuosoListRef.current = shouldCenterVirtuosoList(pageDisplayMode, renderRows.length);
 
     useLayoutEffect(() => {
@@ -2618,6 +2703,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 <div className="relative">
                     <LivePageFrame
                         tabId={tabId}
+                        // PERF (audit 2026-09-27 §V27.01): cùng nguồn với tile renderer,
+                        // để frame mồi đúng path/token được nhận thay vì dựng lại.
+                        nativeFilePath={(file as ViewerFile)?.path ?? null}
                         isViewerActive={isActive}
                         originalPageNum={originalPageNum}
                         viewerPageNum={viewerPagePosition}
@@ -2651,7 +2739,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as ViewerFile)?.isBlank}
                         isImageFile={isImage}
-                        nativeFilePath={(file as ViewerFile)?.path}
+                        // PERF (audit 2026-09-26 Lô 4 §Mục 5): Giữ renderEnabled=true cho fallback PDFium
+                        // để luôn có bitmap nền và không bao giờ bị trắng màn hình. Việc chặn 57 duplicate tiles
+                        // và dừng PPE accurate được đảm bảo sạch qua nativeViewportPending bên dưới.
+                        renderEnabled={true}
+                        nativeViewportPending={viewerPagePosition === activePage && nativeViewportShouldMount && useNativeScene}
+                        nativeViewportPresented={viewerPagePosition === activePage && nativeViewportVisible && useNativeScene}
                         previewRevision={pdfUrl}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession} totalPages={numPages}
@@ -2671,7 +2764,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, fetchObjectsForPage, numPages, onEditCommit, onObjectDelete, onVdpBoxCreate, onVdpFieldsChange, pdfUrl, setHoveredPdfPosition]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, fetchObjectsForPage, numPages, onEditCommit, onObjectDelete, onVdpBoxCreate, onVdpFieldsChange, pdfUrl, setHoveredPdfPosition, nativeViewportShouldMount, nativeViewportVisible, useNativeScene]);
 
     const virtuosoItemContentRef = useRef<(index: number) => ReactNode>(() => null);
     virtuosoItemContentRef.current = (index: number) => {
@@ -2911,6 +3004,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                              pageWorkflowStatuses={pageWorkflowStatuses}
                              cutlinePreviews={cutlinePreviews}
                              renderDocumentToken={loaderRenderDocumentToken}
+                             accurateColorEnabled={accurateColorEnabled}
+                             accurateColorProfileId={viewerSimulationProfileId}
+                             accurateColorIntent={viewerSimulationIntent}
                         />
                     )}
 
@@ -3003,6 +3099,54 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                 {isZoomReady && !suspendViewer && (() => {
                                     if (pageDisplayMode.includes('_fit')) {
                                         return (
+                                            <NativeGpuViewportContainer
+                                                onPageWheel={handlePageWheel}
+                                                enabled={nativeViewportShouldMount} selected={useNativeScene}
+                                                filePath={file?.path ?? ''} page={nativeSourcePage} documentToken={nativeSceneDocumentToken}
+                                                visible={nativeVisible} scale={effectiveZoom * VIEWER_BITMAP_DPI / 72} fitMode={fitMode}
+                                                smartFitScale={physicalDisplayScale * VIEWER_BITMAP_DPI / 72}
+                                                zoomAnchor={lastZoomMouseRef.current ? {
+                                                    x: lastZoomMouseRef.current.mouseX,
+                                                    y: lastZoomMouseRef.current.mouseY,
+                                                    clientX: lastZoomMouseRef.current.clientX,
+                                                    clientY: lastZoomMouseRef.current.clientY,
+                                                } : null}
+                                                tool={toolMode === 'hand' ? 'hand' : 'pointer'} textBlocks={nativeTextBlocks[nativeSourcePage]}
+                                                onDismiss={() => setContextMenu(null)}
+                                                onContextMenu={(x, y) => {
+                                                    if (!selectedIndices.has(activePage - 1)) { setSelectedIndices(new Set([activePage - 1])); setLastSelectedIndex(activePage - 1); }
+                                                    setContextMenu({ x, y, visible: true });
+                                                }}
+                                                onCameraChange={(camera, userInitiatedZoom = false) => {
+                                                    if (isZoomingRef.current) return;
+                                                    const z = camera.zoom / (physicalDisplayScale * 96 / 72);
+                                                    if (Math.abs(z - zoom) > 0.005) {
+                                                        setZoom(z);
+                                                    }
+                                                    // UIUX (audit 2026-09-27 §V27.CAMERA): Fit/scene/resize
+                                                    // chỉ đồng bộ phần trăm, không tự hủy chế độ vừa trang.
+                                                    // Event zoom tay có thể tới sau ACK cùng hình học.
+                                                    if (userInitiatedZoom) setFitMode('custom');
+                                                }}
+                                                onNativeVisibilityChange={handleNativeFrameReady}
+                                                onError={error => {
+                                                    // UIUX (audit 2026-09-26 §R34.05): đổi trang có thể làm
+                                                    // lệnh camera cũ về sau scene mới. Không hạ renderer và
+                                                    // không ẩn cả viewport vì race này đã được hook bỏ qua.
+                                                    if (/Zoom thuộc trang cũ|Fit thuộc trang cũ|Tương tác thuộc trang cũ|Revision scene đã hết hiệu lực|Scene thuộc trang (đã đóng|đã thay thế)|Frame đã bị thay thế|Phiên viewport đã hết hiệu lực|Viewport đã đóng|Viewport không tồn tại|PPE request đã bị hủy/i.test(error.message)) {
+                                                        void viewerTraceLog('native-renderer-transition-ignored', {
+                                                            page: nativeSourcePage, reason: error.message,
+                                                        });
+                                                        return;
+                                                    }
+                                                    setNativeGpuFailure(error.message);
+                                                    // R34.01: capability fallback là quyết định backend, không phải
+                                                    // lỗi UX. Giữ Viewer cũ và chỉ toast lỗi vận hành thật.
+                                                    void viewerTraceLog('native-renderer-fallback', { page: nativeSourcePage, reason: error.message });
+                                                    if (!/PPE|Scene cần|unsupported|không hỗ trợ/i.test(error.message)) {
+                                                        toast.error(`Trình xem mới: ${error.message}`);
+                                                    }
+                                                }}>
                                             <div className="flex-1 relative min-w-0 min-h-0">
                                                 <div className="absolute inset-0 overflow-auto acro-scroll outline-none block" ref={(el) => { internalScrollRef.current = el; }}>
                                                     <div className="min-w-full min-h-full w-max h-max flex flex-col relative" style={{ alignItems: 'safe center', justifyContent: 'safe center' }}>
@@ -3024,6 +3168,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                                     </div>
                                                 </div>
                                             </div>
+                                            </NativeGpuViewportContainer>
                                         );
                                     }
                                     return (

@@ -95,8 +95,23 @@ def _render_chunks(
 
             executor_factory = ProcessPoolExecutor
         worker_count = min(len(context.args_list), context.planned_worker_count)
-        with executor_factory(max_workers=worker_count) as pool:
-            return list(pool.map(chunk_processor, context.args_list))
+        from app.core.heavy_job_scheduler import process_pool_admission
+        from app.core.system_memory import estimate_pdf_worker_mb
+
+        source_path = context.args_list[0][0] if context.args_list else ""
+        try:
+            source_bytes = os.path.getsize(source_path)
+        except (OSError, TypeError):
+            source_bytes = 0
+        per_worker_mb = estimate_pdf_worker_mb(source_bytes)
+        # PERF (audit 2026-09-25 §G2): reserve trước khi tạo ProcessPoolExecutor;
+        # file nhỏ trên máy mạnh vẫn nhận đủ worker, file lớn nhường worker theo
+        # working set RAM khả dụng. Env override vẫn do admission tôn trọng.
+        with process_pool_admission(
+            "nup", worker_count, per_worker_mb, env_override="PRYNX_NUP_WORKERS"
+        ) as admitted_workers:
+            with executor_factory(max_workers=admitted_workers) as pool:
+                return list(pool.map(chunk_processor, context.args_list))
     except BaseException:
         # BUILD (audit 2026-08-03 §REL.03): không để chunk đã trả về sót lại khi
         # một chunk sau thất bại; ngoại lệ gốc vẫn được truyền nguyên vẹn.

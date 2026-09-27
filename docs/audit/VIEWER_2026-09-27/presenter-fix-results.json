@@ -1,0 +1,176 @@
+{
+  "scope": "V27.R7: actual Presenter/refiner/GPU-credit/compositor on owned invisible surface, not live user HWND/scanout",
+  "controlled_desktop_runs": [
+    {
+      "artifact": "presenter-ab-candidate-2\\result.json",
+      "artifact_sha256": "9dea1c7c77c1fcd050bd0e659faa5251b2cd10d86c0df5e9aa3e970139950210",
+      "mode": "candidate",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": null,
+      "stationary_ms": 1748.2416,
+      "input_duration_ms": 1983.7411,
+      "settle_after_input_ms": 525.8281000000001,
+      "presenter_cpu_ms": 359.375,
+      "presents": 166,
+      "refinements": 47,
+      "idle_error_reported": null
+    },
+    {
+      "artifact": "presenter-ab-candidate-5\\result.json",
+      "artifact_sha256": "fac69e09d580ee7fd09fab3b847e8c2191b7ee5a6375174e17bd6a179f5c2b48",
+      "mode": "candidate",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": null,
+      "stationary_ms": 1655.6883999999998,
+      "input_duration_ms": 1983.7613,
+      "settle_after_input_ms": 699.9946,
+      "presenter_cpu_ms": 250.0,
+      "presents": 161,
+      "refinements": 43,
+      "idle_error_reported": null
+    },
+    {
+      "artifact": "presenter-ab-cooperative-1\\result.json",
+      "artifact_sha256": "34b21f660a9acceaa9a2b1b953f62ca95c73a56e7f889f098319d867f29b3b65",
+      "mode": "cooperative",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": null,
+      "stationary_ms": 429.9721,
+      "input_duration_ms": 1983.7099999999998,
+      "settle_after_input_ms": 174.5421,
+      "presenter_cpu_ms": 1125.0,
+      "presents": 209,
+      "refinements": 89,
+      "idle_error_reported": null
+    },
+    {
+      "artifact": "presenter-ab-cooperative-3\\result.json",
+      "artifact_sha256": "5666bde7315efbcac3fd8ffb0faf7e048441c56199300daf75403d86439b2425",
+      "mode": "cooperative",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": null,
+      "stationary_ms": 444.1156,
+      "input_duration_ms": 1983.8947,
+      "settle_after_input_ms": 174.6554,
+      "presenter_cpu_ms": 1078.125,
+      "presents": 206,
+      "refinements": 86,
+      "idle_error_reported": null
+    },
+    {
+      "artifact": "presenter-ab-legacy-0\\result.json",
+      "artifact_sha256": "0da82caf01bb0f320bb02290a4985c211be365d29bcb47386c264a1a0d6e678b",
+      "mode": "legacy",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": null,
+      "stationary_ms": 1029.3369,
+      "input_duration_ms": 1983.4746,
+      "settle_after_input_ms": 889.0247999999999,
+      "presenter_cpu_ms": 1687.5,
+      "presents": 1140,
+      "refinements": 88,
+      "idle_error_reported": null
+    },
+    {
+      "artifact": "presenter-ab-legacy-4\\result.json",
+      "artifact_sha256": "798a0855d981f411e4df4985652b83ea68bc600a9294bca954ff8ed634ad7023",
+      "mode": "legacy",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": null,
+      "stationary_ms": 1023.9612,
+      "input_duration_ms": 1983.7938,
+      "settle_after_input_ms": 814.425,
+      "presenter_cpu_ms": 1421.875,
+      "presents": 1173,
+      "refinements": 91,
+      "idle_error_reported": null
+    }
+  ],
+  "final_same_binary_two_documents": [
+    {
+      "artifact": "presenter-final-desktop-cooperative\\result.json",
+      "artifact_sha256": "2af09f67650e921885d866a1e7808fa616a744afce8de7172d77dcd1661e7a43",
+      "mode": "cooperative",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": "264cef1273e6984e54620b0af05543658efda5128a1a62de67dc8cdee06a8abb",
+      "stationary_ms": 423.7333,
+      "input_duration_ms": 1983.8936,
+      "settle_after_input_ms": 263.3605,
+      "presenter_cpu_ms": 1218.75,
+      "presents": 203,
+      "refinements": 84,
+      "idle_error_reported": true
+    },
+    {
+      "artifact": "presenter-final-desktop-legacy\\result.json",
+      "artifact_sha256": "76b3c84c94d96f21a277f9401f52d4eeb93d6702ccb8e516e5cdc0aa4c0ff5a1",
+      "mode": "legacy",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "exe_sha256": "264cef1273e6984e54620b0af05543658efda5128a1a62de67dc8cdee06a8abb",
+      "stationary_ms": 886.5146000000001,
+      "input_duration_ms": 1983.6816000000001,
+      "settle_after_input_ms": 706.5296,
+      "presenter_cpu_ms": 1234.375,
+      "presents": 808,
+      "refinements": 53,
+      "idle_error_reported": true
+    },
+    {
+      "artifact": "presenter-final-outline-cooperative\\result.json",
+      "artifact_sha256": "dbddbb66ad5b0b7401bb34a14c8ef89115de40bbb80d8ee946bdffc8f8eec1dd",
+      "mode": "cooperative",
+      "input_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+      "exe_sha256": "264cef1273e6984e54620b0af05543658efda5128a1a62de67dc8cdee06a8abb",
+      "stationary_ms": 426.05199999999996,
+      "input_duration_ms": 1983.7879,
+      "settle_after_input_ms": 374.774,
+      "presenter_cpu_ms": 1093.75,
+      "presents": 201,
+      "refinements": 81,
+      "idle_error_reported": true
+    },
+    {
+      "artifact": "presenter-final-outline-legacy\\result.json",
+      "artifact_sha256": "311b85c388a3847c3a12b2a13a72bb6901c4177e4766a58b17b7a03f2eda7885",
+      "mode": "legacy",
+      "input_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+      "exe_sha256": "264cef1273e6984e54620b0af05543658efda5128a1a62de67dc8cdee06a8abb",
+      "stationary_ms": 938.2367,
+      "input_duration_ms": 1984.6528,
+      "settle_after_input_ms": 546.812,
+      "presenter_cpu_ms": 906.25,
+      "presents": 665,
+      "refinements": 45,
+      "idle_error_reported": true
+    }
+  ],
+  "sources_after": [
+    {
+      "path": "desktop/src-tauri/src/viewport/presenter.rs",
+      "sha256": "9af1df7865f5ef99bada73fc87b9089c4829c6bf1c7be46a0eeb8d5e12f4c43d"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/presenter_runtime_tests.rs",
+      "sha256": "afe081366f41af75c9888cbc070bf2539d284c9a9a8e7f1d7f1cf1c5dbb7e56c"
+    }
+  ],
+  "native_test_exe_sha256": "264cef1273e6984e54620b0af05543658efda5128a1a62de67dc8cdee06a8abb",
+  "live_baseline_evidence_sha256": "c85596bcfbe2c182fe55dadecd436da81d76526826d3df6ed335fdc8d8f12409",
+  "verify": {
+    "viewport_tests_passed": 57,
+    "viewport_tests_ignored": 7,
+    "legacy_probe_failures_expected": true,
+    "gpu_idle_error_without_new_input": "passed",
+    "cargo_check_lib_examples": "passed",
+    "user_application_control_or_global_input": false,
+    "owned_hidden_hwnd_surface_test": true
+  },
+  "limits": [
+    "120 synthetic cameras use absolute16.667ms deadlines; timings start after scene/renderer preparation.",
+    "Settled means actual Presenter completed latest camera, drained refine credit and presented; not physical monitor scanout.",
+    "Desktop runs improve Presenter CPU; outline final run uses more active CPU (906.25->1093.75ms) to finish sooner.",
+    "No worker/quality/cache caps or ICC changes. Sub16GiB hardware timing unmeasured.",
+    "Initial presenter-before/after probes had cadence drift and separate builds; kept but excluded from acceptance.",
+    "ROI fragmentation and FE camera-mirror fanout remain separate follow-up work, not silently changed."
+  ]
+}

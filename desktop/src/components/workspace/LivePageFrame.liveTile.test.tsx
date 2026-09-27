@@ -13,6 +13,7 @@ import {
     shouldRequestViewerAccurateBase,
     shouldUseViewerDirectFullPageSurface,
     viewerPanGridRenderPolicy,
+    viewerPanGridTargetRasterPending,
     viewerPageRenderPriority,
     VIEWER_RASTER_IMAGE_RENDERING,
     viewerSurfaceSwapMs,
@@ -190,6 +191,28 @@ function makeViewportHarness(overrides: Partial<ComponentProps<typeof TileLayer>
 }
 
 describe('LiveTile — cold-open màu chính xác', () => {
+    it.each(['missing', 'pdfium', 'stale'] as const)('V27: từ chối nguồn %s trước decode/swap accurate', async kind => {
+        const requiredProof = {documentToken:'v2',page:1,profileId:'fogra39',intent:'relative',proofIdentity:'all'};
+        const {props,pending,source} = makeViewportHarness({requiredProof});
+        const view=render(<TileLayer {...props} />);
+        await waitFor(() => expect(pending.some(t=>t.priority===0)).toBe(true));
+        const bad=source('UNVERIFIED',3);
+        if (kind !== 'missing') bad.proof={...requiredProof,engine:kind==='pdfium'?'pdfium':'ppe-native',soundness:'color-verified',pipelineIdentity:'ppe-v5',documentToken:kind==='stale'?'v1':'v2'};
+        await act(async()=>pending.find(t=>t.priority===0)!.resolve(bad));
+        const context=view.container.querySelector('canvas')!.getContext('2d');
+        expect(context?.drawImage).not.toHaveBeenCalled();
+        expect(bad.bitmap?.close).toHaveBeenCalled();
+    });
+    it('V27: nhận PPE đúng hợp đồng qua TileLayer tới canvas', async()=>{
+        const requiredProof={documentToken:'v2',page:1,profileId:'fogra39',intent:'relative',proofIdentity:'all'};
+        const {props,pending,source}=makeViewportHarness({requiredProof});
+        const view=render(<TileLayer {...props}/>);
+        await waitFor(()=>expect(pending.some(t=>t.priority===0)).toBe(true));
+        const good=source('VERIFIED',3);good.proof={...requiredProof,engine:'ppe-native',soundness:'color-verified',pipelineIdentity:'ppe-v5'};
+        await act(async()=>pending.find(t=>t.priority===0)!.resolve(good));
+        const context=view.container.querySelector('canvas')!.getContext('2d');
+        expect(context?.drawImage).toHaveBeenCalled();
+    });
     it.each([[300, 20], [430, 20], [1000, 500]])(
         'R25.04.2: render %i ms vẫn tiến triển khi zoom mỗi %i ms', async (latency, inputGap) => {
             vi.useFakeTimers();
@@ -802,6 +825,33 @@ describe('LiveTile — cold-open màu chính xác', () => {
             near: true,
             outer: false,
         });
+    });
+
+    it('pan cùng DPI bucket không khóa atlas khi target viewport còn đang chờ', () => {
+        expect(viewerPanGridTargetRasterPending(
+            false,
+            true,
+            true,
+            'bucket-a',
+            'bucket-a',
+            'bucket-a',
+        )).toBe(false);
+        expect(viewerPanGridTargetRasterPending(
+            false,
+            true,
+            true,
+            'bucket-b',
+            'bucket-a',
+            'bucket-a',
+        )).toBe(true);
+        expect(viewerPanGridTargetRasterPending(
+            true,
+            true,
+            true,
+            'bucket-a',
+            'bucket-a',
+            'bucket-a',
+        )).toBe(true);
     });
 
     it('giữ PDFium cho trang compatibility chưa được đánh dấu màu rủi ro', async () => {

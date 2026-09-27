@@ -29,7 +29,7 @@ impl<'a> std::ops::Deref for Coverage<'a> {
 }
 
 /// Quy tắc tô của PDF.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FillRule {
     /// `f`, `F`, `B` — nonzero winding.
     NonZero,
@@ -479,7 +479,13 @@ impl Rasterizer {
 /// Rasterize nét trực tiếp trong toạ độ thiết bị sẽ sai bề rộng ở mọi file có
 /// scale không đều — lỗi này rất hay gặp và rất khó thấy bằng mắt.
 pub fn stroke_to_path(path: &Path, stroke: &Stroke, ctm: &Matrix) -> Option<Path> {
-    let outline = path.stroke(stroke, 1.0)?;
+    // PERF (audit 2026-09-25 §R25.GPU.23): tiny-skia Path::stroke không áp
+    // Stroke::dash. Dựng dash trước, và hairline/độ chính xác cong theo camera.
+    let transform=to_ts(ctm);
+    let resolution=tiny_skia::PathStroker::compute_resolution_scale(&transform);
+    let path=if let Some(dash)=&stroke.dash{path.dash(dash,resolution)?}else{path.clone()};
+    let mut style=stroke.clone();style.width=effective_line_width(style.width,ctm);style.dash=None;
+    let outline = path.stroke(&style, resolution)?;
     outline.transform(to_ts(ctm))
 }
 
@@ -826,6 +832,20 @@ mod tests {
         drop(raster);
         Rasterizer::new_budgeted(4, 4, &owner)
             .expect("reservation lỗi phải không làm rò scratch raster");
+    }
+
+    #[test]
+    fn stroke_outline_keeps_dash_gaps_and_zero_width_at_zoom() {
+        let mut p=PathBuilder::new();p.move_to(0.,10.);p.line_to(100.,10.);let path=p.finish().unwrap();
+        let stroke=Stroke{width:0.,dash:tiny_skia::StrokeDash::new(vec![5.,5.],0.),..Default::default()};
+        for scale in [1.,4.] {
+            let outline=stroke_to_path(&path,&stroke,&Matrix::scale(scale,scale)).unwrap();
+            assert!((outline.bounds().height()-1.).abs()<0.001);
+            let width=(100.*scale) as u32;let mut coverage=Mask::new(width,(20.*scale) as u32).unwrap();
+            coverage.fill_path(&outline,tiny_skia::FillRule::Winding,false,tiny_skia::Transform::identity());
+            let row=(10.*scale) as usize*width as usize;assert!(coverage.data()[row+(2.*scale) as usize]>0);
+            assert_eq!(coverage.data()[row+(7.*scale) as usize],0);
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
+import { reduceWheelNav, createWheelNavState, type WheelNavInput } from './wheelPageNav';
 import { viewerTraceLog } from '../../lib/previewPerfLog';
 import {
     capturePageViewportAnchor,
@@ -23,6 +23,8 @@ const FIT_SAFETY = 12;
 interface ViewerZoomTarget {
     mouseX: number;
     mouseY: number;
+    clientX?: number;
+    clientY?: number;
     ratio: number;
     pageId?: string;
     pageAnchor?: PagePointViewportAnchor;
@@ -406,6 +408,27 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         };
     }, [internalScrollRef, trackCenterAnchor, numPages, activePage]);
 
+    // UIUX (audit 2026-09-25 §R25.GPU.32): DOM và HWND dùng chung trạng thái
+    // điều hướng, sống trên Viewer để cooldown không mất khi đổi key trang native.
+    const handlePageWheel = useCallback((input: WheelNavInput) => {
+        if (!pageDisplayMode.includes('_fit') || numPages <= 0
+            || !containerRef.current || containerRef.current.closest('.opacity-0')) return;
+        const { state, jump } = reduceWheelNav(wheelNavStateRef.current, input);
+        wheelNavStateRef.current = state;
+        const step = pageDisplayMode === 'two_fit' ? 2 : 1;
+        let target = activePage;
+        if (jump > 0) target = Math.min(numPages, activePage + step);
+        else if (jump < 0) {
+            const rowStart = (activePage - 1) % 2 === 0 ? activePage - 1 : activePage - 2;
+            target = pageDisplayMode === 'two_fit' ? Math.max(1, rowStart + 1 - step) : Math.max(1, activePage - 1);
+        }
+        if (target !== activePage) {
+            void viewerTraceLog('wheel-page-navigation', { page_before: activePage, page_target: target,
+                delta_y: input.deltaY, at_top: input.atTop, at_bottom: input.atBottom });
+            navigatePage(target);
+        }
+    }, [activePage, numPages, pageDisplayMode, containerRef, navigatePage]);
+
     // ═══ Wheel handler (Ctrl+Wheel zoom + page-fit scroll-to-page) ═══
     useEffect(() => {
         if (!containerRef.current) return;
@@ -418,6 +441,22 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             const overContainer = containerRef.current.contains(e.target as Node);
             const overSidebar = sidebarRef.current?.contains(e.target as Node) ?? false;
             if (!overContainer && !overSidebar) return;
+
+            // UIUX (audit 2026-09-26 GPU_DIAG): sự kiện này chỉ xuất hiện nếu
+            // WebView nhận wheel. Đối chiếu với WndProc để tìm lớp nuốt input.
+            const targetElement = e.target instanceof Element ? e.target : null;
+            const nativeHost = targetElement?.closest<HTMLElement>('[data-native-diagnostic-id]');
+            void viewerTraceLog('GPU_DIAG_FE_WHEEL', {
+                page: activePageRef.current, tool: toolMode, zoom: currentZoomRef.current,
+                ctrl: e.ctrlKey, shift: e.shiftKey, delta_x: e.deltaX, delta_y: e.deltaY,
+                delta_mode: e.deltaMode, client_x: e.clientX, client_y: e.clientY,
+                over_sidebar: overSidebar, default_prevented: e.defaultPrevented,
+                target_tag: targetElement?.tagName, target_id: targetElement?.id,
+                target_class: targetElement?.getAttribute('class'),
+                instance: nativeHost?.dataset.nativeDiagnosticId,
+                native_visible: nativeHost?.dataset.nativeVisible,
+                fallback_hidden: targetElement?.closest<HTMLElement>('[data-native-fallback-hidden]')?.dataset.nativeFallbackHidden,
+            });
 
             if (e.ctrlKey) {
                 e.preventDefault();
@@ -471,10 +510,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                             event_time_ms: e.timeStamp,
                             input_delay_ms: e.timeStamp <= performance.now() ? performance.now() - e.timeStamp : undefined,
                             viewport_w: el.clientWidth, viewport_h: el.clientHeight,
+                            cursor_x: mouseX, cursor_y: mouseY, rect_left: rect.left, rect_top: rect.top,
+                            anchor_page: pageContainer?.id, page_anchor: pageAnchor,
                         });
                         lastZoomMouseRef.current = {
                             mouseX,
                             mouseY,
+                            clientX: e.clientX,
+                            clientY: e.clientY,
                             pageId: pageContainer?.id,
                             pageAnchor: pageAnchor ?? undefined,
                         };
@@ -490,6 +533,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                                     zoomTargetRef.current = { ...m, ratio: target / old };
                                     void viewerTraceLog('zoom-dispatch', {
                                         page: activePageRef.current, zoom_before: old, zoom_target: target,
+                                        cursor_x: m.mouseX, cursor_y: m.mouseY, anchor_page: m.pageId,
                                     });
                                     setZoom(target);
                                 }
@@ -516,32 +560,11 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                     const atBoundary = (e.deltaY > 0 && isAtBottom) || (e.deltaY < 0 && isAtTop);
                     if (atBoundary) e.preventDefault();
 
-                    // Quyết định chuyển trang bằng reducer thuần (chuẩn hoá chuột + trackpad).
-                    const { state, jump } = reduceWheelNav(wheelNavStateRef.current, {
-                        deltaY: e.deltaY,
-                        deltaMode: e.deltaMode,
-                        atTop: isAtTop,
-                        atBottom: isAtBottom,
-                        timestamp: e.timeStamp,
-                        viewportHeight: el.clientHeight,
+                    handlePageWheel({
+                        deltaY: e.deltaY, deltaMode: e.deltaMode,
+                        atTop: isAtTop, atBottom: isAtBottom,
+                        timestamp: e.timeStamp, viewportHeight: el.clientHeight,
                     });
-                    wheelNavStateRef.current = state;
-
-                    if (jump > 0) {
-                        const step = pageDisplayMode === 'two_fit' ? 2 : 1;
-                        const next = Math.min(numPages, activePage + step);
-                        if (next !== activePage) navigatePage(next);
-                    } else if (jump < 0) {
-                        const step = pageDisplayMode === 'two_fit' ? 2 : 1;
-                        let prev;
-                        if (pageDisplayMode === 'two_fit') {
-                            const logicalRowStart = (activePage - 1) % 2 === 0 ? activePage - 1 : activePage - 2;
-                            prev = Math.max(1, logicalRowStart + 1 - step);
-                        } else {
-                            prev = Math.max(1, activePage - 1);
-                        }
-                        if (prev !== activePage) navigatePage(prev);
-                    }
                 }
             }
         };
@@ -551,13 +574,20 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             window.removeEventListener('wheel', handleWheel, { capture: true });
             if (zoomRafRef.current != null) { cancelAnimationFrame(zoomRafRef.current); zoomRafRef.current = null; }
         };
-    }, [pageDisplayMode, activePage, numPages, containerRef, sidebarRef, internalScrollRef, setFitMode, setZoom, navigatePage]);
+    }, [pageDisplayMode, activePage, numPages, containerRef, sidebarRef, internalScrollRef, setFitMode, setZoom, handlePageWheel, toolMode]);
 
     // ═══ Hand-tool drag (pan) ═══
     const isDragging = useRef(false);
     const dragStart = useRef({ x: 0, y: 0, sx: 0, sy: 0 });
 
     const handleDragStart = useCallback((e: React.MouseEvent) => {
+        const targetElement = e.target instanceof Element ? e.target : null;
+        const nativeHost = targetElement?.closest<HTMLElement>('[data-native-diagnostic-id]');
+        void viewerTraceLog('GPU_DIAG_FE_DRAG', { action: 'down', page: activePageRef.current,
+            tool: toolMode, client_x: e.clientX, client_y: e.clientY,
+            accepted: toolMode === 'hand' && Boolean(internalScrollRef.current),
+            instance: nativeHost?.dataset.nativeDiagnosticId, native_visible: nativeHost?.dataset.nativeVisible,
+            scroll_x: internalScrollRef.current?.scrollLeft, scroll_y: internalScrollRef.current?.scrollTop });
         if (toolMode !== 'hand' || !internalScrollRef.current) return;
         e.preventDefault();
         isDragging.current = true;
@@ -579,7 +609,11 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             internalScrollRef.current.scrollTop = dragStart.current.sy - dy;
         };
 
-        const handleDragEnd = () => {
+        const handleDragEnd = (me: MouseEvent) => {
+            void viewerTraceLog('GPU_DIAG_FE_DRAG', { action: 'up', page: activePageRef.current,
+                tool: toolMode, dx: me.clientX - dragStart.current.x, dy: me.clientY - dragStart.current.y,
+                scroll_before_x: dragStart.current.sx, scroll_before_y: dragStart.current.sy,
+                scroll_after_x: internalScrollRef.current?.scrollLeft, scroll_after_y: internalScrollRef.current?.scrollTop });
             isDragging.current = false;
             document.body.style.userSelect = '';
             document.body.style.cursor = '';
@@ -752,8 +786,9 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         mainWidth, mainHeight, isZoomReady,
         thumbBaseWidth, setThumbBaseWidth,
         isZoomingRef,
+        lastZoomMouseRef,
         applyFitWidth, applyFitPage,
-        handleDragStart,
+        handleDragStart, handlePageWheel,
         updateViewportRect,
     };
 }

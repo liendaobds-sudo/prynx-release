@@ -257,7 +257,7 @@ impl ColorManager {
 
     /// Dựng handle LCMS độc lập từ byte ICC gốc, dùng chung LUT của snapshot.
     /// Không serialize Profile qua LCMS vì việc chuẩn hóa tag có thể đổi RGB.
-    pub(crate) fn fork_for_render(&self) -> PpeResult<Self> {
+    pub fn fork_for_render(&self) -> PpeResult<Self> {
         let cmyk = Profile::new_icc(&self.cmyk_bytes)
             .map_err(|e| PpeError::Unsupported(format!("không dựng được ICC cho tác vụ: {e}")))?;
         let rgb = self

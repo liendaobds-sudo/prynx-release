@@ -169,6 +169,22 @@ _MEMORY_CAPACITY_MB_BY_KIND: dict[str, float] = {}
 _MEMORY_EPSILON_MB = 1e-6
 
 
+def _memory_capacity_locked(budget: float) -> tuple[float, float]:
+    """PERF (audit 2026-09-25 §G1): một ngân sách RAM cho tất cả loại job.
+
+    Ghim capacity của chu kỳ để RAM job đang dùng không bị trừ hai lần; đọc lại
+    budget để vẫn nhận biết áp lực do process ngoài scheduler tạo ra.
+    """
+    reserved = sum(_RESERVED_MEMORY_MB_BY_KIND.values())
+    capacities = [
+        _MEMORY_CAPACITY_MB_BY_KIND.get(kind, budget)
+        for kind, value in _RESERVED_MEMORY_MB_BY_KIND.items()
+        if value > _MEMORY_EPSILON_MB
+    ]
+    capacity = min(capacities) if capacities else budget
+    return reserved, max(reserved, min(capacity, reserved + budget))
+
+
 def _try_acquire_memory_reservation_locked(
     kind: str,
     required: float,
@@ -180,18 +196,13 @@ def _try_acquire_memory_reservation_locked(
     Capacity được ghim theo snapshot đầu chu kỳ để ``available`` giảm do chính job đang
     chạy không bị trừ hai lần.
     """
-    reserved = _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0)
-    if reserved <= _MEMORY_EPSILON_MB:
-        capacity = budget
-        _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
-    else:
-        cycle_capacity = _MEMORY_CAPACITY_MB_BY_KIND.get(kind, budget)
-        capacity = min(cycle_capacity, reserved + budget)
-        capacity = max(reserved, capacity)
-        _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
+    reserved, capacity = _memory_capacity_locked(budget)
 
     if required <= max(0.0, capacity - reserved) + _MEMORY_EPSILON_MB:
-        _RESERVED_MEMORY_MB_BY_KIND[kind] = reserved + required
+        _RESERVED_MEMORY_MB_BY_KIND[kind] = (
+            _RESERVED_MEMORY_MB_BY_KIND.get(kind, 0.0) + required
+        )
+        _MEMORY_CAPACITY_MB_BY_KIND[kind] = capacity
         return True
 
     if reserved <= _MEMORY_EPSILON_MB:
@@ -199,6 +210,70 @@ def _try_acquire_memory_reservation_locked(
         _MEMORY_CAPACITY_MB_BY_KIND.pop(kind, None)
         raise HeavyJobMemoryUnavailable(required, capacity)
     return False
+
+
+@contextmanager
+def process_pool_admission(
+    kind: str,
+    workers: int,
+    per_worker_mb: float,
+    *,
+    env_override: str | None = None,
+    queue_cancelled: Callable[[], bool] | None = None,
+    budget_provider: Callable[[], float | None] | None = None,
+) -> Iterator[int]:
+    """PERF (audit 2026-09-25 §G2): reserve trước spawn, nhả sau khi pool đóng.
+
+    Máy mạnh chạy đủ số worker khi working set vừa RAM thật. Không thay đổi DPI
+    hoặc nội dung. Env ép worker vẫn thắng auto; mất telemetry giữ hành vi cũ.
+    """
+    from app.core.system_memory import process_pool_budget_mb
+
+    planned = max(1, int(workers))
+    if not math.isfinite(per_worker_mb) or per_worker_mb <= 0:
+        raise ValueError("Ước lượng RAM worker phải là số dương hữu hạn.")
+    try:
+        forced = int(os.environ.get(env_override, "0")) if env_override else 0
+    except ValueError:
+        forced = 0
+    if forced > 0:
+        logger.info("[POOL_ADMISSION] kind=%s workers=%d override=%s", kind, planned, env_override)
+        yield planned
+        return
+    provider = budget_provider or process_pool_budget_mb
+    required = None
+    started = time.monotonic()
+    while required is None:
+        if queue_cancelled is not None and queue_cancelled():
+            raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ bộ nhớ.")
+        budget = provider()
+        if budget is None:
+            logger.info("[POOL_ADMISSION] kind=%s workers=%d memory=unknown", kind, planned)
+            yield planned
+            return
+        budget = max(0.0, float(budget)) if math.isfinite(budget) else 0.0
+        with _MEMORY_RESERVATION_CONDITION:
+            reserved, capacity = _memory_capacity_locked(budget)
+            admitted = min(planned, int(max(0.0, capacity - reserved) / per_worker_mb))
+            if admitted > 0:
+                required = admitted * per_worker_mb
+                if not _try_acquire_memory_reservation_locked(kind, required, budget):
+                    _MEMORY_RESERVATION_CONDITION.wait(timeout=0.05)
+                    continue
+            elif reserved <= _MEMORY_EPSILON_MB:
+                raise HeavyJobMemoryUnavailable(per_worker_mb, budget)
+            else:
+                _MEMORY_RESERVATION_CONDITION.wait(timeout=0.05)
+    logger.info(
+        "[POOL_ADMISSION] kind=%s workers_planned=%d workers_started=%d "
+        "estimated_per_worker_mb=%.1f reserved_mb=%.1f queue_ms=%.1f",
+        kind, planned, admitted, per_worker_mb, required,
+        (time.monotonic() - started) * 1000,
+    )
+    try:
+        yield admitted
+    finally:
+        _release_memory_reservation(kind, required)
 
 
 async def _acquire_memory_reservation_async(

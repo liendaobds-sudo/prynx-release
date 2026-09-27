@@ -371,22 +371,29 @@ class SeparationEngine:
         # XẤP XỈ: RGB → CMYK bằng công thức GCR/UCR đơn giản (KHÔNG ICC, dot gain
         # hoặc FOGRA). Đường này chỉ phục vụ xem nhanh; % mực C/M/Y/K có thể lệch
         # xa RIP/Acrobat. Kết quả LUÔN gắn accuracy="approximate" (xem caller).
-        r = arr_rgb[:, :, 0].astype(np.float32) / 255.0
-        g = arr_rgb[:, :, 1].astype(np.float32) / 255.0
-        b = arr_rgb[:, :, 2].astype(np.float32) / 255.0
-
-        k = 1.0 - np.maximum(np.maximum(r, g), b)
-        denom = np.where(k < 1.0, 1.0 - k, 1.0)
-        c = (1.0 - r - k) / denom
-        m = (1.0 - g - k) / denom
-        y = (1.0 - b - k) / denom
-
+        # PERF (audit 2026-09-25 §G3): fallback xấp xỉ vẫn giữ nguyên công
+        # thức RGB→CMYK nhưng xử lý theo dải 512 hàng. Bản cũ giữ đồng thời
+        # 4 kênh float32 + 4 kênh uint8 (≈32 byte/pixel); bản này chỉ giữ
+        # buffer float32 của một dải và 4 plate uint8, giảm peak mà payload/API
+        # không đổi.
         cmyk_channels = {
-            "Cyan": (np.clip(c * 255, 0, 255)).astype(np.uint8),
-            "Magenta": (np.clip(m * 255, 0, 255)).astype(np.uint8),
-            "Yellow": (np.clip(y * 255, 0, 255)).astype(np.uint8),
-            "Black": (np.clip(k * 255, 0, 255)).astype(np.uint8),
+            name: np.empty((height, width), dtype=np.uint8)
+            for name in ("Cyan", "Magenta", "Yellow", "Black")
         }
+        tile_rows = 512
+        for top in range(0, height, tile_rows):
+            bottom = min(height, top + tile_rows)
+            block = arr_rgb[top:bottom].astype(np.float32) / 255.0
+            r, g, b = block[:, :, 0], block[:, :, 1], block[:, :, 2]
+            k = 1.0 - np.maximum(np.maximum(r, g), b)
+            denom = np.where(k < 1.0, 1.0 - k, 1.0)
+            c = (1.0 - r - k) / denom
+            m = (1.0 - g - k) / denom
+            y = (1.0 - b - k) / denom
+            cmyk_channels["Cyan"][top:bottom] = np.clip(c * 255, 0, 255).astype(np.uint8)
+            cmyk_channels["Magenta"][top:bottom] = np.clip(m * 255, 0, 255).astype(np.uint8)
+            cmyk_channels["Yellow"][top:bottom] = np.clip(y * 255, 0, 255).astype(np.uint8)
+            cmyk_channels["Black"][top:bottom] = np.clip(k * 255, 0, 255).astype(np.uint8)
 
         plates = []
         for name in ["Cyan", "Magenta", "Yellow", "Black"]:

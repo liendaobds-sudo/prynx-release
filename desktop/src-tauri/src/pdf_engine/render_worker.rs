@@ -218,10 +218,25 @@ fn accurate_worker_budgets() -> (usize, usize) {
         let cache = (available * 12 / 100 / lanes).clamp(96 * 1024 * 1024, 256 * 1024 * 1024);
         return (render as usize, cache as usize);
     }
-    // PERF (audit 2026-08-09 §L3A): máy mạnh co giãn theo RAM còn trống và số
-    // lane thật; không dùng ceiling cố định làm máy 32/64 GB chậm như máy yếu.
-    let render = (available * 75 / 100 / lanes).max(512 * 1024 * 1024);
-    let cache = (available / 8 / lanes).max(256 * 1024 * 1024);
+    // PERF (audit 2026-09-25 §G0/G1): máy mạnh vẫn chạy full ở trạng thái
+    // bình thường. Khi Windows báo RAM khả dụng dưới 4 GB hoặc dưới 10% tổng
+    // RAM, hạ budget tạm thời để PPE không tạo thêm worker rồi bị hệ điều hành
+    // kết thúc giữa phiên; đây là emergency gate, không phải ceiling cố định.
+    let emergency = available < 4 * GIB || available.saturating_mul(10) < total;
+    let render = if emergency {
+        (available / lanes / 2).clamp(128 * 1024 * 1024, 512 * 1024 * 1024)
+    } else {
+        (available * 75 / 100 / lanes).max(512 * 1024 * 1024)
+    };
+    let cache = if emergency {
+        (available / 16 / lanes).clamp(16 * 1024 * 1024, 64 * 1024 * 1024)
+    } else {
+        (available / 8 / lanes).max(256 * 1024 * 1024)
+    };
+    crate::perf_log(&format!(
+        "PPE_MEMORY_BUDGET total_bytes={} available_bytes={} working_set_bytes={} lanes={} emergency={} render_bytes={} cache_bytes={}",
+        total, available, crate::process_working_set_bytes().unwrap_or_default(), lanes, emergency, render, cache
+    ));
     (
         render.min(usize::MAX as u64) as usize,
         cache.min(usize::MAX as u64) as usize,
@@ -1392,12 +1407,10 @@ fn classify_unsupported_warnings(
             "Trang dùng transparency PPE chưa dựng exact.",
         ));
     }
-    if !warnings.approximated_colorspaces.is_empty() {
-        return Some((
-            RenderUnsupportedReason::ColorApproximation,
-            "Trang cần phép màu xấp xỉ nên không được gắn color-verified.",
-        ));
-    }
+    // COLOR (audit 2026-09-27 §PPE.COLOR_APPROX): không gian màu xấp xỉ
+    // (DeviceRGB/Lab không ICC, blend ngoài DeviceRGB...) không phải lỗi giải mã hay
+    // thiếu đối tượng. PPE vẫn dựng đủ pixel qua pipeline màu tốt nhất có thể.
+    // Loại cả PNG ở đây làm Viewer kẹt cứng, trắng trang hoặc crash viewport.
     if warnings.hidden_content_risk {
         return Some((
             RenderUnsupportedReason::HiddenContent,
@@ -1495,9 +1508,14 @@ fn render_accurate_png(
         .ok_or_else(|| "PPE worker thiếu session_owner_id.".to_string())?;
     let (render_budget, cache_budget) = accurate_worker_budgets();
     trace_worker_cpu(&request.request_id, "start", render_budget, cache_budget);
+    // PERF (audit 2026-09-27 §V27.05): đo riêng khóa, cold-open và snapshot;
+    // raster/quy màu vẫn chạy ngoài registry lock như hợp đồng hiện tại.
+    let pool_at=Instant::now();
     let mut pool = accurate_sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pool_lock_wait_us=pool_at.elapsed().as_micros();
+    let mut session_open_us=0;let prepare_us;
     let now = Instant::now();
     for entry in pool.entries.values_mut() {
         entry.owners.prune_stale(now, ACCURATE_SESSION_OWNER_TTL);
@@ -1565,10 +1583,12 @@ fn render_accurate_png(
         // sống để nhường chỗ. Tài liệu vượt pool chạy transient cache 0; chất lượng/DPI
         // giữ nguyên, chỉ lượt sau phải decode lại.
         drop(pool);
+        let open_at=Instant::now();
         let mut session =
             RenderSession::open_with_profile_paths(path, Some(&profile_path), None, intent)
                 .map_err(|error| format!("Không mở được PPE RenderSession: {error}"))?
                 .with_resource_cache_budget(0);
+        session_open_us=open_at.elapsed().as_micros();let prepare_at=Instant::now();
         let job = session.prepare_page_render(
             request.page as usize,
             dpi,
@@ -1576,15 +1596,18 @@ fn render_accurate_png(
             options(),
             raster_clip,
         )?;
+        prepare_us=prepare_at.elapsed().as_micros();
         // Giữ owner transient sống tới sau encode/post-check; drop sớm sẽ retire
         // snapshot trước khi job bắt đầu raster.
         (job, Some(session), None)
     } else {
         if !pool.entries.contains_key(&key) {
+            let open_at=Instant::now();
             let session =
                 RenderSession::open_with_profile_paths(path, Some(&profile_path), None, intent)
                     .map_err(|error| format!("Không mở được PPE RenderSession: {error}"))?
                     .with_resource_cache_budget(cache_budget);
+            session_open_us=open_at.elapsed().as_micros();
             pool.entries.insert(
                 key.clone(),
                 AccurateSessionEntry {
@@ -1603,6 +1626,7 @@ fn render_accurate_png(
             .expect("PPE session vừa được chèn phải tồn tại");
         entry.last_used = last_used;
         entry.owners.bind(session_owner_id, now);
+        let prepare_at=Instant::now();
         let job = entry.session.prepare_page_render(
             request.page as usize,
             dpi,
@@ -1610,6 +1634,7 @@ fn render_accurate_png(
             options(),
             raster_clip,
         )?;
+        prepare_us=prepare_at.elapsed().as_micros();
         entry.in_flight.fetch_add(1, Ordering::AcqRel);
         let flight = AccurateRequestLease(Arc::clone(&entry.in_flight));
         drop(pool);
@@ -1649,6 +1674,7 @@ fn render_accurate_png(
         }
     };
     trace_worker_cpu(&request.request_id, "render-done", render_budget, cache_budget);
+    crate::perf_log(&format!("PPE_PHASE request_id={} page={} pool_lock_wait_us={} session_open_us={} prepare_us={} job_open_us={} job_parse_us={} raster_us={} color_us={} resource_us={}",request.request_id,request.page,pool_lock_wait_us,session_open_us,prepare_us,timings.open.as_micros(),timings.parse.as_micros(),timings.raster.as_micros(),timings.color.as_micros(),timings.resource.as_micros()));
     crate::perf_log(&format!(
         "PPE_SESSION_CACHE request_id={} page={} mode={} image_hits={} image_misses={} form_hits={} form_misses={} page_hits={} page_misses={}",
         request.request_id,
@@ -5154,7 +5180,7 @@ mod tests {
         color.note_approximated_colorspace("BlendMode /Hue ngoài DeviceRGB");
         assert_eq!(
             classify_unsupported_warnings(&color).map(|value| value.0),
-            Some(RenderUnsupportedReason::ColorApproximation)
+            None
         );
 
         let mut geometry = RenderWarnings::default();

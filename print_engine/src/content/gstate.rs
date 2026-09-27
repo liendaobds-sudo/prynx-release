@@ -17,6 +17,8 @@ use crate::text::state::TextState;
 /// ảnh hưởng tới **tram** ở RIP chứ không tới lượng mực danh nghĩa mà PrynX đo.
 #[derive(Clone)]
 pub struct GraphicsState {
+    /// Hình học clip/mask bất biến; chỉ recorder dùng, raster cũ không đọc.
+    pub retained: crate::scene::retained::RetainedState,
     pub ctm: Matrix,
 
     pub fill_cs: ColorSpace,
@@ -88,6 +90,7 @@ impl GraphicsState {
     /// Trạng thái khởi tạo theo spec: màu đen, nét 1.0, không overprint.
     pub fn initial(ctm: Matrix) -> Self {
         GraphicsState {
+            retained: Default::default(),
             ctm,
             fill_cs: ColorSpace::DeviceGray,
             fill_comps: vec![0.0],

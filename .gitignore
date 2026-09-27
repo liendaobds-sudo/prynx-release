@@ -30,6 +30,9 @@ src-tauri/target/
 native/target/
 imposition_core/target/
 print_engine/target/
+viewer_gpu/target/
+viewer_gpu/.tmp/
+tools/**/target/
 *.rs.bk
 
 # Sidecar binaries (237 MB each — built by build_production.ps1, too large for GitHub)
@@ -78,6 +81,7 @@ debug_main_*.txt
 debug_frontend_*.txt
 detect_shape_error.log
 *.log
+*.rgba
 
 # Temp/scratch files at root
 /.tmp/

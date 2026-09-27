@@ -1,0 +1,30 @@
+{
+  "displayed": "unobserved",
+  "final": {
+    "batches": 962,
+    "peak_details": 65,
+    "presents": 815,
+    "refinements": 66
+  },
+  "foreground_unchanged": true,
+  "idle": {
+    "batches": 962,
+    "peak_details": 65,
+    "presents": 815,
+    "refinements": 66
+  },
+  "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+  "page": 1,
+  "pdf": "C:\\Users\\Khanh Pham\\Desktop\\PDF\\CMNM2026 - Giay moi_BLUE - in.pdf",
+  "production_presenter": true,
+  "replay_ms": 2549.5978,
+  "settle_after_input_ms": 507.16499999999996,
+  "stationary": {
+    "batches": 271,
+    "peak_details": 1,
+    "presents": 31,
+    "refinements": 2
+  },
+  "stationary_ms": 1192.9541,
+  "surface": "owned invisible HWND; no focus or input calls"
+}

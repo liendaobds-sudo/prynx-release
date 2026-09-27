@@ -3558,12 +3558,37 @@ _OPTIMIZE_PRESET_DPI = {
 }
 
 
+def _strip_metadata_in_place(pdf) -> int:
+    """Xóa metadata/PieceInfo trong cùng pass pikepdf của Optimize.
+
+    PERF (audit 2026-09-25 §G3): không mở-save lại toàn bộ tài liệu chỉ để
+    strip metadata sau khi tối ưu; giữ nguyên stream và output contract.
+    Trả số entry đã xóa để telemetry/test biết pass thật sự chạy.
+    """
+    removed = 0
+    if "/Metadata" in pdf.Root:
+        del pdf.Root.Metadata
+        removed += 1
+    try:
+        removed += len(pdf.docinfo.keys())
+        for key in list(pdf.docinfo.keys()):
+            del pdf.docinfo[key]
+    except Exception:
+        pass
+    for owner in [pdf.Root, *pdf.pages]:
+        if "/PieceInfo" in owner:
+            del owner["/PieceInfo"]
+            removed += 1
+    return removed
+
+
 def optimize_pdf(
     input_path: str,
     output_path: str,
     preset: str = "ebook",
     image_dpi: float | None = None,
     grayscale: bool = False,
+    strip_metadata: bool = False,
 ) -> dict:
     """Giảm dung lượng file: hạ ảnh + (tuỳ chọn) đen trắng + nén lại cấu trúc.
 
@@ -3586,6 +3611,7 @@ def optimize_pdf(
         "supported": True,
         "images_downscaled": 0,
         "grayscale_ops": 0,
+        "metadata_removed": 0,
         "warnings": [],
     }
 
@@ -3616,6 +3642,8 @@ def optimize_pdf(
 
         with pikepdf.open(stage_in) as pdf:
             pdf.remove_unreferenced_resources()
+            if strip_metadata:
+                result["metadata_removed"] = _strip_metadata_in_place(pdf)
             pdf.save(
                 output_path,
                 compress_streams=True,

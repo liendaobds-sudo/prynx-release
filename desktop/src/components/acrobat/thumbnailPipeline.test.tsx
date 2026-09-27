@@ -49,6 +49,20 @@ describe('pipeline thumbnail PDF.js', () => {
         expect(request.cacheKey).toBe(`blob:55-pages_31_0_${zoomMilli}`);
     });
 
+    it('gắn profileId và intent vào cacheKey khi có cấu hình mô phỏng màu', () => {
+        const request = createThumbnailRenderRequest({
+            revision: 'blob:55-pages',
+            pageNum: 12,
+            pageWidthPx96: 595 * 96 / 72,
+            cssWidth: 110,
+            devicePixelRatio: 1,
+            profileId: 'fogra39',
+            intent: 'relative',
+        });
+
+        expect(request.cacheKey).toBe('blob:55-pages_12_0_160_fogra39_relative');
+    });
+
     it.each([31, 55])('render on-demand trực tiếp trang %s, không phụ thuộc warmup 30 trang', async pageNum => {
         const page = makePdfPage();
         const getPage = vi.fn(async () => page);

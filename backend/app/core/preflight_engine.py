@@ -6,6 +6,7 @@ Uses pikepdf (QPDF) for structural Object Tree scanning
 and pikepdf for content stream analysis.
 """
 import logging
+import os
 from pathlib import Path
 
 import pikepdf
@@ -233,22 +234,50 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
                     "Preflight: multiprocessing %d chunks — %s", len(chunks), _worker_reason
                 )
 
-                with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(_content_stream_worker, pdf_path, chunk, active_rules, tac_threshold) for chunk in chunks]
-                    
-                    for future in futures:
-                        chunk_issues, chunk_stats = future.result()
-                        issues += chunk_issues
-                        
-                        self._image_total += chunk_stats.get("image_total", 0)
-                        self._image_low_res += chunk_stats.get("image_low_res", 0)
-                        self._image_min_dpi = min(self._image_min_dpi, chunk_stats.get("image_min_dpi", 9999))
-                        if chunk_stats.get("has_rgb"):
-                            self._has_rgb = True
-                        if chunk_stats.get("has_spot"):
-                            self._has_spot = True
-                        if chunk_stats.get("has_cmyk"):
-                            self._has_cmyk = True
+                from app.core.heavy_job_scheduler import process_pool_admission
+                from app.core.system_memory import estimate_pdf_worker_mb
+                try:
+                    source_bytes = os.path.getsize(pdf_path)
+                except OSError:
+                    source_bytes = 0
+                per_worker_mb = max(512.0, estimate_pdf_worker_mb(source_bytes))
+                # PERF (audit 2026-09-25 §G5): preflight mở cùng PDF trong mỗi
+                # process; reserve theo working set trước khi spawn, không dùng
+                # trần 8 như một hard-cap độc lập với kích thước file.
+                with process_pool_admission(
+                    "preflight", max_workers, per_worker_mb,
+                ) as admitted_workers:
+                    try:
+                        with ProcessPoolExecutor(max_workers=admitted_workers) as executor:
+                            futures = [executor.submit(_content_stream_worker, pdf_path, chunk, active_rules, tac_threshold) for chunk in chunks]
+                            results = [future.result() for future in futures]
+                    except PermissionError as error:
+                        # Một số chính sách Windows/AppContainer chặn named pipe
+                        # của multiprocessing. Preflight phải vẫn cho ra kết quả;
+                        # fallback tuần tự giữ đúng rule, chỉ mất song song.
+                        logger.warning(
+                            "Preflight: không tạo được process pool (%s), chuyển tuần tự",
+                            error,
+                        )
+                        results = [
+                            _content_stream_worker(
+                                pdf_path, chunk, active_rules, tac_threshold
+                            )
+                            for chunk in chunks
+                        ]
+
+                    for chunk_issues, chunk_stats in results:
+                            issues += chunk_issues
+
+                            self._image_total += chunk_stats.get("image_total", 0)
+                            self._image_low_res += chunk_stats.get("image_low_res", 0)
+                            self._image_min_dpi = min(self._image_min_dpi, chunk_stats.get("image_min_dpi", 9999))
+                            if chunk_stats.get("has_rgb"):
+                                self._has_rgb = True
+                            if chunk_stats.get("has_spot"):
+                                self._has_spot = True
+                            if chunk_stats.get("has_cmyk"):
+                                self._has_cmyk = True
 
             if "FONT_NOT_EMBEDDED" in active_rules:
                 if doc is None:

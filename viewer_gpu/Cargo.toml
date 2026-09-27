@@ -1,0 +1,26 @@
+[package]
+name = "viewer_gpu"
+version = "0.1.0"
+edition = "2021"
+description = "PPE Viewer GPU - Native GPU Pixel Pipeline (wgpu 24, DirectX 12 / Vulkan)"
+
+[workspace]
+
+[lib]
+name = "viewer_gpu"
+crate-type = ["rlib"]
+
+[dependencies]
+wgpu = "24"
+pollster = "0.4"
+bytemuck = { version = "1.21", features = ["derive"] }
+thiserror = "2"
+half = { version = "2.4", features = ["bytemuck"] }
+print_engine = { path = "../print_engine" }
+tiny-skia = "0.11"
+rayon = "1"
+
+[dev-dependencies]
+lopdf = { version = "0.44", default-features = false }
+
+# KHONG dat [profile.release] o day (quy tac bat di bat dich cua PrynX).

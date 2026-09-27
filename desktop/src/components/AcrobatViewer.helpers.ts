@@ -1,5 +1,11 @@
 import type { ReactNode } from 'react';
 
+/** PERF (audit 2026-09-25 §R25.GPU.28): tôn trọng giá trị thật của store.
+ * 'none' và object bleedView luôn có truthiness, kể cả khi không có lớp phủ. */
+export function nativeViewerAllowsWorkspaceOverlays(dashboardTool: string, bleedView: { show: boolean }): boolean {
+    return dashboardTool === 'none' && !bleedView.show;
+}
+
 export interface PageOverlayRenderContext {
     /** Số trang trong tài liệu nguồn, một-based. */
     originalPageNum: number;

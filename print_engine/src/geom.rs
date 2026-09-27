@@ -9,7 +9,7 @@
 ///
 /// Nhân theo quy ước PDF: `M_new = M_applied × M_current` (§8.3.4 — `cm` nhân
 /// TRƯỚC CTM hiện tại).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Matrix {
     pub a: f32,
     pub b: f32,
@@ -120,7 +120,7 @@ impl Matrix {
 }
 
 /// Hình chữ nhật trong toạ độ trang (point). `x0<x1`, `y0<y1` sau khi chuẩn hoá.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub x0: f32,
     pub y0: f32,

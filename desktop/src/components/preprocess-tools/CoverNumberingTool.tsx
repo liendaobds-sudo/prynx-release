@@ -408,7 +408,7 @@ export default function CoverNumberingTool({
                         const next = !isPickingVdpText;
                         setIsPickingVdpText(next);
                         if (next) {
-                            toast.info(t('Chế độ chọn liên tục đã bật: Nhấp vào chữ hoặc số trên bản thiết kế bìa để chọn làm trường VDP, bấm "Xong" hoặc phím Esc khi hoàn tất.'));
+                            toast.info(t('preprocess.coverNumbering:continuous_select_notice'));
                         }
                     }}
                     className={`w-full p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${

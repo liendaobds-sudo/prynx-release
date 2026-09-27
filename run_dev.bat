@@ -29,6 +29,7 @@ if /I "%~2"=="--license-test" set "PRYNX_LICENSE_TEST_MODE=true"
 :: PERF (audit 2026-09-13 §VIEWLOAD): vòng dev luôn bật telemetry Viewer để
 :: người dùng chỉ cần chạy run_dev.bat là có log đo; bản release vẫn khóa cờ này.
 if not defined PRYNX_PERF set "PRYNX_PERF=1"
+if not defined PRYNX_GPU_DIAGNOSTICS set "PRYNX_GPU_DIAGNOSTICS=1"
 if /I "%~1"=="--perf" set "PRYNX_PERF=1"
 if /I "%~2"=="--perf" set "PRYNX_PERF=1"
 if /I "%PRYNX_LICENSE_TEST_MODE%"=="true" set "PRYNX_DEV_GATED_MODE=true"
@@ -54,7 +55,7 @@ if /I "%PRYNX_LICENSE_TEST_MODE%"=="true" (
 )
 
 echo [1/3] Kiem tra moi truong Backend (Python)...
-if not exist "backend\venv" (
+if not exist "backend\venv\Scripts\python.exe" (
     echo - Dang thiet lap moi truong ao Python venv...
     cd backend
     python -m venv venv

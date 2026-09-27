@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--prynx-scene-worker") {
+        std::process::exit(app_lib::viewport::scene_worker::run_stdio());
+    }
     // PERF (audit 2026-08-08 §RENDER.2): display worker dài hạn dùng chính PrynX.exe;
     // phải rẽ nhánh trước khi khởi tạo Tauri để stdout chỉ chứa protocol framed binary.
     if std::env::args().any(|arg| arg == "--prynx-render-worker") {

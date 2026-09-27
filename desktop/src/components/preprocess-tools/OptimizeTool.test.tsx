@@ -99,4 +99,39 @@ describe('OptimizeTool — kích thước file trước và sau khi nén', () =>
     });
     expect(screen.queryByText(/0 B/i)).toBeNull();
   });
+
+  it('dùng đường dẫn native cho PDF lớn thay vì đưa toàn bộ bytes vào WebView', async () => {
+    const { authenticatedFetch, prepareFileForUpload } = await import('../../lib/api');
+    const nativePath = 'C:\\Users\\Khanh Pham\\Desktop\\large.pdf';
+    const previous = (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    try {
+      (authenticatedFetch as any).mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          path: 'C:\\Users\\Khanh Pham\\AppData\\Local\\Temp\\optimized.pdf',
+          original_size: 1_500_000_000,
+          size: 900_000_000,
+          ratio: 40,
+        }),
+      });
+
+      const file = new File([new Uint8Array([1])], 'large.pdf', { type: 'application/pdf' });
+      Object.defineProperty(file, 'path', { value: nativePath, configurable: true });
+      const onFileFixed = vi.fn();
+      render(<OptimizeTool pdfFile={file} onFileFixed={onFileFixed} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /thực thi/i }));
+      await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
+
+      const [artifact, , resultPath] = onFileFixed.mock.calls[0] as [Blob, string, string];
+      expect(artifact.size).toBe(0);
+      expect(resultPath).toContain('optimized.pdf');
+      expect(prepareFileForUpload).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      else Object.defineProperty(window, '__TAURI_INTERNALS__', { value: previous, configurable: true });
+    }
+  });
 });

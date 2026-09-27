@@ -4,12 +4,27 @@ import {
   TileUrlLruCache,
   tileUrlCacheBudgetForTotalRam,
   tileUrlCacheNamespaceForFileKey,
+  tileHasMatchingProof,
+  type TilePixelProof,
 } from './tileUrlCache';
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
 describe('frontend tile URL cache', () => {
+  it('V27: giữ provenance màu bất biến qua cache, không nhận display dưới nhãn proof', () => {
+    const cache = new TileUrlLruCache(null, vi.fn());
+    const proof: TilePixelProof = {engine:'ppe-native',soundness:'color-verified',documentToken:'v2',page:1,profileId:'fogra39',intent:'relative',proofIdentity:'all',pipelineIdentity:'ppe-v5'};
+    cache.set('accurate', {url:'blob:proof',byteLength:4,proof});
+    const source = cache.getSource('accurate')!;
+    expect(tileHasMatchingProof(source,proof)).toBe(true);
+    expect(tileHasMatchingProof(source,{...proof,documentToken:'v3'})).toBe(false);
+    expect(tileHasMatchingProof(source,{...proof,profileId:'swop'})).toBe(false);
+    expect(tileHasMatchingProof({...source,proof:{...proof,engine:'pdfium'}},proof)).toBe(false);
+    expect(tileHasMatchingProof({url:'blob:no-proof',byteLength:4},proof)).toBe(false);
+    proof.engine='pdfium';
+    expect(source.proof?.engine).toBe('ppe-native');
+  });
   it('chỉ giảm ngân sách trên máy dưới 16 GB', () => {
     expect(tileUrlCacheBudgetForTotalRam(4 * GIB)).toBe(32 * MIB);
     expect(tileUrlCacheBudgetForTotalRam(8 * GIB)).toBe(64 * MIB);

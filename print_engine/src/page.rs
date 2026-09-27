@@ -360,7 +360,7 @@ pub(crate) fn render_page_descriptor(
 /// CORRECTNESS (audit 2026-08-10 §L6.4): Viewer chỉ dựng appearance stream tĩnh
 /// đã nằm trong PDF. Không tổng hợp giao diện từ JavaScript/XFA hay giá trị field;
 /// thiếu appearance phải hạ soundness để hybrid dùng compatibility lane.
-fn render_annotation_appearances(
+pub(crate) fn render_annotation_appearances(
     doc: &Document,
     page_id: ObjectId,
     renderer: &mut Renderer<'_>,

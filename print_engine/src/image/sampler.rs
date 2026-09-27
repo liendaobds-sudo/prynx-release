@@ -40,6 +40,7 @@ fn check_cancelled(cancel_token: Option<&CancelToken>) -> PpeResult<()> {
 }
 
 /// Ảnh đã giải mã, sẵn sàng lấy mẫu.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SampledImage {
     pub width: u32,
     pub height: u32,
@@ -48,6 +49,7 @@ pub struct SampledImage {
     /// Mẫu đã chuẩn hoá về u8, xếp interleaved `[p0c0, p0c1, …]`.
     ///
     /// Với `Indexed` đây là **chỉ số bảng màu**, không phải cường độ.
+    #[serde(skip)]
     samples: Vec<u8>,
     /// Colorspace của ảnh. `None` khi ảnh là stencil (`/ImageMask`).
     pub colorspace: Option<ColorSpace>,
@@ -59,8 +61,10 @@ pub struct SampledImage {
     /// 0..255. Dùng 255 cho ảnh 4 bit sẽ ánh xạ sai toàn bộ bảng màu.
     bpc: usize,
     /// Ảnh stencil `/ImageMask`: `true` tại pixel **được** tô.
+    #[serde(skip)]
     pub stencil: Option<Vec<bool>>,
     /// Alpha 0..1 từ `/SMask`, cùng kích thước ảnh gốc (đã lấy mẫu lại nếu lệch).
+    #[serde(skip)]
     pub alpha: Option<Vec<f32>>,
     /// Màu nền `/Matte` đã dùng để preblend mẫu ảnh trước khi ghi PDF.
     ///
@@ -75,6 +79,48 @@ pub struct SampledImage {
 }
 
 impl SampledImage {
+    /// PERF (audit 2026-09-25 §R25.GPU.18): pixel/alpha truyền thẳng nhị phân.
+    /// Metadata serde không chứa ba plane này và phải đi cùng payload.
+    pub fn write_retained_payload(&self, mut w: impl std::io::Write) -> std::io::Result<()> {
+        for n in [self.samples.len(),self.stencil.as_ref().map_or(0,Vec::len),self.alpha.as_ref().map_or(0,Vec::len)] {w.write_all(&(n as u64).to_le_bytes())?;}
+        w.write_all(&self.samples)?;
+        if let Some(stencil)=&self.stencil {for chunk in stencil.chunks(8192) {let bytes:Vec<u8>=chunk.iter().map(|v|*v as u8).collect();w.write_all(&bytes)?;}}
+        if let Some(alpha)=&self.alpha {for chunk in alpha.chunks(8192) {let bytes:Vec<u8>=chunk.iter().flat_map(|v|v.to_le_bytes()).collect();w.write_all(&bytes)?;}}
+        Ok(())
+    }
+    pub fn read_retained_payload(&mut self,mut r:impl std::io::Read,budget:&mut u64)->Result<(),String>{
+        let pixels=self.width as u64*self.height as u64;
+        if pixels==0 || pixels>MAX_IMAGE_PIXELS || !(1..=64).contains(&self.n_comps){return Err("Kích thước resource ảnh sai".into());}
+        let mut lengths=[0u64;3];for len in &mut lengths {let mut b=[0;8];r.read_exact(&mut b).map_err(|e|e.to_string())?;*len=u64::from_le_bytes(b);}
+        let [samples,stencil,alpha]=lengths;
+        if samples!=pixels*self.n_comps as u64 || (stencil!=0 && stencil!=pixels) || (alpha!=0 && alpha!=pixels){return Err("Độ dài plane ảnh sai".into());}
+        let size=samples+stencil+4*alpha;
+        if size>*budget || size>usize::MAX as u64{return Err("Plane ảnh vượt ngân sách RAM host".into());}*budget-=size;
+        self.samples=vec![0;samples as usize];r.read_exact(&mut self.samples).map_err(|e|e.to_string())?;
+        self.stencil=if stencil==0{None}else{
+            let mut data=vec![0;stencil as usize];r.read_exact(&mut data).map_err(|e|e.to_string())?;
+            if data.iter().any(|v|*v>1){return Err("Stencil nhị phân sai".into());}Some(data.into_iter().map(|v|v!=0).collect())
+        };
+        self.alpha=if alpha==0{None}else{
+            let mut values=vec![0.;alpha as usize];let mut bytes=[0u8;32768];
+            for chunk in values.chunks_mut(8192){let bytes=&mut bytes[..chunk.len()*4];r.read_exact(bytes).map_err(|e|e.to_string())?;
+                for (v,b) in chunk.iter_mut().zip(bytes.chunks_exact(4)){*v=f32::from_le_bytes(b.try_into().unwrap());}}
+            Some(values)
+        };
+        if !self.validate_retained_payload(){return Err("Payload ảnh worker sai".into());}Ok(())
+    }
+    /// Kiểm hợp đồng worker trước khi sampler chạm payload ảnh.
+    pub fn validate_retained_payload(&self) -> bool {
+        let pixels = self.width as u64 * self.height as u64;
+        pixels > 0 && pixels <= MAX_IMAGE_PIXELS && (1..=64).contains(&self.n_comps)
+            && self.samples.len() as u64 == pixels * self.n_comps as u64
+            && matches!(self.bpc, 1 | 2 | 4 | 8 | 16)
+            && (self.decode.is_empty() || self.decode.len() == self.n_comps * 2)
+            && self.decode.iter().all(|x| x.is_finite())
+            && self.stencil.as_ref().is_none_or(|x| x.len() as u64 == pixels)
+            && self.alpha.as_ref().is_none_or(|x| x.len() as u64 == pixels && x.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            && self.matte.as_ref().is_none_or(|x| x.len() == self.n_comps && x.iter().all(|v| v.is_finite()))
+    }
     /// Giá trị thành phần đã áp `/Decode`, trong khoảng của colorspace.
     pub fn components_at(&self, x: u32, y: u32) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.n_comps);

@@ -1547,8 +1547,10 @@ async def vdp_auto_detect_tags(
     }
 
 
+# SEC (audit 2026-09-25 §SEC.31): file font cũng là tài sản được sidecar phục vụ;
+# không để route legacy này bỏ qua license guard khi caller gọi trực tiếp.
 @router.get("/font-file")
-async def get_vdp_font_file(path: str):
+async def get_vdp_font_file(path: str, _license_info: dict = Depends(require_license)):
     """Phục vụ file font cục bộ (.ttf, .otf, .ttc) cho frontend với CORS header đầy đủ.
     Được bảo vệ chống path traversal và chỉ cho phép đọc file font hợp lệ."""
     if not path:
@@ -1582,4 +1584,3 @@ async def get_vdp_font_file(path: str):
             "Cache-Control": "public, max-age=86400",
         },
     )
-

@@ -4,12 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const transportMocks = vi.hoisted(() => ({
     invoke: vi.fn(),
+    listen: vi.fn(() => Promise.resolve(vi.fn())),
     authenticatedFetch: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
     invoke: transportMocks.invoke,
 }));
+
+vi.mock('@tauri-apps/api/event', () => ({ listen: transportMocks.listen }));
 
 vi.mock('../../lib/api', () => ({
     authenticatedFetch: transportMocks.authenticatedFetch,
@@ -56,6 +59,24 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             configurable: true,
             value: vi.fn(),
         });
+    });
+
+    it('scene giữ token nội dung khi tile-refined, đổi token khi tài liệu đổi', async () => {
+        transportMocks.listen.mockClear();
+        const { result, rerender, unmount } = renderHook(({ token }) => useTileRenderer({
+            file: { path: 'D:\\scene-token.pdf', size: 1024, lastModified: 123 },
+            pdfRef: null, pdfUrl: null, activePage: 1, renderDocumentToken: token,
+        }), { initialProps: { token: 'content-v1' } });
+        await waitFor(() => expect(transportMocks.listen).toHaveBeenCalled());
+        const before = result.current.nativeSceneDocumentToken;
+        const tileBefore = result.current.renderDocumentToken;
+        const listener = (transportMocks.listen.mock.calls as unknown as Array<[string, (event: unknown) => void]>)[0][1];
+        act(() => listener({ payload: { file_path: 'D:\\scene-token.pdf', page: 1, zoom: 2 } }));
+        expect(result.current.nativeSceneDocumentToken).toBe(before);
+        expect(result.current.renderDocumentToken).not.toBe(tileBefore);
+        rerender({ token: 'content-v2' });
+        expect(result.current.nativeSceneDocumentToken).not.toBe(before);
+        unmount();
     });
 
     it('dùng accurate path cho cả nền và viewport thuộc danh sách detector', () => {
@@ -622,7 +643,7 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         ).toBe(true));
     });
 
-    it('hybrid chỉ lùi PDFium khi PPE trả unsupported và nhớ capability theo trang', async () => {
+    it('V27: hybrid không đưa PDFium vào slot accurate khi PPE unsupported', async () => {
         transportMocks.invoke.mockImplementation((command: string) => {
             if (command === 'render_ppe_page') {
                 return Promise.reject(new Error(
@@ -649,29 +670,29 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             viewerEngineMode: 'hybrid',
         }));
 
-        await result.current.getTileUrl(
+        await expect(result.current.getTileUrl(
             3, 0, 1, undefined, undefined, undefined, undefined,
             { colorStage: 'accurate' },
-        );
+        )).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
             .toHaveLength(1);
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
-            .toHaveLength(1);
+            .toHaveLength(0);
         expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
-        expect(result.current.accurateColorError).toBeNull();
+        await waitFor(() => expect(result.current.accurateColorError).not.toBeNull());
 
-        await result.current.getTileUrl(
+        await expect(result.current.getTileUrl(
             3, 0, 1.25, undefined, undefined, undefined, undefined,
             { colorStage: 'accurate' },
-        );
+        )).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
-            .toHaveLength(1);
-        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
             .toHaveLength(2);
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
+            .toHaveLength(0);
         unmount();
     });
 
-    it('current mode lùi PDFium khi PPE trả unsupported và nhớ capability theo trang', async () => {
+    it('V27: current giữ fail-closed cho accurate thay vì tự nhớ PDFium compatibility', async () => {
         transportMocks.invoke.mockImplementation((command: string) => {
             if (command === 'render_ppe_page') {
                 return Promise.reject(new Error(
@@ -698,26 +719,26 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             viewerEngineMode: 'current',
         }));
 
-        await result.current.getTileUrl(
+        await expect(result.current.getTileUrl(
             1, 0, 1, undefined, undefined, undefined, undefined,
             { colorStage: 'accurate' },
-        );
+        )).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
             .toHaveLength(1);
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
-            .toHaveLength(1);
+            .toHaveLength(0);
         expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
-        expect(result.current.accurateColorError).toBeNull();
+        await waitFor(() => expect(result.current.accurateColorError).not.toBeNull());
 
-        await result.current.getTileUrl(
+        await expect(result.current.getTileUrl(
             1, 0, 1.25, undefined, undefined, undefined, undefined,
             { colorStage: 'accurate' },
-        );
-        // Lần 2 bỏ qua PPE vì đã nhớ trong compatibilityPagesRef
+        )).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
+        // Lần 2 vẫn yêu cầu PPE, không hạ chuẩn màu theo lỗi lần trước.
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
-            .toHaveLength(1);
-        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
             .toHaveLength(2);
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
+            .toHaveLength(0);
         unmount();
     });
 

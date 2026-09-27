@@ -9,6 +9,30 @@ from __future__ import annotations
 import os
 
 
+def process_pool_budget_mb() -> float | None:
+    """PERF (audit 2026-09-25 §G2): chừa RAM cho Windows/viewer theo RAM thật.
+
+    Đây là admission theo working set từng file, không phải trần worker máy mạnh.
+    File nhỏ vẫn dùng toàn bộ CPU; chỉ giảm khi tổng RAM ước lượng không còn vừa.
+    """
+    total, available = read_memory_status_mb()
+    if available is None:
+        return None
+    if total is not None and total < 16 * 1024:
+        return max(0.0, available * 0.6)
+    reserve = max(1024.0, (total or available) * 0.1)
+    return max(0.0, available - reserve)
+
+
+def estimate_pdf_worker_mb(source_bytes: int, *, raster_mb: float = 0.0) -> float:
+    """Ước lượng admission, KHÔNG phải peak đo được: nguồn + bản copy + workspace.
+
+    Dùng cho pipeline mở/copy cả tài liệu. Nhánh raster cộng working set theo
+    kích thước ảnh đã chốt; không dùng số trang làm hệ số nhân file tùy tiện.
+    """
+    return 256.0 + max(0, source_bytes) * 2 / (1024 * 1024) + max(0.0, raster_mb)
+
+
 def read_memory_status_mb() -> tuple[float | None, float | None]:
     """Trả ``(tổng RAM, RAM khả dụng)`` theo MiB."""
     if os.name == "nt":

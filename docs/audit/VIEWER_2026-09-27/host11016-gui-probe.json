@@ -1,0 +1,730 @@
+{
+  "selection": {
+    "start_ms_inclusive": 1790446040053,
+    "end_ms_inclusive": 1790446235000,
+    "time_basis": "FE event_epoch_ms khi có, native thời điểm ghi log; không dùng FE flush làm event time",
+    "selected_records": 78
+  },
+  "percentile": "nearest-rank: sorted[ceil(p*N)-1]; ngưỡng strict >16.667 ms và >50 ms",
+  "native_session_aggregate_mixed_documents": {
+    "event_counts": {
+      "GPU_DETAIL_CACHE": 8,
+      "GPU_DIAG_NATIVE_APPLY": 2,
+      "GPU_DIAG_NATIVE_COMMAND": 1,
+      "GPU_DIAG_NATIVE_POINTER": 6,
+      "GPU_DIAG_NATIVE_PRESENT": 4,
+      "GPU_DIAG_NATIVE_PRESENT_FRAME": 4,
+      "GPU_DIAG_NATIVE_TOOL": 1,
+      "GPU_DIAG_NATIVE_WHEEL": 1,
+      "GPU_INPUT_PRESENT": 4,
+      "GPU_INTERACTION_CONFIG": 1,
+      "GPU_SCENE_PRESENT": 16,
+      "GPU_SCENE_REFINE": 4,
+      "detail_cache_evicted_frames": 2,
+      "detail_cache_insert": 4,
+      "detail_cache_miss": 4
+    },
+    "timings": {
+      "input_message_to_present_ms": {
+        "N": 4,
+        "min_ms": 1.525,
+        "p50_ms": 8.91,
+        "p95_ms": 12.692,
+        "max_ms": 12.692,
+        "gt_16_667_ms": 0,
+        "gt_50_ms": 0
+      },
+      "present_request_age_ms": {
+        "N": 16,
+        "min_ms": 0.902,
+        "p50_ms": 13.037,
+        "p95_ms": 147.211,
+        "max_ms": 147.211,
+        "gt_16_667_ms": 7,
+        "gt_50_ms": 6
+      },
+      "present_resident_cpu_ms": {
+        "N": 16,
+        "min_ms": 0.692,
+        "p50_ms": 1.02,
+        "p95_ms": 16.017,
+        "max_ms": 16.017,
+        "gt_16_667_ms": 0,
+        "gt_50_ms": 0
+      },
+      "refine_detail_clip_cpu_ms": {
+        "N": 4,
+        "min_ms": 39.802,
+        "p50_ms": 43.372,
+        "p95_ms": 46.006,
+        "max_ms": 46.006,
+        "gt_16_667_ms": 4,
+        "gt_50_ms": 0
+      },
+      "refine_detail_encode_cpu_ms": {
+        "N": 4,
+        "min_ms": 107.708,
+        "p50_ms": 116.711,
+        "p95_ms": 139.543,
+        "max_ms": 139.543,
+        "gt_16_667_ms": 4,
+        "gt_50_ms": 4
+      },
+      "refine_detail_material_cpu_ms": {
+        "N": 4,
+        "min_ms": 0.002,
+        "p50_ms": 0.002,
+        "p95_ms": 0.004,
+        "max_ms": 0.004,
+        "gt_16_667_ms": 0,
+        "gt_50_ms": 0
+      },
+      "refine_detail_request_age_until_submitted_ms": {
+        "N": 4,
+        "min_ms": 110.919,
+        "p50_ms": 119.794,
+        "p95_ms": 145.986,
+        "max_ms": 145.986,
+        "gt_16_667_ms": 4,
+        "gt_50_ms": 4
+      },
+      "surface_acquire_input_present_samples_ms": {
+        "N": 4,
+        "min_ms": 0.037,
+        "p50_ms": 0.046,
+        "p95_ms": 0.064,
+        "max_ms": 0.064,
+        "gt_16_667_ms": 0,
+        "gt_50_ms": 0
+      }
+    },
+    "rejected_negative_or_nonfinite": {},
+    "first_line": 211385,
+    "last_line": 211462,
+    "first_event_epoch_ms": 1790446052627,
+    "last_event_epoch_ms": 1790446233924
+  },
+  "native_revision_context_from_whole_selected_host_session": {
+    "2": {
+      "pages": [
+        1
+      ],
+      "explicit_identities": [],
+      "evidence_lines": [
+        205743,
+        205745,
+        205746
+      ],
+      "scope": "revision/page only; document identity unobserved"
+    },
+    "4": {
+      "pages": [
+        2
+      ],
+      "explicit_identities": [],
+      "evidence_lines": [
+        205806,
+        205807,
+        205808
+      ],
+      "scope": "revision/page only; document identity unobserved"
+    },
+    "6": {
+      "pages": [
+        1
+      ],
+      "explicit_identities": [],
+      "evidence_lines": [
+        205839,
+        205840
+      ],
+      "scope": "revision/page only; document identity unobserved"
+    },
+    "10": {
+      "pages": [
+        1
+      ],
+      "explicit_identities": [],
+      "evidence_lines": [
+        210167,
+        210168
+      ],
+      "scope": "revision/page only; document identity unobserved"
+    },
+    "14": {
+      "pages": [
+        1
+      ],
+      "explicit_identities": [],
+      "evidence_lines": [
+        211005,
+        211006
+      ],
+      "scope": "revision/page only; document identity unobserved"
+    },
+    "18": {
+      "pages": [
+        1
+      ],
+      "explicit_identities": [],
+      "evidence_lines": [
+        211645,
+        211646
+      ],
+      "scope": "revision/page only; document identity unobserved"
+    }
+  },
+  "native_by_revision_not_assumed_document": {
+    "14": {
+      "event_counts": {
+        "GPU_DIAG_NATIVE_APPLY": 2,
+        "GPU_DIAG_NATIVE_COMMAND": 1,
+        "GPU_DIAG_NATIVE_PRESENT": 4,
+        "GPU_DIAG_NATIVE_PRESENT_FRAME": 4,
+        "GPU_DIAG_NATIVE_TOOL": 1,
+        "GPU_DIAG_NATIVE_WHEEL": 1,
+        "GPU_INPUT_PRESENT": 4,
+        "GPU_INTERACTION_CONFIG": 1,
+        "GPU_SCENE_PRESENT": 16,
+        "GPU_SCENE_REFINE": 4
+      },
+      "timings": {
+        "input_message_to_present_ms": {
+          "N": 4,
+          "min_ms": 1.525,
+          "p50_ms": 8.91,
+          "p95_ms": 12.692,
+          "max_ms": 12.692,
+          "gt_16_667_ms": 0,
+          "gt_50_ms": 0
+        },
+        "present_request_age_ms": {
+          "N": 16,
+          "min_ms": 0.902,
+          "p50_ms": 13.037,
+          "p95_ms": 147.211,
+          "max_ms": 147.211,
+          "gt_16_667_ms": 7,
+          "gt_50_ms": 6
+        },
+        "present_resident_cpu_ms": {
+          "N": 16,
+          "min_ms": 0.692,
+          "p50_ms": 1.02,
+          "p95_ms": 16.017,
+          "max_ms": 16.017,
+          "gt_16_667_ms": 0,
+          "gt_50_ms": 0
+        },
+        "refine_detail_clip_cpu_ms": {
+          "N": 4,
+          "min_ms": 39.802,
+          "p50_ms": 43.372,
+          "p95_ms": 46.006,
+          "max_ms": 46.006,
+          "gt_16_667_ms": 4,
+          "gt_50_ms": 0
+        },
+        "refine_detail_encode_cpu_ms": {
+          "N": 4,
+          "min_ms": 107.708,
+          "p50_ms": 116.711,
+          "p95_ms": 139.543,
+          "max_ms": 139.543,
+          "gt_16_667_ms": 4,
+          "gt_50_ms": 4
+        },
+        "refine_detail_material_cpu_ms": {
+          "N": 4,
+          "min_ms": 0.002,
+          "p50_ms": 0.002,
+          "p95_ms": 0.004,
+          "max_ms": 0.004,
+          "gt_16_667_ms": 0,
+          "gt_50_ms": 0
+        },
+        "refine_detail_request_age_until_submitted_ms": {
+          "N": 4,
+          "min_ms": 110.919,
+          "p50_ms": 119.794,
+          "p95_ms": 145.986,
+          "max_ms": 145.986,
+          "gt_16_667_ms": 4,
+          "gt_50_ms": 4
+        },
+        "surface_acquire_input_present_samples_ms": {
+          "N": 4,
+          "min_ms": 0.037,
+          "p50_ms": 0.046,
+          "p95_ms": 0.064,
+          "max_ms": 0.064,
+          "gt_16_667_ms": 0,
+          "gt_50_ms": 0
+        }
+      },
+      "rejected_negative_or_nonfinite": {},
+      "first_line": 211385,
+      "last_line": 211462,
+      "first_event_epoch_ms": 1790446052627,
+      "last_event_epoch_ms": 1790446233924
+    },
+    "unscoped": {
+      "event_counts": {
+        "GPU_DETAIL_CACHE": 8,
+        "GPU_DIAG_NATIVE_POINTER": 6,
+        "detail_cache_evicted_frames": 2,
+        "detail_cache_insert": 4,
+        "detail_cache_miss": 4
+      },
+      "timings": {},
+      "rejected_negative_or_nonfinite": {},
+      "first_line": 211394,
+      "last_line": 211461,
+      "first_event_epoch_ms": 1790446064637,
+      "last_event_epoch_ms": 1790446233923
+    }
+  },
+  "frontend_session_aggregate_mixed_documents": {
+    "event_counts": {
+      "GPU_DIAG_FE_CAMERA": 11,
+      "GPU_DIAG_FE_SCALE_SYNC": 2,
+      "GPU_DIAG_FE_STATE": 1,
+      "frame-policy": 6,
+      "native-renderer-policy": 1,
+      "tile-effect": 1,
+      "tile-skip-sharper-surface": 1,
+      "ui-long-task": 1,
+      "viewport-pan": 1,
+      "zoom-layout": 1
+    },
+    "timings": {
+      "event_to_log_write_delay_ms": {
+        "N": 26,
+        "min_ms": 6.0,
+        "p50_ms": 22.0,
+        "p95_ms": 46.0,
+        "max_ms": 63.0,
+        "gt_16_667_ms": 19,
+        "gt_50_ms": 1
+      },
+      "ui-long-task.duration_ms": {
+        "N": 1,
+        "min_ms": 58.0,
+        "p50_ms": 58.0,
+        "p95_ms": 58.0,
+        "max_ms": 58.0,
+        "gt_16_667_ms": 1,
+        "gt_50_ms": 1
+      }
+    },
+    "rejected_negative_or_nonfinite": {},
+    "first_line": 211389,
+    "last_line": 211459,
+    "first_event_epoch_ms": 1790446052623,
+    "last_event_epoch_ms": 1790446233804
+  },
+  "frontend_by_trace_page_not_assumed_document": {
+    "trace=Vmuioy88k-wsplzi|page=1": {
+      "event_counts": {
+        "GPU_DIAG_FE_CAMERA": 11,
+        "GPU_DIAG_FE_SCALE_SYNC": 2,
+        "GPU_DIAG_FE_STATE": 1,
+        "frame-policy": 2,
+        "native-renderer-policy": 1,
+        "tile-effect": 1,
+        "tile-skip-sharper-surface": 1,
+        "viewport-pan": 1,
+        "zoom-layout": 1
+      },
+      "timings": {
+        "event_to_log_write_delay_ms": {
+          "N": 21,
+          "min_ms": 6.0,
+          "p50_ms": 26.0,
+          "p95_ms": 46.0,
+          "max_ms": 63.0,
+          "gt_16_667_ms": 15,
+          "gt_50_ms": 1
+        }
+      },
+      "rejected_negative_or_nonfinite": {},
+      "first_line": 211389,
+      "last_line": 211459,
+      "first_event_epoch_ms": 1790446052623,
+      "last_event_epoch_ms": 1790446233804
+    },
+    "trace=Vmuioy88k-wsplzi|page=2": {
+      "event_counts": {
+        "frame-policy": 2
+      },
+      "timings": {
+        "event_to_log_write_delay_ms": {
+          "N": 2,
+          "min_ms": 22.0,
+          "p50_ms": 22.0,
+          "p95_ms": 26.0,
+          "max_ms": 26.0,
+          "gt_16_667_ms": 2,
+          "gt_50_ms": 0
+        }
+      },
+      "rejected_negative_or_nonfinite": {},
+      "first_line": 211437,
+      "last_line": 211443,
+      "first_event_epoch_ms": 1790446218468,
+      "last_event_epoch_ms": 1790446218472
+    },
+    "trace=Vmuioy88k-wsplzi|page=3": {
+      "event_counts": {
+        "frame-policy": 2
+      },
+      "timings": {
+        "event_to_log_write_delay_ms": {
+          "N": 2,
+          "min_ms": 22.0,
+          "p50_ms": 22.0,
+          "p95_ms": 26.0,
+          "max_ms": 26.0,
+          "gt_16_667_ms": 2,
+          "gt_50_ms": 0
+        }
+      },
+      "rejected_negative_or_nonfinite": {},
+      "first_line": 211438,
+      "last_line": 211444,
+      "first_event_epoch_ms": 1790446218468,
+      "last_event_epoch_ms": 1790446218472
+    },
+    "trace=Vmuioy88k-wsplzi|page=unobserved": {
+      "event_counts": {
+        "ui-long-task": 1
+      },
+      "timings": {
+        "event_to_log_write_delay_ms": {
+          "N": 1,
+          "min_ms": 12.0,
+          "p50_ms": 12.0,
+          "p95_ms": 12.0,
+          "max_ms": 12.0,
+          "gt_16_667_ms": 0,
+          "gt_50_ms": 0
+        },
+        "ui-long-task.duration_ms": {
+          "N": 1,
+          "min_ms": 58.0,
+          "p50_ms": 58.0,
+          "p95_ms": 58.0,
+          "max_ms": 58.0,
+          "gt_16_667_ms": 1,
+          "gt_50_ms": 1
+        }
+      },
+      "rejected_negative_or_nonfinite": {},
+      "first_line": 211446,
+      "last_line": 211446,
+      "first_event_epoch_ms": 1790446218482,
+      "last_event_epoch_ms": 1790446218482
+    }
+  },
+  "frontend_explicit_identity_events_only": {},
+  "frontend_document_identity_paths_from_explicit_events": {
+    "17869243:1786097761398351100:1786097761204255100": {
+      "paths": [
+        "C:\\Users\\Khanh Pham\\Desktop\\PDF\\CMNM2026 - Giay moi_BLUE - in.pdf"
+      ],
+      "evidence_lines": [
+        205684
+      ]
+    },
+    "17869243:1790445383915000000:unknown": {
+      "paths": [
+        "C:\\Users\\Khanh Pham\\Desktop\\PDF\\CMNM2026 - Giay moi_BLUE - in.pdf"
+      ],
+      "evidence_lines": [
+        205676
+      ]
+    },
+    "46973138:1789896075863039300:1789896075553593500": {
+      "paths": [
+        "C:\\Users\\Khanh Pham\\Desktop\\VDP_Tem Trung Thu chi cuc thue 2026 Auto Tem 10x16cm Auto_123records.pdf"
+      ],
+      "evidence_lines": [
+        209058
+      ]
+    },
+    "46973138:1790445425669000000:unknown": {
+      "paths": [
+        "C:\\Users\\Khanh Pham\\Desktop\\VDP_Tem Trung Thu chi cuc thue 2026 Auto Tem 10x16cm Auto_123records.pdf"
+      ],
+      "evidence_lines": [
+        209052
+      ]
+    }
+  },
+  "frontend_trace_context": {
+    "Vmuioy88k-wsplzi": {
+      "pages": [
+        1,
+        2,
+        3,
+        "unobserved"
+      ],
+      "explicit_identities": []
+    }
+  },
+  "caveats": [
+    "Native/FE aggregate có thể gồm nhiều tài liệu, VDP và page 1 khác nhau; KHÔNG gọi là benchmark một PDF.",
+    "Chỉ map revision->page từ SCENE_COMPILE/CACHE/READY. Không suy native identity từ path hash FE hoặc số trang.",
+    "Revision native không có view/document trên nhiều dòng; revision trùng giữa view vẫn là khoảng trống, kể cả page candidate duy nhất.",
+    "FE cùng trace_id có thể mở tài liệu khác; groups trace/page không bảo đảm cùng file. Nhóm explicit chỉ gồm event tự mang identity.",
+    "INPUT_PRESENT là WndProc->present() trên CPU, không gồm queue OS, GPU completion hoặc scanout; coalesced inputs không có mẫu riêng.",
+    "SCENE_REFINE ready_us là tuổi request tới submit hết command buffers, KHÔNG phải ảnh đã nét trên màn hình.",
+    "SCENE_PRESENT request_to_present là tuổi request, có thể tiếp tục tăng khi refine sau input cuối; không coi là input latency.",
+    "SCENE_PRESENT resident_us bỏ acquire trước nó và bao gồm một phần logging; không phải GPU time.",
+    "SURFACE_ACQUIRE chỉ log wait >=8000us trong source hiện tại: phân bố conditional slow-only. Diagnostic acquire cũng chỉ lấy mẫu có input present.",
+    "transport_us là residual elapsed-minus-parse-minus-compile; gồm startup/wire encode/decode/read, không phải IPC thuần.",
+    "Không tính present intervals/FPS để tránh biến idle hoặc resize thành dropped-frame rate.",
+    "Hash là prefix đã chốt byte length lúc bắt đầu; log append tiếp không nằm trong snapshot. Parse errors và tail thiếu newline không thành mẫu."
+  ],
+  "schema": 1,
+  "generated_at_utc": "2026-09-26T18:19:46.681097+00:00",
+  "input_snapshot": {
+    "path": "D:\\pdfcompare\\.tmp\\render-diagnostics\\PrynX_RenderPerf.log",
+    "sha256": "953470b2f9a8c566d4cc925eca69d64ddfd6895f1f651dad1ac90eeb71097845",
+    "sha256_scope": "prefix [0, snapshot_bytes), đọc theo stream; không gồm append sau lúc bắt đầu",
+    "snapshot_bytes": 68720054,
+    "snapshot_lines": 211740,
+    "size_before": 68720054,
+    "size_after": 68720054,
+    "mtime_ns_before": 1790446753077851000,
+    "mtime_ns_after": 1790446753077851000,
+    "changed_during_read": false,
+    "incomplete_last_line_ignored": false,
+    "selected_host": {
+      "line": 205591,
+      "epoch_ms": 1790445375714,
+      "arch": "x86_64",
+      "exe_sha256": "4c7a8b752494925df574e2e34ac68fde99fde6e23d6206fb2d5f3308d67f8dc4",
+      "logical_cores": 16,
+      "memory": {
+        "availableBytes": 18190770176,
+        "installedBytes": 34359738368,
+        "totalBytes": 34359738368,
+        "usableBytes": 34107990016
+      },
+      "os": "windows",
+      "pid": 11016,
+      "role": "host",
+      "schema": 2,
+      "version": "2.0.4"
+    },
+    "host_sessions_seen": [
+      {
+        "line": 1,
+        "epoch_ms": 1790427790154,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 20654084096,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 9028,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 31977,
+        "epoch_ms": 1790429887623,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19486019584,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 20008,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 67255,
+        "epoch_ms": 1790431707255,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 19510640640,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 20216,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 86680,
+        "epoch_ms": 1790433005403,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17983307776,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 14920,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 123768,
+        "epoch_ms": 1790434924661,
+        "arch": "x86_64",
+        "exe_sha256": "0426948c3ee7d0720adb6bb4deef58acd03b378d250efe8e8056a14a87bbcd72",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18536837120,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 13504,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 133824,
+        "epoch_ms": 1790435543460,
+        "arch": "x86_64",
+        "exe_sha256": "9ba895496a8150100d28b52e773edc41d423b2c24c173e99d726be98bb0de4da",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18189250560,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 13928,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 133897,
+        "epoch_ms": 1790436765183,
+        "arch": "x86_64",
+        "exe_sha256": "0b11fa4e16f85b241c999fbad1a70c94f3e4ca17d2b5f5da8192520562bd1e8b",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17871532032,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 20000,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 147818,
+        "epoch_ms": 1790439571437,
+        "arch": "x86_64",
+        "exe_sha256": "0b11fa4e16f85b241c999fbad1a70c94f3e4ca17d2b5f5da8192520562bd1e8b",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18051919872,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 22648,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 192782,
+        "epoch_ms": 1790440890927,
+        "arch": "x86_64",
+        "exe_sha256": "0963f4eb5b4c171aa007d43cbdd40d4ca9edb8fed601867161c981c21aa11e51",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18219884544,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 21920,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 202984,
+        "epoch_ms": 1790441798600,
+        "arch": "x86_64",
+        "exe_sha256": "e5e59f336fc6c0440ab8e45c77bdf0291c870535a77ae28ff36e28d542d96bdc",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 17777651712,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 19784,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      },
+      {
+        "line": 205591,
+        "epoch_ms": 1790445375714,
+        "arch": "x86_64",
+        "exe_sha256": "4c7a8b752494925df574e2e34ac68fde99fde6e23d6206fb2d5f3308d67f8dc4",
+        "logical_cores": 16,
+        "memory": {
+          "availableBytes": 18190770176,
+          "installedBytes": 34359738368,
+          "totalBytes": 34359738368,
+          "usableBytes": 34107990016
+        },
+        "os": "windows",
+        "pid": 11016,
+        "role": "host",
+        "schema": 2,
+        "version": "2.0.4"
+      }
+    ],
+    "selected_session_parse_errors": []
+  },
+  "analyzer_sha256": "dc93b45f569e042de578bdec6c863692191da756227f29d627b7f9d3f9330cf7",
+  "raw_evidence": {
+    "path": "D:\\pdfcompare\\docs\\audit\\VIEWER_2026-09-27\\host11016-gui-probe.evidence.log",
+    "sha256": "d2498919803ff665223f5065490da15c00d93e6fdf8bbcb7c912bd3943985866",
+    "format": "original_line_number TAB original_log_line",
+    "bytes": 9690
+  }
+}

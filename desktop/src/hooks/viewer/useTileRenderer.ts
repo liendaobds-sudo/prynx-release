@@ -473,13 +473,6 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         normalizedIntent,
     )}${accurateProofIdentity === defaultProofIdentity ? '' : `|${accurateProofIdentity}`}`;
     const accurateRenderIdentity = `${fileIdentity}|simulation:${normalizedProfileId}:${normalizedIntent}|${accurateProofIdentity}`;
-    const compatibilityPagesRef = useRef<{ fileIdentity: string; pages: Set<number> }>({
-        fileIdentity,
-        pages: new Set(),
-    });
-    if (compatibilityPagesRef.current.fileIdentity !== fileIdentity) {
-        compatibilityPagesRef.current = { fileIdentity, pages: new Set() };
-    }
     const shadowedPagesRef = useRef<{ fileIdentity: string; keys: Set<string> }>({
         fileIdentity,
         keys: new Set(),
@@ -606,9 +599,9 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     requestOptions?.colorStage,
                     viewerEngineMode,
                 );
-            const useAccuratePipeline = requestsAccuratePipeline
-                && !(viewerEngineMode !== 'ppe-only'
-                    && compatibilityPagesRef.current.pages.has(pageNum));
+            // COLOR (audit 2026-09-27 §V27.04): một lần unsupported không được
+            // đổi ngầm mọi yêu cầu proof kế tiếp thành PDFium.
+            const useAccuratePipeline = requestsAccuratePipeline;
             const colorPipeline: RenderColorPipeline = useAccuratePipeline ? 'accurate' : 'display';
             const normalizedRotation = normalizeRenderRotation(rotation || 0);
             const clip = isTile
@@ -688,7 +681,10 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     render: invokeDisplayPng,
                     // COLOR (audit 2026-08-07 §GV.1/§GV.4): raw PDFium không được nén
                     // mất dữ liệu lần hai; full-page và tile zoom dùng cùng MIME lossless.
-                    encode: (bytes) => createTileSourceFromBytes(bytes),
+                    encode: async (bytes, request) => ({ ...await createTileSourceFromBytes(bytes), proof: {
+                        engine: 'pdfium', soundness: 'display-preview', documentToken: request.document.token,
+                        page: pageNum, profileId: null, intent: null, proofIdentity: 'display', pipelineIdentity: request.pipelineIdentity,
+                    } }),
                 });
             };
             const schedulePpeShadow = () => {
@@ -728,6 +724,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
             };
 
             if (useAccuratePipeline) {
+                let actualEngine: 'ppe-native' | 'ppe-http' = 'ppe-native';
                 // COLOR (audit 2026-08-07 §GV.3): trang CMYK/DeviceN/transparency
                 // được dựng trong không gian mực rồi mới quy profile mô phỏng→sRGB. Chỉ xin
                 // PPE cho cả nền lẫn viewport; không phủ tile PDFium lên nền PPE.
@@ -811,17 +808,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                     });
                                     const unsupported = parsePpeUnsupportedStatus(nativeError);
                                     if (unsupported) {
-                                        if (viewerEngineMode === 'ppe-only') throw nativeError;
-                                        // CORRECTNESS (audit 2026-08-10 §L7B): chỉ
-                                        // capability thiếu mới được lùi PDFium. PPE chưa
-                                        // trả byte nào nên một frame chỉ có đúng một engine.
-                                        compatibilityPagesRef.current.pages.add(pageNum);
-                                        setAccurateColorFailure(null);
-                                        console.info('[VIEWER-ENGINE] PPE compatibility lane', {
-                                            page: pageNum,
-                                            reason: unsupported.reason,
-                                        });
-                                        return invokeDisplayPng(request);
+                                        throw nativeError;
                                     }
                                     if (!canFallbackPpeToHttp(nativeError)) throw nativeError;
                                 }
@@ -830,6 +817,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                             // Profile/intent chưa được worker native đóng gói đi thẳng route
                             // động; FOGRA39 chỉ về đây khi worker lỗi trước byte đầu tiên.
                             accurateBackendSessionOwnersRef.current.add(renderOwnerId);
+                            actualEngine = 'ppe-http';
                             const accurateGeneration = ++accurateGenerationRef.current;
                             const response = await authenticatedFetch(`${getApiUrl()}/preflight/viewer-accurate`, {
                                 method: 'POST',
@@ -873,18 +861,9 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                             if (
                                 abortController.signal.aborted
                                 || error instanceof CancelledTileRenderError
+                                || renderErrorMessage(error).includes('đã bị hủy')
                             ) {
                                 throw new CancelledTileRenderError();
-                            }
-                            const unsupported = parsePpeUnsupportedStatus(error);
-                            if (unsupported && viewerEngineMode !== 'ppe-only') {
-                                compatibilityPagesRef.current.pages.add(pageNum);
-                                setAccurateColorFailure(null);
-                                console.info('[VIEWER-ENGINE] PPE compatibility lane (outer catch)', {
-                                    page: pageNum,
-                                    reason: unsupported.reason,
-                                });
-                                return invokeDisplayPng(request);
                             }
                             const message = renderErrorMessage(error);
                             setAccurateColorFailure({ fileIdentity: accurateRenderIdentity, message });
@@ -902,7 +881,11 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                             }
                         }
                     },
-                    encode: (bytes) => createTileSourceFromBytes(bytes),
+                    encode: async (bytes, request) => ({ ...await createTileSourceFromBytes(bytes), proof: {
+                        engine: actualEngine, soundness: 'color-verified', documentToken,
+                        page: pageNum, profileId: normalizedProfileId, intent: normalizedIntent,
+                        proofIdentity: accurateProofIdentity, pipelineIdentity: request.pipelineIdentity,
+                    } }),
                 });
             }
 
@@ -914,6 +897,9 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
 
         // Fallback: PDF.js canvas rendering for non-native files
         return (async (): Promise<TileUrlSource> => {
+            if (requestOptions?.forceAccurateColor || shouldUseAccurateViewerRender(
+                accurateColorEnabled, accurateColorPages, pageNum, clipW !== undefined && clipH !== undefined, requestOptions?.colorStage, viewerEngineMode,
+            )) throw new Error('Không có nguồn PPE để dựng bản xem đúng màu; không dùng PDF.js thay cho soft-proof.');
             if (!pdfRef) return Promise.reject("No file and no PDF ref");
 
             const page = await pdfRef.getPage(pageNum);
@@ -951,6 +937,8 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                             width: bitmap?.width ?? canvas.width,
                             height: bitmap?.height ?? canvas.height,
                             byteLength: blob.size,
+                            proof: { engine: 'pdfjs', soundness: 'display-preview', documentToken: 'memory', page: pageNum,
+                                profileId: null, intent: null, proofIdentity: 'display', pipelineIdentity: 'pdfjs-display' },
                         });
                     } else {
                         reject("Failed to create blob");
@@ -987,6 +975,8 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         getTextBlocksForPage,
         renderOwnerId,
         renderDocumentToken: documentToken,
+        // PERF (audit 2026-09-25 §R25.GPU.31): tile nét hơn không đổi nội dung scene.
+        nativeSceneDocumentToken: nativeDocumentIdentity?.token ?? 'memory',
         accurateColorError,
         cancelAccurateGroup,
     };

@@ -47,7 +47,7 @@ export function reportUiError(
   const safeComponentStack = cleanDiagnosticText(componentStack, MAX_COMPONENT_STACK_LENGTH);
 
   try {
-    Sentry.withScope((scope) => {
+    Sentry.withScope((scope: Sentry.Scope) => {
       scope.setTag('ui_area', cleanDiagnosticId(area, 'ui'));
       scope.setTag('ui_error_id', cleanDiagnosticId(errorId, 'unknown'));
       scope.setTag('app_version', APP_VERSION);

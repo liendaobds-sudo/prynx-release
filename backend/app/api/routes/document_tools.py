@@ -394,7 +394,13 @@ def _get_pdf_text(body: dict):
                         continue
                     out_lines.append({
                         "bbox": {"x": x0, "y": top, "w": max(1.0, x1 - x0), "h": max(1.0, bottom - top)},
-                        "chars": [{"c": c["c"]} for c in ln_s],
+                        # UIUX (audit 2026-09-25 §R25.GPU.30): giữ tọa độ PDF gốc
+                        # để native áp cùng CropBox/Rotate/UserUnit với scene.
+                        "chars": [{"c": c["c"], "pdf_bbox": {
+                            "x": c["x0"], "y": ph - c["bottom"],
+                            "width": max(0.0, c["x1"] - c["x0"]),
+                            "height": max(0.0, c["bottom"] - c["top"]),
+                        }} for c in ln_s],
                     })
 
                 t_end = time.perf_counter()

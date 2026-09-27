@@ -41,13 +41,19 @@ impl PageProgram {
         // PERF (audit 2026-08-09 §L4A): BI phải được bóc trước tokenizer đúng như
         // interpreter cũ; chương trình sở hữu Object ảnh nên replay không mượn buffer tạm.
         let extracted = extract_inline_images(data);
-        let content = Content::decode(&extracted.data)
+        let tokens = normalize_content_tokens(&extracted.data);
+        let content = Content::decode(&tokens)
             .map_err(|error| PpeError::ContentStream(format!("{error}")))?;
         // PERF (audit 2026-09-23 §R23.PROGRAM): tokenizer cấp tối thiểu 4 slot
         // operand kể cả q/Q không có operand. Chương trình đã bất biến nên nhả
         // capacity tăng trưởng trước khi giữ trong cache; không đổi token/giá trị.
         let mut operations = content.operations.into_boxed_slice();
         for operation in &mut operations {
+            match operation.operator.as_str() {
+                "pxTypeZero" => operation.operator = "d0".into(),
+                "pxTypeOne" => operation.operator = "d1".into(),
+                _ => {}
+            }
             operation.operands = std::mem::take(&mut operation.operands)
                 .into_boxed_slice().into_vec();
         }
@@ -101,6 +107,29 @@ impl PageProgram {
     }
 }
 
+/// PERF/CORRECTNESS (audit 2026-09-25 §R25.GPU.19): lopdf 0.44 chỉ đọc phần chữ
+/// của d0/d1, làm hậu tố số nhiễm vào operands kế tiếp. Chỉ thay token operator;
+/// giữ nguyên string, name, hex và payload ảnh đã được bóc riêng. Comment đổi
+/// thành khoảng trắng vì lopdf có thể dừng sớm khi sau comment là dòng thụt vào.
+fn normalize_content_tokens(data:&[u8])->std::borrow::Cow<'_,[u8]>{
+    let delimiter=|c:u8|c.is_ascii_whitespace() || b"()<>[]{}/%".contains(&c);
+    let mut at=0;let mut copied=0;let mut output=Vec::new();
+    while at<data.len(){match data[at]{
+        b'%'=>{let start=at;while at<data.len() && data[at]!=b'\n' && data[at]!=b'\r'{at+=1;}
+            output.extend_from_slice(&data[copied..start]);output.push(b' ');copied=at;},
+        b'('=>{at+=1;let mut depth=1;while at<data.len() && depth>0{match data[at]{b'\\'=>{at=(at+2).min(data.len());continue;},b'('=>depth+=1,b')'=>depth-=1,_=>{}}at+=1;}},
+        b'/'=>{at+=1;while at<data.len() && !delimiter(data[at]){at+=1;}},
+        b'<' if data.get(at+1)!=Some(&b'<')=>{at+=1;while at<data.len() && data[at]!=b'>'{at+=1;}at=(at+1).min(data.len());},
+        b'<' if data.get(at+1)==Some(&b'<')=>{at+=2;},
+        c if delimiter(c)=>{at+=1;},
+        _=>{let start=at;while at<data.len() && !delimiter(data[at]){at+=1;}
+            let replacement:Option<&[u8]>=match &data[start..at]{b"d0"=>Some(b"pxTypeZero"),b"d1"=>Some(b"pxTypeOne"),_=>None};
+            if let Some(replacement)=replacement{output.extend_from_slice(&data[copied..start]);output.extend_from_slice(replacement);copied=at;}
+        },
+    }}
+    if copied==0{std::borrow::Cow::Borrowed(data)}else{output.extend_from_slice(&data[copied..]);std::borrow::Cow::Owned(output)}
+}
+
 fn objects_memory_bytes(objects: &Vec<Object>) -> usize {
     objects.iter().fold(
         objects
@@ -149,6 +178,15 @@ fn object_heap_bytes(object: &Object) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type3_width_suffix_does_not_shift_next_operator_or_touch_literals(){
+        let p=PageProgram::compile(b"500 0 0 0 500 700 d1 0 0 500 700 re f /d1 (d0 (d1) \\)) Tj % d0\n 500 0 d0 3 4 m").unwrap();
+        assert_eq!(p.operations[0].operator,"d1");assert_eq!(p.operations[1].operands.len(),4);
+        assert_eq!(p.operations[1].operands[0],Object::Integer(0));
+        assert_eq!(p.operations[3].operands[0],Object::Name(b"d1".to_vec()));
+        assert_eq!(p.operations[4].operator,"d0");assert_eq!(p.operations[5].operands,vec![Object::Integer(3),Object::Integer(4)]);
+    }
 
     #[test]
     fn compiled_program_releases_operand_capacity_without_changing_tokens() {

@@ -1,0 +1,461 @@
+{
+  "scope": "V27.R1-R4 source + auto + headless artifact; no GUI/scanout acceptance",
+  "sources": [
+    {
+      "path": "desktop/src-tauri/src/viewport/detail_cache.rs",
+      "sha256": "c4b82a207b7aa2b86d8fcd2988291b91c97eacb6a67c5a998ca35ba80a492b23"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/refinement.rs",
+      "sha256": "384e764a70195c2f951471556dd34b49c4fe57654d52b5d88bbb5c7a8a93b000"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/refinement_policy.rs",
+      "sha256": "cf3850393e14e0300bbfc4959d67a686cb4ce74908d1fdbca4b390f8d1eab6c4"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/refinement_liveness_tests.rs",
+      "sha256": "8af4c6856db68e3e4e6b666d88afeaa2c8e22115c1c1ff1d48d0e57789db368b"
+    },
+    {
+      "path": "desktop/src-tauri/src/viewport/presenter.rs",
+      "sha256": "be93631c34809721004de41e44c77ca4fe344109b7732bae7b2b4b3db390e829"
+    },
+    {
+      "path": "viewer_gpu/src/retained_renderer.rs",
+      "sha256": "e4274b12d3d6ccc0fefba5db534f606614403b852f74e9608c27f6e772f99810"
+    },
+    {
+      "path": "viewer_gpu/src/resident_present.rs",
+      "sha256": "071f1a26bba721909f62374b2b97b0e49ddae7fe63ad67daee5624da105d3b9a"
+    },
+    {
+      "path": "viewer_gpu/tests/scene_startup.rs",
+      "sha256": "edd519b6c1fb58fdea395ec57e49a5946878525947978fccaa19201a9a044515"
+    }
+  ],
+  "icc_fogra39_sha256": "da2b9b593e27cba2563cbc8596071c5c8f2395d3dbb4434538bac2bc9d58ce77",
+  "native_test_exe_sha256": "da1d59838df2a3e0a906d2ab76fbae9c33720c8a4b32cb4bc81272ca5556aa47",
+  "gpu_test_exe_sha256": "dd5e18f846a0373465b5bab8dbaa6ab3d94b14e5940ba09f4fe7be75b055ac8a",
+  "verified_test_results": {
+    "viewport": {
+      "passed": 54,
+      "ignored": 6,
+      "gui_tests_explicitly_excluded": 9
+    },
+    "viewer_gpu_suite": {
+      "passed": 49,
+      "ignored": 5
+    },
+    "render_worker": {
+      "passed": 53,
+      "ignored": 9
+    },
+    "ignored_probes_run_separately": [
+      "PDF liveness, outline + Desktop",
+      "18 ROI pixel parity",
+      "PPE RGB/late-fallback crop/rotation"
+    ],
+    "cargo_check_lib_examples": "passed",
+    "golden_updates": 0
+  },
+  "pdf_liveness": [
+    {
+      "artifact": "cache-fix-outline-final.json",
+      "artifact_sha256": "7e582b29aa4e14cfadbbbe8c20d4efe08c7d8528222a515c74384fb389ebda9d",
+      "pdf": "D:\\pdfcompare\\test\\CMNM2026 - Giay moi_BLUE - in_OUTLINE_FONTS_5e2846.pdf",
+      "input_sha256": "e657eab1a222ca11ccbe01554f663405251bfb0952fb79eee5083f9c0ce06dd1",
+      "cameras": 32,
+      "refinements": 62,
+      "max_refinements_per_camera": 9,
+      "idle_checks": 3840,
+      "recoveries": 0,
+      "different_bytes": 0
+    },
+    {
+      "artifact": "cache-fix-desktop-final.json",
+      "artifact_sha256": "16ac93c41f872aa97527ca3b234b4dad2528217a1a03cd82b125f27c3cf5838a",
+      "pdf": "C:\\Users\\Khanh Pham\\Desktop\\PDF\\CMNM2026 - Giay moi_BLUE - in.pdf",
+      "input_sha256": "95f38cf429fe7dd7c6500043ce308fd2e87e80a2290217d428fe0c68c6098184",
+      "cameras": 32,
+      "refinements": 62,
+      "max_refinements_per_camera": 9,
+      "idle_checks": 3840,
+      "recoveries": 0,
+      "different_bytes": 0
+    }
+  ],
+  "roi_pairs": [
+    {
+      "camera": 0,
+      "rect": [
+        0,
+        0,
+        130,
+        748
+      ],
+      "before": {
+        "roi_us": 20233,
+        "encode_us": 6885,
+        "coverage_bytes": 6405476
+      },
+      "after": {
+        "roi_us": 14415,
+        "encode_us": 5095,
+        "coverage_bytes": 1761184
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 0,
+      "rect": [
+        868,
+        0,
+        130,
+        748
+      ],
+      "before": {
+        "roi_us": 19693,
+        "encode_us": 7570,
+        "coverage_bytes": 6521900
+      },
+      "after": {
+        "roi_us": 14351,
+        "encode_us": 5663,
+        "coverage_bytes": 1759580
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 0,
+      "rect": [
+        0,
+        656,
+        998,
+        92
+      ],
+      "before": {
+        "roi_us": 20236,
+        "encode_us": 6463,
+        "coverage_bytes": 6880904
+      },
+      "after": {
+        "roi_us": 13181,
+        "encode_us": 4346,
+        "coverage_bytes": 1129184
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 0,
+      "rect": [
+        213,
+        97,
+        417,
+        319
+      ],
+      "before": {
+        "roi_us": 25239,
+        "encode_us": 9161,
+        "coverage_bytes": 8402060
+      },
+      "after": {
+        "roi_us": 17928,
+        "encode_us": 6406,
+        "coverage_bytes": 2667560
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 0,
+      "rect": [
+        0,
+        0,
+        3,
+        5
+      ],
+      "before": {
+        "roi_us": 11097,
+        "encode_us": 4093,
+        "coverage_bytes": 4151744
+      },
+      "after": {
+        "roi_us": 5146,
+        "encode_us": 1919,
+        "coverage_bytes": 160
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 0,
+      "rect": [
+        986,
+        745,
+        12,
+        3
+      ],
+      "before": {
+        "roi_us": 9217,
+        "encode_us": 3071,
+        "coverage_bytes": 2392864
+      },
+      "after": {
+        "roi_us": 5037,
+        "encode_us": 1763,
+        "coverage_bytes": 432
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 1,
+      "rect": [
+        0,
+        0,
+        130,
+        748
+      ],
+      "before": {
+        "roi_us": 16942,
+        "encode_us": 5749,
+        "coverage_bytes": 8331476
+      },
+      "after": {
+        "roi_us": 10003,
+        "encode_us": 2812,
+        "coverage_bytes": 1867320
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 1,
+      "rect": [
+        868,
+        0,
+        130,
+        748
+      ],
+      "before": {
+        "roi_us": 16358,
+        "encode_us": 6047,
+        "coverage_bytes": 6851676
+      },
+      "after": {
+        "roi_us": 9516,
+        "encode_us": 2509,
+        "coverage_bytes": 1736364
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 1,
+      "rect": [
+        0,
+        656,
+        998,
+        92
+      ],
+      "before": {
+        "roi_us": 17172,
+        "encode_us": 5744,
+        "coverage_bytes": 8404568
+      },
+      "after": {
+        "roi_us": 10367,
+        "encode_us": 2587,
+        "coverage_bytes": 1953712
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 1,
+      "rect": [
+        213,
+        97,
+        417,
+        319
+      ],
+      "before": {
+        "roi_us": 18255,
+        "encode_us": 6561,
+        "coverage_bytes": 9261504
+      },
+      "after": {
+        "roi_us": 10476,
+        "encode_us": 2903,
+        "coverage_bytes": 2547552
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 1,
+      "rect": [
+        0,
+        0,
+        3,
+        5
+      ],
+      "before": {
+        "roi_us": 14612,
+        "encode_us": 4997,
+        "coverage_bytes": 7067200
+      },
+      "after": {
+        "roi_us": 6396,
+        "encode_us": 1700,
+        "coverage_bytes": 256
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 1,
+      "rect": [
+        986,
+        745,
+        12,
+        3
+      ],
+      "before": {
+        "roi_us": 9752,
+        "encode_us": 3186,
+        "coverage_bytes": 4479240
+      },
+      "after": {
+        "roi_us": 4356,
+        "encode_us": 1081,
+        "coverage_bytes": 432
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 2,
+      "rect": [
+        0,
+        0,
+        130,
+        748
+      ],
+      "before": {
+        "roi_us": 15531,
+        "encode_us": 5210,
+        "coverage_bytes": 2355052
+      },
+      "after": {
+        "roi_us": 14036,
+        "encode_us": 4800,
+        "coverage_bytes": 991088
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 2,
+      "rect": [
+        868,
+        0,
+        130,
+        748
+      ],
+      "before": {
+        "roi_us": 1028,
+        "encode_us": 282,
+        "coverage_bytes": 0
+      },
+      "after": {
+        "roi_us": 1123,
+        "encode_us": 344,
+        "coverage_bytes": 0
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 2,
+      "rect": [
+        0,
+        656,
+        998,
+        92
+      ],
+      "before": {
+        "roi_us": 1050,
+        "encode_us": 283,
+        "coverage_bytes": 0
+      },
+      "after": {
+        "roi_us": 1080,
+        "encode_us": 282,
+        "coverage_bytes": 0
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 2,
+      "rect": [
+        213,
+        97,
+        417,
+        319
+      ],
+      "before": {
+        "roi_us": 29254,
+        "encode_us": 13046,
+        "coverage_bytes": 3593668
+      },
+      "after": {
+        "roi_us": 28776,
+        "encode_us": 12744,
+        "coverage_bytes": 2359476
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 2,
+      "rect": [
+        0,
+        0,
+        3,
+        5
+      ],
+      "before": {
+        "roi_us": 1343,
+        "encode_us": 472,
+        "coverage_bytes": 0
+      },
+      "after": {
+        "roi_us": 1081,
+        "encode_us": 310,
+        "coverage_bytes": 0
+      },
+      "different_bytes": 0
+    },
+    {
+      "camera": 2,
+      "rect": [
+        986,
+        745,
+        12,
+        3
+      ],
+      "before": {
+        "roi_us": 1018,
+        "encode_us": 249,
+        "coverage_bytes": 0
+      },
+      "after": {
+        "roi_us": 1071,
+        "encode_us": 298,
+        "coverage_bytes": 0
+      },
+      "different_bytes": 0
+    }
+  ],
+  "roi_csv_sha256": {
+    "before": "77ab8f298be41796f36e81799b7872eeed8a8c6d9cc50cd5aca5b2a9bdf40eaa",
+    "after": "fbf951ba6a59d0051aaa4d8df3cf6a5a9357693226961f2ce6b1cba692b4a565"
+  },
+  "notes": [
+    "Timings are single before/after headless kernel samples, not displayed FPS.",
+    "PDF liveness harness uses production policy/cache/Refiner, not native HWND surface or GPU batch scheduler.",
+    "Scissor parity has a separate 123-layer GPU test, including fractional pan, rotation and shear.",
+    "Native app binary/session changed externally during work; no app-control or restart command was issued.",
+    "No cap on workers/quality/cache entry count; existing RAM/VRAM byte budget retained."
+  ]
+}
