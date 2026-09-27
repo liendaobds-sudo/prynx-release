@@ -440,8 +440,6 @@ def _write_completed_progress(context: NupOutputContext) -> None:
 
 
 def _build_report_fallback(context: NupOutputContext) -> None:
-    if context.order_summary is not None:
-        return  # BE.07: report đã chốt theo recipe, không tính lại bằng capacity lớn nhất.
     if context.reports_by_sheet:
         return
     try:
@@ -485,6 +483,7 @@ def _build_report_fallback(context: NupOutputContext) -> None:
             and logical_sheets % 2 == 0
         )
         physical_sheets = logical_sheets // 2 if duplex else logical_sheets
+        sheet_override = 1 if context.layout_type == "cut_stacks" else max(1, physical_sheets)
         for sheet_idx in range(max(1, physical_sheets)):
             identifier = f"Tờ {sheet_idx + 1}/{max(1, physical_sheets)}"
             if context.page_sheet_mode:
@@ -505,7 +504,7 @@ def _build_report_fallback(context: NupOutputContext) -> None:
                 order_code=context.settings.get("reportOrderCode", "") or "",
                 identifier=identifier,
                 gang_count=page_sheet_fields.get("gang_count", 0),
-                sheet_count_override=max(1, physical_sheets),
+                sheet_count_override=sheet_override,
             )
             report_key = sheet_idx * 2 if duplex else sheet_idx
             context.reports_by_sheet[report_key] = nup_report.build_report_string(

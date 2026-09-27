@@ -144,7 +144,7 @@ def test_production_sticker_l_shape_assigns_main_right_bottom_blocks():
     )
 
     result = solve_optimal_sticker_layout(
-        500.0, 700.0, 180.0, 120.0, 0.0, 0.0,
+        300.0, 350.0, 70.0, 90.0, 0.0, 0.0,
         "optimal_auto", shape_type="RECTANGLE",
     )
 
@@ -153,7 +153,7 @@ def test_production_sticker_l_shape_assigns_main_right_bottom_blocks():
         block_id: [item for item in result["items"] if item.get("blockId") == block_id]
         for block_id in (0, 1, 2)
     }
-    assert [len(by_block[block_id]) for block_id in (0, 1, 2)] == [8, 2, 4]
+    assert [len(by_block[block_id]) for block_id in (0, 1, 2)] == [9, 5, 2]
 
     rotated = nup_layout_solver.apply_alternate_rotation(result, "row")
     flags = {
@@ -164,9 +164,9 @@ def test_production_sticker_l_shape_assigns_main_right_bottom_blocks():
         ]
         for block_id in (0, 1, 2)
     }
-    assert flags[0] == [False, False, True, True, False, False, True, True]
-    assert flags[1] == [False, False]
-    assert flags[2] == [False, True, False, True]
+    assert flags[0] == [False, False, False, True, True, True, False, False, False]
+    assert flags[1] == [False, False, False, False, False]
+    assert flags[2] == [False, True]
 
 
 def test_cluster_tile_centering_preserves_sticker_inking_flags():

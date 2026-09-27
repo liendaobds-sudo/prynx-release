@@ -120,7 +120,7 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
         "gapY": _mm(getattr(req, "gap_y", 0)),
         # PARITY (audit 2026-08-30 §B10-6): cổng lưới và render export đều đọc bleed
         # theo mm; bỏ khoá này từng làm gate quyết trên hình học khác provisional.
-        "bleed": _mm(getattr(req, "bleed", 0)),
+        **({"bleed": _mm(getattr(req, "bleed"))} if getattr(req, "bleed", None) is not None else {}),
         "marginLeft": _mm(getattr(req, "margin_left", 0)),
         "marginRight": _mm(getattr(req, "margin_right", 0)),
         "marginTop": _mm(getattr(req, "margin_top", 0)),

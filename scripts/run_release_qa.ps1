@@ -241,6 +241,12 @@ try {
     New-Item -ItemType Directory -Path $frontendQaTestFixtures | Out-Null
     Copy-Item -LiteralPath "$ROOT\test\Tem thuc pham sach Duc An.jpg" `
         -Destination $frontendQaTestFixtures
+    # NativeGpuViewportContainer / useNativeGpuViewport tests resolve
+    # camera fixture through `../tests/viewer_gpu/` (workspace-sibling layout).
+    $frontendQaViewerGpuFixtures = Join-Path $frontendQaFull "tests\viewer_gpu"
+    New-Item -ItemType Directory -Path $frontendQaViewerGpuFixtures | Out-Null
+    Copy-Item -LiteralPath "$ROOT\tests\viewer_gpu\native-camera-v1.json" `
+        -Destination $frontendQaViewerGpuFixtures
 
     Push-Location $frontendQaDesktop
     try {

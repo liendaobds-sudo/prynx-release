@@ -308,6 +308,83 @@ def run_nup_engine(
                 perf_stages.close()
 
 
+def _handle_sticker_grid_order(source_path, settings, page_count, trim_w, trim_h, MM_TO_PTS):
+    from app.workers.sticker_grid_order import (
+        uses_sticker_manual_repeat,
+        uses_sticker_single_order,
+        uses_sticker_simple_grid,
+        build_sticker_grid_order,
+        build_sticker_manual_repeat_order,
+    )
+    is_manual_repeat = uses_sticker_manual_repeat(settings)
+    is_grid = uses_sticker_single_order(settings, page_count) or uses_sticker_simple_grid(settings)
+    if not (is_manual_repeat or is_grid):
+        return None
+    _doc_grid = pdf_lib.open(source_path)
+    try:
+        if is_manual_repeat:
+            grid_order = build_sticker_manual_repeat_order(
+                _doc_grid, settings, logical_page_count=page_count
+            )
+        else:
+            grid_order = build_sticker_grid_order(
+                _doc_grid, settings, logical_page_count=page_count
+            )
+    finally:
+        _doc_grid.close()
+
+    export_unique = bool(settings.get("exportUniqueSheets", True))
+    precalc, run_counts = grid_order.export_sheets(export_unique)
+    total_sheets = len(precalc)
+    total_items = sum(len(p) for p in precalc.values())
+    cap = grid_order.preview.get("capacity") or grid_order.layout.get("totalItems", 1)
+    summary = grid_order.preview.get("orderSummary")
+    master = grid_order.master_page
+
+    reports = {}
+    report_rows = []
+    rcfg = settings.get('reportDisplay') or {}
+    if precalc and summary:
+        from app.workers import nup_report
+        report_enabled = bool(rcfg.get('enabled'))
+        paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+        label = rcfg.get('labelNameText') or ""
+        PT_MM = 1.0 / MM_TO_PTS
+        trim_w_mm = trim_w * PT_MM
+        trim_h_mm = trim_h * PT_MM
+        for s, pls in precalc.items():
+            ips = len(pls)
+            runs = run_counts.get(s, 1) if run_counts else 1
+            row_label = (
+                f"{label} (tờ {s + 1})" if (label and len(precalc) > 1)
+                else (label or (f"Trang {pls[0]['src_page_idx'] + 1}" if pls else f"Tờ {s + 1}"))
+            )
+            report_rows.append({
+                'label': row_label,
+                'items_per_sheet': ips,
+                'requested_qty': summary.get('requestedCount', 0),
+                'sheet_count': runs,
+            })
+            if report_enabled:
+                data = nup_report.compute_report_data(
+                    label_name=label or (f"Trang {pls[0]['src_page_idx'] + 1}" if pls else f"Tờ {s + 1}"),
+                    width_mm=trim_w_mm,
+                    height_mm=trim_h_mm,
+                    paper_size=paper,
+                    items_per_sheet=ips,
+                    requested_qty=summary.get('requestedCount', 0),
+                    material=settings.get('reportMaterial', '') or '',
+                    lamination_type=settings.get('reportLamination', 0) or 0,
+                    lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                    mode_label='Bế tem',
+                    order_code=settings.get('reportOrderCode', '') or '',
+                    identifier=f"Tờ {s + 1}/{total_sheets}",
+                    sheet_count_override=runs,
+                )
+                reports[s] = nup_report.build_report_string(rcfg, data)
+    return precalc, run_counts, total_sheets, total_items, cap, grid_order.layout, summary, master, reports, report_rows
+
+
 def _run_nup_engine_impl(
 
     source_path: str,
@@ -814,16 +891,19 @@ def _run_nup_engine_impl(
         Không nhét gapX/gapY vào identifier: field đó là 「Mẫu/Trang」cho người
         đọc (tên mẫu, số tờ…), còn khe tấm là thông số layout đã có ô nhập riêng.
         """
-        quantities = target_quantities_by_page or {}
-        requested_qty = 0
-        for page_idx in range(page_count):
-            raw_qty = quantities.get(
-                str(page_idx), quantities.get(page_idx, target_quantity)
-            )
-            try:
-                requested_qty += max(0, int(raw_qty or 0))
-            except (TypeError, ValueError):
-                continue
+        if page_sheet_mode and layout_type == 'cut_stacks':
+            requested_qty = page_count
+        else:
+            quantities = target_quantities_by_page or {}
+            requested_qty = 0
+            for page_idx in range(page_count):
+                raw_qty = quantities.get(
+                    str(page_idx), quantities.get(page_idx, target_quantity)
+                )
+                try:
+                    requested_qty += max(0, int(raw_qty or 0))
+                except (TypeError, ValueError):
+                    continue
 
         return {
             "width_mm": trim_w / MM_TO_PTS,
@@ -833,7 +913,32 @@ def _run_nup_engine_impl(
             "identifier": (extra_identifier or "").strip(),
         }
 
+    order_summary = None
+    _grid_handled = None
     if is_die_cut:
+        _grid_handled = _handle_sticker_grid_order(
+            source_path, settings, page_count, trim_w, trim_h, MM_TO_PTS
+        )
+        if _grid_handled is not None:
+            (
+                precalculated_placements,
+                _run_counts,
+                total_sheets,
+                total_items_placed,
+                capacity,
+                layout,
+                order_summary,
+                _master_page,
+                _reports_by_sheet,
+                _report_rows,
+            ) = _grid_handled
+            total_capacity = capacity
+            if _master_page is not None:
+                homogeneous_master_idx = _master_page
+
+    if _grid_handled is not None:
+        pass
+    elif is_die_cut:
 
         logger.info(f"\n🚀 [NUP_ENGINE] Running ZONE-BASED N-UP with INTERLOCKING per type")
 
@@ -2454,6 +2559,8 @@ def _run_nup_engine_impl(
                     f"[BIN-PACK] {len(_ms_missing)} mẫu không xếp được lên tờ nào: "
                     f"{_ms_missing[:10]}"
                 )
+                missing_str = ", ".join(f"mẫu {p + 1}" for p in _ms_missing)
+                raise ValueError(f"Không thể xếp các mẫu sau lên khổ giấy đã chọn: {missing_str}")
 
             if _report_enabled_ms and items_per_sheet_ms > 0:
                 try:
@@ -3110,10 +3217,20 @@ def _run_nup_engine_impl(
                 alternate_rotation,
             )
         else:
+            from app.workers.nup_layout_solver import sequential_required_items
+            _required_items_seq = (
+                sequential_required_items(
+                    page_count, target_quantity,
+                    target_quantities_by_page,
+                    settings.get('duplexFlow', 'single') == 'double',
+                )
+                if layout_type == 'sequential' and not page_sheet_mode else None
+            )
             layout = solve_optimal_layout(
                 usable_w, usable_h, trim_w, trim_h,
                 gap_x, gap_y, strategy, secondary_gap,
                 alternate_rotation,
+                required_items=_required_items_seq,
             )
 
         if strategy == 'manual':
@@ -3811,6 +3928,14 @@ def _run_nup_engine_impl(
                     })
                 precalculated_placements[_s] = _pls
             total_sheets = n_sheets
+            if page_sheet_mode:
+                total_placed = sum(len(p) for p in precalculated_placements.values())
+                order_summary = {
+                    "requestedCount": page_count,
+                    "placedCount": total_placed,
+                    "physicalSheetCount": n_sheets,
+                    "extraCount": max(0, total_placed - page_count),
+                }
             logger.info(
                 "[CUT_STACKS] page_count=%s capacity=%s n_sheets=%s (collation stacks)",
                 page_count, capacity, n_sheets,
@@ -4093,6 +4218,7 @@ def _run_nup_engine_impl(
             ratio_stack_duplex=_ratio_stack_duplex,
             ratio_stack_warnings=_ratio_stack_warnings,
             layout=layout, strategy=strategy, total_capacity=total_capacity,
+            order_summary=order_summary,
         ),
         chunk_processor=process_chunk,
     )

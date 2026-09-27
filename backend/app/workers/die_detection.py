@@ -969,9 +969,8 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
         # 2. Hoặc mang tên kênh bế chuẩn (KissCut, ThruCut, Crease, CutContour...)
         if p_spot is not None and _match_die_channel(p_spot, names_lower):
             return True
-        # 3. Hoặc khớp màu bế chuẩn (Red, Cyan, Magenta, Black...)
-        # Cho phép tham gia nếu màu khớp màu bế chuẩn (kể cả khi p_spot là tên riêng không thuộc non-die spot)
-        if _color_matches_die(p.get("color"), die_colors, die_color_tol):
+        # 3. Hoặc khớp màu bế chuẩn (Red, Cyan, Magenta, Black...) khi anchor không có spot
+        if anchor_spot_key is None and _color_matches_die(p.get("color"), die_colors, die_color_tol):
             return True
         return False
 
@@ -1087,6 +1086,8 @@ def select_die_path(page, die_channel_names=(), die_colors=None, die_color_tol=0
     try:
         paths = page.extract_vector_paths()
     except Exception:
+        return None
+    if not isinstance(paths, (list, tuple)):
         return None
     anchor, _, _ = _select_from_paths(paths, page.rect, die_channel_names, die_colors, die_color_tol)
     if anchor is None:

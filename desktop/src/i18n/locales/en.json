@@ -2815,7 +2815,9 @@
     "dung_hinh_cham": "This page is taking longer than usual to render…",
     "khong_dung_duoc_trang": "Could not render this page.",
     "da_huy_dung_hinh": "Page rendering was cancelled.",
-    "thu_lai": "Retry"
+    "thu_lai": "Retry",
+    "nhan_ban": "Duplicate",
+    "xoa_truong": "Delete field"
   },
   "misc.login": {
     "dang_xuat": "Sign out",
@@ -4015,7 +4017,10 @@
     "van_chay": "Continue",
     "vi_tri_x": "X position",
     "vi_tri_y": "Y position",
-    "xem_lai": "Review"
+    "xem_lai": "Review",
+    "huong_dan_su_dung": "VDP Data Merge Guide",
+    "huong_dan_vdp_title": "Variable Data Printing (VDP) Guide",
+    "nhan_ban": "Duplicate"
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Type to search fonts...",
@@ -4233,7 +4238,19 @@
     "da_cat_ngan_so_luong": "Trimmed all fields to {{count}} items.",
     "xac_nhan_chay_lech": "Sequence counts differ ({{min}} vs {{max}}). Do you want to proceed?",
     "trang_thieu_se_trong": "Missing pages will remain blank.",
-    "continuous_select_notice": "Continuous selection is on: click sample numbers on the artwork to create variable-number slots, then click “Done” or press Esc."
+    "continuous_select_notice": "Continuous selection is on: click sample numbers on the artwork to create variable-number slots, then click “Done” or press Esc.",
+    "4_dinh_dang_chu_can_le": "Typography & Alignment",
+    "da_gop_nhom_cung_so": "Grouped all positions sharing the same serial number (Stub & Ticket body)",
+    "da_tach_rieng_vi_tri": "Separated positions into independent numbering fields",
+    "gop_cung_so_ve": "Group same number (Stub & Ticket body)",
+    "kieu_ghep_bo_so": "Booklet & numbering merge format",
+    "mau_so_tao_ra": "Sample number:",
+    "nhan_ban": "Duplicate",
+    "nhap_chon_truong_de_dinh_dang": "Click a numbering field on the canvas to configure font, size, alignment, and CMYK color",
+    "so_do_minh_hoa": "Numbering sequence diagram",
+    "tach_rieng_tat_ca": "Separate into independent numbers",
+    "trang_hien_tai": "Page numbering",
+    "xem_truc_tiep_tren_canvas": "Previewing directly on canvas"
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Enable for paper-scanned files. Disable if the file is already clean (exported from Photoshop/AI).",

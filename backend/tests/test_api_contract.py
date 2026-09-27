@@ -251,7 +251,7 @@ def test_preflight_nhom_sua_file_dung_chung_mot_model(path):
         ("/preflight/crop-regions", "POST", CropRegionsResponse),
         ("/preflight/preview-hide", "POST", PreviewImageResponse),
         ("/preflight/objects/{file_id}/{page}", "GET", PageObjectsResponse),
-        ("/preflight/inks/{file_id}", "GET", InksResponse),
+        ("/preflight/inks/{file_id:path}", "GET", InksResponse),
         ("/preflight/icc-profiles", "GET", IccProfilesResponse),
         ("/preflight/overprint-preview", "POST", OverprintPreviewResponse),
     ],

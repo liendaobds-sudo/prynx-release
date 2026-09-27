@@ -341,7 +341,7 @@ def compute_sticker_layout_for_page(
     # fallback bên dưới để kiểm tra va chạm. `head_to_tail` vẫn phải tính.
     _skip_unused_custom_nfp = (
         strategy == 'optimal_auto'
-        and shape_type == 'CUSTOM'
+        and shape_type_override == 'CUSTOM'
     )
 
     # PERF: Với các loại hình khác trong optimal_auto, chỉ tải NFP lazily khi

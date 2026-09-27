@@ -1140,7 +1140,7 @@ def _find_largest_die_path(page):
     """
 
     cached = getattr(page, '_cached_largest_die', None)
-    if cached is not None:
+    if isinstance(cached, dict):
         return cached
 
     res = None

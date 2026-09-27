@@ -2815,7 +2815,9 @@
     "dung_hinh_cham": "Đang dựng trang lâu hơn bình thường…",
     "khong_dung_duoc_trang": "Không dựng được trang này.",
     "da_huy_dung_hinh": "Đã hủy dựng trang.",
-    "thu_lai": "Thử lại"
+    "thu_lai": "Thử lại",
+    "nhan_ban": "Nhân bản",
+    "xoa_truong": "Xóa trường"
   },
   "misc.login": {
     "dang_xuat": "Đăng xuất",
@@ -4015,7 +4017,10 @@
     "van_chay": "Vẫn chạy",
     "vi_tri_x": "Vị trí X",
     "vi_tri_y": "Vị trí Y",
-    "xem_lai": "Xem lại"
+    "xem_lai": "Xem lại",
+    "huong_dan_su_dung": "Hướng dẫn Trộn dữ liệu VDP",
+    "huong_dan_vdp_title": "Hướng dẫn Trộn dữ liệu biến đổi (VDP)",
+    "nhan_ban": "Nhân bản"
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Gõ để tìm Font...",
@@ -4233,7 +4238,19 @@
     "da_cat_ngan_so_luong": "Đã cắt ngắn số lượng tất cả các trường thành {{count}} số.",
     "xac_nhan_chay_lech": "Các trường đang bị lệch số lượng ({{min}} vs {{max}} số). Bạn có chắc chắn muốn xuất PDF không?",
     "trang_thieu_se_trong": "Các trang thiếu sẽ để trống số.",
-    "continuous_select_notice": "Chế độ chọn liên tục đã bật: Nhấp vào các con số mẫu trên bản thiết kế để làm Slot số nhảy, bấm \"Xong\" hoặc phím Esc khi hoàn tất."
+    "continuous_select_notice": "Chế độ chọn liên tục đã bật: Nhấp vào các con số mẫu trên bản thiết kế để làm Slot số nhảy, bấm \"Xong\" hoặc phím Esc khi hoàn tất.",
+    "4_dinh_dang_chu_can_le": "Định dạng chữ & Căn chỉnh",
+    "da_gop_nhom_cung_so": "Đã gộp tất cả vị trí mang cùng 1 số seri (Cuống & Thân vé)",
+    "da_tach_rieng_vi_tri": "Đã tách các vị trí thành số nhảy độc lập",
+    "gop_cung_so_ve": "Gộp chung số (Cuống & Thân vé)",
+    "kieu_ghep_bo_so": "Định dạng ghép bộ & số",
+    "mau_so_tao_ra": "Mẫu số:",
+    "nhan_ban": "Nhân bản",
+    "nhap_chon_truong_de_dinh_dang": "Nhấp chọn một trường nhảy số trên bản vẽ để chỉnh Font chữ, Cỡ chữ, Căn lề và Màu in CMYK",
+    "so_do_minh_hoa": "Sơ đồ mô phỏng thứ tự nhảy",
+    "tach_rieng_tat_ca": "Tách thành các số độc lập",
+    "trang_hien_tai": "Số nhảy trang",
+    "xem_truc_tiep_tren_canvas": "Đang hiển thị trên Canvas"
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Bật cho file scan từ giấy. Tắt nếu file đã sạch (export từ Photoshop/AI).",

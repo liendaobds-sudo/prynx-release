@@ -398,11 +398,13 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                 frontend_shape_props = (detected_shape_params_by_page.get(str(fi))
                                         or detected_shape_params_by_page.get(fi) or {})
 
-            if sr_strategy == 'manual':
+            _cols_setting = settings.get('cols') or settings.get('columns')
+            _rows_setting = settings.get('rows')
+            if sr_strategy == 'manual' and _cols_setting and _rows_setting:
                 # PARITY (audit 2026-09-20 §PAR20.02): CNC S&R thủ công nhận đúng cols/rows từ settings
                 from app.workers.nup_layout_solver import solve_manual
-                cols_m = max(1, int(settings.get('cols') or settings.get('columns') or 1))
-                rows_m = max(1, int(settings.get('rows') or 1))
+                cols_m = max(1, int(_cols_setting))
+                rows_m = max(1, int(_rows_setting))
                 pg = src_doc[fi]
                 lp = _find_largest_die_path(pg)
                 if lp:
@@ -410,13 +412,13 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                 else:
                     tw = pg.rect.width - 2 * bleed_pt
                     th = pg.rect.height - 2 * bleed_pt
-                sol_m = solve_manual(tw, th, gap_x, gap_y, cols_m, rows_m)
+                layout = solve_manual(tw, th, gap_x, gap_y, cols_m, rows_m)
                 items = [{
                     'x': c['x'], 'y': c['y'],
                     'width': c['width'], 'height': c['height'],
                     'isRotated': c.get('isRotated', False),
                     'isRotated180': c.get('isRotated180', False),
-                } for c in sol_m.get('cells', [])]
+                } for c in layout.get('cells', [])]
             else:
                 layout = compute_sticker_layout_for_page(
                     page=src_doc[fi],

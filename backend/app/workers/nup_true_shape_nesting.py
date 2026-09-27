@@ -1099,14 +1099,15 @@ def _assemble_nesting_job(
         # S&R xuất một tờ đại diện cho mỗi mẫu; số lượng chỉ chọn mẫu tham gia.
         artifact_settings = {**settings, "exportUniqueSheets": True}
 
-    # BXHAND21.03: Với tem bế, thợ in không cần nhập ô tràn lề; nếu settings
-    # không truyền bleed (hoặc = 0), tự động suy ra bleed_mm từ nửa khoảng hở tem
-    # để giữ lại tối đa phần bù màu ngoài đường bế có sẵn trong file.
-    raw_bleed_mm = max(0.0, float(settings.get("bleed") or 0.0))
-    if raw_bleed_mm <= 0.0 and tool == "sticker_imposer" and gap_x > 0 and gap_y > 0:
+    # BXHAND21.03: Khi settings không khai bleed, tự động suy ra bleed_mm
+    # từ nửa khoảng hở cho tem bế. Nếu settings đã khai bleed tường minh (kể cả 0),
+    # giữ đúng giá trị khai để không làm phình footprint ngoài ý muốn.
+    if "bleed" in settings and settings["bleed"] is not None:
+        effective_bleed_mm = max(0.0, float(settings.get("bleed") or 0.0))
+    elif tool == "sticker_imposer" and gap_x > 0 and gap_y > 0:
         effective_bleed_mm = min(gap_x / 2.0, gap_y / 2.0)
     else:
-        effective_bleed_mm = raw_bleed_mm
+        effective_bleed_mm = 0.0
 
     return ProductionNestingJobInput(
         manifest_id=_manifest_id(),
