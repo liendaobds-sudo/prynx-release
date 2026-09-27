@@ -176,7 +176,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [networkx](https://networkx.org/) | 3.6.1 | BSD-3-Clause | build/test |
 | [Nuitka](https://nuitka.net) | 4.1.2 | GNU Affero General Public License v3 | phát hành |
 | [numpy](https://numpy.org) | 1.26.4 | BSD License | build/test |
-| [onnxruntime](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
+| [onnxruntime-directml](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
 | [opencv-python-headless](https://github.com/opencv/opencv-python) | 4.10.0.84 | Apache 2.0 | phát hành |
 | [openpyxl](https://openpyxl.readthedocs.io) | 3.1.5 | MIT | phát hành |
 | ordered-set | 4.1.0 | MIT License | phát hành |
