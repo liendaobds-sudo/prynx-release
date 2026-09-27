@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { PropsWithChildren } from 'react';
 import { fireEvent, render, renderHook, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
