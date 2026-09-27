@@ -165,7 +165,7 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 | [iniconfig](https://github.com/pytest-dev/iniconfig) | 2.3.0 | MIT | build/test |
 | [Jinja2](https://github.com/pallets/jinja/) | 3.1.6 | BSD License | build/test |
 | [kombu](https://kombu.readthedocs.io) | 5.6.2 | BSD-3-Clause | build/test |
-| [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.6 | BSD-3-Clause | build/test |
+| [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.4 | BSD-3-Clause | build/test |
 | [lxml](https://lxml.de/) | 6.1.3 | BSD-3-Clause | build/test |
 | [Mako](https://www.makotemplates.org/) | 1.4.3 | MIT | build/test |
 | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | 4.2.0 | MIT License | build/test |
