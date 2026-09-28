@@ -9499,6 +9499,7 @@ class StickerEngine:
                 selection_page_mode = page_idx in selection_targets
                 approved_payload = approved_contour_overrides.get(page_idx)
                 alpha_path_payload = alpha_path_overrides.get(page_idx)
+                direct_analytic_fillet = None
                 # QUALITY (2026-09-10 §SIMPLIFY.AUTO): mặc định mới là opt-in
                 # từ UI. Tài liệu lẫn vector/ảnh xét từng trang; recipe/API cũ
                 # thiếu flag giữ chính xác scalar cũ, đặc biệt explicit 0.
