@@ -304,29 +304,6 @@ export async function inspectStickerSource(
 
 /** Chỉ lấy metadata/session, không tải bitmap — dùng cho preview SVG nhẹ. */
 
-export async function sendCutlineDebugLog(
-    stage: string,
-    message: string,
-    fields: Record<string, unknown> = {},
-): Promise<void> {
-    if (!import.meta.env.DEV) {
-        return;
-    }
-    try {
-        await authenticatedFetch(`${getApiUrl()}/sticker-sheet/debug-log`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                source: 'FE',
-                stage,
-                message,
-                fields,
-            }),
-        });
-    } catch {
-        // ignore telemetry errors
-    }
-}
 
 export async function inspectStickerSourceManifest(
     file: File,

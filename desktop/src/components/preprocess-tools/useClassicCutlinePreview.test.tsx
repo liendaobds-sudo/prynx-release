@@ -16,7 +16,6 @@ const apiMocks = vi.hoisted(() => ({
     readStickerCutlinePreviewJob: vi.fn(),
     cancelStickerCutlinePreviewJob: vi.fn(),
     closeStickerSheetSession: vi.fn(),
-    sendCutlineDebugLog: vi.fn(async () => {}),
 }));
 
 vi.mock('../../lib/stickerSheetApi', () => apiMocks);

@@ -25,7 +25,6 @@ import { requestOpenTool } from '../../lib/tabNavigation';
 import { MIXED_NESTING_ENABLED } from '../../lib/mixed-nesting/rollout';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 import { useClassicCutlinePreview } from './useClassicCutlinePreview';
-import { sendCutlineDebugLog } from '../../lib/stickerSheetApi';
 
 interface Props {
     tabId?: string;
@@ -943,9 +942,6 @@ export default function StickerTool({
 
     // Auto-fix bleedColorType when switching tabs
     const handleProductTypeChange = (type: 'sticker' | 'rectangle') => {
-        void sendCutlineDebugLog('UI_ACTION', `Chọn kiểu xử lý bù xén: ${type === 'sticker' ? 'Bế tem nhãn' : 'Xén vuông góc'}`, {
-            productType: type,
-        });
         if (controlledProductType === undefined) setInternalProductType(type);
         onProductTypeChange?.(type);
         const normalizedBleedColorType = normalizeStickerBleedColorType(bleedColorType, type);

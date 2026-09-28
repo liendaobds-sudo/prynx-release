@@ -5,7 +5,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
-    sendCutlineDebugLog,
     cancelStickerCutlinePreviewJob,
     closeStickerSheetSession,
     detectStickerSourceManifest,
@@ -594,30 +593,13 @@ export function useClassicCutlinePreview({
 
         const timer = window.setTimeout(() => {
             void (async () => {
-                const tPrepare0 = performance.now();
                 try {
-                    await sendCutlineDebugLog('PREPARE_START', 'Bắt đầu chuẩn bị file nguồn cho preview');
                     const file = await resolveSourceFile();
                     if (!file) {
                         throw new Error(i18n.t('preprocess.stickerSheet:classic_preview_no_file'));
                     }
-                    const prepareMs = Math.round(performance.now() - tPrepare0);
-                    await sendCutlineDebugLog('PREPARE_DONE', `Chuẩn bị file nguồn xong (${prepareMs}ms)`, {
-                        filename: file.name,
-                        size_mb: Math.round((file.size / (1024 * 1024)) * 100) / 100,
-                        elapsed_ms: prepareMs,
-                    });
 
-                    const tInspect0 = performance.now();
-                    await sendCutlineDebugLog('INSPECT_START', `Bắt đầu inspect manifest nguồn: ${file.name}`);
                     const inspection = await inspectStickerSourceManifest(file, controller.signal);
-                    const inspectMs = Math.round(performance.now() - tInspect0);
-                    await sendCutlineDebugLog('INSPECT_DONE', `Inspect manifest xong (${inspectMs}ms)`, {
-                        sessionId: inspection.session_id,
-                        page_count: inspection.pages?.length ?? 0,
-                        source_kind: inspection.source_kind,
-                        elapsed_ms: inspectMs,
-                    });
                     sessionId = inspection.session_id;
                     if (
                         disposed
@@ -759,24 +741,12 @@ export function useClassicCutlinePreview({
                         'preprocess.stickerSheet:classic_preview_no_boundary',
                     ));
                 }
-                await sendCutlineDebugLog('DETECT_START', `Bắt đầu nhận diện biên trang ${pageNumber}`, {
-                    sessionId: session.sessionId,
-                    strategy,
-                    pageNumber,
-                    detectionCutMode,
-                });
                 const manifest = await detectStickerSourceManifest(session.sessionId, {
                     strategy,
                     pageNumber,
                     previewOnly: true,
                     force: true,
                     signal: controller.signal,
-                });
-                const detectMs = Math.round(performance.now() - tDetect0);
-                await sendCutlineDebugLog('DETECT_DONE', `Nhận diện biên xong (${detectMs}ms)`, {
-                    boundary_source: manifest.boundary_source,
-                    instances_count: manifest.instances?.length ?? 0,
-                    elapsed_ms: detectMs,
                 });
 
                 const current = (
@@ -1077,18 +1047,6 @@ export function useClassicCutlinePreview({
         };
 
         void (async () => {
-            const jobT0 = performance.now();
-            await sendCutlineDebugLog('JOB_SUBMIT', `Bắt đầu gửi job preview trang ${requested.pageNumber}`, {
-                sessionId: requested.source.sessionId,
-                generation: requested.jobGeneration,
-                page: requested.pageNumber,
-                mode: requested.cutMode,
-                cornerStyle: requested.cornerStyle,
-                offsetMm: requested.offsetMm,
-                curveTension: requested.curveTension,
-                simplifyMm: requested.cutlineSimplifyMm,
-                wholePage: requested.source.classicWholePage,
-            });
             try {
                 let job = await startStickerCutlinePreviewJob(
                     requested.source.sessionId,
@@ -1116,16 +1074,11 @@ export function useClassicCutlinePreview({
                             isUpdating: true,
                             error: '',
                         }));
-                        await sendCutlineDebugLog('JOB_DRAFT_RENDERED', `Rendered instant draft cutline preview (${Math.round(performance.now() - jobT0)}ms)`, {
-                            paths: draftJob.draft.paths?.length ?? 0,
-                            segment_count: draftJob.draft.segment_count,
-                        });
                     }
                 };
 
                 await updateWithDraft(job);
 
-                let polls = 0;
                 while (job.status === 'preparing' || job.status === 'simplifying') {
                     if (isStale()) return;
                     await waitForPreviewJobPoll(controller.signal);
@@ -1136,31 +1089,8 @@ export function useClassicCutlinePreview({
                         controller.signal,
                     );
                     await updateWithDraft(job);
-                    polls++;
-                    if (polls % 5 === 0) {
-                        await sendCutlineDebugLog('JOB_POLL', `Job đang xử lý (${Math.round(performance.now() - jobT0)}ms, ${polls} lần poll, status=${job.status})`, {
-                            status: job.status,
-                            elapsed_ms: Math.round(performance.now() - jobT0),
-                            polls,
-                        });
-                    }
                 }
                 if (isStale()) return;
-                const totalJobMs = Math.round(performance.now() - jobT0);
-                await sendCutlineDebugLog('JOB_DONE', `Job preview xong (${totalJobMs}ms, ${polls} lần poll)`, {
-                    status: job.status,
-                    paths: job.result?.paths?.length ?? 0,
-                    segment_count: job.result?.segment_count,
-                    total_job_ms: totalJobMs,
-                });
-                if (totalJobMs > 1000) {
-                    await sendCutlineDebugLog('BOTTLENECK_WARNING', `[ĐIỂM NGHẼN] Preview trang ${requested.pageNumber} mất ${totalJobMs}ms (> 1s)`, {
-                        total_job_ms: totalJobMs,
-                        page: requested.pageNumber,
-                        simplify_mm: requested.cutlineSimplifyMm,
-                        polls,
-                    });
-                }
                 settleTerminal(job);
             } catch (error) {
                 const stale = isStale();
